@@ -10,6 +10,7 @@ Cargo.lock
 *.bak
 
 # IDE/Editor specific
+.cursor/
 .vscode/
 .idea/
 *.swp
@@ -30,8 +31,12 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# Cursor
+
+
 # Optional: Uncomment if using criterion benchmarks
 # /benches/target/
 
 # Optional: Uncomment if using proptest
 # /proptest-regressions/
+
