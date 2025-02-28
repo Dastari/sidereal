@@ -1,0 +1,12 @@
+# Cargo.toml
+[package]
+name = "sidereal-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { workspace = true }
+bevy_reflect = "0.15.3"
+serde = { workspace = true }
+bevy_rapier2d = "0.24.0"  # Adding Rapier 2D physics engine for Bevy
+

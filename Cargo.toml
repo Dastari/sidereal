@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "sidereal-core",
+    "sidereal-replication-server",
+    "sidereal-shard-server",
+]
+resolver = "2"
+
+[workspace.dependencies]
+bevy = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.36", features = ["full"] }

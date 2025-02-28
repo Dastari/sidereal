@@ -1,0 +1,12 @@
+# Cargo.toml
+[package]
+name = "sidereal-shard-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { workspace = true }
+serde = { workspace = true }
+
+[features]
+default = []
