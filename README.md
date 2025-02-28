@@ -76,7 +76,7 @@ The Sidereal project consists of several interconnected components:
    - Generates authentication tokens
    - Verifies user connections
 
-5. **Supabase Database** (https://sidereal.dastari.net)
+5. **Supabase Database**
 
    - Stores entity data and universe state
    - Manages user accounts and authentication
