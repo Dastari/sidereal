@@ -122,11 +122,3 @@ The Sidereal project consists of several interconnected components:
    ```bash
    cargo build --release --workspace
    ```
-
-## License
-
-[Add your license information here]
-
-## Contributors
-
-[Add contributor information here]
