@@ -10,6 +10,7 @@ use super::plugin::ShardServerRegistry;
 
 /// Network messages for cluster management (placeholder for actual network implementation)
 #[derive(Event)]
+#[allow(dead_code)]
 pub enum ClusterManagementMessage {
     AssignCluster {
         cluster_id: Uuid,
@@ -26,6 +27,7 @@ pub enum ClusterManagementMessage {
 }
 
 #[derive(Event)]
+#[allow(dead_code)]
 pub enum EntityTransitionMessage {
     Request {
         entity_id: Entity,
@@ -43,6 +45,7 @@ pub enum EntityTransitionMessage {
 
 /// Entity data for replication
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct EntityData {
     pub id: Entity,
     pub position: Vec2,
@@ -273,9 +276,9 @@ pub fn handle_cluster_assignment(
 
 /// System to process entity transition requests
 pub fn process_entity_transition_requests(
-    mut universe_state: ResMut<UniverseState>,
-    config: Res<UniverseConfig>,
-    mut commands: Commands,
+    _universe_state: ResMut<UniverseState>,
+    _config: Res<UniverseConfig>,
+    _commands: Commands,
     time: Res<Time>,
     // Only read transition requests
     mut transition_requests: EventReader<EntityTransitionMessage>,

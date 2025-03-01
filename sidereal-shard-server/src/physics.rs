@@ -1,25 +1,28 @@
 use bevy::prelude::*;
-use bevy_rapier2d::prelude::*;
+use bevy_rapier2d::prelude::{Velocity, RapierPhysicsPlugin, NoUserData};
 use tracing::info;
 use std::time::Duration;
 
 use crate::config::{PhysicsConfig, ShardState};
 use sidereal_core::ecs::components::spatial::{EntityApproachingBoundary, SpatialPosition};
+// Import the core physics systems (but not the plugin that includes debug rendering)
+use sidereal_core::ecs::systems::physics::n_body_gravity_system;
 
-/// Plugin for physics simulation
-pub struct PhysicsPlugin;
+/// Plugin for shard-specific physics configuration and systems
+pub struct ShardPhysicsPlugin;
 
-impl Plugin for PhysicsPlugin {
+impl Plugin for ShardPhysicsPlugin {
     fn build(&self, app: &mut App) {
-        info!("Building physics plugin");
+        info!("Building shard physics plugin");
         
-        // Add Rapier physics plugin with default configuration
-        // We'll let Rapier handle the physics simulation
+        // Add Rapier physics plugin directly (without debug rendering)
         app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-           // Add our custom fixed timestep physics
+           // Add n-body gravity system from core
+           .add_systems(FixedUpdate, n_body_gravity_system)
+           // Add our shard-specific physics configurations
            .insert_resource(Time::<Fixed>::from_seconds(1.0 / 30.0))
            .add_systems(OnEnter(ShardState::Ready), configure_physics_timestep)
-           // Add our custom physics systems
+           // Add shard-specific physics systems
            .add_systems(
                FixedUpdate, 
                (

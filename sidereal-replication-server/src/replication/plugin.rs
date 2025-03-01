@@ -5,11 +5,11 @@ use bevy_replicon::prelude::*;
 use uuid::Uuid;
 
 use crate::scene::SceneState;
-use sidereal_core::ecs::components::spatial::SpatialPosition;
 use sidereal_core::ecs::plugins::replication::network::{ConnectionConfig, RepliconSetup};
 
 // Network configuration for the replication server
 #[derive(Resource, Clone)]
+#[allow(dead_code)]
 pub struct NetworkConfig {
     pub server_ip: String,
     pub server_port: u16,           // Port 5000 by default, see impl Default below
@@ -82,6 +82,7 @@ impl Plugin for ReplicationPlugin {
 
 // Events for shard server connections
 #[derive(Event)]
+#[allow(dead_code)]
 pub enum ShardServerConnectionEvent {
     Connected { client_id: ClientId, shard_id: Uuid },
     Disconnected { client_id: ClientId, shard_id: Uuid },
@@ -90,6 +91,7 @@ pub enum ShardServerConnectionEvent {
 
 // Events for cluster assignment
 #[derive(Event)]
+#[allow(dead_code)]
 pub struct ClusterAssignmentEvent {
     pub shard_id: Uuid,
     pub client_id: ClientId,
@@ -97,6 +99,7 @@ pub struct ClusterAssignmentEvent {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ClusterAssignment {
     pub id: Uuid,
     pub base_coordinates: IVec2,
@@ -105,6 +108,7 @@ pub struct ClusterAssignment {
 
 // Events for entity transfer between shards
 #[derive(Event)]
+#[allow(dead_code)]
 pub enum EntityTransferEvent {
     Request {
         entity_id: Entity,
@@ -122,6 +126,7 @@ pub enum EntityTransferEvent {
 
 /// Events for entity replication
 #[derive(Event)]
+#[allow(dead_code)]
 pub enum ReplicationEvent {
     EntityUpdated {
         entity: Entity,

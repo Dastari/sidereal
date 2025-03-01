@@ -1,8 +1,5 @@
 use bevy::prelude::*;
 use bevy::math::Vec2;
-use uuid::Uuid;
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 /// Type of entity update being sent or received
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

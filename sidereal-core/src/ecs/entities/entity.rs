@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use crate::ecs::systems::physics::{create_rigid_body, create_collider};
+use crate::ecs::utils::{create_rigid_body, create_collider};
 
 /// Bundle for easily spawning a physics-enabled space entity
 #[derive(Bundle)]

@@ -1,2 +1,2 @@
 pub mod replication;
-pub struct MyPlugin;
+pub mod physics;

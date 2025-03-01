@@ -1,11 +1,10 @@
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::renet2;
-use bevy_replicon_renet2::netcode::{self, ServerSetupConfig, ServerAuthentication, ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport};
+use bevy_replicon_renet2::netcode::{self};
 use bevy_replicon_renet2::RenetChannelsExt;
 use renet2_netcode::NativeSocket;
-use tracing::{info, warn, error};
-use std::net::{UdpSocket, SocketAddr, Ipv4Addr};
+use std::net::{UdpSocket, Ipv4Addr};
 use std::time::SystemTime;
 
 /// Shared configuration for connection settings

@@ -5,7 +5,6 @@ use tracing::{info, warn, error};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use uuid::Uuid;
-use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::renet2::RenetClient;
 use bevy_replicon_renet2::netcode::NetcodeClientTransport;
 
@@ -13,7 +12,6 @@ use super::common::{
     ReplicationClientStatus, EntityState, EntityUpdateType,
     ClientStreamEvent, get_backoff_time, MAX_CONNECTION_ATTEMPTS
 };
-use super::network::{ConnectionConfig, RepliconSetup};
 
 /// Resource to track replication client state
 #[derive(Resource)]

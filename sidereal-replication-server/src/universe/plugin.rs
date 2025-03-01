@@ -1,8 +1,6 @@
 use bevy::prelude::*;
-use bevy::math::IVec2;
 use tracing::info;
 use uuid::Uuid;
-use std::collections::{HashMap, VecDeque};
 use sidereal_core::ecs::components::*;
 use crate::scene::SceneState;
 
@@ -52,6 +50,7 @@ pub struct ShardServerRegistry {
 
 /// Information about a registered shard server
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ShardServerInfo {
     pub id: Uuid,
     pub address: String,

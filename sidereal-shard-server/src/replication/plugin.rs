@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use bevy::math::Vec2;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::renet2::{self, RenetClient};
-use bevy_replicon_renet2::netcode::{NetcodeClientTransport, ClientAuthentication};
+use bevy_replicon_renet2::netcode::{self, NetcodeClientTransport, ClientAuthentication};
+use bevy_replicon_renet2::RenetChannelsExt;
 use renet2_netcode::NativeSocket;
 use tracing::{info, warn, error};
 use serde::Serialize;
@@ -35,6 +36,9 @@ impl Plugin for ReplicationPlugin {
         
         // Initialize replicon channels and add the core plugin
         app.add_plugins(sidereal_core::ReplicationClientPlugin);
+        
+        // Make sure RepliconChannels is initialized
+        app.init_resource::<RepliconChannels>();
         
         // Add post-startup system to initialize the connection to the replication server
         app.add_systems(PostStartup, initialize_replication_connection);
@@ -87,6 +91,7 @@ fn check_connection_status(
     mut next_reconnect: Option<ResMut<NextReconnectAttempt>>,
     client_id: Option<Res<ReplicationClientId>>,
     replicon_client: Option<Res<RenetClient>>,
+    channels: Option<Res<RepliconChannels>>,
     time: Res<Time>,
 ) {
     // If we have a pending connection attempt
@@ -96,18 +101,18 @@ fn check_connection_status(
                 info!("Attempting to connect to replication server at {}:{}", 
                       config.server_address, config.port);
                 
-                // Set up client resources manually instead of using RepliconSetup
-                
-                // 1. Insert RepliconChannels if we don't have it already
+                // 1. Insert RepliconChannels if not already present
                 if replicon_client.is_none() {
                     commands.insert_resource(RepliconChannels::default());
                 }
                 
-                // 2. Get the current time for the client setup
+                // 2. Get the current time
                 let current_time = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
                     Ok(time) => time,
                     Err(err) => {
                         error!("Failed to get system time: {}", err);
+                        client.status = sidereal_core::ecs::plugins::replication::common::ReplicationClientStatus::ConnectionFailed;
+                        client.connection_attempts += 1;
                         return;
                     }
                 };
@@ -117,6 +122,8 @@ fn check_connection_status(
                     Ok(addr) => addr,
                     Err(err) => {
                         error!("Failed to parse server address: {}", err);
+                        client.status = sidereal_core::ecs::plugins::replication::common::ReplicationClientStatus::ConnectionFailed;
+                        client.connection_attempts += 1;
                         return;
                     }
                 };
@@ -126,11 +133,24 @@ fn check_connection_status(
                     Ok(socket) => socket,
                     Err(err) => {
                         error!("Failed to bind client socket: {}", err);
+                        client.status = sidereal_core::ecs::plugins::replication::common::ReplicationClientStatus::ConnectionFailed;
+                        client.connection_attempts += 1;
                         return;
                     }
                 };
                 
-                // 5. Create the client authentication
+                // 5. Create the native socket
+                let native_socket = match NativeSocket::new(socket) {
+                    Ok(socket) => socket,
+                    Err(err) => {
+                        error!("Failed to create native socket: {}", err);
+                        client.status = sidereal_core::ecs::plugins::replication::common::ReplicationClientStatus::ConnectionFailed;
+                        client.connection_attempts += 1;
+                        return;
+                    }
+                };
+                
+                // 6. Create the client authentication
                 let authentication = ClientAuthentication::Unsecure {
                     client_id: client_id.0,
                     protocol_id: config.protocol_id,
@@ -139,40 +159,43 @@ fn check_connection_status(
                     user_data: None,
                 };
                 
-                // 6. Create the native socket
-                let native_socket = match NativeSocket::new(socket) {
-                    Ok(socket) => socket,
-                    Err(err) => {
-                        error!("Failed to create native socket: {}", err);
-                        return;
-                    }
-                };
-                
                 // 7. Create the transport
                 let transport = match NetcodeClientTransport::new(current_time, authentication, native_socket) {
                     Ok(transport) => transport,
                     Err(err) => {
                         error!("Failed to create netcode transport: {}", err);
+                        client.status = sidereal_core::ecs::plugins::replication::common::ReplicationClientStatus::ConnectionFailed;
+                        client.connection_attempts += 1;
                         return;
                     }
                 };
                 
-                // 8. Create the client
+                // 8. Get channel configurations from the resource
+                let channel_configs = if let Some(channels) = channels {
+                    (channels.get_server_configs(), channels.get_client_configs())
+                } else {
+                    error!("Failed to get RepliconChannels resource");
+                    client.status = sidereal_core::ecs::plugins::replication::common::ReplicationClientStatus::ConnectionFailed;
+                    client.connection_attempts += 1;
+                    return;
+                };
+                
+                // 9. Create the client with correct channel configurations
                 let renet_client = RenetClient::new(
                     renet2::ConnectionConfig::from_channels(
-                        renet2::DefaultChannel::config(),
-                        renet2::DefaultChannel::config()
+                        channel_configs.0,  // Server configs
+                        channel_configs.1   // Client configs
                     ),
                     false, // Don't enable encryption for now
                 );
                 
-                // 9. Insert resources into commands
+                // 10. Insert the resources
                 commands.insert_resource(renet_client);
                 commands.insert_resource(transport);
                 
                 // Update client status
                 client.status = sidereal_core::ecs::plugins::replication::common::ReplicationClientStatus::Connected;
-                
+                        
                 // Transition to the next state
                 next_state.set(ShardState::Ready);
                 

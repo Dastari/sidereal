@@ -12,7 +12,7 @@ pub mod shadow;
 pub mod config;
 
 use cluster::ClusterManagerPlugin;
-use physics::PhysicsPlugin;
+use physics::ShardPhysicsPlugin;
 use replication::ReplicationPlugin;
 use shadow::ShadowEntityPlugin;
 use config::ConfigPlugin;
@@ -56,7 +56,7 @@ fn main() {
         // Sidereal plugins
         ConfigPlugin,
         ClusterManagerPlugin,
-        PhysicsPlugin,
+        ShardPhysicsPlugin,
         ReplicationPlugin,
         ShadowEntityPlugin,
     ));
