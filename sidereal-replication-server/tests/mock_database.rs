@@ -3,6 +3,7 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use std::collections::HashMap;
+use bevy::math::Vec2;
 
 use sidereal_replication_server::database::{EntityRecord, DatabaseResult, DatabaseError};
 
@@ -21,7 +22,7 @@ impl MockDatabaseClient {
         // Generate UUID for player entity
         let player_id = Uuid::new_v4().to_string();
         entities.insert(player_id.clone(), EntityRecord {
-            id: player_id,
+            id: player_id.clone(),
             name: Some("Player".to_string()),
             owner_id: None,
             position_x: 0.0,
@@ -45,12 +46,13 @@ impl MockDatabaseClient {
             }),
             created_at: None,
             updated_at: None,
+            physics_data: None,
         });
         
         // Generate UUID for asteroid entity
         let asteroid_id = Uuid::new_v4().to_string();
         entities.insert(asteroid_id.clone(), EntityRecord {
-            id: asteroid_id,
+            id: asteroid_id.clone(),
             name: Some("Asteroid".to_string()),
             owner_id: None,
             position_x: 100.0,
@@ -74,6 +76,7 @@ impl MockDatabaseClient {
             }),
             created_at: None,
             updated_at: None,
+            physics_data: None,
         });
         
         // Generate UUID for station entity
@@ -103,6 +106,7 @@ impl MockDatabaseClient {
             }),
             created_at: None,
             updated_at: None,
+            physics_data: None,
         });
         
         Self {
@@ -140,6 +144,7 @@ impl MockDatabaseClient {
                 components: entity.components.clone(),
                 created_at: entity.created_at.clone(),
                 updated_at: entity.updated_at.clone(),
+                physics_data: entity.physics_data.clone(),
             });
         }
         
@@ -163,6 +168,7 @@ impl MockDatabaseClient {
                     components: entity.components.clone(),
                     created_at: entity.created_at.clone(),
                     updated_at: entity.updated_at.clone(),
+                    physics_data: entity.physics_data.clone(),
                 });
             }
         }
@@ -185,6 +191,7 @@ impl MockDatabaseClient {
                 components: entity.components.clone(),
                 created_at: entity.created_at.clone(),
                 updated_at: entity.updated_at.clone(),
+                physics_data: entity.physics_data.clone(),
             })
         } else {
             Err(DatabaseError::NotFound)
@@ -211,6 +218,7 @@ impl MockDatabaseClient {
             components: entity.components.clone(),
             created_at: entity.created_at.clone(),
             updated_at: entity.updated_at.clone(),
+            physics_data: entity.physics_data.clone(),
         });
         
         Ok(())
@@ -240,6 +248,7 @@ impl MockDatabaseClient {
             components: entity.components.clone(),
             created_at: entity.created_at.clone(),
             updated_at: entity.updated_at.clone(),
+            physics_data: entity.physics_data.clone(),
         });
         
         Ok(())
@@ -337,6 +346,7 @@ mod mock_database_tests {
             components: json!({}),
             created_at: None,
             updated_at: None,
+            physics_data: None,
         };
         
         let result = mock_client.create_entity(&new_entity).await;

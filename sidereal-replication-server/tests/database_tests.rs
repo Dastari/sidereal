@@ -2,6 +2,8 @@
 use serde_json::json;
 use std::env;
 use uuid::Uuid;
+use std::collections::HashMap;
+use bevy::math::Vec2;
 
 // Import the replication server code
 use sidereal_replication_server::database::{DatabaseClient, EntityRecord, DatabaseError};
@@ -58,6 +60,7 @@ mod database_tests {
             }),
             created_at: Some("2023-01-01T00:00:00Z".to_string()),
             updated_at: Some("2023-01-01T00:00:00Z".to_string()),
+            physics_data: None,
         };
         
         // Serialize to JSON
@@ -109,6 +112,7 @@ mod database_tests {
             }),
             created_at: None,
             updated_at: None,
+            physics_data: None,
         };
         
         // Access physics data

@@ -5,6 +5,7 @@ use bevy_rapier2d::prelude::*;
 use serde_json::json;
 use uuid::Uuid;
 use bevy_state::app::StatesPlugin;
+use std::collections::HashMap;
 
 use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
 use sidereal_replication_server::database::EntityRecord;
@@ -65,6 +66,7 @@ fn inject_test_entities(
         }),
         created_at: None,
         updated_at: None,
+        physics_data: None,
     };
 
     // Create the player entity
@@ -177,6 +179,7 @@ fn inject_test_entities(
         }),
         created_at: None,
         updated_at: None,
+        physics_data: None,
     };
 
     // Create the asteroid entity
@@ -285,6 +288,7 @@ fn inject_test_entities(
         }),
         created_at: None,
         updated_at: None,
+        physics_data: None,
     };
 
     // Create the station entity
@@ -467,6 +471,7 @@ mod integration_tests {
             components: json!({}),
             created_at: None,
             updated_at: None,
+            physics_data: None,
         };
         
         // Create physics data

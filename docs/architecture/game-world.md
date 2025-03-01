@@ -123,6 +123,8 @@ pub struct UniverseConfig {
     pub transition_zone_width: f32,
     pub empty_sector_timeout_seconds: f64, // Time before an empty sector is considered inactive
     pub empty_sector_check_interval: f64, // How often to check for empty sectors
+    pub min_boundary_awareness: f32, // Minimum distance to detect boundary approaches
+    pub velocity_awareness_factor: f32, // Factor to adjust boundary awareness based on velocity
 }
 
 // Resource for tracking all active clusters
@@ -176,6 +178,23 @@ pub struct EntityData {
     pub velocity: Vec2,  // Added velocity for proper physics prediction
     pub components: HashMap<String, serde_json::Value>,
 }
+
+// After the ClusterManagementMessage enum, add EntityTransitionMessage
+#[derive(Event)]
+pub enum EntityTransitionMessage {
+    Request {
+        entity_id: Entity,
+        source_cluster_id: Uuid,
+        destination_cluster_id: Uuid,
+        current_position: Vec2,
+        velocity: Vec2,
+    },
+    Acknowledge {
+        entity_id: Entity,
+        destination_cluster_id: Uuid,
+        transfer_time: f64,
+    },
+}
 ```
 
 ### 2. System Implementation
@@ -188,36 +207,99 @@ pub struct UniverseManagerPlugin;
 
 impl Plugin for UniverseManagerPlugin {
     fn build(&self, app: &mut App) {
+        info!("Building universe manager plugin");
+
+        // Register component types
+        SpatialTracked::register_required_components(app);
+        ShadowEntity::register_required_components(app);
+
+        // Register events
+        app.add_event::<ClusterManagementMessage>()
+           .add_event::<EntityTransitionMessage>()
+           .add_event::<EntityApproachingBoundary>();
+
+        // Initialize resources
         app.init_resource::<UniverseConfig>()
            .init_resource::<UniverseState>()
-           .add_systems(Update, (
-               update_global_universe_state,
-               handle_cluster_assignment,
-               process_entity_transitions,
-               persist_universe_state,
-               manage_empty_sectors
-           ))
-           .add_systems(Startup, initialize_universe_state);
+           .init_resource::<ShardServerRegistry>();
+
+        // Add core universe management systems
+        app.add_systems(Update, (
+            update_global_universe_state,
+            update_entity_sector_coordinates,
+            handle_cluster_assignment,
+            process_entity_transition_requests,
+            send_entity_transition_acknowledgments,
+            manage_empty_sectors,
+        ).chain());
+
+        // Add initialization system
+        app.add_systems(OnEnter(SceneState::Ready), initialize_universe_state);
     }
 }
 
 // Initialize universe configuration
 fn initialize_universe_state(
     mut commands: Commands,
+    time: Res<Time>,
 ) {
+    info!("Initializing universe state");
+
+    // Universe is already initialized with defaults via init_resource
+    // But we can create initial clusters here if needed
+
+    // For now, let's create a single 3x3 cluster at the origin
+    let base_coordinates = IVec2::new(0, 0);
+    let cluster_id = Uuid::new_v4();
+    let current_time = time.elapsed_secs_f64();
+
+    let mut sectors = HashMap::new();
+
+    // Create a 3x3 grid of sectors
+    for x in 0..3 {
+        for y in 0..3 {
+            let sector_coords = IVec2::new(x, y);
+
+            sectors.insert(sector_coords, Sector {
+                coordinates: sector_coords,
+                entities: HashSet::new(),
+                active: true,
+                last_updated: current_time,
+                last_entity_seen: current_time,
+                last_saved: 0.0, // Not yet saved
+            });
+        }
+    }
+
+    // Create the cluster
+    let cluster = Cluster {
+        id: cluster_id,
+        base_coordinates,
+        size: IVec2::new(3, 3),
+        sectors,
+        assigned_shard: None, // Not yet assigned to a shard
+        entity_count: 0,
+        transition_zone_width: 50.0,
+    };
+
+    // Add the cluster to the universe state
     commands.insert_resource(UniverseConfig {
         sector_size: 1000.0,
         cluster_dimensions: IVec2::new(3, 3), // 3x3 sectors per cluster
         transition_zone_width: 50.0,
         empty_sector_timeout_seconds: 300.0, // 5 minutes before unloading empty sectors
         empty_sector_check_interval: 60.0, // Check once per minute
+        min_boundary_awareness: 30.0, // Minimum distance for boundary detection
+        velocity_awareness_factor: 2.0, // Velocity factor for boundary awareness
     });
 
     commands.insert_resource(UniverseState {
-        active_clusters: HashMap::new(),
+        active_clusters: [(base_coordinates, cluster)].into_iter().collect(),
         shard_assignments: HashMap::new(),
         entity_locations: HashMap::new(),
     });
+
+    info!("Created initial cluster at {:?} with ID {}", base_coordinates, cluster_id);
 }
 
 // System to determine which cluster an entity belongs to
@@ -234,25 +316,57 @@ fn calculate_entity_cluster(
     IVec2::new(cluster_x, cluster_y)
 }
 
-// System to handle entity transitions between clusters
-fn process_entity_transitions(
-    mut state: ResMut<UniverseState>,
+// System to process entity transition requests
+pub fn process_entity_transition_requests(
+    mut universe_state: ResMut<UniverseState>,
     config: Res<UniverseConfig>,
-    // Using Bevy's event system instead of direct network access
-    mut transition_receiver: EventReader<EntityTransitionRequest>,
-    mut transition_ack_sender: EventWriter<EntityTransitionAcknowledge>,
+    mut commands: Commands,
     time: Res<Time>,
+    // Only read transition requests
+    mut transition_requests: EventReader<EntityTransitionMessage>,
+    // Use a command to store transition data for the next system
+    mut transition_queue: Local<Vec<(Entity, Uuid, f64)>>,
 ) {
-    for transition in transition_receiver.iter() {
-        // Handle the transition logic
-        // 1. Coordinate between source and destination shards
-        // 2. Update entity_locations mapping
-        // 3. Send acknowledgment when complete
+    for message in transition_requests.read() {
+        if let EntityTransitionMessage::Request {
+            entity_id,
+            source_cluster_id,
+            destination_cluster_id,
+            current_position: _,
+            velocity: _,
+        } = message {
+            // Handle the transition logic
+            info!("Processing entity transition: {:?} from cluster {} to cluster {}",
+                  entity_id, source_cluster_id, destination_cluster_id);
 
-        transition_ack_sender.send(EntityTransitionAcknowledge {
-            entity_id: transition.entity_id,
-            destination_cluster_id: transition.destination_cluster_id,
-            transfer_time: time.elapsed_seconds_f64(),
+            // In a real implementation, this would involve:
+            // 1. Coordinate between source and destination shards
+            // 2. Update entity_locations mapping
+
+            // Queue the acknowledgment for the next system
+            transition_queue.push((*entity_id, *destination_cluster_id, time.elapsed_secs_f64()));
+
+            // Update entity location in the universe state
+            // For demonstration only - in a real implementation, we'd have a way to get
+            // the cluster coordinates from the cluster ID
+
+            // Since this is just a demo system, we don't need to actually update the entity location
+            // The real logic would involve more sophisticated handling of the entity transition
+        }
+    }
+}
+
+// System to send entity transition acknowledgments
+pub fn send_entity_transition_acknowledgments(
+    mut transition_queue: Local<Vec<(Entity, Uuid, f64)>>,
+    mut transition_acks: EventWriter<EntityTransitionMessage>,
+) {
+    // Send acknowledgments for all queued transitions
+    for (entity_id, destination_cluster_id, transfer_time) in transition_queue.drain(..) {
+        transition_acks.send(EntityTransitionMessage::Acknowledge {
+            entity_id,
+            destination_cluster_id,
+            transfer_time,
         });
     }
 }
@@ -283,12 +397,12 @@ fn manage_empty_sectors(
     database: Res<DatabaseClient>,
 ) {
     // Only check periodically to reduce overhead
-    if time.elapsed_seconds_f64() - *last_check < config.empty_sector_check_interval {
+    if time.elapsed_secs_f64() - *last_check < config.empty_sector_check_interval {
         return;
     }
 
-    *last_check = time.elapsed_seconds_f64();
-    let current_time = time.elapsed_seconds_f64();
+    *last_check = time.elapsed_secs_f64();
+    let current_time = time.elapsed_secs_f64();
     let mut clusters_to_release = Vec::new();
     let mut sectors_to_deactivate = Vec::new();
 
@@ -402,7 +516,7 @@ fn process_cluster_assignments(
                 // Initialize cluster data structures
                 // Set up sectors within the cluster
                 // Load entities from replication server
-                let current_time = time.elapsed_seconds_f64();
+                let current_time = time.elapsed_secs_f64();
 
                 // Create new sectors with proper initialization
                 let mut sectors = HashMap::new();
@@ -476,7 +590,7 @@ fn detect_entity_transitions(
             // Check if entity is approaching a cluster boundary
             // Using position, velocity, and transition_zone_width
 
-            if is_approaching_boundary(position, velocity, cluster, &config) {
+            if is_approaching_boundary(position, velocity, &config) {
                 // Calculate destination cluster
                 let dest_cluster_coords = calculate_destination_cluster(position, velocity, cluster);
 
@@ -677,9 +791,16 @@ fn setup_shard_server(app: &mut App) {
        );
 
     // Register component requirements
-    app.world.register_component_requirement::<SpatialTracked, SpatialPosition>();
+    app.world().register_component_requirement::<SpatialTracked, SpatialPosition>();
 }
 ```
+
+// Note: Bevy 0.15 Compatibility
+// This codebase follows Bevy 0.15 patterns for world access:
+// - Use app.world() as a method call, not app.world as a property
+// - Use time.elapsed_secs_f64() instead of time.elapsed_seconds_f64()
+// - Follow proper system parameter ordering with Commands before Res/ResMut parameters
+// - Use world_mut() for mutable world access in tests and startup code
 
 ## Performance Optimizations
 

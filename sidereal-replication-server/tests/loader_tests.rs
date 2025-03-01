@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use serde_json::json;
 use bevy_state::app::StatesPlugin;
+use std::collections::HashMap;
 
 use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
 use sidereal_replication_server::{
@@ -53,6 +54,7 @@ impl MockDatabaseClient {
             components: physics_data.to_json(),
             created_at: Some("2023-01-01T00:00:00Z".to_string()),
             updated_at: Some("2023-01-01T00:00:00Z".to_string()),
+            physics_data: None,
         };
         
         self.entities.push(record);

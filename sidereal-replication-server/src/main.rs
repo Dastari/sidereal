@@ -5,10 +5,12 @@ use bevy::transform::TransformPlugin;
 use bevy_state::app::StatesPlugin;
 use scene::SceneLoaderPlugin;
 use replication::ReplicationPlugin;
+use universe::UniverseManagerPlugin;
 
 mod database;
 mod scene;
 mod replication;
+mod universe;
 
 fn main() {
     // Initialize tracing
@@ -27,6 +29,7 @@ fn main() {
             StatesPlugin::default(),
             SceneLoaderPlugin,
             ReplicationPlugin,
+            UniverseManagerPlugin,
         ))
         .run();
 }

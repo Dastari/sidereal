@@ -2,9 +2,10 @@ use bevy::prelude::{self, *};
 use tracing::{info, error};
 use std::sync::Arc;
 use bevy_rapier2d::prelude::*;
+use bevy::math::{Vec2, IVec2};
 
 use crate::database::{DatabaseClient, EntityRecord, DatabaseResult};
-use sidereal_core::ecs::components::*;
+use sidereal_core::ecs::components::{SpatialPosition, SpatialTracked, Hull};
 use sidereal_core::ecs::components::physics::PhysicsData;
 
 /// Plugin for managing the universe scene
@@ -172,48 +173,31 @@ fn process_loaded_entities(
     }
 }
 
-/// Spawn a single entity from a database record (using Commands)
+/// Spawn an entity from a database record
 fn spawn_entity_from_record_cmd(commands: &mut Commands, record: &EntityRecord) {
-    let id = record.id.clone();
     let entity_name = record.name.clone().unwrap_or_else(|| "Unnamed".to_string());
-    let entity_type = record.type_.clone();
+    let mut entity_commands = commands.spawn(bevy::core::Name::new(entity_name.clone()));
     
-    // Spawn entity with basic components
-    let mut entity_commands = commands.spawn_empty();
-    entity_commands
-        .insert(prelude::Name::new(format!("{} ({})", entity_name, id)));
-    
-    // Add position/transform
-    let mut transform = Transform::default();
-    transform.translation.x = record.position_x;
-    transform.translation.y = record.position_y;
-    entity_commands.insert(transform);
-    
-    // Try to extract physics data from the JSON blob
-    if let Some(physics_data) = PhysicsData::from_json(&record.components) {
-        // Apply the physics data to the entity
+    if let Some(physics_data) = &record.physics_data {
+        // Apply physics data
         physics_data.apply_to_entity(&mut entity_commands);
-    } else {
-        // Fallback to default physics components if parsing fails
-        entity_commands
-            .insert(RigidBody::Dynamic)
-            .insert(Collider::ball(16.0))
-            .insert(Velocity::default());
+        
+        // Get the position to calculate spatial coordinates
+        if let Some(position) = physics_data.position {
+            let pos_vec = Vec2::new(position[0], position[1]);
+            
+            // Add spatial tracking components
+            entity_commands.insert(SpatialTracked);
+            entity_commands.insert(SpatialPosition {
+                position: pos_vec,
+                // These will be initialized in the update_entity_sector_coordinates system
+                sector_coords: IVec2::new(0, 0),
+                cluster_coords: IVec2::new(0, 0),
+            });
+        }
     }
     
-    // Add entity type-specific components
-    match entity_type.as_str() {
-        "player" => {
-            // Add any player-specific components
-        },
-        "enemy" => {
-            // Add any enemy-specific components
-        },
-        // Add more entity types as needed
-        _ => {}
-    }
-    
-    info!("Spawned entity: {} ({})", entity_name, id);
+    info!("Spawned entity: {}", entity_name);
 }
 
 /// Load entities from a scene JSON data into a world
@@ -281,6 +265,7 @@ pub fn save_entity_to_database(
             created_at: None,  // These would be handled by the database
             updated_at: None,  // These would be handled by the database
             owner_id: None,    // You would need logic to determine the owner
+            physics_data: Some(physics_data), // Add the physics data
         };
         
         // Save the record to the database - this is just an example
@@ -311,6 +296,12 @@ fn _load_mock_data(commands: &mut Commands) {
             linvel: Vec2::new(0.0, 0.0),
             angvel: 0.0,
         },
+        SpatialTracked,
+        SpatialPosition {
+            position: Vec2::new(0.0, 0.0),
+            sector_coords: IVec2::new(0, 0),
+            cluster_coords: IVec2::new(0, 0),
+        },
         Hull {
             width: 10.0,
             height: 5.0,
@@ -328,6 +319,12 @@ fn _load_mock_data(commands: &mut Commands) {
             linvel: Vec2::new(1.0, 0.5),
             angvel: 0.1,
         },
+        SpatialTracked,
+        SpatialPosition {
+            position: Vec2::new(100.0, 100.0),
+            sector_coords: IVec2::new(0, 0),
+            cluster_coords: IVec2::new(0, 0),
+        },
     ));
     
     // Create a test station
@@ -336,6 +333,12 @@ fn _load_mock_data(commands: &mut Commands) {
         Transform::from_xyz(-100.0, -100.0, 0.0),
         RigidBody::Fixed,
         Collider::cuboid(10.0, 10.0), // Half-width and half-height
+        SpatialTracked,
+        SpatialPosition {
+            position: Vec2::new(-100.0, -100.0),
+            sector_coords: IVec2::new(0, 0),
+            cluster_coords: IVec2::new(0, 0),
+        },
         Hull {
             width: 20.0,
             height: 20.0,

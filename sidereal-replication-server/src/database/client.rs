@@ -43,6 +43,8 @@ pub struct EntityRecord {
     pub components: serde_json::Value,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    #[serde(skip)]
+    pub physics_data: Option<sidereal_core::ecs::components::physics::PhysicsData>,
 }
 
 /// Client for interacting with the Supabase database

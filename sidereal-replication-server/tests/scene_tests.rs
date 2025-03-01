@@ -3,6 +3,7 @@ use serde_json::json;
 use uuid::Uuid;
 use bevy_rapier2d::prelude::*;  // Add Rapier imports for RigidBody and Collider
 use bevy_state::app::StatesPlugin;
+use std::collections::HashMap;
 
 // Import the replication server code
 use sidereal_replication_server::database::EntityRecord;
@@ -156,6 +157,7 @@ mod scene_tests {
             }),
             created_at: None,
             updated_at: None,
+            physics_data: None,
         };
         
         // Test entity creation

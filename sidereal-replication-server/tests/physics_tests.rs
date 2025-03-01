@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use uuid::Uuid;
+use std::collections::HashMap;
 
 use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
 use sidereal_replication_server::database::EntityRecord;
@@ -257,6 +258,7 @@ mod physics_tests {
             components: json,
             created_at: None,
             updated_at: None,
+            physics_data: None,
         };
         
         // Verify entity ID is a valid UUID
