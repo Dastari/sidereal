@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::time::TimePlugin;
 use bevy_rapier2d::prelude::*;
-use serde_json::{json, Value};
+use serde_json::json;
 use uuid::Uuid;
 use bevy_state::app::StatesPlugin;
 
@@ -39,7 +39,7 @@ fn inject_test_entities(
 
     // Create a player entity
     let player_id = Uuid::new_v4().to_string();
-    let mut player_record = EntityRecord {
+    let player_record = EntityRecord {
         id: player_id.clone(),
         name: Some("Player".to_string()),
         owner_id: Some("test-user".to_string()),
@@ -151,7 +151,7 @@ fn inject_test_entities(
 
     // Create an asteroid entity
     let asteroid_id = Uuid::new_v4().to_string();
-    let mut asteroid_record = EntityRecord {
+    let asteroid_record = EntityRecord {
         id: asteroid_id.clone(),
         name: Some("Asteroid".to_string()),
         owner_id: None,
@@ -263,7 +263,7 @@ fn inject_test_entities(
 
     // Create a station entity
     let station_id = Uuid::new_v4().to_string();
-    let mut station_record = EntityRecord {
+    let station_record = EntityRecord {
         id: station_id.clone(),
         name: Some("Space Station".to_string()),
         owner_id: Some("station-owner".to_string()),
@@ -397,6 +397,7 @@ fn verify_test_entities(
     assert!(station_found, "Space Station entity not found");
 }
 
+#[allow(dead_code)]
 fn test_full_integration() {
     // Set up test app
     let mut app = App::new();
@@ -427,6 +428,7 @@ mod integration_tests {
     use super::*;
     use bevy::utils::Duration;
 
+    #[allow(dead_code)]
     fn setup_test_app() -> App {
         let mut app = App::new();
         

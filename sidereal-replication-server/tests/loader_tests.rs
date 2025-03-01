@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use serde_json::json;
-use uuid::Uuid;
 use bevy_state::app::StatesPlugin;
 
 use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
@@ -63,6 +62,7 @@ impl MockDatabaseClient {
 // Test state resource
 #[derive(Resource, Default)]
 struct TestState {
+    #[allow(dead_code)]
     entities_created: usize,
 }
 

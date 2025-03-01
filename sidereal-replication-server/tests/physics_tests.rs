@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use serde_json::json;
 use uuid::Uuid;
 
 use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
@@ -186,7 +185,7 @@ mod physics_tests {
         assert_eq!(velocity.linvel.y, 2.0);
         assert_eq!(velocity.angvel, 0.1);
 
-        let collider = app.world().entity(entity_id).get::<Collider>().unwrap();
+        let _collider = app.world().entity(entity_id).get::<Collider>().unwrap();
         // We can't directly verify the collider shape, but we can check it exists
 
         let mass = app.world().entity(entity_id).get::<AdditionalMassProperties>().unwrap();
