@@ -15,30 +15,29 @@ This document outlines the networking and communication technologies used throug
 └────────┬────────┘               ▲                     ▲
          │                        │                     │
          ▼                        │                     │
-┌─────────────────┐               │                     │
-│                 │               │                     │
-│  Replication    │◄──────────────┘                     │
-│  Server         │                                     │
-│                 │◄─────────────────────────────────┐  │
-└────────┬────────┘                                  │  │
-         │                                           │  │
-         ▼                                           │  │
-┌─────────────────┐     ┌─────────────────┐          │  │
-│                 │     │                 │          │  │
-│  Shard Server   │◄───►│  Shard Server   │◄─────────┘  │
-│  Instance 1     │     │  Instance N     │             │
-│                 │     │                 │             │
-└─────────────────┘     └─────────────────┘             │
-         │                       │                      │
-         └───────────────────────┼──────────────────────┘
-                                 │
-                                 ▼
-                        ┌─────────────────┐
-                        │                 │
-                        │  Sidereal Core  │
-                        │  (Shared Code)  │
-                        │                 │
-                        └─────────────────┘
+┌─────────────────────────────────────────┐             │
+│                                         │             │
+│  Replication Server                     │             │
+│  ┌─────────────────────────────────┐    │             │
+│  │ Sidereal Core (Shared Library)  │    │◄────────────┘
+│  └─────────────────────────────────┘    │
+│                                         │
+└───────────────────┬─────────────────────┘
+                    │
+                    │
+                    ▼
+    ┌───────────────────────────────────┐
+    │                                   │
+    ▼                                   ▼
+┌─────────────────────────────┐  ┌─────────────────────────────┐
+│                             │  │                             │
+│  Shard Server Instance 1    │◄►│  Shard Server Instance N    │
+│  ┌─────────────────────┐    │  │  ┌─────────────────────┐    │
+│  │ Sidereal Core       │    │  │  │ Sidereal Core       │    │
+│  │ (Shared Library)    │    │  │  │ (Shared Library)    │    │
+│  └─────────────────────┘    │  │  └─────────────────────┘    │
+│                             │  │                             │
+└─────────────────────────────┘  └─────────────────────────────┘
 ```
 
 ## Key Technologies
@@ -51,7 +50,7 @@ The following network technologies and protocols are used throughout the Siderea
 | WebSockets                           | Real-time client communication         | Replication Server, Web Clients   |
 | HTTP/REST                            | Database interaction, authentication   | Auth Server, Replication Server   |
 | GraphQL                              | Complex universe queries               | Replication Server                |
-| Crossbeam channels                   | Internal message passing               | All server components             |
+| Bevy EventWriter/EventReader         | Internal message passing               | All server components             |
 | Serde                                | Data serialization                     | All components                    |
 | Direct P2P (renet2)                  | Shard-to-shard boundary communications | Shard Servers                     |
 
@@ -79,14 +78,14 @@ This pathway handles:
 
 **Technologies:** `renet2` (direct), `bevy_replicon` (mediated)
 
-Shard servers can communicate with each other in two ways:
+Shard servers communicate with each other using a hybrid approach:
 
-- **Direct communication**: Using renet2 for low-latency updates about entities near boundaries
+- **Direct P2P communication**: Using renet2 for low-latency updates about entities near boundaries
 - **Replication-server mediated**: Using bevy_replicon when direct communication isn't established or fails
 
 This pathway handles:
 
-- Read-only shadow entity synchronization
+- Shadow entity synchronization
 - Boundary awareness updates
 - Handover coordination for entity transitions
 
@@ -98,7 +97,7 @@ fn sync_shadow_entities_direct(
     managed_clusters: Res<ManagedClusters>,
     boundary_entities: Query<(Entity, &SpatialPosition, &Velocity), With<NearBoundary>>,
     neighbor_connections: Res<NeighborConnections>,
-    mut outgoing_buffer: ResMut<DirectMessageBuffer>,
+    mut outgoing_events: EventWriter<ShadowEntityUpdateEvent>,
     time: Res<Time>,
 ) {
     let current_time = time.elapsed_seconds_f64();
@@ -124,15 +123,18 @@ fn sync_shadow_entities_direct(
                 update_batch.entities.push(ShadowEntityData {
                     id: entity,
                     position: position.position,
-                    velocity: velocity.0,
+                    velocity: velocity.linvel,
                     components: serialize_relevant_components(entity),
                 });
             }
         }
 
-        // If we have entities to send, queue the message
+        // If we have entities to send, dispatch the event
         if !update_batch.entities.is_empty() {
-            outgoing_buffer.enqueue_message(*neighbor_id, Message::BoundarySyncUpdate(update_batch));
+            outgoing_events.send(ShadowEntityUpdateEvent {
+                neighbor_id: *neighbor_id,
+                batch: update_batch
+            });
         }
     }
 }
@@ -140,42 +142,109 @@ fn sync_shadow_entities_direct(
 // Handle shadow entity updates from neighboring shards
 fn process_shadow_updates(
     mut commands: Commands,
-    mut incoming_messages: ResMut<IncomingMessageQueue>,
+    mut incoming_events: EventReader<IncomingShadowUpdateEvent>,
     mut shadow_entities: ResMut<ShadowEntityRegistry>,
+    mut transform_query: Query<&mut Transform>,
+    mut velocity_query: Query<&mut Velocity>,
 ) {
-    while let Some(message) = incoming_messages.dequeue() {
-        match message {
-            Message::BoundarySyncUpdate(batch) => {
-                for entity_data in batch.entities {
-                    // Check if we already have this shadow entity
-                    if let Some(shadow_entity) = shadow_entities.get(&entity_data.id) {
-                        // Update existing shadow entity
-                        if let Ok(mut transform) = shadow_entity.transform.get_mut() {
-                            transform.translation = entity_data.position.extend(0.0);
-                        }
-                        // Update other components...
-                    } else {
-                        // Create new shadow entity
-                        let shadow = commands
-                            .spawn()
-                            .insert(ShadowEntity {
-                                source_shard_id: batch.source_shard_id,
-                                original_id: entity_data.id,
-                                is_read_only: true,
-                            })
-                            .insert(Transform::from_translation(entity_data.position.extend(0.0)))
-                            .insert(Velocity(entity_data.velocity))
-                            // Add visual representation but no physics collider
-                            .insert(VisualOnly)
-                            .id();
+    for event in incoming_events.iter() {
+        let batch = &event.batch;
 
-                        shadow_entities.register(entity_data.id, shadow);
-                    }
+        for entity_data in &batch.entities {
+            // Check if we already have this shadow entity
+            if let Some(shadow_entity) = shadow_entities.get(&entity_data.id) {
+                // Update existing shadow entity
+                if let Ok(mut transform) = transform_query.get_mut(shadow_entity.local_entity) {
+                    transform.translation = Vec3::new(entity_data.position.x, entity_data.position.y, 0.0);
+                }
+
+                if let Ok(mut velocity) = velocity_query.get_mut(shadow_entity.local_entity) {
+                    velocity.linvel = entity_data.velocity;
+                }
+
+                // Update any other components that need updating
+                update_shadow_entity_components(shadow_entity.local_entity, &entity_data.components, &mut commands);
+
+                // Update last refreshed time
+                shadow_entities.update_timestamp(&entity_data.id, batch.timestamp);
+            } else {
+                // Create new shadow entity
+                let local_entity = commands
+                    .spawn((
+                        ShadowEntity {
+                            source_shard_id: batch.source_shard_id,
+                            original_entity: entity_data.id,
+                            is_read_only: true,
+                        },
+                        Transform::from_translation(Vec3::new(entity_data.position.x, entity_data.position.y, 0.0)),
+                        Velocity {
+                            linvel: entity_data.velocity,
+                            angvel: 0.0
+                        },
+                        // Visual representation components but no physics collider
+                        VisualOnly,
+                    ))
+                    .id();
+
+                // Add any additional components from the serialized data
+                add_shadow_entity_components(local_entity, &entity_data.components, &mut commands);
+
+                // Register in the shadow entity registry
+                shadow_entities.register(entity_data.id, local_entity, batch.timestamp);
+            }
+        }
+
+        // Clean up shadow entities that were not refreshed
+        shadow_entities.prune_outdated_shadows(batch.timestamp - CONFIG.shadow_entity_timeout, &mut commands);
+    }
+}
+
+// Helper to add component data to shadow entities
+fn add_shadow_entity_components(
+    entity: Entity,
+    component_data: &HashMap<String, serde_json::Value>,
+    commands: &mut Commands
+) {
+    for (name, value) in component_data {
+        match name.as_str() {
+            "ShipVisual" => {
+                if let Ok(visual) = serde_json::from_value::<ShipVisualData>(value.clone()) {
+                    commands.entity(entity).insert(ShipVisual {
+                        model_type: visual.model_type,
+                        color: visual.color,
+                        scale: visual.scale,
+                    });
                 }
             },
-            // Other message types...
+            "Name" => {
+                if let Ok(name_value) = serde_json::from_value::<String>(value.clone()) {
+                    commands.entity(entity).insert(Name::new(name_value));
+                }
+            },
+            // Add other component types as needed
+            _ => {}
         }
     }
+}
+
+// Update components on existing shadow entities
+fn update_shadow_entity_components(
+    entity: Entity,
+    component_data: &HashMap<String, serde_json::Value>,
+    commands: &mut Commands
+) {
+    // Similar to add_shadow_entity_components but handles updates to existing components
+    // Implementation would check for component existence and update or insert as needed
+}
+
+// System to clean up shadow entities when they're no longer needed or valid
+fn cleanup_shadow_entities(
+    mut shadow_registry: ResMut<ShadowEntityRegistry>,
+    mut commands: Commands,
+    time: Res<Time>,
+) {
+    let current_time = time.elapsed_seconds_f64();
+    shadow_registry.prune_outdated_shadows(current_time - CONFIG.shadow_entity_timeout, &mut commands);
 }
 ```
 
@@ -229,35 +298,98 @@ The core library provides shared functionality used by all server components, in
 - Common data structures for network messages
 - Serialization helpers
 - ECS components designed for network replication
-- Boundary entity shadow implementation
+- Shadow entity implementation
 
 ```rust
-// Example of shadow entity implementation in sidereal-core
+// Shadow entity implementation in sidereal-core
 #[derive(Component, Serialize, Deserialize)]
 pub struct ShadowEntity {
     pub source_shard_id: Uuid,
-    pub original_id: Entity,
+    pub original_entity: Entity,
     pub is_read_only: bool,
     pub last_updated: f64,
 }
 
-// Message types for boundary awareness
-#[derive(Serialize, Deserialize)]
-pub enum BoundaryMessage {
-    EntityUpdate {
-        entities: Vec<ShadowEntityData>,
-        source_shard_id: Uuid,
-        timestamp: f64,
-    },
-    AwarenessRequest {
-        boundary_directions: Vec<BoundaryDirection>,
-        requesting_shard_id: Uuid,
-    },
-    AwarenessResponse {
-        entities: Vec<ShadowEntityData>,
-        boundary_direction: BoundaryDirection,
-        source_shard_id: Uuid,
+// Marker component for visual-only entities (no physics processing)
+#[derive(Component)]
+pub struct VisualOnly;
+
+// Shadow entity registry for managing shadow entities
+#[derive(Resource)]
+pub struct ShadowEntityRegistry {
+    // Maps original entity ID to local shadow entity
+    entity_map: HashMap<Entity, ShadowEntityInfo>,
+}
+
+#[derive(Clone)]
+pub struct ShadowEntityInfo {
+    pub local_entity: Entity,
+    pub source_shard_id: Uuid,
+    pub last_updated: f64,
+}
+
+impl ShadowEntityRegistry {
+    pub fn new() -> Self {
+        Self {
+            entity_map: HashMap::new(),
+        }
     }
+
+    pub fn register(&mut self, original_id: Entity, local_entity: Entity, timestamp: f64) {
+        self.entity_map.insert(original_id, ShadowEntityInfo {
+            local_entity,
+            source_shard_id: Uuid::nil(), // Will be set from the ShadowEntity component
+            last_updated: timestamp,
+        });
+    }
+
+    pub fn get(&self, original_id: &Entity) -> Option<&ShadowEntityInfo> {
+        self.entity_map.get(original_id)
+    }
+
+    pub fn update_timestamp(&mut self, original_id: &Entity, timestamp: f64) {
+        if let Some(info) = self.entity_map.get_mut(original_id) {
+            info.last_updated = timestamp;
+        }
+    }
+
+    pub fn prune_outdated_shadows(&mut self, cutoff_time: f64, commands: &mut Commands) {
+        self.entity_map.retain(|original_id, info| {
+            let keep = info.last_updated >= cutoff_time;
+            if !keep {
+                // Shadow is too old, remove the entity
+                commands.entity(info.local_entity).despawn();
+            }
+            keep
+        });
+    }
+}
+
+// Events for shadow entity communication
+#[derive(Event)]
+pub struct ShadowEntityUpdateEvent {
+    pub neighbor_id: Uuid,
+    pub batch: BoundaryEntityBatch,
+}
+
+#[derive(Event)]
+pub struct IncomingShadowUpdateEvent {
+    pub batch: BoundaryEntityBatch,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BoundaryEntityBatch {
+    pub timestamp: f64,
+    pub source_shard_id: Uuid,
+    pub entities: Vec<ShadowEntityData>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ShadowEntityData {
+    pub id: Entity,
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub components: HashMap<String, serde_json::Value>,
 }
 ```
 
@@ -269,9 +401,6 @@ Current implementation includes:
 - Database client for Supabase interaction
 - Scene loading and management
 - Empty sector timeout management
-
-Future implementations will include:
-
 - WebSocket server for client connections
 - bevy_replicon integration for shard communication
 - GraphQL endpoint for complex queries
@@ -314,10 +443,10 @@ fn coordinate_neighbor_discovery(
 
 ### sidereal-shard-server
 
-Current implementation is minimal, but future versions will include:
+The shard server implementation includes:
 
 - bevy_replicon client for connecting to replication server
-- Physics simulation for assigned sector
+- Physics simulation for assigned sectors
 - Entity management systems
 - Performance monitoring and reporting
 - Direct communication with neighboring shard servers
@@ -327,7 +456,7 @@ Current implementation is minimal, but future versions will include:
 // Example of shard server direct connection setup
 fn setup_neighbor_connections(
     mut commands: Commands,
-    discovery_events: EventReader<NeighborDiscoveryEvent>,
+    mut discovery_events: EventReader<NeighborDiscoveryEvent>,
     config: Res<NetworkConfig>,
 ) {
     for event in discovery_events.iter() {
@@ -355,6 +484,56 @@ fn setup_neighbor_connections(
                 },
                 DirectConnectionTask::new(),
             ));
+        }
+    }
+}
+
+// System to detect entities approaching shard boundaries
+fn detect_boundary_entities(
+    mut query: Query<(Entity, &SpatialPosition, &Velocity)>,
+    universe_config: Res<UniverseConfig>,
+    mut boundary_entities: ResMut<NearBoundaryEntities>,
+) {
+    boundary_entities.entities.clear();
+
+    for (entity, position, velocity) in &mut query {
+        // Calculate distance to nearest sector boundary
+        let sector_size = universe_config.sector_size;
+        let pos_in_sector = Vec2::new(
+            position.position.x % sector_size,
+            position.position.y % sector_size
+        );
+
+        // Find distance to each boundary
+        let dist_to_left = pos_in_sector.x;
+        let dist_to_right = sector_size - pos_in_sector.x;
+        let dist_to_top = pos_in_sector.y;
+        let dist_to_bottom = sector_size - pos_in_sector.y;
+
+        // Define boundary awareness threshold based on velocity and a fixed minimum
+        let threshold = (velocity.linvel.length() * 2.0).max(universe_config.transition_zone_width);
+
+        // Check if entity is near any boundary
+        if dist_to_left < threshold || dist_to_right < threshold ||
+           dist_to_top < threshold || dist_to_bottom < threshold {
+            // Determine which boundaries the entity is approaching
+            let mut boundaries = Vec::new();
+
+            if dist_to_left < threshold {
+                boundaries.push(BoundaryDirection::West);
+            }
+            if dist_to_right < threshold {
+                boundaries.push(BoundaryDirection::East);
+            }
+            if dist_to_top < threshold {
+                boundaries.push(BoundaryDirection::North);
+            }
+            if dist_to_bottom < threshold {
+                boundaries.push(BoundaryDirection::South);
+            }
+
+            // Add to boundary entities list
+            boundary_entities.entities.push((entity, boundaries));
         }
     }
 }

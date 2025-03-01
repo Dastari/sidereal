@@ -81,6 +81,17 @@ pub struct SpatialPosition {
     pub cluster_coords: IVec2, // Current cluster coordinates
 }
 
+// Velocity component for physics-based entities
+#[derive(Component, Serialize, Deserialize, Clone, Debug)]
+pub struct Velocity {
+    pub linvel: Vec2,      // Linear velocity vector
+    pub angvel: f32,       // Angular velocity in radians per second
+}
+
+// Marker component that requires SpatialPosition
+#[derive(Component)]
+pub struct SpatialTracked;
+
 // Sector definition - contains entities in a spatial region
 #[derive(Resource, Serialize, Deserialize, Clone, Debug)]
 pub struct Sector {
@@ -162,6 +173,7 @@ pub enum ClusterManagementMessage {
 pub struct EntityData {
     pub id: Entity,
     pub position: Vec2,
+    pub velocity: Vec2,  // Added velocity for proper physics prediction
     pub components: HashMap<String, serde_json::Value>,
 }
 ```
@@ -226,9 +238,8 @@ fn calculate_entity_cluster(
 fn process_entity_transitions(
     mut state: ResMut<UniverseState>,
     config: Res<UniverseConfig>,
-    // Network receiver for transition requests from shard servers
+    // Using Bevy's event system instead of direct network access
     mut transition_receiver: EventReader<EntityTransitionRequest>,
-    // Network sender to send acknowledgments back to shard servers
     mut transition_ack_sender: EventWriter<EntityTransitionAcknowledge>,
     time: Res<Time>,
 ) {
@@ -595,12 +606,21 @@ The replication server serves as the orchestrator for the world partitioning sys
 
    - Routes client WebSocket connections to appropriate shard servers
    - Handles authentication and initial player placement
+   - Provides WebSocket and GraphQL endpoints for client access
+   - Facilitates real-time game state updates to connected clients
 
 3. **Entity Lifecycle Management**:
+
    - Creates new entities and determines initial placement
    - Coordinates entity transitions between clusters
    - Handles persistence of entity state
    - Monitors and manages resource utilization through empty sector recycling
+   - Facilitates neighbor shard discovery and connection establishment
+
+4. **Database Integration**:
+   - Manages periodic persistence of game state
+   - Handles save/load operations for player data
+   - Coordinates database interactions across the distributed system
 
 ### Shard Server Role
 
@@ -655,6 +675,9 @@ fn setup_shard_server(app: &mut App) {
        .add_systems(PostUpdate,
            send_entity_transitions.before(ClientSet::Send)
        );
+
+    // Register component requirements
+    app.world.register_component_requirement::<SpatialTracked, SpatialPosition>();
 }
 ```
 
@@ -806,6 +829,85 @@ pub struct ShadowEntity {
     pub source_shard_id: Uuid,
     pub original_entity: Entity,
     pub is_read_only: bool,
+    pub last_updated: f64,
+}
+
+// Registry to manage shadow entities
+#[derive(Resource)]
+pub struct ShadowEntityRegistry {
+    // Maps original entity ID to local shadow entity
+    entity_map: HashMap<Entity, ShadowEntityInfo>,
+}
+
+#[derive(Clone)]
+pub struct ShadowEntityInfo {
+    pub local_entity: Entity,
+    pub source_shard_id: Uuid,
+    pub last_updated: f64,
+}
+
+impl ShadowEntityRegistry {
+    pub fn new() -> Self {
+        Self {
+            entity_map: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, original_id: Entity, local_entity: Entity, timestamp: f64) {
+        self.entity_map.insert(original_id, ShadowEntityInfo {
+            local_entity,
+            source_shard_id: Uuid::nil(), // Will be set from the ShadowEntity component
+            last_updated: timestamp,
+        });
+    }
+
+    pub fn get(&self, original_id: &Entity) -> Option<&ShadowEntityInfo> {
+        self.entity_map.get(original_id)
+    }
+
+    pub fn update_timestamp(&mut self, original_id: &Entity, timestamp: f64) {
+        if let Some(info) = self.entity_map.get_mut(original_id) {
+            info.last_updated = timestamp;
+        }
+    }
+
+    pub fn prune_outdated_shadows(&mut self, cutoff_time: f64, commands: &mut Commands) {
+        self.entity_map.retain(|original_id, info| {
+            let keep = info.last_updated >= cutoff_time;
+            if !keep {
+                // Shadow is too old, remove the entity
+                commands.entity(info.local_entity).despawn();
+            }
+            keep
+        });
+    }
+}
+
+// Events for shadow entity communication
+#[derive(Event)]
+pub struct ShadowEntityUpdateEvent {
+    pub neighbor_id: Uuid,
+    pub batch: BoundaryEntityBatch,
+}
+
+#[derive(Event)]
+pub struct IncomingShadowUpdateEvent {
+    pub batch: BoundaryEntityBatch,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BoundaryEntityBatch {
+    pub timestamp: f64,
+    pub source_shard_id: Uuid,
+    pub entities: Vec<ShadowEntityData>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ShadowEntityData {
+    pub id: Entity,
+    pub position: Vec2,
+    pub velocity: Vec2,
+    pub components: HashMap<String, serde_json::Value>,
 }
 
 // Message for sharing boundary entities between shards
@@ -868,78 +970,104 @@ fn share_boundary_entities(
 }
 ```
 
-#### Communication Path Options
-
-There are two main approaches for implementing cross-shard awareness:
-
-1. **Direct Shard-to-Shard Communication**:
-
-   - **Advantages**:
-     - Lower latency for updates
-     - Reduced load on the replication server
-     - More scalable in a large world with many shard servers
-   - **Disadvantages**:
-     - More complex networking topology
-     - Requires each shard to maintain connections to multiple other shards
-     - More challenging to secure and monitor
-
-2. **Replication Server Mediated Communication**:
-   - **Advantages**:
-     - Centralized control and monitoring
-     - Simpler network topology (hub and spoke)
-     - Easier to implement security and authentication
-     - Consistent with existing architecture
-   - **Disadvantages**:
-     - Potential bottleneck at the replication server
-     - Higher latency for entity updates
-     - Single point of failure risk
-
 #### Recommended Approach
 
-For Sidereal, a **hybrid approach** is likely optimal:
+For Sidereal, a **hybrid approach** is optimal:
 
 ```rust
 // Implementation for the hybrid communication approach
 fn setup_cross_shard_communication(app: &mut App) {
     // Direct communication for high-frequency, performance-critical updates
-    app.add_system(send_direct_neighbor_updates.run_if(|state: Res<ShardState>| {
+    app.add_systems(Update, send_direct_neighbor_updates.run_if(|state: Res<ShardState>| {
         state.has_direct_neighbor_connections()
     }));
 
     // Replication server mediated for setup, teardown, and less frequent updates
-    app.add_system(process_neighbor_discovery.after(ClientSet::Receive));
+    app.add_systems(Update, process_neighbor_discovery);
+
+    // Shadow entity management
+    app.add_systems(Update, (
+        detect_boundary_entities,
+        sync_shadow_entities_direct,
+        process_shadow_updates,
+        cleanup_shadow_entities
+    ));
+
+    // Events for shadow entity communication
+    app.add_event::<ShadowEntityUpdateEvent>();
+    app.add_event::<IncomingShadowUpdateEvent>();
 
     // Fallback to replication server when direct communication fails
-    app.add_system(handle_direct_communication_fallback);
+    app.add_systems(Update, handle_direct_communication_fallback);
+}
+
+// System to detect entities approaching sector boundaries
+fn detect_boundary_entities(
+    mut query: Query<(Entity, &SpatialPosition, &Velocity)>,
+    universe_config: Res<UniverseConfig>,
+    mut boundary_entities: ResMut<NearBoundaryEntities>,
+) {
+    boundary_entities.entities.clear();
+
+    for (entity, position, velocity) in &mut query {
+        // Calculate distance to nearest sector boundary
+        let sector_size = universe_config.sector_size;
+        let pos_in_sector = Vec2::new(
+            position.position.x % sector_size,
+            position.position.y % sector_size
+        );
+
+        // Find distance to each boundary
+        let dist_to_left = pos_in_sector.x;
+        let dist_to_right = sector_size - pos_in_sector.x;
+        let dist_to_top = pos_in_sector.y;
+        let dist_to_bottom = sector_size - pos_in_sector.y;
+
+        // Define boundary awareness threshold based on velocity and a fixed minimum
+        let threshold = (velocity.linvel.length() * 2.0).max(universe_config.transition_zone_width);
+
+        // Check if entity is near any boundary
+        if dist_to_left < threshold || dist_to_right < threshold ||
+           dist_to_top < threshold || dist_to_bottom < threshold {
+            // Determine which boundaries the entity is approaching
+            let mut boundaries = Vec::new();
+
+            if dist_to_left < threshold {
+                boundaries.push(BoundaryDirection::West);
+            }
+            if dist_to_right < threshold {
+                boundaries.push(BoundaryDirection::East);
+            }
+            if dist_to_top < threshold {
+                boundaries.push(BoundaryDirection::North);
+            }
+            if dist_to_bottom < threshold {
+                boundaries.push(BoundaryDirection::South);
+            }
+
+            // Add to boundary entities list
+            boundary_entities.entities.push((entity, boundaries));
+        }
+    }
 }
 ```
 
 In this hybrid model:
 
-1. The replication server would be responsible for:
+1. The replication server is responsible for:
 
    - Informing shards about which other shards manage neighboring clusters
    - Providing connection details for direct communication
    - Handling communication when direct paths are unavailable
    - Managing security and authentication
 
-2. Shard servers would:
+2. Shard servers:
    - Establish direct connections with neighboring shards for high-frequency updates
    - Send boundary entity information directly to relevant neighbors
+   - Use Bevy's event system for efficient communication
    - Fall back to replication server mediation when direct communication fails
 
-This approach provides the best balance of performance and manageability.
-
-#### Necessity Assessment
-
-This cross-shard awareness system is not strictly necessary for the initial implementation but becomes increasingly important as the game world grows and player density increases. It addresses several critical aspects:
-
-1. **Player Experience**: Prevents the "pop-in" effect of entities suddenly appearing when crossing boundaries
-2. **Game Mechanics**: Enables mechanics that require awareness beyond the current shard
-3. **Performance**: Reduces the need for frequent handovers by allowing visual awareness without full entity transitions
-4. **Scalability**: Provides more efficient communication paths as the world expands
-
-For these reasons, implementing cross-shard awareness should be considered a high-priority improvement after the core system is operational.
+This approach provides the best balance of performance and manageability while leveraging Bevy's event system for cleaner, more maintainable code.
 
 ## Conclusion
 
