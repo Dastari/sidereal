@@ -93,7 +93,7 @@ pub struct EntityApproachingBoundary {
 }
 
 /// Direction of sector boundary
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum BoundaryDirection {
     North,
     East,

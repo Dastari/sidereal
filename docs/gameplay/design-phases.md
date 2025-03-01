@@ -49,7 +49,7 @@ This document outlines the phased approach to developing Sidereal, focusing on l
 
 **Duration Estimate:** 3-4 months  
 **Focus:** Creating a minimal universe with basic movement and visualization
-**Status:** 🔄 In Progress, Transitioning to Phase 2
+**Status:** 🔄 In Progress, Implement Phase 2
 
 ### Technical Goals
 
