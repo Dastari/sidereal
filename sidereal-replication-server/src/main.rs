@@ -28,7 +28,7 @@ fn main() {
             TransformPlugin,
             StatesPlugin::default(),
             SceneLoaderPlugin,
-            ReplicationPlugin,
+            ReplicationPlugin,        // Uses the RepliconSetup from sidereal_core to listen on port 5000
             UniverseManagerPlugin,
         ))
         .run();

@@ -63,16 +63,16 @@ impl ShardConfig {
         // Get the replication server address or use default
         let replication_server_address = env::var("REPLICATION_SERVER_ADDRESS")
             .unwrap_or_else(|_| {
-                info!("Using default replication server address: localhost");
-                "localhost".to_string()
+                info!("Using default replication server address: 127.0.0.1");
+                "127.0.0.1".to_string()
             });
         
         // Get the replication server port or use default
         let replication_server_port = env::var("REPLICATION_SERVER_PORT")
             .map(|port| port.parse::<u16>().expect("Invalid REPLICATION_SERVER_PORT"))
             .unwrap_or_else(|_| {
-                info!("Using default replication server port: 8765");
-                8765
+                info!("Using default replication server port: 5000");
+                5000
             });
         
         // Get network protocol ID or use default

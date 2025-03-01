@@ -1,26 +1,18 @@
 use bevy::prelude::*;
-use tracing::{info, warn, error};
-use std::net::{UdpSocket, SocketAddr};
-use std::time::Duration;
+use tracing::{info, error};
 use bevy::math::{Vec2, IVec2};
 use bevy_replicon::prelude::*;
-use bevy_replicon_renet2::renet2::{ConnectionConfig, RenetServer};
-use bevy_replicon_renet2::netcode::{NetcodeServerTransport, ServerAuthentication, ServerSetupConfig, NativeSocket};
-use bevy_replicon_renet2::RenetChannelsExt;
 use uuid::Uuid;
 
 use crate::scene::SceneState;
-use sidereal_core::ecs::components::*;
-use bevy_replicon_renet2::RepliconRenetServerPlugin;
 use sidereal_core::ecs::components::spatial::SpatialPosition;
-use bevy_rapier2d::prelude::{RigidBody, Velocity, Collider};
-use bevy::core::Name;
+use sidereal_core::ecs::plugins::replication::network::{ConnectionConfig, RepliconSetup};
 
 // Network configuration for the replication server
 #[derive(Resource, Clone)]
 pub struct NetworkConfig {
     pub server_ip: String,
-    pub server_port: u16,
+    pub server_port: u16,           // Port 5000 by default, see impl Default below
     pub max_clients: usize,
     pub protocol_id: u64,
     pub server_id: Uuid,
@@ -30,7 +22,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             server_ip: "127.0.0.1".to_string(), // Default to localhost
-            server_port: 5000,                  // Default port
+            server_port: 5000,                  // Default port for replication server
             max_clients: 32,                    // Maximum number of shard servers
             protocol_id: 0,                     // Protocol ID for renet2
             server_id: Uuid::new_v4(),          // Unique ID for this server
@@ -51,17 +43,27 @@ impl Plugin for ReplicationPlugin {
             .get_resource_or_insert_with(NetworkConfig::default)
             .clone();
         
-        // Configure the server settings
-        let server_addr: SocketAddr = format!("{}:{}", network_config.server_ip, network_config.server_port)
-            .parse()
-            .expect("Failed to parse server address");
+        // Add resources but don't add the client plugin since this is the server
+        app.insert_resource(network_config.clone());
         
-        // Add the core replication server plugin
-        app.add_plugins(ReplicationServerPlugin)
-           .insert_resource(network_config);
-
-        // Start the transport
-        app.add_systems(Startup, setup_replication_server);
+        // Setup the replication server directly in the plugin build method
+        let config = ConnectionConfig {
+            server_address: network_config.server_ip.clone(),
+            port: network_config.server_port,
+            protocol_id: network_config.protocol_id,
+            max_clients: network_config.max_clients,
+        };
+        
+        // Setup the server resources using the shared helper from sidereal_core
+        match RepliconSetup::setup_server_resources(app, &config) {
+            Ok(_) => {
+                info!("Replication server started successfully at {}:{}", 
+                    network_config.server_ip, network_config.server_port);
+            },
+            Err(err) => {
+                error!("Failed to start replication server: {}", err);
+            }
+        }
         
         // Register replication events
         app.add_event::<ReplicationEvent>()
@@ -74,8 +76,6 @@ impl Plugin for ReplicationPlugin {
             handle_server_events,
             handle_replication_events,
             process_entity_transfer_requests,
-            coordinate_neighbor_discovery,
-            monitor_shard_servers,
         ).run_if(in_state(SceneState::Ready)));
     }
 }
@@ -137,79 +137,20 @@ pub enum ReplicationEvent {
     },
 }
 
-/// Setup the replication server initially
-fn setup_replication_server(
-    mut commands: Commands,
-    network_config: Res<NetworkConfig>,
-    channels: Res<RepliconChannels>,
-) {
-    info!("Setting up replication server with ID: {}", network_config.server_id);
-    
-    // Create a UdpSocket and bind it
-    let server_addr = format!("{}:{}", network_config.server_ip, network_config.server_port);
-    
-    // Create socket
-    let socket = match UdpSocket::bind(&server_addr) {
-        Ok(socket) => socket,
-        Err(err) => {
-            error!("Failed to bind to {}: {}", server_addr, err);
-            return;
-        }
-    };
-    
-    // Create and initialize server
-    let server = RenetServer::new(
-        ConnectionConfig::from_channels(
-            channels.get_server_configs(),
-            channels.get_client_configs(),
-        )
-    );
-    
-    // Create server configuration
-    let public_addr = server_addr.parse().expect("Failed to parse server address");
-    let server_config = ServerSetupConfig {
-        current_time: std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .expect("Time went backwards"),
-        max_clients: network_config.max_clients,
-        protocol_id: network_config.protocol_id,
-        authentication: ServerAuthentication::Unsecure,
-        socket_addresses: vec![vec![public_addr]],
-    };
-    
-    // Create transport
-    match NativeSocket::new(socket) {
-        Ok(native_socket) => {
-            match NetcodeServerTransport::new(server_config, native_socket) {
-                Ok(transport) => {
-                    commands.insert_resource(server);
-                    commands.insert_resource(transport);
-                    info!("Replication server started successfully on {}", server_addr);
-                },
-                Err(err) => {
-                    error!("Failed to create NetcodeServerTransport: {:?}", err);
-                }
-            }
-        },
-        Err(err) => {
-            error!("Failed to create NativeSocket: {:?}", err);
-        }
-    }
-}
-
 /// Monitor server events (connect, disconnect, etc.)
 fn handle_server_events(
     mut connection_events: EventWriter<ShardServerConnectionEvent>,
     server: Option<Res<RepliconServer>>,
+    connected_clients: Option<Res<ConnectedClients>>,
 ) {
-    // Implementation would need to be updated to use the modern renet2 API
-    // Here we'll use a placeholder that just indicates what we would do
-    if let Some(_server) = server {
-        // Process new connections using the renet2 5.0 API
-        // This is a simplified placeholder
-        
-        // Process disconnections using the renet2 5.0 API
-        // This is a simplified placeholder
+    if let (Some(_server), Some(connected_clients)) = (server, connected_clients) {
+        // Process new connections
+        for client in connected_clients.iter() {
+            connection_events.send(ShardServerConnectionEvent::Connected {
+                client_id: client.id(),
+                shard_id: Uuid::new_v4(), // In a real implementation, this would be obtained from the client's auth data
+            });
+        }
     }
 }
 
@@ -242,7 +183,6 @@ fn handle_replication_events(
 /// Process entity transfer requests between shards
 fn process_entity_transfer_requests(
     mut transfer_events: EventReader<EntityTransferEvent>,
-    // We would need access to shard assignment information
 ) {
     for event in transfer_events.read() {
         match event {
@@ -280,24 +220,4 @@ fn process_entity_transfer_requests(
             },
         }
     }
-}
-
-/// Coordinate neighbor discovery for adjacent shards
-fn coordinate_neighbor_discovery(
-    // We would need access to shard assignments and cluster information
-) {
-    // In a real implementation, we would:
-    // 1. Check for clusters that are adjacent but managed by different shards
-    // 2. Send neighbor discovery events to those shards
-    // 3. Facilitate direct connection establishment
-}
-
-/// Monitor shard server health and status
-fn monitor_shard_servers(
-    // We would need access to connected clients and their status
-) {
-    // In a real implementation, we would:
-    // 1. Check for heartbeats from connected shard servers
-    // 2. Detect and handle shard server failures
-    // 3. Reassign clusters if needed
 } 

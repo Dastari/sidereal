@@ -13,7 +13,7 @@ pub mod config;
 
 use cluster::ClusterManagerPlugin;
 use physics::PhysicsPlugin;
-use replication::ReplicationClientPlugin;
+use replication::ReplicationPlugin;
 use shadow::ShadowEntityPlugin;
 use config::ConfigPlugin;
 
@@ -57,7 +57,7 @@ fn main() {
         ConfigPlugin,
         ClusterManagerPlugin,
         PhysicsPlugin,
-        ReplicationClientPlugin,
+        ReplicationPlugin,
         ShadowEntityPlugin,
     ));
     
