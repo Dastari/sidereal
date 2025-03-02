@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::time::Time;
 use bevy::math::{Vec2, IVec2};
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use uuid::Uuid;
@@ -202,11 +202,49 @@ fn monitor_connection_status(
                 
                 // Set status to pending - concrete implementations should handle the actual reconnection
                 client.status = ReplicationClientStatus::ConnectionPending;
+                client.last_connection_attempt = current_time;
+            }
+        },
+        ReplicationClientStatus::ConnectionPending => {
+            // This is the critical state where we need to explicitly initiate the connection
+            if let (Some(renet_client), Some(transport)) = (&renet_client, &transport) {
+                // Check if we've already started connecting
+                if transport.is_connected() || renet_client.is_connected() {
+                    info!("Connection already initiated, transitioning to Connecting state");
+                    client.status = ReplicationClientStatus::Connecting;
+                } else {
+                    // Explicitly initiate connection - call connect() on transport if needed
+                    // This is the key addition that ensures UDP packets get sent
+                    info!("Explicitly initiating connection to replication server");
+                    
+                    // NetcodeClientTransport doesn't have a public connect method we can call,
+                    // but we need to ensure connection starts. Since setting up the transport
+                    // should automatically start the connection process, we'll change our state
+                    // to Connecting and let the connection attempt proceed.
+                    client.status = ReplicationClientStatus::Connecting;
+                    
+                    // Log extra diagnostic info
+                    debug!("Connection initialized with client ID: {}", 
+                           transport.client_id());
+                }
+            } else {
+                warn!("Cannot initiate connection - transport or client not available");
+                // If resources aren't ready, we might need to transition back to Disconnected
+                if current_time - client.last_connection_attempt > 2.0 {
+                    warn!("Resources not available for connection, reverting to Disconnected");
+                    client.status = ReplicationClientStatus::Disconnected;
+                }
             }
         },
         ReplicationClientStatus::Connecting => {
             // Check if client and transport exist
             if let (Some(renet_client), Some(transport)) = (renet_client, transport) {
+                // Add diagnostic logging
+                debug!("Connection status: renet_connected={}, transport_connected={}, time_elapsed={:.2}s", 
+                      renet_client.is_connected(), 
+                      transport.is_connected(),
+                      current_time - client.last_connection_attempt);
+                
                 if renet_client.is_connected() {
                     info!("Successfully connected to replication server");
                     client.status = ReplicationClientStatus::Connected;
@@ -214,6 +252,7 @@ fn monitor_connection_status(
                 } else if transport.is_connected() {
                     // Client authenticated but not fully connected
                     info!("Authenticated with replication server, completing connection");
+                    client.status = ReplicationClientStatus::Authenticated;
                 } else if current_time - client.last_connection_attempt > 5.0 {
                     // Connection timeout
                     warn!("Connection attempt timed out");

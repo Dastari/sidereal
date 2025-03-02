@@ -1,0 +1,16 @@
+# Cargo.toml
+[package]
+name = "sidereal-test-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.15.0"
+bevy_replicon = "0.30.1"
+bevy_replicon_renet2 = "0.5.0"
+renet2 = "0.5.0"
+renet2_netcode = "0.5.0"
+renet2_setup = "0.5.0"
+renetcode2 = "0.5.0"
+env_logger = "0.11.0"
+log = "0.4.20"

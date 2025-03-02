@@ -4,7 +4,8 @@ use bevy_replicon_renet2::renet2;
 use bevy_replicon_renet2::netcode::{self};
 use bevy_replicon_renet2::RenetChannelsExt;
 use renet2_netcode::NativeSocket;
-use std::net::{UdpSocket, Ipv4Addr};
+use std::net::{Ipv4Addr, UdpSocket};
+use tracing::info;
 use std::time::SystemTime;
 
 /// Shared configuration for connection settings
@@ -19,7 +20,7 @@ pub struct ConnectionConfig {
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
-            server_address: "127.0.0.1".to_string(),
+            server_address: "0.0.0.0".to_string(),
             port: 5000,
             protocol_id: 0,
             max_clients: 32,
@@ -37,9 +38,8 @@ impl RepliconSetup {
         config: &ConnectionConfig, 
         client_id: u64
     ) -> Result<(), String> {
-        // Insert the replicon channels
-        app.insert_resource(RepliconChannels::default());
-        let channels = app.world().resource::<RepliconChannels>();
+        // Get RepliconChannels
+        let channels = app.world_mut().resource::<RepliconChannels>();
         
         // Create the client
         let client = renet2::RenetClient::new(
@@ -50,11 +50,12 @@ impl RepliconSetup {
             false, // Don't enable encryption for now
         );
 
-        // Get the current time for the client setup
+        // Get the current time
         let current_time = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(time) => time,
+            Ok(duration) => duration,
             Err(err) => return Err(format!("Failed to get system time: {}", err)),
         };
+        info!("Using system time for client transport: {:?}", current_time);
         
         // Create the server address
         let server_addr = match format!("{}:{}", config.server_address, config.port).parse() {
@@ -96,62 +97,60 @@ impl RepliconSetup {
         Ok(())
     }
     
-    pub fn setup_server_resources(
-        app: &mut App, 
-        config: &ConnectionConfig
-    ) -> Result<(), String> {
-        // Insert the replicon channels
-        app.insert_resource(RepliconChannels::default());
+    /// Setup server resources for a replication server
+    pub fn setup_server_resources(app: &mut App, config: &ConnectionConfig) -> Result<(), String> {
+        // Initialize replicon channels
+        app.init_resource::<RepliconChannels>();
         let channels = app.world().resource::<RepliconChannels>();
-        
-        // Create socket
-        let server_addr = format!("{}:{}", config.server_address, config.port);
-        let socket = match UdpSocket::bind(&server_addr) {
-            Ok(socket) => socket,
-            Err(err) => return Err(format!("Failed to bind to {}: {}", server_addr, err)),
-        };
-        
-        // Create and initialize server
-        let server = renet2::RenetServer::new(
-            renet2::ConnectionConfig::from_channels(
-                channels.get_server_configs(),
-                channels.get_client_configs(),
-            )
-        );
-        
-        // Create server configuration
-        let public_addr = match server_addr.parse() {
-            Ok(addr) => addr,
-            Err(err) => return Err(format!("Failed to parse server address: {}", err)),
-        };
-        
+
+        // Get server and client channel configs
+        let (server_channels, client_channels) = (channels.get_server_configs(), channels.get_client_configs());
+
+        // Setup the server address
+        let server_addr = format!("{}:{}", config.server_address, config.port)
+            .parse()
+            .map_err(|e| format!("Failed to parse server address: {}", e))?;
+
+        // Create connection config
+        let connection_config = renet2::ConnectionConfig::from_channels(server_channels, client_channels);
+
+        // Create a server with the connection config - note: no 'false' param like we tried before
+        let server = renet2::RenetServer::new(connection_config);
+
+        // Setup the UDP socket
+        let socket = UdpSocket::bind(server_addr).map_err(|e| format!("Failed to bind socket: {}", e))?;
+
+        // Create the native socket
+        let native_socket = NativeSocket::new(socket)
+            .map_err(|e| format!("Failed to create native socket: {}", e))?;
+
+        // Get the current time
         let current_time = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(time) => time,
+            Ok(duration) => duration,
             Err(err) => return Err(format!("Failed to get system time: {}", err)),
         };
-        
+        info!("Using system time for server transport: {:?}", current_time);
+
+        // Create server setup config - this is the correct type for NetcodeServerTransport::new
         let server_config = netcode::ServerSetupConfig {
+            protocol_id: config.protocol_id,
             current_time,
             max_clients: config.max_clients,
-            protocol_id: config.protocol_id,
             authentication: netcode::ServerAuthentication::Unsecure,
-            socket_addresses: vec![vec![public_addr]],
+            socket_addresses: vec![vec![server_addr]],
         };
-        
-        // Create transport
-        match NativeSocket::new(socket) {
-            Ok(native_socket) => {
-                match netcode::NetcodeServerTransport::new(server_config, native_socket) {
-                    Ok(transport) => {
-                        app.insert_resource(server);
-                        app.insert_resource(transport);
-                    },
-                    Err(err) => return Err(format!("Failed to create NetcodeServerTransport: {:?}", err)),
-                }
-            },
-            Err(err) => return Err(format!("Failed to create NativeSocket: {:?}", err)),
-        }
-        
+
+        // Create the transport with the correct parameters
+        let transport = match netcode::NetcodeServerTransport::new(server_config, native_socket) {
+            Ok(transport) => transport,
+            Err(err) => return Err(format!("Failed to create server transport: {}", err)),
+        };
+
+        // Add the resources to the app
+        app.insert_resource(server);
+        app.insert_resource(transport);
+
+        // Return success
         Ok(())
     }
 } 

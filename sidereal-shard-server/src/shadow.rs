@@ -1,10 +1,8 @@
 use bevy::prelude::*;
-use tracing::{info, warn};
+use tracing::{info};
 use uuid::Uuid;
 use std::collections::HashMap;
 use bevy_rapier2d::prelude::Velocity;
-
-use sidereal_core::ecs::components::*;
 
 /// Plugin for managing shadow entities
 pub struct ShadowEntityPlugin;
@@ -88,7 +86,7 @@ impl ShadowEntityRegistry {
         self.entity_map
             .iter()
             .filter(|(_, info)| info.last_updated < cutoff_time)
-            .map(|(original_id, info)| info.local_entity)
+            .map(|(_original_id, info)| info.local_entity)
             .collect()
     }
     

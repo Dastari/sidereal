@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use tracing::{info, warn, error};
+use tracing::{info};
 use bevy_replicon::prelude::ClientId;
 use bevy::math::Vec2;
 use serde::{Serialize, Deserialize};
@@ -165,7 +165,7 @@ fn handle_p2p_connection_events(
                 info!("P2P connection to shard {} initiated", shard_id);
             },
             P2PConnectionEvent::Disconnect { shard_id } => {
-                if let Some(connection) = p2p_connections.connections.remove(shard_id) {
+                if let Some(_connection) = p2p_connections.connections.remove(shard_id) {
                     info!("Disconnected P2P connection to shard {}", shard_id);
                 }
             }
