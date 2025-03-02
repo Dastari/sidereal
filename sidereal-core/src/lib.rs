@@ -6,12 +6,11 @@ pub mod ecs;
 
 // Re-export the replication modules for easier access
 pub use ecs::plugins::replication::{
-    client::ReplicationClientPlugin,
     common::{
         ReplicationClientStatus, EntityUpdateType, ClientStreamEvent,
         EntityState, get_backoff_time, MAX_CONNECTION_ATTEMPTS,
     },
-    network::{ConnectionConfig, RepliconSetup},
+    network::{NetworkConfig, RepliconClientPlugin, RepliconServerPlugin},
 };
 
 /// Initialize the core library

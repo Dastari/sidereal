@@ -94,30 +94,9 @@ impl HandshakeTracker {
 }
 
 /// Track the state of the connection to the replication server
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct ShardConnectionState {
-    /// The current status of the connection
-    pub status: ReplicationClientStatus,
-    
-    /// The time of the last connection attempt
-    pub last_connection_attempt: f64,
-    
-    /// The number of connection attempts made
-    pub connection_attempts: usize,
-    
-    /// The next time a reconnection is allowed (absolute time value)
-    pub next_allowed_connection_time: f64,
-}
-
-impl Default for ShardConnectionState {
-    fn default() -> Self {
-        Self {
-            status: ReplicationClientStatus::Disconnected,
-            last_connection_attempt: 0.0,
-            connection_attempts: 0,
-            next_allowed_connection_time: 0.0,
-        }
-    }
+    pub is_connected: bool,
 }
 
 /// Resource to track entity state changes

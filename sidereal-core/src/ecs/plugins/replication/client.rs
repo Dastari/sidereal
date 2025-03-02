@@ -1,296 +1,77 @@
+#[cfg(feature = "netcode")]
+use crate::netcode::{NetcodeClientPlugin, NetcodeClientTransport};
+use bevy_replicon_renet2::renet2::{RenetClient, RenetClientPlugin, RenetReceive, RenetSend};
+use bevy_replicon_renet2::renet2::{client_connected, client_connecting, client_just_disconnected, client_just_connected};
 use bevy::prelude::*;
-use bevy::time::Time;
-use bevy::math::{Vec2, IVec2};
-use tracing::{info, warn, error, debug};
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
-use uuid::Uuid;
-use bevy_replicon_renet2::renet2::RenetClient;
-use bevy_replicon_renet2::netcode::NetcodeClientTransport;
+use bevy_replicon::prelude::*;
 
-use super::common::{
-    ReplicationClientStatus, EntityState, EntityUpdateType,
-    ClientStreamEvent, get_backoff_time, MAX_CONNECTION_ATTEMPTS
-};
+pub struct RepliconRenetClientPlugin;
 
-/// Resource to track replication client state
-#[derive(Resource)]
-pub struct ReplicationClient {
-    pub status: ReplicationClientStatus,
-    pub server_id: Option<Uuid>,
-    pub assigned_clusters: Vec<(IVec2, Uuid)>, // Cluster coordinates and their IDs
-    pub last_heartbeat: Duration,
-    pub last_entity_update: Duration,
-    
-    // Connection tracking
-    pub connection_attempts: u32,
-    pub last_connection_attempt: f64,
-    
-    // Tracks entities that need to be sent to the replication server
-    pub pending_entity_updates: HashSet<Entity>,
-    pub entity_update_types: HashMap<Entity, EntityUpdateType>,
-    
-    // Last known position cache for determining which entities need updates
-    pub entity_last_known_state: HashMap<Entity, EntityState>,
-}
-
-impl Default for ReplicationClient {
-    fn default() -> Self {
-        Self {
-            status: ReplicationClientStatus::Disconnected,
-            server_id: None,
-            assigned_clusters: Vec::new(),
-            last_heartbeat: Duration::ZERO,
-            last_entity_update: Duration::ZERO,
-            connection_attempts: 0,
-            last_connection_attempt: 0.0,
-            pending_entity_updates: HashSet::new(),
-            entity_update_types: HashMap::new(),
-            entity_last_known_state: HashMap::new(),
-        }
-    }
-}
-
-impl ReplicationClient {
-    /// Queue an entity for update to be sent to the replication server
-    pub fn queue_entity_update(&mut self, entity: Entity, update_type: EntityUpdateType) {
-        // For Create/Update types, we always send the latest state
-        // For Delete, we only queue it if it's not already queued for Create/Update
-        match update_type {
-            EntityUpdateType::Create | EntityUpdateType::Update => {
-                self.entity_update_types.insert(entity, update_type);
-                self.pending_entity_updates.insert(entity);
-            }
-            EntityUpdateType::Delete => {
-                if !matches!(self.entity_update_types.get(&entity), 
-                    Some(EntityUpdateType::Create) | Some(EntityUpdateType::Update)) {
-                    self.entity_update_types.insert(entity, EntityUpdateType::Delete);
-                    self.pending_entity_updates.insert(entity);
-                }
-            }
-        }
-    }
-    
-    /// Update the last heartbeat time
-    pub fn update_heartbeat(&mut self, time: &Time) {
-        self.last_heartbeat = time.elapsed();
-    }
-    
-    /// Check if we're due to send another heartbeat
-    pub fn should_send_heartbeat(&self, time: &Time, interval_seconds: f64) -> bool {
-        let interval = Duration::from_secs_f64(interval_seconds);
-        time.elapsed() - self.last_heartbeat >= interval
-    }
-    
-    /// Update the last entity update time
-    pub fn update_entity_update_time(&mut self, time: &Time) {
-        self.last_entity_update = time.elapsed();
-    }
-    
-    /// Check if we're due to send entity updates
-    pub fn should_send_entity_updates(&self, time: &Time, interval_seconds: f64) -> bool {
-        let interval = Duration::from_secs_f64(interval_seconds);
-        !self.pending_entity_updates.is_empty() && 
-        time.elapsed() - self.last_entity_update >= interval
-    }
-    
-    /// Check if an entity needs to be updated based on its current state
-    pub fn entity_needs_update(&mut self, entity: Entity, transform: &Transform, velocity: Vec2) -> bool {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-            
-        let position = transform.translation;
-        
-        // If the entity is already pending, it needs an update
-        if self.pending_entity_updates.contains(&entity) {
-            return true;
-        }
-        
-        // If we've never seen this entity before, it needs an update
-        if !self.entity_last_known_state.contains_key(&entity) {
-            self.entity_last_known_state.insert(entity, EntityState {
-                position,
-                velocity,
-                last_update: current_time,
-            });
-            return true;
-        }
-        
-        // Get the last known state
-        let last_state = self.entity_last_known_state.get(&entity).unwrap();
-        
-        // Check if position or velocity has changed significantly
-        let position_changed = (last_state.position - position).length() > 0.1;
-        let velocity_changed = (last_state.velocity - velocity).length() > 0.1;
-        
-        // If something changed, update the last known state and return true
-        if position_changed || velocity_changed {
-            self.entity_last_known_state.insert(entity, EntityState {
-                position,
-                velocity,
-                last_update: current_time,
-            });
-            return true;
-        }
-        
-        // Check if we need a periodic update regardless of change
-        let periodic_update_interval = 5.0; // Send an update every 5 seconds at minimum
-        if current_time - last_state.last_update > periodic_update_interval {
-            self.entity_last_known_state.insert(entity, EntityState {
-                position,
-                velocity,
-                last_update: current_time,
-            });
-            return true;
-        }
-        
-        false
-    }
-    
-    /// Handle cluster assignment from replication server
-    pub fn assign_cluster(&mut self, coordinates: IVec2, cluster_id: Uuid) {
-        if !self.assigned_clusters.iter().any(|(coords, _)| *coords == coordinates) {
-            self.assigned_clusters.push((coordinates, cluster_id));
-        }
-    }
-    
-    /// Handle cluster unassignment from replication server
-    pub fn unassign_cluster(&mut self, coordinates: IVec2) {
-        self.assigned_clusters.retain(|(coords, _)| *coords != coordinates);
-    }
-}
-
-/// Replication client plugin for connecting to the replication server
-pub struct ReplicationClientPlugin;
-
-impl Plugin for ReplicationClientPlugin {
+impl Plugin for RepliconRenetClientPlugin {
     fn build(&self, app: &mut App) {
-        info!("Building core replication client plugin");
-        
-        // Register events
-        app.add_event::<ClientStreamEvent>();
-        
-        // Add client resource
-        app.init_resource::<ReplicationClient>();
-        
-        // Add systems
-        app.add_systems(Update, (
-            monitor_connection_status,
-        ));
+        app.add_plugins(RenetClientPlugin)
+            .configure_sets(PreUpdate, ClientSet::ReceivePackets.after(RenetReceive))
+            .configure_sets(PostUpdate, ClientSet::SendPackets.before(RenetSend))
+            .add_systems(
+                PreUpdate,
+                (
+                    Self::set_connecting.run_if(client_connecting),
+                    Self::set_disconnected.run_if(client_just_disconnected),
+                    Self::set_connected.run_if(client_just_connected),
+                    Self::receive_packets.run_if(client_connected),
+                )
+                    .chain()
+                    .in_set(ClientSet::ReceivePackets),
+            )
+            .add_systems(
+                PostUpdate,
+                Self::send_packets
+                    .in_set(ClientSet::SendPackets)
+                    .run_if(client_connected),
+            );
+
+        #[cfg(feature = "netcode")]
+        app.add_plugins(NetcodeClientPlugin);
     }
 }
 
-/// Monitor connection status and handle reconnection
-fn monitor_connection_status(
-    mut client: ResMut<ReplicationClient>,
-    renet_client: Option<Res<RenetClient>>,
-    transport: Option<Res<NetcodeClientTransport>>,
-    time: Res<Time>,
-) {
-    let current_time = time.elapsed_secs_f64();
-    
-    // Handle different connection states
-    match client.status {
-        ReplicationClientStatus::Disconnected => {
-            // Check if we should attempt to reconnect
-            let backoff_time = get_backoff_time(client.connection_attempts);
-            if current_time - client.last_connection_attempt >= backoff_time {
-                info!("Initiating reconnection to replication server (attempt {})", 
-                      client.connection_attempts + 1);
-                
-                // Set status to pending - concrete implementations should handle the actual reconnection
-                client.status = ReplicationClientStatus::ConnectionPending;
-                client.last_connection_attempt = current_time;
-            }
-        },
-        ReplicationClientStatus::ConnectionPending => {
-            // This is the critical state where we need to explicitly initiate the connection
-            if let (Some(renet_client), Some(transport)) = (&renet_client, &transport) {
-                // Check if we've already started connecting
-                if transport.is_connected() || renet_client.is_connected() {
-                    info!("Connection already initiated, transitioning to Connecting state");
-                    client.status = ReplicationClientStatus::Connecting;
-                } else {
-                    // Explicitly initiate connection - call connect() on transport if needed
-                    // This is the key addition that ensures UDP packets get sent
-                    info!("Explicitly initiating connection to replication server");
-                    
-                    // NetcodeClientTransport doesn't have a public connect method we can call,
-                    // but we need to ensure connection starts. Since setting up the transport
-                    // should automatically start the connection process, we'll change our state
-                    // to Connecting and let the connection attempt proceed.
-                    client.status = ReplicationClientStatus::Connecting;
-                    
-                    // Log extra diagnostic info
-                    debug!("Connection initialized with client ID: {}", 
-                           transport.client_id());
-                }
-            } else {
-                warn!("Cannot initiate connection - transport or client not available");
-                // If resources aren't ready, we might need to transition back to Disconnected
-                if current_time - client.last_connection_attempt > 2.0 {
-                    warn!("Resources not available for connection, reverting to Disconnected");
-                    client.status = ReplicationClientStatus::Disconnected;
-                }
-            }
-        },
-        ReplicationClientStatus::Connecting => {
-            // Check if client and transport exist
-            if let (Some(renet_client), Some(transport)) = (renet_client, transport) {
-                // Add diagnostic logging
-                debug!("Connection status: renet_connected={}, transport_connected={}, time_elapsed={:.2}s", 
-                      renet_client.is_connected(), 
-                      transport.is_connected(),
-                      current_time - client.last_connection_attempt);
-                
-                if renet_client.is_connected() {
-                    info!("Successfully connected to replication server");
-                    client.status = ReplicationClientStatus::Connected;
-                    client.connection_attempts = 0;
-                } else if transport.is_connected() {
-                    // Client authenticated but not fully connected
-                    info!("Authenticated with replication server, completing connection");
-                    client.status = ReplicationClientStatus::Authenticated;
-                } else if current_time - client.last_connection_attempt > 5.0 {
-                    // Connection timeout
-                    warn!("Connection attempt timed out");
-                    client.status = ReplicationClientStatus::ConnectionFailed;
-                    client.connection_attempts += 1;
-                }
-            }
-        },
-        ReplicationClientStatus::Connected => {
-            // Check if we're still connected
-            if let (Some(renet_client), _) = (renet_client, transport) {
-                if !renet_client.is_connected() {
-                    warn!("Lost connection to replication server");
-                    client.status = ReplicationClientStatus::Disconnected;
-                    client.last_connection_attempt = current_time;
-                } else if client.should_send_heartbeat(&time, 5.0) {
-                    // Send heartbeat
-                    info!("Connected to replication server - heartbeat");
-                    
-                    // Update the last heartbeat time to prevent spamming
-                    client.update_heartbeat(&time);
-                }
-            }
-        },
-        ReplicationClientStatus::ConnectionFailed => {
-            // Check if we should retry
-            if client.connection_attempts >= MAX_CONNECTION_ATTEMPTS {
-                error!("Failed to connect to replication server after {} attempts", 
-                       MAX_CONNECTION_ATTEMPTS);
-            } else {
-                let backoff_time = get_backoff_time(client.connection_attempts);
-                if current_time - client.last_connection_attempt >= backoff_time {
-                    info!("Retrying connection to replication server (attempt {})", 
-                          client.connection_attempts + 1);
-                    client.status = ReplicationClientStatus::ConnectionPending;
-                }
-            }
-        },
-        _ => {}
+impl RepliconRenetClientPlugin {
+    fn set_disconnected(mut client: ResMut<RepliconClient>) {
+        client.set_status(RepliconClientStatus::Disconnected);
     }
-} 
+
+    fn set_connecting(mut client: ResMut<RepliconClient>) {
+        if client.status() != RepliconClientStatus::Connecting {
+            client.set_status(RepliconClientStatus::Connecting);
+        }
+    }
+
+    fn set_connected(mut client: ResMut<RepliconClient>, #[cfg(feature = "netcode")] transport: Res<NetcodeClientTransport>) {
+        // In renet only transport knows the ID.
+        // TODO: Pending renet issue https://github.com/lucaspoffo/renet/issues/153
+        #[cfg(feature = "netcode")]
+        let client_id = Some(ClientId::new(transport.client_id()));
+        #[cfg(not(feature = "netcode"))]
+        let client_id = None;
+
+        client.set_status(RepliconClientStatus::Connected { client_id });
+    }
+
+    fn receive_packets(
+        channels: Res<RepliconChannels>,
+        mut renet_client: ResMut<RenetClient>,
+        mut replicon_client: ResMut<RepliconClient>,
+    ) {
+        for channel_id in 0..channels.server_channels().len() as u8 {
+            while let Some(message) = renet_client.receive_message(channel_id) {
+                replicon_client.insert_received(channel_id, message);
+            }
+        }
+    }
+
+    fn send_packets(mut renet_client: ResMut<RenetClient>, mut replicon_client: ResMut<RepliconClient>) {
+        for (channel_id, message) in replicon_client.drain_sent() {
+            renet_client.send_message(channel_id, message)
+        }
+    }
+}
