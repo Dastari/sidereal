@@ -7,8 +7,8 @@ pub mod ecs;
 // Re-export the replication modules for easier access
 pub use ecs::plugins::replication::{
     common::{
-        ReplicationClientStatus, EntityUpdateType, ClientStreamEvent,
-        EntityState, get_backoff_time, MAX_CONNECTION_ATTEMPTS,
+        get_backoff_time, ClientStreamEvent, EntityState, EntityUpdateType,
+        ReplicationClientStatus, MAX_CONNECTION_ATTEMPTS,
     },
     network::{NetworkConfig, RepliconClientPlugin, RepliconServerPlugin},
 };
@@ -16,4 +16,4 @@ pub use ecs::plugins::replication::{
 /// Initialize the core library
 pub fn init() {
     println!("Sidereal Core initialized");
-} 
+}

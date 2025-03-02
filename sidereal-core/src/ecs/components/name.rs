@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::reflect::Reflect;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 pub struct Name(pub String);

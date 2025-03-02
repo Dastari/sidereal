@@ -1,3 +1,3 @@
 mod client;
 
-pub use client::{DatabaseClient, EntityRecord, DatabaseError, DatabaseResult}; 
+pub use client::{DatabaseClient, DatabaseError, DatabaseResult, EntityRecord};

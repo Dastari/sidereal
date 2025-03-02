@@ -1,4 +1,4 @@
 pub mod plugin;
 pub mod systems;
 
-pub use plugin::UniverseManagerPlugin; 
+pub use plugin::UniverseManagerPlugin;

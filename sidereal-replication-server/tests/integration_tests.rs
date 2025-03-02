@@ -1,13 +1,13 @@
-use bevy::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
+use bevy::prelude::*;
 use bevy::time::TimePlugin;
 use bevy_rapier2d::prelude::*;
-use serde_json::json;
-use uuid::Uuid;
 use bevy_state::app::StatesPlugin;
+use serde_json::json;
 use std::collections::HashMap;
+use uuid::Uuid;
 
-use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
+use sidereal_core::ecs::components::physics::{ColliderShapeData, PhysicsData};
 use sidereal_replication_server::database::EntityRecord;
 use sidereal_replication_server::scene::SceneState;
 
@@ -71,38 +71,35 @@ fn inject_test_entities(
 
     // Create the player entity
     let player_entity = commands.spawn_empty().id();
-    
+
     // Access the entity and apply components
     let mut entity = commands.entity(player_entity);
-    
+
     // Add transform component
     entity.insert(Transform::from_xyz(
-        player_record.position_x, 
-        player_record.position_y, 
-        0.0
+        player_record.position_x,
+        player_record.position_y,
+        0.0,
     ));
-    
+
     // Add name component
     if let Some(name) = &player_record.name {
         entity.insert(Name::new(name.clone()));
     }
-    
+
     // Extract and apply physics data
     if let Some(physics_json) = player_record.components.get("physics") {
         if let Some(physics_data) = PhysicsData::from_json(physics_json) {
             // Apply position (already covered by the transform above)
-            
+
             // Apply rotation
             if let Some(rotation) = physics_data.rotation {
-                let mut transform = Transform::from_xyz(
-                    player_record.position_x, 
-                    player_record.position_y, 
-                    0.0
-                );
+                let mut transform =
+                    Transform::from_xyz(player_record.position_x, player_record.position_y, 0.0);
                 transform.rotation = Quat::from_rotation_z(rotation);
                 entity.insert(transform);
             }
-            
+
             // Apply rigid body type
             if let Some(rigid_body_type) = &physics_data.rigid_body_type {
                 match rigid_body_type.as_str() {
@@ -112,7 +109,7 @@ fn inject_test_entities(
                     _ => entity.insert(RigidBody::Dynamic),
                 };
             }
-            
+
             // Apply velocity
             if let Some(velocity) = physics_data.velocity {
                 entity.insert(Velocity {
@@ -120,31 +117,33 @@ fn inject_test_entities(
                     angvel: velocity[2],
                 });
             }
-            
+
             // Apply collider shape
             if let Some(ref shape) = physics_data.collider_shape {
                 let collider = match shape {
                     ColliderShapeData::Ball { radius } => Collider::ball(*radius),
                     ColliderShapeData::Cuboid { hx, hy } => Collider::cuboid(*hx, *hy),
-                    ColliderShapeData::Capsule { half_height, radius } => 
-                        Collider::capsule_y(*half_height, *radius),
+                    ColliderShapeData::Capsule {
+                        half_height,
+                        radius,
+                    } => Collider::capsule_y(*half_height, *radius),
                 };
                 entity.insert(collider);
             }
-            
+
             // Apply optional physics properties
             if let Some(mass) = physics_data.mass {
                 entity.insert(AdditionalMassProperties::Mass(mass));
             }
-            
+
             if let Some(friction) = physics_data.friction {
                 entity.insert(Friction::coefficient(friction));
             }
-            
+
             if let Some(restitution) = physics_data.restitution {
                 entity.insert(Restitution::coefficient(restitution));
             }
-            
+
             if let Some(gravity_scale) = physics_data.gravity_scale {
                 entity.insert(GravityScale(gravity_scale));
             }
@@ -184,38 +183,38 @@ fn inject_test_entities(
 
     // Create the asteroid entity
     let asteroid_entity = commands.spawn_empty().id();
-    
+
     // Access the entity and apply components
     let mut entity = commands.entity(asteroid_entity);
-    
+
     // Add transform component
     entity.insert(Transform::from_xyz(
-        asteroid_record.position_x, 
-        asteroid_record.position_y, 
-        0.0
+        asteroid_record.position_x,
+        asteroid_record.position_y,
+        0.0,
     ));
-    
+
     // Add name component
     if let Some(name) = &asteroid_record.name {
         entity.insert(Name::new(name.clone()));
     }
-    
+
     // Extract and apply physics data
     if let Some(physics_json) = asteroid_record.components.get("physics") {
         if let Some(physics_data) = PhysicsData::from_json(physics_json) {
             // Apply position (already covered by the transform above)
-            
+
             // Apply rotation
             if let Some(rotation) = physics_data.rotation {
                 let mut transform = Transform::from_xyz(
-                    asteroid_record.position_x, 
-                    asteroid_record.position_y, 
-                    0.0
+                    asteroid_record.position_x,
+                    asteroid_record.position_y,
+                    0.0,
                 );
                 transform.rotation = Quat::from_rotation_z(rotation);
                 entity.insert(transform);
             }
-            
+
             // Apply rigid body type
             if let Some(rigid_body_type) = &physics_data.rigid_body_type {
                 match rigid_body_type.as_str() {
@@ -225,7 +224,7 @@ fn inject_test_entities(
                     _ => entity.insert(RigidBody::Dynamic),
                 };
             }
-            
+
             // Apply velocity
             if let Some(velocity) = physics_data.velocity {
                 entity.insert(Velocity {
@@ -233,31 +232,33 @@ fn inject_test_entities(
                     angvel: velocity[2],
                 });
             }
-            
+
             // Apply collider shape
             if let Some(ref shape) = physics_data.collider_shape {
                 let collider = match shape {
                     ColliderShapeData::Ball { radius } => Collider::ball(*radius),
                     ColliderShapeData::Cuboid { hx, hy } => Collider::cuboid(*hx, *hy),
-                    ColliderShapeData::Capsule { half_height, radius } => 
-                        Collider::capsule_y(*half_height, *radius),
+                    ColliderShapeData::Capsule {
+                        half_height,
+                        radius,
+                    } => Collider::capsule_y(*half_height, *radius),
                 };
                 entity.insert(collider);
             }
-            
+
             // Apply optional physics properties
             if let Some(mass) = physics_data.mass {
                 entity.insert(AdditionalMassProperties::Mass(mass));
             }
-            
+
             if let Some(friction) = physics_data.friction {
                 entity.insert(Friction::coefficient(friction));
             }
-            
+
             if let Some(restitution) = physics_data.restitution {
                 entity.insert(Restitution::coefficient(restitution));
             }
-            
+
             if let Some(gravity_scale) = physics_data.gravity_scale {
                 entity.insert(GravityScale(gravity_scale));
             }
@@ -293,38 +294,35 @@ fn inject_test_entities(
 
     // Create the station entity
     let station_entity = commands.spawn_empty().id();
-    
+
     // Access the entity and apply components
     let mut entity = commands.entity(station_entity);
-    
+
     // Add transform component
     entity.insert(Transform::from_xyz(
-        station_record.position_x, 
-        station_record.position_y, 
-        0.0
+        station_record.position_x,
+        station_record.position_y,
+        0.0,
     ));
-    
+
     // Add name component
     if let Some(name) = &station_record.name {
         entity.insert(Name::new(name.clone()));
     }
-    
+
     // Extract and apply physics data
     if let Some(physics_json) = station_record.components.get("physics") {
         if let Some(physics_data) = PhysicsData::from_json(physics_json) {
             // Apply position (already covered by the transform above)
-            
+
             // Apply rotation
             if let Some(rotation) = physics_data.rotation {
-                let mut transform = Transform::from_xyz(
-                    station_record.position_x, 
-                    station_record.position_y, 
-                    0.0
-                );
+                let mut transform =
+                    Transform::from_xyz(station_record.position_x, station_record.position_y, 0.0);
                 transform.rotation = Quat::from_rotation_z(rotation);
                 entity.insert(transform);
             }
-            
+
             // Apply rigid body type
             if let Some(rigid_body_type) = &physics_data.rigid_body_type {
                 match rigid_body_type.as_str() {
@@ -334,31 +332,33 @@ fn inject_test_entities(
                     _ => entity.insert(RigidBody::Dynamic),
                 };
             }
-            
+
             // Apply collider shape
             if let Some(ref shape) = physics_data.collider_shape {
                 let collider = match shape {
                     ColliderShapeData::Ball { radius } => Collider::ball(*radius),
                     ColliderShapeData::Cuboid { hx, hy } => Collider::cuboid(*hx, *hy),
-                    ColliderShapeData::Capsule { half_height, radius } => 
-                        Collider::capsule_y(*half_height, *radius),
+                    ColliderShapeData::Capsule {
+                        half_height,
+                        radius,
+                    } => Collider::capsule_y(*half_height, *radius),
                 };
                 entity.insert(collider);
             }
-            
+
             // Apply optional physics properties if present
             if let Some(mass) = physics_data.mass {
                 entity.insert(AdditionalMassProperties::Mass(mass));
             }
-            
+
             if let Some(friction) = physics_data.friction {
                 entity.insert(Friction::coefficient(friction));
             }
-            
+
             if let Some(restitution) = physics_data.restitution {
                 entity.insert(Restitution::coefficient(restitution));
             }
-            
+
             if let Some(gravity_scale) = physics_data.gravity_scale {
                 entity.insert(GravityScale(gravity_scale));
             }
@@ -380,7 +380,11 @@ fn verify_test_entities(
 
     // Count entities with RigidBody component (should be at least 3)
     let rigid_body_count = query.iter().count();
-    assert!(rigid_body_count >= 3, "Expected at least 3 entities with RigidBody, found {}", rigid_body_count);
+    assert!(
+        rigid_body_count >= 3,
+        "Expected at least 3 entities with RigidBody, found {}",
+        rigid_body_count
+    );
 
     // Verify entity names
     let mut player_found = false;
@@ -405,26 +409,29 @@ fn verify_test_entities(
 fn test_full_integration() {
     // Set up test app
     let mut app = App::new();
-    
+
     // Add minimal plugins
     app.add_plugins(MinimalPlugins)
-       .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-       .add_plugins(StatesPlugin::default())
-       .add_plugins(TestPlugin)
-       .init_state::<SceneState>();
-    
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        .add_plugins(StatesPlugin::default())
+        .add_plugins(TestPlugin)
+        .init_state::<SceneState>();
+
     // Transition to the Ready state
     app.update();
     let mut next_state = app.world_mut().resource_mut::<NextState<SceneState>>();
     next_state.set(SceneState::Ready);
     drop(next_state);
-    
+
     // Run the app to process systems
     app.update();
-    
+
     // Verify the entities were created
     let test_state = app.world().resource::<TestState>();
-    assert_eq!(test_state.entities_created, 3, "Expected 3 entities to be created");
+    assert_eq!(
+        test_state.entities_created, 3,
+        "Expected 3 entities to be created"
+    );
 }
 
 #[cfg(test)]
@@ -435,25 +442,25 @@ mod integration_tests {
     #[allow(dead_code)]
     fn setup_test_app() -> App {
         let mut app = App::new();
-        
+
         // Add minimal required plugins
         app.add_plugins(MinimalPlugins)
-           .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-           .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_millis(100)))
-           .add_plugins(TimePlugin::default())
-           .add_plugins(TransformPlugin::default())
-           .add_plugins(HierarchyPlugin::default())
-           .add_plugins(StatesPlugin::default());
+            .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+            .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_millis(100)))
+            .add_plugins(TimePlugin::default())
+            .add_plugins(TransformPlugin::default())
+            .add_plugins(HierarchyPlugin::default())
+            .add_plugins(StatesPlugin::default());
 
         // Add scene state
         app.init_state::<SceneState>();
         let mut next_state = app.world_mut().resource_mut::<NextState<SceneState>>();
         next_state.set(SceneState::Ready);
         drop(next_state);
-        
+
         // Add test plugin
         app.add_plugins(TestPlugin);
-        
+
         app
     }
 
@@ -473,7 +480,7 @@ mod integration_tests {
             updated_at: None,
             physics_data: None,
         };
-        
+
         // Create physics data
         let physics_data = PhysicsData {
             position: Some([10.0, 20.0]),
@@ -486,18 +493,18 @@ mod integration_tests {
             restitution: Some(0.3),
             gravity_scale: Some(1.0),
         };
-        
+
         // Serialize physics data to JSON and add to record
         record.components = json!({
             "physics": physics_data
         });
-        
+
         // Serialize record to JSON
         let record_json = serde_json::to_string(&record).unwrap();
-        
+
         // Deserialize back to record
         let deserialized_record: EntityRecord = serde_json::from_str(&record_json).unwrap();
-        
+
         // Check fields match
         assert_eq!(deserialized_record.id, entity_id);
         assert_eq!(deserialized_record.name, Some("Test Entity".to_string()));
@@ -505,46 +512,87 @@ mod integration_tests {
         assert_eq!(deserialized_record.type_, "test");
         assert_eq!(deserialized_record.position_x, 10.0);
         assert_eq!(deserialized_record.position_y, 20.0);
-        
+
         // Extract physics data
-        let physics_obj = deserialized_record.components.as_object().unwrap()
-            .get("physics").unwrap().as_object().unwrap();
-        
+        let physics_obj = deserialized_record
+            .components
+            .as_object()
+            .unwrap()
+            .get("physics")
+            .unwrap()
+            .as_object()
+            .unwrap();
+
         // Check some physics fields
-        assert_eq!(physics_obj.get("position").unwrap().as_array().unwrap()[0].as_f64().unwrap(), 10.0);
-        assert_eq!(physics_obj.get("position").unwrap().as_array().unwrap()[1].as_f64().unwrap(), 20.0);
+        assert_eq!(
+            physics_obj.get("position").unwrap().as_array().unwrap()[0]
+                .as_f64()
+                .unwrap(),
+            10.0
+        );
+        assert_eq!(
+            physics_obj.get("position").unwrap().as_array().unwrap()[1]
+                .as_f64()
+                .unwrap(),
+            20.0
+        );
         assert_eq!(physics_obj.get("rotation").unwrap().as_f64().unwrap(), 0.5);
-        assert_eq!(physics_obj.get("rigid_body_type").unwrap().as_str().unwrap(), "dynamic");
-        
+        assert_eq!(
+            physics_obj
+                .get("rigid_body_type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "dynamic"
+        );
+
         // Check collider shape
-        let collider = physics_obj.get("collider_shape").unwrap().as_object().unwrap();
+        let collider = physics_obj
+            .get("collider_shape")
+            .unwrap()
+            .as_object()
+            .unwrap();
         assert!(collider.contains_key("Ball"));
-        assert_eq!(collider.get("Ball").unwrap().as_object().unwrap().get("radius").unwrap().as_f64().unwrap(), 5.0);
+        assert_eq!(
+            collider
+                .get("Ball")
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .get("radius")
+                .unwrap()
+                .as_f64()
+                .unwrap(),
+            5.0
+        );
     }
 
     #[test]
     fn test_entity_creation() {
         // Set up test app
         let mut app = App::new();
-        
+
         // Add minimal plugins
         app.add_plugins(MinimalPlugins)
-           .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-           .add_plugins(StatesPlugin)
-           .add_plugins(TestPlugin)
-           .init_state::<SceneState>();
-        
+            .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+            .add_plugins(StatesPlugin)
+            .add_plugins(TestPlugin)
+            .init_state::<SceneState>();
+
         // Transition to the Ready state
         app.update();
         let mut next_state = app.world_mut().resource_mut::<NextState<SceneState>>();
         next_state.set(SceneState::Ready);
         drop(next_state);
-        
+
         // Run the app to process systems
         app.update();
-        
+
         // Verify the entities were created
         let test_state = app.world().resource::<TestState>();
-        assert_eq!(test_state.entities_created, 3, "Expected 3 entities to be created");
+        assert_eq!(
+            test_state.entities_created, 3,
+            "Expected 3 entities to be created"
+        );
     }
-} 
+}

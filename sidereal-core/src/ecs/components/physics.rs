@@ -1,7 +1,7 @@
+use bevy::math::Vec2;
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use serde::{Deserialize, Serialize};
-use bevy::math::Vec2;
 use serde_json;
 
 /// Serialize/deserialize friendly representation of physics components
@@ -10,7 +10,7 @@ pub struct PhysicsData {
     // Transform components
     pub position: Option<[f32; 2]>,
     pub rotation: Option<f32>,
-    
+
     // Rapier components
     pub rigid_body_type: Option<String>, // "dynamic", "fixed", "kinematic"
     pub velocity: Option<[f32; 3]>,      // [linvel.x, linvel.y, angvel]
@@ -36,7 +36,7 @@ impl PhysicsData {
         transform: Option<&Transform>,
         rigid_body: Option<&RigidBody>,
         velocity: Option<&Velocity>,
-        _collider: Option<&Collider>,  // Currently unused but will be used for collider shape extraction
+        _collider: Option<&Collider>, // Currently unused but will be used for collider shape extraction
         mass_props: Option<&AdditionalMassProperties>,
         friction: Option<&Friction>,
         restitution: Option<&Restitution>,
@@ -44,30 +44,30 @@ impl PhysicsData {
     ) -> Self {
         let position = transform.map(|t| [t.translation.x, t.translation.y]);
         let rotation = transform.map(|t| t.rotation.to_euler(EulerRot::XYZ).2);
-        
+
         let rigid_body_type = rigid_body.map(|rb| match rb {
             RigidBody::Dynamic => "dynamic".to_string(),
             RigidBody::Fixed => "fixed".to_string(),
             RigidBody::KinematicPositionBased => "kinematic_position".to_string(),
             RigidBody::KinematicVelocityBased => "kinematic_velocity".to_string(),
         });
-        
+
         let velocity = velocity.map(|v| [v.linvel.x, v.linvel.y, v.angvel]);
-        
+
         // For now, we'll just use a simplified approach for colliders
         // This is a placeholder that will need to be revised based on the actual API
-        let collider_shape = None;  // We'll implement this properly once we understand the API better
-        
+        let collider_shape = None; // We'll implement this properly once we understand the API better
+
         // Extract mass from AdditionalMassProperties if available
         let mass = mass_props.and_then(|mp| match mp {
             AdditionalMassProperties::Mass(m) => Some(*m),
             AdditionalMassProperties::MassProperties(mp) => Some(mp.mass),
         });
-        
+
         let friction = friction.map(|f| f.coefficient);
         let restitution = restitution.map(|r| r.coefficient);
         let gravity_scale = gravity_scale.map(|g| g.0);
-        
+
         Self {
             position,
             rotation,
@@ -80,25 +80,25 @@ impl PhysicsData {
             gravity_scale,
         }
     }
-    
+
     /// Apply physics data to an entity command
     pub fn apply_to_entity(&self, entity: &mut EntityCommands) {
         // Apply Transform if position or rotation is specified
         if self.position.is_some() || self.rotation.is_some() {
             let mut transform = Transform::default();
-            
+
             if let Some(pos) = self.position {
                 transform.translation.x = pos[0];
                 transform.translation.y = pos[1];
             }
-            
+
             if let Some(rot) = self.rotation {
                 transform.rotation = Quat::from_rotation_z(rot);
             }
-            
+
             entity.insert(transform);
         }
-        
+
         // Apply RigidBody if specified
         if let Some(ref body_type) = self.rigid_body_type {
             let rigid_body = match body_type.as_str() {
@@ -108,10 +108,10 @@ impl PhysicsData {
                 "kinematic_velocity" => RigidBody::KinematicVelocityBased,
                 _ => RigidBody::Dynamic, // Default to dynamic if unknown
             };
-            
+
             entity.insert(rigid_body);
         }
-        
+
         // Apply Velocity if specified
         if let Some(vel) = self.velocity {
             entity.insert(Velocity {
@@ -119,42 +119,44 @@ impl PhysicsData {
                 angvel: vel[2],
             });
         }
-        
+
         // Apply Collider if shape is specified
         if let Some(ref shape) = self.collider_shape {
             let collider = match shape {
                 ColliderShapeData::Ball { radius } => Collider::ball(*radius),
                 ColliderShapeData::Cuboid { hx, hy } => Collider::cuboid(*hx, *hy),
-                ColliderShapeData::Capsule { half_height, radius } => 
-                    Collider::capsule_y(*half_height, *radius),
+                ColliderShapeData::Capsule {
+                    half_height,
+                    radius,
+                } => Collider::capsule_y(*half_height, *radius),
             };
-            
+
             entity.insert(collider);
         }
-        
+
         // Apply optional physics properties
         if let Some(mass) = self.mass {
             entity.insert(AdditionalMassProperties::Mass(mass));
         }
-        
+
         if let Some(friction) = self.friction {
             entity.insert(Friction::coefficient(friction));
         }
-        
+
         if let Some(restitution) = self.restitution {
             entity.insert(Restitution::coefficient(restitution));
         }
-        
+
         if let Some(gravity_scale) = self.gravity_scale {
             entity.insert(GravityScale(gravity_scale));
         }
     }
-    
+
     /// Convert physics data to JSON for database storage
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
-    
+
     /// Create physics data from JSON (from database)
     pub fn from_json(json: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(json.clone()).ok()
@@ -179,4 +181,4 @@ impl PhysicsExtractExt for EntityRef<'_> {
             self.get::<GravityScale>(),
         )
     }
-} 
+}

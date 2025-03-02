@@ -1,14 +1,11 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use serde_json::json;
 use bevy_state::app::StatesPlugin;
+use serde_json::json;
 use std::collections::HashMap;
 
-use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
-use sidereal_replication_server::{
-    database::EntityRecord,
-    scene::SceneState,
-};
+use sidereal_core::ecs::components::physics::{ColliderShapeData, PhysicsData};
+use sidereal_replication_server::{database::EntityRecord, scene::SceneState};
 
 // Helper function to run tests
 fn run_test<F>(app: &mut App, test_fn: F)
@@ -30,7 +27,7 @@ impl MockDatabaseClient {
             entities: Vec::new(),
         }
     }
-    
+
     fn add_test_entity(&mut self, id: &str, entity_type: &str, x: f32, y: f32) {
         let physics_data = PhysicsData {
             position: Some([x, y]),
@@ -43,7 +40,7 @@ impl MockDatabaseClient {
             restitution: Some(0.3),
             gravity_scale: Some(1.0),
         };
-        
+
         let record = EntityRecord {
             id: id.to_string(),
             name: Some(format!("Test Entity {}", id)),
@@ -56,7 +53,7 @@ impl MockDatabaseClient {
             updated_at: Some("2023-01-01T00:00:00Z".to_string()),
             physics_data: None,
         };
-        
+
         self.entities.push(record);
     }
 }
@@ -71,50 +68,68 @@ struct TestState {
 // Setup test app with required plugins
 fn setup_test_app() -> App {
     let mut app = App::new();
-    
+
     // Add minimal required plugins
     app.add_plugins(MinimalPlugins)
-       .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-       .add_plugins(TransformPlugin::default())
-       .add_plugins(HierarchyPlugin::default())
-       .add_plugins(StatesPlugin::default());
-    
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        .add_plugins(TransformPlugin::default())
+        .add_plugins(HierarchyPlugin::default())
+        .add_plugins(StatesPlugin::default());
+
     // Add scene state
     app.init_state::<SceneState>();
-    
+
     // Add test state
     app.insert_resource(TestState::default());
-    
+
     app
 }
 
 #[test]
 fn test_state_transitions() {
     let mut app = setup_test_app();
-    
+
     // Initialize to Connecting
-    assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Connecting);
-    
+    assert_eq!(
+        app.world().resource::<State<SceneState>>().get(),
+        &SceneState::Connecting
+    );
+
     // Manually transition to Loading
-    app.world_mut().resource_mut::<NextState<SceneState>>().set(SceneState::Loading);
+    app.world_mut()
+        .resource_mut::<NextState<SceneState>>()
+        .set(SceneState::Loading);
     app.update();
-    assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Loading);
-    
+    assert_eq!(
+        app.world().resource::<State<SceneState>>().get(),
+        &SceneState::Loading
+    );
+
     // Manually transition to Processing
-    app.world_mut().resource_mut::<NextState<SceneState>>().set(SceneState::Processing);
+    app.world_mut()
+        .resource_mut::<NextState<SceneState>>()
+        .set(SceneState::Processing);
     app.update();
-    assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Processing);
-    
+    assert_eq!(
+        app.world().resource::<State<SceneState>>().get(),
+        &SceneState::Processing
+    );
+
     // Manually transition to Ready
-    app.world_mut().resource_mut::<NextState<SceneState>>().set(SceneState::Ready);
+    app.world_mut()
+        .resource_mut::<NextState<SceneState>>()
+        .set(SceneState::Ready);
     app.update();
-    assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Ready);
+    assert_eq!(
+        app.world().resource::<State<SceneState>>().get(),
+        &SceneState::Ready
+    );
 }
 
 #[test]
 fn test_physics_data_extraction() {
     let mut app = setup_test_app();
-    
+
     run_test(&mut app, |app| {
         // Create test physics data
         let component_data = vec![
@@ -144,55 +159,67 @@ fn test_physics_data_extraction() {
                         "hy": 5.0
                     }
                 }
-            })
+            }),
         ];
-        
+
         // Create entities directly
         for component_json in &component_data {
             if let Some(physics_data) = PhysicsData::from_json(component_json) {
                 // Create an entity with the physics data
                 let entity_id = app.world_mut().spawn_empty().id();
                 let mut entity_commands = app.world_mut().entity_mut(entity_id);
-                
+
                 // Manually apply physics components based on the data
                 if let Some(position) = physics_data.position {
                     entity_commands.insert(Transform::from_xyz(position[0], position[1], 0.0));
                 }
-                
+
                 if let Some(rotation) = physics_data.rotation {
-                    entity_commands.insert(Transform::from_rotation(Quat::from_rotation_z(rotation)));
+                    entity_commands
+                        .insert(Transform::from_rotation(Quat::from_rotation_z(rotation)));
                 }
-                
+
                 if let Some(rb_type) = &physics_data.rigid_body_type {
                     match rb_type.as_str() {
-                        "dynamic" => { entity_commands.insert(RigidBody::Dynamic); },
-                        "fixed" => { entity_commands.insert(RigidBody::Fixed); },
-                        "kinematic_position_based" => { entity_commands.insert(RigidBody::KinematicPositionBased); },
-                        "kinematic_velocity_based" => { entity_commands.insert(RigidBody::KinematicVelocityBased); },
+                        "dynamic" => {
+                            entity_commands.insert(RigidBody::Dynamic);
+                        }
+                        "fixed" => {
+                            entity_commands.insert(RigidBody::Fixed);
+                        }
+                        "kinematic_position_based" => {
+                            entity_commands.insert(RigidBody::KinematicPositionBased);
+                        }
+                        "kinematic_velocity_based" => {
+                            entity_commands.insert(RigidBody::KinematicVelocityBased);
+                        }
                         _ => {}
                     }
                 }
-                
+
                 // Add collider based on shape
                 if let Some(shape) = &physics_data.collider_shape {
                     match shape {
                         ColliderShapeData::Ball { radius } => {
                             entity_commands.insert(Collider::ball(*radius));
-                        },
+                        }
                         ColliderShapeData::Cuboid { hx, hy } => {
                             entity_commands.insert(Collider::cuboid(*hx, *hy));
-                        },
-                        ColliderShapeData::Capsule { half_height, radius } => {
+                        }
+                        ColliderShapeData::Capsule {
+                            half_height,
+                            radius,
+                        } => {
                             entity_commands.insert(Collider::capsule_y(*half_height, *radius));
                         }
                     }
                 }
             }
         }
-        
+
         // Update the world
         app.update();
-        
+
         // Verify the physics components were inserted correctly
         // TODO: Implement verification
     });
@@ -201,29 +228,44 @@ fn test_physics_data_extraction() {
 #[test]
 fn test_load_entities_system() {
     let mut app = setup_test_app();
-    
+
     run_test(&mut app, |app| {
         // Set up a mock database with entities
         let mut mock_db = MockDatabaseClient::new();
         mock_db.add_test_entity("entity-1", "player", 10.0, 20.0);
         mock_db.add_test_entity("entity-2", "asteroid", 30.0, 40.0);
         app.insert_resource(mock_db);
-        
+
         // Manually transition to Loading
-        app.world_mut().resource_mut::<NextState<SceneState>>().set(SceneState::Loading);
+        app.world_mut()
+            .resource_mut::<NextState<SceneState>>()
+            .set(SceneState::Loading);
         app.update();
-        assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Loading);
-        
+        assert_eq!(
+            app.world().resource::<State<SceneState>>().get(),
+            &SceneState::Loading
+        );
+
         // Manually transition to Processing
-        app.world_mut().resource_mut::<NextState<SceneState>>().set(SceneState::Processing);
+        app.world_mut()
+            .resource_mut::<NextState<SceneState>>()
+            .set(SceneState::Processing);
         app.update();
-        assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Processing);
-        
+        assert_eq!(
+            app.world().resource::<State<SceneState>>().get(),
+            &SceneState::Processing
+        );
+
         // Manually transition to Ready
-        app.world_mut().resource_mut::<NextState<SceneState>>().set(SceneState::Ready);
+        app.world_mut()
+            .resource_mut::<NextState<SceneState>>()
+            .set(SceneState::Ready);
         app.update();
-        assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Ready);
-        
+        assert_eq!(
+            app.world().resource::<State<SceneState>>().get(),
+            &SceneState::Ready
+        );
+
         // Verify entities were created
         // TODO: Implement verification
     });
@@ -232,7 +274,7 @@ fn test_load_entities_system() {
 #[test]
 fn test_invalid_physics_data() {
     let mut app = setup_test_app();
-    
+
     run_test(&mut app, |app| {
         // Test with invalid JSON
         let invalid_json = json!({
@@ -240,25 +282,36 @@ fn test_invalid_physics_data() {
             "rotation": true,
             "rigid_body_type": 123,
         });
-        
+
         let physics_data = PhysicsData::from_json(&invalid_json);
-        assert!(physics_data.is_none(), "Expected None for invalid physics data");
-        
+        assert!(
+            physics_data.is_none(),
+            "Expected None for invalid physics data"
+        );
+
         // Test with incomplete JSON that might be valid
         let incomplete_json = json!({
             "position": [10.0, 20.0],
             // Missing rotation and other fields
         });
-        
+
         // The incomplete JSON might be valid since all fields are optional
         let physics_data = PhysicsData::from_json(&incomplete_json);
-        assert!(physics_data.is_some(), "PhysicsData should accept partial data with just position");
-        
+        assert!(
+            physics_data.is_some(),
+            "PhysicsData should accept partial data with just position"
+        );
+
         // Manually transition to Error
-        app.world_mut().resource_mut::<NextState<SceneState>>().set(SceneState::Error);
+        app.world_mut()
+            .resource_mut::<NextState<SceneState>>()
+            .set(SceneState::Error);
         app.update();
-        
+
         // Verify state change
-        assert_eq!(app.world().resource::<State<SceneState>>().get(), &SceneState::Error);
+        assert_eq!(
+            app.world().resource::<State<SceneState>>().get(),
+            &SceneState::Error
+        );
     });
-} 
+}

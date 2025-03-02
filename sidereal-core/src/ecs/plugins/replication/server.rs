@@ -5,9 +5,11 @@ use std::{
 
 #[cfg(feature = "netcode")]
 use crate::netcode::NetcodeServerPlugin;
-use bevy_replicon_renet2::renet2::{RenetReceive, RenetSend, RenetServer, RenetServerPlugin, ServerEvent};
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
+use bevy_replicon_renet2::renet2::{
+    RenetReceive, RenetSend, RenetServer, RenetServerPlugin, ServerEvent,
+};
 
 pub struct RepliconRenetServerPlugin;
 
@@ -50,7 +52,10 @@ impl RepliconRenetServerPlugin {
         server.set_running(false);
     }
 
-    fn forward_server_events(mut commands: Commands, mut renet_server_events: EventReader<ServerEvent>) {
+    fn forward_server_events(
+        mut commands: Commands,
+        mut renet_server_events: EventReader<ServerEvent>,
+    ) {
         for event in renet_server_events.read() {
             match event {
                 ServerEvent::ClientConnected { client_id } => commands.trigger(ClientConnected {
@@ -58,8 +63,12 @@ impl RepliconRenetServerPlugin {
                 }),
                 ServerEvent::ClientDisconnected { client_id, reason } => {
                     let reason = match reason {
-                        bevy_replicon_renet2::renet2::DisconnectReason::DisconnectedByClient => DisconnectReason::DisconnectedByClient,
-                        bevy_replicon_renet2::renet2::DisconnectReason::DisconnectedByServer => DisconnectReason::DisconnectedByServer,
+                        bevy_replicon_renet2::renet2::DisconnectReason::DisconnectedByClient => {
+                            DisconnectReason::DisconnectedByClient
+                        }
+                        bevy_replicon_renet2::renet2::DisconnectReason::DisconnectedByServer => {
+                            DisconnectReason::DisconnectedByServer
+                        }
                         _ => Box::<BackendError>::from(RenetDisconnectReason(*reason)).into(),
                     };
                     commands.trigger(ClientDisconnected {
@@ -80,14 +89,18 @@ impl RepliconRenetServerPlugin {
         for connected in connected_clients.iter().copied() {
             let renet_client_id = connected.id().get();
             for channel_id in 0..channels.client_channels().len() as u8 {
-                while let Some(message) = renet_server.receive_message(renet_client_id, channel_id) {
+                while let Some(message) = renet_server.receive_message(renet_client_id, channel_id)
+                {
                     replicon_server.insert_received(connected.id(), channel_id, message);
                 }
             }
         }
     }
 
-    fn send_packets(mut renet_server: ResMut<RenetServer>, mut replicon_server: ResMut<RepliconServer>) {
+    fn send_packets(
+        mut renet_server: ResMut<RenetServer>,
+        mut replicon_server: ResMut<RepliconServer>,
+    ) {
         for (client_id, channel_id, message) in replicon_server.drain_sent() {
             renet_server.send_message(client_id.get(), channel_id, message)
         }

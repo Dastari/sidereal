@@ -1,5 +1,5 @@
-use bevy::prelude::*;
 use bevy::math::Vec2;
+use bevy::prelude::*;
 
 /// Type of entity update being sent or received
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,4 +54,4 @@ pub fn get_backoff_time(retry_count: u32) -> f64 {
     let max_time = 60.0;
     let backoff = base_time * (2.0_f64).powi(retry_count as i32);
     backoff.min(max_time)
-} 
+}
