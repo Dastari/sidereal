@@ -1,4 +1,3 @@
-
 // Sidereal Core Library
 //
 // This is the main entry point for the sidereal-core crate.

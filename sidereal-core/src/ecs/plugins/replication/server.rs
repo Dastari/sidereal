@@ -35,7 +35,6 @@ impl Plugin for RepliconRenetServerPlugin {
                     .in_set(ServerSet::SendPackets)
                     .run_if(resource_exists::<RenetServer>),
             );
-
     }
 }
 

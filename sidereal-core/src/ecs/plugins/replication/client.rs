@@ -43,9 +43,7 @@ impl RepliconRenetClientPlugin {
         }
     }
 
-    fn set_connected(
-        mut client: ResMut<RepliconClient>,
-    ) {
+    fn set_connected(mut client: ResMut<RepliconClient>) {
         let client_id = None;
 
         client.set_status(RepliconClientStatus::Connected { client_id });

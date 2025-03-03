@@ -1,11 +1,19 @@
+use crate::ecs::components::spatial::{ClusterCoords, Position, SectorCoords};
 use bevy::math::Vec2;
-use crate::ecs::components::spatial::{Position,SectorCoords,ClusterCoords};
 use bevy::prelude::{Component, Reflect};
-use serde::{Deserialize, Serialize};
 use bevy_rapier2d::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
-#[require(Position,SectorCoords, ClusterCoords,RigidBody, Velocity, Collider, PhysicsState)]
+#[require(
+    Position,
+    SectorCoords,
+    ClusterCoords,
+    RigidBody,
+    Velocity,
+    Collider,
+    PhysicsState
+)]
 pub struct PhysicsBody;
 
 #[derive(Component, Clone, Debug, Serialize, Deserialize, Reflect)]
@@ -15,22 +23,22 @@ pub struct PhysicsState {
     pub angular_velocity: f32,
     pub linear_damping: f32,
     pub angular_damping: f32,
-    
+
     // Mass properties
     pub mass: f32,
     pub center_of_mass: Vec2,
-    
+
     // Body type
     pub body_type: BodyType,
-    
+
     // Collider properties
     pub collider_type: ColliderType,
-    pub collider_size: Vec2,  // For simple shapes like boxes
-    
+    pub collider_size: Vec2, // For simple shapes like boxes
+
     // Additional flags
     pub can_sleep: bool,
     pub is_sensor: bool,
-    
+
     // Timestamp of last Rapier sync
     pub last_sync: f64,
 }
@@ -80,35 +88,35 @@ impl PhysicsState {
             ..Default::default()
         }
     }
-    
+
     // Convert our BodyType to Rapier's RigidBody
     pub fn to_rapier_body_type(&self) -> bevy_rapier2d::dynamics::RigidBody {
         use bevy_rapier2d::dynamics::RigidBody;
-        
+
         match self.body_type {
             BodyType::Dynamic => RigidBody::Dynamic,
             BodyType::Static => RigidBody::Fixed,
             BodyType::Kinematic => RigidBody::KinematicPositionBased,
         }
     }
-    
+
     // Create a Rapier collider based on our properties
     pub fn to_rapier_collider(&self) -> bevy_rapier2d::geometry::Collider {
         use bevy_rapier2d::geometry::Collider;
-        
+
         match self.collider_type {
             ColliderType::Box => {
                 Collider::cuboid(self.collider_size.x / 2.0, self.collider_size.y / 2.0)
-            },
+            }
             ColliderType::Circle => {
                 let radius = self.collider_size.x.max(self.collider_size.y) / 2.0;
                 Collider::ball(radius)
-            },
+            }
             ColliderType::Capsule => {
                 let half_height = self.collider_size.y / 2.0 - self.collider_size.x / 2.0;
                 let radius = self.collider_size.x / 2.0;
                 Collider::capsule_y(half_height, radius)
-            },
+            }
         }
     }
 }

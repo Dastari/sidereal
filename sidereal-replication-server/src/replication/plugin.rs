@@ -1,7 +1,6 @@
-use sidereal_core::ecs::plugins::replication::server::RepliconRenetServerPlugin;
 use bevy::prelude::*;
+use sidereal_core::ecs::plugins::replication::server::RepliconRenetServerPlugin;
 use tracing::{debug, error, info, warn};
-
 
 /// Plugin for handling all replication tasks
 pub struct ReplicationPlugin;
@@ -13,4 +12,3 @@ impl Plugin for ReplicationPlugin {
         app.add_plugins(RepliconRenetServerPlugin);
     }
 }
-

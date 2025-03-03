@@ -14,18 +14,15 @@ impl Position {
     pub fn get(&self) -> Vec2 {
         self.0
     }
-    
+
     pub fn set(&mut self, value: Vec2) {
         self.0 = value;
     }
-    
+
     pub fn new(value: Vec2) -> Self {
         Position(value)
     }
 }
-
-
-
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
 pub struct SectorCoords(IVec2);
@@ -35,7 +32,7 @@ impl SectorCoords {
     pub fn get(&self) -> IVec2 {
         self.0
     }
-    
+
     pub fn set(&mut self, value: IVec2) {
         self.0 = value;
     }
@@ -52,7 +49,7 @@ impl ClusterCoords {
     pub fn get(&self) -> IVec2 {
         self.0
     }
-    
+
     pub fn set(&mut self, value: IVec2) {
         self.0 = value;
     }
@@ -142,7 +139,6 @@ impl Default for BoundaryDirection {
     }
 }
 
-
 //// Marker indicating entity is visual-only (no physics)
 #[derive(Component, Reflect, Default)]
 pub struct VisualOnly;
@@ -162,7 +158,7 @@ pub struct ShadowEntity {
 impl ShadowEntity {
     pub fn register_reflection(app: &mut App) {
         app.register_type::<ShadowEntity>()
-           .register_type::<VisualOnly>();
+            .register_type::<VisualOnly>();
     }
 }
 
