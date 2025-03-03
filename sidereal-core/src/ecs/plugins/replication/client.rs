@@ -1,9 +1,11 @@
 #[cfg(feature = "netcode")]
 use crate::netcode::{NetcodeClientPlugin, NetcodeClientTransport};
-use bevy_replicon_renet2::renet2::{RenetClient, RenetClientPlugin, RenetReceive, RenetSend};
-use bevy_replicon_renet2::renet2::{client_connected, client_connecting, client_just_disconnected, client_just_connected};
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
+use bevy_replicon_renet2::renet2::{
+    client_connected, client_connecting, client_just_connected, client_just_disconnected,
+};
+use bevy_replicon_renet2::renet2::{RenetClient, RenetClientPlugin, RenetReceive, RenetSend};
 
 pub struct RepliconRenetClientPlugin;
 
@@ -46,7 +48,10 @@ impl RepliconRenetClientPlugin {
         }
     }
 
-    fn set_connected(mut client: ResMut<RepliconClient>, #[cfg(feature = "netcode")] transport: Res<NetcodeClientTransport>) {
+    fn set_connected(
+        mut client: ResMut<RepliconClient>,
+        #[cfg(feature = "netcode")] transport: Res<NetcodeClientTransport>,
+    ) {
         // In renet only transport knows the ID.
         // TODO: Pending renet issue https://github.com/lucaspoffo/renet/issues/153
         #[cfg(feature = "netcode")]
@@ -69,7 +74,10 @@ impl RepliconRenetClientPlugin {
         }
     }
 
-    fn send_packets(mut renet_client: ResMut<RenetClient>, mut replicon_client: ResMut<RepliconClient>) {
+    fn send_packets(
+        mut renet_client: ResMut<RenetClient>,
+        mut replicon_client: ResMut<RepliconClient>,
+    ) {
         for (channel_id, message) in replicon_client.drain_sent() {
             renet_client.send_message(channel_id, message)
         }

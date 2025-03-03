@@ -1,9 +1,9 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use uuid::Uuid;
 use std::collections::HashMap;
+use uuid::Uuid;
 
-use sidereal_core::ecs::components::physics::{PhysicsData, ColliderShapeData};
+use sidereal_core::ecs::components::physics::{ColliderShapeData, PhysicsData};
 use sidereal_replication_server::database::EntityRecord;
 
 #[cfg(test)]
@@ -13,7 +13,7 @@ mod physics_tests {
     fn setup_test_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-           .add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
+            .add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
         app
     }
 
@@ -95,22 +95,22 @@ mod physics_tests {
 
         // Apply physics data to a new entity
         let entity_id = app.world_mut().spawn_empty().id();
-        
+
         // Apply physics data directly using entity_mut
         let mut entity_mut = app.world_mut().entity_mut(entity_id);
-        
+
         // Apply position
         if let Some(position) = physics_data.position {
             entity_mut.insert(Transform::from_xyz(position[0], position[1], 0.0));
         }
-        
+
         // Apply rotation
         if let Some(rotation) = physics_data.rotation {
             if let Some(mut transform) = entity_mut.get_mut::<Transform>() {
                 transform.rotation = Quat::from_rotation_z(rotation);
             }
         }
-        
+
         // Apply rigid body type
         if let Some(rigid_body_type) = &physics_data.rigid_body_type {
             match rigid_body_type.as_str() {
@@ -120,7 +120,7 @@ mod physics_tests {
                 _ => entity_mut.insert(RigidBody::Dynamic),
             };
         }
-        
+
         // Apply velocity
         if let Some(velocity) = physics_data.velocity {
             entity_mut.insert(Velocity {
@@ -128,27 +128,30 @@ mod physics_tests {
                 angvel: velocity[2],
             });
         }
-        
+
         // Apply collider shape
         if let Some(shape) = &physics_data.collider_shape {
             match shape {
                 ColliderShapeData::Ball { radius } => {
                     entity_mut.insert(Collider::ball(*radius));
-                },
+                }
                 ColliderShapeData::Cuboid { hx, hy } => {
                     entity_mut.insert(Collider::cuboid(*hx, *hy));
-                },
-                ColliderShapeData::Capsule { half_height, radius } => {
+                }
+                ColliderShapeData::Capsule {
+                    half_height,
+                    radius,
+                } => {
                     entity_mut.insert(Collider::capsule_y(*half_height, *radius));
-                },
+                }
             }
         }
-        
+
         // Apply mass
         if let Some(mass) = physics_data.mass {
             entity_mut.insert(AdditionalMassProperties::Mass(mass));
         }
-        
+
         // Apply friction
         if let Some(friction) = physics_data.friction {
             entity_mut.insert(Friction {
@@ -156,7 +159,7 @@ mod physics_tests {
                 combine_rule: CoefficientCombineRule::Average,
             });
         }
-        
+
         // Apply restitution
         if let Some(restitution) = physics_data.restitution {
             entity_mut.insert(Restitution {
@@ -164,12 +167,12 @@ mod physics_tests {
                 combine_rule: CoefficientCombineRule::Average,
             });
         }
-        
+
         // Apply gravity scale
         if let Some(gravity_scale) = physics_data.gravity_scale {
             entity_mut.insert(GravityScale(gravity_scale));
         }
-        
+
         // Update app to process commands
         app.update();
 
@@ -189,7 +192,11 @@ mod physics_tests {
         let _collider = app.world().entity(entity_id).get::<Collider>().unwrap();
         // We can't directly verify the collider shape, but we can check it exists
 
-        let mass = app.world().entity(entity_id).get::<AdditionalMassProperties>().unwrap();
+        let mass = app
+            .world()
+            .entity(entity_id)
+            .get::<AdditionalMassProperties>()
+            .unwrap();
         match mass {
             AdditionalMassProperties::Mass(m) => assert_eq!(*m, 5.0),
             _ => panic!("Expected Mass but got a different AdditionalMassProperties"),
@@ -219,13 +226,13 @@ mod physics_tests {
             restitution: Some(0.3),
             gravity_scale: Some(1.0),
         };
-        
+
         // Serialize to JSON
         let json = physics_data.to_json();
-        
+
         // Deserialize back
         let deserialized = PhysicsData::from_json(&json).expect("Failed to deserialize");
-        
+
         // Verify fields match
         assert_eq!(deserialized.position, Some([100.0, 200.0]));
         assert_eq!(deserialized.rotation, Some(0.5));
@@ -235,18 +242,18 @@ mod physics_tests {
         assert_eq!(deserialized.friction, Some(0.5));
         assert_eq!(deserialized.restitution, Some(0.3));
         assert_eq!(deserialized.gravity_scale, Some(1.0));
-        
+
         // Verify collider shape
         match deserialized.collider_shape {
             Some(ColliderShapeData::Ball { radius }) => {
                 assert_eq!(radius, 10.0);
-            },
+            }
             _ => panic!("Expected Ball shape, got something else"),
         }
-        
+
         // Generate a UUID for testing
         let entity_id = Uuid::new_v4().to_string();
-        
+
         // Create an EntityRecord using the physics data
         let record = EntityRecord {
             id: entity_id.clone(),
@@ -260,13 +267,18 @@ mod physics_tests {
             updated_at: None,
             physics_data: None,
         };
-        
+
         // Verify entity ID is a valid UUID
-        assert!(Uuid::parse_str(&record.id).is_ok(), "Entity ID is not a valid UUID: {}", record.id);
-        
+        assert!(
+            Uuid::parse_str(&record.id).is_ok(),
+            "Entity ID is not a valid UUID: {}",
+            record.id
+        );
+
         // Extract physics data from the record
-        let extracted = PhysicsData::from_json(&record.components).expect("Failed to extract physics data");
-        
+        let extracted =
+            PhysicsData::from_json(&record.components).expect("Failed to extract physics data");
+
         // Verify data matches original
         assert_eq!(extracted.position, physics_data.position);
         assert_eq!(extracted.rotation, physics_data.rotation);
@@ -307,7 +319,10 @@ mod physics_tests {
             rotation: None,
             rigid_body_type: Some("dynamic".to_string()),
             velocity: None,
-            collider_shape: Some(ColliderShapeData::Capsule { half_height: 5.0, radius: 2.0 }),
+            collider_shape: Some(ColliderShapeData::Capsule {
+                half_height: 5.0,
+                radius: 2.0,
+            }),
             mass: None,
             friction: None,
             restitution: None,
@@ -323,7 +338,10 @@ mod physics_tests {
         assert_eq!(cuboid_json["collider_shape"]["Cuboid"]["hy"], 7.5);
 
         let capsule_json = capsule_data.to_json();
-        assert_eq!(capsule_json["collider_shape"]["Capsule"]["half_height"], 5.0);
+        assert_eq!(
+            capsule_json["collider_shape"]["Capsule"]["half_height"],
+            5.0
+        );
         assert_eq!(capsule_json["collider_shape"]["Capsule"]["radius"], 2.0);
     }
-} 
+}

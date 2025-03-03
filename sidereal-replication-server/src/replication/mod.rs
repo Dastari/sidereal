@@ -1,3 +1,3 @@
 mod plugin;
 
-pub use plugin::ReplicationPlugin; 
+pub use plugin::ReplicationPlugin;

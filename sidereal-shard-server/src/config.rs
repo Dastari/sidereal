@@ -11,16 +11,16 @@ pub struct ConfigPlugin;
 impl Plugin for ConfigPlugin {
     fn build(&self, app: &mut App) {
         info!("Building config plugin");
-        
+
         // Load environment variables
         dotenv().ok();
-        
+
         // Create shard configuration from environment
         let shard_config = ShardConfig::from_env();
         let physics_config = PhysicsConfig::default();
 
         app.insert_resource(shard_config)
-           .insert_resource(physics_config);
+            .insert_resource(physics_config);
 
         // Make sure the app initializes the state
         app.init_state::<ShardState>();
@@ -54,10 +54,8 @@ impl ShardConfig {
                 info!("No SHARD_ID provided, generated new ID: {}", id);
                 id
             });
-        
-        Self {
-            shard_id,
-        }
+
+        Self { shard_id }
     }
 }
 
@@ -74,16 +72,19 @@ impl Default for PhysicsConfig {
         let physics_fps = env::var("PHYSICS_FPS")
             .map(|fps| fps.parse::<f32>().expect("Invalid PHYSICS_FPS"))
             .unwrap_or(30.0);
-        
+
         let physics_substeps = env::var("PHYSICS_SUBSTEPS")
             .map(|steps| steps.parse::<usize>().expect("Invalid PHYSICS_SUBSTEPS"))
             .unwrap_or(1);
-        
-        info!("Physics configuration: FPS={}, Substeps={}", physics_fps, physics_substeps);
-        
+
+        info!(
+            "Physics configuration: FPS={}, Substeps={}",
+            physics_fps, physics_substeps
+        );
+
         Self {
             physics_fps,
             physics_substeps,
         }
     }
-} 
+}

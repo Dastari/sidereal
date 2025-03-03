@@ -1,8 +1,8 @@
 use bevy::prelude::*;
-use tracing::{info};
-use uuid::Uuid;
-use std::collections::HashMap;
 use bevy_rapier2d::prelude::Velocity;
+use std::collections::HashMap;
+use tracing::info;
+use uuid::Uuid;
 
 /// Plugin for managing shadow entities
 pub struct ShadowEntityPlugin;
@@ -10,17 +10,14 @@ pub struct ShadowEntityPlugin;
 impl Plugin for ShadowEntityPlugin {
     fn build(&self, app: &mut App) {
         info!("Building shadow entity plugin");
-        
+
         // Register components and resources
         app.init_resource::<ShadowEntityRegistry>()
-           .register_type::<ShadowEntity>()
-           .register_type::<VisualOnly>();
-           
+            .register_type::<ShadowEntity>()
+            .register_type::<VisualOnly>();
+
         // Add systems
-        app.add_systems(Update, (
-            update_shadow_entities,
-            prune_outdated_shadows,
-        ));
+        app.add_systems(Update, (update_shadow_entities, prune_outdated_shadows));
     }
 }
 
@@ -60,28 +57,37 @@ impl Default for ShadowEntityRegistry {
 }
 
 impl ShadowEntityRegistry {
-    pub fn register(&mut self, original_id: Entity, local_entity: Entity, source_shard_id: Uuid, timestamp: f64) {
-        self.entity_map.insert(original_id, ShadowEntityInfo {
-            local_entity,
-            source_shard_id,
-            last_updated: timestamp,
-        });
+    pub fn register(
+        &mut self,
+        original_id: Entity,
+        local_entity: Entity,
+        source_shard_id: Uuid,
+        timestamp: f64,
+    ) {
+        self.entity_map.insert(
+            original_id,
+            ShadowEntityInfo {
+                local_entity,
+                source_shard_id,
+                last_updated: timestamp,
+            },
+        );
     }
-    
+
     pub fn get(&self, original_id: &Entity) -> Option<&ShadowEntityInfo> {
         self.entity_map.get(original_id)
     }
-    
+
     pub fn update_timestamp(&mut self, original_id: &Entity, timestamp: f64) {
         if let Some(info) = self.entity_map.get_mut(original_id) {
             info.last_updated = timestamp;
         }
     }
-    
+
     pub fn get_all(&self) -> impl Iterator<Item = (&Entity, &ShadowEntityInfo)> {
         self.entity_map.iter()
     }
-    
+
     pub fn get_outdated(&self, cutoff_time: f64) -> Vec<Entity> {
         self.entity_map
             .iter()
@@ -89,7 +95,7 @@ impl ShadowEntityRegistry {
             .map(|(_original_id, info)| info.local_entity)
             .collect()
     }
-    
+
     pub fn remove(&mut self, original_id: &Entity) -> Option<ShadowEntityInfo> {
         self.entity_map.remove(original_id)
     }
@@ -97,17 +103,14 @@ impl ShadowEntityRegistry {
 
 /// System to update shadow entities (visual positioning)
 fn update_shadow_entities(
-    mut query: Query<
-        (&mut Transform, &Velocity, &ShadowEntity),
-        With<VisualOnly>
-    >,
+    mut query: Query<(&mut Transform, &Velocity, &ShadowEntity), With<VisualOnly>>,
     time: Res<Time>,
 ) {
     // Basic prediction algorithm - move shadow entities based on their last known velocity
     // In a production system, this would be interpolation between known states
-    
+
     let dt = time.delta_secs();
-    
+
     for (mut transform, velocity, _shadow) in query.iter_mut() {
         // Simple position prediction based on velocity
         let movement = velocity.linvel * dt;
@@ -124,16 +127,16 @@ fn prune_outdated_shadows(
 ) {
     // Timeout in seconds
     const SHADOW_TIMEOUT: f64 = 5.0;
-    
+
     let current_time = time.elapsed_secs_f64();
-    
+
     // Find all shadow entities that haven't been updated within the timeout period
     let outdated = registry.get_outdated(current_time - SHADOW_TIMEOUT);
-    
+
     // Remove each outdated entity
     for entity in outdated {
         info!("Removing outdated shadow entity: {:?}", entity);
         commands.entity(entity).despawn();
         registry.remove(&entity);
     }
-} 
+}

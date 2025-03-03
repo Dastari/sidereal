@@ -1,3 +1,3 @@
 mod loader;
 
-pub use loader::{SceneLoaderPlugin, SceneState}; 
+pub use loader::{SceneLoaderPlugin, SceneState};

@@ -1,12 +1,12 @@
 // Removed: use bevy::prelude::*;
+use bevy::math::Vec2;
 use serde_json::json;
+use std::collections::HashMap;
 use std::env;
 use uuid::Uuid;
-use std::collections::HashMap;
-use bevy::math::Vec2;
 
 // Import the replication server code
-use sidereal_replication_server::database::{DatabaseClient, EntityRecord, DatabaseError};
+use sidereal_replication_server::database::{DatabaseClient, DatabaseError, EntityRecord};
 
 #[cfg(test)]
 mod database_tests {
@@ -21,19 +21,19 @@ mod database_tests {
     #[test]
     fn test_database_client_creation() {
         setup_test_env();
-        
+
         // This test should succeed if the DatabaseClient is created without errors
         let client = DatabaseClient::new().expect("Failed to create client");
-        
+
         // Verify the base URL was set correctly
         assert_eq!(client.base_url, "http://test-server.example.com");
     }
-    
+
     #[test]
     fn test_entity_record_serialization() {
         // Generate a valid UUID for the entity
         let entity_id = Uuid::new_v4().to_string();
-        
+
         // Create a test entity record
         let record = EntityRecord {
             id: entity_id.clone(),
@@ -62,13 +62,14 @@ mod database_tests {
             updated_at: Some("2023-01-01T00:00:00Z".to_string()),
             physics_data: None,
         };
-        
+
         // Serialize to JSON
         let serialized = serde_json::to_string(&record).expect("Failed to serialize");
-        
+
         // Deserialize back into an EntityRecord
-        let deserialized: EntityRecord = serde_json::from_str(&serialized).expect("Failed to deserialize");
-        
+        let deserialized: EntityRecord =
+            serde_json::from_str(&serialized).expect("Failed to deserialize");
+
         // Verify fields match
         assert_eq!(deserialized.id, entity_id);
         assert_eq!(deserialized.name, Some("Test Entity".to_string()));
@@ -78,14 +79,17 @@ mod database_tests {
         assert_eq!(deserialized.type_, "test-type");
 
         // Verify the ID is a valid UUID
-        assert!(Uuid::parse_str(&deserialized.id).is_ok(), "Entity ID is not a valid UUID");
+        assert!(
+            Uuid::parse_str(&deserialized.id).is_ok(),
+            "Entity ID is not a valid UUID"
+        );
     }
-    
+
     #[test]
     fn test_entity_record_physics_json() {
         // Generate a valid UUID for the entity
         let entity_id = Uuid::new_v4().to_string();
-        
+
         // Create a test entity record with physics data
         let record = EntityRecord {
             id: entity_id,
@@ -114,10 +118,13 @@ mod database_tests {
             updated_at: None,
             physics_data: None,
         };
-        
+
         // Access physics data
-        let physics = record.components.get("physics").expect("Physics data not found");
-        
+        let physics = record
+            .components
+            .get("physics")
+            .expect("Physics data not found");
+
         // Verify physics data fields
         assert_eq!(physics["position"][0], 50.0);
         assert_eq!(physics["position"][1], 75.0);
@@ -126,7 +133,7 @@ mod database_tests {
         assert_eq!(physics["mass"], 20.0);
         assert_eq!(physics["friction"], 0.7);
         assert_eq!(physics["restitution"], 0.5);
-        
+
         // Verify collider shape
         let collider = &physics["collider_shape"];
         assert_eq!(collider["type"], "ball");
@@ -141,7 +148,7 @@ mod database_tests {
             DatabaseError::NotFound => (),
             _ => panic!("Expected NotFound error"),
         }
-        
+
         // Test HttpError
         let http_error = DatabaseError::HttpError(404);
         match http_error {
@@ -149,4 +156,4 @@ mod database_tests {
             _ => panic!("Expected HttpError with code 404"),
         }
     }
-} 
+}

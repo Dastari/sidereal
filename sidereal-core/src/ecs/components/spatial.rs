@@ -1,16 +1,16 @@
+use bevy::math::{IVec2, Vec2};
 use bevy::prelude::*;
-use bevy::math::{Vec2, IVec2};
+use bevy::reflect::Reflect;
+use bevy_rapier2d::prelude::Velocity;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
-use bevy_rapier2d::prelude::Velocity;
-use bevy::reflect::Reflect;
 
 /// Component for tracking an entity's position within the spatial partitioning system
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect)]
 pub struct SpatialPosition {
-    pub position: Vec2,       // Actual position in world space
-    pub sector_coords: IVec2, // Current sector coordinates
+    pub position: Vec2,        // Actual position in world space
+    pub sector_coords: IVec2,  // Current sector coordinates
     pub cluster_coords: IVec2, // Current cluster coordinates
 }
 
@@ -21,7 +21,7 @@ pub struct SpatialTracked;
 impl SpatialTracked {
     pub fn register_required_components(app: &mut App) {
         app.register_type::<SpatialPosition>()
-           .register_type::<SpatialTracked>();
+            .register_type::<SpatialTracked>();
         // In Bevy 0.15, we need to use a different approach for component requirements
         // This will be implemented in the plugin
     }
@@ -33,9 +33,9 @@ pub struct Sector {
     pub coordinates: IVec2,
     pub entities: HashSet<Entity>,
     pub active: bool,
-    pub last_updated: f64, // Time since startup
+    pub last_updated: f64,     // Time since startup
     pub last_entity_seen: f64, // Timestamp when the last entity was in this sector
-    pub last_saved: f64, // Timestamp of last persistence to database
+    pub last_saved: f64,       // Timestamp of last persistence to database
 }
 
 /// Cluster definition - group of sectors managed by a single shard
@@ -57,9 +57,9 @@ pub struct UniverseConfig {
     pub cluster_dimensions: IVec2,
     pub transition_zone_width: f32,
     pub empty_sector_timeout_seconds: f64, // Time before an empty sector is considered inactive
-    pub empty_sector_check_interval: f64, // How often to check for empty sectors
+    pub empty_sector_check_interval: f64,  // How often to check for empty sectors
     pub velocity_awareness_factor: f32, // Multiplier for velocity to determine transition zone size
-    pub min_boundary_awareness: f32, // Minimum distance to be considered near a boundary
+    pub min_boundary_awareness: f32,    // Minimum distance to be considered near a boundary
 }
 
 impl Default for UniverseConfig {
@@ -69,9 +69,9 @@ impl Default for UniverseConfig {
             cluster_dimensions: IVec2::new(3, 3), // 3x3 sectors per cluster
             transition_zone_width: 50.0,
             empty_sector_timeout_seconds: 300.0, // 5 minutes before unloading empty sectors
-            empty_sector_check_interval: 60.0, // Check once per minute
+            empty_sector_check_interval: 60.0,   // Check once per minute
             velocity_awareness_factor: 2.0, // Multiply velocity by this factor for awareness zone
-            min_boundary_awareness: 50.0, // Minimum 50 units from boundary
+            min_boundary_awareness: 50.0,   // Minimum 50 units from boundary
         }
     }
 }
@@ -118,17 +118,14 @@ pub struct VisualOnly;
 impl ShadowEntity {
     pub fn register_required_components(app: &mut App) {
         app.register_type::<ShadowEntity>()
-           .register_type::<VisualOnly>();
+            .register_type::<VisualOnly>();
         // In Bevy 0.15, we need to use a different approach for component requirements
         // This will be implemented in the plugin
     }
 }
 
 /// Helper to calculate which cluster an entity belongs to
-pub fn calculate_entity_cluster(
-    position: Vec2,
-    config: &UniverseConfig,
-) -> IVec2 {
+pub fn calculate_entity_cluster(position: Vec2, config: &UniverseConfig) -> IVec2 {
     let sector_x = (position.x / config.sector_size).floor() as i32;
     let sector_y = (position.y / config.sector_size).floor() as i32;
 
@@ -148,7 +145,7 @@ pub fn is_approaching_boundary(
     let sector_size = config.sector_size;
     let pos_in_sector = Vec2::new(
         position.position.x - (position.sector_coords.x as f32 * sector_size),
-        position.position.y - (position.sector_coords.y as f32 * sector_size)
+        position.position.y - (position.sector_coords.y as f32 * sector_size),
     );
 
     // Calculate distances to each boundary
@@ -167,12 +164,15 @@ pub fn is_approaching_boundary(
     };
 
     // Check which boundary (if any) is closest and within threshold
-    let min_dist = dist_to_left.min(dist_to_right).min(dist_to_top).min(dist_to_bottom);
-    
+    let min_dist = dist_to_left
+        .min(dist_to_right)
+        .min(dist_to_top)
+        .min(dist_to_bottom);
+
     if min_dist >= threshold {
         return None;
     }
-    
+
     if min_dist == dist_to_left {
         Some(BoundaryDirection::West)
     } else if min_dist == dist_to_right {
@@ -182,4 +182,4 @@ pub fn is_approaching_boundary(
     } else {
         Some(BoundaryDirection::South)
     }
-} 
+}
