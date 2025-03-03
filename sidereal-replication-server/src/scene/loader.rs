@@ -6,7 +6,7 @@ use tracing::{error, info};
 
 use crate::database::{DatabaseClient, DatabaseResult, EntityRecord};
 use sidereal_core::ecs::components::physics::PhysicsData;
-use sidereal_core::ecs::components::{Hull, SpatialPosition, SpatialTracked};
+use sidereal_core::ecs::components::{SpatialPosition, SpatialTracked};
 
 /// Plugin for managing the universe scene
 pub struct SceneLoaderPlugin;
