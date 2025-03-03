@@ -6,29 +6,64 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-/// Component for tracking an entity's position within the spatial partitioning system
-#[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect)]
-pub struct SpatialPosition {
-    pub position: Vec2,        // Actual position in world space
-    pub sector_coords: IVec2,  // Current sector coordinates
-    pub cluster_coords: IVec2, // Current cluster coordinates
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+pub struct Position(Vec2);
+
+// Add these implementations to Position
+impl Position {
+    pub fn get(&self) -> Vec2 {
+        self.0
+    }
+    
+    pub fn set(&mut self, value: Vec2) {
+        self.0 = value;
+    }
+    
+    pub fn new(value: Vec2) -> Self {
+        Position(value)
+    }
 }
 
-/// Marker component that requires SpatialPosition
-#[derive(Component, Reflect)]
-pub struct SpatialTracked;
 
-impl SpatialTracked {
-    pub fn register_required_components(app: &mut App) {
-        app.register_type::<SpatialPosition>()
-            .register_type::<SpatialTracked>();
-        // In Bevy 0.15, we need to use a different approach for component requirements
-        // This will be implemented in the plugin
+
+
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+pub struct SectorCoords(IVec2);
+
+// Add these implementations to SectorCoords
+impl SectorCoords {
+    pub fn get(&self) -> IVec2 {
+        self.0
+    }
+    
+    pub fn set(&mut self, value: IVec2) {
+        self.0 = value;
+    }
+
+    pub fn new(value: IVec2) -> Self {
+        SectorCoords(value)
+    }
+}
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+pub struct ClusterCoords(IVec2);
+
+// Add these implementations to ClusterCoords
+impl ClusterCoords {
+    pub fn get(&self) -> IVec2 {
+        self.0
+    }
+    
+    pub fn set(&mut self, value: IVec2) {
+        self.0 = value;
+    }
+
+    pub fn new(value: IVec2) -> Self {
+        ClusterCoords(value)
     }
 }
 
 /// Sector definition - contains entities in a spatial region
-#[derive(Resource, Serialize, Deserialize, Clone, Debug)]
+#[derive(Resource, Serialize, Deserialize, Clone, Debug, Default, Reflect)]
 pub struct Sector {
     pub coordinates: IVec2,
     pub entities: HashSet<Entity>,
@@ -39,7 +74,7 @@ pub struct Sector {
 }
 
 /// Cluster definition - group of sectors managed by a single shard
-#[derive(Resource, Serialize, Deserialize, Clone, Debug)]
+#[derive(Resource, Serialize, Deserialize, Clone, Debug, Default, Reflect)]
 pub struct Cluster {
     pub id: Uuid,
     pub base_coordinates: IVec2,
@@ -93,7 +128,7 @@ pub struct EntityApproachingBoundary {
 }
 
 /// Direction of sector boundary
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash, Reflect)]
 pub enum BoundaryDirection {
     North,
     East,
@@ -101,8 +136,20 @@ pub enum BoundaryDirection {
     West,
 }
 
+impl Default for BoundaryDirection {
+    fn default() -> Self {
+        BoundaryDirection::North
+    }
+}
+
+
+//// Marker indicating entity is visual-only (no physics)
+#[derive(Component, Reflect, Default)]
+pub struct VisualOnly;
+
 /// Shadow entity representation for entities from neighboring shards
 #[derive(Component, Reflect)]
+#[require(Position, SectorCoords, ClusterCoords, Velocity, VisualOnly)]
 pub struct ShadowEntity {
     pub source_cluster_id: Uuid,
     pub source_shard_id: Uuid,
@@ -111,16 +158,23 @@ pub struct ShadowEntity {
     pub last_updated: f64,
 }
 
-/// Marker indicating entity is visual-only (no physics)
-#[derive(Component, Reflect)]
-pub struct VisualOnly;
-
+// Only used for reflection registration
 impl ShadowEntity {
-    pub fn register_required_components(app: &mut App) {
+    pub fn register_reflection(app: &mut App) {
         app.register_type::<ShadowEntity>()
-            .register_type::<VisualOnly>();
-        // In Bevy 0.15, we need to use a different approach for component requirements
-        // This will be implemented in the plugin
+           .register_type::<VisualOnly>();
+    }
+}
+
+impl Default for ShadowEntity {
+    fn default() -> Self {
+        Self {
+            source_cluster_id: Uuid::nil(),
+            source_shard_id: Uuid::nil(),
+            original_entity: Entity::from_raw(0),
+            is_read_only: true,
+            last_updated: 0.0,
+        }
     }
 }
 
@@ -137,15 +191,16 @@ pub fn calculate_entity_cluster(position: Vec2, config: &UniverseConfig) -> IVec
 
 /// Helper to check if entity is near boundary
 pub fn is_approaching_boundary(
-    position: &SpatialPosition,
+    position: &Position,
+    sector_coords: &SectorCoords,
     velocity: Option<&Velocity>,
     config: &UniverseConfig,
 ) -> Option<BoundaryDirection> {
     // Calculate position within current sector
     let sector_size = config.sector_size;
     let pos_in_sector = Vec2::new(
-        position.position.x - (position.sector_coords.x as f32 * sector_size),
-        position.position.y - (position.sector_coords.y as f32 * sector_size),
+        position.0.x - (sector_coords.0.x as f32 * sector_size),
+        position.0.y - (sector_coords.0.y as f32 * sector_size),
     );
 
     // Calculate distances to each boundary

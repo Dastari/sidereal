@@ -1,5 +1,3 @@
-#[cfg(feature = "netcode")]
-use crate::netcode::{NetcodeClientPlugin, NetcodeClientTransport};
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::renet2::{
@@ -31,9 +29,6 @@ impl Plugin for RepliconRenetClientPlugin {
                     .in_set(ClientSet::SendPackets)
                     .run_if(client_connected),
             );
-
-        #[cfg(feature = "netcode")]
-        app.add_plugins(NetcodeClientPlugin);
     }
 }
 
@@ -50,13 +45,7 @@ impl RepliconRenetClientPlugin {
 
     fn set_connected(
         mut client: ResMut<RepliconClient>,
-        #[cfg(feature = "netcode")] transport: Res<NetcodeClientTransport>,
     ) {
-        // In renet only transport knows the ID.
-        // TODO: Pending renet issue https://github.com/lucaspoffo/renet/issues/153
-        #[cfg(feature = "netcode")]
-        let client_id = Some(ClientId::new(transport.client_id()));
-        #[cfg(not(feature = "netcode"))]
         let client_id = None;
 
         client.set_status(RepliconClientStatus::Connected { client_id });

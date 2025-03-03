@@ -3,8 +3,6 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
-#[cfg(feature = "netcode")]
-use crate::netcode::NetcodeServerPlugin;
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::renet2::{
@@ -38,8 +36,6 @@ impl Plugin for RepliconRenetServerPlugin {
                     .run_if(resource_exists::<RenetServer>),
             );
 
-        #[cfg(feature = "netcode")]
-        app.add_plugins(NetcodeServerPlugin);
     }
 }
 

@@ -1,184 +1,114 @@
 use bevy::math::Vec2;
-use bevy::prelude::*;
-use bevy_rapier2d::prelude::*;
+use crate::ecs::components::spatial::{Position,SectorCoords,ClusterCoords};
+use bevy::prelude::{Component, Reflect};
 use serde::{Deserialize, Serialize};
-use serde_json;
+use bevy_rapier2d::prelude::*;
 
-/// Serialize/deserialize friendly representation of physics components
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PhysicsData {
-    // Transform components
-    pub position: Option<[f32; 2]>,
-    pub rotation: Option<f32>,
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+#[require(Position,SectorCoords, ClusterCoords,RigidBody, Velocity, Collider, PhysicsState)]
+pub struct PhysicsBody;
 
-    // Rapier components
-    pub rigid_body_type: Option<String>, // "dynamic", "fixed", "kinematic"
-    pub velocity: Option<[f32; 3]>,      // [linvel.x, linvel.y, angvel]
-    pub collider_shape: Option<ColliderShapeData>,
-    pub mass: Option<f32>,
-    pub friction: Option<f32>,
-    pub restitution: Option<f32>,
-    pub gravity_scale: Option<f32>,
+#[derive(Component, Clone, Debug, Serialize, Deserialize, Reflect)]
+pub struct PhysicsState {
+    // Core physics properties
+    pub linear_velocity: Vec2,
+    pub angular_velocity: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    
+    // Mass properties
+    pub mass: f32,
+    pub center_of_mass: Vec2,
+    
+    // Body type
+    pub body_type: BodyType,
+    
+    // Collider properties
+    pub collider_type: ColliderType,
+    pub collider_size: Vec2,  // For simple shapes like boxes
+    
+    // Additional flags
+    pub can_sleep: bool,
+    pub is_sensor: bool,
+    
+    // Timestamp of last Rapier sync
+    pub last_sync: f64,
 }
 
-/// Representation of different collider shapes
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum ColliderShapeData {
-    Ball { radius: f32 },
-    Cuboid { hx: f32, hy: f32 },
-    Capsule { half_height: f32, radius: f32 },
-    // Add more shapes as needed
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+pub enum BodyType {
+    Dynamic,
+    Static,
+    Kinematic,
 }
 
-impl PhysicsData {
-    /// Create physics data from Bevy/Rapier components
-    pub fn from_components(
-        transform: Option<&Transform>,
-        rigid_body: Option<&RigidBody>,
-        velocity: Option<&Velocity>,
-        _collider: Option<&Collider>, // Currently unused but will be used for collider shape extraction
-        mass_props: Option<&AdditionalMassProperties>,
-        friction: Option<&Friction>,
-        restitution: Option<&Restitution>,
-        gravity_scale: Option<&GravityScale>,
-    ) -> Self {
-        let position = transform.map(|t| [t.translation.x, t.translation.y]);
-        let rotation = transform.map(|t| t.rotation.to_euler(EulerRot::XYZ).2);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+pub enum ColliderType {
+    Box,
+    Circle,
+    Capsule,
+    // Add other shapes as needed
+}
 
-        let rigid_body_type = rigid_body.map(|rb| match rb {
-            RigidBody::Dynamic => "dynamic".to_string(),
-            RigidBody::Fixed => "fixed".to_string(),
-            RigidBody::KinematicPositionBased => "kinematic_position".to_string(),
-            RigidBody::KinematicVelocityBased => "kinematic_velocity".to_string(),
-        });
-
-        let velocity = velocity.map(|v| [v.linvel.x, v.linvel.y, v.angvel]);
-
-        // For now, we'll just use a simplified approach for colliders
-        // This is a placeholder that will need to be revised based on the actual API
-        let collider_shape = None; // We'll implement this properly once we understand the API better
-
-        // Extract mass from AdditionalMassProperties if available
-        let mass = mass_props.and_then(|mp| match mp {
-            AdditionalMassProperties::Mass(m) => Some(*m),
-            AdditionalMassProperties::MassProperties(mp) => Some(mp.mass),
-        });
-
-        let friction = friction.map(|f| f.coefficient);
-        let restitution = restitution.map(|r| r.coefficient);
-        let gravity_scale = gravity_scale.map(|g| g.0);
-
+impl Default for PhysicsState {
+    fn default() -> Self {
         Self {
-            position,
-            rotation,
-            rigid_body_type,
-            velocity,
-            collider_shape,
+            linear_velocity: Vec2::ZERO,
+            angular_velocity: 0.0,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
+            mass: 1000.0,
+            center_of_mass: Vec2::ZERO,
+            body_type: BodyType::Dynamic,
+            collider_type: ColliderType::Box,
+            collider_size: Vec2::new(10.0, 10.0),
+            can_sleep: true,
+            is_sensor: false,
+            last_sync: 0.0,
+        }
+    }
+}
+
+impl PhysicsState {
+    // Helper to create a physics state with common settings for a ship
+    pub fn new_ship(width: f32, height: f32, mass: f32) -> Self {
+        Self {
             mass,
-            friction,
-            restitution,
-            gravity_scale,
+            collider_type: ColliderType::Box,
+            collider_size: Vec2::new(width, height),
+            // Other defaults
+            ..Default::default()
         }
     }
-
-    /// Apply physics data to an entity command
-    pub fn apply_to_entity(&self, entity: &mut EntityCommands) {
-        // Apply Transform if position or rotation is specified
-        if self.position.is_some() || self.rotation.is_some() {
-            let mut transform = Transform::default();
-
-            if let Some(pos) = self.position {
-                transform.translation.x = pos[0];
-                transform.translation.y = pos[1];
-            }
-
-            if let Some(rot) = self.rotation {
-                transform.rotation = Quat::from_rotation_z(rot);
-            }
-
-            entity.insert(transform);
-        }
-
-        // Apply RigidBody if specified
-        if let Some(ref body_type) = self.rigid_body_type {
-            let rigid_body = match body_type.as_str() {
-                "dynamic" => RigidBody::Dynamic,
-                "fixed" => RigidBody::Fixed,
-                "kinematic_position" => RigidBody::KinematicPositionBased,
-                "kinematic_velocity" => RigidBody::KinematicVelocityBased,
-                _ => RigidBody::Dynamic, // Default to dynamic if unknown
-            };
-
-            entity.insert(rigid_body);
-        }
-
-        // Apply Velocity if specified
-        if let Some(vel) = self.velocity {
-            entity.insert(Velocity {
-                linvel: Vec2::new(vel[0], vel[1]),
-                angvel: vel[2],
-            });
-        }
-
-        // Apply Collider if shape is specified
-        if let Some(ref shape) = self.collider_shape {
-            let collider = match shape {
-                ColliderShapeData::Ball { radius } => Collider::ball(*radius),
-                ColliderShapeData::Cuboid { hx, hy } => Collider::cuboid(*hx, *hy),
-                ColliderShapeData::Capsule {
-                    half_height,
-                    radius,
-                } => Collider::capsule_y(*half_height, *radius),
-            };
-
-            entity.insert(collider);
-        }
-
-        // Apply optional physics properties
-        if let Some(mass) = self.mass {
-            entity.insert(AdditionalMassProperties::Mass(mass));
-        }
-
-        if let Some(friction) = self.friction {
-            entity.insert(Friction::coefficient(friction));
-        }
-
-        if let Some(restitution) = self.restitution {
-            entity.insert(Restitution::coefficient(restitution));
-        }
-
-        if let Some(gravity_scale) = self.gravity_scale {
-            entity.insert(GravityScale(gravity_scale));
+    
+    // Convert our BodyType to Rapier's RigidBody
+    pub fn to_rapier_body_type(&self) -> bevy_rapier2d::dynamics::RigidBody {
+        use bevy_rapier2d::dynamics::RigidBody;
+        
+        match self.body_type {
+            BodyType::Dynamic => RigidBody::Dynamic,
+            BodyType::Static => RigidBody::Fixed,
+            BodyType::Kinematic => RigidBody::KinematicPositionBased,
         }
     }
-
-    /// Convert physics data to JSON for database storage
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
-    }
-
-    /// Create physics data from JSON (from database)
-    pub fn from_json(json: &serde_json::Value) -> Option<Self> {
-        serde_json::from_value(json.clone()).ok()
-    }
-}
-
-// Extension trait for easy extraction of physics data from an entity
-pub trait PhysicsExtractExt {
-    fn extract_physics_data(&self) -> PhysicsData;
-}
-
-impl PhysicsExtractExt for EntityRef<'_> {
-    fn extract_physics_data(&self) -> PhysicsData {
-        PhysicsData::from_components(
-            self.get::<Transform>(),
-            self.get::<RigidBody>(),
-            self.get::<Velocity>(),
-            self.get::<Collider>(),
-            self.get::<AdditionalMassProperties>(),
-            self.get::<Friction>(),
-            self.get::<Restitution>(),
-            self.get::<GravityScale>(),
-        )
+    
+    // Create a Rapier collider based on our properties
+    pub fn to_rapier_collider(&self) -> bevy_rapier2d::geometry::Collider {
+        use bevy_rapier2d::geometry::Collider;
+        
+        match self.collider_type {
+            ColliderType::Box => {
+                Collider::cuboid(self.collider_size.x / 2.0, self.collider_size.y / 2.0)
+            },
+            ColliderType::Circle => {
+                let radius = self.collider_size.x.max(self.collider_size.y) / 2.0;
+                Collider::ball(radius)
+            },
+            ColliderType::Capsule => {
+                let half_height = self.collider_size.y / 2.0 - self.collider_size.x / 2.0;
+                let radius = self.collider_size.x / 2.0;
+                Collider::capsule_y(half_height, radius)
+            },
+        }
     }
 }
