@@ -1,9 +1,9 @@
 use crate::ecs::components::spatial::{ClusterCoords, Position, SectorCoords};
 use bevy::math::Vec2;
-use bevy_rapier2d::prelude::*;
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
 use bevy::reflect::Reflect;
+use bevy_rapier2d::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
 #[reflect(Component, Serialize, Deserialize)]

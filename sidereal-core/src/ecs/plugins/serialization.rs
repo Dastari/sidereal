@@ -80,8 +80,12 @@ impl EntitySerializer for World {
         for (type_name, value) in &serialized.components {
             if let Some(registration) = find_registration_by_name(&registry, type_name) {
                 if let Some(component_id) = registration.data::<ReflectComponent>() {
+                    let wrapped_value = serde_json::json!({
+                        type_name: value
+                    });
+                    
                     let deserializer = ReflectDeserializer::new(&registry);
-                    let json_str = value.to_string();
+                    let json_str = wrapped_value.to_string();
                     let mut json_de = serde_json::Deserializer::from_str(&json_str);
                     let reflect_value = deserializer.deserialize(&mut json_de).map_err(|err| {
                         format!("Failed to deserialize component {}: {}", type_name, err)

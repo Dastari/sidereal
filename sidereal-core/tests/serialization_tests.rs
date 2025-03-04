@@ -27,10 +27,12 @@ fn setup_test_app() -> App {
     app.insert_resource(UniverseConfig::default());
 
     // Add our plugins last to avoid registration conflicts
-    app.add_plugins(SpatialPlugin)
-        .add_plugins(PhysicsPlugin)
-        .add_plugins(CorePlugin)
-        .add_plugins(EntitySerializationPlugin);
+    app.add_plugins((
+        SpatialPlugin,
+        PhysicsPlugin,
+        CorePlugin,
+        EntitySerializationPlugin,
+    ));
 
     // Add assertion to verify setup
     debug_assert!(

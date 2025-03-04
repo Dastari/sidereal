@@ -12,9 +12,14 @@ impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
         // Register types
         app.register_type::<PhysicsBody>()
-            .register_type::<PhysicsState>();
+            .register_type::<PhysicsState>()
+            .register_type::<Damping>()
+            .register_type::<Sleeping>()
+            .register_type::<AdditionalMassProperties>()
+            .register_type::<RigidBody>()
+            .register_type::<Velocity>()
+            .register_type::<BodyType>();
 
-        // // Register that PhysicsBody requires spatial components
         // app.world_mut().register_required_components::<PhysicsBody, Position>();
         // app.world_mut().register_required_components::<PhysicsBody, SectorCoords>();
         // app.world_mut().register_required_components::<PhysicsBody, ClusterCoords>();

@@ -20,8 +20,8 @@ impl Default for Hull {
     }
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Deserialize, Reflect)]
-#[reflect(Serialize, Deserialize)]
+#[derive(Component, Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Component, Serialize, Deserialize)]
 pub struct Block {
     pub x: f32,
     pub y: f32,

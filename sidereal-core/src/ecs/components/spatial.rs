@@ -8,60 +8,78 @@ use uuid::Uuid;
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
 #[reflect(Component, Serialize, Deserialize)]
-pub struct Position(Vec2);
+pub struct Position {
+    pub x: f32,
+    pub y: f32,
+}
 
-// Add these implementations to Position
 impl Position {
     pub fn get(&self) -> Vec2 {
-        self.0
+        Vec2::new(self.x, self.y)
     }
 
     pub fn set(&mut self, value: Vec2) {
-        self.0 = value;
+        self.x = value.x;
+        self.y = value.y;
     }
 
     pub fn new(value: Vec2) -> Self {
-        Position(value)
+        Position {
+            x: value.x,
+            y: value.y,
+        }
     }
 }
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
 #[reflect(Component, Serialize, Deserialize)]
-pub struct SectorCoords(IVec2);
+pub struct SectorCoords {
+    pub x: i32,
+    pub y: i32,
+}
 
-// Add these implementations to SectorCoords
 impl SectorCoords {
     pub fn get(&self) -> IVec2 {
-        self.0
+        IVec2::new(self.x, self.y)
     }
 
     pub fn set(&mut self, value: IVec2) {
-        self.0 = value;
+        self.x = value.x;
+        self.y = value.y;
     }
 
     pub fn new(value: IVec2) -> Self {
-        SectorCoords(value)
+        SectorCoords {
+            x: value.x,
+            y: value.y,
+        }
     }
 }
+
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
 #[reflect(Component, Serialize, Deserialize)]
-pub struct ClusterCoords(IVec2);
+pub struct ClusterCoords {
+    pub x: i32,
+    pub y: i32,
+}
 
-// Add these implementations to ClusterCoords
 impl ClusterCoords {
     pub fn get(&self) -> IVec2 {
-        self.0
+        IVec2::new(self.x, self.y)
     }
 
     pub fn set(&mut self, value: IVec2) {
-        self.0 = value;
+        self.x = value.x;
+        self.y = value.y;
     }
 
     pub fn new(value: IVec2) -> Self {
-        ClusterCoords(value)
+        ClusterCoords {
+            x: value.x,
+            y: value.y,
+        }
     }
 }
-
 /// Sector definition - contains entities in a spatial region
 #[derive(Resource)]
 pub struct Sector {
@@ -198,8 +216,8 @@ pub fn is_approaching_boundary(
     // Calculate position within current sector
     let sector_size = config.sector_size;
     let pos_in_sector = Vec2::new(
-        position.0.x - (sector_coords.0.x as f32 * sector_size),
-        position.0.y - (sector_coords.0.y as f32 * sector_size),
+        position.x - (sector_coords.x as f32 * sector_size),
+        position.y - (sector_coords.y as f32 * sector_size),
     );
 
     // Calculate distances to each boundary

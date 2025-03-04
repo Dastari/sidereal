@@ -11,7 +11,10 @@ impl Plugin for SpatialPlugin {
             .register_type::<ClusterCoords>()
             .register_type::<BoundaryDirection>()
             .register_type::<VisualOnly>()
-            .register_type::<ShadowEntity>();
+            .register_type::<ShadowEntity>()
+            .register_type::<f32>()
+            .register_type::<Vec2>()
+            .register_type::<IVec2>();
 
         // Register events
         app.add_event::<EntityApproachingBoundary>();
