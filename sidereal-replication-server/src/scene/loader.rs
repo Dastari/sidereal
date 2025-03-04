@@ -1,12 +1,11 @@
 use bevy::math::{IVec2, Vec2};
-use bevy::prelude::{self, *};
+use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use std::sync::Arc;
 use tracing::{error, info};
 
 use crate::database::{DatabaseClient, DatabaseResult, EntityRecord};
-use sidereal_core::ecs::components::physics::PhysicsData;
-use sidereal_core::ecs::components::{SpatialPosition, SpatialTracked};
+
 
 /// Plugin for managing the universe scene
 pub struct SceneLoaderPlugin;

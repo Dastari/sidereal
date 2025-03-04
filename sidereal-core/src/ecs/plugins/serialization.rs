@@ -61,12 +61,10 @@ impl EntitySerializer for World {
 
     fn deserialize_entity(&mut self, serialized: &SerializedEntity) -> Result<Entity, String> {
         let entity = self.spawn_empty().id();
-        println!("Created empty entity: {:?}", entity);
         let type_registry = self.resource::<AppTypeRegistry>().clone();
         let registry = type_registry.read();
 
         for (type_name, value) in &serialized.components {
-            println!("Deserializing component: {}", type_name);
             if let Some(registration) = find_registration_by_name(&registry, type_name) {
                 if let Some(component_id) = registration.data::<ReflectComponent>() {
                     let wrapped_value = serde_json::json!({
@@ -93,10 +91,7 @@ impl EntitySerializer for World {
             } else {
                 return Err(format!("Type {} not found in registry", type_name));
             }
-            println!("Successfully deserialized component: {}", type_name);
         }
-
-        println!("All components deserialized");
         Ok(entity)
     }
 }

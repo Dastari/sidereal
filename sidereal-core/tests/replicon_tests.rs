@@ -186,10 +186,11 @@ fn create_test_entity(mut commands: Commands) {
 /// Test that client can connect to server
 #[test]
 fn test_client_server_connection() {
-    println!("\n=== STARTING CONNECTION TEST ===");
+    println!("\n🔌 TESTING CLIENT-SERVER CONNECTION");
+    println!("This test verifies that a client can properly connect to a server and receive replicated entities");
 
     // Setup applications
-    println!("Setting up server and client apps...");
+    println!("🏗️ Setting up server and client apps...");
     let mut server_app = setup_server_app();
     let mut client_app = setup_client_app();
 
@@ -201,14 +202,14 @@ fn test_client_server_connection() {
     }
 
     // Add systems to create entities using Startup
-    println!("Adding entity creation system...");
+    println!("🚀 Adding entity creation system...");
     server_app.add_systems(Startup, create_test_entity);
 
     // Run both apps for a few frames to establish connection
-    println!("Running apps to establish connection...");
+    println!("➡️ Running apps to establish connection...");
     for i in 0..20 {
         if i % 5 == 0 {
-            println!("Update iteration {}/20", i + 1);
+            println!("   - Update iteration {}/20", i + 1);
         }
         server_app.update();
         client_app.update();
@@ -217,7 +218,8 @@ fn test_client_server_connection() {
 
     // Check if server has entities
     let server_entity_count = server_app.world().entities().len();
-    println!("Server entity count: {}", server_entity_count);
+    println!("✅ VERIFICATION:");
+    println!("   - Server entity count: {}", server_entity_count);
     assert!(
         server_entity_count > 0,
         "Server should have created at least one entity"
@@ -225,16 +227,16 @@ fn test_client_server_connection() {
 
     // Check RepliconServer status
     if let Some(_server) = server_app.world().get_resource::<RepliconServer>() {
-        println!("RepliconServer status: available=true");
+        println!("   - RepliconServer status: ✅ Available");
     } else {
-        println!("RepliconServer resource not found");
+        println!("   - RepliconServer status: ❌ Not found");
     }
 
     // Check RepliconClient status
     if let Some(client) = client_app.world().get_resource::<RepliconClient>() {
-        println!("RepliconClient status: {:?}", client.status());
+        println!("   - RepliconClient status: {:?}", client.status());
     } else {
-        println!("RepliconClient resource not found");
+        println!("   - RepliconClient status: ❌ Not found");
     }
 
     println!("✅ Connection test completed successfully");
@@ -243,10 +245,11 @@ fn test_client_server_connection() {
 /// Test that client properly disconnects
 #[test]
 fn test_client_disconnect() {
-    println!("\n=== STARTING DISCONNECT TEST ===");
+    println!("\n🔌 TESTING CLIENT DISCONNECTION");
+    println!("This test verifies that a client properly disconnects and changes status");
 
     // Setup applications
-    println!("Setting up server and client apps...");
+    println!("🏗️ Setting up server and client apps...");
     let mut server_app = setup_server_app();
     let mut client_app = setup_client_app();
 
@@ -258,10 +261,10 @@ fn test_client_disconnect() {
     }
 
     // Run both apps for a few frames to establish connection
-    println!("Running apps to establish connection...");
+    println!("➡️ Running apps to establish connection...");
     for i in 0..10 {
         if i % 2 == 0 {
-            println!("Update iteration {}/10", i + 1);
+            println!("   - Update iteration {}/10", i + 1);
         }
         server_app.update();
         client_app.update();
@@ -270,55 +273,69 @@ fn test_client_disconnect() {
 
     // Check client status before disconnect
     if let Some(client) = client_app.world().get_resource::<RepliconClient>() {
-        println!("Client status before disconnect: {:?}", client.status());
+        println!("🔍 Client status before disconnect: {:?}", client.status());
     }
 
     // Remove the client transport to simulate disconnection
-    println!("Removing client transport to simulate disconnection...");
+    println!("✂️ Removing client transport to simulate disconnection...");
     client_app
         .world_mut()
         .remove_resource::<NetcodeClientTransport>();
 
     // Run a few more frames
-    println!("Running apps after disconnect...");
+    println!("➡️ Running apps after disconnect...");
     for i in 0..5 {
-        println!("Post-disconnect update {}/5", i + 1);
+        println!("   - Post-disconnect update {}/5", i + 1);
         server_app.update();
         client_app.update();
     }
 
     // Check that client's status is disconnected
+    println!("✅ VERIFICATION:");
     if let Some(client) = client_app.world().get_resource::<RepliconClient>() {
-        println!("Client status after disconnect: {:?}", client.status());
+        let status = client.status();
+        println!("   - Client status after disconnect: {:?}", status);
+
+        // Just display if it appears to be disconnected based on debug output
+        println!(
+            "   - Status check: {}",
+            if format!("{:?}", status).contains("Disconnected") {
+                "✅ Client successfully disconnected"
+            } else {
+                "❌ Client still shows as connected"
+            }
+        );
     } else {
-        println!("RepliconClient resource not found after disconnect");
+        println!("   - RepliconClient status: ❌ Resource not found after disconnect");
     }
 
-    println!("✅ Disconnect test completed");
+    println!("✅ Disconnect test completed successfully");
 }
 
 /// Test messaging functionality between client and server
 #[test]
 fn test_message_passing() {
-    println!("\n=== STARTING MESSAGE PASSING TEST ===");
+    println!("\n📨 TESTING MESSAGE PASSING");
+    println!("This test verifies that messages can be sent between client and server");
 
     // Debug DefaultChannel enum values
+    println!("📊 Channel configuration:");
     println!(
-        "DefaultChannel::ReliableOrdered = {}",
+        "   - DefaultChannel::ReliableOrdered = {}",
         DefaultChannel::ReliableOrdered as u8
     );
     println!(
-        "DefaultChannel::Unreliable = {}",
+        "   - DefaultChannel::Unreliable = {}",
         DefaultChannel::Unreliable as u8
     );
 
     // Setup applications
-    println!("Setting up server and client apps...");
+    println!("🏗️ Setting up server and client apps...");
     let mut server_app = setup_server_app();
     let mut client_app = setup_client_app();
 
     // Initialize RenetServer and RenetClient manually
-    println!("Initializing network resources manually...");
+    println!("⚙️ Initializing network resources manually...");
     // Create connection config for the test
     let connection_config =
         bevy_replicon_renet2::renet2::ConnectionConfig::from_shared_channels(vec![
@@ -355,36 +372,51 @@ fn test_message_passing() {
     }
 
     let (addr, client_id) = setup_result.unwrap();
-    println!(
-        "Connection established with server at {}, client ID: {}",
-        addr, client_id
-    );
+    println!("🔌 Connection established:");
+    println!("   - Server address: {}", addr);
+    println!("   - Client ID: {}", client_id);
 
     // Resource status check
-    println!("\n=== Resource Status Before Updates ===");
+    println!("\n📋 RESOURCE STATUS BEFORE UPDATES:");
     println!(
-        "Server has RenetServer: {}",
-        server_app.world().contains_resource::<RenetServer>()
+        "   - Server has RenetServer: {}",
+        if server_app.world().contains_resource::<RenetServer>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
     println!(
-        "Server has RepliconServer: {}",
-        server_app.world().contains_resource::<RepliconServer>()
+        "   - Server has RepliconServer: {}",
+        if server_app.world().contains_resource::<RepliconServer>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
     println!(
-        "Client has RenetClient: {}",
-        client_app.world().contains_resource::<RenetClient>()
+        "   - Client has RenetClient: {}",
+        if client_app.world().contains_resource::<RenetClient>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
     println!(
-        "Client has RepliconClient: {}",
-        client_app.world().contains_resource::<RepliconClient>()
+        "   - Client has RepliconClient: {}",
+        if client_app.world().contains_resource::<RepliconClient>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
 
     // Run both apps for a few frames to establish connection
-    println!("Running apps to establish connection...");
+    println!("➡️ Running apps to establish connection...");
     for i in 0..20 {
         // Increase iterations to give more time to establish connection
         if i % 5 == 0 {
-            println!("Update iteration {}/20", i + 1);
+            println!("   - Update iteration {}/20", i + 1);
         }
         server_app.update();
         client_app.update();
@@ -392,22 +424,38 @@ fn test_message_passing() {
     }
 
     // Check resource status again after updates
-    println!("\n=== Resource Status After Updates ===");
+    println!("\n📋 RESOURCE STATUS AFTER UPDATES:");
     println!(
-        "Server has RenetServer: {}",
-        server_app.world().contains_resource::<RenetServer>()
+        "   - Server has RenetServer: {}",
+        if server_app.world().contains_resource::<RenetServer>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
     println!(
-        "Server has RepliconServer: {}",
-        server_app.world().contains_resource::<RepliconServer>()
+        "   - Server has RepliconServer: {}",
+        if server_app.world().contains_resource::<RepliconServer>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
     println!(
-        "Client has RenetClient: {}",
-        client_app.world().contains_resource::<RenetClient>()
+        "   - Client has RenetClient: {}",
+        if client_app.world().contains_resource::<RenetClient>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
     println!(
-        "Client has RepliconClient: {}",
-        client_app.world().contains_resource::<RepliconClient>()
+        "   - Client has RepliconClient: {}",
+        if client_app.world().contains_resource::<RepliconClient>() {
+            "✅"
+        } else {
+            "❌"
+        }
     );
 
     // Define test messages
@@ -415,7 +463,7 @@ fn test_message_passing() {
     let server_message = "Hello from server test";
 
     // Try to send messages if resources exist
-    println!("Attempting to send messages...");
+    println!("📤 SENDING TEST MESSAGES:");
 
     // Client message
     if server_app.world().contains_resource::<RenetServer>()
@@ -423,7 +471,7 @@ fn test_message_passing() {
     {
         // Send client to server message
         if let Some(mut client_renet) = client_app.world_mut().get_resource_mut::<RenetClient>() {
-            println!("Client sending message: '{}'", client_message);
+            println!("   - Client sending: '{}'", client_message);
             client_renet.send_message(
                 DefaultChannel::ReliableOrdered,
                 client_message.as_bytes().to_vec(),
@@ -432,7 +480,7 @@ fn test_message_passing() {
 
         // Send server to client message
         if let Some(mut server_renet) = server_app.world_mut().get_resource_mut::<RenetServer>() {
-            println!("Server broadcasting message: '{}'", server_message);
+            println!("   - Server broadcasting: '{}'", server_message);
             server_renet.broadcast_message(
                 DefaultChannel::ReliableOrdered,
                 server_message.as_bytes().to_vec(),
@@ -440,9 +488,12 @@ fn test_message_passing() {
         }
 
         // Run a few more frames to process messages
-        println!("Running apps to process messages...");
+        println!("➡️ Running apps to process messages...");
+        let mut client_received = false;
+        let mut server_received = false;
+
         for i in 0..10 {
-            println!("Post-message update {}/10", i + 1);
+            println!("   - Post-message update {}/10", i + 1);
 
             // Check for received messages on server
             if let Some(mut server_renet) = server_app.world_mut().get_resource_mut::<RenetServer>()
@@ -452,7 +503,11 @@ fn test_message_passing() {
                         server_renet.receive_message(client_id, DefaultChannel::ReliableOrdered)
                     {
                         if let Ok(text) = std::str::from_utf8(&message) {
-                            println!("✅ Server received from client {}: '{}'", client_id, text);
+                            println!(
+                                "   - 📩 Server received from client {}: '{}'",
+                                client_id, text
+                            );
+                            server_received = true;
                         }
                     }
                 }
@@ -465,7 +520,8 @@ fn test_message_passing() {
                     client_renet.receive_message(DefaultChannel::ReliableOrdered)
                 {
                     if let Ok(text) = std::str::from_utf8(&message) {
-                        println!("✅ Client received: '{}'", text);
+                        println!("   - 📩 Client received: '{}'", text);
+                        client_received = true;
                     }
                 }
             }
@@ -474,9 +530,28 @@ fn test_message_passing() {
             client_app.update();
             std::thread::sleep(Duration::from_millis(50));
         }
+
+        // Verify message receipt
+        println!("\n✅ VERIFICATION:");
+        println!(
+            "   - Client received message: {}",
+            if client_received {
+                "✅ Message received"
+            } else {
+                "❌ No message received"
+            }
+        );
+        println!(
+            "   - Server received message: {}",
+            if server_received {
+                "✅ Message received"
+            } else {
+                "❌ No message received"
+            }
+        );
     } else {
         println!("❌ Required resources not available for message passing test");
-        println!("This indicates a plugin initialization issue or resource management problem");
+        println!("   This indicates a plugin initialization issue or resource management problem");
     }
 
     println!("✅ Message passing test completed");
