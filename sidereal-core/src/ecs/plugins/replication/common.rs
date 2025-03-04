@@ -1,6 +1,6 @@
-use std::fmt::Display;
-use bevy::prelude::*;
 use bevy::ecs::component::ComponentId;
+use bevy::prelude::*;
+use std::fmt::Display;
 
 /// The status of a replication client.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,4 +69,4 @@ impl Default for NetworkConfig {
             max_clients: 64,
         }
     }
-} 
+}

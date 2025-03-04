@@ -1,14 +1,10 @@
 use bevy::prelude::*;
 use bevy_replicon_renet2::{
-    renet2::{
-        ConnectionConfig, DefaultChannel, SendType, ChannelConfig,
-        RenetClient, RenetServer, ClientId,
-    },
     netcode::{
-        ClientAuthentication, ServerAuthentication, ServerConfig, ServerSetupConfig,
-        NetcodeClientTransport, NetcodeServerTransport,
-        ServerSocketConfig, NativeSocket,
+        ClientAuthentication, NativeSocket, NetcodeClientTransport, NetcodeServerTransport,
+        ServerAuthentication, ServerConfig, ServerSetupConfig, ServerSocketConfig,
     },
+    renet2::{ChannelConfig, ConnectionConfig, DefaultChannel, RenetClient, RenetServer, SendType},
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime};
@@ -34,21 +30,21 @@ impl Default for ReplicationConfig {
                 server_channels_config: vec![
                     // Using numeric channel IDs (0, 1, 2) for core channels
                     ChannelConfig {
-                        channel_id: 0, // Channel for entity updates
+                        channel_id: 0,                            // Channel for entity updates
                         max_memory_usage_bytes: 10 * 1024 * 1024, // 10 MB
                         send_type: SendType::ReliableOrdered {
                             resend_time: Duration::from_millis(200),
                         },
                     },
                     ChannelConfig {
-                        channel_id: 1, // Channel for component updates
+                        channel_id: 1,                            // Channel for component updates
                         max_memory_usage_bytes: 10 * 1024 * 1024, // 10 MB
                         send_type: SendType::ReliableOrdered {
                             resend_time: Duration::from_millis(200),
                         },
                     },
                     ChannelConfig {
-                        channel_id: 2, // Channel for events
+                        channel_id: 2,                           // Channel for events
                         max_memory_usage_bytes: 5 * 1024 * 1024, // 5 MB
                         send_type: SendType::ReliableOrdered {
                             resend_time: Duration::from_millis(200),
@@ -95,7 +91,9 @@ impl ReplicationConfig {
         };
 
         ServerConfig {
-            current_time: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap(),
+            current_time: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap(),
             max_clients: self.max_clients as usize,
             protocol_id: self.protocol_id,
             sockets: vec![socket_config],
@@ -120,7 +118,7 @@ impl ReplicationConfig {
             connection_config: ConnectionConfig {
                 server_channels_config: vec![
                     ChannelConfig {
-                        channel_id: 0, // EntityUpdates
+                        channel_id: 0,                       // EntityUpdates
                         max_memory_usage_bytes: 1024 * 1024, // 1 MB for tests
                         send_type: SendType::ReliableOrdered {
                             resend_time: Duration::from_millis(100),
@@ -170,39 +168,46 @@ impl ReplicationConfig {
 }
 
 /// Helper function to create a server with default configuration
-pub fn create_default_server() -> Result<(RenetServer, NetcodeServerTransport), Box<dyn std::error::Error>> {
+pub fn create_default_server(
+) -> Result<(RenetServer, NetcodeServerTransport), Box<dyn std::error::Error>> {
     let config = ReplicationConfig::default();
     let server = RenetServer::new(config.connection_config.clone());
-    
+
     // Create a UDP socket for the server
     let udp_socket = UdpSocket::bind(config.server_addr)?;
     let socket = NativeSocket::new(udp_socket)?;
-    
+
     // Create server setup config
     let addresses: Vec<Vec<SocketAddr>> = vec![vec![config.server_addr]];
     let server_config = ServerSetupConfig {
-        current_time: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap(),
+        current_time: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap(),
         max_clients: config.max_clients,
         protocol_id: config.protocol_id,
         socket_addresses: addresses,
         authentication: ServerAuthentication::Unsecure,
     };
-    
+
     let transport = NetcodeServerTransport::new(server_config, socket)?;
-    
+
     Ok((server, transport))
 }
 
 /// Helper function to create a client with default configuration
-pub fn create_default_client(client_id: u64) -> Result<(RenetClient, NetcodeClientTransport), Box<dyn std::error::Error>> {
+pub fn create_default_client(
+    client_id: u64,
+) -> Result<(RenetClient, NetcodeClientTransport), Box<dyn std::error::Error>> {
     let config = ReplicationConfig::default();
     let client = RenetClient::new(config.connection_config.clone(), false);
-    
+
     // Create a UDP socket for the client with a random port
     let udp_socket = UdpSocket::bind("0.0.0.0:0")?;
     let socket = NativeSocket::new(udp_socket)?;
-    
-    let current_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+
+    let current_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
     let client_auth = ClientAuthentication::Unsecure {
         server_addr: config.server_addr,
         client_id,
@@ -210,13 +215,9 @@ pub fn create_default_client(client_id: u64) -> Result<(RenetClient, NetcodeClie
         protocol_id: config.protocol_id,
         socket_id: 0,
     };
-    
-    let transport = NetcodeClientTransport::new(
-        current_time,
-        client_auth,
-        socket,
-    )?;
-    
+
+    let transport = NetcodeClientTransport::new(current_time, client_auth, socket)?;
+
     Ok((client, transport))
 }
 
@@ -224,47 +225,51 @@ pub fn create_default_client(client_id: u64) -> Result<(RenetClient, NetcodeClie
 /// Note: This function should only be used in test code as it makes
 /// networking assumptions that wouldn't be valid in production.
 #[cfg(test)]
-pub fn create_test_server_client() -> Result<(
-    (RenetServer, NetcodeServerTransport),
-    (RenetClient, NetcodeClientTransport),
-), Box<dyn std::error::Error>> {
+pub fn create_test_server_client() -> Result<
+    (
+        (RenetServer, NetcodeServerTransport),
+        (RenetClient, NetcodeClientTransport),
+    ),
+    Box<dyn std::error::Error>,
+> {
     // Use loopback address with port 0 to let the OS assign a port
     let test_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
     let mut config = ReplicationConfig::test_config();
     config.server_addr = test_addr;
-    
+
     // Bind the server socket first to get the assigned port
     let server_udp_socket = UdpSocket::bind(test_addr)?;
     let actual_server_addr = server_udp_socket.local_addr()?;
     let server_socket = NativeSocket::new(server_udp_socket)?;
-    
+
     // Update the config with the actual server address
     config.server_addr = actual_server_addr;
-    
+
     // Create server
     let server = RenetServer::new(config.connection_config.clone());
-    
+
     // Create server setup config
     let addresses: Vec<Vec<SocketAddr>> = vec![vec![config.server_addr]];
     let server_config = ServerSetupConfig {
-        current_time: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap(),
+        current_time: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap(),
         max_clients: config.max_clients,
         protocol_id: config.protocol_id,
         socket_addresses: addresses,
         authentication: ServerAuthentication::Unsecure,
     };
-    
-    let server_transport = NetcodeServerTransport::new(
-        server_config,
-        server_socket,
-    )?;
-    
+
+    let server_transport = NetcodeServerTransport::new(server_config, server_socket)?;
+
     // Create client
     let client = RenetClient::new(config.connection_config.clone(), false);
     let client_udp_socket = UdpSocket::bind("127.0.0.1:0")?;
     let client_socket = NativeSocket::new(client_udp_socket)?;
-    
-    let current_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+
+    let current_time = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
     let client_auth = ClientAuthentication::Unsecure {
         server_addr: config.server_addr,
         client_id: 0,
@@ -272,12 +277,8 @@ pub fn create_test_server_client() -> Result<(
         protocol_id: config.protocol_id,
         socket_id: 0,
     };
-    
-    let client_transport = NetcodeClientTransport::new(
-        current_time,
-        client_auth,
-        client_socket,
-    )?;
-    
+
+    let client_transport = NetcodeClientTransport::new(current_time, client_auth, client_socket)?;
+
     Ok(((server, server_transport), (client, client_transport)))
 }

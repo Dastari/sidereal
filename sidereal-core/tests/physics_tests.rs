@@ -1,8 +1,6 @@
 use bevy::prelude::*;
-use bevy_rapier2d::prelude::*; // Import Rapier components
-use sidereal_core::ecs::{
-    components::PhysicsBody, plugins::physics::PhysicsPlugin, systems::physics::*,
-};
+use bevy_rapier2d::prelude::*;
+use sidereal_core::ecs::{components::PhysicsBody, plugins::physics::PhysicsPlugin};
 use std::time::Duration;
 
 // Test helper to create an app with Rapier physics

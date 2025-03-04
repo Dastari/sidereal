@@ -1,18 +1,19 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use serde_json;
-use sidereal_core::ecs::components::{
-    hull::{Block, Direction, Hull},
-    physics::PhysicsBody,
-    spatial::{ClusterCoords, Position, SectorCoords, UniverseConfig},
-    Name,
-};
-use sidereal_core::ecs::entities::ship::Ship;
-use sidereal_core::ecs::plugins::core::CorePlugin;
-use sidereal_core::ecs::plugins::{
-    physics::PhysicsPlugin,
-    serialization::{EntitySerializationPlugin, EntitySerializer},
-    spatial::SpatialPlugin,
+use sidereal_core::ecs::{
+    components::{
+        hull::{Block, Direction, Hull},
+        physics::PhysicsBody,
+        spatial::{ClusterCoords, Position, SectorCoords, UniverseConfig},
+        Name,
+    },
+    entities::ship::Ship,
+    plugins::{
+        core::CorePlugin,
+        physics::PhysicsPlugin,
+        serialization::{EntitySerializationPlugin, EntitySerializer},
+        spatial::SpatialPlugin,
+    },
 };
 
 // Test helper to create an app with the required plugins
