@@ -1,3 +1,7 @@
+use crate::ecs::components::hull::Hull;
+use crate::ecs::components::physics::{PhysicsBody, PhysicsState};
+use crate::ecs::components::spatial::{ClusterCoords, Position, SectorCoords};
+use crate::ecs::components::Name;
 use bevy::prelude::*;
 use bevy_reflect::serde::{ReflectDeserializer, ReflectSerializer};
 use bevy_reflect::{GetTypeRegistration, PartialReflect, Reflect, TypeRegistration, TypeRegistry};
@@ -5,11 +9,6 @@ use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 use std::collections::HashMap;
-
-use crate::ecs::components::hull::Hull;
-use crate::ecs::components::physics::{PhysicsBody, PhysicsState};
-use crate::ecs::components::spatial::{ClusterCoords, Position, SectorCoords};
-use crate::ecs::components::Name;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SerializedEntity {
@@ -24,16 +23,13 @@ impl Plugin for EntitySerializationPlugin {
             app.init_resource::<AppTypeRegistry>();
         }
         let type_registry = app.world().resource::<AppTypeRegistry>().clone();
-        let mut registry = type_registry.write();
-        registry.register::<Position>();
-        registry.register::<ClusterCoords>();
-        registry.register::<SectorCoords>();
-        registry.register::<PhysicsBody>();
-        registry.register::<PhysicsState>();
-        registry.register::<Hull>();
-        registry.register::<Name>();
+        let registry = type_registry.read();
+        for registration in registry.iter() {
+            let type_name = registration.type_info().type_path();
+            let type_id = registration.type_info().type_id();
+            println!("Registered type: {} (TypeId: {:?})", type_name, type_id);
+        }
         drop(registry);
-        app.insert_resource(type_registry);
     }
 }
 
@@ -60,6 +56,15 @@ impl EntitySerializer for World {
                     let value = serde_json::to_value(&serializer).map_err(|err| {
                         format!("Failed to serialize component {}: {}", type_name, err)
                     })?;
+                    let value = if let serde_json::Value::Object(mut map) = value {
+                        if map.contains_key(&type_name) && map.len() == 1 {
+                            map.remove(&type_name).unwrap()
+                        } else {
+                            serde_json::Value::Object(map)
+                        }
+                    } else {
+                        value
+                    };
                     components.insert(type_name, value);
                 }
             }
@@ -101,8 +106,7 @@ fn find_registration_by_name<'a>(
 }
 
 fn as_partial_reflect(value: &dyn Reflect) -> &dyn PartialReflect {
-    // SAFETY: Every type implementing Reflect in our registry is expected to also implement PartialReflect.
-    unsafe { &*(value as *const dyn Reflect as *const dyn PartialReflect) }
+    unsafe { std::mem::transmute::<&dyn Reflect, &dyn PartialReflect>(value) }
 }
 
 pub trait EntitySerializationExt {

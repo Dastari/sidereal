@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+#[reflect(Component, Serialize, Deserialize)]
 pub struct Position(Vec2);
 
 // Add these implementations to Position
@@ -25,6 +26,7 @@ impl Position {
 }
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+#[reflect(Component, Serialize, Deserialize)]
 pub struct SectorCoords(IVec2);
 
 // Add these implementations to SectorCoords
@@ -42,6 +44,7 @@ impl SectorCoords {
     }
 }
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+#[reflect(Component, Serialize, Deserialize)]
 pub struct ClusterCoords(IVec2);
 
 // Add these implementations to ClusterCoords
@@ -60,7 +63,7 @@ impl ClusterCoords {
 }
 
 /// Sector definition - contains entities in a spatial region
-#[derive(Resource, Serialize, Deserialize, Clone, Debug, Default, Reflect)]
+#[derive(Resource)]
 pub struct Sector {
     pub coordinates: IVec2,
     pub entities: HashSet<Entity>,
@@ -71,7 +74,7 @@ pub struct Sector {
 }
 
 /// Cluster definition - group of sectors managed by a single shard
-#[derive(Resource, Serialize, Deserialize, Clone, Debug, Default, Reflect)]
+#[derive(Resource)]
 pub struct Cluster {
     pub id: Uuid,
     pub base_coordinates: IVec2,

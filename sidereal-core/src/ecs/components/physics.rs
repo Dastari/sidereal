@@ -1,8 +1,18 @@
 use crate::ecs::components::spatial::{ClusterCoords, Position, SectorCoords};
 use bevy::math::Vec2;
-use bevy::prelude::{Component, Reflect};
 use bevy_rapier2d::prelude::*;
+use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+use bevy::reflect::Reflect;
+
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
+#[reflect(Component, Serialize, Deserialize)]
+pub enum RigidBody {
+    #[default]
+    Dynamic,
+    Static,
+    Kinematic,
+}
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
 #[require(
@@ -17,6 +27,7 @@ use serde::{Deserialize, Serialize};
 pub struct PhysicsBody;
 
 #[derive(Component, Clone, Debug, Serialize, Deserialize, Reflect)]
+
 pub struct PhysicsState {
     // Core physics properties
     pub linear_velocity: Vec2,
