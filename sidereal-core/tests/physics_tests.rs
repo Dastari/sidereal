@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*; // Import Rapier components
-use sidereal_core::ecs::systems::physics::*;
+use sidereal_core::ecs::{
+    components::PhysicsBody, plugins::physics::PhysicsPlugin, systems::physics::*,
+};
 use std::time::Duration;
 
 // Test helper to create an app with Rapier physics
@@ -8,13 +10,7 @@ fn setup_test_app() -> App {
     let mut app = App::new();
 
     // Add the bare minimum plugins for testing
-    app.add_plugins(MinimalPlugins);
-
-    // Add Rapier physics plugin with default settings
-    app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
-
-    // Add our n_body_gravity_system to run physics
-    app.add_systems(Update, n_body_gravity_system);
+    app.add_plugins(MinimalPlugins).add_plugins(PhysicsPlugin);
 
     app
 }
@@ -157,6 +153,7 @@ fn test_n_body_gravity() {
     let _massive_id = app
         .world_mut()
         .spawn((
+            PhysicsBody,
             Transform::from_xyz(0.0, 0.0, 0.0),
             GlobalTransform::default(),
             RigidBody::Fixed,     // Fixed bodies are treated as massive
@@ -167,6 +164,7 @@ fn test_n_body_gravity() {
     let small_id = app
         .world_mut()
         .spawn((
+            PhysicsBody,
             Transform::from_xyz(10.0, 0.0, 0.0),
             GlobalTransform::default(),
             RigidBody::Dynamic,
@@ -219,6 +217,7 @@ fn test_orbital_mechanics() {
     let _sun_id = app
         .world_mut()
         .spawn((
+            PhysicsBody,
             Transform::from_xyz(0.0, 0.0, 0.0),
             GlobalTransform::default(),
             RigidBody::Fixed,     // Fixed, very massive object
@@ -230,6 +229,7 @@ fn test_orbital_mechanics() {
     let planet_id = app
         .world_mut()
         .spawn((
+            PhysicsBody,
             Transform::from_xyz(100.0, 0.0, 0.0),
             GlobalTransform::default(),
             RigidBody::Dynamic,

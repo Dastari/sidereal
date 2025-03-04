@@ -1,13 +1,8 @@
-use crate::ecs::components::hull::Hull;
-use crate::ecs::components::physics::{PhysicsBody, PhysicsState};
-use crate::ecs::components::spatial::{ClusterCoords, Position, SectorCoords};
-use crate::ecs::components::Name;
 use bevy::prelude::*;
 use bevy_reflect::serde::{ReflectDeserializer, ReflectSerializer};
 use bevy_reflect::{GetTypeRegistration, PartialReflect, Reflect, TypeRegistration, TypeRegistry};
 use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
-use std::any::TypeId;
 use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -22,14 +17,6 @@ impl Plugin for EntitySerializationPlugin {
         if !app.world().contains_resource::<AppTypeRegistry>() {
             app.init_resource::<AppTypeRegistry>();
         }
-        let type_registry = app.world().resource::<AppTypeRegistry>().clone();
-        let registry = type_registry.read();
-        for registration in registry.iter() {
-            let type_name = registration.type_info().type_path();
-            let type_id = registration.type_info().type_id();
-            println!("Registered type: {} (TypeId: {:?})", type_name, type_id);
-        }
-        drop(registry);
     }
 }
 
@@ -74,28 +61,42 @@ impl EntitySerializer for World {
 
     fn deserialize_entity(&mut self, serialized: &SerializedEntity) -> Result<Entity, String> {
         let entity = self.spawn_empty().id();
+        println!("Created empty entity: {:?}", entity);
         let type_registry = self.resource::<AppTypeRegistry>().clone();
         let registry = type_registry.read();
-        let mut entity_mut = self.entity_mut(entity);
+
         for (type_name, value) in &serialized.components {
+            println!("Deserializing component: {}", type_name);
             if let Some(registration) = find_registration_by_name(&registry, type_name) {
                 if let Some(component_id) = registration.data::<ReflectComponent>() {
                     let wrapped_value = serde_json::json!({
                         type_name: value
                     });
-                    
+
                     let deserializer = ReflectDeserializer::new(&registry);
                     let json_str = wrapped_value.to_string();
                     let mut json_de = serde_json::Deserializer::from_str(&json_str);
                     let reflect_value = deserializer.deserialize(&mut json_de).map_err(|err| {
                         format!("Failed to deserialize component {}: {}", type_name, err)
                     })?;
-                    component_id.apply(&mut entity_mut, reflect_value.as_ref());
+
+                    // Create a mutable reference that can access the world for apply_or_insert
+                    let mut entity_world_mut = self.entity_mut(entity);
+
+                    // Use apply_or_insert instead of apply so it works for new components
+                    component_id.apply_or_insert(
+                        &mut entity_world_mut,
+                        reflect_value.as_ref(),
+                        &registry,
+                    );
                 }
             } else {
                 return Err(format!("Type {} not found in registry", type_name));
             }
+            println!("Successfully deserialized component: {}", type_name);
         }
+
+        println!("All components deserialized");
         Ok(entity)
     }
 }
@@ -124,12 +125,7 @@ impl EntitySerializationExt for App {
     where
         T: Component + Reflect + GetTypeRegistration,
     {
-        let type_registry = self.world().resource::<AppTypeRegistry>().clone();
-        {
-            let mut registry = type_registry.write();
-            registry.register::<T>();
-        }
-        self.insert_resource(type_registry);
-        self
+        // Just use Bevy's built-in register_type method
+        self.register_type::<T>()
     }
 }

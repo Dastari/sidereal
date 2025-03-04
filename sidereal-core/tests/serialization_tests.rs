@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
-use serde::{Deserialize, Serialize};
 use serde_json;
 use sidereal_core::ecs::components::{
     hull::{Block, Direction, Hull},
@@ -13,7 +12,7 @@ use sidereal_core::ecs::plugins::core::CorePlugin;
 use sidereal_core::ecs::plugins::{
     physics::PhysicsPlugin,
     serialization::{EntitySerializationPlugin, EntitySerializer},
-    spacial::SpatialPlugin,
+    spatial::SpatialPlugin,
 };
 
 // Test helper to create an app with the required plugins
@@ -28,12 +27,13 @@ fn setup_test_app() -> App {
 
     // Add our plugins last to avoid registration conflicts
     app.add_plugins((
+        CorePlugin,
         SpatialPlugin,
         PhysicsPlugin,
-        CorePlugin,
         EntitySerializationPlugin,
     ));
 
+    println!("Plugins added");
     // Add assertion to verify setup
     debug_assert!(
         app.world().contains_resource::<Time>(),
@@ -78,8 +78,9 @@ fn test_ship_serialization_deserialization() {
         .spawn((
             Ship,
             Name::new(ship_name),
-            Transform::from_translation(Vec3::new(initial_position.x, initial_position.y, 0.0)),
-            GlobalTransform::default(),
+            Position::new(initial_position),
+            SectorCoords::new(sector_coords),
+            ClusterCoords::new(cluster_coords),
             PhysicsBody::default(),
             RigidBody::Dynamic,
             Collider::cuboid(25.0, 15.0), // Half the hull dimensions
@@ -87,9 +88,6 @@ fn test_ship_serialization_deserialization() {
                 linvel: Vec2::new(5.0, 2.0),
                 angvel: 1.0,
             },
-            Position::new(initial_position),
-            SectorCoords::new(sector_coords),
-            ClusterCoords::new(cluster_coords),
             hull.clone(),
         ))
         .id();
@@ -181,8 +179,6 @@ fn test_ship_physics_simulation_serialization() {
         .spawn((
             Ship,
             Name::new(ship_name),
-            Transform::from_translation(Vec3::new(initial_position.x, initial_position.y, 0.0)),
-            GlobalTransform::default(),
             PhysicsBody::default(),
             RigidBody::Dynamic,
             Collider::cuboid(25.0, 15.0), // Half the hull dimensions

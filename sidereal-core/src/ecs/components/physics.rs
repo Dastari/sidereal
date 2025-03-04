@@ -22,7 +22,11 @@ pub enum RigidBody {
     RigidBody,
     Velocity,
     Collider,
-    PhysicsState
+    PhysicsState,
+    Transform,
+    Sleeping,
+    Damping,
+    GlobalTransform
 )]
 pub struct PhysicsBody;
 

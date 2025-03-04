@@ -1,28 +1,19 @@
-use crate::ecs::components::physics::{BodyType, PhysicsBody, PhysicsState};
 use crate::ecs::components::spatial::{
     calculate_entity_cluster, ClusterCoords, Position, SectorCoords, UniverseConfig,
 };
+use crate::ecs::plugins::serialization::EntitySerializationExt;
 use crate::ecs::systems::physics::n_body_gravity_system;
 use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
+use std::collections::HashMap;
 
 pub struct PhysicsPlugin;
 
 impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
         // Register types
-        app.register_type::<PhysicsBody>()
-            .register_type::<PhysicsState>()
-            .register_type::<Damping>()
-            .register_type::<Sleeping>()
-            .register_type::<AdditionalMassProperties>()
-            .register_type::<RigidBody>()
-            .register_type::<Velocity>()
-            .register_type::<BodyType>();
-
-        // app.world_mut().register_required_components::<PhysicsBody, Position>();
-        // app.world_mut().register_required_components::<PhysicsBody, SectorCoords>();
-        // app.world_mut().register_required_components::<PhysicsBody, ClusterCoords>();
+        app.register_serializable_component::<Transform>()
+            .register_serializable_component::<GlobalTransform>();
 
         // Add Rapier physics
         app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
@@ -30,19 +21,22 @@ impl Plugin for PhysicsPlugin {
         // Add gravitational system
         app.add_systems(FixedUpdate, n_body_gravity_system);
 
-        // Add position synchronization system
-        // This should run after physics simulation but before boundary checks
+        // Add UniverseConfig
+        app.insert_resource(UniverseConfig::default());
+
         app.add_systems(
             FixedUpdate,
             sync_transform_to_spatial_position.after(PhysicsSet::Writeback),
         );
 
-        // Add sync systems
-        app.add_systems(PreUpdate, init_rapier_from_physics_state);
         app.add_systems(
-            PostUpdate,
-            sync_rapier_to_physics_state.after(PhysicsSet::Writeback),
+            FixedUpdate,
+            sync_spatial_position_to_transform.before(PhysicsSet::StepSimulation),
         );
+
+        // Store the previous state of positions to detect manual position changes
+        app.init_resource::<PositionChangeTracker>();
+        app.add_systems(PostUpdate, track_position_changes);
     }
 }
 
@@ -72,87 +66,58 @@ fn sync_transform_to_spatial_position(
     }
 }
 
-// System to initialize Rapier components when a new entity with PhysicsState is spawned
-fn init_rapier_from_physics_state(
-    mut commands: Commands,
-    query: Query<(Entity, &PhysicsState), Added<PhysicsState>>,
-    time: Res<Time>,
+// Add this system to synchronize spatial position to Transform
+fn sync_spatial_position_to_transform(
+    tracker: Res<PositionChangeTracker>,
+    mut query: Query<(Entity, &Position, &mut Transform)>,
 ) {
-    let current_time = time.elapsed_secs_f64();
-
-    for (entity, physics_state) in query.iter() {
-        // Create Rapier rigid body
-        let rigid_body = physics_state.to_rapier_body_type();
-
-        // Create Rapier collider
-        let collider = physics_state.to_rapier_collider();
-
-        // Set up Rapier components
-        commands
-            .entity(entity)
-            .insert(rigid_body)
-            .insert(collider)
-            .insert(Velocity {
-                linvel: physics_state.linear_velocity,
-                angvel: physics_state.angular_velocity,
-            })
-            .insert(Damping {
-                linear_damping: physics_state.linear_damping,
-                angular_damping: physics_state.angular_damping,
-            })
-            .insert(AdditionalMassProperties::Mass(physics_state.mass))
-            .insert(Sleeping::default());
-
-        // Update last sync time
-        if let Some(mut state) = commands.get_entity(entity) {
-            state.insert(PhysicsState {
-                last_sync: current_time,
-                ..*physics_state
-            });
+    // Only process entities that were manually changed
+    for entity in tracker.manually_changed.iter() {
+        if let Ok((_, position, mut transform)) = query.get_mut(*entity) {
+            // Update the transform's translation from Position
+            // Keep the z-coordinate unchanged
+            let current_z = transform.translation.z;
+            let pos = position.get();
+            transform.translation = Vec3::new(pos.x, pos.y, current_z);
         }
     }
 }
 
-// System to update our PhysicsState from Rapier's components after physics simulations
-fn sync_rapier_to_physics_state(
-    mut query: Query<(
-        &RigidBody,
-        &Collider,
-        &Velocity,
-        Option<&Damping>,
-        Option<&ReadMassProperties>,
-        &mut PhysicsState,
-    )>,
-    time: Res<Time>,
+// Resource to track position changes
+#[derive(Resource, Default)]
+struct PositionChangeTracker {
+    manually_changed: Vec<Entity>,
+    previous_positions: HashMap<Entity, Vec2>,
+}
+
+// System to track which positions were changed manually vs by transform sync
+fn track_position_changes(
+    mut tracker: ResMut<PositionChangeTracker>,
+    position_query: Query<(Entity, &Position), Changed<Position>>,
+    transform_query: Query<Entity, Changed<Transform>>,
 ) {
-    let current_time = time.elapsed_secs_f64();
+    // Clear previous frame's changes
+    tracker.manually_changed.clear();
 
-    for (rigid_body, collider, velocity, damping, mass_props, mut physics_state) in query.iter_mut()
-    {
-        // Update velocity
-        physics_state.linear_velocity = velocity.linvel;
-        physics_state.angular_velocity = velocity.angvel;
+    // Check each entity with a changed position
+    for (entity, position) in position_query.iter() {
+        let pos = position.get();
 
-        // Update damping if available
-        if let Some(damping) = damping {
-            physics_state.linear_damping = damping.linear_damping;
-            physics_state.angular_damping = damping.angular_damping;
+        // If the entity's transform didn't change OR
+        // if the new position doesn't match what we'd expect from transform changes,
+        // consider it a manual change
+        if !transform_query.contains(entity) {
+            if let Some(prev_pos) = tracker.previous_positions.get(&entity) {
+                if *prev_pos != pos {
+                    tracker.manually_changed.push(entity);
+                }
+            } else {
+                // First time seeing this entity, assume it's a manual change
+                tracker.manually_changed.push(entity);
+            }
         }
 
-        // Update body type
-        physics_state.body_type = match rigid_body {
-            RigidBody::Dynamic => BodyType::Dynamic,
-            RigidBody::Fixed => BodyType::Static,
-            _ => BodyType::Kinematic,
-        };
-
-        // Update mass if available
-        if let Some(mass_props) = mass_props {
-            physics_state.mass = mass_props.mass;
-            physics_state.center_of_mass = mass_props.local_center_of_mass;
-        }
-
-        // Update last sync time
-        physics_state.last_sync = current_time;
+        // Update the stored position
+        tracker.previous_positions.insert(entity, pos);
     }
 }

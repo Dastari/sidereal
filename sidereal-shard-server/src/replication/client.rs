@@ -1,13 +1,16 @@
 use bevy::math::Vec2;
 use bevy::prelude::*;
 use bevy::time::Time;
+use bevy_rapier2d::prelude::Velocity;
+use serde::Serialize;
 use std::collections::HashMap;
+use std::time::Duration;
 use uuid::Uuid;
 
-//pub use sidereal_core::ecs::plugins::replication::client::ReplicationClient;
 pub use sidereal_core::ecs::plugins::replication::common::{
     EntityState, EntityUpdateType, ReplicationClientStatus,
 };
+use sidereal_core::ecs::components::spatial::SpatialPosition;
 
 /// Resource to track handshake attempts and timeouts
 #[derive(Resource)]
@@ -31,9 +34,9 @@ impl Default for HandshakeTracker {
         Self {
             last_attempt: 0.0,
             retries: 0,
-            max_retries: 10,
-            retry_interval: 2.0, // Increased from 0.5
-            timeout: 60.0,       // Increased from 30.0
+            max_retries: 5,
+            retry_interval: 2.0,
+            timeout: 30.0,
             connection_time: 0.0,
         }
     }
@@ -44,30 +47,17 @@ impl HandshakeTracker {
     pub fn reset(&mut self) {
         self.last_attempt = 0.0;
         self.retries = 0;
-        // Keep connection_time unchanged to preserve reference to original time
+        self.connection_time = 0.0;
     }
 
     /// Check if we should retry sending a handshake
     pub fn should_retry(&self, current_time: f64) -> bool {
-        // No retry needed if we're over the retry limit
-        if self.retries >= self.max_retries {
-            return false;
+        if self.last_attempt == 0.0 || (current_time - self.last_attempt) >= self.retry_interval {
+            if self.retries < self.max_retries {
+                return true;
+            }
         }
-
-        // First attempt (retries=0) should happen immediately
-        if self.retries == 0 && self.last_attempt == 0.0 {
-            return true;
-        }
-
-        // Use a dynamic retry interval based on the retry count to be more aggressive
-        let dynamic_interval = match self.retries {
-            0..=2 => 0.5, // First 3 retries: every 0.5 seconds
-            3..=9 => 1.0, // Next 7 retries: every 1 second
-            _ => 3.0,     // Remaining retries: every 3 seconds
-        };
-
-        // Check if enough time has passed since the last attempt
-        current_time - self.last_attempt >= dynamic_interval
+        false
     }
 
     /// Record a handshake attempt
@@ -78,18 +68,18 @@ impl HandshakeTracker {
 
     /// Check if the handshake has timed out
     pub fn is_timed_out(&self, current_time: f64, custom_timeout: Option<f64>) -> bool {
-        let effective_timeout = custom_timeout.unwrap_or(self.timeout);
-        self.retries >= self.max_retries
-            || (self.last_attempt > 0.0 && current_time - self.last_attempt > effective_timeout)
+        let timeout = custom_timeout.unwrap_or(self.timeout);
+        self.last_attempt > 0.0 && (current_time - self.last_attempt) > timeout
     }
 
     pub fn create_handshake_message(&self, shard_id: &Uuid) -> String {
-        format!(
-            "{{\"version\":\"1.0\",\"shard_id\":\"{}\",\"protocol_version\":\"{}.{}\"}}",
-            shard_id,
-            env!("CARGO_PKG_VERSION_MAJOR"),
-            env!("CARGO_PKG_VERSION_MINOR")
-        )
+        serde_json::json!({
+            "type": "handshake",
+            "shard_id": shard_id.to_string(),
+            "timestamp": self.last_attempt,
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+        .to_string()
     }
 }
 
@@ -114,39 +104,35 @@ impl EntityChangeTracker {
         transform: &Transform,
         velocity: Vec2,
     ) -> bool {
-        let position = Vec2::new(transform.translation.x, transform.translation.y);
-
-        // Get the last known position and velocity
-        if let Some((last_pos, last_vel)) = self.entity_positions.get(&entity) {
-            // Check if position has changed significantly (>0.5 units)
-            let pos_changed = (position - *last_pos).length_squared() > 0.25;
-
-            // Check if velocity has changed significantly (>0.1 units/s)
-            let vel_changed = (velocity - *last_vel).length_squared() > 0.01;
-
-            // If either has changed, update our tracking and return true
-            if pos_changed || vel_changed {
-                self.entity_positions.insert(entity, (position, velocity));
-                return true;
-            }
-
-            false
+        let current_pos = Vec2::new(transform.translation.x, transform.translation.y);
+        
+        if let Some((prev_pos, prev_vel)) = self.entity_positions.get(&entity) {
+            let distance = current_pos.distance(*prev_pos);
+            let vel_change = (velocity - *prev_vel).length();
+            
+            self.entity_positions.insert(entity, (current_pos, velocity));
+            
+            let velocity_magnitude = velocity.length();
+            let distance_threshold = if velocity_magnitude > 10.0 {
+                0.5
+            } else {
+                1.0
+            };
+            
+            return distance > distance_threshold || vel_change > 1.0;
         } else {
-            // First time seeing this entity, always needs update
-            self.entity_positions.insert(entity, (position, velocity));
-            true
+            self.entity_positions.insert(entity, (current_pos, velocity));
+            return true;
         }
     }
 
     /// Check if it's time to send entity updates
     pub fn should_send_entity_updates(&mut self, time: &Time, interval: f64) -> bool {
         let current_time = time.elapsed_secs_f64();
-
-        if current_time - self.last_update_time > interval {
+        if (current_time - self.last_update_time) >= interval {
             self.last_update_time = current_time;
             return true;
         }
-
         false
     }
 }
