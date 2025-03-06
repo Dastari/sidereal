@@ -1,17 +1,6 @@
-use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
-use bevy::transform::TransformPlugin;
-use bevy_remote::http::RemoteHttpPlugin;
-use bevy_remote::RemotePlugin;
-use bevy_state::app::StatesPlugin;
-use replication::ReplicationPlugin;
-use scene::SceneLoaderPlugin;
 use sidereal_core::ecs::plugins::SiderealGamePlugin;
 use tracing::{info, Level};
-
-mod database;
-mod replication;
-mod scene;
 
 fn main() {
     // Initialize tracing
@@ -39,16 +28,9 @@ fn main() {
 
     // Initialize the Bevy app with minimal plugins for headless operation
     App::new()
-        .add_plugins(MinimalPlugins)
+        .add_plugins(DefaultPlugins)
         .add_plugins((
-            HierarchyPlugin,
-            TransformPlugin,
-            StatesPlugin::default(),
-            RemotePlugin::default(),
-            RemoteHttpPlugin::default(),
             SiderealGamePlugin,
-            SceneLoaderPlugin,
-            ReplicationPlugin,
         ))
         .run();
 }

@@ -3,7 +3,7 @@ members = [
     "sidereal-core",
     "sidereal-replication-server",
     "sidereal-shard-server",
-    "sidereal-test-client"
+    "sidereal-client"
 ]
 resolver = "2"
 

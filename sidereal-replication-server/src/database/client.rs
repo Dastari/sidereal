@@ -35,15 +35,13 @@ pub type DatabaseResult<T> = Result<T, DatabaseError>;
 pub struct EntityRecord {
     pub id: String,
     pub name: Option<String>,
-    pub owner_id: Option<String>,
     pub position_x: f32,
     pub position_y: f32,
-    #[serde(rename = "type")]
-    pub type_: String,
+    pub object: String,
     pub components: serde_json::Value,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
-
+    pub owner_id: Option<String>,
 }
 
 /// Client for interacting with the Supabase database
@@ -103,11 +101,11 @@ impl DatabaseClient {
 
     /// Fetches entities by type from the database
     #[allow(dead_code)]
-    pub async fn fetch_entities_by_type(
+    pub async fn fetch_entities_by_object(
         &self,
-        entity_type: &str,
+        object: &str,
     ) -> DatabaseResult<Vec<EntityRecord>> {
-        let url = format!("{}/rest/v1/entities?type=eq.{}", self.base_url, entity_type);
+        let url = format!("{}/rest/v1/entities?object=eq.{}", self.base_url, object);
         let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {

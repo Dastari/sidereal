@@ -8,31 +8,6 @@ use uuid::Uuid;
 
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
 #[reflect(Component, Serialize, Deserialize)]
-pub struct Position {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl Position {
-    pub fn get(&self) -> Vec2 {
-        Vec2::new(self.x, self.y)
-    }
-
-    pub fn set(&mut self, value: Vec2) {
-        self.x = value.x;
-        self.y = value.y;
-    }
-
-    pub fn new(value: Vec2) -> Self {
-        Position {
-            x: value.x,
-            y: value.y,
-        }
-    }
-}
-
-#[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect, Default)]
-#[reflect(Component, Serialize, Deserialize)]
 pub struct SectorCoords {
     pub x: i32,
     pub y: i32,
@@ -160,41 +135,6 @@ impl Default for BoundaryDirection {
     }
 }
 
-//// Marker indicating entity is visual-only (no physics)
-#[derive(Component, Reflect, Default)]
-pub struct VisualOnly;
-
-/// Shadow entity representation for entities from neighboring shards
-#[derive(Component, Reflect)]
-#[require(Position, SectorCoords, ClusterCoords, Velocity, VisualOnly)]
-pub struct ShadowEntity {
-    pub source_cluster_id: Uuid,
-    pub source_shard_id: Uuid,
-    pub original_entity: Entity,
-    pub is_read_only: bool,
-    pub last_updated: f64,
-}
-
-// Only used for reflection registration
-impl ShadowEntity {
-    pub fn register_reflection(app: &mut App) {
-        app.register_type::<ShadowEntity>()
-            .register_type::<VisualOnly>();
-    }
-}
-
-impl Default for ShadowEntity {
-    fn default() -> Self {
-        Self {
-            source_cluster_id: Uuid::nil(),
-            source_shard_id: Uuid::nil(),
-            original_entity: Entity::from_raw(0),
-            is_read_only: true,
-            last_updated: 0.0,
-        }
-    }
-}
-
 /// Helper to calculate which cluster an entity belongs to
 pub fn calculate_entity_cluster(position: Vec2, config: &UniverseConfig) -> IVec2 {
     let sector_x = (position.x / config.sector_size).floor() as i32;
@@ -208,7 +148,7 @@ pub fn calculate_entity_cluster(position: Vec2, config: &UniverseConfig) -> IVec
 
 /// Helper to check if entity is near boundary
 pub fn is_approaching_boundary(
-    position: &Position,
+    transform: &Transform,
     sector_coords: &SectorCoords,
     velocity: Option<&Velocity>,
     config: &UniverseConfig,
@@ -216,8 +156,8 @@ pub fn is_approaching_boundary(
     // Calculate position within current sector
     let sector_size = config.sector_size;
     let pos_in_sector = Vec2::new(
-        position.x - (sector_coords.x as f32 * sector_size),
-        position.y - (sector_coords.y as f32 * sector_size),
+        transform.translation.x - (sector_coords.x as f32 * sector_size),
+        transform.translation.y - (sector_coords.y as f32 * sector_size),
     );
 
     // Calculate distances to each boundary

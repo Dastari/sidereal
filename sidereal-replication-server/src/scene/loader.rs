@@ -1,37 +1,46 @@
-use bevy::math::{IVec2, Vec2};
+use crate::database::{DatabaseClient, EntityRecord};
 use bevy::prelude::*;
-use bevy_rapier2d::prelude::*;
+use sidereal_core::ecs::plugins::serialization::{EntitySerializer, SerializedEntity};
 use std::sync::Arc;
-use tracing::{error, info};
-
-use crate::database::{DatabaseClient, DatabaseResult, EntityRecord};
-
-
-/// Plugin for managing the universe scene
+use tracing::{error, info, warn};
+/// Plugin for loading the game scene from the database
 pub struct SceneLoaderPlugin;
 
 impl Plugin for SceneLoaderPlugin {
     fn build(&self, app: &mut App) {
-        app.init_state::<SceneState>()
-            .init_resource::<SceneLoadingState>()
-            .add_systems(Startup, setup)
+        app.init_resource::<SceneLoadingState>()
+            .init_state::<SceneState>()
+            .add_systems(OnEnter(SceneState::Connecting), setup)
             .add_systems(
                 Update,
                 check_db_connection.run_if(in_state(SceneState::Connecting)),
             )
-            .add_systems(
-                Update,
-                load_entities_system.run_if(in_state(SceneState::Loading)),
-            )
+            .add_systems(OnEnter(SceneState::Loading), load_entities_system)
             .add_systems(
                 Update,
                 process_loaded_entities.run_if(in_state(SceneState::Processing)),
+            )
+            .add_systems(
+                Update,
+                (
+                    process_pending_deserializations,
+                    perform_entity_deserialization.after(process_pending_deserializations),
+                )
+                    .run_if(in_state(SceneState::Ready)),
             );
     }
 }
 
+/// Component to mark entities that need component deserialization
+#[derive(Component)]
+struct PendingDeserialization(SerializedEntity);
+
+/// Component to mark entities that have been successfully deserialized
+#[derive(Component)]
+struct DeserializedEntity;
+
 /// State of the scene loading process
-#[derive(States, Debug, Clone, Default, Eq, PartialEq, Hash)]
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SceneState {
     #[default]
     Connecting,
@@ -41,24 +50,31 @@ pub enum SceneState {
     Error,
 }
 
-/// Resource for managing the scene loading state
-#[derive(Resource, Default)]
+/// Resource holding the state of scene loading
+#[derive(Resource)]
 pub struct SceneLoadingState {
     pub loaded_entities: Vec<EntityRecord>,
-    // This field may be used in the future for error handling
     pub _error_message: Option<String>,
 }
 
-/// Component for marking an entity as an async task
+impl Default for SceneLoadingState {
+    fn default() -> Self {
+        Self {
+            loaded_entities: Vec::new(),
+            _error_message: None,
+        }
+    }
+}
+
+/// Component to hold the async task for loading entities
 #[derive(Component)]
 struct AsyncTask(Arc<std::sync::Mutex<Option<Vec<EntityRecord>>>>);
 
-/// Setup function for initializing the scene
+/// Setup system for scene loading
 fn setup(_commands: Commands) {
-    info!("Initializing scene loader");
+    // Any initial setup needed before connecting to the database
 }
 
-/// System for checking database connection
 fn check_db_connection(
     mut commands: Commands,
     mut scene_state: ResMut<NextState<SceneState>>,
@@ -69,7 +85,6 @@ fn check_db_connection(
         return;
     }
 
-    // Try to create a database client
     match DatabaseClient::new() {
         Ok(client) => {
             info!("Connected to database");
@@ -84,28 +99,20 @@ fn check_db_connection(
     }
 }
 
-/// System for loading entities from the database
 fn load_entities_system(
     mut commands: Commands,
-    db_client: Res<DatabaseClient>,
     mut scene_state: ResMut<NextState<SceneState>>,
     query: Query<Entity, With<AsyncTask>>,
 ) {
-    // Only start one task
+    // Only start one task at a time
     if !query.is_empty() {
         return;
     }
 
     info!("Starting to load entities from database");
-
-    // Clone necessary data for the async task (currently unused but might be needed in the future)
-    let _db_url = db_client.base_url.clone();
-
-    // Create a new database client inside the task
     let task_result = Arc::new(std::sync::Mutex::new(None));
     let task_result_clone = task_result.clone();
 
-    // Spawn a thread to handle the database query
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let result = runtime.block_on(async {
@@ -133,7 +140,6 @@ fn load_entities_system(
         }
     });
 
-    // Spawn an entity to track the task
     commands.spawn((
         AsyncTask(task_result),
         bevy::core::Name::new("Entity Loader Task"),
@@ -142,7 +148,6 @@ fn load_entities_system(
     scene_state.set(SceneState::Processing);
 }
 
-/// System for processing loaded entities
 fn process_loaded_entities(
     mut commands: Commands,
     task_query: Query<(Entity, &AsyncTask)>,
@@ -150,14 +155,12 @@ fn process_loaded_entities(
     mut scene_loading_state: ResMut<SceneLoadingState>,
 ) {
     for (task_entity, task) in task_query.iter() {
-        // Check if the task has completed
         let has_entities = {
             let lock = task.0.lock().unwrap();
             lock.is_some()
         };
 
         if has_entities {
-            // Get the entities data
             let entities = {
                 let mut lock = task.0.lock().unwrap();
                 lock.take().unwrap()
@@ -166,123 +169,126 @@ fn process_loaded_entities(
             info!("Processing {} loaded entities", entities.len());
             scene_loading_state.loaded_entities = entities;
 
-            // Spawn the entities into the scene
+            // Here we spawn the entities into the scene
             for entity_record in &scene_loading_state.loaded_entities {
                 spawn_entity_from_record_cmd(&mut commands, entity_record);
             }
 
             scene_state.set(SceneState::Ready);
-
-            // Remove the task entity
             commands.entity(task_entity).despawn();
+        }
+    }
+}
+
+/// Process pending deserializations - this system now uses a simpler approach
+fn process_pending_deserializations(
+    mut commands: Commands,
+    query: Query<(Entity, &PendingDeserialization), Without<DeserializedEntity>>,
+) {
+    for (entity, _pending) in query.iter() {
+        let entity_id = entity;
+
+        // Use the entity itself to store serialized data
+        // Then in the next frame, we'll have a separate system that deserializes
+        // Mark this entity as deserializing so we can process it separately
+        commands.entity(entity_id).insert(DeserializedEntity);
+
+        debug!("Marked entity for deserialization in next frame");
+    }
+}
+
+/// Actually perform the entity deserialization using direct world access
+fn perform_entity_deserialization(world: &mut World) {
+    // Query for entities with PendingDeserialization and DeserializedEntity components
+    let mut entities_to_process = Vec::new();
+
+    // Get all entity IDs that need processing
+    {
+        let mut query =
+            world.query_filtered::<(Entity, &PendingDeserialization), With<DeserializedEntity>>();
+        for (entity, pending) in query.iter(world) {
+            entities_to_process.push((entity, pending.0.clone()));
+        }
+    }
+
+    // Process each entity
+    for (entity, serialized_data) in entities_to_process {
+        match world.deserialize_entity(&serialized_data) {
+            Ok(new_entity) => {
+                // Get the name from the original entity if it exists
+                let mut name_to_apply = None;
+                if let Some(name) = world.get::<Name>(entity) {
+                    name_to_apply = Some(name.clone());
+                }
+
+                // Get the transform from the original entity if it exists
+                let mut transform_to_apply = None;
+                if let Some(transform) = world.get::<Transform>(entity) {
+                    transform_to_apply = Some(*transform);
+                }
+
+                // Apply the name to the new entity if we have it
+                if let Some(name) = name_to_apply {
+                    world.entity_mut(new_entity).insert(name);
+                }
+
+                // Apply the transform to the new entity if we have it
+                if let Some(transform) = transform_to_apply {
+                    world.entity_mut(new_entity).insert(transform);
+                }
+
+                // Despawn the placeholder entity
+                world.despawn(entity);
+
+                info!(
+                    "Successfully spawned entity {:?} from database",
+                    world.get::<Name>(new_entity).unwrap()
+                );
+            }
+            Err(err) => {
+                error!("Failed to deserialize entity components: {}", err);
+                // Just remove the pending component to prevent further processing
+                world.entity_mut(entity).remove::<PendingDeserialization>();
+            }
         }
     }
 }
 
 /// Spawn an entity from a database record
 fn spawn_entity_from_record_cmd(commands: &mut Commands, record: &EntityRecord) {
+    // Fall back to "Unnamed" if there's no name
     let entity_name = record.name.clone().unwrap_or_else(|| "Unnamed".to_string());
-    let mut entity_commands = commands.spawn(bevy::core::Name::new(entity_name.clone()));
 
-    if let Some(physics_data) = &record.physics_data {
-        // Apply physics data
-        physics_data.apply_to_entity(&mut entity_commands);
+    // Process the entity's components which is stored as a JSONB field
+    // Attempt to deserialize the components JSON into a SerializedEntity
+    match serde_json::from_value::<SerializedEntity>(record.components.clone()) {
+        Ok(deserialized_entity) => {
+            // Create a placeholder entity with basic components
+            let _new_entity = commands
+                .spawn((
+                    Name::new(entity_name.clone()),
+                    Transform::from_xyz(record.position_x, record.position_y, 0.0),
+                    // Add the pending deserialization component to process later
+                    PendingDeserialization(deserialized_entity),
+                ))
+                .id();
 
-        // Get the position to calculate spatial coordinates
-        if let Some(position) = physics_data.position {
-            let pos_vec = Vec2::new(position[0], position[1]);
-
-            // Add spatial tracking components
-            entity_commands.insert(SpatialTracked);
-            entity_commands.insert(SpatialPosition {
-                position: pos_vec,
-                // These will be initialized in the update_entity_sector_coordinates system
-                sector_coords: IVec2::new(0, 0),
-                cluster_coords: IVec2::new(0, 0),
-            });
+            debug!(
+                "Created entity from record: {}. Components will be loaded in a separate system",
+                entity_name
+            );
         }
-    }
+        Err(err) => {
+            // Log the error
+            warn!("Failed to deserialize entity components: {}", err);
 
-    info!("Spawned entity: {}", entity_name);
-}
+            // Fallback: spawn a minimal entity
+            commands.spawn((
+                Name::new(entity_name.clone()),
+                Transform::from_xyz(record.position_x, record.position_y, 0.0),
+            ));
 
-/// Load entities from a scene JSON data into a world
-/// This is a placeholder function for future use to load entities from JSON data
-#[allow(dead_code)]
-pub fn _load_entities_from_json(mut commands: Commands, entities_data: Vec<EntityRecord>) {
-    info!("Loading {} entities from database", entities_data.len());
-
-    for entity_data in entities_data {
-        spawn_entity_from_record_cmd(&mut commands, &entity_data);
-    }
-}
-
-/// Example function: Save an entity back to the database
-#[allow(dead_code)]
-pub fn save_entity_to_database(
-    query: &Query<(
-        &Transform,
-        &RigidBody,
-        Option<&Velocity>,
-        Option<&Collider>,
-        Option<&AdditionalMassProperties>,
-        Option<&Friction>,
-        Option<&Restitution>,
-        Option<&GravityScale>,
-        &prelude::Name,
-    )>,
-    entity: Entity,
-    _db_client: &DatabaseClient,
-) -> DatabaseResult<()> {
-    if let Ok((
-        transform,
-        rigid_body,
-        velocity,
-        collider,
-        mass_props,
-        friction,
-        restitution,
-        gravity_scale,
-        name,
-    )) = query.get(entity)
-    {
-        // Create physics data from components
-        let physics_data = PhysicsData::from_components(
-            Some(transform),
-            Some(rigid_body),
-            velocity,
-            collider,
-            mass_props,
-            friction,
-            restitution,
-            gravity_scale,
-        );
-
-        // Convert physics data to JSON for storage
-        let physics_json = physics_data.to_json();
-
-        // Create an entity record
-        let record = EntityRecord {
-            id: entity.to_bits().to_string(), // Convert entity ID to string
-            name: Some(name.to_string()),
-            position_x: transform.translation.x,
-            position_y: transform.translation.y,
-            type_: "default".to_string(), // You would need logic to determine the entity type
-            components: physics_json,
-            created_at: None, // These would be handled by the database
-            updated_at: None, // These would be handled by the database
-            owner_id: None,   // You would need logic to determine the owner
-            physics_data: Some(physics_data), // Add the physics data
-        };
-
-        // Save the record to the database - this is just an example
-        info!("Saving entity to database: {:?}", record.name);
-
-        // In a real implementation, you would do:
-        // db_client.create_entity(&record).await
-
-        Ok(())
-    } else {
-        Err(crate::database::DatabaseError::NotFound)
+            info!("Spawned minimal entity from record: {}", entity_name);
+        }
     }
 }

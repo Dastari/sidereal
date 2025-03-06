@@ -1,9 +1,13 @@
-use crate::ecs::components::hull::Hull;
-use crate::ecs::components::name::Name;
-use crate::ecs::components::physics::PhysicsBody;
+use crate::ecs::components::{Hull, Object, PhysicsBody};
 use bevy::prelude::*;
-use bevy_rapier2d::prelude::*;
+use serde::{Deserialize, Serialize};
 
-#[derive(Component, Reflect)]
-#[require(Name, Velocity, Hull, PhysicsBody)]
+#[derive(Component, Reflect, Default, Serialize, Deserialize, Clone)]
+#[require(Hull, PhysicsBody, Object(|| Object::Ship))]
 pub struct Ship;
+
+impl Ship {
+    pub fn new() -> Self {
+        Self
+    }
+}
