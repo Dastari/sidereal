@@ -1,7 +1,6 @@
 // Sidereal Replication Server Library
 
 pub mod database;
-pub mod replication;
 pub mod scene;
 
 /// Initialize the replication server library

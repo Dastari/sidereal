@@ -2,23 +2,32 @@
 members = [
     "sidereal-core",
     "sidereal-replication-server",
-    "sidereal-shard-server",
-    "sidereal-client"
+    "sidereal-shard-server"
 ]
 resolver = "2"
 
 [workspace.dependencies]
 bevy = "0.15.3"
 bevy_state = "0.15"
-bevy_renet2 = "0.5.0"
-bevy_replicon = "0.30.1"
 bevy_reflect = "0.15.3"
-bevy_replicon_renet2 = "0.5.0"
-renet2_netcode = "0.5.0"
-renet2 = "0.5.0"
+
+bincode = "2.0.0"
 env_logger = "0.11.6"
-serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
-tokio = { version = "1.43.0", features = ["full"] }
 tracing = "0.1"
+
+serde = { version = "1.0.218", features = ["derive"] }
+tokio = { version = "1.43.0", features = ["full"] }
 uuid = { version = "1.12", features = ["v4", "serde"] }
+
+[profile.dev]
+opt-level = 3
+debug = false
+strip = false
+
+[profile.release]
+#opt-level = 's'
+debug = false
+lto = true
+codegen-units = 1 #will slow down compilation considerably (+43%)
+strip = true

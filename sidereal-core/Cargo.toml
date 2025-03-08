@@ -1,21 +1,18 @@
 # Cargo.toml
 [package]
 name = "sidereal-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
+# Common Project
 bevy = { workspace = true }
 bevy_reflect =  {workspace = true }
-bevy_renet2 = {workspace = true}
 serde = { workspace = true, features = ["derive"]}
 serde_json = { workspace = true }
-bevy_replicon = {workspace = true}
-bevy_replicon_renet2 = {workspace = true}
-renet2_netcode = {workspace = true}
 uuid = { workspace = true }
+bincode = { workspace = true }
+
+# Unique to this Workspace
 assert-json-diff = "2.0.2"
-bincode = "2.0.0"
-
-bevy_rapier2d = { version = "0.29.0", features = ["serde-serialize"] } 
-
+avian2d = "0.2"
