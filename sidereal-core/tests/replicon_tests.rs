@@ -334,36 +334,6 @@ fn test_message_passing() {
     let mut server_app = setup_server_app();
     let mut client_app = setup_client_app();
 
-    // Initialize RenetServer and RenetClient manually
-    println!("⚙️ Initializing network resources manually...");
-    // Create connection config for the test
-    let connection_config =
-        bevy_replicon_renet2::renet2::ConnectionConfig::from_shared_channels(vec![
-            bevy_replicon_renet2::renet2::ChannelConfig {
-                channel_id: DefaultChannel::ReliableOrdered as u8,
-                max_memory_usage_bytes: 10 * 1024 * 1024,
-                send_type: bevy_replicon_renet2::renet2::SendType::ReliableOrdered {
-                    resend_time: Duration::from_millis(300),
-                },
-            },
-            bevy_replicon_renet2::renet2::ChannelConfig {
-                channel_id: DefaultChannel::Unreliable as u8,
-                max_memory_usage_bytes: 10 * 1024 * 1024,
-                send_type: bevy_replicon_renet2::renet2::SendType::Unreliable,
-            },
-            bevy_replicon_renet2::renet2::ChannelConfig {
-                channel_id: 2, // Add channel 2 since DefaultChannel::ReliableOrdered seems to be 2
-                max_memory_usage_bytes: 10 * 1024 * 1024,
-                send_type: bevy_replicon_renet2::renet2::SendType::ReliableOrdered {
-                    resend_time: Duration::from_millis(300),
-                },
-            },
-        ]);
-
-    // Initialize network resources manually
-    server_app.insert_resource(RenetServer::new(connection_config.clone()));
-    client_app.insert_resource(RenetClient::new(connection_config, false));
-
     // Setup networking
     let setup_result = setup_transport(&mut server_app, &mut client_app);
     if setup_result.is_none() {
@@ -414,7 +384,6 @@ fn test_message_passing() {
     // Run both apps for a few frames to establish connection
     println!("➡️ Running apps to establish connection...");
     for i in 0..20 {
-        // Increase iterations to give more time to establish connection
         if i % 5 == 0 {
             println!("   - Update iteration {}/20", i + 1);
         }
@@ -465,26 +434,46 @@ fn test_message_passing() {
     // Try to send messages if resources exist
     println!("📤 SENDING TEST MESSAGES:");
 
-    // Client message
-    if server_app.world().contains_resource::<RenetServer>()
-        && client_app.world().contains_resource::<RenetClient>()
+    // Use RepliconClient/RepliconServer to send messages
+    if server_app.world().contains_resource::<RepliconServer>()
+        && client_app.world().contains_resource::<RepliconClient>()
     {
-        // Send client to server message
-        if let Some(mut client_renet) = client_app.world_mut().get_resource_mut::<RenetClient>() {
+        // Send client to server message using RepliconClient
+        if let Some(mut replicon_client) = client_app.world_mut().get_resource_mut::<RepliconClient>() {
             println!("   - Client sending: '{}'", client_message);
-            client_renet.send_message(
-                DefaultChannel::ReliableOrdered,
-                client_message.as_bytes().to_vec(),
-            );
+            // Use the replicon abstraction instead of direct Renet access
+            replicon_client.send(DefaultChannel::ReliableOrdered as u8, client_message.as_bytes().to_vec());
         }
 
-        // Send server to client message
-        if let Some(mut server_renet) = server_app.world_mut().get_resource_mut::<RenetServer>() {
-            println!("   - Server broadcasting: '{}'", server_message);
-            server_renet.broadcast_message(
-                DefaultChannel::ReliableOrdered,
-                server_message.as_bytes().to_vec(),
-            );
+        // Send server to client message using RepliconServer
+        // Get connected clients first (immutable borrow)
+        let connected_clients_exist = server_app.world().contains_resource::<ConnectedClients>();
+        let mut client_ids = Vec::new();
+        
+        if connected_clients_exist {
+            if let Some(connected_clients) = server_app.world().get_resource::<ConnectedClients>() {
+                // Collect client IDs to avoid borrowing issues
+                for client in connected_clients.iter() {
+                    client_ids.push(client.id());
+                }
+            }
+        }
+        
+        // Now do the mutable borrow without conflicting
+        if let Some(mut replicon_server) = server_app.world_mut().get_resource_mut::<RepliconServer>() {
+            if !client_ids.is_empty() {
+                println!("   - Server broadcasting: '{}'", server_message);
+                
+                // Send message to each connected client
+                for client_id in &client_ids {
+                    println!("   - Sending to client: {:?}", client_id);
+                    replicon_server.send(
+                        *client_id,
+                        DefaultChannel::ReliableOrdered as u8, 
+                        server_message.as_bytes().to_vec()
+                    );
+                }
+            }
         }
 
         // Run a few more frames to process messages
@@ -494,14 +483,16 @@ fn test_message_passing() {
 
         for i in 0..10 {
             println!("   - Post-message update {}/10", i + 1);
-
-            // Check for received messages on server
-            if let Some(mut server_renet) = server_app.world_mut().get_resource_mut::<RenetServer>()
-            {
+            
+            // Update both apps to process messages through our plugin systems
+            server_app.update();
+            client_app.update();
+            
+            // Check for received messages on server using RepliconServer
+            if let Some(mut server_renet) = server_app.world_mut().get_resource_mut::<RenetServer>() {
+                // Fix: Access messages directly from RenetServer instead of using drain_received
                 for client_id in server_renet.clients_id() {
-                    while let Some(message) =
-                        server_renet.receive_message(client_id, DefaultChannel::ReliableOrdered)
-                    {
+                    while let Some(message) = server_renet.receive_message(client_id, DefaultChannel::ReliableOrdered as u8) {
                         if let Ok(text) = std::str::from_utf8(&message) {
                             println!(
                                 "   - 📩 Server received from client {}: '{}'",
@@ -513,12 +504,10 @@ fn test_message_passing() {
                 }
             }
 
-            // Check for received messages on client
-            if let Some(mut client_renet) = client_app.world_mut().get_resource_mut::<RenetClient>()
-            {
-                while let Some(message) =
-                    client_renet.receive_message(DefaultChannel::ReliableOrdered)
-                {
+            // Check for received messages on client using RepliconClient
+            if let Some(mut client_renet) = client_app.world_mut().get_resource_mut::<RenetClient>() {
+                // Fix: Access messages directly from RenetClient instead of using drain_received
+                while let Some(message) = client_renet.receive_message(DefaultChannel::ReliableOrdered as u8) {
                     if let Ok(text) = std::str::from_utf8(&message) {
                         println!("   - 📩 Client received: '{}'", text);
                         client_received = true;
@@ -526,8 +515,6 @@ fn test_message_passing() {
                 }
             }
 
-            server_app.update();
-            client_app.update();
             std::thread::sleep(Duration::from_millis(50));
         }
 
