@@ -10,6 +10,7 @@ resolver = "2"
 bevy = "0.15.3"
 bevy_state = "0.15"
 bevy_reflect = "0.15.3"
+bevy_renet = "1.0.0"
 
 bincode = "2.0.0"
 env_logger = "0.11.6"

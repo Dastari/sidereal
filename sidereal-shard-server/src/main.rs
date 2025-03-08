@@ -1,7 +1,11 @@
+mod network;
+
+use avian2d::prelude::*;
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy_state::app::StatesPlugin;
+use network::client::NetworkClientPlugin;
 use sidereal_core::ecs::plugins::SiderealGamePlugin;
 use tracing::{info, Level};
 
@@ -33,10 +37,17 @@ fn main() {
     App::new()
         .add_plugins(MinimalPlugins)
         .add_plugins((
-            HierarchyPlugin,
             TransformPlugin,
+            bevy::asset::AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+        ))
+        .init_resource::<Assets<Mesh>>()
+        .add_plugins((
+            HierarchyPlugin,
             StatesPlugin::default(),
+            PhysicsPlugins::default(),
             SiderealGamePlugin,
+            NetworkClientPlugin,
         ))
         .run();
 }

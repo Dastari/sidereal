@@ -7,12 +7,18 @@ edition = "2021"
 [dependencies]
 # Common Project
 bevy = { workspace = true }
-bevy_reflect =  {workspace = true }
+bevy_reflect = { workspace = true }
 serde = { workspace = true, features = ["derive"]}
 serde_json = { workspace = true }
 uuid = { workspace = true }
-bincode = { workspace = true }
+
+# Either use bincode 1.3 directly or make sure it's in the workspace
+bincode = "1.3"  # Not using workspace version since workspace has 2.0.0
 
 # Unique to this Workspace
 assert-json-diff = "2.0.2"
-avian2d = "0.2"
+avian2d = "0.2.1"
+rand = "0.8.5"
+
+[dev-dependencies]
+# Add any dev dependencies here

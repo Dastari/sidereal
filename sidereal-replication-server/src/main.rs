@@ -1,14 +1,19 @@
+mod network;
+mod database;
+mod scene;
+
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
-use scene::SceneLoaderPlugin;
+// use scene::SceneLoaderPlugin;
+use network::NetworkServerPlugin;
 use sidereal_core::ecs::plugins::SiderealGamePlugin;
 use tracing::{info, Level};
-
-mod database;
-mod scene;
+use sidereal_core::ecs::components::*;
+use sidereal_core::ecs::entities::ship::Ship;
+use avian2d::prelude::*;
 
 fn main() {
     // Initialize tracing
@@ -43,7 +48,42 @@ fn main() {
             RemotePlugin::default(),
             RemoteHttpPlugin::default(),
             SiderealGamePlugin,
-            SceneLoaderPlugin
+            // SceneLoaderPlugin,
+            NetworkServerPlugin,
         ))
+        .add_systems(Startup, setup_game_world)
         .run();
+}
+
+
+
+fn setup_game_world(mut commands: Commands) {
+    // Spawn entities with NetworkId and Networked components
+    commands.spawn((
+        Ship::new(),
+        Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+        Name::new("Ship"),
+        Hull {
+            width: 50.0,
+            height: 30.0,
+            blocks: vec![
+                Block {
+                    x: 0.0,
+                    y: 0.0,
+                    direction: Direction::Fore,
+                },
+                Block {
+                    x: 10.0,
+                    y: 0.0,
+                    direction: Direction::Starboard,
+                },
+            ],
+        },
+        // Avian physics components
+        RigidBody::Dynamic,
+        Collider::circle(25.0),
+        LinearVelocity(Vec2::new(100.0, 0.0))
+    ));
+    
+    // More entities...
 }
