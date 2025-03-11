@@ -24,6 +24,8 @@ tracing = { workspace = true }
 
 tracing-subscriber = "0.3"
 
+bincode = "2.0.0"
+
 avian2d = "0.2.1"
 
 [features]

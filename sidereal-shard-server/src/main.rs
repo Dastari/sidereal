@@ -1,12 +1,15 @@
-mod network;
+mod game;
 
-use avian2d::prelude::*;
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
+use bevy::log::*;
 use bevy::transform::TransformPlugin;
 use bevy_state::app::StatesPlugin;
-use network::client::NetworkClientPlugin;
-use sidereal_core::ecs::plugins::SiderealGamePlugin;
+use sidereal_core::ecs::plugins::network::client::NetworkClientPlugin;
+use sidereal_core::ecs::plugins::serialization::EntitySerializationPlugin;
+use game::process_message_queue;
+
+use avian2d::prelude::*;
 use tracing::{info, Level};
 
 fn main() {
@@ -46,8 +49,9 @@ fn main() {
             HierarchyPlugin,
             StatesPlugin::default(),
             PhysicsPlugins::default(),
-            SiderealGamePlugin,
+            EntitySerializationPlugin,
             NetworkClientPlugin,
         ))
+        .add_systems(Update, process_message_queue)
         .run();
 }

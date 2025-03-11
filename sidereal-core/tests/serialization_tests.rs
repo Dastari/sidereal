@@ -40,7 +40,6 @@ fn setup_test_app() -> App {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
-        SiderealGamePlugin,
         EntitySerializationPlugin,
     ));
     debug_assert!(

@@ -1,5 +1,5 @@
-mod network;
 mod database;
+mod game;
 mod scene;
 
 use bevy::hierarchy::HierarchyPlugin;
@@ -8,12 +8,13 @@ use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
 // use scene::SceneLoaderPlugin;
-use network::NetworkServerPlugin;
-use sidereal_core::ecs::plugins::SiderealGamePlugin;
-use tracing::{info, Level};
+use avian2d::prelude::*;
+use game::process_message_queue;
 use sidereal_core::ecs::components::*;
 use sidereal_core::ecs::entities::ship::Ship;
-use avian2d::prelude::*;
+use sidereal_core::ecs::plugins::network::NetworkServerPlugin;
+use sidereal_core::ecs::plugins::serialization::EntitySerializationPlugin;
+use tracing::{info, Level};
 
 fn main() {
     // Initialize tracing
@@ -44,18 +45,17 @@ fn main() {
         .add_plugins(MinimalPlugins)
         .add_plugins((
             HierarchyPlugin,
+            TransformPlugin,
             StatesPlugin::default(),
             RemotePlugin::default(),
             RemoteHttpPlugin::default(),
-            SiderealGamePlugin,
-            // SceneLoaderPlugin,
+            EntitySerializationPlugin,
             NetworkServerPlugin,
         ))
         .add_systems(Startup, setup_game_world)
+        .add_systems(Update, process_message_queue)
         .run();
 }
-
-
 
 fn setup_game_world(mut commands: Commands) {
     // Spawn entities with NetworkId and Networked components
@@ -82,8 +82,8 @@ fn setup_game_world(mut commands: Commands) {
         // Avian physics components
         RigidBody::Dynamic,
         Collider::circle(25.0),
-        LinearVelocity(Vec2::new(100.0, 0.0))
+        LinearVelocity(Vec2::new(100.0, 0.0)),
     ));
-    
+
     // More entities...
 }
