@@ -1,4 +1,4 @@
-use crate::ecs::components::{Hull, Object };
+use crate::ecs::components::{Hull, Object};
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};

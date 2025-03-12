@@ -1,8 +1,7 @@
-
-pub mod serialization;
 pub mod network;
 pub mod sectors;
+pub mod serialization;
 
-pub use serialization::*;
 pub use network::*;
 pub use sectors::*;
+pub use serialization::*;

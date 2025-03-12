@@ -1,9 +1,8 @@
-use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
-use bincode::{Encode, Decode};
 use crate::ecs::systems::sectors::SectorCoord;
 use crate::plugins::SerializedEntity;
-
+use bevy::prelude::*;
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_ID: u64 = 1000;
 #[derive(Event)]
@@ -19,12 +18,25 @@ pub enum NetworkMessage {
     ShardConnected,
     ShardDisconnected,
     RequestWorldState,
-    Heartbeat { timestamp: f64 },
-    EntityUpdates { updated_entities:  Vec<SerializedEntity> , timestamp: f64 },
-    AssignSectors { sectors: Vec<SectorCoord> },
-    RevokeSectors { sectors: Vec<SectorCoord> },
-    SectorAssignmentConfirm { sectors: Vec<SectorCoord> },
-    SectorLoadReport { load_factor: f32 },
+    Heartbeat {
+        timestamp: f64,
+    },
+    EntityUpdates {
+        updated_entities: Vec<SerializedEntity>,
+        timestamp: f64,
+    },
+    AssignSectors {
+        sectors: Vec<SectorCoord>,
+    },
+    RevokeSectors {
+        sectors: Vec<SectorCoord>,
+    },
+    SectorAssignmentConfirm {
+        sectors: Vec<SectorCoord>,
+    },
+    SectorLoadReport {
+        load_factor: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,13 +74,18 @@ impl<'de> Deserialize<'de> for EntityWrapper {
 }
 
 impl Encode for EntityWrapper {
-    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
         self.0.to_bits().encode(encoder)
     }
 }
 
 impl<CTX> Decode<CTX> for EntityWrapper {
-    fn decode<D: bincode::de::Decoder<Context = CTX>>(decoder: &mut D) -> Result<Self, bincode::error::DecodeError> {
+    fn decode<D: bincode::de::Decoder<Context = CTX>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
         let bits = u64::decode(decoder)?;
         Ok(EntityWrapper(Entity::from_bits(bits)))
     }
@@ -83,6 +100,3 @@ impl<'de, CTX> bincode::BorrowDecode<'de, CTX> for EntityWrapper {
         Ok(EntityWrapper(Entity::from_bits(bits)))
     }
 }
-
-
-

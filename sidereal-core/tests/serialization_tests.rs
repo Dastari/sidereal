@@ -38,10 +38,7 @@ pub fn test_ship_bundle() -> TestShipBundle {
 
 fn setup_test_app() -> App {
     let mut app = App::new();
-    app.add_plugins((
-        MinimalPlugins,
-        EntitySerializationPlugin,
-    ));
+    app.add_plugins((MinimalPlugins, EntitySerializationPlugin));
     debug_assert!(
         app.world().contains_resource::<Time>(),
         "Time resource should be initialized"

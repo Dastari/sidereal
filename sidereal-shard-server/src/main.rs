@@ -1,15 +1,15 @@
 mod game;
 
 use bevy::hierarchy::HierarchyPlugin;
-use bevy::prelude::*;
 use bevy::log::*;
+use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
-use bevy_state::app::StatesPlugin;
-use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
+use bevy_remote::RemotePlugin;
+use bevy_state::app::StatesPlugin;
+use game::process_message_queue;
 use sidereal_core::ecs::plugins::network::client::NetworkClientPlugin;
 use sidereal_core::ecs::plugins::serialization::EntitySerializationPlugin;
-use game::process_message_queue;
 
 use avian2d::prelude::*;
 use tracing::{info, Level};

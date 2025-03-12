@@ -13,13 +13,17 @@ serde = { workspace = true, features = ["derive"]}
 serde_json = { workspace = true }
 uuid = { workspace = true }
 
+# Faker
+fake = { version = "4", features = ["derive"] }
+rayon = "1.7"     # For parallel processing
+rand = "0.9.0"
+
 # Either use bincode 1.3 directly or make sure it's in the workspace
 bincode = {workspace = true}
 
 # Unique to this Workspace
 assert-json-diff = "2.0.2"
 avian2d = "0.2.1"
-rand = "0.8.5"
 
 [dev-dependencies]
 # Add any dev dependencies here

@@ -1,10 +1,23 @@
-use bevy::prelude::*;
-use bincode::{Encode, Decode};
-use std::collections::HashMap;
 use crate::ecs::components::in_sector::InSector;
+use bevy::prelude::*;
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 // Identifies a specific sector in the grid
-#[derive(Clone, Copy, Default, Debug, Eq, Hash, PartialEq, Reflect, Serialize, Deserialize, Encode, Decode)]
+#[derive(
+    Clone,
+    Copy,
+    Default,
+    Debug,
+    Eq,
+    Hash,
+    PartialEq,
+    Reflect,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
+)]
 pub struct SectorCoord {
     pub x: i32,
     pub y: i32,
@@ -24,7 +37,7 @@ pub fn update_entity_sectors(
 ) {
     for (entity, transform, maybe_in_sector) in query.iter() {
         let current_sector = sector_manager.get_sector_coord(&transform.translation);
-        
+
         match maybe_in_sector {
             Some(in_sector) if in_sector.0 != current_sector => {
                 // Entity has moved to a new sector
@@ -40,7 +53,6 @@ pub fn update_entity_sectors(
         }
     }
 }
-
 
 // A sector that contains entities
 pub struct Sector {
@@ -72,7 +84,7 @@ impl SectorManager {
             y: (position.y / self.sector_size).floor() as i32,
         }
     }
-    
+
     // Get or create a sector at the given coordinates
     pub fn get_or_create_sector(&mut self, coord: SectorCoord) -> &mut Sector {
         if !self.sectors.contains_key(&coord) {
@@ -81,12 +93,12 @@ impl SectorManager {
                 Sector {
                     coord,
                     entities: Vec::new(),
-                }
+                },
             );
         }
         self.sectors.get_mut(&coord).unwrap()
     }
-    
+
     // Add an entity to a sector
     pub fn add_entity_to_sector(&mut self, entity: Entity, coord: SectorCoord) {
         let sector = self.get_or_create_sector(coord);
@@ -94,19 +106,19 @@ impl SectorManager {
             sector.entities.push(entity);
         }
     }
-    
+
     // Remove an entity from a sector
     pub fn remove_entity_from_sector(&mut self, entity: Entity, coord: SectorCoord) {
         if let Some(sector) = self.sectors.get_mut(&coord) {
             sector.entities.retain(|e| *e != entity);
-            
+
             // Clean up empty sectors (optional)
             if sector.entities.is_empty() {
                 self.sectors.remove(&coord);
             }
         }
     }
-    
+
     // Move an entity between sectors
     pub fn move_entity(&mut self, entity: Entity, from: SectorCoord, to: SectorCoord) {
         if from != to {
@@ -115,5 +127,3 @@ impl SectorManager {
         }
     }
 }
-
-

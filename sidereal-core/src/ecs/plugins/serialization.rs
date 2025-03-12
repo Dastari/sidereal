@@ -1,12 +1,12 @@
+use crate::ecs::components::*;
+use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_reflect::serde::{ReflectDeserializer, ReflectSerializer};
 use bevy_reflect::{GetTypeRegistration, PartialReflect, Reflect, TypeRegistration, TypeRegistry};
+use bincode::{Decode, Encode};
 use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use bincode::{Encode, Decode};
-use avian2d::prelude::*;
-use crate::ecs::components::*;
 #[derive(Serialize, Deserialize, Debug, Clone, Encode, Decode)]
 pub struct SerializedEntity {
     pub components: HashMap<String, String>,
@@ -21,28 +21,27 @@ impl Plugin for EntitySerializationPlugin {
         }
 
         app.register_serializable_component::<Object>()
-        .register_serializable_component::<Id>()
-        .register_serializable_component::<ColliderMarker>()
-        .register_serializable_component::<ColliderAabb>()
-        .register_serializable_component::<AccumulatedTranslation>()
-        .register_serializable_component::<AngularVelocity>()
-        .register_serializable_component::<ExternalAngularImpulse>()
-        .register_serializable_component::<ExternalForce>()
-        .register_serializable_component::<ExternalImpulse>()
-        .register_serializable_component::<ExternalTorque>()
-        .register_serializable_component::<LinearVelocity>()
-        .register_serializable_component::<ColliderDensity>()
-        .register_serializable_component::<ColliderMassProperties>()
-        .register_serializable_component::<ComputedAngularInertia>()
-        .register_serializable_component::<ComputedCenterOfMass>()
-        .register_serializable_component::<ComputedMass>()
-        .register_serializable_component::<RigidBody>()
-        .register_serializable_component::<Transform>()
-        .register_serializable_component::<Rotation>()
-        .register_serializable_component::<Name>()
-        .register_serializable_component::<InSector>()
-        .register_serializable_component::<Parent>();
-
+            .register_serializable_component::<Id>()
+            .register_serializable_component::<ColliderMarker>()
+            .register_serializable_component::<ColliderAabb>()
+            .register_serializable_component::<AccumulatedTranslation>()
+            .register_serializable_component::<AngularVelocity>()
+            .register_serializable_component::<ExternalAngularImpulse>()
+            .register_serializable_component::<ExternalForce>()
+            .register_serializable_component::<ExternalImpulse>()
+            .register_serializable_component::<ExternalTorque>()
+            .register_serializable_component::<LinearVelocity>()
+            .register_serializable_component::<ColliderDensity>()
+            .register_serializable_component::<ColliderMassProperties>()
+            .register_serializable_component::<ComputedAngularInertia>()
+            .register_serializable_component::<ComputedCenterOfMass>()
+            .register_serializable_component::<ComputedMass>()
+            .register_serializable_component::<RigidBody>()
+            .register_serializable_component::<Transform>()
+            .register_serializable_component::<Rotation>()
+            .register_serializable_component::<Name>()
+            .register_serializable_component::<InSector>()
+            .register_serializable_component::<Parent>();
     }
 }
 
@@ -78,12 +77,15 @@ impl EntitySerializer for World {
                     } else {
                         value
                     };
-                    
+
                     // Convert the JSON value to a string
                     let json_string = serde_json::to_string(&value).map_err(|err| {
-                        format!("Failed to convert JSON to string for component {}: {}", type_name, err)
+                        format!(
+                            "Failed to convert JSON to string for component {}: {}",
+                            type_name, err
+                        )
                     })?;
-                    
+
                     components.insert(type_name, json_string);
                 }
             }
@@ -99,9 +101,12 @@ impl EntitySerializer for World {
         for (type_name, json_string) in &serialized.components {
             // Parse the JSON string back to serde_json::Value
             let value: serde_json::Value = serde_json::from_str(json_string).map_err(|err| {
-                format!("Failed to parse JSON string for component {}: {}", type_name, err)
+                format!(
+                    "Failed to parse JSON string for component {}: {}",
+                    type_name, err
+                )
             })?;
-            
+
             if let Some(registration) = find_registration_by_name(&registry, type_name) {
                 if let Some(component_id) = registration.data::<ReflectComponent>() {
                     let wrapped_value = serde_json::json!({

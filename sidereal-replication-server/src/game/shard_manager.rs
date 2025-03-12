@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, time::common_conditions::on_timer};
 use bevy_renet::renet::*;
 use sidereal_core::ecs::{
     systems::network::{NetworkMessage, NetworkMessageEvent},
@@ -174,15 +174,15 @@ impl ShardManager {
     }
 
     // Get all sectors assigned to a shard
-    pub fn get_shard_sectors(&self, client_id: u64) -> Vec<SectorCoord> {
-        match self.shard_sectors.get(&client_id) {
-            Some(sectors) => sectors.iter().cloned().collect(),
-            None => Vec::new(),
-        }
-    }
+    // pub fn get_shard_sectors(&self, client_id: u64) -> Vec<SectorCoord> {
+    //     match self.shard_sectors.get(&client_id) {
+    //         Some(sectors) => sectors.iter().cloned().collect(),
+    //         None => Vec::new(),
+    //     }
+    // }
 
     // Find the best shard to handle a specific sector
-    pub fn find_best_shard_for_sector(&self, sector: SectorCoord) -> Option<u64> {
+    pub fn find_best_shard_for_sector(&self, _sector: SectorCoord) -> Option<u64> {
         if self.active_shards.is_empty() {
             return None;
         }
@@ -397,13 +397,28 @@ pub fn check_assignment_timeouts(
     }
 }
 
-// Updated balance_sectors system
 pub fn balance_sectors(
-    mut shard_manager: ResMut<ShardManager>,
-    mut server: ResMut<RenetServer>,
-    time: Res<Time>,
+    mut _shard_manager: ResMut<ShardManager>,
+    mut _server: ResMut<RenetServer>,
+    _time: Res<Time>,
 ) {
     // This would be the code to periodically rebalance sectors
     // Make sure to use the pending assignment mechanism here too
     // by marking sectors as pending when reassigning them
+}
+
+pub struct ShardManagerPlugin;
+
+impl Plugin for ShardManagerPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<ShardManager>();
+        app.add_systems(
+            Update,
+            (
+                handle_shard_connection,
+                check_assignment_timeouts.run_if(on_timer(std::time::Duration::from_secs(5))),
+                balance_sectors.run_if(on_timer(std::time::Duration::from_secs(30))),
+            ),
+        );
+    }
 }

@@ -17,9 +17,7 @@ impl Default for Id {
 impl Id {
     pub fn new(id: Option<Uuid>) -> Self {
         match id {
-            Some(id) => {
-                Self(id)
-            },
+            Some(id) => Self(id),
             None => Self(Uuid::new_v4()),
         }
     }

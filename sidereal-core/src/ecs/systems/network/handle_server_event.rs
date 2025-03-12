@@ -1,21 +1,26 @@
+use crate::ecs::systems::network::{NetworkMessage, NetworkMessageEvent};
 use bevy::prelude::*;
 use bevy_renet::renet::*;
-use crate::ecs::systems::network::{NetworkMessage, NetworkMessageEvent};
-
 
 // System to detect connections
 pub fn handle_server_events(
-    mut server_events: EventReader<ServerEvent>, 
-    mut network_events: EventWriter<NetworkMessageEvent>
+    mut server_events: EventReader<ServerEvent>,
+    mut network_events: EventWriter<NetworkMessageEvent>,
 ) {
     for event in server_events.read() {
         match event {
             ServerEvent::ClientConnected { client_id } => {
                 info!("Shard Server {client_id} connected");
-                network_events.send(NetworkMessageEvent { client_id: *client_id, message: NetworkMessage::ShardConnected });
+                network_events.send(NetworkMessageEvent {
+                    client_id: *client_id,
+                    message: NetworkMessage::ShardConnected,
+                });
             }
             ServerEvent::ClientDisconnected { client_id, reason } => {
-                network_events.send(NetworkMessageEvent { client_id: *client_id, message: NetworkMessage::ShardDisconnected });
+                network_events.send(NetworkMessageEvent {
+                    client_id: *client_id,
+                    message: NetworkMessage::ShardDisconnected,
+                });
                 warn!("Shard Server {client_id} disconnected: {reason}");
             }
         }
@@ -29,7 +34,7 @@ pub fn handle_server_events(
 // ) {
 //     // Import the trait
 //     use crate::plugins::EntitySerializer;
-    
+
 //     // Extract client IDs first
 //     let client_ids = {
 //         let mut client_events = world.resource_mut::<Events<ClientConnectedEvent>>();
@@ -38,15 +43,15 @@ pub fn handle_server_events(
 //             .map(|event| event.client_id)
 //             .collect::<Vec<_>>()
 //     };
-    
+
 //     // Exit early if no events
 //     if client_ids.is_empty() {
 //         return;
 //     }
-    
+
 //     // Extract entity IDs next
 //     let entity_ids = world.query_filtered::<Entity, With<Id>>().iter(world).collect::<Vec<_>>();
-    
+
 //     // Serialize entities
 //     let serialized_entities = {
 //         let mut entities = Vec::new();
@@ -57,7 +62,7 @@ pub fn handle_server_events(
 //         }
 //         entities
 //     };
-    
+
 //     // Create the message once
 //     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
 //     let state_message = NetworkMessage::EntityUpdates {
@@ -68,7 +73,7 @@ pub fn handle_server_events(
 //         error!("Failed to encode message: {:?}", e);
 //         Vec::new()
 //     });
-    
+
 //     // Send if we have a valid message
 //     if !message.is_empty() {
 //         println!("Sending message to {} clients", client_ids.len());
