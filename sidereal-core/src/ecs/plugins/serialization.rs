@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use bincode::{Encode, Decode};
 use avian2d::prelude::*;
 use crate::ecs::components::*;
-
 #[derive(Serialize, Deserialize, Debug, Clone, Encode, Decode)]
 pub struct SerializedEntity {
     pub components: HashMap<String, String>,
@@ -41,7 +40,9 @@ impl Plugin for EntitySerializationPlugin {
         .register_serializable_component::<Transform>()
         .register_serializable_component::<Rotation>()
         .register_serializable_component::<Name>()
+        .register_serializable_component::<InSector>()
         .register_serializable_component::<Parent>();
+
     }
 }
 

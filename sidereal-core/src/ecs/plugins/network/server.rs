@@ -4,8 +4,7 @@ use bevy_renet::renet::*;
 use bevy_renet::*;
 use std::net::UdpSocket;
 use std::time::SystemTime;
-use crate::ecs::systems::network::{NetworkMessageEvent, send_message_system, receive_server_message_system, register_network_systems};
-use crate::plugins::EntitySerializationPlugin;
+use crate::ecs::systems::network::{NetworkMessageEvent, send_message_system, receive_server_message_system, handle_server_events};
 
 pub struct NetworkServerPlugin;
 
@@ -13,7 +12,7 @@ impl Plugin for NetworkServerPlugin {
     fn build(&self, app: &mut App) {    
         let server = RenetServer::new(ConnectionConfig::default());
 
-        register_network_systems(app);
+        app.add_systems(Update, handle_server_events);
 
         app.add_plugins((RenetServerPlugin, NetcodeServerPlugin));
         app.add_event::<NetworkMessageEvent>();

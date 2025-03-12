@@ -7,7 +7,7 @@ pub fn process_message_queue(
     mut network_message_events: EventReader<NetworkMessageEvent>,
 ) {
     for event in network_message_events.read() {
-        match event.message {
+        match &event.message {
             NetworkMessage::Ping => {
                 println!("Processing: Received Ping from {}", event.client_id);
                 let message =

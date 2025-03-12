@@ -5,6 +5,8 @@ use bevy::prelude::*;
 use bevy::log::*;
 use bevy::transform::TransformPlugin;
 use bevy_state::app::StatesPlugin;
+use bevy_remote::RemotePlugin;
+use bevy_remote::http::RemoteHttpPlugin;
 use sidereal_core::ecs::plugins::network::client::NetworkClientPlugin;
 use sidereal_core::ecs::plugins::serialization::EntitySerializationPlugin;
 use game::process_message_queue;
@@ -47,6 +49,8 @@ fn main() {
         .init_resource::<Assets<Mesh>>()
         .add_plugins((
             HierarchyPlugin,
+            // RemotePlugin::default(),
+            // RemoteHttpPlugin::default(),
             StatesPlugin::default(),
             PhysicsPlugins::default(),
             EntitySerializationPlugin,

@@ -1,8 +1,7 @@
-
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use bincode::{Encode, Decode};
-
+use crate::ecs::systems::sectors::SectorCoord;
 use crate::plugins::SerializedEntity;
 
 
@@ -17,10 +16,15 @@ pub struct NetworkMessageEvent {
 pub enum NetworkMessage {
     Ping,
     Pong,
-    ShardConnected { shard_id: String },
+    ShardConnected,
+    ShardDisconnected,
     RequestWorldState,
     Heartbeat { timestamp: f64 },
     EntityUpdates { updated_entities:  Vec<SerializedEntity> , timestamp: f64 },
+    AssignSectors { sectors: Vec<SectorCoord> },
+    RevokeSectors { sectors: Vec<SectorCoord> },
+    SectorAssignmentConfirm { sectors: Vec<SectorCoord> },
+    SectorLoadReport { load_factor: f32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
