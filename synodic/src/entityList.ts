@@ -7,6 +7,7 @@ export class EntityListSidebar {
   private entityListElement: HTMLElement;
   private toggleButton: HTMLElement;
   private isOpen: boolean = true;
+  private selectedEntityId: number | null = null;
 
   constructor(container: HTMLElement, renderer: SectorMapRenderer) {
     this.container = container;
@@ -82,7 +83,26 @@ export class EntityListSidebar {
     });
   }
 
+  selectEntity(entityId: number) {
+    // Update the stored selection
+    this.selectedEntityId = entityId;
+
+    // Update the UI to reflect the selection
+    const items = this.entityListElement.querySelectorAll(".entity-item");
+    items.forEach((item) => {
+      const itemId = parseInt(item.getAttribute("data-id") || "0");
+      if (itemId === entityId) {
+        item.classList.add("selected");
+      } else {
+        item.classList.remove("selected");
+      }
+    });
+  }
+
   updateEntityList(entities: Entity[]) {
+    // Store the selected ID before clearing the list
+    const selectedId = this.selectedEntityId;
+
     // Clear existing list
     this.entityListElement.innerHTML = "";
 
@@ -143,30 +163,42 @@ export class EntityListSidebar {
             ];
           const position = transform.translation;
 
+          // Get sector information if available
+          const sectorInfo =
+            entity.components[
+              "sidereal_core::ecs::components::in_sector::InSector"
+            ];
+          const sectorText = sectorInfo
+            ? `Sector: ${sectorInfo.x}, ${sectorInfo.y}`
+            : "No sector";
+
           item.innerHTML = `
             <div class="entity-name">${name}</div>
             <div class="entity-position">Position: ${position[0].toFixed(
               0
             )}, ${position[1].toFixed(0)}</div>
+            <div class="entity-sector">${sectorText}</div>
           `;
 
-          // Add click handler to focus camera on this entity
+          // Check if this entity was previously selected
+          if (this.selectedEntityId === entity.entity) {
+            item.classList.add("selected");
+          }
+
+          // Modify the click handler to use the new selectEntity method
           item.addEventListener("click", () => {
             this.renderer.focusOnEntity(entity.entity);
-
-            // Highlight the selected item
-            const selected = this.entityListElement.querySelector(
-              ".entity-item.selected"
-            );
-            if (selected) {
-              selected.classList.remove("selected");
-            }
-            item.classList.add("selected");
+            this.selectEntity(entity.entity);
           });
 
           typeContainer.appendChild(item);
         });
     });
+
+    // Re-apply the selection after building the new list
+    if (selectedId !== null) {
+      this.selectEntity(selectedId);
+    }
   }
 
   addStyles() {
@@ -294,6 +326,12 @@ export class EntityListSidebar {
       .entity-position {
         font-size: 12px;
         color: rgba(255, 255, 255, 0.7);
+      }
+      
+      .entity-sector {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.7);
+        margin-top: 2px;
       }
     `;
 

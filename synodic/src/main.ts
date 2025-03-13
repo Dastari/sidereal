@@ -20,7 +20,7 @@ const entityList = new EntityListSidebar(container, renderer);
 // Store current viewport info
 let currentSector: SectorCoord = { x: 0, y: 0 };
 let lastUpdateTime = 0;
-const UPDATE_INTERVAL = 5000; // Update every 5 seconds
+const UPDATE_INTERVAL = 500; // Update every 5 seconds
 
 // Start the animation loop
 animate();

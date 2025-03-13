@@ -10,6 +10,7 @@ use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
 use game::process_message_queue;
 use game::sector_assignemnt::*;
+use sidereal_core::ecs::systems::{update_entity_sectors, SectorManager};
 use sidereal_core::ecs::plugins::{EntitySerializationPlugin, NetworkClientPlugin};
 use tracing::{info, Level};
 
@@ -67,6 +68,8 @@ pub fn setup_shard_server(app: &mut App) {
         NetworkClientPlugin,
     ));
 
+    app.insert_resource(SectorManager::default());
     // Add shard manager systems
     app.add_systems(Update, process_message_queue);
+    app.add_systems(Update, update_entity_sectors.after(PhysicsStepSet::Solver));
 }

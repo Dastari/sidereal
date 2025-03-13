@@ -23,6 +23,8 @@ export class DataService {
                 "sidereal_core::ecs::components::id::Id",
                 "sidereal_core::ecs::components::object::Object",
                 "bevy_transform::components::transform::Transform",
+                "avian2d::dynamics::rigid_body::LinearVelocity",
+                "sidereal_core::ecs::components::in_sector::InSector",
               ],
             },
           },

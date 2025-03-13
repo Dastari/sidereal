@@ -31,6 +31,8 @@ export interface Entity {
     "sidereal_core::ecs::components::id::Id": string;
     "bevy_transform::components::transform::Transform": Transform;
     "sidereal_core::ecs::components::object::Object": string;
+    "avian2d::dynamics::rigid_body::LinearVelocity": [number, number];
+    "sidereal_core::ecs::components::in_sector::InSector": SectorCoord;
   };
   entity: number;
 }

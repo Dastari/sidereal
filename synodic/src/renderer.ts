@@ -29,28 +29,48 @@ export class SectorMapRenderer {
   // Private variable to track last camera position for sector updates
   private lastCheckedPosition = new THREE.Vector2();
 
+  private sectorsWithEntities: Set<string> = new Set(); // Track sectors containing entities
+  private sectorBorders: Map<string, THREE.LineSegments> = new Map(); // Store border objects
+
+  // Store a reference to the raw entity data for re-emitting
+  private rawEntities: Entity[] = [];
+
+  // Private variable to track initial render
+  private hasInitialRender = false;
+
+  // Store velocity arrows separately to avoid rotation inheritance
+  private velocityArrows: Map<number, THREE.Object3D> = new Map();
+
+  // Add a flag to track when camera should follow selected entity
+  private followSelectedEntity: boolean = false;
+
+  // Add a map to store entity labels separately
+  private entityLabels: Map<number, THREE.Sprite> = new Map();
+
   constructor(container: HTMLElement) {
     this.container = container;
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x000814);
-
-    // Create an orthographic camera
+    // Create an orthographic camera with correct initial zoom
     const width = window.innerWidth;
     const height = window.innerHeight;
-    const frustumSize = 10000;
-    const aspect = width / height;
+
+    // Instead of using a fixed frustumSize, calculate based on zoom
     this.camera = new THREE.OrthographicCamera(
-      (frustumSize * aspect) / -2,
-      (frustumSize * aspect) / 2,
-      frustumSize / 2,
-      frustumSize / -2,
+      -width / (2 * this.zoom),
+      width / (2 * this.zoom),
+      height / (2 * this.zoom),
+      -height / (2 * this.zoom),
       0.1,
       10000
     );
     this.camera.position.z = 1000;
 
     // Create the renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+    });
+    this.renderer.setClearColor(0x000000, 0);
     this.renderer.setSize(width, height);
     this.container.appendChild(this.renderer.domElement);
 
@@ -96,67 +116,26 @@ export class SectorMapRenderer {
   }
 
   createSectorLabel() {
-    // Create a canvas for the hover label
+    // Create a hidden/empty label (not showing anything)
     const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 64;
-    const context = canvas.getContext("2d");
-    if (context) {
-      context.fillStyle = "rgba(255, 255, 255, 0.8)";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.font = "20px Arial";
-      context.fillStyle = "rgba(0, 0, 0, 1)";
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.fillText(
-        "Hover over a sector",
-        canvas.width / 2,
-        canvas.height / 2
-      );
-    }
+    canvas.width = 1;
+    canvas.height = 1;
 
-    // Create a texture from the canvas
     const texture = new THREE.CanvasTexture(canvas);
     const material = new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
+      opacity: 0, // Make fully transparent
     });
+
     this.sectorLabel = new THREE.Sprite(material);
-    this.sectorLabel.scale.set(200, 50, 1);
-    this.sectorLabel.visible = false;
+    this.sectorLabel.visible = false; // Always hidden
     this.scene.add(this.sectorLabel);
   }
 
   updateSectorLabel(x: number, y: number, worldX: number, worldY: number) {
-    if (!this.sectorLabel) return;
-
-    // Create a canvas for the label
-    const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 64;
-    const context = canvas.getContext("2d");
-    if (context) {
-      context.fillStyle = "rgba(255, 255, 255, 0.8)";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.font = "20px Arial";
-      context.fillStyle = "rgba(0, 0, 0, 1)";
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.fillText(
-        `Sector (${x}, ${y})`,
-        canvas.width / 2,
-        canvas.height / 2
-      );
-    }
-
-    // Update the texture
-    const texture = new THREE.CanvasTexture(canvas);
-    (this.sectorLabel.material as THREE.SpriteMaterial).map = texture;
-    (this.sectorLabel.material as THREE.SpriteMaterial).needsUpdate = true;
-
-    // Position the label
-    this.sectorLabel.position.set(worldX, worldY, 10);
-    this.sectorLabel.visible = true;
+    // Do nothing - we no longer update the sector label
+    return;
   }
 
   updateVisibleSectors() {
@@ -193,6 +172,9 @@ export class SectorMapRenderer {
         }
       }
     }
+
+    // After updating visible sectors, also update borders
+    this.updateSectorBorders();
   }
 
   createSectorGrid(x: number, y: number): THREE.Object3D {
@@ -226,9 +208,9 @@ export class SectorMapRenderer {
     );
 
     const gridMaterial = new THREE.LineBasicMaterial({
-      color: 0x444444,
+      color: 0xffffff,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.1,
     });
 
     const grid = new THREE.LineSegments(gridGeometry, gridMaterial);
@@ -242,6 +224,12 @@ export class SectorMapRenderer {
   }
 
   updateEntities(entities: Entity[]) {
+    // Store the raw entities for later use
+    this.rawEntities = [...entities];
+
+    // Clear the sectors with entities tracking
+    this.sectorsWithEntities.clear();
+
     // Keep track of entities to remove
     const entityIds = new Set(entities.map((e) => e.entity));
     const entitiesToRemove = new Set(
@@ -255,6 +243,20 @@ export class SectorMapRenderer {
         this.scene.remove(object);
         this.entities.delete(id);
       }
+
+      // Also remove their velocity arrows
+      const arrow = this.velocityArrows.get(id);
+      if (arrow) {
+        this.scene.remove(arrow);
+        this.velocityArrows.delete(id);
+      }
+
+      // Remove their labels
+      const label = this.entityLabels.get(id);
+      if (label) {
+        this.scene.remove(label);
+        this.entityLabels.delete(id);
+      }
     });
 
     // Update or add entities
@@ -266,6 +268,10 @@ export class SectorMapRenderer {
         entity.components["sidereal_core::ecs::components::object::Object"];
       const name = entity.components["bevy_core::name::Name"].name;
 
+      // Extract velocity if it exists
+      const linearVelocity =
+        entity.components["avian2d::dynamics::rigid_body::LinearVelocity"];
+
       // Position from server
       const position = new THREE.Vector3(
         transform.translation[0],
@@ -273,12 +279,27 @@ export class SectorMapRenderer {
         0
       );
 
+      // Extract rotation quaternion
+      const rotation = new THREE.Quaternion(
+        transform.rotation[0],
+        transform.rotation[1],
+        transform.rotation[2],
+        transform.rotation[3]
+      );
+
+      // Track which sector this entity belongs to
+      const sectorX = Math.floor(position.x / this.sectorSize);
+      const sectorY = Math.floor(position.y / this.sectorSize);
+      const sectorKey = `${sectorX},${sectorY}`;
+      this.sectorsWithEntities.add(sectorKey);
+
       let object: THREE.Object3D;
 
       // Check if entity already exists
       if (this.entities.has(id)) {
         object = this.entities.get(id)!;
         object.position.copy(position);
+        object.quaternion.copy(rotation); // Apply rotation
       } else {
         // Create new entity based on its type
         if (objectType === "Ship") {
@@ -308,35 +329,45 @@ export class SectorMapRenderer {
 
           object = new THREE.Mesh(geometry, material);
 
-          // Add a label with the ship name
-          const canvas = document.createElement("canvas");
-          canvas.width = 256;
-          canvas.height = 64;
-          const context = canvas.getContext("2d");
-          if (context) {
-            context.fillStyle = "rgba(0, 0, 0, 0.7)";
-            context.fillRect(0, 0, canvas.width, canvas.height);
-            context.font = "16px Arial";
-            context.fillStyle = "white";
-            context.textAlign = "center";
-            context.textBaseline = "middle";
-            context.fillText(name, canvas.width / 2, canvas.height / 2);
-          }
+          // Apply rotation to point in the right direction
+          object.quaternion.copy(rotation);
 
-          const texture = new THREE.CanvasTexture(canvas);
-          const spriteMaterial = new THREE.SpriteMaterial({
-            map: texture,
-            transparent: true,
-          });
-          const sprite = new THREE.Sprite(spriteMaterial);
-          sprite.position.set(0, 30, 0);
-          sprite.scale.set(100, 25, 1);
-          object.add(sprite);
+          // Add name label with dynamic sizing
+          const canvas = this.createTextCanvas(name);
+          if (canvas) {
+            // Remove any existing label
+            const existingLabel = this.entityLabels.get(id);
+            if (existingLabel) {
+              this.scene.remove(existingLabel);
+            }
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({
+              map: texture,
+              transparent: true,
+            });
+            const sprite = new THREE.Sprite(spriteMaterial);
+
+            // Set the sprite position to be above the entity
+            sprite.position.set(position.x, position.y + 30, position.z);
+
+            // Scale based on the canvas dimensions to maintain proportions
+            const scaleX = canvas.width / 10;
+            const scaleY = canvas.height / 10;
+            sprite.scale.set(scaleX, scaleY, 1);
+
+            // Add to scene independently and track it
+            this.scene.add(sprite);
+            this.entityLabels.set(id, sprite);
+          }
         } else {
           // Default object for unknown types
           const geometry = new THREE.CircleGeometry(10, 32);
           const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
           object = new THREE.Mesh(geometry, material);
+
+          // Apply rotation (though may not be visually apparent for circles)
+          object.quaternion.copy(rotation);
         }
 
         object.position.copy(position);
@@ -347,32 +378,86 @@ export class SectorMapRenderer {
         this.scene.add(object);
         this.entities.set(id, object);
       }
+
+      // Update velocity arrow as a separate object (not affected by entity rotation)
+      this.updateVelocityArrow(id, position, linearVelocity);
+
+      // For entities that already exist, update their label positions
+      if (this.entityLabels.has(id)) {
+        const label = this.entityLabels.get(id)!;
+        label.position.set(position.x, position.y + 30, position.z);
+      }
     });
 
-    // If we have a selected entity, focus on it
+    // When finished updating all entities, reapply selection highlight if needed
     if (this.selectedEntityId && this.entities.has(this.selectedEntityId)) {
       const entity = this.entities.get(this.selectedEntityId)!;
-      this.focusOnPosition(entity.position.x, entity.position.y);
+      if (entity instanceof THREE.Mesh) {
+        // Update the highlight
+        (entity.material as THREE.MeshBasicMaterial).color.set(0xff0000);
+      }
     }
 
-    // Emit an event with the updated entities list for the UI
+    // Update the sector borders
+    this.updateSectorBorders();
+
+    // Emit the updated entities event
     this.emitEntitiesUpdatedEvent(entities);
   }
 
   emitEntitiesUpdatedEvent(entities: Entity[]) {
     // Create a custom event with entity data for the UI to consume
     const event = new CustomEvent("entities-updated", {
-      detail: { entities },
+      detail: {
+        entities,
+        selectedEntityId: this.selectedEntityId,
+        forceSelection: true, // Add this flag to force UI to respect our selection
+      },
     });
     document.dispatchEvent(event);
   }
 
   focusOnEntity(entityId: number) {
+    // Clear any previous selection visual state
+    this.clearSelectedEntityHighlight();
+
     this.selectedEntityId = entityId;
 
     if (this.entities.has(entityId)) {
       const entity = this.entities.get(entityId)!;
+
+      // Highlight the selected entity (change its appearance)
+      if (entity instanceof THREE.Mesh) {
+        // Store original color to restore later if needed
+        entity.userData.originalColor = (
+          entity.material as THREE.MeshBasicMaterial
+        ).color.clone();
+        // Change to a highlighted color (e.g., bright red)
+        (entity.material as THREE.MeshBasicMaterial).color.set(0xff0000);
+      }
+
+      // Focus the camera on it
       this.focusOnPosition(entity.position.x, entity.position.y);
+
+      // Enable follow mode when focusing on an entity
+      this.toggleFollowMode(true);
+    }
+
+    // Force an entities-updated event to sync the UI
+    this.emitEntitiesUpdatedEvent(this.getAllRawEntities());
+  }
+
+  // Helper method to clear visual highlight
+  clearSelectedEntityHighlight() {
+    if (this.selectedEntityId && this.entities.has(this.selectedEntityId)) {
+      const entity = this.entities.get(this.selectedEntityId)!;
+
+      // Restore original appearance
+      if (entity instanceof THREE.Mesh && entity.userData.originalColor) {
+        (entity.material as THREE.MeshBasicMaterial).color.copy(
+          entity.userData.originalColor
+        );
+      }
     }
   }
 
@@ -411,6 +496,38 @@ export class SectorMapRenderer {
   }
 
   render() {
+    // Force camera reset and multiple refresh attempts on first render
+    if (!this.hasInitialRender) {
+      this.hasInitialRender = true;
+
+      // Force camera projection to correct initial state
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      this.camera.left = -width / (2 * this.zoom);
+      this.camera.right = width / (2 * this.zoom);
+      this.camera.top = height / (2 * this.zoom);
+      this.camera.bottom = -height / (2 * this.zoom);
+      this.camera.updateProjectionMatrix();
+
+      // Try a series of refreshes with increasing delays to ensure everything renders
+      setTimeout(() => this.refreshView(), 50);
+      setTimeout(() => this.refreshView(), 200);
+      setTimeout(() => this.refreshView(), 500);
+    }
+
+    // Update camera position to follow selected entity if follow mode is enabled
+    if (this.followSelectedEntity && this.selectedEntityId) {
+      const entity = this.entities.get(this.selectedEntityId);
+      if (entity) {
+        // Smoothly move camera to follow entity
+        const lerpFactor = 0.1; // Adjust for smoother or more immediate following
+        this.camera.position.x +=
+          (entity.position.x - this.camera.position.x) * lerpFactor;
+        this.camera.position.y +=
+          (entity.position.y - this.camera.position.y) * lerpFactor;
+      }
+    }
+
     // Update visible sectors if needed
     this.checkSectorUpdate();
 
@@ -436,36 +553,8 @@ export class SectorMapRenderer {
   }
 
   checkSectorHover() {
-    // Cast a ray to see if we're hovering over a sector
-    this.raycaster.setFromCamera(this.mouse, this.camera);
-
-    // Calculate world coordinates from mouse
-    const worldPosition = new THREE.Vector3(
-      this.camera.position.x +
-        (this.mouse.x * (window.innerWidth / 2)) / this.zoom,
-      this.camera.position.y +
-        (this.mouse.y * (window.innerHeight / 2)) / this.zoom,
-      0
-    );
-
-    // Calculate sector from world position
-    const x = Math.floor(worldPosition.x / this.sectorSize);
-    const y = Math.floor(worldPosition.y / this.sectorSize);
-
-    // If sector changed, update the hover info
-    if (
-      !this.hoveredSector ||
-      this.hoveredSector.x !== x ||
-      this.hoveredSector.y !== y
-    ) {
-      this.hoveredSector = { x, y };
-
-      // Position label at sector center
-      const centerX = x * this.sectorSize + this.sectorSize / 2;
-      const centerY = y * this.sectorSize + this.sectorSize / 2;
-
-      this.updateSectorLabel(x, y, centerX, centerY);
-    }
+    // Disable sector hover functionality
+    return;
   }
 
   onWindowResize() {
@@ -487,6 +576,11 @@ export class SectorMapRenderer {
   onMouseDown(event: MouseEvent) {
     this.isDragging = true;
     this.lastMousePosition.set(event.clientX, event.clientY);
+
+    // Disable follow mode when manually dragging
+    if (this.followSelectedEntity) {
+      this.followSelectedEntity = false;
+    }
   }
 
   onMouseMove(event: MouseEvent) {
@@ -565,5 +659,275 @@ export class SectorMapRenderer {
     }
 
     return result;
+  }
+
+  updateSectorBorders() {
+    // Remove borders for sectors that no longer have entities
+    this.sectorBorders.forEach((border, key) => {
+      if (!this.sectorsWithEntities.has(key)) {
+        this.scene.remove(border);
+        border.geometry.dispose();
+        (border.material as THREE.Material).dispose();
+        this.sectorBorders.delete(key);
+      }
+    });
+
+    // Add borders for sectors with entities that don't have borders yet
+    this.sectorsWithEntities.forEach((sectorKey) => {
+      if (!this.sectorBorders.has(sectorKey)) {
+        const [x, y] = sectorKey.split(",").map(Number);
+        const border = this.createSectorBorder(x, y);
+        this.scene.add(border);
+        this.sectorBorders.set(sectorKey, border);
+      }
+    });
+  }
+
+  createSectorBorder(x: number, y: number): THREE.LineSegments {
+    // Calculate sector boundaries
+    const startX = x * this.sectorSize;
+    const startY = y * this.sectorSize;
+
+    // Create a box to represent the border
+    const borderGeometry = new THREE.BufferGeometry();
+    const vertices = [];
+
+    // Create a square outline
+    vertices.push(startX, startY, 0.5);
+    vertices.push(startX + this.sectorSize, startY, 0.5);
+
+    vertices.push(startX + this.sectorSize, startY, 0.5);
+    vertices.push(startX + this.sectorSize, startY + this.sectorSize, 0.5);
+
+    vertices.push(startX + this.sectorSize, startY + this.sectorSize, 0.5);
+    vertices.push(startX, startY + this.sectorSize, 0.5);
+
+    vertices.push(startX, startY + this.sectorSize, 0.5);
+    vertices.push(startX, startY, 0.5);
+
+    borderGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(vertices, 3)
+    );
+
+    const borderMaterial = new THREE.LineBasicMaterial({
+      color: 0xffff00, // Yellow color
+      linewidth: 2,
+      transparent: false,
+      depthTest: false,
+    });
+
+    return new THREE.LineSegments(borderGeometry, borderMaterial);
+  }
+
+  // Helper method to get the stored raw entities
+  getAllRawEntities(): Entity[] {
+    return this.rawEntities;
+  }
+
+  // Force a complete update of the view
+  refreshView() {
+    this.updateVisibleSectors();
+
+    // If we have entities, re-apply them to trigger visual updates
+    if (this.rawEntities.length > 0) {
+      this.updateEntities(this.rawEntities);
+    }
+
+    // Make sure sector label is positioned correctly
+    if (this.hoveredSector) {
+      const centerX =
+        this.hoveredSector.x * this.sectorSize + this.sectorSize / 2;
+      const centerY =
+        this.hoveredSector.y * this.sectorSize + this.sectorSize / 2;
+      this.updateSectorLabel(
+        this.hoveredSector.x,
+        this.hoveredSector.y,
+        centerX,
+        centerY
+      );
+    }
+  }
+
+  // Helper method to create or update velocity arrow as an independent object
+  updateVelocityArrow(
+    entityId: number,
+    entityPosition: THREE.Vector3,
+    velocity: number[] | undefined
+  ) {
+    // Remove existing arrow if present
+    const existingArrow = this.velocityArrows.get(entityId);
+    if (existingArrow) {
+      this.scene.remove(existingArrow);
+      this.velocityArrows.delete(entityId);
+    }
+
+    // If no velocity or zero velocity, don't add an arrow
+    if (!velocity || (velocity[0] === 0 && velocity[1] === 0)) {
+      return;
+    }
+
+    // Create velocity arrow
+    const velocityVector = new THREE.Vector2(velocity[0], velocity[1]);
+    const velocityMagnitude = velocityVector.length();
+
+    // Scale factor to make arrow visible (adjust as needed based on typical velocities)
+    const scaleFactor = 2;
+    const arrowLength = velocityMagnitude * scaleFactor;
+
+    // Only show arrow if velocity is significant
+    if (arrowLength < 5) {
+      return;
+    }
+
+    // Create arrow group
+    const arrowGroup = new THREE.Group();
+    arrowGroup.position.copy(entityPosition);
+    arrowGroup.position.z = 2; // Put slightly above the entity
+
+    // Calculate direction
+    const direction = velocityVector.clone().normalize();
+
+    // Create line for arrow shaft
+    const lineGeometry = new THREE.BufferGeometry();
+    const lineVertices = new Float32Array([
+      0,
+      0,
+      0, // Start at entity center
+      direction.x * arrowLength,
+      direction.y * arrowLength,
+      0, // End at scaled velocity direction
+    ]);
+    lineGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(lineVertices, 3)
+    );
+
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0xff8000 }); // Orange color for velocity
+    const line = new THREE.Line(lineGeometry, lineMaterial);
+    arrowGroup.add(line);
+
+    // Create arrowhead (small triangle at the tip)
+    const arrowHeadSize = Math.min(10, arrowLength * 0.2); // Cap size and make proportional
+    const arrowHeadGeometry = new THREE.BufferGeometry();
+
+    // Calculate perpendicular direction for arrowhead
+    const perpDirection = new THREE.Vector2(-direction.y, direction.x);
+
+    const tipX = direction.x * arrowLength;
+    const tipY = direction.y * arrowLength;
+
+    const arrowHeadVertices = new Float32Array([
+      tipX,
+      tipY,
+      0, // Tip
+      tipX -
+        direction.x * arrowHeadSize -
+        (perpDirection.x * arrowHeadSize) / 2,
+      tipY -
+        direction.y * arrowHeadSize -
+        (perpDirection.y * arrowHeadSize) / 2,
+      0, // Left wing
+      tipX -
+        direction.x * arrowHeadSize +
+        (perpDirection.x * arrowHeadSize) / 2,
+      tipY -
+        direction.y * arrowHeadSize +
+        (perpDirection.y * arrowHeadSize) / 2,
+      0, // Right wing
+    ]);
+
+    arrowHeadGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(arrowHeadVertices, 3)
+    );
+
+    const arrowHeadMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff8000,
+      side: THREE.DoubleSide,
+    });
+
+    const arrowHead = new THREE.Mesh(arrowHeadGeometry, arrowHeadMaterial);
+    arrowGroup.add(arrowHead);
+
+    // Add completed arrow to scene and track it
+    this.scene.add(arrowGroup);
+    this.velocityArrows.set(entityId, arrowGroup);
+  }
+
+  // Helper method to create text canvas with dynamic sizing
+  createTextCanvas(text: string) {
+    // Create temporary canvas for measuring text
+    const measureCanvas = document.createElement("canvas");
+    const measureContext = measureCanvas.getContext("2d");
+
+    if (!measureContext) return null;
+
+    // Set font to measure
+    const fontSize = 128;
+    const fontFace = "Consolas";
+    measureContext.font = `${fontSize}px ${fontFace}`;
+
+    // Measure text width
+    const metrics = measureContext.measureText(text);
+    const textWidth = metrics.width;
+
+    // Account for font height (approx 70% of fontSize for most fonts)
+    const textHeight = fontSize * 0.7;
+
+    // Add padding (50px on each side horizontally, 30px vertically)
+    const paddingX = 100;
+    const paddingY = 60;
+
+    // Create final canvas with appropriate dimensions
+    const canvas = document.createElement("canvas");
+    canvas.width = textWidth + paddingX;
+    canvas.height = textHeight + paddingY;
+
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+
+    // Set transparent background
+    context.fillStyle = "rgba(0, 0, 0, 0.0)";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Apply same font settings
+    context.font = `${fontSize}px ${fontFace}`;
+    context.fillStyle = "white";
+    context.textAlign = "left";
+    context.textBaseline = "top";
+
+    // Position text with consistent padding
+    context.fillText(text, paddingX / 2, paddingY / 2);
+
+    return canvas;
+  }
+
+  // Add a method to toggle camera follow mode
+  toggleFollowMode(enabled?: boolean) {
+    if (enabled !== undefined) {
+      this.followSelectedEntity = enabled;
+    } else {
+      this.followSelectedEntity = !this.followSelectedEntity;
+    }
+
+    // If enabling follow mode and we have a selected entity, immediately center on it
+    if (
+      this.followSelectedEntity &&
+      this.selectedEntityId &&
+      this.entities.has(this.selectedEntityId)
+    ) {
+      const entity = this.entities.get(this.selectedEntityId)!;
+      this.camera.position.x = entity.position.x;
+      this.camera.position.y = entity.position.y;
+      this.updateVisibleSectors();
+    }
+
+    return this.followSelectedEntity;
+  }
+
+  // Add a method to get current follow mode state for UI
+  isFollowingEntity(): boolean {
+    return this.followSelectedEntity;
   }
 }
