@@ -19,7 +19,6 @@ pub fn process_message_queue(
                 println!("Processing: Received Pong from {}", event.client_id);
             }
             _ => {
-                println!("Unhandled message type from {}", event.client_id);
             }
         }
     }

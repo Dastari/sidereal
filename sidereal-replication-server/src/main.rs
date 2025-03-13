@@ -44,14 +44,14 @@ fn main() {
             HierarchyPlugin,
             TransformPlugin,
             StatesPlugin::default(),
-            RemotePlugin::default(),
-            RemoteHttpPlugin::default(),
+            // RemotePlugin::default(),
+            // RemoteHttpPlugin::default(),
         ))
-        .add_plugins(setup_game)
+        .add_plugins(setup_replication_server)
         .run();
 }
 
-pub fn setup_game(app: &mut App) {
+pub fn setup_replication_server(app: &mut App) {
     app.add_plugins((
         EntitySerializationPlugin,
         NetworkServerPlugin,

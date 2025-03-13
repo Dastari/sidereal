@@ -8,6 +8,7 @@ use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
 use game::process_message_queue;
+use game::sector_assignemnt::*;
 use sidereal_core::ecs::plugins::network::client::NetworkClientPlugin;
 use sidereal_core::ecs::plugins::serialization::EntitySerializationPlugin;
 
@@ -49,13 +50,22 @@ fn main() {
         .init_resource::<Assets<Mesh>>()
         .add_plugins((
             HierarchyPlugin,
-            // RemotePlugin::default(),
-            // RemoteHttpPlugin::default(),
+            RemotePlugin::default(),
+            RemoteHttpPlugin::default(),
             StatesPlugin::default(),
             PhysicsPlugins::default(),
-            EntitySerializationPlugin,
-            NetworkClientPlugin,
         ))
-        .add_systems(Update, process_message_queue)
+        .add_plugins(setup_shard_server)
         .run();
+}
+
+pub fn setup_shard_server(app: &mut App) {
+    app.add_plugins((
+        EntitySerializationPlugin,
+        SectorAssignmentPlugin,
+        NetworkClientPlugin,
+    ));
+
+    // Add shard manager systems
+    app.add_systems(Update, process_message_queue);
 }

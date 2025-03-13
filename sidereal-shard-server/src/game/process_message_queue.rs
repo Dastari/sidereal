@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy_renet::renet::*;
-use serde_json;
 use sidereal_core::ecs::systems::network::{NetworkMessage, NetworkMessageEvent};
 
 pub fn process_message_queue(
@@ -19,31 +18,8 @@ pub fn process_message_queue(
             NetworkMessage::Pong => {
                 println!("Processing: Received Pong from {}", event.client_id);
             }
-            NetworkMessage::EntityUpdates {
-                updated_entities,
-                timestamp,
-            } => {
-                println!(
-                    "Processing: Received EntityUpdates from {}",
-                    event.client_id
-                );
 
-                // Print as JSON if serializable
-                match serde_json::to_string_pretty(updated_entities) {
-                    Ok(json) => println!("Entities JSON: {}", json),
-                    Err(e) => println!("Failed to convert entities to JSON: {}", e),
-                }
-
-                // world.deserialize(updated_entities);
-
-                println!("Processing: Timestamp: {}", timestamp);
-            }
-            _ => {
-                println!(
-                    "Unhandled message {:?} from {}",
-                    event.message, event.client_id
-                );
-            }
+            _ => {}
         }
     }
 }
