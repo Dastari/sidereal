@@ -1,0 +1,20 @@
+{
+  "name": "synodic",
+  "version": "1.0.0",
+  "description": "Interactive WebGL map of the Sidereal universe",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.158.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.158.2",
+    "typescript": "^5.2.2",
+    "vite": "^4.5.0"
+  }
+}

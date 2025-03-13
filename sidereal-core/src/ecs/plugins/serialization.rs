@@ -1,40 +1,13 @@
 use bevy::prelude::*;
 use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use uuid::Uuid;
-
-#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[reflect(Component, Serialize, Deserialize)]
-pub struct Id(pub Uuid);
-
-impl Default for Id {
-    fn default() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Id {
-    pub fn new(id: Option<Uuid>) -> Self {
-        match id {
-            Some(id) => Self(id),
-            None => Self(Uuid::new_v4()),
-        }
-    }
-}
-
-impl fmt::Display for Id {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-use crate::ecs::components::*;
 use avian2d::prelude::*;
 use bevy_reflect::serde::{ReflectDeserializer, ReflectSerializer};
 use bevy_reflect::{GetTypeRegistration, PartialReflect,  TypeRegistration, TypeRegistry};
 use bincode::{Decode, Encode};
 use serde::de::DeserializeSeed;
 use std::collections::HashMap;
+use crate::ecs::components::*;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Encode, Decode)]
 pub struct SerializedEntity {
@@ -51,7 +24,7 @@ impl Plugin for EntitySerializationPlugin {
         app.register_serializable_component::<Object>()
             .register_serializable_component::<Id>()
             .register_serializable_component::<ColliderMarker>()
-            .register_serializable_component::<ColliderAabb>()
+            // .register_serializable_component::<ColliderAabb>()
             .register_serializable_component::<AccumulatedTranslation>()
             .register_serializable_component::<AngularVelocity>()
             .register_serializable_component::<ExternalAngularImpulse>()

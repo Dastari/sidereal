@@ -51,6 +51,7 @@ pub enum SceneState {
 
 /// Resource holding the state of scene loading
 #[derive(Resource)]
+
 pub struct SceneLoadingState {
     pub loaded_entities: Vec<EntityRecord>,
     pub _error_message: Option<String>,

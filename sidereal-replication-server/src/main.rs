@@ -5,9 +5,9 @@ use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
 use bevy_state::app::StatesPlugin;
 
-use game::{process_message_queue, ShardManagerPlugin};
+use game::{process_message_queue, ShardManagerPlugin, SceneLoaderPlugin};
 
-use sidereal_core::ecs::plugins::{NetworkServerPlugin, SectorPlugin};
+use sidereal_core::ecs::plugins::{NetworkServerPlugin, SectorPlugin, EntitySerializationPlugin };
 use sidereal_core::ecs::systems::mock_game_world;
 use tracing::{info, Level};
 
@@ -42,6 +42,7 @@ fn main() {
             HierarchyPlugin,
             TransformPlugin,
             StatesPlugin::default(),
+            
             // RemotePlugin::default(),
             // RemoteHttpPlugin::default(),
         ))
@@ -51,12 +52,14 @@ fn main() {
 
 pub fn setup_replication_server(app: &mut App) {
     app.add_plugins((
+        EntitySerializationPlugin,
         NetworkServerPlugin,
         SectorPlugin,
         ShardManagerPlugin,
+        SceneLoaderPlugin,
     ));
 
-    app.add_systems(Startup, mock_game_world);
+    // app.add_systems(Startup, mock_game_world);
     // Add shard manager systems
     app.add_systems(Update, process_message_queue);
 }

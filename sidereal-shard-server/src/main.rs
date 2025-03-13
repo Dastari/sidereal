@@ -1,5 +1,6 @@
 mod game;
 
+use avian2d::prelude::*;
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::log::*;
 use bevy::prelude::*;
@@ -9,8 +10,7 @@ use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
 use game::process_message_queue;
 use game::sector_assignemnt::*;
-use sidereal_core::ecs::plugins::network::client::NetworkClientPlugin;
-use avian2d::prelude::*;
+use sidereal_core::ecs::plugins::{EntitySerializationPlugin, NetworkClientPlugin};
 use tracing::{info, Level};
 
 fn main() {
@@ -49,7 +49,10 @@ fn main() {
         .add_plugins((
             HierarchyPlugin,
             RemotePlugin::default(),
-            RemoteHttpPlugin::default(),
+            RemoteHttpPlugin::default()
+                .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
+                .with_header("Access-Control-Allow-Headers", "content-type, authorization")
+                .with_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
             StatesPlugin::default(),
             PhysicsPlugins::default(),
         ))
@@ -59,6 +62,7 @@ fn main() {
 
 pub fn setup_shard_server(app: &mut App) {
     app.add_plugins((
+        EntitySerializationPlugin,
         SectorAssignmentPlugin,
         NetworkClientPlugin,
     ));
