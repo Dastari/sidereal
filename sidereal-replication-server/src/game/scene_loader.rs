@@ -24,9 +24,8 @@ impl Plugin for SceneLoaderPlugin {
                 Update,
                 (
                     process_pending_deserializations,
-                    perform_entity_deserialization.after(process_pending_deserializations),
-                )
-                    .run_if(in_state(SceneState::Ready)),
+                    apply_deferred,
+                ).run_if(in_state(SceneState::Ready)),
             );
     }
 }
@@ -197,8 +196,8 @@ fn process_pending_deserializations(
     }
 }
 
-/// Actually perform the entity deserialization using direct world access
-fn perform_entity_deserialization(world: &mut World) {
+/// Apply deferred deserialization
+fn apply_deferred(world: &mut World) {
     // Query for entities with PendingDeserialization and DeserializedEntity components
     let mut entities_to_process = Vec::new();
 

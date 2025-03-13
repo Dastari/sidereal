@@ -3,13 +3,11 @@ mod game;
 
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
-use bevy_remote::http::RemoteHttpPlugin;
-use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
 
-use game::{process_message_queue, SceneLoaderPlugin, ShardManagerPlugin};
+use game::{process_message_queue, ShardManagerPlugin};
 
-use sidereal_core::ecs::plugins::{EntitySerializationPlugin, NetworkServerPlugin, SectorPlugin};
+use sidereal_core::ecs::plugins::{NetworkServerPlugin, SectorPlugin};
 use sidereal_core::ecs::systems::mock_game_world;
 use tracing::{info, Level};
 
@@ -53,7 +51,6 @@ fn main() {
 
 pub fn setup_replication_server(app: &mut App) {
     app.add_plugins((
-        EntitySerializationPlugin,
         NetworkServerPlugin,
         SectorPlugin,
         ShardManagerPlugin,

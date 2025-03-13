@@ -3,30 +3,37 @@ use bevy_renet::renet::*;
 use sidereal_core::ecs::{
     systems::network::{NetworkMessage, NetworkMessageEvent},
     systems::sectors::{SectorCoord, SectorManager},
+    components::InSector,
 };
+use sidereal_core::EntitySerializer;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
-
-// Add this struct to track pending assignments
 
 struct PendingAssignment {
     sectors: HashSet<SectorCoord>,
     timestamp: Instant,
 }
 
+#[derive(Event)]
+pub struct SendEntityUpdatesEvent {
+    pub client_id: u64,
+    pub sectors: Vec<SectorCoord>,
+}
+
+#[derive(Event, Clone)]
+pub struct EntitySerializationEvent {
+    pub client_id: u64,
+    pub entities: Vec<Entity>,
+    pub timestamp: f64,
+}
+
 #[derive(Resource)]
 pub struct ShardManager {
-    // Maps client_id to the sectors it's responsible for
     pub shard_sectors: HashMap<u64, HashSet<SectorCoord>>,
-    // Maps sector coordinates to the client_id responsible for it
     pub sector_assignments: HashMap<SectorCoord, u64>,
-    // Tracks load factor for each shard (0.0 - 1.0)
     pub shard_loads: HashMap<u64, f32>,
-    // Whether a shard has fully initialized
     pub active_shards: HashSet<u64>,
-    // Pending sector assignments awaiting confirmation
     pending_assignments: HashMap<u64, PendingAssignment>,
-    // Timeout for pending assignments
     assignment_timeout: Duration,
 }
 
@@ -38,359 +45,266 @@ impl Default for ShardManager {
             shard_loads: HashMap::new(),
             active_shards: HashSet::new(),
             pending_assignments: HashMap::new(),
-            assignment_timeout: Duration::from_secs(10), // 10 second timeout
+            assignment_timeout: Duration::from_secs(10),
         }
     }
 }
 
 impl ShardManager {
-    // Register a new shard when it connects
     pub fn register_shard(&mut self, client_id: u64) {
         self.shard_sectors.insert(client_id, HashSet::new());
         self.shard_loads.insert(client_id, 0.0);
         info!("Registered new shard server with client_id: {}", client_id);
     }
-
-    // Remove a shard when it disconnects
     pub fn remove_shard(&mut self, client_id: u64) -> Vec<SectorCoord> {
         let orphaned_sectors = match self.shard_sectors.remove(&client_id) {
             Some(sectors) => sectors.into_iter().collect::<Vec<_>>(),
             None => Vec::new(),
         };
-
-        // Remove assignments for orphaned sectors
         for sector in &orphaned_sectors {
             self.sector_assignments.remove(sector);
         }
-
         self.shard_loads.remove(&client_id);
         self.active_shards.remove(&client_id);
-
         info!("Removed shard server with client_id: {}", client_id);
-
         orphaned_sectors
     }
-
-    // Modify assign_sector to handle the pending state
     pub fn assign_sector(&mut self, client_id: u64, sector: SectorCoord, pending: bool) -> bool {
-        if !self.shard_sectors.contains_key(&client_id)
-            && !self.pending_assignments.contains_key(&client_id)
-        {
-            warn!(
-                "Attempted to assign sector to non-existent shard: {}",
-                client_id
-            );
+        if !self.shard_sectors.contains_key(&client_id) && !self.pending_assignments.contains_key(&client_id) {
+            warn!("Attempted to assign sector to non-existent shard: {}", client_id);
             return false;
         }
-
         if pending {
-            // Add to pending assignments
-            if let Some(pending_assignment) = self.pending_assignments.get_mut(&client_id) {
-                pending_assignment.sectors.insert(sector);
-            } else {
-                let mut sectors = HashSet::new();
-                sectors.insert(sector);
-                self.pending_assignments.insert(
-                    client_id,
-                    PendingAssignment {
-                        sectors,
-                        timestamp: Instant::now(),
-                    },
-                );
-            }
+            self.pending_assignments.entry(client_id).and_modify(|pa| {
+                pa.sectors.insert(sector);
+            }).or_insert(PendingAssignment {
+                sectors: {
+                    let mut hs = HashSet::new();
+                    hs.insert(sector);
+                    hs
+                },
+                timestamp: Instant::now(),
+            });
             return true;
         }
-
-        // Regular assignment logic for confirmed sectors
-        // Check if sector is already assigned to another shard
         if let Some(current_shard) = self.sector_assignments.get(&sector) {
             if *current_shard != client_id {
-                // Remove sector from previous shard
                 if let Some(sectors) = self.shard_sectors.get_mut(current_shard) {
                     sectors.remove(&sector);
                 }
             }
         }
-
-        // Assign sector to new shard
         if let Some(sectors) = self.shard_sectors.get_mut(&client_id) {
             sectors.insert(sector);
         }
         self.sector_assignments.insert(sector, client_id);
-
         true
     }
-
-    // New method to confirm assignments
     pub fn confirm_sector_assignments(&mut self, client_id: u64, sectors: &[SectorCoord]) {
-        // First, collect the sectors that need to be confirmed
-        let sectors_to_confirm: Vec<SectorCoord> =
-            if let Some(pending) = self.pending_assignments.get_mut(&client_id) {
-                let mut confirmed = Vec::new();
-
-                // Remove confirmed sectors from pending and collect them
-                for sector in sectors {
-                    if pending.sectors.remove(sector) {
-                        confirmed.push(*sector);
-                    }
+        let sectors_to_confirm: Vec<SectorCoord> = if let Some(pending) = self.pending_assignments.get_mut(&client_id) {
+            let mut confirmed = Vec::new();
+            for sector in sectors {
+                if pending.sectors.remove(sector) {
+                    confirmed.push(*sector);
                 }
-
-                // If all pending assignments are confirmed, remove the pending entry
-                if pending.sectors.is_empty() {
-                    self.pending_assignments.remove(&client_id);
-                }
-
-                confirmed
-            } else {
-                Vec::new()
-            };
-
-        // Now assign the confirmed sectors
+            }
+            if pending.sectors.is_empty() {
+                self.pending_assignments.remove(&client_id);
+            }
+            confirmed
+        } else {
+            Vec::new()
+        };
         for sector in sectors_to_confirm {
             self.assign_sector(client_id, sector, false);
         }
     }
-
-    // New method to check for timed-out assignments
     pub fn check_assignment_timeouts(&mut self) -> Vec<(u64, Vec<SectorCoord>)> {
         let now = Instant::now();
         let mut timed_out = Vec::new();
         let mut to_remove = Vec::new();
-
         for (client_id, pending) in &self.pending_assignments {
             if now.duration_since(pending.timestamp) > self.assignment_timeout {
-                // This assignment has timed out
                 let sectors: Vec<_> = pending.sectors.iter().cloned().collect();
                 timed_out.push((*client_id, sectors));
                 to_remove.push(*client_id);
             }
         }
-
-        // Remove timed-out assignments
         for client_id in to_remove {
             self.pending_assignments.remove(&client_id);
         }
-
         timed_out
     }
-
-    // Get all sectors assigned to a shard
-    // pub fn get_shard_sectors(&self, client_id: u64) -> Vec<SectorCoord> {
-    //     match self.shard_sectors.get(&client_id) {
-    //         Some(sectors) => sectors.iter().cloned().collect(),
-    //         None => Vec::new(),
-    //     }
-    // }
-
-    // Find the best shard to handle a specific sector
     pub fn find_best_shard_for_sector(&self, _sector: SectorCoord) -> Option<u64> {
         if self.active_shards.is_empty() {
             return None;
         }
-
-        // Simplistic approach for now: find shard with lowest load
-        // In a real implementation, you'd also consider proximity to other sectors
-        self.active_shards
-            .iter()
-            .min_by(|&a, &b| {
-                let load_a = self.shard_loads.get(a).unwrap_or(&1.0);
-                let load_b = self.shard_loads.get(b).unwrap_or(&1.0);
-                load_a.partial_cmp(load_b).unwrap()
-            })
-            .copied()
+        self.active_shards.iter().min_by(|&a, &b| {
+            let load_a = self.shard_loads.get(a).unwrap_or(&1.0);
+            let load_b = self.shard_loads.get(b).unwrap_or(&1.0);
+            load_a.partial_cmp(load_b).unwrap()
+        }).copied()
     }
-
-    // Update load information for a shard
     pub fn update_shard_load(&mut self, client_id: u64, load_factor: f32) {
         self.shard_loads.insert(client_id, load_factor);
     }
-
-    // Activate a shard (mark it as fully initialized and ready to take sectors)
     pub fn activate_shard(&mut self, client_id: u64) {
         if self.shard_sectors.contains_key(&client_id) {
             self.active_shards.insert(client_id);
             info!("Shard {} is now active", client_id);
         }
     }
-
-    // Calculate which sectors should be assigned to a new shard
-    pub fn calculate_sector_assignment(
-        &self,
-        client_id: u64,
-        sector_manager: &SectorManager,
-    ) -> Vec<SectorCoord> {
+    pub fn calculate_sector_assignment(&self, client_id: u64, sector_manager: &SectorManager) -> Vec<SectorCoord> {
         let mut sectors_to_assign = Vec::new();
-
-        // For initial implementation, just evenly distribute unassigned sectors
         for (coord, _sector) in &sector_manager.sectors {
-            // Skip sectors that are assigned or pending assignment
             if self.sector_assignments.contains_key(coord) {
                 continue;
             }
-
-            // Also check if this sector is in any pending assignment
-            let is_pending = self
-                .pending_assignments
-                .values()
-                .any(|pending| pending.sectors.contains(coord));
-
+            let is_pending = self.pending_assignments.values().any(|pending| pending.sectors.contains(coord));
             if !is_pending {
                 sectors_to_assign.push(*coord);
             }
         }
-
-        // If we have other active shards, try to redistribute some sectors
         if self.active_shards.len() > 1 {
-            let target_sectors_per_shard = (sector_manager.sectors.len() as f32
-                / self.active_shards.len() as f32)
-                .ceil() as usize;
-
+            let target_sectors_per_shard = (sector_manager.sectors.len() as f32 / self.active_shards.len() as f32).ceil() as usize;
             for &active_shard in &self.active_shards {
                 if active_shard == client_id {
                     continue;
                 }
-
                 if let Some(shard_sectors) = self.shard_sectors.get(&active_shard) {
-                    // If this shard has more than the target number of sectors, redistribute some
                     if shard_sectors.len() > target_sectors_per_shard {
-                        // Take up to half of the excess sectors from this overloaded shard
                         let excess = shard_sectors.len() - target_sectors_per_shard;
                         let transfer_count = excess / 2;
-
-                        // For simplicity, just take any sectors
-                        // In a real implementation, you'd consider proximity and load
-                        sectors_to_assign
-                            .extend(shard_sectors.iter().take(transfer_count).cloned());
+                        sectors_to_assign.extend(shard_sectors.iter().take(transfer_count).cloned());
                     }
                 }
             }
         }
-
         sectors_to_assign
     }
 }
 
-// Modified system to handle shard connection
 pub fn handle_shard_connection(
     mut shard_manager: ResMut<ShardManager>,
     mut server: ResMut<RenetServer>,
     mut network_events: EventReader<NetworkMessageEvent>,
     sector_manager: Res<SectorManager>,
+    mut entity_update_events: EventWriter<SendEntityUpdatesEvent>,
 ) {
     for event in network_events.read() {
         match &event.message {
             NetworkMessage::ShardConnected => {
                 info!("Shard server connected: {}", event.client_id);
-
-                // Register the new shard
                 shard_manager.register_shard(event.client_id);
-
-                // Calculate which sectors to assign to this shard
-                let sectors_to_assign =
-                    shard_manager.calculate_sector_assignment(event.client_id, &sector_manager);
-
-                // Mark these sectors as pending assignment
+                let sectors_to_assign = shard_manager.calculate_sector_assignment(event.client_id, &sector_manager);
                 for sector in &sectors_to_assign {
                     shard_manager.assign_sector(event.client_id, *sector, true);
                 }
-
-                // Send the sector assignments to the shard
-                let message = bincode::encode_to_vec(
-                    &NetworkMessage::AssignSectors {
-                        sectors: sectors_to_assign,
-                    },
-                    bincode::config::standard(),
-                )
-                .unwrap();
-
+                let message = bincode::encode_to_vec(&NetworkMessage::AssignSectors { sectors: sectors_to_assign }, bincode::config::standard()).unwrap();
                 server.send_message(event.client_id, DefaultChannel::ReliableOrdered, message);
-
-                // Note: We don't mark the shard as active until it confirms the assignments
             }
             NetworkMessage::ShardDisconnected => {
                 info!("Shard server disconnected: {}", event.client_id);
-
-                // Get sectors that need reassignment
                 let orphaned_sectors = shard_manager.remove_shard(event.client_id);
-
-                // Reassign orphaned sectors to other shards
                 for sector in orphaned_sectors {
                     if let Some(new_shard) = shard_manager.find_best_shard_for_sector(sector) {
                         shard_manager.assign_sector(new_shard, sector, true);
-
-                        // Notify shard of new assignment
-                        let message = bincode::encode_to_vec(
-                            &NetworkMessage::AssignSectors {
-                                sectors: vec![sector],
-                            },
-                            bincode::config::standard(),
-                        )
-                        .unwrap();
-
+                        let message = bincode::encode_to_vec(&NetworkMessage::AssignSectors { sectors: vec![sector] }, bincode::config::standard()).unwrap();
                         server.send_message(new_shard, DefaultChannel::ReliableOrdered, message);
                     }
                 }
             }
             NetworkMessage::SectorAssignmentConfirm { sectors } => {
-                // Shard confirms it has taken responsibility for sectors
-                info!(
-                    "Shard {} confirmed {} sector assignments",
-                    event.client_id,
-                    sectors.len()
-                );
-
-                // Finalize the sector assignments
+                info!("Shard {} confirmed {} sector assignments", event.client_id, sectors.len());
                 shard_manager.confirm_sector_assignments(event.client_id, sectors);
-
-                // Mark the shard as active if it wasn't already
                 shard_manager.activate_shard(event.client_id);
+                entity_update_events.send(SendEntityUpdatesEvent {
+                    client_id: event.client_id,
+                    sectors: sectors.clone(),
+                });
             }
             NetworkMessage::SectorLoadReport { load_factor } => {
-                // Update the load factor for this shard
                 shard_manager.update_shard_load(event.client_id, *load_factor);
-
-                // You could implement load balancing here by redistributing sectors
-                // based on updated load information
             }
-            _ => {} // Ignore other messages
+            _ => {}
         }
     }
 }
 
-// Add a new system to handle timeout checks
+pub fn process_entity_updates(
+    mut events: EventReader<SendEntityUpdatesEvent>,
+    query: Query<(Entity, &InSector)>,
+    time: Res<Time>,
+    mut serialization_events: EventWriter<EntitySerializationEvent>,
+) {
+    for event in events.read() {
+        let sector_set: HashSet<SectorCoord> = event.sectors.iter().cloned().collect();
+        let mut entities_to_sync = Vec::new();
+        for (entity, in_sector) in query.iter() {
+            if sector_set.contains(&in_sector.0) {
+                entities_to_sync.push(entity);
+            }
+        }
+        if entities_to_sync.is_empty() {
+            info!("No entities found in newly assigned sectors for shard {}", event.client_id);
+            continue;
+        }
+        info!("Sending {} entities to shard {} for newly assigned sectors", entities_to_sync.len(), event.client_id);
+        serialization_events.send(EntitySerializationEvent {
+            client_id: event.client_id,
+            entities: entities_to_sync,
+            timestamp: time.elapsed().as_secs_f64(),
+        });
+    }
+}
+
+pub fn serialize_and_send_entities_exclusive(world: &mut World) {
+    let event_iter: Vec<EntitySerializationEvent> = {
+        let mut events = world.get_resource_mut::<Events<EntitySerializationEvent>>().unwrap();
+        events.drain().collect()
+    };
+    if event_iter.is_empty() {
+        return;
+    }
+    let mut serialized_results = Vec::new();
+    for event in event_iter {
+        let mut serialized_entities = Vec::new();
+        for entity in event.entities {
+            if let Ok(serialized) = world.serialize_entity(entity) {
+                serialized_entities.push(serialized);
+            } else {
+                warn!("Failed to serialize entity {}", entity.index());
+            }
+        }
+        serialized_results.push((event.client_id, event.timestamp, serialized_entities));
+    }
+    let mut server = world.get_resource_mut::<RenetServer>().unwrap();
+    for (client_id, timestamp, serialized_entities) in serialized_results {
+        if !serialized_entities.is_empty() {
+            let count = serialized_entities.len();
+            let entity_update = NetworkMessage::EntityUpdates {
+                updated_entities: serialized_entities,
+                timestamp,
+            };
+            let message = bincode::encode_to_vec(&entity_update, bincode::config::standard()).unwrap();
+            server.send_message(client_id, DefaultChannel::ReliableOrdered, message);
+            info!("Sent {} fully serialized entities to shard {}", count, client_id);
+        }
+    }
+}
+
 pub fn check_assignment_timeouts(
     mut shard_manager: ResMut<ShardManager>,
     mut server: ResMut<RenetServer>,
 ) {
     let timed_out = shard_manager.check_assignment_timeouts();
-
     for (client_id, sectors) in timed_out {
-        warn!(
-            "Assignment timeout for shard {}: {} sectors",
-            client_id,
-            sectors.len()
-        );
-
-        // You could choose to:
-        // 1. Retry sending the assignments
-        // 2. Reassign the sectors to other shards
-        // 3. Mark the shard as problematic
-
-        // For now, let's just try to reassign the sectors
+        warn!("Assignment timeout for shard {}: {} sectors", client_id, sectors.len());
         for sector in sectors {
             if let Some(new_shard) = shard_manager.find_best_shard_for_sector(sector) {
                 if new_shard != client_id {
                     shard_manager.assign_sector(new_shard, sector, true);
-
-                    // Notify the new shard
-                    let message = bincode::encode_to_vec(
-                        &NetworkMessage::AssignSectors {
-                            sectors: vec![sector],
-                        },
-                        bincode::config::standard(),
-                    )
-                    .unwrap();
-
+                    let message = bincode::encode_to_vec(&NetworkMessage::AssignSectors { sectors: vec![sector] }, bincode::config::standard()).unwrap();
                     server.send_message(new_shard, DefaultChannel::ReliableOrdered, message);
                 }
             }
@@ -398,27 +312,20 @@ pub fn check_assignment_timeouts(
     }
 }
 
-pub fn balance_sectors(
-    mut _shard_manager: ResMut<ShardManager>,
-    mut _server: ResMut<RenetServer>,
-    _time: Res<Time>,
-) {
-    // This would be the code to periodically rebalance sectors
-    // Make sure to use the pending assignment mechanism here too
-    // by marking sectors as pending when reassigning them
-}
-
 pub struct ShardManagerPlugin;
 
 impl Plugin for ShardManagerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShardManager>();
+        app.add_event::<SendEntityUpdatesEvent>()
+           .add_event::<EntitySerializationEvent>();
         app.add_systems(
             Update,
             (
                 handle_shard_connection,
-                check_assignment_timeouts.run_if(on_timer(std::time::Duration::from_secs(5))),
-                balance_sectors.run_if(on_timer(std::time::Duration::from_secs(30))),
+                process_entity_updates,
+                check_assignment_timeouts.run_if(on_timer(Duration::from_secs(5))),
+                serialize_and_send_entities_exclusive,
             ),
         );
     }

@@ -1,12 +1,41 @@
+use bevy::prelude::*;
+use bevy::reflect::Reflect;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use uuid::Uuid;
+
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[reflect(Component, Serialize, Deserialize)]
+pub struct Id(pub Uuid);
+
+impl Default for Id {
+    fn default() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Id {
+    pub fn new(id: Option<Uuid>) -> Self {
+        match id {
+            Some(id) => Self(id),
+            None => Self(Uuid::new_v4()),
+        }
+    }
+}
+
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 use crate::ecs::components::*;
 use avian2d::prelude::*;
-use bevy::prelude::*;
 use bevy_reflect::serde::{ReflectDeserializer, ReflectSerializer};
-use bevy_reflect::{GetTypeRegistration, PartialReflect, Reflect, TypeRegistration, TypeRegistry};
+use bevy_reflect::{GetTypeRegistration, PartialReflect,  TypeRegistration, TypeRegistry};
 use bincode::{Decode, Encode};
 use serde::de::DeserializeSeed;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
 #[derive(Serialize, Deserialize, Debug, Clone, Encode, Decode)]
 pub struct SerializedEntity {
     pub components: HashMap<String, String>,
@@ -19,7 +48,6 @@ impl Plugin for EntitySerializationPlugin {
         if !app.world().contains_resource::<AppTypeRegistry>() {
             app.init_resource::<AppTypeRegistry>();
         }
-
         app.register_serializable_component::<Object>()
             .register_serializable_component::<Id>()
             .register_serializable_component::<ColliderMarker>()
@@ -77,15 +105,9 @@ impl EntitySerializer for World {
                     } else {
                         value
                     };
-
-                    // Convert the JSON value to a string
                     let json_string = serde_json::to_string(&value).map_err(|err| {
-                        format!(
-                            "Failed to convert JSON to string for component {}: {}",
-                            type_name, err
-                        )
+                        format!("Failed to convert JSON to string for component {}: {}", type_name, err)
                     })?;
-
                     components.insert(type_name, json_string);
                 }
             }
@@ -94,61 +116,63 @@ impl EntitySerializer for World {
     }
 
     fn deserialize_entity(&mut self, serialized: &SerializedEntity) -> Result<Entity, String> {
-        let entity = self.spawn_empty().id();
         let type_registry = self.resource::<AppTypeRegistry>().clone();
         let registry = type_registry.read();
-
-        for (type_name, json_string) in &serialized.components {
-            // Parse the JSON string back to serde_json::Value
-            let value: serde_json::Value = serde_json::from_str(json_string).map_err(|err| {
-                format!(
-                    "Failed to parse JSON string for component {}: {}",
-                    type_name, err
-                )
+        let id_type_name = std::any::type_name::<Id>().to_string();
+        let entity = if let Some(id_json) = serialized.components.get(&id_type_name) {
+            let id: Id = serde_json::from_str(id_json).map_err(|err| {
+                format!("Failed to deserialize Id component: {}", err)
             })?;
-
-            if let Some(registration) = find_registration_by_name(&registry, type_name) {
-                if let Some(component_id) = registration.data::<ReflectComponent>() {
-                    let wrapped_value = serde_json::json!({
-                        type_name: value
-                    });
-
-                    let deserializer = ReflectDeserializer::new(&registry);
-                    let json_str = wrapped_value.to_string();
-                    let mut json_de = serde_json::Deserializer::from_str(&json_str);
-                    let reflect_value = deserializer.deserialize(&mut json_de).map_err(|err| {
-                        format!("Failed to deserialize component {}: {}", type_name, err)
-                    })?;
-
-                    // Create a mutable reference that can access the world for apply_or_insert
-                    let mut entity_world_mut = self.entity_mut(entity);
-
-                    // Use apply_or_insert instead of apply so it works for new components
-                    component_id.apply_or_insert(
-                        &mut entity_world_mut,
-                        reflect_value.as_ref(),
-                        &registry,
-                    );
-                }
+            if let Some(existing_entity) = find_entity_with_id(self, &id) {
+                existing_entity
             } else {
-                return Err(format!("Type {} not found in registry", type_name));
+                self.spawn_empty().id()
+            }
+        } else {
+            self.spawn_empty().id()
+        };
+        {
+            let mut entity_world_mut = self.entity_mut(entity);
+            for (type_name, json_string) in &serialized.components {
+                let value: serde_json::Value = serde_json::from_str(json_string).map_err(|err| {
+                    format!("Failed to parse JSON string for component {}: {}", type_name, err)
+                })?;
+                if let Some(registration) = find_registration_by_name(&registry, type_name) {
+                    if let Some(component_id) = registration.data::<ReflectComponent>() {
+                        let wrapped_value = serde_json::json!({ type_name: value });
+                        let deserializer = ReflectDeserializer::new(&registry);
+                        let json_str = wrapped_value.to_string();
+                        let mut json_de = serde_json::Deserializer::from_str(&json_str);
+                        let reflect_value = deserializer.deserialize(&mut json_de).map_err(|err| {
+                            format!("Failed to deserialize component {}: {}", type_name, err)
+                        })?;
+                        component_id.apply_or_insert(&mut entity_world_mut, reflect_value.as_ref(), &registry);
+                    }
+                } else {
+                    return Err(format!("Type {} not found in registry", type_name));
+                }
             }
         }
         Ok(entity)
     }
 }
 
-fn find_registration_by_name<'a>(
-    registry: &'a TypeRegistry,
-    type_name: &str,
-) -> Option<&'a TypeRegistration> {
-    registry
-        .iter()
-        .find(|registration| registration.type_info().type_path() == type_name)
+fn find_registration_by_name<'a>(registry: &'a TypeRegistry, type_name: &str) -> Option<&'a TypeRegistration> {
+    registry.iter().find(|registration| registration.type_info().type_path() == type_name)
 }
 
 fn as_partial_reflect(value: &dyn Reflect) -> &dyn PartialReflect {
     unsafe { std::mem::transmute::<&dyn Reflect, &dyn PartialReflect>(value) }
+}
+
+fn find_entity_with_id(world: &mut World, id: &Id) -> Option<Entity> {
+    let mut query = world.query::<(Entity, &Id)>();
+    for (entity, existing_id) in query.iter(world) {
+        if existing_id == id {
+            return Some(entity);
+        }
+    }
+    None
 }
 
 pub trait EntitySerializationExt {
@@ -162,7 +186,6 @@ impl EntitySerializationExt for App {
     where
         T: Component + Reflect + GetTypeRegistration,
     {
-        // Just use Bevy's built-in register_type method
         self.register_type::<T>()
     }
 }

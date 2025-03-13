@@ -10,8 +10,6 @@ use bevy_state::app::StatesPlugin;
 use game::process_message_queue;
 use game::sector_assignemnt::*;
 use sidereal_core::ecs::plugins::network::client::NetworkClientPlugin;
-use sidereal_core::ecs::plugins::serialization::EntitySerializationPlugin;
-
 use avian2d::prelude::*;
 use tracing::{info, Level};
 
@@ -61,7 +59,6 @@ fn main() {
 
 pub fn setup_shard_server(app: &mut App) {
     app.add_plugins((
-        EntitySerializationPlugin,
         SectorAssignmentPlugin,
         NetworkClientPlugin,
     ));
