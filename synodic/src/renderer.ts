@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { Entity } from "./types";
+import { shipFragmentShader } from "./shaders";
+import { shipVertexShader } from "./shaders";
 
 export class SectorMapRenderer {
   private scene: THREE.Scene;
@@ -64,6 +66,8 @@ export class SectorMapRenderer {
   // Ship sprite properties
   private shipSpriteTexture: THREE.Texture | null = null;
   private isShipTextureLoaded: boolean = false;
+  private shipTextureWidth: number = 0;
+  private shipTextureHeight: number = 0;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -91,6 +95,9 @@ export class SectorMapRenderer {
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.setSize(width, height);
     this.container.appendChild(this.renderer.domElement);
+
+    // Set the default cursor to a pointer (hand)
+    this.renderer.domElement.style.cursor = "pointer";
 
     // Create grid container
     this.gridHelper = new THREE.Object3D();
@@ -620,6 +627,9 @@ export class SectorMapRenderer {
     this.isDragging = true;
     this.lastMousePosition.set(event.clientX, event.clientY);
 
+    // Change cursor to grabbing hand while dragging
+    this.renderer.domElement.style.cursor = "grabbing";
+
     // Disable follow mode when manually dragging
     if (this.followSelectedEntity) {
       this.followSelectedEntity = false;
@@ -645,6 +655,10 @@ export class SectorMapRenderer {
 
   onMouseUp() {
     this.isDragging = false;
+
+    // Change cursor back to pointer (hand) when done dragging
+    this.renderer.domElement.style.cursor = "pointer";
+
     this.updateVisibleSectors();
   }
 
@@ -944,10 +958,14 @@ export class SectorMapRenderer {
     const paddingX = 100;
     const paddingY = 60;
 
+    // Add extra padding for the outline
+    const outlineWidth = 8; // Width of the outline
+    const canvasPadding = outlineWidth * 2;
+
     // Create final canvas with appropriate dimensions
     const canvas = document.createElement("canvas");
-    canvas.width = textWidth + paddingX;
-    canvas.height = textHeight + paddingY;
+    canvas.width = textWidth + paddingX + canvasPadding;
+    canvas.height = textHeight + paddingY + canvasPadding;
 
     const context = canvas.getContext("2d");
     if (!context) return null;
@@ -958,12 +976,29 @@ export class SectorMapRenderer {
 
     // Apply same font settings
     context.font = `${fontSize}px ${fontFace}`;
-    context.fillStyle = "white";
     context.textAlign = "left";
     context.textBaseline = "top";
 
-    // Position text with consistent padding
-    context.fillText(text, paddingX / 2, paddingY / 2);
+    // Position text with consistent padding (adjusted for outline)
+    const textX = paddingX / 2 + outlineWidth;
+    const textY = paddingY / 2 + outlineWidth;
+
+    // Draw the text outline by drawing the text multiple times in black with offsets
+    context.fillStyle = "black";
+
+    // Draw the outline by repeating the text at slight offsets
+    for (let x = -outlineWidth; x <= outlineWidth; x += outlineWidth) {
+      for (let y = -outlineWidth; y <= outlineWidth; y += outlineWidth) {
+        if (x !== 0 || y !== 0) {
+          // Skip the center position (that's for the white text)
+          context.fillText(text, textX + x, textY + y);
+        }
+      }
+    }
+
+    // Now draw the main text in white on top
+    context.fillStyle = "white";
+    context.fillText(text, textX, textY);
 
     return canvas;
   }
@@ -1304,6 +1339,11 @@ export class SectorMapRenderer {
         this.shipSpriteTexture = texture;
         this.isShipTextureLoaded = true;
 
+        // Store the texture dimensions for proper aspect ratio
+        const image = texture.image;
+        this.shipTextureWidth = image.width;
+        this.shipTextureHeight = image.height;
+
         // Re-render existing entities to apply the sprite if needed
         if (this.rawEntities.length > 0 && this.zoom > 1.0) {
           this.updateEntities(this.rawEntities);
@@ -1332,14 +1372,35 @@ export class SectorMapRenderer {
         // Create a group to hold both the ship and direction indicator
         const group = new THREE.Group();
 
-        // Create the plane geometry without any rotation (default orientation)
-        const planeGeometry = new THREE.PlaneGeometry(25, 25);
+        // Calculate the aspect ratio if we have the texture dimensions
+        let width = 25;
+        let height = 25;
+
+        if (this.shipTextureWidth && this.shipTextureHeight) {
+          // Keep the larger dimension at 25 units and scale the other accordingly
+          const aspectRatio = this.shipTextureWidth / this.shipTextureHeight;
+          if (aspectRatio >= 1) {
+            // Width is larger than or equal to height
+            width = 25;
+            height = 25 / aspectRatio;
+          } else {
+            // Height is larger than width
+            height = 25;
+            width = 25 * aspectRatio;
+          }
+        }
+
+        // Create the plane geometry with proper aspect ratio
+        const planeGeometry = new THREE.PlaneGeometry(width, height);
 
         // Create the material with the ship texture
-        const material = new THREE.MeshBasicMaterial({
-          map: this.shipSpriteTexture,
-          transparent: true,
-          side: THREE.DoubleSide,
+        const material = new THREE.ShaderMaterial({
+          vertexShader: shipVertexShader,
+          fragmentShader: shipFragmentShader,
+          uniforms: {
+            map: { value: this.shipSpriteTexture },
+            brightness: { value: 0.8 },
+          },
         });
 
         // Create the mesh
@@ -1348,11 +1409,6 @@ export class SectorMapRenderer {
         // Create a separate mesh container group to handle the ship's orientation
         const shipContainer = new THREE.Group();
         shipContainer.add(shipMesh);
-
-        // Try a different angle to align with the green direction line
-        // The green line is along +Y axis (0, 1, 0), so we need to make the ship point that way
-        // Based on the reported issues, try 180 degrees (Math.PI)
-        // shipContainer.rotation.z = Math.PI;
 
         // Add the ship container to the main group
         group.add(shipContainer);
