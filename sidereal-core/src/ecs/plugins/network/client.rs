@@ -39,10 +39,13 @@ impl Plugin for NetworkClientPlugin {
             protocol_id: 0,
         };
         info!("Configured authentication for server at {}", SERVER_ADDR);
-        
+
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-        info!("Bound UDP socket locally to {}", socket.local_addr().unwrap());
-        
+        info!(
+            "Bound UDP socket locally to {}",
+            socket.local_addr().unwrap()
+        );
+
         let current_time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
@@ -51,7 +54,7 @@ impl Plugin for NetworkClientPlugin {
 
         app.insert_resource(transport);
         app.add_systems(Update, receive_client_message_system);
-        
+
         // Add system to monitor connection status
         app.add_systems(Update, log_connection_status);
     }
@@ -82,25 +85,28 @@ fn log_connection_status(
     };
 
     // Update elapsed time for reconnection attempts
-    if current_state == ConnectionStateType::Disconnected || current_state == ConnectionStateType::Reconnecting {
+    if current_state == ConnectionStateType::Disconnected
+        || current_state == ConnectionStateType::Reconnecting
+    {
         connection_state.disconnected_time += time.delta_secs();
     } else {
         connection_state.disconnected_time = 0.0;
     }
 
     // Check if we need to attempt reconnection (every 5 seconds)
-    if current_state == ConnectionStateType::Disconnected && 
-       connection_state.disconnected_time >= 5.0 {
+    if current_state == ConnectionStateType::Disconnected
+        && connection_state.disconnected_time >= 5.0
+    {
         info!("Attempting to reconnect to server at {}", SERVER_ADDR);
-        
+
         // Reset timer and change state to reconnecting
         connection_state.disconnected_time = 0.0;
         current_state = ConnectionStateType::Reconnecting;
-        
+
         // Create new client ID
         let client_id = uuid::Uuid::new_v4();
         let client_id_str = client_id.to_string();
-        
+
         // Configure authentication
         let authentication = ClientAuthentication::Unsecure {
             server_addr: SERVER_ADDR.parse().unwrap(),
@@ -113,30 +119,34 @@ fn log_connection_status(
             }),
             protocol_id: 0,
         };
-        
+
         // Create a new transport with the updated authentication
         if let Ok(socket) = UdpSocket::bind("127.0.0.1:0") {
             let current_time = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap();
-                
-            if let Ok(new_transport) = NetcodeClientTransport::new(current_time, authentication, socket) {
+
+            if let Ok(new_transport) =
+                NetcodeClientTransport::new(current_time, authentication, socket)
+            {
                 *transport = new_transport;
-                
+
                 // Reset the client as well to ensure a fresh connection attempt
                 *client = RenetClient::new(ConnectionConfig::default());
-                
+
                 info!("New transport created with client ID: {}", client_id_str);
             }
         }
     }
-    
+
     // Check for reconnection attempts that have been going on too long - reset them
-    if current_state == ConnectionStateType::Reconnecting && 
-       connection_state.last_spinner_time >= 30.0 {  // After 30 seconds of trying
+    if current_state == ConnectionStateType::Reconnecting
+        && connection_state.last_spinner_time >= 30.0
+    {
+        // After 30 seconds of trying
         info!("Reconnection attempt timed out, resetting...");
         current_state = ConnectionStateType::Disconnected;
-        connection_state.disconnected_time = 5.0;  // Force immediate retry with new connection
+        connection_state.disconnected_time = 5.0; // Force immediate retry with new connection
         connection_state.last_spinner_time = 0.0;
     }
 
@@ -146,40 +156,47 @@ fn log_connection_status(
         match current_state {
             ConnectionStateType::Connected => info!("Client successfully connected to server"),
             ConnectionStateType::Connecting => info!("Client attempting to connect to server..."),
-            ConnectionStateType::Reconnecting => info!("Client attempting to reconnect to server..."),
+            ConnectionStateType::Reconnecting => {
+                info!("Client attempting to reconnect to server...")
+            }
             ConnectionStateType::Disconnected => info!("Client disconnected from server"),
             ConnectionStateType::Unknown => info!("Client in unknown state"),
         }
-        
+
         // Update the state
         connection_state.state_type = current_state;
         connection_state.spinner_count = 0;
         connection_state.last_spinner_time = 0.0;
-    } else if (current_state == ConnectionStateType::Connecting || current_state == ConnectionStateType::Reconnecting) 
-             && connection_state.last_spinner_time >= 10.0 {  // Only update every 10 seconds
-        
+    } else if (current_state == ConnectionStateType::Connecting
+        || current_state == ConnectionStateType::Reconnecting)
+        && connection_state.last_spinner_time >= 10.0
+    {
+        // Only update every 10 seconds
+
         // Calculate elapsed time
         let total_elapsed = if current_state == ConnectionStateType::Connecting {
             connection_state.last_spinner_time
         } else {
             connection_state.disconnected_time
         };
-        
+
         let elapsed = total_elapsed.round() as u32;
         let minutes = elapsed / 60;
         let seconds = elapsed % 60;
-        
+
         let status = if current_state == ConnectionStateType::Connecting {
             "connecting"
         } else {
             "reconnecting"
         };
-        
+
         info!("Still {} ({}m:{}s)", status, minutes, seconds);
-        
+
         // Reset the timer for spinner updates only
         connection_state.last_spinner_time = 0.0;
-    } else if current_state == ConnectionStateType::Connecting || current_state == ConnectionStateType::Reconnecting {
+    } else if current_state == ConnectionStateType::Connecting
+        || current_state == ConnectionStateType::Reconnecting
+    {
         // Just update the time and spinner without logging
         connection_state.last_spinner_time += time.delta_secs();
         connection_state.spinner_count += 1;

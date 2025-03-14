@@ -11,6 +11,7 @@ pub fn receive_server_message_system(
     for client_id in server.clients_id() {
         while let Some(message) = server.receive_message(client_id, DefaultChannel::ReliableOrdered)
         {
+            println!("Received message size: {}", message.len());
             match bincode::decode_from_slice::<NetworkMessage, _>(&message, config::standard()) {
                 Ok((network_message, _)) => {
                     network_message_events.send(NetworkMessageEvent {
@@ -31,6 +32,7 @@ pub fn receive_client_message_system(
     mut network_message_events: EventWriter<NetworkMessageEvent>,
 ) {
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
+        println!("Received message size: {}", message.len());
         match bincode::decode_from_slice::<NetworkMessage, _>(&message, config::standard()) {
             Ok((network_message, _)) => {
                 network_message_events.send(NetworkMessageEvent {

@@ -15,7 +15,7 @@ use rand::Rng;
 use rayon::prelude::*;
 
 // Configuration constant for mock ship generation
-const MOCK_SHIPS: usize = 10;
+const MOCK_SHIPS: usize = 10000;
 const WORLD_BOUNDS: f32 = 10_000.0;
 
 pub fn mock_game_world(mut commands: Commands) {

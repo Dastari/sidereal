@@ -22,10 +22,8 @@ impl Plugin for SceneLoaderPlugin {
             )
             .add_systems(
                 Update,
-                (
-                    process_pending_deserializations,
-                    apply_deferred,
-                ).run_if(in_state(SceneState::Ready)),
+                (process_pending_deserializations, apply_deferred)
+                    .run_if(in_state(SceneState::Ready)),
             );
     }
 }

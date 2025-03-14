@@ -1,9 +1,9 @@
 use bevy::{prelude::*, time::common_conditions::on_timer};
 use bevy_renet::renet::*;
 use sidereal_core::ecs::{
+    components::InSector,
     systems::network::{NetworkMessage, NetworkMessageEvent},
     systems::sectors::{SectorCoord, SectorManager},
-    components::InSector,
 };
 use sidereal_core::EntitySerializer;
 use std::collections::{HashMap, HashSet};
@@ -70,21 +70,29 @@ impl ShardManager {
         orphaned_sectors
     }
     pub fn assign_sector(&mut self, client_id: u64, sector: SectorCoord, pending: bool) -> bool {
-        if !self.shard_sectors.contains_key(&client_id) && !self.pending_assignments.contains_key(&client_id) {
-            warn!("Attempted to assign sector to non-existent shard: {}", client_id);
+        if !self.shard_sectors.contains_key(&client_id)
+            && !self.pending_assignments.contains_key(&client_id)
+        {
+            warn!(
+                "Attempted to assign sector to non-existent shard: {}",
+                client_id
+            );
             return false;
         }
         if pending {
-            self.pending_assignments.entry(client_id).and_modify(|pa| {
-                pa.sectors.insert(sector);
-            }).or_insert(PendingAssignment {
-                sectors: {
-                    let mut hs = HashSet::new();
-                    hs.insert(sector);
-                    hs
-                },
-                timestamp: Instant::now(),
-            });
+            self.pending_assignments
+                .entry(client_id)
+                .and_modify(|pa| {
+                    pa.sectors.insert(sector);
+                })
+                .or_insert(PendingAssignment {
+                    sectors: {
+                        let mut hs = HashSet::new();
+                        hs.insert(sector);
+                        hs
+                    },
+                    timestamp: Instant::now(),
+                });
             return true;
         }
         if let Some(current_shard) = self.sector_assignments.get(&sector) {
@@ -101,20 +109,21 @@ impl ShardManager {
         true
     }
     pub fn confirm_sector_assignments(&mut self, client_id: u64, sectors: &[SectorCoord]) {
-        let sectors_to_confirm: Vec<SectorCoord> = if let Some(pending) = self.pending_assignments.get_mut(&client_id) {
-            let mut confirmed = Vec::new();
-            for sector in sectors {
-                if pending.sectors.remove(sector) {
-                    confirmed.push(*sector);
+        let sectors_to_confirm: Vec<SectorCoord> =
+            if let Some(pending) = self.pending_assignments.get_mut(&client_id) {
+                let mut confirmed = Vec::new();
+                for sector in sectors {
+                    if pending.sectors.remove(sector) {
+                        confirmed.push(*sector);
+                    }
                 }
-            }
-            if pending.sectors.is_empty() {
-                self.pending_assignments.remove(&client_id);
-            }
-            confirmed
-        } else {
-            Vec::new()
-        };
+                if pending.sectors.is_empty() {
+                    self.pending_assignments.remove(&client_id);
+                }
+                confirmed
+            } else {
+                Vec::new()
+            };
         for sector in sectors_to_confirm {
             self.assign_sector(client_id, sector, false);
         }
@@ -139,11 +148,14 @@ impl ShardManager {
         if self.active_shards.is_empty() {
             return None;
         }
-        self.active_shards.iter().min_by(|&a, &b| {
-            let load_a = self.shard_loads.get(a).unwrap_or(&1.0);
-            let load_b = self.shard_loads.get(b).unwrap_or(&1.0);
-            load_a.partial_cmp(load_b).unwrap()
-        }).copied()
+        self.active_shards
+            .iter()
+            .min_by(|&a, &b| {
+                let load_a = self.shard_loads.get(a).unwrap_or(&1.0);
+                let load_b = self.shard_loads.get(b).unwrap_or(&1.0);
+                load_a.partial_cmp(load_b).unwrap()
+            })
+            .copied()
     }
     pub fn update_shard_load(&mut self, client_id: u64, load_factor: f32) {
         self.shard_loads.insert(client_id, load_factor);
@@ -154,19 +166,28 @@ impl ShardManager {
             info!("Shard {} is now active", client_id);
         }
     }
-    pub fn calculate_sector_assignment(&self, client_id: u64, sector_manager: &SectorManager) -> Vec<SectorCoord> {
+    pub fn calculate_sector_assignment(
+        &self,
+        client_id: u64,
+        sector_manager: &SectorManager,
+    ) -> Vec<SectorCoord> {
         let mut sectors_to_assign = Vec::new();
         for (coord, _sector) in &sector_manager.sectors {
             if self.sector_assignments.contains_key(coord) {
                 continue;
             }
-            let is_pending = self.pending_assignments.values().any(|pending| pending.sectors.contains(coord));
+            let is_pending = self
+                .pending_assignments
+                .values()
+                .any(|pending| pending.sectors.contains(coord));
             if !is_pending {
                 sectors_to_assign.push(*coord);
             }
         }
         if self.active_shards.len() > 1 {
-            let target_sectors_per_shard = (sector_manager.sectors.len() as f32 / self.active_shards.len() as f32).ceil() as usize;
+            let target_sectors_per_shard = (sector_manager.sectors.len() as f32
+                / self.active_shards.len() as f32)
+                .ceil() as usize;
             for &active_shard in &self.active_shards {
                 if active_shard == client_id {
                     continue;
@@ -175,7 +196,8 @@ impl ShardManager {
                     if shard_sectors.len() > target_sectors_per_shard {
                         let excess = shard_sectors.len() - target_sectors_per_shard;
                         let transfer_count = excess / 2;
-                        sectors_to_assign.extend(shard_sectors.iter().take(transfer_count).cloned());
+                        sectors_to_assign
+                            .extend(shard_sectors.iter().take(transfer_count).cloned());
                     }
                 }
             }
@@ -196,11 +218,18 @@ pub fn handle_shard_connection(
             NetworkMessage::ShardConnected => {
                 info!("Shard server connected: {}", event.client_id);
                 shard_manager.register_shard(event.client_id);
-                let sectors_to_assign = shard_manager.calculate_sector_assignment(event.client_id, &sector_manager);
+                let sectors_to_assign =
+                    shard_manager.calculate_sector_assignment(event.client_id, &sector_manager);
                 for sector in &sectors_to_assign {
                     shard_manager.assign_sector(event.client_id, *sector, true);
                 }
-                let message = bincode::encode_to_vec(&NetworkMessage::AssignSectors { sectors: sectors_to_assign }, bincode::config::standard()).unwrap();
+                let message = bincode::encode_to_vec(
+                    &NetworkMessage::AssignSectors {
+                        sectors: sectors_to_assign,
+                    },
+                    bincode::config::standard(),
+                )
+                .unwrap();
                 server.send_message(event.client_id, DefaultChannel::ReliableOrdered, message);
             }
             NetworkMessage::ShardDisconnected => {
@@ -209,13 +238,23 @@ pub fn handle_shard_connection(
                 for sector in orphaned_sectors {
                     if let Some(new_shard) = shard_manager.find_best_shard_for_sector(sector) {
                         shard_manager.assign_sector(new_shard, sector, true);
-                        let message = bincode::encode_to_vec(&NetworkMessage::AssignSectors { sectors: vec![sector] }, bincode::config::standard()).unwrap();
+                        let message = bincode::encode_to_vec(
+                            &NetworkMessage::AssignSectors {
+                                sectors: vec![sector],
+                            },
+                            bincode::config::standard(),
+                        )
+                        .unwrap();
                         server.send_message(new_shard, DefaultChannel::ReliableOrdered, message);
                     }
                 }
             }
             NetworkMessage::SectorAssignmentConfirm { sectors } => {
-                info!("Shard {} confirmed {} sector assignments", event.client_id, sectors.len());
+                info!(
+                    "Shard {} confirmed {} sector assignments",
+                    event.client_id,
+                    sectors.len()
+                );
                 shard_manager.confirm_sector_assignments(event.client_id, sectors);
                 shard_manager.activate_shard(event.client_id);
                 entity_update_events.send(SendEntityUpdatesEvent {
@@ -246,10 +285,17 @@ pub fn process_entity_updates(
             }
         }
         if entities_to_sync.is_empty() {
-            info!("No entities found in newly assigned sectors for shard {}", event.client_id);
+            info!(
+                "No entities found in newly assigned sectors for shard {}",
+                event.client_id
+            );
             continue;
         }
-        info!("Sending {} entities to shard {} for newly assigned sectors", entities_to_sync.len(), event.client_id);
+        info!(
+            "Sending {} entities to shard {} for newly assigned sectors",
+            entities_to_sync.len(),
+            event.client_id
+        );
         serialization_events.send(EntitySerializationEvent {
             client_id: event.client_id,
             entities: entities_to_sync,
@@ -260,7 +306,9 @@ pub fn process_entity_updates(
 
 pub fn serialize_and_send_entities_exclusive(world: &mut World) {
     let event_iter: Vec<EntitySerializationEvent> = {
-        let mut events = world.get_resource_mut::<Events<EntitySerializationEvent>>().unwrap();
+        let mut events = world
+            .get_resource_mut::<Events<EntitySerializationEvent>>()
+            .unwrap();
         events.drain().collect()
     };
     if event_iter.is_empty() {
@@ -286,9 +334,13 @@ pub fn serialize_and_send_entities_exclusive(world: &mut World) {
                 updated_entities: serialized_entities,
                 timestamp,
             };
-            let message = bincode::encode_to_vec(&entity_update, bincode::config::standard()).unwrap();
+            let message =
+                bincode::encode_to_vec(&entity_update, bincode::config::standard()).unwrap();
             server.send_message(client_id, DefaultChannel::ReliableOrdered, message);
-            info!("Sent {} fully serialized entities to shard {}", count, client_id);
+            info!(
+                "Sent {} fully serialized entities to shard {}",
+                count, client_id
+            );
         }
     }
 }
@@ -299,12 +351,22 @@ pub fn check_assignment_timeouts(
 ) {
     let timed_out = shard_manager.check_assignment_timeouts();
     for (client_id, sectors) in timed_out {
-        warn!("Assignment timeout for shard {}: {} sectors", client_id, sectors.len());
+        warn!(
+            "Assignment timeout for shard {}: {} sectors",
+            client_id,
+            sectors.len()
+        );
         for sector in sectors {
             if let Some(new_shard) = shard_manager.find_best_shard_for_sector(sector) {
                 if new_shard != client_id {
                     shard_manager.assign_sector(new_shard, sector, true);
-                    let message = bincode::encode_to_vec(&NetworkMessage::AssignSectors { sectors: vec![sector] }, bincode::config::standard()).unwrap();
+                    let message = bincode::encode_to_vec(
+                        &NetworkMessage::AssignSectors {
+                            sectors: vec![sector],
+                        },
+                        bincode::config::standard(),
+                    )
+                    .unwrap();
                     server.send_message(new_shard, DefaultChannel::ReliableOrdered, message);
                 }
             }
@@ -318,7 +380,7 @@ impl Plugin for ShardManagerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShardManager>();
         app.add_event::<SendEntityUpdatesEvent>()
-           .add_event::<EntitySerializationEvent>();
+            .add_event::<EntitySerializationEvent>();
         app.add_systems(
             Update,
             (
