@@ -69,6 +69,25 @@ export class SectorMapRenderer {
   private shipTextureWidth: number = 0;
   private shipTextureHeight: number = 0;
 
+  // Starfield properties
+  private starField: THREE.Points | null = null;
+  private starFieldMaterial: THREE.PointsMaterial | null = null;
+  private starCount = 2000;
+  private starFieldSize = 10000;
+  private starFieldOffset = new THREE.Vector2(0, 0);
+  private lastStarFieldUpdate = 0;
+
+  // Add tracking for camera's previous position
+  private lastCameraPosition = new THREE.Vector2();
+
+  // Separate starfield scene and renderer
+  private starFieldScene: THREE.Scene = new THREE.Scene();
+  private starFieldCamera: THREE.OrthographicCamera =
+    new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 1000);
+  private starFieldRenderer: THREE.WebGLRenderer = new THREE.WebGLRenderer({
+    alpha: true,
+  });
+
   constructor(container: HTMLElement) {
     this.container = container;
     this.scene = new THREE.Scene();
@@ -95,6 +114,9 @@ export class SectorMapRenderer {
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.setSize(width, height);
     this.container.appendChild(this.renderer.domElement);
+
+    // Setup separate rendering system for starfield FIRST (before other setup)
+    this.setupStarFieldRenderer(container);
 
     // Set the default cursor to a pointer (hand)
     this.renderer.domElement.style.cursor = "pointer";
@@ -142,8 +164,14 @@ export class SectorMapRenderer {
     // Load ship sprite texture
     this.loadShipTexture();
 
+    // Initialize starfield AFTER renderer setup
+    this.initializeStarField();
+
     // Initial grid setup
     this.updateVisibleSectors();
+
+    // Initialize last camera position
+    this.lastCameraPosition.set(this.camera.position.x, this.camera.position.y);
   }
 
   createSectorLabel() {
@@ -566,7 +594,10 @@ export class SectorMapRenderer {
     // Handle sector hover
     this.checkSectorHover();
 
-    // Render the scene
+    // First render the starfield (background)
+    this.updateStarField();
+
+    // Then render the main scene
     this.renderer.render(this.scene, this.camera);
 
     // Render mini-map if enabled
@@ -605,20 +636,28 @@ export class SectorMapRenderer {
     const width = window.innerWidth;
     const height = window.innerHeight;
 
+    // Update main renderer and camera
     this.camera.left = -width / (2 * this.zoom);
     this.camera.right = width / (2 * this.zoom);
     this.camera.top = height / (2 * this.zoom);
     this.camera.bottom = -height / (2 * this.zoom);
-
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+
+    // Update starfield camera to match screen dimensions
+    this.starFieldCamera.right = width;
+    this.starFieldCamera.bottom = height;
+    this.starFieldCamera.updateProjectionMatrix();
+    this.starFieldRenderer.setSize(width, height);
+
+    // Reposition stars to fill the new screen dimensions
+    this.redistributeStarsOnResize(width, height);
 
     // Update the visible sectors
     this.updateVisibleSectors();
 
     // Update mini-map if enabled
     if (this.miniMapEnabled) {
-      // Update the mini-map viewport to represent the new visible area
       this.updateMiniMapViewport();
     }
   }
@@ -689,14 +728,12 @@ export class SectorMapRenderer {
     // Update visible sectors
     this.updateVisibleSectors();
 
-    // Check if we crossed the zoom threshold for ship representations (1.0)
-    // Only update if we have loaded ship texture and actually crossed the threshold
+    // Handle ship representation changes
     if (
       this.isShipTextureLoaded &&
       ((prevZoom <= 1.0 && this.zoom > 1.0) ||
         (prevZoom > 1.0 && this.zoom <= 1.0))
     ) {
-      // Re-render entities to update ship representations
       if (this.rawEntities.length > 0) {
         this.updateEntities(this.rawEntities);
       }
@@ -825,6 +862,16 @@ export class SectorMapRenderer {
     if (this.miniMapEnabled) {
       this.updateMiniMapViewport();
       this.updateMiniMapEntities();
+    }
+
+    // Reset starfield
+    if (this.starFieldScene) {
+      // Reset all star layers to current camera position
+      const currentCameraPos = this.getCameraPosition();
+      this.lastCameraPosition.copy(currentCameraPos);
+
+      // Force an immediate update of the starfield
+      this.updateStarField();
     }
   }
 
@@ -1539,5 +1586,219 @@ export class SectorMapRenderer {
       );
       geometry.attributes.position.needsUpdate = true;
     }
+  }
+
+  // Initialize the star field
+  initializeStarField() {
+    // Create three separate star layers with different parallax factors
+    this.createStarLayer(200, 0.05, 1.5); // Far layer (slowest)
+    this.createStarLayer(100, 0.1, 2); // Medium layer
+    this.createStarLayer(50, 0.2, 3); // Near layer (fastest)
+  }
+
+  // Create a single star layer with specified parameters
+  private createStarLayer(
+    numStars: number,
+    parallaxFactor: number,
+    baseSize: number
+  ) {
+    // Get screen dimensions for positioning
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    // Create geometry for the stars
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(numStars * 3);
+    const sizes = new Float32Array(numStars);
+    const colors = new Float32Array(numStars * 3);
+
+    // Fill the stars randomly across the entire screen
+    for (let i = 0; i < numStars; i++) {
+      // Position in screen space
+      positions[i * 3] = Math.random() * width; // x (0 to width)
+      positions[i * 3 + 1] = Math.random() * height; // y (0 to height)
+      positions[i * 3 + 2] = 0; // z
+
+      // Random size with more small stars
+      sizes[i] = baseSize * (Math.pow(Math.random(), 1.5) * 0.7 + 0.3);
+
+      // Star color
+      const colorType = Math.random();
+      if (colorType > 0.95) {
+        // Blue stars (5%)
+        colors[i * 3] = 0.7 + Math.random() * 0.3;
+        colors[i * 3 + 1] = 0.7 + Math.random() * 0.3;
+        colors[i * 3 + 2] = 1.0;
+      } else if (colorType > 0.85) {
+        // Yellow/red stars (10%)
+        colors[i * 3] = 1.0;
+        colors[i * 3 + 1] = 0.7 + Math.random() * 0.3;
+        colors[i * 3 + 2] = 0.5 + Math.random() * 0.2;
+      } else {
+        // White stars (85%)
+        const brightness = 0.8 + Math.random() * 0.2;
+        colors[i * 3] = brightness;
+        colors[i * 3 + 1] = brightness;
+        colors[i * 3 + 2] = brightness;
+      }
+    }
+
+    // Set the attributes
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("size", new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+    // Create the material
+    const material = new THREE.PointsMaterial({
+      size: baseSize,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 1.0,
+      vertexColors: true,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+    });
+
+    // Create the star points
+    const stars = new THREE.Points(geometry, material);
+
+    // Store the parallax factor in userData
+    stars.userData = {
+      parallaxFactor: parallaxFactor,
+      lastOffset: new THREE.Vector2(0, 0),
+      initialPositions: positions.slice(), // Store initial positions for resetting
+    };
+
+    // Add the stars to the scene
+    this.starFieldScene.add(stars);
+  }
+
+  // Update starfield based on camera movement
+  updateStarField() {
+    // Skip if we haven't initialized the starfield
+    if (!this.starFieldScene) return;
+
+    // Get current camera position
+    const currentCameraPos = this.getCameraPosition();
+
+    // Get screen dimensions for wrapping
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    // For each star layer
+    this.starFieldScene.children.forEach((child) => {
+      if (!(child instanceof THREE.Points)) return;
+
+      const parallaxFactor = child.userData.parallaxFactor;
+
+      // Calculate movement based on camera delta and parallax factor
+      const movementX =
+        (this.lastCameraPosition.x - currentCameraPos.x) * parallaxFactor;
+      const movementY =
+        (this.lastCameraPosition.y - currentCameraPos.y) * parallaxFactor;
+
+      // Get star positions
+      const positions = (
+        child.geometry.attributes.position as THREE.BufferAttribute
+      ).array;
+
+      // Update each star position
+      for (let i = 0; i < positions.length / 3; i++) {
+        // Move the star based on camera movement
+        positions[i * 3] += movementX;
+        positions[i * 3 + 1] -= movementY; // Invert Y for screen coordinates
+
+        // Wrap stars that go outside the screen
+        // X wrapping
+        if (positions[i * 3] < 0) {
+          positions[i * 3] += width;
+        } else if (positions[i * 3] > width) {
+          positions[i * 3] -= width;
+        }
+
+        // Y wrapping
+        if (positions[i * 3 + 1] < 0) {
+          positions[i * 3 + 1] += height;
+        } else if (positions[i * 3 + 1] > height) {
+          positions[i * 3 + 1] -= height;
+        }
+      }
+
+      // Update the geometry
+      child.geometry.attributes.position.needsUpdate = true;
+    });
+
+    // Store current camera position for next frame
+    this.lastCameraPosition.copy(currentCameraPos);
+
+    // Render the starfield
+    this.starFieldRenderer.clear();
+    this.starFieldRenderer.render(this.starFieldScene, this.starFieldCamera);
+  }
+
+  // Set up separate starfield renderer
+  private setupStarFieldRenderer(container: HTMLElement) {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    // Create a separate scene for the starfield
+    this.starFieldScene = new THREE.Scene();
+
+    // Create a fixed orthographic camera with screen dimensions
+    // Note: We're using screen coordinates here
+    this.starFieldCamera = new THREE.OrthographicCamera(
+      0,
+      width,
+      0,
+      height,
+      1,
+      1000
+    );
+    this.starFieldCamera.position.z = 10;
+
+    // Create a separate canvas for the starfield
+    const starfieldCanvas = document.createElement("canvas");
+    starfieldCanvas.style.position = "absolute";
+    starfieldCanvas.style.top = "0";
+    starfieldCanvas.style.left = "0";
+    starfieldCanvas.style.width = "100%";
+    starfieldCanvas.style.height = "100%";
+    starfieldCanvas.style.pointerEvents = "none";
+    starfieldCanvas.style.zIndex = "-1";
+
+    // Create renderer for the starfield
+    this.starFieldRenderer = new THREE.WebGLRenderer({
+      canvas: starfieldCanvas,
+      alpha: true,
+    });
+    this.starFieldRenderer.setSize(width, height);
+    this.starFieldRenderer.setClearColor(0x000000, 0);
+
+    // Add the starfield canvas to the container before the main canvas
+    container.insertBefore(starfieldCanvas, container.firstChild);
+  }
+
+  // Redistribute stars when window is resized
+  private redistributeStarsOnResize(width: number, height: number) {
+    this.starFieldScene.children.forEach((child) => {
+      if (!(child instanceof THREE.Points)) return;
+
+      const positions = (
+        child.geometry.attributes.position as THREE.BufferAttribute
+      ).array;
+      const initialPositions = child.userData.initialPositions;
+
+      // For each star, check if it's outside the new dimensions and reposition if needed
+      for (let i = 0; i < positions.length / 3; i++) {
+        if (positions[i * 3] > width || positions[i * 3 + 1] > height) {
+          // Reposition star within the new screen bounds
+          positions[i * 3] = Math.random() * width;
+          positions[i * 3 + 1] = Math.random() * height;
+        }
+      }
+
+      child.geometry.attributes.position.needsUpdate = true;
+    });
   }
 }
