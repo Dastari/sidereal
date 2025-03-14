@@ -47,6 +47,24 @@ export class SectorMapRenderer {
   // Add a map to store entity labels separately
   private entityLabels: Map<number, THREE.Sprite> = new Map();
 
+  // Mini-map properties
+  private miniMapEnabled: boolean = true;
+  private miniMapSize: number = 200; // Size in pixels
+  private miniMapScene: THREE.Scene = new THREE.Scene();
+  private miniMapCamera: THREE.OrthographicCamera =
+    new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10000); // Default values, will be updated in init
+  private miniMapRenderer: THREE.WebGLRenderer = new THREE.WebGLRenderer({
+    alpha: true,
+  });
+  private miniMapContainer: HTMLElement = document.createElement("div");
+  private miniMapEntities: Map<string, THREE.Mesh> = new Map(); // Store entities by sector
+  private miniMapSectorBorders: Map<string, THREE.LineSegments> = new Map();
+  private miniMapViewport: THREE.Mesh = new THREE.Mesh(); // Default mesh, will be properly initialized
+
+  // Ship sprite properties
+  private shipSpriteTexture: THREE.Texture | null = null;
+  private isShipTextureLoaded: boolean = false;
+
   constructor(container: HTMLElement) {
     this.container = container;
     this.scene = new THREE.Scene();
@@ -110,6 +128,12 @@ export class SectorMapRenderer {
 
     // Create sector hover label
     this.createSectorLabel();
+
+    // Initialize mini-map
+    this.initializeMiniMap();
+
+    // Load ship sprite texture
+    this.loadShipTexture();
 
     // Initial grid setup
     this.updateVisibleSectors();
@@ -298,85 +322,72 @@ export class SectorMapRenderer {
       // Check if entity already exists
       if (this.entities.has(id)) {
         object = this.entities.get(id)!;
+
+        // Check if we need to update the representation based on zoom level
+        const shouldUseTexture =
+          this.zoom > 1.0 && objectType === "Ship" && this.isShipTextureLoaded;
+        const isCurrentlyTexturedPlane =
+          object.userData.isTexturedPlane === true;
+        const isCurrentlySprite = object.userData.isSprite === true;
+
+        // If zoom level crossed the threshold, recreate the object
+        if (
+          shouldUseTexture !== (isCurrentlyTexturedPlane || isCurrentlySprite)
+        ) {
+          // Remove the old object
+          this.scene.remove(object);
+
+          // Create a new representation based on the current zoom level
+          object = this.createEntityObject(objectType, id, name);
+          this.scene.add(object);
+          this.entities.set(id, object);
+        }
+
+        // Update position
         object.position.copy(position);
-        object.quaternion.copy(rotation); // Apply rotation
+        object.quaternion.copy(rotation);
       } else {
-        // Create new entity based on its type
-        if (objectType === "Ship") {
-          // Create a triangle for ships
-          const geometry = new THREE.BufferGeometry();
-          const vertices = new Float32Array([
-            0,
-            20,
-            0, // top
-            -10,
-            -10,
-            0, // bottom left
-            10,
-            -10,
-            0, // bottom right
-          ]);
-          geometry.setAttribute(
-            "position",
-            new THREE.BufferAttribute(vertices, 3)
-          );
+        // Create new entity
+        object = this.createEntityObject(objectType, id, name);
+        object.position.copy(position);
 
-          // Create a material with a brighter color for better visibility
-          const material = new THREE.MeshBasicMaterial({
-            color: 0x00ffff,
-            side: THREE.DoubleSide,
-          });
-
-          object = new THREE.Mesh(geometry, material);
-
-          // Apply rotation to point in the right direction
+        // Apply rotation with special handling for textured ships
+        if (object.userData.isTexturedPlane && objectType === "Ship") {
+          // Apply entity's rotation to the main group
           object.quaternion.copy(rotation);
 
-          // Add name label with dynamic sizing
-          const canvas = this.createTextCanvas(name);
-          if (canvas) {
-            // Remove any existing label
-            const existingLabel = this.entityLabels.get(id);
-            if (existingLabel) {
-              this.scene.remove(existingLabel);
-            }
-
-            const texture = new THREE.CanvasTexture(canvas);
-            const spriteMaterial = new THREE.SpriteMaterial({
-              map: texture,
-              transparent: true,
-            });
-            const sprite = new THREE.Sprite(spriteMaterial);
-
-            // Set the sprite position to be above the entity
-            sprite.position.set(position.x, position.y + 30, position.z);
-
-            // Scale based on the canvas dimensions to maintain proportions
-            const scaleX = canvas.width / 10;
-            const scaleY = canvas.height / 10;
-            sprite.scale.set(scaleX, scaleY, 1);
-
-            // Add to scene independently and track it
-            this.scene.add(sprite);
-            this.entityLabels.set(id, sprite);
-          }
+          // Update direction indicator
+          this.updateDirectionIndicator(object, rotation);
         } else {
-          // Default object for unknown types
-          const geometry = new THREE.CircleGeometry(10, 32);
-          const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
-          object = new THREE.Mesh(geometry, material);
-
-          // Apply rotation (though may not be visually apparent for circles)
+          // For other objects, apply quaternion directly
           object.quaternion.copy(rotation);
         }
 
-        object.position.copy(position);
-        object.userData.id = id;
-        object.userData.name = name;
-        object.userData.type = objectType;
-
         this.scene.add(object);
         this.entities.set(id, object);
+
+        // Add name label with dynamic sizing
+        const canvas = this.createTextCanvas(name);
+        if (canvas) {
+          const texture = new THREE.CanvasTexture(canvas);
+          const spriteMaterial = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+          });
+          const sprite = new THREE.Sprite(spriteMaterial);
+
+          // Set the sprite position to be above the entity
+          sprite.position.set(position.x, position.y + 30, position.z);
+
+          // Scale based on the canvas dimensions to maintain proportions
+          const scaleX = canvas.width / 10;
+          const scaleY = canvas.height / 10;
+          sprite.scale.set(scaleX, scaleY, 1);
+
+          // Add to scene independently and track it
+          this.scene.add(sprite);
+          this.entityLabels.set(id, sprite);
+        }
       }
 
       // Update velocity arrow as a separate object (not affected by entity rotation)
@@ -392,14 +403,16 @@ export class SectorMapRenderer {
     // When finished updating all entities, reapply selection highlight if needed
     if (this.selectedEntityId && this.entities.has(this.selectedEntityId)) {
       const entity = this.entities.get(this.selectedEntityId)!;
-      if (entity instanceof THREE.Mesh) {
-        // Update the highlight
-        (entity.material as THREE.MeshBasicMaterial).color.set(0xff0000);
-      }
+      this.applySelectionHighlight(entity);
     }
 
-    // Update the sector borders
+    // Update the sector borders on main map
     this.updateSectorBorders();
+
+    // Update the mini-map entities and borders
+    if (this.miniMapEnabled) {
+      this.updateMiniMapEntities();
+    }
 
     // Emit the updated entities event
     this.emitEntitiesUpdatedEvent(entities);
@@ -427,14 +440,7 @@ export class SectorMapRenderer {
       const entity = this.entities.get(entityId)!;
 
       // Highlight the selected entity (change its appearance)
-      if (entity instanceof THREE.Mesh) {
-        // Store original color to restore later if needed
-        entity.userData.originalColor = (
-          entity.material as THREE.MeshBasicMaterial
-        ).color.clone();
-        // Change to a highlighted color (e.g., bright red)
-        (entity.material as THREE.MeshBasicMaterial).color.set(0xff0000);
-      }
+      this.applySelectionHighlight(entity);
 
       // Focus the camera on it
       this.focusOnPosition(entity.position.x, entity.position.y);
@@ -447,12 +453,30 @@ export class SectorMapRenderer {
     this.emitEntitiesUpdatedEvent(this.getAllRawEntities());
   }
 
+  // Helper method to apply selection highlight to an entity
+  applySelectionHighlight(entity: THREE.Object3D) {
+    // First clear any existing highlight
+
+    if (entity instanceof THREE.Mesh && !entity.userData.isTexturedPlane) {
+      // For mesh-based entities (triangle ships when zoomed out)
+      // Store original color if not already stored
+      if (!entity.userData.originalColor) {
+        entity.userData.originalColor = (
+          entity.material as THREE.MeshBasicMaterial
+        ).color.clone();
+      }
+      // Change to a highlighted color (bright red)
+      (entity.material as THREE.MeshBasicMaterial).color.set(0xff0000);
+    } else if (entity.userData.isTexturedPlane) {
+    }
+  }
+
   // Helper method to clear visual highlight
   clearSelectedEntityHighlight() {
     if (this.selectedEntityId && this.entities.has(this.selectedEntityId)) {
       const entity = this.entities.get(this.selectedEntityId)!;
 
-      // Restore original appearance
+      // Restore original appearance for mesh entities
       if (entity instanceof THREE.Mesh && entity.userData.originalColor) {
         (entity.material as THREE.MeshBasicMaterial).color.copy(
           entity.userData.originalColor
@@ -495,6 +519,7 @@ export class SectorMapRenderer {
     animate();
   }
 
+  // Update in the render method to continuously check position and rotation
   render() {
     // Force camera reset and multiple refresh attempts on first render
     if (!this.hasInitialRender) {
@@ -536,6 +561,18 @@ export class SectorMapRenderer {
 
     // Render the scene
     this.renderer.render(this.scene, this.camera);
+
+    // Render mini-map if enabled
+    if (this.miniMapEnabled) {
+      // Update the mini-map viewport to represent the main camera's visible area
+      this.updateMiniMapViewport();
+
+      // Update entity dots on mini-map
+      this.updateMiniMapEntities();
+
+      // Render mini-map
+      this.miniMapRenderer.render(this.miniMapScene, this.miniMapCamera);
+    }
   }
 
   checkSectorUpdate() {
@@ -571,6 +608,12 @@ export class SectorMapRenderer {
 
     // Update the visible sectors
     this.updateVisibleSectors();
+
+    // Update mini-map if enabled
+    if (this.miniMapEnabled) {
+      // Update the mini-map viewport to represent the new visible area
+      this.updateMiniMapViewport();
+    }
   }
 
   onMouseDown(event: MouseEvent) {
@@ -608,6 +651,9 @@ export class SectorMapRenderer {
   onMouseWheel(event: WheelEvent) {
     event.preventDefault();
 
+    // Store previous zoom for comparison
+    const prevZoom = this.zoom;
+
     // Calculate new zoom level
     const zoomDelta = event.deltaY > 0 ? -this.ZOOM_SPEED : this.ZOOM_SPEED;
     this.zoom = Math.max(
@@ -628,6 +674,19 @@ export class SectorMapRenderer {
 
     // Update visible sectors
     this.updateVisibleSectors();
+
+    // Check if we crossed the zoom threshold for ship representations (1.0)
+    // Only update if we have loaded ship texture and actually crossed the threshold
+    if (
+      this.isShipTextureLoaded &&
+      ((prevZoom <= 1.0 && this.zoom > 1.0) ||
+        (prevZoom > 1.0 && this.zoom <= 1.0))
+    ) {
+      // Re-render entities to update ship representations
+      if (this.rawEntities.length > 0) {
+        this.updateEntities(this.rawEntities);
+      }
+    }
   }
 
   getCameraPosition(): THREE.Vector2 {
@@ -746,6 +805,12 @@ export class SectorMapRenderer {
         centerX,
         centerY
       );
+    }
+
+    // Refresh mini-map if enabled
+    if (this.miniMapEnabled) {
+      this.updateMiniMapViewport();
+      this.updateMiniMapEntities();
     }
   }
 
@@ -929,5 +994,494 @@ export class SectorMapRenderer {
   // Add a method to get current follow mode state for UI
   isFollowingEntity(): boolean {
     return this.followSelectedEntity;
+  }
+
+  // Initialize mini-map
+  initializeMiniMap() {
+    // Create mini-map scene
+    this.miniMapScene = new THREE.Scene();
+
+    // Set up fixed-size orthographic camera for mini-map
+    const miniMapAspect = 1; // Square mini-map
+    // Show 1000 sectors in each direction (1000 * 1000 units per sector)
+    const miniMapFrustumSize = 2000000;
+    this.miniMapCamera = new THREE.OrthographicCamera(
+      -miniMapFrustumSize / 2,
+      miniMapFrustumSize / 2,
+      miniMapFrustumSize / 2,
+      -miniMapFrustumSize / 2,
+      0.1,
+      10000
+    );
+    this.miniMapCamera.position.z = 1000;
+
+    // Create mini-map renderer
+    this.miniMapRenderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+    });
+    this.miniMapRenderer.setClearColor(0x111111, 1); // Dark background with some transparency
+    this.miniMapRenderer.setSize(this.miniMapSize, this.miniMapSize);
+
+    // Position mini-map in bottom left corner
+    this.miniMapContainer = document.createElement("div");
+    this.miniMapContainer.style.position = "absolute";
+    this.miniMapContainer.style.left = "10px";
+    this.miniMapContainer.style.bottom = "10px";
+    this.miniMapContainer.style.width = `${this.miniMapSize}px`;
+    this.miniMapContainer.style.height = `${this.miniMapSize}px`;
+    this.miniMapContainer.style.border = "2px solid #555555";
+    this.miniMapContainer.style.borderRadius = "3px";
+    this.miniMapContainer.style.overflow = "hidden";
+    this.miniMapContainer.style.pointerEvents = "auto"; // Allow interaction
+
+    // Add mini-map to container
+    this.miniMapContainer.appendChild(this.miniMapRenderer.domElement);
+    this.container.appendChild(this.miniMapContainer);
+
+    // Create a mesh to represent the main camera's viewport in the mini-map
+    const viewportGeometry = new THREE.PlaneGeometry(
+      window.innerWidth / this.zoom,
+      window.innerHeight / this.zoom
+    );
+    const viewportMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.2,
+      wireframe: true,
+    });
+    this.miniMapViewport = new THREE.Mesh(viewportGeometry, viewportMaterial);
+    this.miniMapScene.add(this.miniMapViewport);
+
+    // Add click event listener to mini-map
+    this.miniMapRenderer.domElement.addEventListener(
+      "click",
+      this.onMiniMapClick.bind(this)
+    );
+
+    // Create a grid for the mini-map to show sector boundaries
+    this.createMiniMapGrid();
+  }
+
+  // Handle clicks on the mini-map
+  onMiniMapClick(event: MouseEvent) {
+    // Calculate the position within the mini-map (in pixels)
+    const rect = this.miniMapRenderer.domElement.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+
+    // Convert to normalized coordinates (-1 to 1)
+    const normX = (x / this.miniMapSize) * 2 - 1;
+    const normY = -((y / this.miniMapSize) * 2 - 1); // Invert Y for Three.js
+
+    // Raycasting not needed for orthographic mini-map; we can directly convert to world position
+    const worldX =
+      this.miniMapCamera.left +
+      (this.miniMapCamera.right - this.miniMapCamera.left) * ((normX + 1) / 2);
+    const worldY =
+      this.miniMapCamera.bottom +
+      (this.miniMapCamera.top - this.miniMapCamera.bottom) * ((normY + 1) / 2);
+
+    // Focus the main camera on this position
+    this.focusOnPosition(worldX, worldY);
+
+    // Toggle off follow mode when directly navigating
+    if (this.followSelectedEntity) {
+      this.followSelectedEntity = false;
+    }
+  }
+
+  // Create grid for mini-map
+  createMiniMapGrid() {
+    // Create a basic grid for the mini-map
+    const gridGeometry = new THREE.BufferGeometry();
+    // Grid should cover the entire viewable area (1000 sectors * 1000 units per sector * 2 for both directions)
+    const gridSize = 2000000;
+    const vertices = [];
+
+    // Only create horizontal and vertical center lines through the origin
+    // Horizontal line
+    vertices.push(-gridSize / 2, 0, 0);
+    vertices.push(gridSize / 2, 0, 0);
+
+    // Vertical line
+    vertices.push(0, -gridSize / 2, 0);
+    vertices.push(0, gridSize / 2, 0);
+
+    gridGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(vertices, 3)
+    );
+
+    const gridMaterial = new THREE.LineBasicMaterial({
+      color: 0x555555, // Slightly brighter than before to make center lines more visible
+      transparent: true,
+      opacity: 0.5,
+      linewidth: 1.5, // Make slightly thicker for better visibility
+    });
+
+    const grid = new THREE.LineSegments(gridGeometry, gridMaterial);
+    this.miniMapScene.add(grid);
+
+    // Add a marker for the origin (0,0) to help with orientation
+    const originGeometry = new THREE.CircleGeometry(5000, 16);
+    const originMaterial = new THREE.MeshBasicMaterial({
+      color: 0x888888,
+      transparent: true,
+      opacity: 0.7,
+    });
+    const originMarker = new THREE.Mesh(originGeometry, originMaterial);
+    originMarker.position.set(0, 0, 0.5);
+    this.miniMapScene.add(originMarker);
+
+    // Remove the cross lines since we now have the center grid lines
+  }
+
+  // Add a method to update the mini-map viewport to represent the main camera's visible area
+  updateMiniMapViewport() {
+    // Get the current camera position
+    const cameraPosition = this.getCameraPosition();
+
+    // Calculate the visible area dimensions based on current zoom
+    const visibleWidth = window.innerWidth / this.zoom;
+    const visibleHeight = window.innerHeight / this.zoom;
+
+    // Position the viewport representation at the camera position
+    this.miniMapViewport.position.set(cameraPosition.x, cameraPosition.y, 2); // Keep it above other elements
+
+    // Update the geometry to match current visible area
+    if (this.miniMapViewport.geometry) {
+      this.miniMapViewport.geometry.dispose();
+    }
+
+    // Create new geometry for the viewport indicator
+    const viewportGeometry = new THREE.PlaneGeometry(
+      visibleWidth,
+      visibleHeight
+    );
+    this.miniMapViewport.geometry = viewportGeometry;
+
+    // Create/update material for the viewport indicator - semi-transparent white
+    const viewportMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.2,
+      wireframe: true,
+    });
+
+    // Apply the material, disposing of old one if it exists
+    if (
+      this.miniMapViewport.material &&
+      this.miniMapViewport.material instanceof THREE.Material
+    ) {
+      this.miniMapViewport.material.dispose();
+    }
+    this.miniMapViewport.material = viewportMaterial;
+  }
+
+  // Add a method to update entity dots on the mini-map
+  updateMiniMapEntities() {
+    // Clear existing entity dots on mini-map
+    this.miniMapEntities.forEach((dot) => {
+      this.miniMapScene.remove(dot);
+      dot.geometry.dispose();
+      (dot.material as THREE.Material).dispose();
+    });
+    this.miniMapEntities.clear();
+
+    // Clear existing sector borders on mini-map
+    this.miniMapSectorBorders.forEach((border) => {
+      this.miniMapScene.remove(border);
+      border.geometry.dispose();
+      (border.material as THREE.Material).dispose();
+    });
+    this.miniMapSectorBorders.clear();
+
+    // Create pixel dot for each entity
+    this.entities.forEach((entity, entityId) => {
+      // Create a small dot to represent the entity
+      // Much smaller dots for the larger view (1000 sectors)
+      const dotGeometry = new THREE.CircleGeometry(10000, 8);
+
+      // Use different colors based on entity type
+      let color = 0xffffff; // Default white
+      if (entity.userData.type === "Ship") {
+        color = 0x00ffff; // Cyan for ships
+      }
+
+      // Highlight selected entity
+      if (entityId === this.selectedEntityId) {
+        color = 0xff0000; // Red for selected entity
+      }
+
+      const dotMaterial = new THREE.MeshBasicMaterial({ color });
+      const dot = new THREE.Mesh(dotGeometry, dotMaterial);
+
+      // Position at entity's coordinates
+      dot.position.copy(entity.position);
+      dot.position.z = 1; // Ensure dot is above the grid
+
+      // Add to mini-map scene
+      this.miniMapScene.add(dot);
+      this.miniMapEntities.set(entityId.toString(), dot);
+    });
+
+    // Create yellow borders for sectors with entities
+    this.sectorsWithEntities.forEach((sectorKey) => {
+      const [x, y] = sectorKey.split(",").map(Number);
+      const border = this.createMiniMapSectorBorder(x, y);
+      this.miniMapScene.add(border);
+      this.miniMapSectorBorders.set(sectorKey, border);
+    });
+  }
+
+  // Add a method to create a mini-map sector border with yellow outline
+  createMiniMapSectorBorder(x: number, y: number): THREE.LineSegments {
+    // Calculate sector boundaries
+    const startX = x * this.sectorSize;
+    const startY = y * this.sectorSize;
+
+    // Create a box to represent the border
+    const borderGeometry = new THREE.BufferGeometry();
+    const vertices = [];
+
+    // Create a square outline (same as createSectorBorder but for mini-map)
+    vertices.push(startX, startY, 0.5);
+    vertices.push(startX + this.sectorSize, startY, 0.5);
+
+    vertices.push(startX + this.sectorSize, startY, 0.5);
+    vertices.push(startX + this.sectorSize, startY + this.sectorSize, 0.5);
+
+    vertices.push(startX + this.sectorSize, startY + this.sectorSize, 0.5);
+    vertices.push(startX, startY + this.sectorSize, 0.5);
+
+    vertices.push(startX, startY + this.sectorSize, 0.5);
+    vertices.push(startX, startY, 0.5);
+
+    borderGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(vertices, 3)
+    );
+
+    const borderMaterial = new THREE.LineBasicMaterial({
+      color: 0xffff00, // Yellow color (same as main map)
+      linewidth: 2,
+      transparent: false,
+      depthTest: false,
+    });
+
+    return new THREE.LineSegments(borderGeometry, borderMaterial);
+  }
+
+  // Add a method to toggle mini-map visibility
+  toggleMiniMap(enabled?: boolean): boolean {
+    if (enabled !== undefined) {
+      this.miniMapEnabled = enabled;
+    } else {
+      this.miniMapEnabled = !this.miniMapEnabled;
+    }
+
+    // Update the mini-map container visibility
+    this.miniMapContainer.style.display = this.miniMapEnabled
+      ? "block"
+      : "none";
+
+    // If enabling, make sure the mini-map is up to date
+    if (this.miniMapEnabled) {
+      this.updateMiniMapViewport();
+      this.updateMiniMapEntities();
+    }
+
+    return this.miniMapEnabled;
+  }
+
+  // Load the ship sprite texture
+  loadShipTexture() {
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader.load(
+      "/SpaceShip.png",
+      (texture) => {
+        this.shipSpriteTexture = texture;
+        this.isShipTextureLoaded = true;
+
+        // Re-render existing entities to apply the sprite if needed
+        if (this.rawEntities.length > 0 && this.zoom > 1.0) {
+          this.updateEntities(this.rawEntities);
+        }
+      },
+      undefined, // onProgress callback not needed
+      (error) => {
+        console.error("Error loading ship texture:", error);
+      }
+    );
+  }
+
+  // Helper method to create entity objects based on their type and current zoom level
+  createEntityObject(
+    objectType: string,
+    id: number,
+    name: string
+  ): THREE.Object3D {
+    if (objectType === "Ship") {
+      // Use textured plane for ships when zoomed in and texture is loaded
+      if (
+        this.zoom > 1.0 &&
+        this.isShipTextureLoaded &&
+        this.shipSpriteTexture
+      ) {
+        // Create a group to hold both the ship and direction indicator
+        const group = new THREE.Group();
+
+        // Create the plane geometry without any rotation (default orientation)
+        const planeGeometry = new THREE.PlaneGeometry(25, 25);
+
+        // Create the material with the ship texture
+        const material = new THREE.MeshBasicMaterial({
+          map: this.shipSpriteTexture,
+          transparent: true,
+          side: THREE.DoubleSide,
+        });
+
+        // Create the mesh
+        const shipMesh = new THREE.Mesh(planeGeometry, material);
+
+        // Create a separate mesh container group to handle the ship's orientation
+        const shipContainer = new THREE.Group();
+        shipContainer.add(shipMesh);
+
+        // Try a different angle to align with the green direction line
+        // The green line is along +Y axis (0, 1, 0), so we need to make the ship point that way
+        // Based on the reported issues, try 180 degrees (Math.PI)
+        // shipContainer.rotation.z = Math.PI;
+
+        // Add the ship container to the main group
+        group.add(shipContainer);
+
+        // Add direction indicator (green line) showing the forward direction
+        const directionGeometry = new THREE.BufferGeometry();
+        const directionVertices = new Float32Array([
+          0,
+          0,
+          0, // center
+          0,
+          40,
+          0, // front direction - points along +Y axis
+        ]);
+        directionGeometry.setAttribute(
+          "position",
+          new THREE.BufferAttribute(directionVertices, 3)
+        );
+
+        const directionMaterial = new THREE.LineBasicMaterial({
+          color: 0x00ff00, // Green for direction
+          linewidth: 2,
+        });
+
+        const directionLine = new THREE.Line(
+          directionGeometry,
+          directionMaterial
+        );
+
+        // Add the direction line to the main group
+        group.add(directionLine);
+
+        // Store the ship container for later reference
+        group.userData.shipContainer = shipContainer;
+
+        // Set user data
+        group.userData.id = id;
+        group.userData.name = name;
+        group.userData.type = objectType;
+        group.userData.isTexturedPlane = true;
+        group.userData.isSprite = false;
+
+        return group;
+      } else {
+        // Use triangle for ships when zoomed out or texture not loaded
+        const geometry = new THREE.BufferGeometry();
+        const vertices = new Float32Array([
+          0,
+          20,
+          0, // top
+          -10,
+          -10,
+          0, // bottom left
+          10,
+          -10,
+          0, // bottom right
+        ]);
+        geometry.setAttribute(
+          "position",
+          new THREE.BufferAttribute(vertices, 3)
+        );
+
+        // Create a material with a brighter color for better visibility
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x00ffff,
+          side: THREE.DoubleSide,
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+
+        // Set user data
+        mesh.userData.id = id;
+        mesh.userData.name = name;
+        mesh.userData.type = objectType;
+        mesh.userData.isSprite = false;
+
+        return mesh;
+      }
+    } else {
+      // Default object for unknown types (no change)
+      const geometry = new THREE.CircleGeometry(10, 32);
+      const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const object = new THREE.Mesh(geometry, material);
+
+      // Set user data
+      object.userData.id = id;
+      object.userData.name = name;
+      object.userData.type = objectType;
+      object.userData.isSprite = false;
+
+      return object;
+    }
+  }
+
+  // Helper method to update the direction indicator based on the rotation
+  updateDirectionIndicator(
+    shipGroup: THREE.Object3D,
+    rotation: THREE.Quaternion
+  ) {
+    // Find the direction line in the group
+    const directionLine = shipGroup.children.find(
+      (child) => child instanceof THREE.Line
+    );
+
+    if (directionLine) {
+      // Calculate the forward direction vector from the quaternion
+      const forward = new THREE.Vector3(0, 1, 0); // Start with forward = +Y axis
+      forward.applyQuaternion(rotation); // Apply rotation
+
+      // Scale it to the desired length
+      forward.normalize().multiplyScalar(40);
+
+      // Update the direction line's geometry
+      const positions = new Float32Array([
+        0,
+        0,
+        0, // Origin
+        forward.x,
+        forward.y,
+        0, // Forward direction (keep z=0 for 2D)
+      ]);
+
+      // Update the buffer geometry
+      const geometry = (directionLine as THREE.Line).geometry;
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(positions, 3)
+      );
+      geometry.attributes.position.needsUpdate = true;
+    }
   }
 }

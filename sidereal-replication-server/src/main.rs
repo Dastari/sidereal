@@ -8,7 +8,7 @@ use bevy_state::app::StatesPlugin;
 use game::{process_message_queue, ShardManagerPlugin, SceneLoaderPlugin};
 
 use sidereal_core::ecs::plugins::{NetworkServerPlugin, SectorPlugin, EntitySerializationPlugin };
-use sidereal_core::ecs::systems::mock_game_world;
+// use sidereal_core::ecs::systems::mock_game_world;
 use tracing::{info, Level};
 
 fn main() {

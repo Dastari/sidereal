@@ -9,12 +9,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "three": "^0.158.0",
-    "axios": "^1.6.0"
+    "axios": "^1.8.3",
+    "three": "^0.174.0"
   },
   "devDependencies": {
-    "@types/three": "^0.158.2",
-    "typescript": "^5.2.2",
-    "vite": "^4.5.0"
+    "@types/three": "^0.174.0",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
