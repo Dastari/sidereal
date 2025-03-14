@@ -78,5 +78,6 @@ impl Plugin for EntityUpdatePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingEntityUpdates>().add_event::<ProcessEntitiesEvent>();
         app.add_systems(Update, receive_entity_updates);
+        app.add_systems(Update, process_entity_updates);
     }
 }
