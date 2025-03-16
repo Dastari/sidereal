@@ -1,7 +1,6 @@
-use bevy::prelude::*;
 use crate::ecs::systems::network::{NetworkMessage, NetworkMessageEvent};
-use crate::plugins::SerializedEntity;
-use crate::EntitySerializer;    
+use crate::plugins::{SerializedEntity, EntitySerializer};
+use bevy::prelude::*;
 
 #[derive(Resource, Default)]
 pub struct PendingEntityUpdates {
@@ -44,7 +43,7 @@ pub fn process_entity_updates(world: &mut World) {
     let pending_entities = {
         let mut pending_updates = match world.get_resource_mut::<PendingEntityUpdates>() {
             Some(updates) => updates,
-            none => return,
+            None => return,
         };
         if pending_updates.entities.is_empty() {
             return;
@@ -69,14 +68,18 @@ pub fn process_entity_updates(world: &mut World) {
         )
         .collect::<Vec<_>>();
 
-    info!("Successfully processed {} entity updates", deserialized_entities.len());
+    info!(
+        "Successfully processed {} entity updates",
+        deserialized_entities.len()
+    );
 }
 
 pub struct EntityUpdatePlugin;
 
 impl Plugin for EntityUpdatePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PendingEntityUpdates>().add_event::<ProcessEntitiesEvent>();
+        app.init_resource::<PendingEntityUpdates>()
+            .add_event::<ProcessEntitiesEvent>();
         app.add_systems(Update, receive_entity_updates);
         app.add_systems(Update, process_entity_updates);
     }

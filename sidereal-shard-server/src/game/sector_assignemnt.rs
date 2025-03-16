@@ -1,7 +1,7 @@
 use bevy::{prelude::*, time::common_conditions::on_timer};
 use bevy_renet::renet::*;
+use sidereal_core::ecs::plugins::sectors::SectorCoord;
 use sidereal_core::ecs::systems::network::{NetworkMessage, NetworkMessageEvent};
-use sidereal_core::ecs::systems::sectors::SectorCoord;
 use std::collections::HashSet;
 use std::time::Duration;
 

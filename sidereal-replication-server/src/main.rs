@@ -6,8 +6,10 @@ use bevy::prelude::*;
 use bevy_state::app::StatesPlugin;
 
 use game::{SceneLoaderPlugin, ShardManagerPlugin};
-use sidereal_core::ecs::plugins::{EntitySerializationPlugin, NetworkServerPlugin, SectorPlugin, EntityUpdatePlugin};
-use sidereal_core::ecs::systems::mock_game_world;
+use sidereal_core::ecs::plugins::{
+    EntitySerializationPlugin, EntityUpdatePlugin, NetworkServerPlugin, SectorPlugin,
+};
+// use sidereal_core::ecs::systems::mock_game_world;
 use tracing::{info, Level};
 
 fn main() {
@@ -55,8 +57,8 @@ pub fn setup_replication_server(app: &mut App) {
         NetworkServerPlugin,
         SectorPlugin,
         ShardManagerPlugin,
-        // SceneLoaderPlugin,
+        SceneLoaderPlugin,
     ));
 
-    app.add_systems(Startup, mock_game_world);
+    // app.add_systems(Startup, mock_game_world);
 }

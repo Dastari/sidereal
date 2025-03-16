@@ -1,4 +1,4 @@
-use crate::ecs::systems::sectors::SectorCoord;
+use crate::ecs::plugins::sectors::SectorCoord;
 use crate::plugins::SerializedEntity;
 use bevy::prelude::*;
 use bincode::{Decode, Encode};

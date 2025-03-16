@@ -1,4 +1,4 @@
-use crate::ecs::systems::sectors::SectorCoord;
+use crate::ecs::plugins::sectors::SectorCoord;
 use bevy::prelude::*;
 use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};

@@ -2,10 +2,10 @@ use bevy::{prelude::*, time::common_conditions::on_timer};
 use bevy_renet::renet::*;
 use sidereal_core::ecs::{
     components::InSector,
+    plugins::{SectorCoord, SectorManager},
     systems::network::{NetworkMessage, NetworkMessageEvent},
-    systems::sectors::{SectorCoord, SectorManager},
 };
-use sidereal_core::EntitySerializer;
+use sidereal_core::ecs::plugins::EntitySerializer;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -314,10 +314,10 @@ pub fn serialize_and_send_entities_exclusive(world: &mut World) {
     if event_iter.is_empty() {
         return;
     }
-    
+
     // Define a reasonable batch size - adjust this value based on entity size and network capacity
     const BATCH_SIZE: usize = 50;
-    
+
     let mut serialized_results = Vec::new();
     for event in event_iter {
         let mut serialized_entities = Vec::new();
@@ -330,23 +330,23 @@ pub fn serialize_and_send_entities_exclusive(world: &mut World) {
         }
         serialized_results.push((event.client_id, event.timestamp, serialized_entities));
     }
-    
+
     let mut server = world.get_resource_mut::<RenetServer>().unwrap();
     for (client_id, timestamp, serialized_entities) in serialized_results {
         if serialized_entities.is_empty() {
             continue;
         }
-        
+
         let total_count = serialized_entities.len();
         info!("Batching {} entities to shard {}", total_count, client_id);
-        
+
         // Split entities into batches and send each batch separately
         for (batch_index, batch) in serialized_entities.chunks(BATCH_SIZE).enumerate() {
             let batch_update = NetworkMessage::EntityUpdates {
                 updated_entities: batch.to_vec(),
                 timestamp,
             };
-            
+
             match bincode::encode_to_vec(&batch_update, bincode::config::standard()) {
                 Ok(message) => {
                     server.send_message(client_id, DefaultChannel::ReliableOrdered, message);
@@ -357,17 +357,17 @@ pub fn serialize_and_send_entities_exclusive(world: &mut World) {
                         batch.len(),
                         client_id
                     );
-                    
+
                     // Optional: Add a small delay between batches to prevent network congestion
                     // Uncomment if needed
                     std::thread::sleep(std::time::Duration::from_millis(100));
-                },
+                }
                 Err(err) => {
                     error!("Failed to encode entity batch: {}", err);
                 }
             }
         }
-        
+
         info!(
             "Completed sending {} entities in {} batches to shard {}",
             total_count,

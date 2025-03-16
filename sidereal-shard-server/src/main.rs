@@ -12,7 +12,7 @@ use game::SectorAssignmentPlugin;
 use sidereal_core::ecs::plugins::{
     EntitySerializationPlugin, EntityUpdatePlugin, NetworkClientPlugin,
 };
-use sidereal_core::ecs::systems::{update_entity_sectors, SectorManager};
+use sidereal_core::ecs::plugins::{update_entity_sectors, SectorManager};
 use tracing::{info, Level};
 
 fn main() {
@@ -78,6 +78,6 @@ pub fn setup_shard_server(app: &mut App) {
 
     app.insert_resource(SectorManager::default());
     // Add shard manager systems
-   
+
     app.add_systems(Update, update_entity_sectors.after(PhysicsStepSet::Solver));
 }
