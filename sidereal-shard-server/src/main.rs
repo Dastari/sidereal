@@ -9,10 +9,10 @@ use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
 use game::SectorAssignmentPlugin;
+use sidereal_core::ecs::plugins::{update_entity_sectors, SectorManager};
 use sidereal_core::ecs::plugins::{
     EntitySerializationPlugin, EntityUpdatePlugin, NetworkClientPlugin,
 };
-use sidereal_core::ecs::plugins::{update_entity_sectors, SectorManager};
 use tracing::{info, Level};
 
 fn main() {

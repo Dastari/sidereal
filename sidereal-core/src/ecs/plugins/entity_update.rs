@@ -1,5 +1,5 @@
 use crate::ecs::systems::network::{NetworkMessage, NetworkMessageEvent};
-use crate::plugins::{SerializedEntity, EntitySerializer};
+use crate::plugins::{EntitySerializer, SerializedEntity};
 use bevy::prelude::*;
 
 #[derive(Resource, Default)]

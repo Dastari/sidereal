@@ -1,11 +1,11 @@
 use bevy::{prelude::*, time::common_conditions::on_timer};
 use bevy_renet::renet::*;
+use sidereal_core::ecs::plugins::EntitySerializer;
 use sidereal_core::ecs::{
     components::InSector,
     plugins::{SectorCoord, SectorManager},
     systems::network::{NetworkMessage, NetworkMessageEvent},
 };
-use sidereal_core::ecs::plugins::EntitySerializer;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 

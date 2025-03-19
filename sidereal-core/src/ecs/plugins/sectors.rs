@@ -1,8 +1,8 @@
+use crate::ecs::components::in_sector::InSector;
 use bevy::prelude::*;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::ecs::components::in_sector::InSector;
 
 // Identifies a specific sector in the grid
 #[derive(
@@ -129,7 +129,6 @@ impl SectorManager {
     }
 }
 
-
 // Plugin to register the sector system
 pub struct SectorPlugin;
 
@@ -139,4 +138,3 @@ impl Plugin for SectorPlugin {
             .add_systems(Update, update_entity_sectors);
     }
 }
-
