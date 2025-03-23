@@ -1,0 +1,31 @@
+# Cargo.toml
+[package]
+name = "sidereal-replication-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sidereal = { path = "../sidereal" }
+
+dotenv = "0.15"
+thiserror = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+bevy_remote = "0.15.3"
+
+bevy = { workspace = true }
+bevy_state = { workspace = true }
+bevy_renet = {workspace = true}
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"]}
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+tracing-subscriber = "0.3"
+bincode = "2.0.0"
+
+
+[features]
+default = []
+
