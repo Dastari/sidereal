@@ -20,11 +20,11 @@ export class DataService {
             data: {
               components: [
                 "bevy_core::name::Name",
-                "sidereal_core::ecs::components::id::Id",
-                "sidereal_core::ecs::components::object::Object",
+                "sidereal::ecs::components::id::Id",
+                "sidereal::ecs::components::object::Object",
                 "bevy_transform::components::transform::Transform",
                 "avian2d::dynamics::rigid_body::LinearVelocity",
-                "sidereal_core::ecs::components::in_sector::InSector",
+                "sidereal::ecs::components::sector::Sector",
               ],
             },
           },

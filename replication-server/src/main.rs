@@ -6,17 +6,39 @@ use bevy::prelude::*;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_replicon::prelude::*;
-use bevy_replicon_renet2::RepliconRenetPlugins;
+use bevy_replicon_renet2::{
+    renet2::RenetServer,
+    RepliconRenetPlugins
+};
 use bevy_state::app::StatesPlugin;
 
 use game::SceneLoaderPlugin;
+use game::scene_loader::SceneState;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::{
     BiDirectionalReplicationSetupPlugin, ReplicationServerConfig, ServerNetworkPlugin,
     DEFAULT_PROTOCOL_ID,
 };
 
-use tracing::{info, Level};
+use tracing::{info, Level, debug};
+
+/// System that runs when scene loading is complete and marks all entities for replication
+fn mark_entities_for_replication(
+    mut commands: Commands,
+    query: Query<Entity, (Without<Replicated>, With<Transform>)>,
+    mut next_state: ResMut<NextState<SceneState>>,
+) {
+    let count = query.iter().count();
+    if count > 0 {
+        info!("Marking {} entities for replication", count);
+        
+        for entity in query.iter() {
+            commands.entity(entity).insert(Replicated);
+        }
+        
+        info!("All entities marked for replication");
+    }
+}
 
 fn main() {
     // Initialize tracing
@@ -59,8 +81,17 @@ fn main() {
             HierarchyPlugin,
             TransformPlugin,
             StatesPlugin::default(),
-            RemotePlugin::default(),
-            RemoteHttpPlugin::default(),
+            // RemotePlugin::default(),
+            // RemoteHttpPlugin::default()
+            //     .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
+            //     .with_header(
+            //         "Access-Control-Allow-Headers",
+            //         "content-type, authorization",
+            //     )
+            //     .with_header(
+            //         "Access-Control-Allow-Methods",
+            //         "GET, POST, PUT, DELETE, OPTIONS",
+            //     ),
             SiderealPlugin,
             ServerNetworkPlugin,
             BiDirectionalReplicationSetupPlugin {
@@ -71,5 +102,23 @@ fn main() {
             // Add scene loader
             SceneLoaderPlugin,
         ))
+        // Add system to mark entities for replication when scene loading is complete
+        .add_systems(OnEnter(SceneState::Completed), mark_entities_for_replication)
+        // Add debug system to show replication status
+        .add_systems(Update, debug_replication)
         .run();
+}
+
+/// Debug system to monitor replication status
+fn debug_replication(
+    server: Option<Res<RenetServer>>,
+    query: Query<Entity, With<Replicated>>,
+) {
+    if let Some(server) = server {
+        let client_count = server.connected_clients();
+        if client_count > 0 {
+            debug!("Server has {} connected clients and {} replicated entities", 
+                client_count, query.iter().count());
+        }
+    }
 }

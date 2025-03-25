@@ -49,6 +49,8 @@ fn test_serialization() {
     let test_entity_ref = app.world().get_entity(test_entity_id).unwrap();
     let test_entity_serialized = serialize_entity(test_entity_ref, &app.world());
     let test_entity_json: Value = serde_json::from_str(&test_entity_serialized).expect("Original entity should deserialize to valid JSON");
+
+    println!("Test entity serialized: {}", test_entity_serialized);
     
     // Update world with serialized entity (should find matching ID and update)
     let same_id_entity = update_entity(&test_entity_serialized, &mut app.world_mut())

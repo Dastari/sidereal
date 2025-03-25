@@ -111,7 +111,7 @@ export class EntityListSidebar {
 
     entities.forEach((entity) => {
       const type =
-        entity.components["sidereal_core::ecs::components::object::Object"];
+        entity.components["sidereal::ecs::components::object::Object"];
 
       if (!entityTypes.has(type)) {
         entityTypes.set(type, []);
@@ -142,8 +142,8 @@ export class EntityListSidebar {
       // Add entities of this type
       entities
         .sort((a, b) => {
-          const nameA = a.components["bevy_core::name::Name"].name;
-          const nameB = b.components["bevy_core::name::Name"].name;
+          const nameA = a.components["bevy_core::name::Name"];
+          const nameB = b.components["bevy_core::name::Name"];
           return nameA.localeCompare(nameB);
         })
         .forEach((entity) => {
@@ -152,11 +152,11 @@ export class EntityListSidebar {
           item.setAttribute("data-id", entity.entity.toString());
           item.setAttribute(
             "data-name",
-            entity.components["bevy_core::name::Name"].name
+            entity.components["bevy_core::name::Name"]
           );
           item.setAttribute("data-type", type);
 
-          const name = entity.components["bevy_core::name::Name"].name;
+          const name = entity.components["bevy_core::name::Name"];
           const transform =
             entity.components[
               "bevy_transform::components::transform::Transform"
@@ -165,9 +165,7 @@ export class EntityListSidebar {
 
           // Get sector information if available
           const sectorInfo =
-            entity.components[
-              "sidereal_core::ecs::components::in_sector::InSector"
-            ];
+            entity.components["sidereal::ecs::components::sector::Sector"];
           const sectorText = sectorInfo
             ? `Sector: ${sectorInfo.x}, ${sectorInfo.y}`
             : "No sector";

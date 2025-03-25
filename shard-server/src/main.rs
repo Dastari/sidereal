@@ -9,7 +9,10 @@ use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
 use bevy_replicon::prelude::*;
-use bevy_replicon_renet2::RepliconRenetPlugins;
+use bevy_replicon_renet2::{
+    renet2::RenetClient,
+    RepliconRenetPlugins
+};
 
 use sidereal::net::{ShardConfig, NetworkConfig, DEFAULT_PROTOCOL_ID, BiDirectionalReplicationSetupPlugin};
 use sidereal::net::{NetworkStats, ClientNetworkPlugin};
@@ -18,6 +21,33 @@ use sidereal::ecs::plugins::SiderealPlugin;
 use tracing::{info, Level};
 use std::env;
 use std::net::SocketAddr;
+
+/// System to log when new entities are received from the replication server
+fn log_received_entities(
+    query: Query<Entity, (With<Replicated>, Added<Replicated>)>,
+) {
+    let count = query.iter().count();
+    if count > 0 {
+        info!("Received {} new replicated entities from replication server", count);
+        
+        for entity in query.iter() {
+            info!("Received replicated entity: {:?}", entity);
+        }
+    }
+}
+
+/// System to show connection status to replication server
+fn debug_replication_client(
+    client: Option<Res<RenetClient>>,
+    query: Query<Entity, With<Replicated>>, 
+) {
+    if let Some(client) = client {
+        if client.is_connected() {
+            debug!("Connected to replication server with {} replicated entities", 
+                query.iter().count());
+        }
+    }
+}
 
 fn main() {
     // Initialize tracing
@@ -99,5 +129,7 @@ fn main() {
                 known_shard_addresses: Vec::new(),
             },
         ))
+        // Add systems to monitor replication
+        .add_systems(Update, (log_received_entities, debug_replication_client))
         .run();
 }

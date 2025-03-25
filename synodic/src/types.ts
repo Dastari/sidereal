@@ -1,13 +1,9 @@
+import { string } from "three/tsl";
+
 // Sector coordinate type (matches server-side implementation)
 export interface SectorCoord {
   x: number;
   y: number;
-}
-
-// Entity component types
-export interface Name {
-  hash: number;
-  name: string;
 }
 
 export interface Id {
@@ -27,12 +23,12 @@ export interface Object {
 // Entity structure from API
 export interface Entity {
   components: {
-    "bevy_core::name::Name": Name;
-    "sidereal_core::ecs::components::id::Id": string;
+    "bevy_core::name::Name": string;
+    "sidereal::ecs::components::id::Id": string;
     "bevy_transform::components::transform::Transform": Transform;
-    "sidereal_core::ecs::components::object::Object": string;
+    "sidereal::ecs::components::object::Object": string;
     "avian2d::dynamics::rigid_body::LinearVelocity": [number, number];
-    "sidereal_core::ecs::components::in_sector::InSector": SectorCoord;
+    "sidereal::ecs::components::sector::Sector": SectorCoord;
   };
   entity: number;
 }

@@ -324,8 +324,8 @@ export class SectorMapRenderer {
       const transform =
         entity.components["bevy_transform::components::transform::Transform"];
       const objectType =
-        entity.components["sidereal_core::ecs::components::object::Object"];
-      const name = entity.components["bevy_core::name::Name"].name;
+        entity.components["sidereal::ecs::components::object::Object"];
+      const name = entity.components["bevy_core::name::Name"];
 
       // Extract velocity if it exists
       const linearVelocity =

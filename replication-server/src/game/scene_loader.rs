@@ -1,5 +1,6 @@
 use crate::database::{DatabaseClient, EntityRecord};
 use sidereal::serialization::update_entity;
+use sidereal::ecs::components::id::Id;
 use bevy::prelude::*;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -27,17 +28,11 @@ impl Plugin for SceneLoaderPlugin {
                     batch_processing,
                     process_deserialization_tasks,
                 ).run_if(in_state(SceneState::Ready)),
-            );
+            )
+            // Add apply_pending_deserializations as a separate system that runs after other systems
+            .add_systems(PostUpdate, apply_pending_deserializations.run_if(in_state(SceneState::Ready)));
     }
 }
-
-/// Component to mark entities that need component deserialization
-#[derive(Component)]
-struct PendingDeserialization(Vec<String>);
-
-/// Component to mark entities that have been successfully deserialized
-#[derive(Component)]
-struct DeserializedEntity;
 
 /// State of the scene loading process
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -60,7 +55,8 @@ pub struct SceneLoadingState {
     pub current_batch_index: usize,
     pub total_entities: usize,
     pub is_processing_batch: bool,
-    pub current_batch: Vec<usize>, // Store indices to process instead of serialized data
+    pub current_batch: Vec<usize>,
+    pub pending_deserializations: Vec<String>,
 }
 
 impl Default for SceneLoadingState {
@@ -68,11 +64,12 @@ impl Default for SceneLoadingState {
         Self {
             loaded_entities: Vec::new(),
             _error_message: None,
-            batch_size: 100, // Process 100 entities at a time
+            batch_size: 100,
             current_batch_index: 0,
             total_entities: 0,
             is_processing_batch: false,
             current_batch: Vec::new(),
+            pending_deserializations: Vec::new(),
         }
     }
 }
@@ -227,77 +224,64 @@ fn batch_processing(
     scene_loading_state.current_batch_index = end_idx;
 }
 
-/// Process the deserialization of entities directly using the database records
+/// System for processing the deserialization of entities in batches
 fn process_deserialization_tasks(
-    world: &mut World,
+    mut scene_loading_state: ResMut<SceneLoadingState>,
 ) {
-    // Get the current batch of entity indices to process
-    let entity_indices = {
-        if let Some(state) = world.get_resource::<SceneLoadingState>() {
-            if !state.is_processing_batch || state.current_batch.is_empty() {
-                return;
-            }
-            state.current_batch.clone()
-        } else {
-            return;
-        }
-    };
+    // Skip if not processing a batch or batch is empty
+    if !scene_loading_state.is_processing_batch || scene_loading_state.current_batch.is_empty() {
+        return;
+    }
 
     // Track how many entities were processed
     let mut success_count = 0;
     let mut error_count = 0;
     
-    // Process each entity in the batch
-    for idx in entity_indices {
-        // Get the entity record directly
-        let entity_record = {
-            if let Some(state) = world.get_resource::<SceneLoadingState>() {
-                if let Some(record) = state.loaded_entities.get(idx) {
-                    record.clone()
-                } else {
-                    error!("Invalid entity index: {}", idx);
+    // Process each entity in the current batch
+    let indices_to_process = scene_loading_state.current_batch.clone();
+    for idx in indices_to_process {
+        if let Some(record) = scene_loading_state.loaded_entities.get(idx) {
+            match serde_json::to_string(&record.components) {
+                Ok(json) => {
+                    // Store JSON in the resource instead of creating an entity
+                    scene_loading_state.pending_deserializations.push(json);
+                    success_count += 1;
+                }
+                Err(e) => {
+                    error!("Failed to serialize components to JSON: {}", e);
                     error_count += 1;
-                    continue;
-                }
-            } else {
-                return;
-            }
-        };
-        
-        // Just use the components directly without additional processing
-        // The components field should now have the correct format after fixing the database
-        let components = entity_record.components.clone();
-        
-        // Convert the components to JSON string for update_entity
-        match serde_json::to_string(&components) {
-            Ok(json) => {
-                match update_entity(&json, world) {
-                    Ok(entity_id) => {
-                        debug!("Successfully loaded entity: {:?}", entity_id);
-                        success_count += 1;
-                    }
-                    Err(e) => {
-                        error!("Failed to deserialize entity: {} with JSON: {}", e, json);
-                        error_count += 1;
-                    }
                 }
             }
-            Err(e) => {
-                error!("Failed to serialize entity components: {}", e);
-                error_count += 1;
-            }
+        } else {
+            error!("Invalid entity index: {}", idx);
+            error_count += 1;
         }
     }
     
-    // Log summary
+    // Log summary and mark batch as complete
     if success_count > 0 || error_count > 0 {
         info!("Batch processed: {} successful, {} failed", success_count, error_count);
     }
     
-    // Mark batch as complete
-    if let Some(mut state) = world.get_resource_mut::<SceneLoadingState>() {
-        state.is_processing_batch = false;
-        state.current_batch.clear();
+    scene_loading_state.is_processing_batch = false;
+    scene_loading_state.current_batch.clear();
+}
+
+// System to apply pending deserializations
+fn apply_pending_deserializations(world: &mut World) {
+    let mut scene_loading_state = world.resource_mut::<SceneLoadingState>();
+    let pending = std::mem::take(&mut scene_loading_state.pending_deserializations);
+    
+    // Process each serialized entity
+    for json in pending {
+        match update_entity(&json, world) {
+            Ok(_) => {
+                debug!("Successfully deserialized entity");
+            }
+            Err(e) => {
+                error!("Failed to deserialize entity: {}", e);
+            }
+        }
     }
 }
 
