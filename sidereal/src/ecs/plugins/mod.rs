@@ -1,3 +1,3 @@
-pub mod sidereal;
+mod sidereal;
 
-pub use sidereal::*;
+pub use sidereal::SiderealPlugin;

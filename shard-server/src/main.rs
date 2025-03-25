@@ -8,6 +8,13 @@ use bevy::transform::TransformPlugin;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_state::app::StatesPlugin;
+use bevy_replicon::prelude::*;
+use bevy_replicon_renet2::RepliconRenetPlugins;
+
+use sidereal::net::{ShardConfig, BiDirectionalReplicationSetupPlugin};
+use sidereal::net::{NetworkStats, ClientNetworkPlugin};
+use sidereal::ecs::plugins::SiderealPlugin;
+
 use tracing::{info, Level};
 
 fn main() {
@@ -34,6 +41,14 @@ fn main() {
         }
     }
 
+    // Configure shard server
+    let config = ShardConfig {
+        bind_addr: "127.0.0.1:5001".parse().unwrap(),
+        replication_server_addr: "127.0.0.1:5000".parse().unwrap(),
+        shard_id: 1, // Unique ID for this shard
+        protocol_id: 7,
+    };
+
     // Initialize the Bevy app with minimal plugins for headless operation
     App::new()
         .add_plugins(MinimalPlugins)
@@ -58,15 +73,19 @@ fn main() {
                 ),
             StatesPlugin::default(),
             PhysicsPlugins::default(),
+            // Add bi-directional networking
+            RepliconPlugins,
+            RepliconRenetPlugins,
+            // Add the core plugin
+            SiderealPlugin,
+            // Add client networking (for connecting to replication server)
+            ClientNetworkPlugin,
+            // Set up bi-directional replication
+            BiDirectionalReplicationSetupPlugin {
+                shard_config: Some(config),
+                replication_server_config: None,
+                known_shard_addresses: Vec::new(),
+            },
         ))
-        .add_plugins(setup_shard_server)
         .run();
-}
-
-pub fn setup_shard_server(app: &mut App) {
-    app.add_plugins((
-
-    ));
-    // Add shard manager systems
-
 }

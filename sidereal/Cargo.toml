@@ -8,9 +8,8 @@ edition = "2024"
 bevy = { workspace = true }
 bevy_state = { workspace = true }
 bevy_replicon = { workspace = true }
-bevy_replicon_renet2 = { workspace = true }
+bevy_replicon_renet2 = { workspace = true, features=["native_transport"] }
 bevy_reflect = { workspace = true }
-bevy_renet = { workspace = true }
 bevy_remote = "0.15.3"
 
 # Other

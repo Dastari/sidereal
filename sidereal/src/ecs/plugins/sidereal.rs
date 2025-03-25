@@ -16,12 +16,13 @@ impl Plugin for SiderealPlugin {
             .replicate::<Object>()
             .replicate::<Sector>();
 
-        app.register_type::<Transform>();
-        app.register_type::<Id>();
-        app.register_type::<LinearVelocity>();
-        app.register_type::<AngularVelocity>();
-        app.register_type::<RigidBody>();
-        app.register_type::<Object>();
-        app.register_type::<Sector>();
+        app.register_type::<Name>()
+            .register_type::<Transform>()
+            .register_type::<Id>()
+            .register_type::<LinearVelocity>()
+            .register_type::<AngularVelocity>()
+            .register_type::<RigidBody>()
+            .register_type::<Object>()
+            .register_type::<Sector>();
     }
-}
+} 
