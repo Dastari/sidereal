@@ -61,11 +61,8 @@ fn main() {
             StatesPlugin::default(),
             RemotePlugin::default(),
             RemoteHttpPlugin::default(),
-            // Add the replication core plugin
             SiderealPlugin,
-            // Add server-specific networking
             ServerNetworkPlugin,
-            // Setup bi-directional replication
             BiDirectionalReplicationSetupPlugin {
                 replication_server_config: Some(config),
                 shard_config: None,
