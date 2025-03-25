@@ -24,6 +24,8 @@ pub struct NetworkConfig {
     pub available_bytes_per_tick: usize,
     /// Channel configurations
     pub channels: Vec<ChannelConfig>,
+    /// Keepalive flag
+    pub keep_alive: bool,
 }
 
 impl Default for NetworkConfig {
@@ -32,11 +34,8 @@ impl Default for NetworkConfig {
             protocol_id: DEFAULT_PROTOCOL_ID,
             max_clients: DEFAULT_MAX_CLIENTS,
             available_bytes_per_tick: 60_000,
-            channels: vec![ChannelConfig {
-                channel_id: 0,
-                max_memory_usage_bytes: 5 * 1024 * 1024,
-                send_type: SendType::ReliableOrdered { resend_time: Duration::from_millis(200) },
-            }],
+            channels: Vec::new(), // We'll use Replicon's default channels
+            keep_alive: true,
         }
     }
 }
@@ -52,6 +51,50 @@ impl NetworkConfig {
             channels.server_configs(),
             channels.client_configs(),
         )
+    }
+    
+    /// Creates a ConnectionConfig with exactly three channels configured that is fully
+    /// compatible with RepliconChannels but more predictable.
+    /// This should be used when absolute consistency is required.
+    pub fn to_stable_connection_config(&self) -> ConnectionConfig {
+        // Create explicitly defined channels that match Replicon's expectations
+        // but with explicit, consistent configuration
+        let mut server_channels = Vec::new();
+        let mut client_channels = Vec::new();
+        
+        // Channel 0: Reliable for entities (both directions)
+        let reliable_ordered = ChannelConfig {
+            channel_id: 0,
+            max_memory_usage_bytes: 5 * 1024 * 1024, // 5MB
+            send_type: SendType::ReliableOrdered { 
+                resend_time: Duration::from_millis(300)
+            },
+        };
+        server_channels.push(reliable_ordered.clone());
+        client_channels.push(reliable_ordered);
+        
+        // Channel 1: Unreliable for frequent updates (both directions)
+        let unreliable = ChannelConfig {
+            channel_id: 1,
+            max_memory_usage_bytes: 5 * 1024 * 1024, // 5MB
+            send_type: SendType::Unreliable,
+        };
+        server_channels.push(unreliable.clone());
+        client_channels.push(unreliable);
+        
+        // Add Channel 2: Also needed for Replicon protocol
+        let reliable_unordered = ChannelConfig {
+            channel_id: 2,
+            max_memory_usage_bytes: 5 * 1024 * 1024, // 5MB
+            send_type: SendType::ReliableUnordered { 
+               resend_time: Duration::from_millis(300)
+            },
+        };
+        server_channels.push(reliable_unordered.clone());
+        client_channels.push(reliable_unordered);
+        
+        // We need to ensure consistent channel IDs
+        ConnectionConfig::from_channels(server_channels, client_channels)
     }
 }
 

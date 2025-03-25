@@ -36,41 +36,22 @@ fn log_received_entities(
     }
 }
 
-/// System to show connection status to replication server
-fn debug_replication_client(
-    client: Option<Res<RenetClient>>,
-    query: Query<Entity, With<Replicated>>, 
-) {
-    if let Some(client) = client {
-        if client.is_connected() {
-            debug!("Connected to replication server with {} replicated entities", 
-                query.iter().count());
-        }
-    }
-}
+/// System to show connection stat
 
 fn main() {
-    // Initialize tracing
-    tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .init();
-
-    info!("Starting Sidereal Shard Server");
-
-    // Enable debug tracing for netcode to see raw packet details
+    // Set environment variables first
     #[cfg(debug_assertions)]
     {
-        env::set_var("RUST_LOG", "info,renetcode2=trace,renet2=debug");
-
-        // Initialize tracing if not already done
-        if tracing_subscriber::fmt::Subscriber::builder()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .try_init()
-            .is_ok()
-        {
-            println!("Enhanced logging enabled for netcode debugging");
-        }
+        std::env::set_var("RUST_LOG", "info,renetcode2=trace,renet2=debug,bevy_replicon=debug");
     }
+    
+    // Then initialize logging once
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_max_level(Level::DEBUG) // Allow debug logs
+        .init();
+    
+    info!("Starting Sidereal Shard Server");
 
     // Get shard ID from command line, default to 1
     let args: Vec<String> = env::args().collect();
@@ -102,26 +83,24 @@ fn main() {
         .init_resource::<Assets<Mesh>>()
         .add_plugins((
             HierarchyPlugin,
-            RemotePlugin::default(),
-            RemoteHttpPlugin::default()
-                .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
-                .with_header(
-                    "Access-Control-Allow-Headers",
-                    "content-type, authorization",
-                )
-                .with_header(
-                    "Access-Control-Allow-Methods",
-                    "GET, POST, PUT, DELETE, OPTIONS",
-                ),
+            // RemotePlugin::default(),
+            // RemoteHttpPlugin::default()
+            //     .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
+            //     .with_header(
+            //         "Access-Control-Allow-Headers",
+            //         "content-type, authorization",
+            //     )
+            //     .with_header(
+            //         "Access-Control-Allow-Methods",
+            //         "GET, POST, PUT, DELETE, OPTIONS",
+            //     ),
             StatesPlugin::default(),
             PhysicsPlugins::default(),
-            // Add bi-directional networking
+            // Add bi-directional networking - RepliconPlugins must come before RepliconRenetPlugins
             RepliconPlugins,
             RepliconRenetPlugins,
             // Add the core plugin
             SiderealPlugin,
-            // Add client networking (for connecting to replication server)
-            ClientNetworkPlugin,
             // Set up bi-directional replication
             BiDirectionalReplicationSetupPlugin {
                 shard_config: Some(config),
@@ -129,7 +108,11 @@ fn main() {
                 known_shard_addresses: Vec::new(),
             },
         ))
+        // Add client network plugin separately
+        .add_plugins(ClientNetworkPlugin)
         // Add systems to monitor replication
-        .add_systems(Update, (log_received_entities, debug_replication_client))
+        .add_systems(Update, (
+            log_received_entities
+        ))
         .run();
 }

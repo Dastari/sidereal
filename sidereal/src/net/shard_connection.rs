@@ -1,21 +1,28 @@
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::{
-    netcode::{ClientAuthentication, NetcodeClientTransport, NativeSocket},
-    renet2::{RenetClient, RenetServer, ServerEvent},
+    netcode::{ClientAuthentication, NativeSocket, NetcodeClientTransport, NetcodeServerTransport},
+    renet2::{ConnectionConfig, RenetClient, RenetServer, ServerEvent},
     RenetChannelsExt
 };
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use crate::net::{NetworkConfig, DEFAULT_PROTOCOL_ID};
+
 use super::connection::{init_client, init_server};
 use super::config::{ShardConfig, ReplicationServerConfig, ShardConnections};
 use super::utils::find_available_port;
 
-/// A resource to store connections to multiple shards
+/// A resource to store shard client data
 #[derive(Resource, Default)]
-pub struct ShardClientConnections {
+pub struct ShardClients {
     pub clients: Vec<(u64, RenetClient)>,
+}
+
+/// A resource to store shard transport data 
+#[derive(Resource, Default)]
+pub struct ShardTransports {
     pub transports: Vec<(u64, NetcodeClientTransport)>,
 }
 
@@ -28,6 +35,14 @@ pub struct ConnectedShards {
     pub shard_addresses: HashMap<u64, SocketAddr>,
     /// Set of shards that have established reverse connections
     pub reverse_connected: Vec<u64>,
+}
+
+/// For backwards compatibility
+/// A resource to store connections to multiple shards
+#[derive(Resource, Default)]
+pub struct ShardClientConnections {
+    pub clients: Vec<(u64, RenetClient)>,
+    pub transports: Vec<(u64, NetcodeClientTransport)>,
 }
 
 /// Create a bi-directional replication plugin that configures the app
@@ -61,15 +76,26 @@ impl Plugin for BiDirectionalReplicationSetupPlugin {
         } else if self.replication_server_config.is_some() {
             // Add separate systems
             app.add_systems(Update, tick_replication_server);
-            app.add_systems(Update, tick_shard_clients);
+            // Add backwards compatibility migration to new resource structure
+            app.add_systems(Startup, migrate_to_new_resources);
+            // Add client and transport update systems
+            app.add_systems(Update, update_shard_clients);
+            app.add_systems(Update, update_shard_transports);
+            // Add cleanup system
+            app.add_systems(Update, cleanup_disconnected_shards.after(update_shard_transports));
             // Add monitoring system
             app.add_systems(Update, monitor_shard_connections);
             // Add new system to detect shard connections
             app.add_systems(Update, handle_shard_connections);
+            // Add system to register shards on connection
+            app.add_systems(Update, register_shards_on_connection);
             // Initialize resources
             app.init_resource::<ShardConnections>();
-            app.init_resource::<ShardClientConnections>();
+            app.init_resource::<ShardClients>();
+            app.init_resource::<ShardTransports>();
             app.init_resource::<ConnectedShards>();
+            // For backwards compatibility
+            app.init_resource::<ShardClientConnections>();
         }
         
         if let Some(shard_config) = &self.shard_config {
@@ -91,7 +117,7 @@ impl Plugin for BiDirectionalReplicationSetupPlugin {
                 }
             });
             
-            // No longer pre-registering known shard addresses - they will be discovered when shards connect
+            // No longer pre-registering known shard addresses - they will now report their addresses when connecting
             if !self.known_shard_addresses.is_empty() {
                 warn!("Pre-registering shard addresses is deprecated - shards will now report their addresses when connecting");
             }
@@ -99,29 +125,21 @@ impl Plugin for BiDirectionalReplicationSetupPlugin {
     }
 }
 
-/// Initialize a shard server that also connects to the replication server
-/// Shard is a server for the replication server (sends diffs)
-/// And a client of the replication server (receives commands)
+/// Initialize a shard server
 pub fn init_shard_server(
     commands: &mut Commands,
     channels: &RepliconChannels,
     config: &ShardConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Find an available port if dynamic port is requested
-    let bind_addr = if config.bind_addr.port() == 0 {
-        // If port is 0, find an available port starting from 5001
-        match find_available_port("127.0.0.1", 5001, 100) {
-            Some(addr) => {
-                info!("Using dynamically assigned port: {}", addr);
-                addr
-            },
-            None => {
-                return Err("Failed to find available port for shard server".into());
-            }
-        }
-    } else {
-        config.bind_addr
-    };
+    // Use a predictable port pattern: 5000 + shard_id
+    let bind_port = 5000 + config.shard_id as u16;
+    
+    // Explicitly use 127.0.0.1 to ensure IPv4 connections
+    // Avoid 0.0.0.0 as it can cause binding issues on some platforms
+    let bind_addr = SocketAddr::new(
+        "127.0.0.1".parse().unwrap(),
+        bind_port
+    );
     
     info!("Initializing shard server {} at {} with protocol ID {}", 
         config.shard_id, bind_addr, config.protocol_id);
@@ -136,21 +154,37 @@ pub fn init_shard_server(
     
     // Step 2: Also initialize the shard as a client to the replication server
     // This allows it to receive commands or data from the replication server
-    let client_id = config.shard_id;
+    // CRUCIAL: Use a different ID range for the client role to avoid ID conflicts
+    // Use 20000 + shard_id instead of just shard_id
+    let client_id = 20000 + config.shard_id;
     
-    info!("Connecting to replication server at {} as client ID {}", 
-        config.replication_server_addr, client_id);
+    // Make sure we're connecting to IPv4 for replication server using exact localhost address
+    let replication_server_addr = SocketAddr::new(
+        "127.0.0.1".parse().unwrap(), // Ensure IPv4 localhost
+        5000 // Always connect to replication server on port 5000
+    );
+    
+    // CRITICAL: Make sure we're using the exact same protocol ID
+    let protocol_id = config.protocol_id;
+    
+    info!("Connecting to replication server at {} as client ID {} with protocol ID {}", 
+        replication_server_addr, client_id, protocol_id);
+    
+    // IMPORTANT: Introduce a small delay between server and client initialization
+    // This helps avoid race conditions in socket binding that may cause immediate disconnections
+    std::thread::sleep(std::time::Duration::from_millis(100));
     
     init_client(
         commands,
-        config.replication_server_addr,
-        config.protocol_id,
+        replication_server_addr,
+        protocol_id, // Use the explicit protocol ID
         client_id,
     )?;
     
     // Store the updated config with possibly modified bind_addr
     let mut updated_config = config.clone();
     updated_config.bind_addr = bind_addr;
+    updated_config.replication_server_addr = replication_server_addr;  // Use the IPv4 address
     commands.insert_resource(updated_config);
     
     Ok(())
@@ -179,99 +213,68 @@ pub fn init_replication_server(
     Ok(())
 }
 
-/// Establish a reverse connection from the replication server to a shard
-pub fn connect_to_shard(
-    commands: &mut Commands,
-    config: &ReplicationServerConfig,
-    shard_id: u64,
-    shard_addr: SocketAddr,
-    shard_connections: &mut ShardClientConnections,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Create a unique client ID for the reverse connection
-    let replication_client_id = 10000 + shard_id;
-    
-    info!("Creating reverse connection to shard {} at {} with client ID {}", 
-        shard_id, shard_addr, replication_client_id);
-    
-    // Create socket and initialize connection to the shard
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    let native_socket = NativeSocket::new(socket)?;
-    
-    // Use the proper channel configuration from Replicon
-    let connection_config = config.network_config.to_connection_config();
-    
-    let authentication = ClientAuthentication::Unsecure {
-        client_id: replication_client_id,
-        protocol_id: config.protocol_id,
-        server_addr: shard_addr,
-        user_data: None,
-        socket_id: 0,
-    };
-    
-    let client_transport = NetcodeClientTransport::new(
-        SystemTime::now().duration_since(std::time::UNIX_EPOCH)?,
-        authentication,
-        native_socket,
-    )?;
-    
-    let client = RenetClient::new(connection_config, true);
-    
-    // Store client and transport in our ShardClientConnections resource
-    shard_connections.clients.push((shard_id, client));
-    shard_connections.transports.push((shard_id, client_transport));
-    
-    info!("Establishing reverse connection to shard {} at {}", shard_id, shard_addr);
-    
-    Ok(())
-}
-
 /// Handles connections from shards and establishes reverse connections
 pub fn handle_shard_connections(
+    time: Res<Time>,
     mut commands: Commands,
     mut server_events: EventReader<ServerEvent>,
     server: Res<RenetServer>,
     config: Option<Res<ReplicationServerConfig>>,
     mut connected_shards: ResMut<ConnectedShards>,
-    mut shard_connections: ResMut<ShardClientConnections>,
+    mut shard_clients: ResMut<ShardClients>,
+    mut shard_transports: ResMut<ShardTransports>,
+    transport: Res<NetcodeServerTransport>,
 ) {
-    // Skip if no config is available
-    let Some(config) = config else { return };
+    // Use elapsed time to throttle log messages (log only once per second)
+    let should_log = time.elapsed().as_secs() % 2 == 0;
     
-    // Process server events to detect connecting/disconnecting shards
     for event in server_events.read() {
         match event {
             ServerEvent::ClientConnected { client_id } => {
-                // Check if this is a shard server connecting
-                // Shard servers use their shard_id as client_id, which is typically < 1000
-                if *client_id < 1000 {
-                    let shard_id = *client_id;
-                    
-                    // In a real production environment, the shard would send its address to the server
-                    // For local development, we'll use a convention where:
-                    // - If the server can determine the port (e.g., from the packet source), use that
-                    // - Otherwise use a convention based on the shard ID (5000 + shard_id)
-                    
-                    // For now, we're using a port mapping based on shard ID for local development
-                    let shard_port = 5000 + shard_id as u16; // e.g., shard 1 = port 5001
-                    let addr: SocketAddr = format!("127.0.0.1:{}", shard_port).parse().unwrap();
-                    
-                    info!("Shard server {} connected - using address {}", shard_id, addr);
-                    warn!("Note: Using hardcoded local address - in production, the shard would send its actual address");
-                    
-                    // Store the shard's address
-                    connected_shards.shard_addresses.insert(shard_id, addr);
-                    connected_shards.client_to_shard.insert(*client_id, shard_id);
-                    
-                    // Check if we already have a reverse connection
-                    if !connected_shards.reverse_connected.contains(&shard_id) {
-                        // Establish reverse connection
-                        if let Err(e) = connect_to_shard(&mut commands, &config, shard_id, addr, &mut shard_connections) {
-                            error!("Failed to establish reverse connection to shard {}: {}", shard_id, e);
-                        } else {
-                            connected_shards.reverse_connected.push(shard_id);
-                        }
+                // Check if this is a shard connecting
+                if let Some(&shard_id) = connected_shards.client_to_shard.get(client_id) {
+                    if should_log {
+                        info!("Shard {} connected to replication server", shard_id);
                     }
-                } else {
+                    
+                    // Get the shard's address
+                    let shard_addr = connected_shards.shard_addresses.get(&shard_id).cloned();
+                    let shard_protocol_id = config.as_ref().map(|c| c.protocol_id).unwrap_or(DEFAULT_PROTOCOL_ID);
+                    
+                    if let Some(shard_addr) = shard_addr {
+                        if should_log {
+                            info!("Found shard {} at address {}", shard_id, shard_addr);
+                        }
+                        
+                        // Check if we already have a reverse connection
+                        if !connected_shards.reverse_connected.contains(&shard_id) {
+                            if should_log {
+                                info!("Shard {} doesn't have a reverse connection yet - establishing now", shard_id);
+                            }
+                            
+                            // Establish reverse connection
+                            if let Err(e) = connect_to_shard(
+                                &mut commands,
+                                &config, 
+                                shard_id, 
+                                shard_addr,
+                                shard_protocol_id,
+                                &mut shard_clients,
+                                &mut shard_transports,
+                                should_log
+                            ) {
+                                error!("Reverse connection failed: {}", e);
+                            } else if should_log {
+                                info!("Reverse connection to shard {} successfully established", shard_id);
+                                connected_shards.reverse_connected.push(shard_id);
+                            }
+                        } else if should_log {
+                            info!("Shard {} already has a reverse connection", shard_id);
+                        }
+                    } else if should_log {
+                        info!("No address found for shard {}", shard_id);
+                    }
+                } else if should_log {
                     // Regular client connected, not a shard
                     info!("Client {} connected to replication server", client_id);
                 }
@@ -279,23 +282,101 @@ pub fn handle_shard_connections(
             ServerEvent::ClientDisconnected { client_id, .. } => {
                 // Check if this was a shard
                 if let Some(shard_id) = connected_shards.client_to_shard.remove(client_id) {
-                    info!("Shard {} disconnected from replication server", shard_id);
+                    if should_log {
+                        info!("Shard {} disconnected from replication server", shard_id);
+                    }
                     
                     // Remove from reverse_connected list
                     if let Some(index) = connected_shards.reverse_connected.iter().position(|id| *id == shard_id) {
                         connected_shards.reverse_connected.swap_remove(index);
+                        if should_log {
+                            info!("Removed shard {} from reverse_connected list", shard_id);
+                        }
                     }
                     
-                    // Note: We're not removing the client/transport from ShardClientConnections here
+                    // Note: We're not removing the client/transport from ShardClients here
                     // because they'll be automatically cleaned up when their connection fails
                     // This makes reconnection easier
-                } else {
+                } else if should_log {
                     // Regular client disconnected
                     info!("Client {} disconnected from replication server", client_id);
                 }
             }
         }
     }
+}
+
+/// Establish a reverse connection from the replication server to a shard
+pub fn connect_to_shard(
+    commands: &mut Commands,
+    config: &Option<Res<ReplicationServerConfig>>,
+    shard_id: u64,
+    shard_addr: SocketAddr,
+    shard_protocol_id: u64,
+    shard_clients: &mut ShardClients,
+    shard_transports: &mut ShardTransports,
+    should_log: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Use a different ID range for replication -> shard connections
+    let replication_client_id = 10000 + shard_id;
+    
+    // Log detailed connection information
+    if should_log {
+        info!("Attempting to establish reverse connection to shard {} at {}", shard_id, shard_addr);
+        info!("Using client ID {} and protocol ID {}", replication_client_id, shard_protocol_id);
+    }
+    
+    // Use minimal authentication with no user data for simplicity
+    let authentication = ClientAuthentication::Unsecure {
+        client_id: replication_client_id,
+        protocol_id: shard_protocol_id,
+        server_addr: shard_addr,
+        user_data: None, // No user data for simplicity
+        socket_id: 0,
+    };
+    
+    // Bind to a specific address for the client
+    let client_socket_addr = SocketAddr::new("0.0.0.0".parse().unwrap(), 0);
+    if should_log {
+        info!("Binding reverse connection socket to {}", client_socket_addr);
+    }
+    
+    // Create socket and initialize connection to the shard
+    let socket = UdpSocket::bind(client_socket_addr)?;
+    socket.set_nonblocking(true)?;
+    
+    if should_log {
+        info!("Reverse connection socket bound to {}", socket.local_addr()?);
+    }
+    
+    let native_socket = NativeSocket::new(socket)?;
+    
+    // Use our stable connection config for guaranteed compatibility
+    let config = crate::net::config::NetworkConfig::default();
+    let connection_config = config.to_stable_connection_config();
+    
+    if should_log {
+        info!("Creating transport for reverse connection to shard {}", shard_id);
+    }
+    
+    let current_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    let transport = NetcodeClientTransport::new(current_time, authentication, native_socket)?;
+    
+    if should_log {
+        info!("Creating client for reverse connection to shard {}", shard_id);
+    }
+    
+    let client = RenetClient::new(connection_config, false);
+    
+    // Store the client and transport in our collections
+    if should_log {
+        info!("Storing reverse connection to shard {} in ShardClients", shard_id);
+    }
+    
+    shard_clients.clients.push((shard_id, client));
+    shard_transports.transports.push((shard_id, transport));
+    
+    Ok(())
 }
 
 /// Ticks the network system for the replication server role
@@ -307,26 +388,96 @@ pub fn tick_replication_server(
     server.update(delta);
 }
 
-/// Ticks the network system for a shard server role
+/// Ticks the network system for the shard server role
 pub fn tick_shard_server(
     time: Res<Time>,
     mut server: ResMut<RenetServer>,
-    mut client: ResMut<RenetClient>,
 ) {
+    // Only update the server, DON'T update the transport - that's handled by ClientNetworkPlugin
     let delta = Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
     server.update(delta);
-    client.update(delta);
+    
+    // DO NOT update transport here - let the ClientNetworkPlugin handle that
+    // This was causing a conflict with update_client_transport
 }
 
-/// Ticks all shard clients to receive updates from shards
-pub fn tick_shard_clients(
-    time: Res<Time>,
-    mut shard_clients: ResMut<ShardClientConnections>,
+/// Updates all shard clients
+pub fn update_shard_clients(
+    mut clients: ResMut<ShardClients>,
 ) {
     let delta = Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
     
-    for (_, client) in shard_clients.clients.iter_mut() {
+    // Update each client
+    for (_, client) in &mut clients.clients {
         client.update(delta);
+    }
+}
+
+/// Updates shard transports one at a time
+pub fn update_shard_transports(
+    time: Res<Time>,
+    mut transports: ResMut<ShardTransports>,
+    mut clients: ResMut<ShardClients>,
+    mut disconnected: Local<HashSet<u64>>,
+) {
+    // Clear disconnected list from previous frame
+    disconnected.clear();
+    
+    // Create a temporary map of shard_id -> client_idx
+    let client_indices: HashMap<u64, usize> = clients.clients.iter()
+        .enumerate()
+        .map(|(idx, (shard_id, _))| (*shard_id, idx))
+        .collect();
+    
+    // Process each transport with its matching client
+    for (i, (shard_id, transport)) in transports.transports.iter_mut().enumerate() {
+        // Find the matching client index
+        if let Some(&client_idx) = client_indices.get(shard_id) {
+            // Access the client by index
+            if client_idx < clients.clients.len() {
+                let client = &mut clients.clients[client_idx].1;
+                
+                // Only update if client is active
+                if client.is_connected() || client.is_connecting() {
+                    // Update the transport
+                    if let Err(e) = transport.update(time.delta(), client) {
+                        error!("Transport update error for shard {}: {}", shard_id, e);
+                        disconnected.insert(*shard_id);
+                    }
+                } else {
+                    // Client is disconnected
+                    disconnected.insert(*shard_id);
+                }
+            }
+        } else {
+            // No matching client
+            disconnected.insert(*shard_id);
+        }
+    }
+}
+
+/// Resource for tracking disconnected shards
+#[derive(Resource, Default)]
+pub struct DisconnectedShards(pub HashSet<u64>);
+
+/// Cleans up disconnected shards after transport updates
+pub fn cleanup_disconnected_shards(
+    mut clients: ResMut<ShardClients>,
+    mut transports: ResMut<ShardTransports>,
+    disconnected: Local<HashSet<u64>>,
+) {
+    // Clean up disconnected clients and transports
+    for &shard_id in disconnected.iter() {
+        // Remove client
+        if let Some(client_idx) = clients.clients.iter().position(|(id, _)| *id == shard_id) {
+            info!("Cleaning up disconnected client for shard {}", shard_id);
+            clients.clients.swap_remove(client_idx);
+        }
+        
+        // Remove transport
+        if let Some(transport_idx) = transports.transports.iter().position(|(id, _)| *id == shard_id) {
+            transports.transports.swap_remove(transport_idx);
+        }
     }
 }
 
@@ -342,12 +493,31 @@ pub fn tick_bidirectional(
     client.update(delta);
 }
 
+/// Migration system to move from old ShardClientConnections to new resources
+pub fn migrate_to_new_resources(
+    mut old_connections: ResMut<ShardClientConnections>,
+    mut clients: ResMut<ShardClients>,
+    mut transports: ResMut<ShardTransports>,
+) {
+    // Move all clients to the new resource
+    for (shard_id, client) in std::mem::take(&mut old_connections.clients) {
+        clients.clients.push((shard_id, client));
+    }
+    
+    // Move all transports to the new resource
+    for (shard_id, transport) in std::mem::take(&mut old_connections.transports) {
+        transports.transports.push((shard_id, transport));
+    }
+    
+    info!("Migrated old ShardClientConnections to new split resources");
+}
+
 /// Monitors the connection status of shard clients
 pub fn monitor_shard_connections(
-    shard_clients: Res<ShardClientConnections>,
+    clients: Res<ShardClients>,
     connected_shards: Res<ConnectedShards>,
 ) {
-    for (shard_id, client) in &shard_clients.clients {
+    for (shard_id, client) in &clients.clients {
         if client.is_connected() {
             // Get the shard's address for better logging
             let addr = connected_shards.shard_addresses.get(shard_id)
@@ -360,5 +530,16 @@ pub fn monitor_shard_connections(
         } else {
             debug!("Not connected to shard {}", shard_id);
         }
+    }
+}
+
+/// Register shards for replication when they connect
+pub fn register_shards_on_connection(
+    mut commands: Commands,
+    query: Query<Entity, (With<ConnectedClient>, Without<ReplicatedClient>)>,
+) {
+    for entity in query.iter() {
+        info!("Marking shard client {:?} for replication", entity);
+        commands.entity(entity).insert(ReplicatedClient);
     }
 } 

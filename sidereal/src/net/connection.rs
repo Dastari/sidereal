@@ -35,14 +35,11 @@ impl Plugin for NetworkingPlugin {
 
 /// Creates a connection configuration with Replicon's default channels
 fn default_connection_config() -> ConnectionConfig {
-    // Get default Replicon channels
-    let channels = RepliconChannels::default();
+    // Create a default network config
+    let config = super::config::NetworkConfig::default();
     
-    // Use the ConnectionConfig::from_channels constructor with the extension trait
-    ConnectionConfig::from_channels(
-        channels.server_configs(),
-        channels.client_configs(),
-    )
+    // Use the stable connection config for guaranteed compatibility
+    config.to_stable_connection_config()
 }
 
 pub fn init_server(
@@ -51,23 +48,45 @@ pub fn init_server(
     protocol_id: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server_addr = format!("0.0.0.0:{}", server_port).parse()?;
+    let final_protocol_id = protocol_id.unwrap_or(DEFAULT_PROTOCOL_ID);
+    
+    info!("Initializing server at {} with protocol ID {}", server_addr, final_protocol_id);
+    
+    // Bind the socket with specific options
     let socket = UdpSocket::bind(server_addr)?;
+    socket.set_nonblocking(true)?;
+    
+    info!("Server socket bound successfully to {}", socket.local_addr()?);
+    
     let native_socket = NativeSocket::new(socket)?;
+    info!("Native socket created");
 
+    // Use Replicon's default connection config
     let connection_config = default_connection_config();
+    info!("Using Replicon default connection config");
+    
+    // Create server config with minimal authentication for maximum compatibility
     let server_config = ServerSetupConfig {
         current_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?,
         max_clients: 64,
-        protocol_id: protocol_id.unwrap_or(DEFAULT_PROTOCOL_ID),
+        protocol_id: final_protocol_id,
         socket_addresses: vec![vec![server_addr]],
         authentication: ServerAuthentication::Unsecure,
     };
+    
+    info!("Creating server transport with protocol ID {} and minimal authentication", 
+          server_config.protocol_id);
 
     let transport = NetcodeServerTransport::new(server_config, native_socket)?;
+    info!("Server transport created");
+    
     let server = RenetServer::new(connection_config);
+    info!("Server created");
 
     commands.insert_resource(server);
     commands.insert_resource(transport);
+    info!("Server resources inserted");
+    
     Ok(())
 }
 
@@ -77,25 +96,53 @@ pub fn init_client(
     protocol_id: u64,
     client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Initializing client with ID {} connecting to {} with protocol ID {}", 
+          client_id, server_addr, protocol_id);
+          
+    // Bind to 0.0.0.0 to avoid any specific interface binding issues
     let socket = UdpSocket::bind("0.0.0.0:0")?;
+    
+    // Set socket options for better reliability
+    socket.set_nonblocking(true)?; 
+    
+    // Log the local socket address
+    info!("Client socket bound to: {}", socket.local_addr()?);
+    
     let native_socket = NativeSocket::new(socket)?;
 
+    // Use default connection config from Replicon
     let connection_config = default_connection_config();
+    
+    // Log connection config details
+    info!("Using Replicon default connection config");
+    
+    // Simplest possible authentication - no user_data
     let authentication = ClientAuthentication::Unsecure {
         client_id,
         protocol_id,
         server_addr,
-        user_data: None,
+        user_data: None, // No user data for simplicity
         socket_id: 0,
     };
+    
+    // Log authentication details
+    info!("Client authentication: client_id={}, protocol_id={}, server_addr={}, no user_data", 
+          client_id, protocol_id, server_addr);
+    
     let transport = NetcodeClientTransport::new(
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?,
         authentication,
         native_socket,
     )?;
-    let client = RenetClient::new(connection_config, true);
+    
+    // Create client with standard timeout values
+    let client = RenetClient::new(connection_config, false);
+    
+    info!("Client transport and client created successfully");
 
     commands.insert_resource(client);
     commands.insert_resource(transport);
+    
+    info!("Client resources inserted");
     Ok(())
 }
