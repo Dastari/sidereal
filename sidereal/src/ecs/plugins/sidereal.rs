@@ -25,4 +25,4 @@ impl Plugin for SiderealPlugin {
             .register_type::<Object>()
             .register_type::<Sector>();
     }
-} 
+}

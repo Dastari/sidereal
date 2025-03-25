@@ -1,8 +1,11 @@
 use bevy::prelude::*;
+use bevy_replicon::prelude::*;
+use bevy_replicon_renet2::{
+    RenetChannelsExt,
+    renet2::{ChannelConfig, ConnectionConfig, SendType},
+};
 use std::net::SocketAddr;
 use std::time::Duration;
-use bevy_replicon::prelude::*;
-use bevy_replicon_renet2::{RenetChannelsExt, renet2::{ChannelConfig, ConnectionConfig, SendType}};
 
 /// Default protocol ID used across all networking components
 pub const DEFAULT_PROTOCOL_ID: u64 = 7;
@@ -45,14 +48,11 @@ impl NetworkConfig {
     pub fn to_connection_config(&self) -> ConnectionConfig {
         // Get default Replicon channels
         let channels = RepliconChannels::default();
-        
+
         // Use the ConnectionConfig::from_channels constructor with the extension trait
-        ConnectionConfig::from_channels(
-            channels.server_configs(),
-            channels.client_configs(),
-        )
+        ConnectionConfig::from_channels(channels.server_configs(), channels.client_configs())
     }
-    
+
     /// Creates a ConnectionConfig with exactly three channels configured that is fully
     /// compatible with RepliconChannels but more predictable.
     /// This should be used when absolute consistency is required.
@@ -61,18 +61,18 @@ impl NetworkConfig {
         // but with explicit, consistent configuration
         let mut server_channels = Vec::new();
         let mut client_channels = Vec::new();
-        
+
         // Channel 0: Reliable for entities (both directions)
         let reliable_ordered = ChannelConfig {
             channel_id: 0,
             max_memory_usage_bytes: 5 * 1024 * 1024, // 5MB
-            send_type: SendType::ReliableOrdered { 
-                resend_time: Duration::from_millis(300)
+            send_type: SendType::ReliableOrdered {
+                resend_time: Duration::from_millis(300),
             },
         };
         server_channels.push(reliable_ordered.clone());
         client_channels.push(reliable_ordered);
-        
+
         // Channel 1: Unreliable for frequent updates (both directions)
         let unreliable = ChannelConfig {
             channel_id: 1,
@@ -81,18 +81,18 @@ impl NetworkConfig {
         };
         server_channels.push(unreliable.clone());
         client_channels.push(unreliable);
-        
+
         // Add Channel 2: Also needed for Replicon protocol
         let reliable_unordered = ChannelConfig {
             channel_id: 2,
             max_memory_usage_bytes: 5 * 1024 * 1024, // 5MB
-            send_type: SendType::ReliableUnordered { 
-               resend_time: Duration::from_millis(300)
+            send_type: SendType::ReliableUnordered {
+                resend_time: Duration::from_millis(300),
             },
         };
         server_channels.push(reliable_unordered.clone());
         client_channels.push(reliable_unordered);
-        
+
         // We need to ensure consistent channel IDs
         ConnectionConfig::from_channels(server_channels, client_channels)
     }
@@ -117,7 +117,9 @@ impl Default for ShardConfig {
     fn default() -> Self {
         Self {
             bind_addr: "127.0.0.1:0".parse().unwrap(), // Dynamic port
-            replication_server_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT).parse().unwrap(),
+            replication_server_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT)
+                .parse()
+                .unwrap(),
             shard_id: 1,
             protocol_id: DEFAULT_PROTOCOL_ID,
             network_config: NetworkConfig::default(),
@@ -139,7 +141,9 @@ pub struct ReplicationServerConfig {
 impl Default for ReplicationServerConfig {
     fn default() -> Self {
         Self {
-            bind_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT).parse().unwrap(),
+            bind_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT)
+                .parse()
+                .unwrap(),
             protocol_id: DEFAULT_PROTOCOL_ID,
             network_config: NetworkConfig::default(),
         }
@@ -151,4 +155,4 @@ impl Default for ReplicationServerConfig {
 pub struct ShardConnections {
     /// Map of shard IDs to their connection status
     pub connected_shards: Vec<u64>,
-} 
+}

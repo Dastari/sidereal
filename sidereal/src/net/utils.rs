@@ -1,12 +1,13 @@
 use bevy::prelude::*;
-use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::{
-    netcode::{NetcodeClientTransport, NetcodeServerTransport, NetcodeTransportError, NetcodeDisconnectReason},
+    netcode::{
+        NetcodeClientTransport, NetcodeServerTransport,
+    },
     renet2::{RenetClient, RenetServer},
 };
-use std::net::{SocketAddr, TcpListener, UdpSocket};
-use tracing::{info, warn, error, debug};
-use std::time::Duration;
+use std::net::{SocketAddr, UdpSocket};
+
+use tracing::{debug, error, info, warn};
 
 /// System to handle client and server connections
 #[derive(Resource)]
@@ -32,45 +33,32 @@ impl Default for NetworkStats {
     }
 }
 
-/// Update network stats for the server
-pub fn update_server_stats(
-    server: Option<Res<RenetServer>>,
-    mut stats: ResMut<NetworkStats>,
-) {
+pub fn update_server_stats(server: Option<Res<RenetServer>>, mut stats: ResMut<NetworkStats>) {
     if let Some(server) = server {
         stats.connected_clients = server.connected_clients();
     }
 }
 
-/// Update network stats for clients
-pub fn update_client_stats(
-    client: Option<Res<RenetClient>>,
-    mut stats: ResMut<NetworkStats>,
-) {
+pub fn update_client_stats(client: Option<Res<RenetClient>>, mut stats: ResMut<NetworkStats>) {
     if let Some(client) = client {
         stats.is_connected_to_server = client.is_connected();
     }
 }
 
-/// Updates the client transport and handles any errors
 pub fn update_client_transport(
     mut client: ResMut<RenetClient>,
     mut client_transport: ResMut<NetcodeClientTransport>,
     mut network_stats: ResMut<NetworkStats>,
     time: Res<Time>,
 ) {
-    // Update connection status
     let was_connected = network_stats.is_connected_to_server;
     network_stats.is_connected_to_server = client.is_connected();
-    
-    // Track status changes
+
     let status_changed = was_connected != network_stats.is_connected_to_server;
-    
-    // Calculate times for reconnection attempts 
+
     let current_time = time.elapsed().as_secs_f32();
     let should_log = current_time - network_stats.last_status_log > 1.0;
-    
-    // Log connection status changes or periodic updates
+
     if status_changed || should_log {
         network_stats.last_status_log = current_time;
         if network_stats.is_connected_to_server {
@@ -84,13 +72,13 @@ pub fn update_client_transport(
 
     // Update the transport with a fixed delta time to ensure consistent behavior
     let delta = std::time::Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
-    
+
     if let Err(e) = client_transport.update(delta, &mut client) {
         if should_log {
             // Downgrade to debug level to reduce spam
             debug!("Client transport update error: {:?}", e);
         }
-        
+
         // Don't call disconnect here - we want automatic reconnection
         network_stats.is_connected_to_server = false;
     }
@@ -105,15 +93,15 @@ pub fn update_server_transport(
 ) {
     // Check if there are any connected clients
     network_stats.is_connected_to_server = !server.clients_id().is_empty();
-    
+
     // Only log connection status changes once per second
     let current_time = time.elapsed().as_secs_f32();
     if current_time - network_stats.last_status_log > 1.0 {
         network_stats.last_status_log = current_time;
         if network_stats.is_connected_to_server {
-            info!("Server is running with connected clients");
+            debug!("Server is running with connected clients");
         } else {
-            info!("Server is running but no clients connected");
+            debug!("Server is running but no clients connected");
         }
     }
 
@@ -125,18 +113,25 @@ pub fn update_server_transport(
 }
 
 /// Finds an available port by trying to bind to ports incrementally
-/// 
+///
 /// Starts from the preferred port and increments until it finds one that's available
 /// Returns the socket address with the available port
-pub fn find_available_port(preferred_host: &str, preferred_port: u16, max_attempts: u32) -> Option<SocketAddr> {
+pub fn find_available_port(
+    preferred_host: &str,
+    preferred_port: u16,
+    max_attempts: u32,
+) -> Option<SocketAddr> {
     let mut current_port = preferred_port;
     let max_port = u16::MAX.min(preferred_port + max_attempts as u16);
-    
-    info!("Looking for available port starting from {}:{}", preferred_host, preferred_port);
-    
+
+    info!(
+        "Looking for available port starting from {}:{}",
+        preferred_host, preferred_port
+    );
+
     while current_port < max_port {
         let addr = format!("{}:{}", preferred_host, current_port);
-        
+
         // Try binding with UDP (which is what we'll use for the actual server)
         match UdpSocket::bind(&addr) {
             Ok(socket) => {
@@ -155,8 +150,11 @@ pub fn find_available_port(preferred_host: &str, preferred_port: u16, max_attemp
             }
         }
     }
-    
-    warn!("Failed to find available port after {} attempts", max_attempts);
+
+    warn!(
+        "Failed to find available port after {} attempts",
+        max_attempts
+    );
     None
 }
 
@@ -165,8 +163,7 @@ pub struct ServerNetworkPlugin;
 
 impl Plugin for ServerNetworkPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .init_resource::<NetworkStats>()
+        app.init_resource::<NetworkStats>()
             .add_systems(PostUpdate, update_server_stats)
             .add_systems(PostUpdate, update_server_transport);
     }
@@ -177,9 +174,8 @@ pub struct ClientNetworkPlugin;
 
 impl Plugin for ClientNetworkPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .init_resource::<NetworkStats>()
+        app.init_resource::<NetworkStats>()
             .add_systems(PostUpdate, update_client_stats)
             .add_systems(PostUpdate, update_client_transport);
     }
-} 
+}

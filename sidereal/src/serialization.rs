@@ -58,7 +58,10 @@ pub fn deserialize_entity(
         let registration = match registry.get_with_type_path(&type_name) {
             Some(reg) => reg,
             None => {
-                println!("Warning: No registration found for component type: {}", type_name);
+                println!(
+                    "Warning: No registration found for component type: {}",
+                    type_name
+                );
                 continue;
             }
         };
@@ -101,9 +104,10 @@ pub fn update_entity(serialized: &str, world: &mut World) -> Result<Entity, Stri
     };
 
     // Check if there's an Id component (look for both possible paths)
-    let id_key = components.get("sidereal::ecs::components::id::Id")
+    let id_key = components
+        .get("sidereal::ecs::components::id::Id")
         .or_else(|| components.get("sidereal::ecs::components::id::Id"));
-    
+
     if let Some(id_value) = id_key {
         // For Id component, we can directly extract the string value without additional parsing
         if let Some(id_str) = id_value.as_str() {

@@ -1,10 +1,10 @@
 use crate::database::{DatabaseClient, EntityRecord};
-use sidereal::serialization::update_entity;
-use sidereal::ecs::components::id::Id;
 use bevy::prelude::*;
+use serde_json;
+use sidereal::ecs::components::id::Id;
+use sidereal::serialization::update_entity;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
-use serde_json;
 /// Plugin for loading the game scene from the database
 pub struct SceneLoaderPlugin;
 
@@ -24,13 +24,14 @@ impl Plugin for SceneLoaderPlugin {
             )
             .add_systems(
                 Update,
-                (
-                    batch_processing,
-                    process_deserialization_tasks,
-                ).run_if(in_state(SceneState::Ready)),
+                (batch_processing, process_deserialization_tasks)
+                    .run_if(in_state(SceneState::Ready)),
             )
             // Add apply_pending_deserializations as a separate system that runs after other systems
-            .add_systems(PostUpdate, apply_pending_deserializations.run_if(in_state(SceneState::Ready)));
+            .add_systems(
+                PostUpdate,
+                apply_pending_deserializations.run_if(in_state(SceneState::Ready)),
+            );
     }
 }
 
@@ -199,18 +200,25 @@ fn batch_processing(
     // Check if we have processed all entities
     if scene_loading_state.current_batch_index >= scene_loading_state.total_entities {
         if scene_loading_state.total_entities > 0 {
-            info!("Finished processing all {} entities - moving to Completed state", scene_loading_state.total_entities);
+            info!(
+                "Finished processing all {} entities - moving to Completed state",
+                scene_loading_state.total_entities
+            );
             scene_state.set(SceneState::Completed);
         }
         return;
     }
 
     let start_idx = scene_loading_state.current_batch_index;
-    let end_idx = (start_idx + scene_loading_state.batch_size).min(scene_loading_state.total_entities);
+    let end_idx =
+        (start_idx + scene_loading_state.batch_size).min(scene_loading_state.total_entities);
     let batch_size = end_idx - start_idx;
 
-    info!("Processing batch of {} entities ({}-{})", batch_size, start_idx, end_idx);
-    
+    info!(
+        "Processing batch of {} entities ({}-{})",
+        batch_size, start_idx, end_idx
+    );
+
     // Mark that we're processing a batch
     scene_loading_state.is_processing_batch = true;
     scene_loading_state.current_batch.clear();
@@ -225,9 +233,7 @@ fn batch_processing(
 }
 
 /// System for processing the deserialization of entities in batches
-fn process_deserialization_tasks(
-    mut scene_loading_state: ResMut<SceneLoadingState>,
-) {
+fn process_deserialization_tasks(mut scene_loading_state: ResMut<SceneLoadingState>) {
     // Skip if not processing a batch or batch is empty
     if !scene_loading_state.is_processing_batch || scene_loading_state.current_batch.is_empty() {
         return;
@@ -236,7 +242,7 @@ fn process_deserialization_tasks(
     // Track how many entities were processed
     let mut success_count = 0;
     let mut error_count = 0;
-    
+
     // Process each entity in the current batch
     let indices_to_process = scene_loading_state.current_batch.clone();
     for idx in indices_to_process {
@@ -257,12 +263,15 @@ fn process_deserialization_tasks(
             error_count += 1;
         }
     }
-    
+
     // Log summary and mark batch as complete
     if success_count > 0 || error_count > 0 {
-        info!("Batch processed: {} successful, {} failed", success_count, error_count);
+        info!(
+            "Batch processed: {} successful, {} failed",
+            success_count, error_count
+        );
     }
-    
+
     scene_loading_state.is_processing_batch = false;
     scene_loading_state.current_batch.clear();
 }
@@ -271,7 +280,7 @@ fn process_deserialization_tasks(
 fn apply_pending_deserializations(world: &mut World) {
     let mut scene_loading_state = world.resource_mut::<SceneLoadingState>();
     let pending = std::mem::take(&mut scene_loading_state.pending_deserializations);
-    
+
     // Process each serialized entity
     for json in pending {
         match update_entity(&json, world) {
