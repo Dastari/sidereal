@@ -28,83 +28,66 @@ impl Plugin for NetworkingPlugin {
     }
 }
 
-pub fn init_server(
-    commands: &mut Commands,
-    server_port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Bind the socket to the server address
-    let server_addr = format!("0.0.0.0:{}", server_port).parse()?;
-    let socket = UdpSocket::bind(server_addr)?;
-
-    let native_socket = NativeSocket::new(socket)?;
-
-    let server_channels = vec![ChannelConfig {
+fn default_connection_config() -> ConnectionConfig {
+    let channels = vec![ChannelConfig {
         channel_id: 0,
         max_memory_usage_bytes: 5 * 1024 * 1024,
         send_type: SendType::ReliableOrdered { resend_time: Duration::from_millis(200) },
     }];
-    let client_channels = server_channels.clone();
-    
-    let connection_config = ConnectionConfig {
+    ConnectionConfig {
         available_bytes_per_tick: 60_000,
-        server_channels_config: server_channels,
-        client_channels_config: client_channels,
-    };
+        server_channels_config: channels.clone(),
+        client_channels_config: channels,
+    }
+}
 
-    // Provide values for ServerSetupConfig
-    let current_time = Duration::from_secs(0); // Initial time
-    let socket_addresses = vec![vec![server_addr]]; // Single address for the server
+pub fn init_server(
+    commands: &mut Commands,
+    server_port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server_addr = format!("0.0.0.0:{}", server_port).parse()?;
+    let socket = UdpSocket::bind(server_addr)?;
+    let native_socket = NativeSocket::new(socket)?;
 
+    let connection_config = default_connection_config();
     let server_config = ServerSetupConfig {
-        current_time,
-        max_clients: 64, // Example value
-        protocol_id: 0, // Example protocol ID
-        socket_addresses,
-        authentication: ServerAuthentication::Unsecure, // Example authentication
+        current_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?,
+        max_clients: 64,
+        protocol_id: 0,
+        socket_addresses: vec![vec![server_addr]],
+        authentication: ServerAuthentication::Unsecure,
     };
 
-    // Create the transport and server
     let transport = NetcodeServerTransport::new(server_config, native_socket)?;
     let server = RenetServer::new(connection_config);
 
-    // Insert resources into Bevy
     commands.insert_resource(server);
     commands.insert_resource(transport);
-
     Ok(())
 }
 
 pub fn init_client(
     commands: &mut Commands,
-    channels: &RepliconChannels,
     server_addr: SocketAddr,
     protocol_id: u64,
     client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
-    // Convert to NativeSocket for use with NetcodeClientTransport
     let native_socket = NativeSocket::new(socket)?;
 
-    let server_channels = vec![ChannelConfig {
-        channel_id: 0,
-        max_memory_usage_bytes: 5 * 1024 * 1024,
-        send_type: SendType::ReliableOrdered { resend_time: Duration::from_millis(200) },
-    }];
-    let client_channels = server_channels.clone();
-    let connection_config = ConnectionConfig {
-        available_bytes_per_tick: 60_000,
-        server_channels_config: server_channels,
-        client_channels_config: client_channels,
-    };
-
+    let connection_config = default_connection_config();
     let authentication = ClientAuthentication::Unsecure {
         client_id,
         protocol_id,
         server_addr,
         user_data: None,
-        socket_id: 0, // Add the missing socket_id field
+        socket_id: 0,
     };
-    let transport = NetcodeClientTransport::new(Duration::from_secs(0), authentication, native_socket)?;
+    let transport = NetcodeClientTransport::new(
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?,
+        authentication,
+        native_socket,
+    )?;
     let client = RenetClient::new(connection_config, true);
 
     commands.insert_resource(client);

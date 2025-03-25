@@ -115,7 +115,7 @@ pub fn init_shard_server(
     let client_id = config.shard_id;
     init_client(
         commands,
-        channels,
+        // channels,
         config.replication_server_addr,
         config.protocol_id,
         client_id,
@@ -150,7 +150,7 @@ pub fn init_replication_server(
         // For now, this is a placeholder - we'd need a better way to manage multiple connections
         init_client(
             commands,
-            channels,
+            // channels,
             *shard_addr,
             config.protocol_id,
             replication_client_id,
