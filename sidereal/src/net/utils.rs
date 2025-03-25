@@ -4,6 +4,8 @@ use bevy_replicon_renet2::{
     netcode::{NetcodeClientTransport, NetcodeServerTransport},
     renet2::{RenetClient, RenetServer},
 };
+use std::net::{SocketAddr, TcpListener, UdpSocket};
+use tracing::{info, warn};
 
 /// System to handle client and server connections
 #[derive(Resource)]
@@ -91,4 +93,40 @@ impl Plugin for ClientNetworkPlugin {
             .add_systems(PostUpdate, update_client_stats)
             .add_systems(PostUpdate, update_client_transport);
     }
+}
+
+/// Finds an available port by trying to bind to ports incrementally
+/// 
+/// Starts from the preferred port and increments until it finds one that's available
+/// Returns the socket address with the available port
+pub fn find_available_port(preferred_host: &str, preferred_port: u16, max_attempts: u32) -> Option<SocketAddr> {
+    let mut current_port = preferred_port;
+    let max_port = u16::MAX.min(preferred_port + max_attempts as u16);
+    
+    info!("Looking for available port starting from {}:{}", preferred_host, preferred_port);
+    
+    while current_port < max_port {
+        let addr = format!("{}:{}", preferred_host, current_port);
+        
+        // Try binding with UDP (which is what we'll use for the actual server)
+        match UdpSocket::bind(&addr) {
+            Ok(socket) => {
+                // Found an available port
+                if let Ok(local_addr) = socket.local_addr() {
+                    info!("Found available port: {}", local_addr);
+                    return Some(local_addr);
+                }
+                // If we can't get the local address, try the next port
+                current_port += 1;
+            }
+            Err(_) => {
+                // Port is in use, try next one
+                warn!("Port {} is unavailable, trying next port", current_port);
+                current_port += 1;
+            }
+        }
+    }
+    
+    warn!("Failed to find available port after {} attempts", max_attempts);
+    None
 } 

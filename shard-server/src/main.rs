@@ -16,6 +16,8 @@ use sidereal::net::{NetworkStats, ClientNetworkPlugin};
 use sidereal::ecs::plugins::SiderealPlugin;
 
 use tracing::{info, Level};
+use std::env;
+use std::net::SocketAddr;
 
 fn main() {
     // Initialize tracing
@@ -28,7 +30,6 @@ fn main() {
     // Enable debug tracing for netcode to see raw packet details
     #[cfg(debug_assertions)]
     {
-        use std::env;
         env::set_var("RUST_LOG", "info,renetcode2=trace,renet2=debug");
 
         // Initialize tracing if not already done
@@ -41,12 +42,24 @@ fn main() {
         }
     }
 
-    // Configure shard server with default network configuration
+    // Get shard ID from command line, default to 1
+    let args: Vec<String> = env::args().collect();
+    let shard_id = if args.len() > 1 {
+        args[1].parse::<u64>().unwrap_or(1)
+    } else {
+        1
+    };
+
+    info!("Initializing shard server with ID: {}", shard_id);
+
+    // Configure shard server with default network configuration and dynamic port
     let mut config = ShardConfig::default();
-    config.bind_addr = "127.0.0.1:5001".parse().unwrap();
+    config.bind_addr = "127.0.0.1:0".parse().unwrap(); // Use port 0 for dynamic port assignment
     config.replication_server_addr = "127.0.0.1:5000".parse().unwrap();
-    config.shard_id = 1;
+    config.shard_id = shard_id;
     config.protocol_id = DEFAULT_PROTOCOL_ID;
+    
+    info!("Shard configuration: {:?}", config);
     
     // Initialize the Bevy app with minimal plugins for headless operation
     App::new()

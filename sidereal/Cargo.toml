@@ -10,12 +10,13 @@ bevy_state = { workspace = true }
 bevy_replicon = { workspace = true }
 bevy_replicon_renet2 = { workspace = true, features=["native_transport"] }
 bevy_reflect = { workspace = true }
-bevy_remote = "0.15.3"
 
+bevy_remote = "0.15.3"
 # Other
 uuid = { workspace = true}
 serde = { workspace = true}
 serde_json = { workspace = true }
+tracing = {workspace = true}
 
 # Physics
 avian2d = {version = "0.2.1", features=['serialize']}

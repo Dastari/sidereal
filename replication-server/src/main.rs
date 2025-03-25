@@ -5,16 +5,18 @@ use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
-use bevy_state::app::StatesPlugin;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::RepliconRenetPlugins;
+use bevy_state::app::StatesPlugin;
 
 use game::SceneLoaderPlugin;
-use sidereal::net::{ReplicationServerConfig, DEFAULT_PROTOCOL_ID, BiDirectionalReplicationSetupPlugin, ServerNetworkPlugin};
 use sidereal::ecs::plugins::SiderealPlugin;
+use sidereal::net::{
+    BiDirectionalReplicationSetupPlugin, ReplicationServerConfig, ServerNetworkPlugin,
+    DEFAULT_PROTOCOL_ID,
+};
 
 use tracing::{info, Level};
-use std::net::SocketAddr;
 
 fn main() {
     // Initialize tracing
@@ -44,12 +46,10 @@ fn main() {
     let mut config = ReplicationServerConfig::default();
     config.bind_addr = "0.0.0.0:5000".parse().unwrap();
     config.protocol_id = DEFAULT_PROTOCOL_ID;
-    
-    // Known shard addresses - in a real application, this might come from config
-    let shard_addresses = vec![
-        SocketAddr::new("127.0.0.1".parse().unwrap(), 5001)
-    ];
-    
+
+    info!("Replication server configuration: {:?}", config);
+    info!("Waiting for shard servers to connect - their addresses will be discovered dynamically");
+
     // Initialize the Bevy app with minimal plugins for headless operation
     App::new()
         .add_plugins(MinimalPlugins)
@@ -69,7 +69,7 @@ fn main() {
             BiDirectionalReplicationSetupPlugin {
                 replication_server_config: Some(config),
                 shard_config: None,
-                known_shard_addresses: shard_addresses,
+                known_shard_addresses: Vec::new(), // No longer needed
             },
             // Add scene loader
             SceneLoaderPlugin,

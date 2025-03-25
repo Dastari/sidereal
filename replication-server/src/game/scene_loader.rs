@@ -1,4 +1,5 @@
 use crate::database::{DatabaseClient, EntityRecord};
+use sidereal::serialization::update_entity;
 use bevy::prelude::*;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -168,7 +169,9 @@ fn process_loaded_entities(
 
             // Here we spawn the entities into the scene
             for entity_record in &scene_loading_state.loaded_entities {
+                let components = entity_record.components.clone();
 
+                // update_entity(&serde_json::to_string(&entity_record).unwrap(), &mut commands);
             }
 
             scene_state.set(SceneState::Ready);
@@ -209,9 +212,5 @@ fn apply_deferred(world: &mut World) {
     }
 
     // Process each entity
-    for (entity, serialized_data) in entities_to_process {
-
-    }
+    for (entity, serialized_data) in entities_to_process {}
 }
-
-

@@ -132,6 +132,7 @@ pub fn update_entity(serialized: &str, world: &mut World) -> Result<Entity, Stri
     Ok(entity)
 }
 
+#[allow(dead_code)]
 trait AsPartialReflect {
     fn as_partial_reflect(&self) -> &dyn PartialReflect;
 }
