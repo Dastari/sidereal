@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::{
     netcode::{ClientAuthentication, NetcodeClientTransport, NativeSocket},
-    renet2::{RenetClient, RenetServer}
+    renet2::{RenetClient, RenetServer},
+    RenetChannelsExt
 };
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime};
@@ -48,6 +49,8 @@ impl Plugin for BiDirectionalReplicationSetupPlugin {
             // Add separate systems
             app.add_systems(Update, tick_replication_server);
             app.add_systems(Update, tick_shard_clients);
+            // Add monitoring system
+            app.add_systems(Update, monitor_shard_connections);
             app.init_resource::<ShardConnections>();
             app.init_resource::<ShardClientConnections>();
         }
@@ -135,7 +138,9 @@ pub fn init_replication_server(
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         let native_socket = NativeSocket::new(socket)?;
         
+        // Use the proper channel configuration from Replicon
         let connection_config = config.network_config.to_connection_config();
+        
         let authentication = ClientAuthentication::Unsecure {
             client_id: replication_client_id,
             protocol_id: config.protocol_id,
@@ -159,7 +164,7 @@ pub fn init_replication_server(
         // Track the shard connection
         shard_connections.connected_shards.push(shard_id);
         
-        info!("Connected to shard {} at {}", shard_id, shard_addr);
+        info!("Attempting to connect to shard {} at {}", shard_id, shard_addr);
     }
     
     // Store resources
@@ -212,4 +217,17 @@ pub fn tick_bidirectional(
     let delta = Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
     server.update(delta);
     client.update(delta);
+}
+
+/// Monitors the connection status of shard clients
+pub fn monitor_shard_connections(
+    shard_clients: Res<ShardClientConnections>,
+) {
+    for (shard_id, client) in &shard_clients.clients {
+        if client.is_connected() {
+            info!("Connected to shard {}", shard_id);
+        } else if client.is_connecting() {
+            debug!("Still connecting to shard {}", shard_id);
+        }
+    }
 } 

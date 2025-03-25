@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::{
-    netcode::{ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport, ServerAuthentication, ServerSetupConfig,NativeSocket}, 
-    renet2::{ChannelConfig, ConnectionConfig, RenetClient, RenetServer, SendType }, RepliconRenetPlugins
+    netcode::{ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport, ServerAuthentication, ServerSetupConfig, NativeSocket}, 
+    renet2::{ChannelConfig, ConnectionConfig, RenetClient, RenetServer, SendType}, 
+    RepliconRenetPlugins, RenetChannelsExt
 };
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
@@ -32,17 +33,16 @@ impl Plugin for NetworkingPlugin {
     }
 }
 
+/// Creates a connection configuration with Replicon's default channels
 fn default_connection_config() -> ConnectionConfig {
-    let channels = vec![ChannelConfig {
-        channel_id: 0,
-        max_memory_usage_bytes: 5 * 1024 * 1024,
-        send_type: SendType::ReliableOrdered { resend_time: Duration::from_millis(200) },
-    }];
-    ConnectionConfig {
-        available_bytes_per_tick: 60_000,
-        server_channels_config: channels.clone(),
-        client_channels_config: channels,
-    }
+    // Get default Replicon channels
+    let channels = RepliconChannels::default();
+    
+    // Use the ConnectionConfig::from_channels constructor with the extension trait
+    ConnectionConfig::from_channels(
+        channels.server_configs(),
+        channels.client_configs(),
+    )
 }
 
 pub fn init_server(

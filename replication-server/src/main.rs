@@ -10,8 +10,7 @@ use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::RepliconRenetPlugins;
 
 use game::SceneLoaderPlugin;
-use sidereal::net::{ReplicationServerConfig, NetworkConfig, DEFAULT_PROTOCOL_ID, BiDirectionalReplicationSetupPlugin};
-use sidereal::net::{NetworkStats, ServerNetworkPlugin};
+use sidereal::net::{ReplicationServerConfig, DEFAULT_PROTOCOL_ID, BiDirectionalReplicationSetupPlugin, ServerNetworkPlugin};
 use sidereal::ecs::plugins::SiderealPlugin;
 
 use tracing::{info, Level};

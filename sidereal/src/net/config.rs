@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use std::net::SocketAddr;
 use std::time::Duration;
-use bevy_replicon_renet2::renet2::{ChannelConfig, ConnectionConfig, SendType};
+use bevy_replicon::prelude::*;
+use bevy_replicon_renet2::{RenetChannelsExt, renet2::{ChannelConfig, ConnectionConfig, SendType}};
 
 /// Default protocol ID used across all networking components
 pub const DEFAULT_PROTOCOL_ID: u64 = 7;
@@ -41,13 +42,16 @@ impl Default for NetworkConfig {
 }
 
 impl NetworkConfig {
-    /// Creates a ConnectionConfig from this NetworkConfig
+    /// Creates a ConnectionConfig from this NetworkConfig using Replicon's channel configurations
     pub fn to_connection_config(&self) -> ConnectionConfig {
-        ConnectionConfig {
-            available_bytes_per_tick: self.available_bytes_per_tick as u64,
-            server_channels_config: self.channels.clone(),
-            client_channels_config: self.channels.clone(),
-        }
+        // Get default Replicon channels
+        let channels = RepliconChannels::default();
+        
+        // Use the ConnectionConfig::from_channels constructor with the extension trait
+        ConnectionConfig::from_channels(
+            channels.server_configs(),
+            channels.client_configs(),
+        )
     }
 }
 
