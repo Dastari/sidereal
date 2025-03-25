@@ -6,15 +6,18 @@ use bevy_replicon_renet2::{
 };
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
+use super::config::{NetworkConfig, DEFAULT_PROTOCOL_ID};
 
 pub struct NetworkingPlugin {
     pub server_addr: SocketAddr,
+    pub network_config: NetworkConfig,
 }
 
 impl Default for NetworkingPlugin {
     fn default() -> Self {
         Self {
             server_addr: "127.0.0.1:5000".parse().unwrap(),
+            network_config: NetworkConfig::default(),
         }
     }
 }
@@ -22,6 +25,7 @@ impl Default for NetworkingPlugin {
 impl Plugin for NetworkingPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(RepliconRenetPlugins);
+        app.insert_resource(self.network_config.clone());
         app.add_systems(Startup, || {
             info!("Networking plugin initialized");
         });
@@ -44,6 +48,7 @@ fn default_connection_config() -> ConnectionConfig {
 pub fn init_server(
     commands: &mut Commands,
     server_port: u16,
+    protocol_id: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server_addr = format!("0.0.0.0:{}", server_port).parse()?;
     let socket = UdpSocket::bind(server_addr)?;
@@ -53,7 +58,7 @@ pub fn init_server(
     let server_config = ServerSetupConfig {
         current_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?,
         max_clients: 64,
-        protocol_id: 0,
+        protocol_id: protocol_id.unwrap_or(DEFAULT_PROTOCOL_ID),
         socket_addresses: vec![vec![server_addr]],
         authentication: ServerAuthentication::Unsecure,
     };

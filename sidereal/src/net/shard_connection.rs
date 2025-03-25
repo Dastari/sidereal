@@ -1,50 +1,19 @@
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
-use bevy_replicon_renet2::renet2::{RenetClient, RenetServer};
-use std::net::SocketAddr;
+use bevy_replicon_renet2::{
+    netcode::{ClientAuthentication, NetcodeClientTransport, NativeSocket},
+    renet2::{RenetClient, RenetServer}
+};
+use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime};
 use super::connection::{init_client, init_server};
+use super::config::{ShardConfig, ReplicationServerConfig, ShardConnections};
 
-/// Configuration for a shard server
-#[derive(Resource, Debug, Clone)]
-pub struct ShardConfig {
-    /// The address to bind the shard server to
-    pub bind_addr: SocketAddr,
-    /// The address of the replication server
-    pub replication_server_addr: SocketAddr,
-    /// A unique ID for this shard
-    pub shard_id: u64,
-    /// The protocol ID used for networking
-    pub protocol_id: u64,
-}
-
-impl Default for ShardConfig {
-    fn default() -> Self {
-        Self {
-            bind_addr: "127.0.0.1:0".parse().unwrap(), // Dynamic port
-            replication_server_addr: "127.0.0.1:5000".parse().unwrap(),
-            shard_id: 1,
-            protocol_id: 7,
-        }
-    }
-}
-
-/// Configuration for the replication server's connections to shards
-#[derive(Resource, Debug, Clone)]
-pub struct ReplicationServerConfig {
-    /// The address to bind the replication server to
-    pub bind_addr: SocketAddr,
-    /// The protocol ID used for networking
-    pub protocol_id: u64,
-}
-
-impl Default for ReplicationServerConfig {
-    fn default() -> Self {
-        Self {
-            bind_addr: "127.0.0.1:5000".parse().unwrap(),
-            protocol_id: 7,
-        }
-    }
+/// A resource to store connections to multiple shards
+#[derive(Resource, Default)]
+pub struct ShardClientConnections {
+    pub clients: Vec<(u64, RenetClient)>,
+    pub transports: Vec<(u64, NetcodeClientTransport)>,
 }
 
 /// Create a bi-directional replication plugin that configures the app
@@ -70,7 +39,18 @@ impl Default for BiDirectionalReplicationSetupPlugin {
 
 impl Plugin for BiDirectionalReplicationSetupPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, tick_bidirectional_network);
+        // Add appropriate network tick systems based on configuration
+        if self.shard_config.is_some() && self.replication_server_config.is_some() {
+            app.add_systems(Update, tick_bidirectional);
+        } else if self.shard_config.is_some() {
+            app.add_systems(Update, tick_shard_server);
+        } else if self.replication_server_config.is_some() {
+            // Add separate systems
+            app.add_systems(Update, tick_replication_server);
+            app.add_systems(Update, tick_shard_clients);
+            app.init_resource::<ShardConnections>();
+            app.init_resource::<ShardClientConnections>();
+        }
         
         if let Some(shard_config) = &self.shard_config {
             let config = shard_config.clone();
@@ -108,6 +88,7 @@ pub fn init_shard_server(
     init_server(
         commands,
         config.bind_addr.port(),
+        Some(config.protocol_id),
     )?;
     
     // Step 2: Also initialize the shard as a client to the replication server
@@ -115,7 +96,6 @@ pub fn init_shard_server(
     let client_id = config.shard_id;
     init_client(
         commands,
-        // channels,
         config.replication_server_addr,
         config.protocol_id,
         client_id,
@@ -139,46 +119,97 @@ pub fn init_replication_server(
     init_server(
         commands,
         config.bind_addr.port(),
+        Some(config.protocol_id),
     )?;
     
-    // Step 2: Connect to each shard as a client
-    // This allows receiving component changes from each shard
+    // Step 2: Create resources to track connections to shards
+    let mut shard_connections = ShardConnections::default();
+    let mut shard_client_connections = ShardClientConnections::default();
+    
+    // Step 3: Connect to each shard as a client to receive component changes
     for (idx, shard_addr) in shard_addresses.iter().enumerate() {
-        let replication_client_id = 10000 + (idx as u64); // Use a different range of IDs for clarity
+        let shard_id = idx as u64 + 1; // Assume sequential shard IDs starting from 1
+        let replication_client_id = 10000 + shard_id; // Use a different range of IDs for clarity
         
-        // In a real implementation, we would create proper resources for each client connection
-        // For now, this is a placeholder - we'd need a better way to manage multiple connections
-        init_client(
-            commands,
-            // channels,
-            *shard_addr,
-            config.protocol_id,
-            replication_client_id,
+        // Create socket and initialize connection to the shard
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        let native_socket = NativeSocket::new(socket)?;
+        
+        let connection_config = config.network_config.to_connection_config();
+        let authentication = ClientAuthentication::Unsecure {
+            client_id: replication_client_id,
+            protocol_id: config.protocol_id,
+            server_addr: *shard_addr,
+            user_data: None,
+            socket_id: 0,
+        };
+        
+        let client_transport = NetcodeClientTransport::new(
+            SystemTime::now().duration_since(std::time::UNIX_EPOCH)?,
+            authentication,
+            native_socket,
         )?;
+        
+        let client = RenetClient::new(connection_config, true);
+        
+        // Store client and transport in our ShardClientConnections resource
+        shard_client_connections.clients.push((shard_id, client));
+        shard_client_connections.transports.push((shard_id, client_transport));
+        
+        // Track the shard connection
+        shard_connections.connected_shards.push(shard_id);
+        
+        info!("Connected to shard {} at {}", shard_id, shard_addr);
     }
     
-    // Store the config for reference
+    // Store resources
+    commands.insert_resource(shard_connections);
+    commands.insert_resource(shard_client_connections);
     commands.insert_resource(config.clone());
     
     Ok(())
 }
 
-/// Ticks the network systems for both server and client roles
-/// This is needed for bi-directional replication to work
-pub fn tick_bidirectional_network(
+/// Ticks the network system for the replication server role
+pub fn tick_replication_server(
     time: Res<Time>,
-    mut server: Option<ResMut<RenetServer>>,
-    mut client: Option<ResMut<RenetClient>>,
+    mut server: ResMut<RenetServer>,
 ) {
-    // Use fixed delta time for consistent updates
+    let delta = Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
+    server.update(delta);
+}
+
+/// Ticks the network system for a shard server role
+pub fn tick_shard_server(
+    time: Res<Time>,
+    mut server: ResMut<RenetServer>,
+    mut client: ResMut<RenetClient>,
+) {
+    let delta = Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
+    server.update(delta);
+    client.update(delta);
+}
+
+/// Ticks all shard clients to receive updates from shards
+pub fn tick_shard_clients(
+    time: Res<Time>,
+    mut shard_clients: ResMut<ShardClientConnections>,
+) {
     let delta = Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
     
-    // Tick both server and client if present
-    if let Some(ref mut server) = server {
-        server.update(delta);
-    }
-    
-    if let Some(ref mut client) = client {
+    for (_, client) in shard_clients.clients.iter_mut() {
         client.update(delta);
     }
+}
+
+/// Ticks the network systems for both server and client roles when running as both
+/// replication server and shard server at the same time
+pub fn tick_bidirectional(
+    time: Res<Time>,
+    mut server: ResMut<RenetServer>,
+    mut client: ResMut<RenetClient>,
+) {
+    let delta = Duration::from_secs_f32(1.0 / 60.0); // 60 FPS fixed timestep
+    server.update(delta);
+    client.update(delta);
 } 

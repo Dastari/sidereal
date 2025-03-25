@@ -10,7 +10,7 @@ use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::RepliconRenetPlugins;
 
 use game::SceneLoaderPlugin;
-use sidereal::net::{ReplicationServerConfig, BiDirectionalReplicationSetupPlugin};
+use sidereal::net::{ReplicationServerConfig, NetworkConfig, DEFAULT_PROTOCOL_ID, BiDirectionalReplicationSetupPlugin};
 use sidereal::net::{NetworkStats, ServerNetworkPlugin};
 use sidereal::ecs::plugins::SiderealPlugin;
 
@@ -41,11 +41,10 @@ fn main() {
         }
     }
 
-    // Configure replication server
-    let config = ReplicationServerConfig {
-        bind_addr: "0.0.0.0:5000".parse().unwrap(),
-        protocol_id: 7,
-    };
+    // Configure replication server with default network configuration
+    let mut config = ReplicationServerConfig::default();
+    config.bind_addr = "0.0.0.0:5000".parse().unwrap();
+    config.protocol_id = DEFAULT_PROTOCOL_ID;
     
     // Known shard addresses - in a real application, this might come from config
     let shard_addresses = vec![
