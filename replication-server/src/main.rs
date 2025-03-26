@@ -67,18 +67,18 @@ fn main() {
             HierarchyPlugin,         // Needed for parent/child relationships
             TransformPlugin,         // Needed for spatial components if scene uses them
             StatesPlugin,            // For SceneLoaderPlugin state machine
-            RemotePlugin::default(), // For bevy-remote debugging
-            RemoteHttpPlugin::default() // For bevy-remote HTTP endpoint
-                // CORS Headers for bevy-remote frontend
-                .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
-                .with_header(
-                    "Access-Control-Allow-Headers",
-                    "content-type, authorization",
-                )
-                .with_header(
-                    "Access-Control-Allow-Methods",
-                    "GET, POST, PUT, DELETE, OPTIONS",
-                ),
+            // RemotePlugin::default(), // For bevy-remote debugging
+            // RemoteHttpPlugin::default() // For bevy-remote HTTP endpoint
+            //     // CORS Headers for bevy-remote frontend
+            //     .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
+            //     .with_header(
+            //         "Access-Control-Allow-Headers",
+            //         "content-type, authorization",
+            //     )
+            //     .with_header(
+            //         "Access-Control-Allow-Methods",
+            //         "GET, POST, PUT, DELETE, OPTIONS",
+            //     ),
         ))
         // Replicon Networking Plugins
         .add_plugins((RepliconPlugins, RepliconRenetPlugins))
