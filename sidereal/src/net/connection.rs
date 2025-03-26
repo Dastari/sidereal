@@ -1,4 +1,4 @@
-use super::config::DEFAULT_PROTOCOL_ID;
+use super::config::{DEFAULT_PROTOCOL_ID, create_stable_connection_config}; // Adjusted import
 use bevy::prelude::*;
 use bevy_replicon_renet2::{
     RepliconRenetPlugins,
@@ -16,13 +16,15 @@ use std::{
 use tracing::info;
 
 pub struct NetworkingPlugin {
-    pub server_addr: SocketAddr,
+    pub server_addr: SocketAddr, // This might be less relevant now, consider removing if unused
 }
 
 impl Default for NetworkingPlugin {
     fn default() -> Self {
         Self {
-            server_addr: "127.0.0.1:5000".parse().expect("Invalid default server address"),
+            server_addr: "127.0.0.1:5000"
+                .parse()
+                .expect("Invalid default server address"),
         }
     }
 }
@@ -35,10 +37,10 @@ impl Plugin for NetworkingPlugin {
 }
 
 /// Creates a connection configuration using Replicon's defaults via NetworkConfig.
-/// This function is brought back as it's the correct way to get Replicon's standard config.
-pub fn default_connection_config() -> ConnectionConfig { // Added pub
-    super::config::create_stable_connection_config() // Call the new function
+pub fn default_connection_config() -> ConnectionConfig {
+    create_stable_connection_config() // Using the function from config.rs
 }
+
 /// Initializes Renet server resources.
 pub fn init_server(
     commands: &mut Commands,
@@ -62,18 +64,20 @@ pub fn init_server(
     let native_socket = NativeSocket::new(socket)?;
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
 
-    // Use the function to get Replicon's default ConnectionConfig
     let connection_config = default_connection_config();
-    info!("Using Replicon default connection configuration.");
+    info!("Using custom stable connection configuration."); // Updated log message
 
     let server_config = ServerSetupConfig {
         current_time,
-        max_clients: 64,
+        max_clients: 64, // Consider making this configurable
         protocol_id: final_protocol_id,
         socket_addresses: vec![vec![public_addr]],
         authentication: ServerAuthentication::Unsecure,
     };
-    info!("Server configured for {} max clients.", server_config.max_clients);
+    info!(
+        "Server configured for {} max clients.",
+        server_config.max_clients
+    );
 
     let transport = NetcodeServerTransport::new(server_config, native_socket)?;
     info!("Netcode server transport created.");
@@ -108,9 +112,8 @@ pub fn init_client(
     let native_socket = NativeSocket::new(socket)?;
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
 
-    // Use the function to get Replicon's default ConnectionConfig
     let connection_config = default_connection_config();
-    info!("Using Replicon default channel configuration.");
+    info!("Using custom stable channel configuration."); // Updated log message
 
     let authentication = ClientAuthentication::Unsecure {
         client_id,
@@ -127,6 +130,7 @@ pub fn init_client(
     let transport = NetcodeClientTransport::new(current_time, authentication, native_socket)?;
     info!("Netcode client transport created.");
 
+    // The `drop_packets` argument is `false` by default, explicitly setting it for clarity.
     let client = RenetClient::new(connection_config, false);
     info!("Renet client created.");
 

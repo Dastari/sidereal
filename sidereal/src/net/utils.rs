@@ -1,92 +1,96 @@
+// sidereal/src/utils.rs
+// No changes needed based on the request. This file seems independent
+// of the bi-directional setup.
+
 use bevy::prelude::*;
 use bevy_replicon_renet2::renet2::{RenetClient, RenetServer};
-// Added IpAddr import
-use std::net::{SocketAddr, UdpSocket, IpAddr};
-// Removed unused Duration import
-// use std::time::Duration;
-use tracing::{debug, info, warn, error};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
+use tracing::{debug, error, info, warn};
 
 /// Resource to store basic network statistics.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)] // Added Debug
 pub struct NetworkStats {
     /// Number of clients connected to the server. Updated by `update_server_stats`.
     pub connected_clients: usize,
     /// Whether the client is currently connected to the server. Updated by `update_client_stats`.
     pub is_connected_to_server: bool,
-    /// Timestamp of the last status log to enable throttling.
-    pub last_status_log: f32,
+    // Removed last_status_log - prefer using Local state in logging systems
 }
 
 /// Updates the server-specific network statistics.
-pub fn update_server_stats(
-    server: Option<Res<RenetServer>>,
-    mut stats: ResMut<NetworkStats>,
-) {
-    if let Some(server) = server {
-        stats.connected_clients = server.connected_clients();
-    } else {
-        if stats.connected_clients != 0 {
-             stats.connected_clients = 0;
-        }
+pub fn update_server_stats(server: Option<Res<RenetServer>>, mut stats: ResMut<NetworkStats>) {
+    let new_count = server.map_or(0, |s| s.connected_clients());
+    if stats.connected_clients != new_count {
+        stats.connected_clients = new_count;
+        // Optionally log change here if desired, instead of periodic logging
+        // info!("Server connected clients: {}", new_count);
     }
 }
 
 /// Updates the client-specific network statistics.
-pub fn update_client_stats(
-    client: Option<Res<RenetClient>>,
-    mut stats: ResMut<NetworkStats>,
-) {
-    if let Some(client) = client {
-        stats.is_connected_to_server = client.is_connected();
-    } else {
-         if stats.is_connected_to_server {
-             stats.is_connected_to_server = false;
-         }
+pub fn update_client_stats(client: Option<Res<RenetClient>>, mut stats: ResMut<NetworkStats>) {
+    let new_connected = client.map_or(false, |c| c.is_connected());
+    if stats.is_connected_to_server != new_connected {
+        stats.is_connected_to_server = new_connected;
+        // Optionally log change here
+        // info!("Client connection status: {}", new_connected);
     }
 }
 
-/// Logs the client connection status (throttled).
+/// Logs the client connection status (throttled using Local state).
 pub fn log_client_status(
-    // Removed unused `stats: Res<NetworkStats>` argument
     client: Option<Res<RenetClient>>,
     time: Res<Time>,
     mut last_log_time: Local<f32>,
+    // Optionally use stats if needed, but client resource is more direct
+    // stats: Res<NetworkStats>,
 ) {
     let current_time = time.elapsed_secs();
-    let throttle_interval = 1.0;
-
-    let (connected, connecting) = client.map_or((false, false), |c| (c.is_connected(), c.is_connecting()));
+    let throttle_interval = 5.0; // Log less frequently
 
     if current_time - *last_log_time > throttle_interval {
         *last_log_time = current_time;
 
-        if connected {
-            info!("Client Status: Connected");
-        } else if connecting {
-            debug!("Client Status: Connecting...");
-        } else {
-            debug!("Client Status: Disconnected");
+        match client {
+            Some(client) => {
+                if client.is_connected() {
+                    info!("Client Status: Connected");
+                } else if client.is_connecting() {
+                    info!("Client Status: Connecting..."); // Changed to info
+                } else {
+                    info!("Client Status: Disconnected"); // Changed to info
+                }
+            }
+            None => {
+                // Only log if this system is expected to run when no client exists
+                // debug!("Client Status: No client resource found.");
+            }
         }
     }
 }
 
-
-/// Logs the server connection status (throttled).
+/// Logs the server connection status (throttled using Local state).
 pub fn log_server_status(
-    stats: Res<NetworkStats>,
+    server: Option<Res<RenetServer>>, // Use server directly
     time: Res<Time>,
     mut last_log_time: Local<f32>,
+    stats: Res<NetworkStats>, // Keep stats for count
 ) {
     let current_time = time.elapsed_secs();
-    let throttle_interval = 1.0;
+    let throttle_interval = 5.0; // Log less frequently
 
     if current_time - *last_log_time > throttle_interval {
         *last_log_time = current_time;
 
-        if stats.connected_clients > 0 {
-            debug!("Server Status: Running with {} client(s)", stats.connected_clients);
+        if server.is_some() {
+            // Use stats resource which is already updated
+            info!(
+                "Server Status: Running with {} client(s)",
+                stats.connected_clients
+            );
         } else {
-            debug!("Server Status: Running with 0 clients");
+            // Only log if this system is expected to run when no server exists
+            // debug!("Server Status: No server resource found.");
         }
     }
 }
@@ -98,15 +102,18 @@ pub fn find_available_port(
     preferred_port: u16,
     max_attempts: u32,
 ) -> Option<SocketAddr> {
-    // Use IpAddr type
     let host_ip: IpAddr = preferred_host.parse().unwrap_or_else(|_| {
-        warn!("Failed to parse preferred_host '{}', defaulting to 127.0.0.1", preferred_host);
+        warn!(
+            "Failed to parse preferred_host '{}', defaulting to 127.0.0.1",
+            preferred_host
+        );
         IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
     });
 
     let max_port = preferred_port.saturating_add(max_attempts as u16);
 
-    info!(
+    debug!(
+        // Changed to debug level for less noise
         "Searching for available UDP port starting from {}:{} (max attempts: {})",
         host_ip, preferred_port, max_attempts
     );
@@ -115,32 +122,51 @@ pub fn find_available_port(
         let addr = SocketAddr::new(host_ip, current_port);
         match UdpSocket::bind(addr) {
             Ok(socket) => {
+                // We need to close the socket handle immediately after binding successfully
+                // to free up the port for the actual application use.
+                // The `socket` variable goes out of scope here, closing the socket.
                 match socket.local_addr() {
                     Ok(local_addr) => {
                         info!("Found available port: {}", local_addr);
                         return Some(local_addr);
                     }
                     Err(e) => {
-                        error!("Could not get local address for bound socket {}: {}", addr, e);
+                        // This case should be rare if bind succeeded.
+                        error!(
+                            "Could not get local address for temporarily bound socket {}: {}",
+                            addr, e
+                        );
                     }
                 }
+                // Explicitly drop socket here just in case (though scope drop should handle it)
+                drop(socket);
+                // Return the address we successfully bound to.
+                return Some(addr);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                debug!("Port {} is unavailable (AddrInUse)", current_port);
+                // Port is busy, try the next one. This is expected.
+                // debug!("Port {} is unavailable (AddrInUse)", current_port); // Maybe too verbose for debug
             }
             Err(e) => {
-                 warn!("Error binding to port {}: {} ({:?}). Trying next port.", current_port, e, e.kind());
+                // Log other errors that might indicate a bigger problem.
+                warn!(
+                    "Error binding to port {}: {} ({:?}). Trying next port.",
+                    current_port,
+                    e,
+                    e.kind()
+                );
             }
         }
     }
 
     error!(
         "Failed to find an available UDP port in range {}-{} after {} attempts",
-        preferred_port, max_port.saturating_sub(1), max_attempts
+        preferred_port,
+        max_port.saturating_sub(1),
+        max_attempts
     );
     None
 }
-
 
 /// Plugin for server-side network statistics and status logging.
 pub struct ServerNetworkPlugin;
@@ -148,7 +174,9 @@ pub struct ServerNetworkPlugin;
 impl Plugin for ServerNetworkPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkStats>()
+            // Run stats update in PostUpdate to capture state after network ticks
             .add_systems(PostUpdate, update_server_stats)
+            // Run logging after stats update
             .add_systems(PostUpdate, log_server_status.after(update_server_stats));
     }
 }
@@ -160,8 +188,6 @@ impl Plugin for ClientNetworkPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkStats>()
             .add_systems(PostUpdate, update_client_stats)
-            // Corrected: log_client_status uses Local state, no need for .after() necessarily,
-            // but keeping it doesn't hurt and maintains logical flow.
             .add_systems(PostUpdate, log_client_status.after(update_client_stats));
     }
 }

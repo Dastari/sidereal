@@ -16,7 +16,6 @@ impl Plugin for SiderealPlugin {
             .replicate::<RigidBody>()
             .replicate::<Object>()
             .replicate::<Sector>()
-            // *** ADD THESE AVIAN COMPONENTS ***
             .replicate::<Position>()
             .replicate::<Rotation>();
 
