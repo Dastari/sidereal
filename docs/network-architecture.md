@@ -1,4 +1,6 @@
-#### Server Architecture and Networking Plan for Sidereal
+[← Back to README](../README.md)
+
+# Server Architecture and Networking Plan for Sidereal
 
 ## Overview of the Architecture
 

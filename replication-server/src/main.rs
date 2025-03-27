@@ -14,19 +14,20 @@ use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
 use sidereal::net::{ReplicationServerConfig, ReplicationTopologyPlugin, ServerNetworkPlugin};
 
-use tracing::{debug, info, Level};
+use tracing::{Level, debug, info};
 
 fn main() {
     #[cfg(debug_assertions)]
-    {
+    unsafe {
+        // TODO: Audit that the environment access only happens in single-threaded code.
         std::env::set_var(
             "RUST_LOG",
-            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn,sidereal=warn",
+            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn",
         );
     }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .init();
 
     info!("Starting Sidereal Replication Server");
