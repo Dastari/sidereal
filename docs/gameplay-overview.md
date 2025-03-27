@@ -1,4 +1,4 @@
-[← Back to README](../README.md) | [Design Phases](./design-phases.md) | [Game World Partitioning](../architecture/game-world.md) | [Game Entity System](../architecture/game-entities.md)
+[← Back to README](../README.md)
 
 # Sidereal: Gameplay Overview
 
