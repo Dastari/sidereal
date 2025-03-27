@@ -2,9 +2,9 @@
 
 use bevy::prelude::*;
 use bevy_replicon_renet2::renet2::{ChannelConfig, ConnectionConfig, SendType};
-use uuid::Uuid;
 use std::net::SocketAddr;
 use std::time::Duration;
+use uuid::Uuid;
 
 // --- Constants ---
 pub const DEFAULT_PROTOCOL_ID: u64 = 7;

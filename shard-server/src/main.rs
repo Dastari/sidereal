@@ -5,23 +5,23 @@ use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
 use bevy::transform::TransformPlugin;
-use bevy_remote::http::RemoteHttpPlugin;
 use bevy_remote::RemotePlugin;
+use bevy_remote::http::RemoteHttpPlugin;
 use bevy_replicon::prelude::*;
 use bevy_state::app::StatesPlugin;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
 use sidereal::net::{ClientNetworkPlugin, ReplicationTopologyPlugin, ShardConfig};
-use uuid::Uuid;
 use std::env;
 use std::time::Duration;
+use uuid::Uuid;
 
-use tracing::{debug, info, warn, Level};
+use tracing::{Level, debug, info, warn};
 
 fn main() {
     #[cfg(debug_assertions)]
     unsafe {
-         // TODO: Audit that the environment access only happens in single-threaded code.
+        // TODO: Audit that the environment access only happens in single-threaded code.
         std::env::set_var(
             "RUST_LOG",
             "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn,sidereal=warn",
@@ -30,7 +30,7 @@ fn main() {
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .init();
 
     let args: Vec<String> = env::args().collect();
@@ -74,8 +74,14 @@ fn main() {
             RemotePlugin::default(),
             RemoteHttpPlugin::default()
                 .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
-                .with_header("Access-Control-Allow-Headers", "content-type, authorization")
-                .with_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
+                .with_header(
+                    "Access-Control-Allow-Headers",
+                    "content-type, authorization",
+                )
+                .with_header(
+                    "Access-Control-Allow-Methods",
+                    "GET, POST, PUT, DELETE, OPTIONS",
+                ),
         ))
         .add_plugins((
             RepliconPlugins,
@@ -86,38 +92,13 @@ fn main() {
             },
         ))
         .add_plugins(SiderealPlugin)
-        .add_systems(
-            Update,
-            (log_received_entities, log_shard_replicated_entities),
-        )
+        .add_systems(Update, (log_received_entities))
         .run();
 }
 
 fn log_received_entities(query: Query<Entity, Added<Replicated>>) {
     let count = query.iter().count();
     if count > 0 {
-        debug!("Shard received {} new entities from server", count);
-    }
-}
-
-fn log_shard_replicated_entities(
-    query: Query<Entity, With<Replicated>>,
-    time: Res<Time>,
-    mut last_log_time: Local<f32>,
-) {
-    let current_time = time.elapsed_secs();
-    let log_interval = 10.0; // Log count less frequently
-
-    if current_time - *last_log_time > log_interval {
-        *last_log_time = current_time;
-        let count = query.iter().count();
-        if count > 0 {
-            debug!(
-                "Shard currently managing {} replicated entities (received from server)",
-                count
-            );
-        } else {
-            debug!("Shard has no entities marked as Replicated.");
-        }
+        info!("Shard received {} new entities from server", count);
     }
 }

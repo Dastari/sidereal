@@ -4,13 +4,25 @@
 
 ## Overview of the Architecture
 
-Sidereal's backend is split into two main server roles: a **Replication Server** and multiple **Shard Servers**. This design supports a vast, unbounded 2D world by partitioning simulation work (physics and game logic) and centralizing networking and persistence. Below is a summary of each role:
+Sidereal's backend is split into two main server roles: a **Replication Server** and multiple **Shard Servers**. This design supports a vast, unbounded 2D world by centralizing authority and distributing simulation work. Below is a summary of each role:
 
-- **Replication Server:** The authoritative gateway for clients. It manages all client connections (authentication, messages), maintains a **global view** of the world state (especially the subset visible to each client), and synchronizes that state out to players. It also handles **persistence**, applying world updates to a Supabase (PostgreSQL) database for saving game state. The replication server does minimal or no physics; it primarily routes data between shard servers and clients and enforces game rules (to prevent cheating). It knows which entities are in which sector and which clients should receive which updates.
+- **Replication Server:** The authoritative server for all game state. It:
+    - Maintains the primary Bevy ECS world state
+    - Manages all client connections (authentication, messages)
+    - Handles persistence to Supabase (PostgreSQL)
+    - Validates and processes state change requests from shards
+    - Replicates entity state to relevant shards and clients
+    - Enforces game rules and prevents cheating
+    - Knows which entities are in which sector
     
-- **Shard Servers:** Each shard server is responsible for a region of the game world (one or more **sectors** of size 1000×1000 units). Shards run the **Bevy ECS** and **Avian2D** physics simulation for their sector, computing all game logic (movement, collisions, combat, AI, etc.) within that area. Shard servers are authoritative over the entities in their sector: they advance the state of those entities and detect events (like destruction or crossing sector boundaries). After each simulation tick, shards report state changes to the replication server. Shard servers connect to the replication server on startup, receive their assigned sector(s) and initial entities (from the database or replication server), then continually send updates (position, velocity, health, etc.) to the replication server. They might also receive control commands or new entity spawn instructions forwarded from the replication server (e.g., a player action or a missile entering from a neighboring sector).
-    
-This architecture allows the system to **scale horizontally**. More shard servers can be added to cover additional sectors as the world (or player population) grows. The replication server ensures clients have a consistent view of the world by merging updates from all shards and sending each player only the relevant subset of entities (those in proximity or in the same sector). The Supabase database ties into this by storing persistent data (e.g. entity definitions, last known positions, player inventories) so that shards or the replication server can load state on startup or when needed.
+- **Shard Servers:** Each shard server is responsible for running physics and game logic simulation for a region of the game world (one or more **sectors** of size 1000×1000 units). Shards:
+    - Receive replicated copies of entities in their sector from the replication server
+    - Run the **Bevy ECS** and **Avian2D** physics simulation
+    - Send state change requests back to the replication server (e.g., "entity X should move to position Y")
+    - Do not maintain authoritative state - they only simulate and propose changes
+    - Can handle multiple sectors if needed for load balancing
+
+This architecture allows the system to **scale horizontally** while maintaining a single source of truth. More shard servers can be added to handle additional sectors as the world (or player population) grows. The replication server ensures consistency by being the sole authority for game state, while shards distribute the computational load of physics and game logic simulation.
 
 **Key challenges addressed by this plan:**
 
