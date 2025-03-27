@@ -16,7 +16,7 @@ use std::env;
 use std::time::Duration;
 use uuid::Uuid;
 
-use tracing::{Level, debug, info, warn};
+use tracing::{Level, info, warn};
 
 fn main() {
     #[cfg(debug_assertions)]
@@ -92,7 +92,7 @@ fn main() {
             },
         ))
         .add_plugins(SiderealPlugin)
-        .add_systems(Update, (log_received_entities))
+        .add_systems(Update, log_received_entities)
         .run();
 }
 
