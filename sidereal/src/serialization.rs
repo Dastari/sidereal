@@ -58,7 +58,7 @@ pub fn deserialize_entity(
         let registration = match registry.get_with_type_path(&type_name) {
             Some(reg) => reg,
             None => {
-                println!(
+                debug!(
                     "Warning: No registration found for component type: {}",
                     type_name
                 );

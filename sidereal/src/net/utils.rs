@@ -37,13 +37,10 @@ pub fn update_client_stats(client: Option<Res<RenetClient>>, mut stats: ResMut<N
     }
 }
 
-/// Logs the client connection status (throttled using Local state).
 pub fn log_client_status(
     client: Option<Res<RenetClient>>,
     time: Res<Time>,
     mut last_log_time: Local<f32>,
-    // Optionally use stats if needed, but client resource is more direct
-    // stats: Res<NetworkStats>,
 ) {
     let current_time = time.elapsed_secs();
     let throttle_interval = 5.0; // Log less frequently
@@ -54,7 +51,7 @@ pub fn log_client_status(
         match client {
             Some(client) => {
                 if client.is_connected() {
-                    info!("Client Status: Connected");
+                    debug!("Client Status: Connected");
                 } else if client.is_connecting() {
                     info!("Client Status: Connecting..."); // Changed to info
                 } else {
@@ -84,7 +81,7 @@ pub fn log_server_status(
 
         if server.is_some() {
             // Use stats resource which is already updated
-            info!(
+            debug!(
                 "Server Status: Running with {} client(s)",
                 stats.connected_clients
             );
@@ -131,7 +128,6 @@ pub fn find_available_port(
                         return Some(local_addr);
                     }
                     Err(e) => {
-                        // This case should be rare if bind succeeded.
                         error!(
                             "Could not get local address for temporarily bound socket {}: {}",
                             addr, e

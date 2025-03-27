@@ -1,21 +1,22 @@
-mod game; 
+mod game;
 use avian2d::prelude::*;
 use bevy::asset::AssetPlugin;
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
 use bevy::transform::TransformPlugin;
+use bevy_remote::http::RemoteHttpPlugin;
+use bevy_remote::RemotePlugin;
 use bevy_replicon::prelude::*;
-use bevy_replicon_renet2::renet2::ServerEvent;
-use bevy_replicon_renet2::RepliconRenetPlugins;
 use bevy_state::app::StatesPlugin;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
 use sidereal::net::{ClientNetworkPlugin, ReplicationTopologyPlugin, ShardConfig};
+use uuid::Uuid;
 use std::env;
 use std::time::Duration;
 
-use tracing::{debug, info, trace, warn, Level};
+use tracing::{debug, info, warn, Level};
 
 fn main() {
     #[cfg(debug_assertions)]
@@ -43,7 +44,7 @@ fn main() {
     info!("Initializing Sidereal Shard Server with ID: {}", shard_id);
 
     let shard_config = ShardConfig {
-        shard_id,
+        shard_id: Uuid::new_v4(),
         protocol_id: DEFAULT_PROTOCOL_ID,
         replication_server_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT)
             .parse()
@@ -64,39 +65,36 @@ fn main() {
         .add_plugins((
             TransformPlugin,
             AssetPlugin::default(),
-            ScenePlugin,            
+            ScenePlugin,
             HierarchyPlugin,
-            PhysicsPlugins::default(), 
-            StatesPlugin::default(),   
+            PhysicsPlugins::default(),
+            StatesPlugin::default(),
+            RemotePlugin::default(),
+            RemoteHttpPlugin::default()
+                .with_header("Access-Control-Allow-Origin", "http://localhost:3000")
+                .with_header("Access-Control-Allow-Headers", "content-type, authorization")
+                .with_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
         ))
         .add_plugins((
             RepliconPlugins,
             ClientNetworkPlugin,
             ReplicationTopologyPlugin {
-                shard_config: Some(shard_config), 
-                replication_server_config: None, 
+                shard_config: Some(shard_config),
+                replication_server_config: None,
             },
         ))
         .add_plugins(SiderealPlugin)
         .add_systems(
             Update,
-            (
-                log_received_entities,
-                log_shard_replicated_entities,
-            ),
+            (log_received_entities, log_shard_replicated_entities),
         )
         .run();
 }
 
-fn log_received_entities(
-    query: Query<Entity, Added<Replicated>>,
-) {
+fn log_received_entities(query: Query<Entity, Added<Replicated>>) {
     let count = query.iter().count();
     if count > 0 {
-        debug!(
-            "Shard received {} new entities from server",
-            count
-        );
+        debug!("Shard received {} new entities from server", count);
     }
 }
 

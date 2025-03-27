@@ -12,7 +12,6 @@ use std::{
 use tracing::{error, info, warn};
 
 pub const REPLICATION_SERVER_DEFAULT_PORT: u16 = 5000;
-pub const SHARD_LISTEN_PORT_OFFSET: u16 = 6000;
 pub const SHARD_CLIENT_ID_OFFSET: u64 = 20000;
 
 /// Stores information about shards connected TO the replication server.
@@ -63,13 +62,13 @@ impl Plugin for ReplicationTopologyPlugin {
                 match init_shard(&mut commands, &shard_config) {
                     Ok(_) => {
                         info!(
-                            shard_id = shard_config.shard_id,
+                            shard_id = shard_config.shard_id.to_string(),
                             "Shard initialized successfully"
                         )
                     }
                     Err(e) => {
                         error!(
-                            shard_id = shard_config.shard_id,
+                            shard_id = shard_config.shard_id.to_string(),
                             "Failed to initialize shard: {}", e
                         )
                     }
@@ -106,22 +105,9 @@ impl Plugin for ReplicationTopologyPlugin {
 
 /// Initialize a shard: starts a server for game clients and a client for the replication server.
 pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), Box<dyn Error>> {
-    let shard_listen_port = SHARD_LISTEN_PORT_OFFSET + config.shard_id as u16;
-    let bind_ip = config.bind_addr.ip();
-    let shard_listen_addr = SocketAddr::new(bind_ip, shard_listen_port);
-
-    info!(
-        shard_id = config.shard_id,
-        addr = %shard_listen_addr,
-        protocol_id = config.protocol_id,
-        "Initializing shard server component (listening for game clients)..."
-    );
-    init_server(commands, shard_listen_addr.port(), Some(config.protocol_id))?;
-    info!(shard_id = config.shard_id, addr = %shard_listen_addr, "Shard server component initialized.");
-
     let repl_server_addr = if config.replication_server_addr.port() == 0 {
         warn!(
-            shard_id = config.shard_id,
+            shard_id = config.shard_id.to_string(),
             "Replication server address port is 0 in config, using default port {}.",
             REPLICATION_SERVER_DEFAULT_PORT
         );
@@ -132,10 +118,10 @@ pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), B
     } else {
         config.replication_server_addr
     };
-    let client_id_for_replication = SHARD_CLIENT_ID_OFFSET + config.shard_id;
+    let client_id_for_replication = SHARD_CLIENT_ID_OFFSET;
 
     info!(
-        shard_id = config.shard_id,
+        shard_id = config.shard_id.to_string(),
         client_id = client_id_for_replication,
         target_addr = %repl_server_addr,
         protocol_id = config.protocol_id,
@@ -148,13 +134,12 @@ pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), B
         client_id_for_replication,
     )?;
     info!(
-        shard_id = config.shard_id,
+        shard_id = config.shard_id.to_string(),
         client_id = client_id_for_replication,
         "Shard client component initialized."
     );
 
     let final_config = ShardConfig {
-        bind_addr: shard_listen_addr,
         replication_server_addr: repl_server_addr,
         ..config.clone()
     };
@@ -163,7 +148,6 @@ pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), B
     Ok(())
 }
 
-/// Initialize the replication server (listens for Shard Servers).
 pub fn init_replication_server(
     commands: &mut Commands,
     config: &ReplicationServerConfig,
@@ -184,6 +168,7 @@ pub fn handle_shard_connections(
     mut connected_shards: ResMut<ConnectedShards>,
 ) {
     for event in server_events.read() {
+        println!("Server event: {:?}", event);
         match event {
             ServerEvent::ClientConnected { client_id } => {
                 if *client_id >= SHARD_CLIENT_ID_OFFSET {

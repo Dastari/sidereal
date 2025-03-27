@@ -1,4 +1,4 @@
-mod database; // Keep if used by SiderealPlugin or SceneLoaderPlugin
+mod database;
 mod game;
 
 use bevy::hierarchy::HierarchyPlugin;
@@ -9,32 +9,28 @@ use game::SceneLoaderPlugin;
 use std::time::Duration;
 
 use game::scene_loader::SceneState;
-use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
-use sidereal::net::{ReplicationServerConfig, ReplicationTopologyPlugin, ServerNetworkPlugin};
 use sidereal::ecs::components::Object;
 use sidereal::ecs::plugins::SiderealPlugin;
+use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
+use sidereal::net::{ReplicationServerConfig, ReplicationTopologyPlugin, ServerNetworkPlugin};
 
-use tracing::{debug, info, Level}; 
+use tracing::{debug, info, Level};
 
 fn main() {
-    // --- Logging Setup ---
     #[cfg(debug_assertions)]
     {
         std::env::set_var(
             "RUST_LOG",
-            "info,wgpu_core=warn,wgpu_hal=warn,naga=info,bevy_app=info,bevy_render=warn,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=debug,sidereal=debug",
+            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=debug,sidereal=debug",
         );
     }
-    // Use tracing_subscriber setup
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_max_level(Level::DEBUG) 
+        .with_max_level(Level::DEBUG)
         .init();
 
     info!("Starting Sidereal Replication Server");
 
-    // --- Configuration ---
-    // Use default port, bind to 0.0.0.0 for listening
     let replication_bind_addr = format!("0.0.0.0:{}", DEFAULT_REPLICATION_PORT)
         .parse()
         .expect("Failed to parse default replication server address");
@@ -54,17 +50,13 @@ fn main() {
                 ))
                 .build(),
         )
-        .add_plugins((
-            HierarchyPlugin,
-            TransformPlugin,
-            StatesPlugin,
-        ))
+        .add_plugins((HierarchyPlugin, TransformPlugin, StatesPlugin))
         .add_plugins((
             RepliconPlugins,
             ServerNetworkPlugin,
             ReplicationTopologyPlugin {
-                replication_server_config: Some(replication_config), 
-                shard_config: None,                                  
+                replication_server_config: Some(replication_config),
+                shard_config: None,
             },
         ))
         .add_plugins((SiderealPlugin, SceneLoaderPlugin))
@@ -72,7 +64,7 @@ fn main() {
             OnEnter(SceneState::Completed),
             mark_entities_for_replication,
         )
-        .add_systems(Update, log_marked_entities) 
+        .add_systems(Update, log_marked_entities)
         .run();
 }
 
@@ -91,9 +83,7 @@ fn mark_entities_for_replication(
     }
 }
 
-fn log_marked_entities(
-    query: Query<(Entity, Option<&Name>), Added<Replicated>>,
-) {
+fn log_marked_entities(query: Query<(Entity, Option<&Name>), Added<Replicated>>) {
     for (entity, name) in query.iter() {
         if let Some(name) = name {
             debug!(

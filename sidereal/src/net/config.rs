@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_replicon_renet2::renet2::{ChannelConfig, ConnectionConfig, SendType};
+use uuid::Uuid;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -80,7 +81,7 @@ pub fn create_stable_connection_config() -> ConnectionConfig {
 pub struct ShardConfig {
     pub bind_addr: SocketAddr,
     pub replication_server_addr: SocketAddr,
-    pub shard_id: u64,
+    pub shard_id: Uuid,
     pub protocol_id: u64,
 }
 
@@ -91,7 +92,7 @@ impl Default for ShardConfig {
             replication_server_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT)
                 .parse()
                 .expect("Invalid default replication_server_addr"),
-            shard_id: 1,
+            shard_id: Uuid::new_v4(),
             protocol_id: DEFAULT_PROTOCOL_ID,
         }
     }
