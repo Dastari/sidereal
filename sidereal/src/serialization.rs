@@ -30,12 +30,12 @@ pub fn serialize_entity(entity: EntityRef, world: &World) -> String {
                     }
                     components.insert(type_name.to_string(), value);
                 }
-                Err(e) => println!("Failed to serialize {}: {}", type_name, e),
+                Err(e) => error!("Failed to serialize {}: {}", type_name, e),
             }
         });
 
     to_string(&components).unwrap_or_else(|e| {
-        println!("Failed to serialize components: {}", e);
+        error!("Failed to serialize components: {}", e);
         String::new()
     })
 }
@@ -58,8 +58,8 @@ pub fn deserialize_entity(
         let registration = match registry.get_with_type_path(&type_name) {
             Some(reg) => reg,
             None => {
-                debug!(
-                    "Warning: No registration found for component type: {}",
+                warn!(
+                    "No registration found for component type: {}",
                     type_name
                 );
                 continue;
@@ -70,7 +70,7 @@ pub fn deserialize_entity(
         let reflect_component = match registration.data::<ReflectComponent>() {
             Some(rc) => rc,
             None => {
-                println!("Warning: Type {} is not a component", type_name);
+                warn!("Warning: Type {} is not a component", type_name);
                 continue;
             }
         };
@@ -89,7 +89,7 @@ pub fn deserialize_entity(
                 let mut entity_ref = world.entity_mut(entity);
                 reflect_component.apply_or_insert(&mut entity_ref, component.as_ref(), &registry);
             }
-            Err(e) => println!("Failed to deserialize component {}: {}", type_name, e),
+            Err(e) => error!("Failed to deserialize component {}: {}", type_name, e),
         }
     }
 

@@ -1,6 +1,6 @@
 # Cargo.toml
 [package]
-name = "sidereal-shard-server"
+name = shard-server"
 version = "0.1.0"
 edition = "2021"
 

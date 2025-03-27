@@ -168,7 +168,6 @@ pub fn handle_shard_connections(
     mut connected_shards: ResMut<ConnectedShards>,
 ) {
     for event in server_events.read() {
-        println!("Server event: {:?}", event);
         match event {
             ServerEvent::ClientConnected { client_id } => {
                 if *client_id >= SHARD_CLIENT_ID_OFFSET {

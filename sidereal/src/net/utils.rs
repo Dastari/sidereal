@@ -55,7 +55,7 @@ pub fn log_client_status(
                 } else if client.is_connecting() {
                     info!("Client Status: Connecting..."); // Changed to info
                 } else {
-                    info!("Client Status: Disconnected"); // Changed to info
+                    warn!("Client Status: Disconnected"); // Changed to info
                 }
             }
             None => {

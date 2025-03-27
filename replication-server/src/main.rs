@@ -21,7 +21,7 @@ fn main() {
     {
         std::env::set_var(
             "RUST_LOG",
-            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=debug,sidereal=debug",
+            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn,sidereal=warn",
         );
     }
     tracing_subscriber::fmt()
