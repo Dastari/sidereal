@@ -21,7 +21,6 @@ use tracing::{Level, info, warn};
 fn main() {
     #[cfg(debug_assertions)]
     unsafe {
-        // TODO: Audit that the environment access only happens in single-threaded code.
         std::env::set_var(
             "RUST_LOG",
             "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn,sidereal=warn",
