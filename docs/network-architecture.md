@@ -34,322 +34,218 @@ This architecture allows the system to **scale horizontally** while maintaining 
     
 - **Scalability:** The design must accommodate growth in player count and world size. This means supporting multiple shard servers, load balancing their work, and possibly running servers on separate machines or containers. It also means the networking layer should handle dozens or hundreds of connections efficiently and be able to broadcast updates to many clients. We will discuss how to containerize these servers (e.g. using Docker) and manage them (orchestrating shards, possibly via Kubernetes), and strategies like dynamic shard allocation or load-based sector splitting in the future.
 
-## Networking Stack: UDP/TCP Hybrid with Rust
+## Networking Stack: Updated Approach with Renet2
 
-To meet Sidereal's networking requirements, we propose using a **hybrid UDP/TCP strategy** implemented with Rust networking libraries specialized for game development. Below we outline the approach and recommend specific crates to use:
+To meet Sidereal's networking requirements, we'll use a hybrid approach combining renet2 for raw networking with bevy_replicon_renet2 for client-facing ECS replication:
 
-- **UDP for Real-Time State (Unreliable):** Use UDP for the _high-speed, continuous replication_ of entity states (positions, velocities, etc.). UDP allows sending packets at a high frequency (e.g. 20-60 times per second) with low overhead and does not stall if a packet is lost. We acknowledge that UDP packets may be dropped or arrive out of order; the game will tolerate this for transient state updates (the next update will correct any divergence). The system will not spend time retransmitting lost position updates – instead, newer data always supersedes older data. This is crucial for fast-paced action where outdated updates are not useful.
-    
-- **TCP (or Reliable UDP channels) for Critical Data:** Simultaneously, use reliable channels for important messages: player input commands, game events (like "fire weapon" or "take damage"), chat messages, or any transaction that must be persisted. These can go over a TCP connection or using a reliability layer on top of UDP. The advantage of TCP is simplicity – it guarantees delivery and ordering – which is important for database writes or game logic triggers. The downside is potential latency from head-of-line blocking, so we will keep the TCP channel usage minimal (only for infrequent or non-time-critical events). Many modern game networking libraries implement reliability on UDP to avoid opening a separate TCP socket; we can leverage that for an integrated solution.
-    
-- **Unified Networking Library (Recommended):** We recommend using **Renet** (with the Bevy plugin **bevy_renet**) as the core networking library. Renet is a Rust network library designed for fast-paced games. It operates over UDP and provides multiple message channels with different delivery guarantees (unreliable, reliable ordered, reliable unordered). This fits perfectly with the hybrid approach: we can define an unreliable channel for state updates and a reliable channel for critical events, all on a single UDP port. Renet also handles packet fragmentation (so large messages can be sent if needed) and encryption/authentication (important for security in a large-scale game). By using bevy_renet, we get an easy integration into Bevy's ECS: the plugin will give us `RenetServer` and `RenetClient` resources for the replication server and clients/shards respectively, and we can add systems to send/receive messages through those. **Renet is built for performance**, supporting hundreds of clients with low overhead, and is battle-tested for FPS-style games.
-    
-- **Alternative Networking Crates:** For completeness, consider other crates:
-    
-    - **bevy_quinnet:** A networking plugin using QUIC (an UDP-based reliable protocol). QUIC can be beneficial if Web clients are a target (since QUIC is web-friendly via WebTransport). Using QUIC means we get reliable delivery by default, but it also supports _unreliable datagrams_ for real-time data. `bevy_quinnet` provides a Bevy plugin wrapper over the pure Rust QUIC implementation (Quinn). This is an option if we wanted to consolidate on a single protocol (QUIC) for both reliable and unreliable needs, or to ease browser support. However, Renet with WebTransport (via its renet2/steam integration) can also handle web, so QUIC is not strictly necessary unless we prefer its standardized nature.
-        
-    - **Laminar:** A legacy crate offering a "semi-reliable" UDP protocol (used by the Amethyst engine). It allows sending unreliable, reliable, or ordered messages over UDP. While Laminar was pioneering for Rust game networking, Renet largely supersedes it in functionality and performance. If one were not using Renet, Laminar could be used with Bevy's old networking plugin (`bevy_prototype_networking_laminar`), but that is outdated compared to the Renet ecosystem.
-        
-    - **NAIA:** A high-level networking framework for interactive applications, with Bevy support. NAIA is cross-platform (native and web) and aims to make multiplayer networking "dead-simple & lightning-fast". It provides its own architecture: you define a **protocol** of messages and **replicated component** types, and NAIA syncs those between client and server with options for reliability. NAIA could be an alternative to using bevy_replicon (discussed below) for ECS replication. It has Bevy adapters (`naia_bevy_client`, `naia_bevy_server`, etc.) that integrate with Bevy's `World`. NAIA handles tick rates, component replication, etc., but it requires a specific setup (e.g. deriving `Replicate` on components and using a shared protocol spec). We might consider NAIA if we want an all-in-one solution, but given that the user is already working with Supabase and custom serialization, it might be more flexible to proceed with our own replication logic or Replicon.
-        
-    - **Aeronet:** A newer suite of Bevy-native networking crates (by aecsocket). Aeronet provides low-level building blocks (connections as entities, sending/receiving by mutating components) and supports multiple transports (WebSockets, WebTransport/QUIC, Steam, etc.). It doesn't provide high-level replication itself (explicitly leaving replication/prediction as user responsibility), but it does integrate with bevy_replicon (via `aeronet_replicon`). Aeronet could be useful if we wanted fine control or to support Web clients with WebTransport seamlessly, but it's a bit lower-level than Renet. For now, Renet's out-of-the-box features suffice, but Aeronet is something to watch for future networking improvements.
+- **Client-Replication Server Communication:** We'll use **bevy_replicon_renet2** (v0.7.0) to handle all communication between game clients and the replication server. This library provides seamless integration between Replicon's ECS replication framework and renet2's networking capabilities. Using Replicon here gives us automatic entity replication, client prediction, and other game-networking features with minimal code.
 
-## Entity State Replication Protocol
+- **Replication Server-Shard Server Communication:** For communication between the replication server and shard servers, we'll use **renet2** (v0.7.0) directly with **bevy_renet2** (v0.7.0) for Bevy integration. This approach gives us more control over the exact data being transmitted between servers, without the overhead of Replicon's full entity replication system which isn't needed for server-to-server communication.
 
-A key part of the plan is designing the **messaging protocol** for sending entity updates between the shard servers, replication server, and clients. The goal is to **batch and compactly encode** the game state changes each tick to minimize bandwidth while keeping all parties in sync.
+### Understanding the Renet2 Ecosystem
 
-### Batching and Update Messages
+It's important to clarify the distinction between several related crates:
 
-Rather than sending one network message per entity, the servers will batch updates for many entities into a single message when possible. For example, each shard server tick will produce an **"Update Packet"** containing the new state of all relevant entities in its sector that changed. Likewise, the replication server will bundle multiple entities' updates destined for a client into a single packet per tick. Batching reduces overhead (each packet has IP/UDP headers, so fewer packets means less header overhead) and improves throughput.
+- **renet2** (v0.7.0): The core networking library that handles reliable and unreliable UDP-based messaging, with features for connection management, channels with different reliability guarantees, and authentication.
 
-We will define **structured message types** for these updates. Using Rust's type system and serialization, we can create structs like:
+- **bevy_renet2** (v0.7.0): A thin integration layer for using renet2 with Bevy. It provides systems to call update functions on RenetClient and RenetServer, and requires these components to be added as resources. The setup is similar to using renet2 directly but with Bevy-specific optimizations.
+
+- **bevy_replicon_renet2** (v0.7.0): An integration of bevy_renet2 as a messaging backend for bevy_replicon. It includes a WebTransport backend for browsers and enables servers that can manage multi-platform clients simultaneously. We'll use this only for client-replication server communication.
+
+### Replication Server Network Configuration
+
+The replication server will need to run **two separate renet2 servers**:
+
+1. **Client-facing Server:** Uses bevy_replicon_renet2 for game clients. This server will handle entity replication to clients using Replicon's automatic ECS synchronization.
+
+2. **Shard-facing Server:** Uses renet2/bevy_renet2 directly for communication with shard servers. This server will use custom message types for efficient server-to-server communication.
+
+This dual-server approach is necessary because:
+- The client and shard connections require different handling (Replicon ECS replication vs. direct messaging)
+- Security and authentication needs differ between client and shard connections
+- Using separate servers allows for different network configurations (port numbers, packet rates, etc.)
+- It provides cleaner separation of concerns and code organization
+
+Both servers can run within the same Bevy application on the replication server.
+
+### Networking Message Types and Serialization
+
+For shard-replication server communication, we'll define custom message types that are optimized for server-to-server communication:
 
 ```rust
-use uuid::Uuid;
 use serde::{Serialize, Deserialize};
+use uuid::Uuid;
+
+// Channels for renet2 communication between replication and shard servers
+const SHARD_CHANNEL_UNRELIABLE: u8 = 0;
+const SHARD_CHANNEL_RELIABLE: u8 = 1;
+
+#[derive(Serialize, Deserialize)]
+enum ShardToReplicationMessage {
+    EntityUpdates(Vec<EntityUpdate>),
+    SpawnRequest { entity_type: EntityType, position: (f32, f32) },
+    DespawnNotification(Uuid),
+    // Other message types as needed
+}
+
+#[derive(Serialize, Deserialize)]
+enum ReplicationToShardMessage {
+    InitializeSector { sector_id: (i32, i32), entities: Vec<EntityInitData> },
+    EntityAdded(EntityData),
+    EntityRemoved(Uuid),
+    PlayerCommand { player_id: Uuid, command_type: CommandType, data: Vec<u8> },
+    // Other message types as needed
+}
 
 #[derive(Serialize, Deserialize)]
 struct EntityUpdate {
-    id: Uuid,                     // Unique entity identifier (same across shard, server, client)
-    position: (f32, f32),         // Could use a Vec2; sending as two f32
+    id: Uuid,
+    position: (f32, f32),
     velocity: (f32, f32),
-    rotation: f32,                // orientation or angular velocity if needed
-    health: Option<u16>,          // example of other component data (Option means only present if changed)
-    // ... other components of interest ...
+    rotation: f32,
+    // Other dynamic state fields
 }
 
-#[derive(Serialize, Deserialize)]
-struct SectorUpdate {
-    sector: (i32, i32),           // The sector coordinates this update is for
-    entities: Vec<EntityUpdate>,  // All entity states in this sector for this tick
-}
+// ... other struct definitions
 ```
 
-Each `EntityUpdate` carries the minimal state needed to represent an entity's dynamic state. We include an `id` (using a UUID or similar globally unique ID for the entity) so the replication server and clients know _which entity_ this update refers to. The other fields are components that often change: here position and velocity are included for movement. We can extend this with any other replicated components (e.g., maybe shield level, current action, etc.), or use separate message types for different kinds of entities.
+We'll use bincode (v2.0.0) for efficient binary serialization of these messages.
 
-A `SectorUpdate` groups all `EntityUpdate` from one shard's region for a tick. If a shard manages multiple sectors, it could send one combined update (with multiple sectors in one message, or separate messages per sector). Since the architecture currently suggests one shard = one sector, we might not need the `sector` field in every message (the shard identity could imply it), but including it can help verification and flexibility (e.g., if we allow shards to take on extra sectors dynamically).
+## Entity State Replication Protocol
 
-**Serialization:** We will serialize these structs into binary data for sending. **Bincode** is a great choice for quick, compact serialization of Rust structures; it has low overhead and is easy to use (just `bincode::serialize(&packet)`). Bincode will encode the floats and UUID to bytes without extra fluff (unlike JSON which would be text). Alternatively, we could consider a more specialized format (like bit-packing certain fields, or using Cap'n Proto or FlatBuffers for schema-defined binary encoding). To keep it simple at first, bincode (or Serde's postcard) is sufficient and performant for our needs. For large messages, we should be mindful of UDP packet size – by batching we might approach or exceed the typical MTU (~1200 bytes for internet-safe UDP). Renet will fragment and reassemble larger packets if needed, but it's still wise to keep updates lean. We can refine the data (e.g., send smaller types or delta-compress values) if bandwidth becomes an issue.
+The updated architecture modifies how we handle entity replication:
 
-**Message Frequency:** We will likely send these `SectorUpdate` messages at a fixed rate (the replication **tick rate**). It's inefficient and unnecessary to send updates every single engine frame if the frame rate is very high. A typical approach is to run a network update at, say, 10, 20, or 30 times per second. Replicon (if used) supports setting a tick policy for replication (e.g., fixed ticks). We can similarly schedule our manual send system with Bevy's `FixedUpdate` or a timer. For instance, we might target 20 Hz updates (50 ms interval) for network sync – this is a compromise between smoothness and bandwidth use. If the game is very fast (bullets etc.), 20 Hz might be low, so perhaps 30-60 Hz for critical nearby entities. We can adjust as needed or even use LOD: high-frequency for nearby, low-frequency for distant.
+### Client-Replication Server Replication
 
-### Reliable Messages for Events/Commands
+For client-replication server communication, we'll use bevy_replicon_renet2 which handles entity replication automatically:
 
-In parallel to the streaming state updates, we will define message types for events and commands that require reliable delivery. For example:
+1. Entities on the replication server that should be visible to clients are marked with Replicon's `Replicated` component
+2. Replicon automatically serializes and sends entity state to clients based on visibility rules
+3. Client-side, Replicon spawns and updates entities based on this received data
 
-- **Control commands:** When a player presses a key or triggers an action, the client sends a command (e.g., "thrust on", "fire weapon at X angle") to the server. These should be reliable so that the server definitely receives the player's intention. We might have a message struct like `PlayerCommand { player_id, action: ActionType, ... }`. These go from client to replication server (which then routes to the appropriate shard that the player's ship is on).
-    
-- **Spawn/despawn events:** When an entity is created or removed in the world, we want clients to eventually know about it. If a missile is fired or a ship explodes, a `SpawnEntity` or `DespawnEntity` event could be sent. We can handle this via state (the entity will appear/disappear in the next state update anyway), but sending an explicit event might make it faster or ensure none are missed. These events should be reliable (especially despawn, so an entity doesn't "ghost" on the client).
-    
-- **Persistence triggers:** If the game logic decides to save something to the database (e.g., player docked at a station and we save their inventory), the replication server might send an internal message to a DB handler system. We can treat DB writes as reliable tasks (though they're not really part of client networking). The result of a DB write (success/failure) might be communicated back to the client reliably (maybe via the same TCP channel or a separate ack message).
+### Replication Server-Shard Server Communication
 
-## Efficient ECS Replication Between Servers
+For replication server-shard server communication, we'll implement a custom messaging protocol using renet2:
 
-Now we describe how to efficiently propagate changes in the ECS from the shard servers to the replication server (and then out to clients), using the networking structures above. The guiding principle is **server-authoritative state**: shard servers are the source of truth for their sector's entities, and the replication server is the source of truth for what clients see.
+1. Shard servers will collect entity updates after each physics/game logic tick
+2. These updates will be batched into `ShardToReplicationMessage::EntityUpdates` messages and sent to the replication server
+3. The replication server will process these updates and apply them to its ECS world
+4. For new entities or entities moving between sectors, the replication server will send appropriate initialization data to shards
 
-### Change Detection and Sending Deltas
+This approach gives us more control over exactly what data is sent between servers and allows for more efficient communication than using Replicon's full entity replication system.
 
-Each shard server will run the game simulation for its sector. After each physics tick (or a group of ticks), the shard needs to determine what has changed and send that to the replication server. We can leverage Bevy's ECS change detection to avoid sending unchanged data:
+## ECS System Layout for the Implementation
 
-- Bevy marks components as "changed" if they were mutated since the last time they were checked. We can use a query like `query.iter_changed()` for components like `Transform` (for position) or any relevant component to gather only entities that moved or updated.
-    
-- Alternatively, we can store the last sent state of each entity and diff against the current state, but using Bevy's built-in change tracking is simpler to start.
-    
+### Replication Server Systems
 
-For example, on a shard we might have a system:
+The replication server will need systems for both client and shard communication:
 
 ```rust
-fn collect_entity_updates(
-    mut net: ResMut<RenetClient>, // Renet client connected to replication server
-    query: Query<(&sidereal::ecs::components::id::Id, &Transform, &LinearVelocity), Changed<Transform>>,
-) {
-    let mut updates = Vec::new();
-    for (id, transform, vel) in query.iter() {
-        let pos = (transform.translation.x, transform.translation.y);
-        let vel = (vel.0.x, vel.0.y);
-        updates.push(EntityUpdate {
-            id: id.0, 
-            position: pos, 
-            velocity: vel,
-            rotation: 0.0,    // if we had rotation component, include it
-            health: None,     // health not changed here, so skip
-        });
-    }
-    if updates.is_empty() {
-        return;
-    }
-    let sector_update = SectorUpdate {
-        sector: CURRENT_SECTOR, 
-        entities: updates,
-    };
-    // Serialize and send via unreliable channel
-    let packet = bincode::serialize(&sector_update).unwrap();
-    net.send_message(CHANNEL_UNRELIABLE, packet);
+fn main() {
+    App::new()
+        .add_plugins(MinimalPlugins)
+        // Client-facing networking with Replicon
+        .add_plugins(RepliconPlugins)
+        .add_plugins(RepliconRenetPlugins)
+        // Shard-facing networking with direct renet2
+        .add_plugins(RenetServerPlugin)
+        .insert_resource(setup_shard_server_config()) // Custom function to set up shard-facing server
+        // Remaining resources and systems...
+        .add_systems(Update, handle_shard_messages)
+        .add_systems(Update, forward_client_commands_to_shards)
+        .add_systems(Update, update_entity_visibility)
+        // Replicon handles client entity replication automatically
+        .run();
 }
-```
 
-On the **Replication Server** side, a corresponding system receives these updates:
-
-```rust
-fn handle_shard_updates(
-    mut net: ResMut<RenetServer>, 
+fn handle_shard_messages(
+    mut shard_server: ResMut<RenetServer>,
     mut commands: Commands,
-    mut world: ResMut<WorldMap>, // hypothetical mapping from Uuid to Bevy Entity
-    mut query: Query<(&sidereal::ecs::components::id::Id, &mut Transform, &mut LinearVelocity)>,
+    mut world_entities: ResMut<WorldEntityRegistry>,
+    mut query: Query<(&Id, &mut Transform, &mut Velocity)>,
 ) {
-    // Iterate over all connected shard servers (identified by their client id in RenetServer)
-    for shard_client_id in net.clients_id() {
-        // We use a while loop to drain all pending messages from this shard this tick
-        while let Some(message) = net.receive_message(shard_client_id, CHANNEL_UNRELIABLE) {
-            if let Ok(sector_update) = bincode::deserialize::<SectorUpdate>(&message) {
-                for ent_update in sector_update.entities {
-                    let eid = ent_update.id;
-                    // Look up if this entity already exists in our replication world
-                    if let Some(entity) = world.entities.get(&eid) {
-                        // Update existing entity components
-                        if let Ok((_, mut transform, mut velocity)) = query.get_mut(*entity) {
-                            transform.translation.x = ent_update.position.0;
-                            transform.translation.y = ent_update.position.1;
-                            velocity.0.x = ent_update.velocity.0;
-                            velocity.0.y = ent_update.velocity.1;
-                            // (If other components like health present and changed, update them too)
-                        }
-                    } else {
-                        // If not existing, this is a new entity (perhaps created on shard)
-                        // Spawn it in the replication server ECS:
-                        let new_entity = commands.spawn((
-                            sidereal::ecs::components::id::Id(eid), 
-                            sidereal::ecs::components::sector::Sector{ x: sector_update.sector.0, y: sector_update.sector.1 },
-                            Transform::from_xyz(ent_update.position.0, ent_update.position.1, 0.0),
-                            LinearVelocity(Vec2::new(ent_update.velocity.0, ent_update.velocity.1)),
-                            bevy_replicon::prelude::Replicated,  // marker to replicate to clients
-                        )).id();
-                        world.entities.insert(eid, new_entity);
-                    }
+    // Process messages from all connected shards
+    for client_id in shard_server.clients_id() {
+        while let Some(message) = shard_server.receive_message(client_id, SHARD_CHANNEL_UNRELIABLE) {
+            if let Ok(ShardToReplicationMessage::EntityUpdates(updates)) = bincode::deserialize(&message) {
+                for update in updates {
+                    // Apply entity updates to the ECS world
+                    // This will automatically propagate to clients via Replicon
+                    // ...
                 }
             }
+            // Handle other message types...
         }
     }
 }
 ```
 
-This design ensures the replication server maintains an **ECS mirror** of the active game world. It does not run physics or game logic on these entities; it simply holds their latest state as reported by shards. Because it's an ECS, we can use Bevy queries and systems (or Replicon) to efficiently manage and send data to clients. Each entity has the same `Id` as on the shard, so even if the Bevy `Entity` indices differ, we treat the UUID as the primary identifier for consistency across network and DB.
-
-### Using bevy_replicon for Client Sync
-
-We should strongly consider using **bevy_replicon** on the replication server to automate sending the world state to clients. `bevy_replicon` is a server-authoritative networking framework that hooks into Bevy ECS. It can monitor entities with a `Replicated` component and send their components to connected clients, with configurable tick rates and even per-client visibility control.
-
-How this would work:
-
-- We add `RepliconPlugins` to the replication server app, along with a messaging backend integration (there is `bevy_replicon_renet` maintained by replicon's authors that works with bevy_renet). This setup will create a `RepliconServer` resource and allow us to register which components to replicate.
-    
-- We tag all entities that should be networked with the `Replicated` component (as done in the spawn above). We also ensure all their relevant components (Transform, etc.) are either `Reflect` or serializable. Replicon will take snapshots of these and send to clients at each tick.
-    
-- We can configure replicon's tick to perhaps 20 Hz (or matching our network tick).
-    
-- **Visibility filtering:** Not every client should receive every entity. Sidereal's universe is huge, and a player in sector (10,10) doesn't care about an asteroid in sector (-5,-8). Replicon provides a low-level API for per-client entity visibility, and an extension crate `bevy_replicon_attributes` that makes it easier to manage conditions for what each client sees. We can use this to implement interest management: essentially, tie each client to a "current sector" or view range, and mark entities as visible to that client only if within some range (e.g., the same sector or neighboring sectors). For example, if a client's ship is in sector (X,Y), we could make all entities with a `Sector` component in [X±1, Y±1] visible to that client. The replicon plugin would then only replicate those to that client. This prevents wasting bandwidth on distant objects.
-    
-- Replicon will handle sending only diffs of changes if configured, to minimize data. It likely uses a similar delta mechanism internally (only changed components since last tick are sent, not the entire entity state every time, unless configured otherwise).
-    
-- On the client side, if we use replicon, we'd have `RepliconClient` which automatically applies the updates to the client's ECS world, spawning entities or updating components as needed. This saves us from writing a lot of manual client sync code.
-
-## ECS System Layout for a Minimal Implementation
-
-To implement this architecture, we'll structure our Rust project into at least two binaries (server and shard, and possibly a separate client binary for testing). Here's a suggested breakdown and system layout:
-
-### Shared Code and Components
-
-First, define a **shared library crate** (e.g. `sidereal_shared`) that both server and shards (and client) will use. This crate will contain:
-
-- **Component definitions:** Position/Transform, Velocity, Sector, etc., so that they are consistent. For example, using Bevy's `Transform` for position is fine, or define our own lightweight `Position(f32, f32)` component for network clarity. We'll also define the `Id` component (likely wrapping a `Uuid`) and any other gameplay components that need to be known across network boundaries.
-    
-- **Network message structs:** `EntityUpdate`, `SectorUpdate`, `PlayerCommand`, etc., and implement `Serialize, Deserialize` (with Serde) for them. We can also include the channel constants (e.g., `const CHANNEL_UNRELIABLE: u8 = 0; const CHANNEL_RELIABLE: u8 = 1;`) so both sides use the same indices.
-    
-- If using replicon or NAIA, any required trait implementations or protocol definitions would go here as well (for replicon, mostly marking components as Reflect/Serialize).
-    
-
-This shared crate ensures the server and shard use the exact same data formats. The presence of this crate aligns with how NAIA or replicon would require a shared definition of components/messages.
-
 ### Shard Server Systems
 
-In the **shard server** binary:
+The shard server will connect to the replication server as a client:
 
 ```rust
 fn main() {
     App::new()
-      .add_plugins(MinimalPlugins)
-      .add_plugin(Avian2dPhysicsPlugin) // pseudocode for physics
-      .add_plugin(GameLogicPlugin)      // your game systems
-      .add_plugin(bevy_renet::RenetClientPlugin)
-      .insert_resource(RenetClient::new(client_config, socket)) // configured to connect to replication server
-      .add_systems(Update, apply_player_commands)    // handle input from server (reliable channel)
-      .add_systems(Update, game_logic_systems)       // movement, AI, etc.
-      .add_systems(PreUpdate, receive_server_messages) // process incoming network events early
-      .add_systems(PostUpdate, collect_entity_updates) // after state updated, send out changes
-      .run();
+        .add_plugins(MinimalPlugins)
+        .add_plugins(Avian2dPhysicsPlugin)
+        .add_plugins(GameLogicPlugin)
+        // Connect to replication server
+        .add_plugins(RenetClientPlugin)
+        .insert_resource(setup_replication_client_config()) // Custom function to set up client
+        // Systems
+        .add_systems(PreUpdate, receive_replication_messages)
+        .add_systems(Update, game_logic_systems)
+        .add_systems(PostUpdate, send_entity_updates_to_replication)
+        .run();
+}
+
+fn send_entity_updates_to_replication(
+    mut replication_client: ResMut<RenetClient>,
+    query: Query<(&Id, &Transform, &Velocity), Changed<Transform>>,
+) {
+    let mut updates = Vec::new();
+    
+    for (id, transform, velocity) in query.iter() {
+        updates.push(EntityUpdate {
+            id: id.0,
+            position: (transform.translation.x, transform.translation.y),
+            velocity: (velocity.0.x, velocity.0.y),
+            rotation: transform.rotation.z,
+            // Other fields...
+        });
+    }
+    
+    if !updates.is_empty() {
+        let message = ShardToReplicationMessage::EntityUpdates(updates);
+        let bytes = bincode::serialize(&message).unwrap();
+        replication_client.send_message(SHARD_CHANNEL_UNRELIABLE, bytes);
+    }
 }
 ```
-
-### Replication Server Systems
-
-In the **replication server** binary:
-
-```rust
-fn main() {
-    App::new()
-      .add_plugins(MinimalPlugins)
-      .add_plugin(bevy_renet::RenetServerPlugin)
-      .add_plugin(bevy_replicon::RepliconServerPlugin) // hypothetical, plus backend
-      .insert_resource(RenetServer::new(server_config)) // bound to UDP socket
-      .add_systems(Update, handle_new_connections)   // assign sectors to shards, initialize clients
-      .add_systems(Update, handle_shard_updates)     // apply shard messages to ECS
-      .add_systems(Update, handle_client_commands)   // forward input from clients to shards
-      // Replicon's own systems will run to replicate to clients based on our world state
-      .run();
-}
-```
-
-### Supabase Persistence
-
-While the question focuses on networking, a quick note on how Supabase (Postgres) fits in:
-
-- The **entities** table (as seen by the SQL dump) holds the current state of each entity (position, components serialized, etc.). The replication server can update this table periodically. A straightforward approach: every few seconds, or on certain events, the replication server writes the state of entities to the DB. For example, when a shard sends an update, the replication server could mark those entities as "dirty" and a background thread or timer could batch-update the DB with the new positions. We might not want to write every tick (that would be too slow and unnecessary), but maybe once a second per entity or when it leaves active area.
-    
-- Alternatively, shards could directly write to Supabase when they finalize an event (like an asteroid's resource count changed). But centralized through replication server ensures consistency and avoids multiple writers.
-    
-- On startup, the replication server can load static world data from the DB (like all NPC stations, etc.) and then distribute them to shards. Or shards request from replication as needed ("I have no data for sector X, give me everything").
-    
-- Supabase also offers real-time listeners, but that's more for clients via WebSockets; our architecture doesn't rely on that for the game simulation, since we have our own real-time channel.
 
 ## Scalability and Future Improvements
 
-The proposed architecture is inherently scalable. Here are strategies and considerations for future scaling beyond the MVP:
+The updated architecture maintains all the scalability benefits of the original design while providing more efficient server-to-server communication:
 
-### Docker Deployment
+1. **Separate Network Stacks:** By using different networking approaches for client and shard communication, we can optimize each for its specific needs.
 
-Containerizing the replication server and shard servers is highly recommended. Each shard server is essentially identical code (just parameterized by sector ID). We can bake one Docker image for "sidereal-shard" and run multiple containers with an env variable like `SECTOR_X`, `SECTOR_Y` to specify what to load. The replication server is another service with its own image. Using Docker Compose, we could define the replication service and a few shard services for testing. In a production environment, Kubernetes or another orchestrator can manage these containers, allowing dynamic scaling (launching new shard instances as the world expands).
+2. **Efficient Server-to-Server Communication:** Direct renet2 messaging between replication and shard servers allows us to fine-tune exactly what data is transmitted, minimizing bandwidth usage.
 
-For example, if a new region of space becomes active (players moved there), a new shard server container can be started to handle that region. The replication server would register it and assign the sector. If a shard goes down or needs to restart, the replication server could detect its disconnect and either hand off its entities to another shard or pause that region until a replacement comes up (using the DB state to restore).
+3. **Flexible Deployment:** The replication server can handle both client and shard connections independently, allowing for separate scaling strategies if needed.
 
-### Load Balancing and Multiple Replication Servers
+4. **Optimized Client Experience:** Clients still benefit from the high-level features of Replicon for entity replication, interpolation, and prediction.
 
-The replication server, at some point, could become a bottleneck if thousands of players connect to a single instance. Because it's handling all networking to clients, its outgoing bandwidth and CPU usage for processing updates is heavy. To scale further, one could introduce multiple replication servers, each responsible for a subset of sectors or players. This starts to resemble a multi-region MMO: e.g., sectors [(-10,-10) to (0,0)] on replication server A, and (1,1) to (10,10) on server B. Shards connect to the respective replication server that manages their region. If a player crosses regions, you'd transfer them between replication servers (a complex but solvable handoff, similar to shard handoff but at a higher level).
+### Docker Deployment and Scaling
 
-Another approach is to use a UDP proxy or mesh network: projects like **Quilkin** (by Embark) provide a UDP proxy for game servers. Quilkin can sit in front of the replication server to handle things like load balancing or filtering. But in our design, replication is stateful, so a simple proxy is not enough to offload load; splitting the actual server responsibilities is necessary for true scaling.
-
-### Dynamic Sharding Strategy
-
-The current shard strategy is by fixed sectors. This is easy to reason about, but note that load may not be evenly distributed. One sector might have 100 players in a big battle (very heavy load on that shard), while others are empty. In the future, consider **dynamic sharding**: the ability to split a hot sector into two shard processes (perhaps dividing the sector spatially or by entity type). This is a hard problem (it's essentially dynamic load balancing in space), but some games use "sub-shards" or spawn temporary instances for crowded areas.
-
-Also, if a sector is empty, the shard could shut down to save resources. The replication server can note which sectors are active. Shards could be started on demand (and load state from DB) when a player enters an empty sector. Serverless or on-demand container platforms could make this automatic, though with some spin-up latency.
-
-### State Consistency and Network Optimization
-
-As we add more shards and possibly more layers, keeping state consistent is important. The design is server-authoritative, so consistency is easier (no conflicting edits from two sources). However, network latency will mean that clients are always slightly behind the true state and commands take time to propagate. We might need to implement:
-
-- **Client-side prediction:** When a player presses forward, the client could immediately move their ship locally (prediction) while the command goes to server and comes back. If the server corrects the position, the client smoothly interpolates.
-    
-- **Lag compensation:** The replicon ecosystem has a crate `bevy_replicon_snap` for snapshot interpolation and client prediction, which could be explored to improve the feeling of responsiveness.
-    
-- **Entity interpolation:** If updates are 20Hz, the client can interpolate or extrapolate positions between updates to make motion smooth. Libraries like Glam or CGMath can help with simple vector interpolation.
-    
-- **Interest management optimization:** Further refine how we determine what entities each client needs to know about. Perhaps use spatial indexing or more sophisticated visibility algorithms.
+The deployment strategy remains unchanged - containerizing both replication and shard servers with appropriate configuration. Since the communication protocol is now custom, we have more flexibility to optimize how sectors are assigned and how entities are transferred between shards.
 
 ### Security Considerations
 
-With a large-scale game, cheat prevention is important:
+With direct renet2 communication between servers, we should implement proper authentication for shard servers connecting to the replication server. This can be done using renet2's authentication features, potentially with pre-shared keys or certificates for shard servers.
 
-- The server-authoritative model means clients cannot directly modify world state except via allowed commands.
-    
-- Validate all inputs: ensure a player's fire command comes at a valid rate, or a movement command does not teleport the ship.
-    
-- Use encryption (Renet with Netcode) to prevent packet tampering or snooping.
-    
-- Implement proper authentication (Supabase for user accounts, and the replication server only accepts connections with a valid session token).
+## Conclusion
 
-### Monitoring and Testing
+By using renet2 directly for server-to-server communication while keeping bevy_replicon_renet2 for client-server communication, we achieve a more efficient and flexible networking architecture. This approach gives us fine-grained control over the exact data being transmitted between servers while still providing clients with the benefits of a high-level entity replication system.
 
-In a deployed environment:
-
-- Monitor network usage and performance metrics (updates/sec, packet sizes, etc.).
-    
-- Use logging and metrics (Prometheus, etc.) to detect overloaded shards or replication server lag.
-    
-- Implement comprehensive testing:
-  - Simulate numerous clients to test system load
-  - Run multiple shard processes to test replication merging
-  - Unit test the ECS components and systems
-  - Integration test the handoff mechanisms
-
-### Future Extensibility
-
-The system is modular and can be extended:
-
-- Networking layer can be swapped (e.g., replace Renet if needed)
-- Physics is encapsulated in Avian2D
-- Database layer is independent
-- Could add caching (e.g., Redis for quick shard spawning)
-- Might add matchmaking or server-discovery services
-- Consider WebSocket/WebTransport support for web clients
-
-By following this plan, we achieve a robust starting point: a server architecture that splits responsibilities between shards (computation) and a replication server (network fan-out and persistence), using proven Rust crates for networking. The modular design makes it easier to expand and maintain. As Sidereal grows, this architecture can evolve to meet higher demands, ensuring the universe and its battles remain seamless and responsive for all players.
+The replication server will run two separate renet2 servers - one for clients using Replicon and one for shards using direct messaging. This dual-server approach provides clean separation of concerns and allows each network stack to be optimized for its specific use case.
