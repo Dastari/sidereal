@@ -2,7 +2,7 @@ use super::config::{ReplicationServerConfig, ShardConfig};
 use super::connection::init_server;
 use super::shard_communication::{REPLICATION_SERVER_SHARD_PORT, init_shard_client};
 use bevy::prelude::*;
-use bevy_renet2::prelude::{RenetClientPlugin, RenetServerPlugin};
+use bevy_renet2::prelude::RenetClientPlugin;
 use bevy_replicon::prelude::{ConnectedClient, ReplicatedClient};
 #[cfg(feature = "replicon")]
 use bevy_replicon_renet2::RepliconRenetPlugins;

@@ -16,7 +16,7 @@ use std::env;
 use std::time::Duration;
 use uuid::Uuid;
 
-use tracing::{Level, info, warn, error};
+use tracing::{Level, info, warn};
 
 fn main() {
     #[cfg(debug_assertions)]
