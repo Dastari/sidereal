@@ -7,8 +7,6 @@ edition = "2024"
 [dependencies]
 bevy = { workspace = true }
 bevy_state = {workspace= true}
-bevy_replicon = {workspace = true}
-bevy_replicon_renet2 = {workspace = true}
 bevy_remote = "0.15.3"
 
 serde = { workspace = true }
@@ -23,7 +21,8 @@ tracing-subscriber = "0.3"
 avian2d = "0.2.1"
 dotenv = "0.15.0"
 
-sidereal = { path = "../sidereal" }
+# Explicitly disable replicon feature for sidereal
+sidereal = { path = "../sidereal", default-features = false }
 
 [features]
 default = []

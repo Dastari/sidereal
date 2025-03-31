@@ -5,7 +5,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sidereal = { path = "../sidereal" }
+# Explicitly enable replicon for the replication server
+sidereal = { path = "../sidereal", features = ["replicon"] }
 
 dotenv = "0.15"
 thiserror = "2.0.12"
@@ -16,6 +17,7 @@ bevy = { workspace = true }
 bevy_state = { workspace = true }
 bevy_replicon = {workspace = true}
 bevy_replicon_renet2 = { workspace = true }
+bevy_renet2 = {workspace = true, features = ["netcode"] }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

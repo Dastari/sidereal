@@ -13,6 +13,7 @@ use sidereal::ecs::components::Object;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
 use sidereal::net::{ReplicationServerConfig, ReplicationTopologyPlugin, ServerNetworkPlugin};
+use sidereal::net::shard_communication::{ConnectedShards, REPLICATION_SERVER_SHARD_PORT};
 
 use tracing::{Level, debug, info};
 
@@ -27,7 +28,7 @@ fn main() {
     }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .init();
 
     info!("Starting Sidereal Replication Server");
@@ -42,6 +43,7 @@ fn main() {
     };
 
     info!("Replication server configuration: {:?}", replication_config);
+    info!("Shard server port: {}", REPLICATION_SERVER_SHARD_PORT);
 
     App::new()
         .add_plugins(
@@ -65,7 +67,10 @@ fn main() {
             OnEnter(SceneState::Completed),
             mark_entities_for_replication,
         )
-        .add_systems(Update, log_marked_entities)
+        .add_systems(Update, (
+            log_marked_entities,
+            log_shard_connections,
+        ))
         .run();
 }
 
@@ -96,6 +101,37 @@ fn log_marked_entities(query: Query<(Entity, Option<&Name>), Added<Replicated>>)
                 "Entity {:?} marked as Replicated on server (no name)",
                 entity
             );
+        }
+    }
+}
+
+// System to monitor shard connections
+fn log_shard_connections(
+    shards: Option<Res<ConnectedShards>>,
+    time: Res<Time>,
+    mut last_log: Local<f64>,
+) {
+    // Log every 60 seconds
+    let current_time = time.elapsed().as_secs_f64();
+    if current_time - *last_log > 60.0 {
+        *last_log = current_time;
+        
+        if let Some(shards) = shards {
+            let count = shards.shards.len();
+            if count > 0 {
+                info!("Replication server is managing {} connected shard servers", count);
+                
+                for (client_id, shard) in &shards.shards {
+                    info!(
+                        "Shard {} (client_id: {}) managing {} sectors",
+                        shard.shard_id, client_id, shard.sectors.len()
+                    );
+                }
+            } else {
+                debug!("No shard servers connected to replication server");
+            }
+        } else {
+            debug!("Shard tracking system not initialized");
         }
     }
 }

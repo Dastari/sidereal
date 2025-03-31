@@ -15,8 +15,9 @@ use std::{
 };
 use tracing::info;
 
+/// Plugin for Replicon-based client-server networking
 pub struct NetworkingPlugin {
-    pub server_addr: SocketAddr, // This might be less relevant now, consider removing if unused
+    pub server_addr: SocketAddr,
 }
 
 impl Default for NetworkingPlugin {
@@ -41,7 +42,7 @@ pub fn default_connection_config() -> ConnectionConfig {
     create_stable_connection_config() // Using the function from config.rs
 }
 
-/// Initializes Renet server resources.
+/// Initializes Renet server resources for game clients.
 pub fn init_server(
     commands: &mut Commands,
     server_port: u16,
@@ -52,7 +53,7 @@ pub fn init_server(
     let final_protocol_id = protocol_id.unwrap_or(DEFAULT_PROTOCOL_ID);
 
     info!(
-        "Initializing server on {} (public {}) with protocol ID {}",
+        "Initializing game client server on {} (public {}) with protocol ID {}",
         listen_addr, public_addr, final_protocol_id
     );
 
@@ -65,7 +66,7 @@ pub fn init_server(
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
 
     let connection_config = default_connection_config();
-    info!("Using custom stable connection configuration."); // Updated log message
+    info!("Using Replicon connection configuration for client connections.");
 
     let server_config = ServerSetupConfig {
         current_time,
@@ -92,7 +93,7 @@ pub fn init_server(
     Ok(())
 }
 
-/// Initializes Renet client resources.
+/// Initializes Renet client resources for game clients.
 pub fn init_client(
     commands: &mut Commands,
     server_addr: SocketAddr,
@@ -100,7 +101,7 @@ pub fn init_client(
     client_id: u64,
 ) -> Result<(), Box<dyn Error>> {
     info!(
-        "Initializing client ID {} connecting to {} with protocol ID {}",
+        "Initializing game client ID {} connecting to {} with protocol ID {}",
         client_id, server_addr, protocol_id
     );
 
@@ -113,7 +114,7 @@ pub fn init_client(
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
 
     let connection_config = default_connection_config();
-    info!("Using custom stable channel configuration."); // Updated log message
+    info!("Using Replicon connection configuration for client connection.");
 
     let authentication = ClientAuthentication::Unsecure {
         client_id,

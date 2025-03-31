@@ -3,13 +3,20 @@ name = "sidereal"
 version = "0.1.0"
 edition = "2024"
 
+# Define features
+[features]
+default = ["replicon"]
+replicon = ["bevy_replicon", "bevy_replicon_renet2"]
+
 [dependencies]
 # Bevy 
 bevy = { workspace = true }
 bevy_state = { workspace = true }
-bevy_replicon = { workspace = true }
-bevy_replicon_renet2 = { workspace = true, features=["native_transport"] }
+bevy_replicon = { workspace = true, optional = true }
+bevy_replicon_renet2 = { workspace = true, features=["native_transport"], optional = true }
 bevy_reflect = { workspace = true }
+bevy_renet2 = { workspace = true, features=["netcode"] }
+renet2 = { workspace = true }
 bevy_remote = "0.15.3"
 
 # Other
@@ -20,4 +27,4 @@ tracing = {workspace = true}
 
 # Physics
 avian2d = {version = "0.2.1", features=['serialize']}
-bincode = "2.0.1"
+bincode = { workspace = true }

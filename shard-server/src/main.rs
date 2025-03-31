@@ -7,29 +7,29 @@ use bevy::scene::ScenePlugin;
 use bevy::transform::TransformPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
-use bevy_replicon::prelude::*;
 use bevy_state::app::StatesPlugin;
+// SiderealPlugin now properly respects the replicon feature flag
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
-use sidereal::net::{ClientNetworkPlugin, ReplicationTopologyPlugin, ShardConfig};
+use sidereal::net::{ClientNetworkPlugin, ShardConfig, ReplicationTopologyPlugin};
 use std::env;
 use std::time::Duration;
 use uuid::Uuid;
 
-use tracing::{Level, info, warn};
+use tracing::{Level, info, warn, error};
 
 fn main() {
     #[cfg(debug_assertions)]
     unsafe {
         std::env::set_var(
             "RUST_LOG",
-            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn,sidereal=warn",
+            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,sidereal=debug",
         );
     }
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .init();
 
     let args: Vec<String> = env::args().collect();
@@ -83,21 +83,24 @@ fn main() {
                 ),
         ))
         .add_plugins((
-            RepliconPlugins,
+            SiderealPlugin, // Now safe to use without Replicon
             ClientNetworkPlugin,
+            // Use the topology plugin which will add ShardClientPlugin for us
             ReplicationTopologyPlugin {
-                shard_config: Some(shard_config),
+                shard_config: Some(shard_config.clone()),
                 replication_server_config: None,
             },
         ))
-        .add_plugins(SiderealPlugin)
-        .add_systems(Update, log_received_entities)
+        .insert_resource(shard_config)
+        .add_systems(Update, log_status)
         .run();
 }
 
-fn log_received_entities(query: Query<Entity, Added<Replicated>>) {
-    let count = query.iter().count();
-    if count > 0 {
-        info!("Shard received {} new entities from server", count);
+// Simplified logging function
+fn log_status(time: Res<Time>) {
+    // Log every minute
+    let seconds = time.elapsed().as_secs_f64() as u64;
+    if seconds % 60 == 0 && seconds > 0 {
+        info!("Shard server running for {} seconds", seconds);
     }
 }
