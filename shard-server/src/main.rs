@@ -11,7 +11,7 @@ use bevy_state::app::StatesPlugin;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::DEFAULT_PROTOCOL_ID;
 use sidereal::net::utils::ClientNetworkPlugin;
-use sidereal::net::{ShardConfig, shard_communication::{ShardClientPlugin, REPLICATION_SERVER_SHARD_PORT}};
+use sidereal::net::{ShardConfig, ReplicationTopologyPlugin, shard_communication::REPLICATION_SERVER_SHARD_PORT};
 use std::env;
 use std::time::Duration;
 use uuid::Uuid;
@@ -87,37 +87,14 @@ fn main() {
             SiderealPlugin::without_replicon(),
             ClientNetworkPlugin,
             // Directly add the ShardClientPlugin which handles communications with the replication server
-            ShardClientPlugin,
+            ReplicationTopologyPlugin {
+                shard_config: Some(shard_config.clone()),
+                replication_server_config: None,
+            },
         ))
         .insert_resource(shard_config)
-        .add_systems(Startup, init_shard_connection)
         .add_systems(Update, log_status)
         .run();
-}
-
-// Initialize connection to the replication server directly 
-fn init_shard_connection(
-    mut commands: Commands,
-    config: Res<ShardConfig>,
-) {
-    info!(
-        shard_id = %config.shard_id,
-        "Connecting to replication server at {}",
-        config.replication_server_addr
-    );
-    
-    match sidereal::net::shard_communication::init_shard_client(
-        &mut commands,
-        config.replication_server_addr,
-        config.protocol_id,
-        config.shard_id,
-    ) {
-        Ok(_) => info!("Shard client connection initialized"),
-        Err(e) => {
-            error!("Failed to initialize shard client: {}", e);
-            panic!("Failed to initialize shard client: {}", e);
-        }
-    }
 }
 
 // Simplified logging function

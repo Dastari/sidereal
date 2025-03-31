@@ -17,6 +17,7 @@ use std::{
 };
 use tracing::{error, info, debug};
 use uuid::Uuid;
+use bincode;
 
 
 // --- Constants ---
@@ -104,6 +105,13 @@ pub struct AssignedSectors {
     pub dirty: bool, // Set to true when sectors have changed
 }
 
+// --- Resource for Manual Shard Server Management ---
+#[derive(Resource)]
+pub struct ShardListener {
+    pub server: RenetServer,
+    pub transport: NetcodeServerTransport,
+}
+
 /// Initialize a shard client that connects to the replication server
 pub fn init_shard_client(
     commands: &mut Commands,
@@ -172,10 +180,9 @@ pub fn init_shard_client(
 
 /// Initialize a replication server that shards connect to
 pub fn init_shard_server(
-    commands: &mut Commands,
     port: u16,
     protocol_id: u64,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<ShardListener, Box<dyn Error>> {
     let server_addr = SocketAddr::new("0.0.0.0".parse()?, port);
     let socket = UdpSocket::bind(server_addr)?;
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
@@ -228,11 +235,11 @@ pub fn init_shard_server(
     let socket = NativeSocket::new(socket)?;
     let transport = NetcodeServerTransport::new(setup_config, socket)?;
 
-    // Insert resources into ECS
-    commands.insert_resource(server);
-    commands.insert_resource(transport);
-
-    Ok(())
+    // Return the ShardListener containing the server and transport
+    Ok(ShardListener {
+        server,
+        transport,
+    })
 }
 
 // --- Plugins ---
@@ -242,6 +249,7 @@ pub struct ShardClientPlugin;
 impl Plugin for ShardServerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ConnectedShards>()
+            .add_systems(Update, manual_shard_server_update.run_if(resource_exists::<ShardListener>))
             .add_systems(Update, (handle_server_events, log_shard_stats));
     }
 }
@@ -261,14 +269,61 @@ impl Plugin for ShardClientPlugin {
     }
 }
 
+// --- Manual Update System ---
+fn manual_shard_server_update(
+    mut listener: ResMut<ShardListener>,
+    time: Res<Time>,
+) {
+    // Destructure listener to get independent mutable borrows of server and transport
+    let ShardListener { server, transport } = listener.as_mut();
+
+    server.update(time.delta());
+    // Pass the independent mutable borrow of server to the transport update
+    if let Err(e) = transport.update(time.delta(), server) {
+        error!("Shard transport update error: {:?}", e);
+    }
+}
+
 /// Handle server events (client connections, disconnections)
 fn handle_server_events(
-    mut server: ResMut<RenetServer>,
+    mut listener: ResMut<ShardListener>, // Use the ShardListener resource
     mut connected_shards: ResMut<ConnectedShards>,
 ) {
-    for client_id in server.clients_id() {
+    let server = &mut listener.server; // Get mutable ref to server
+
+    // Process RenetServer Events & Messages
+    while let Some(event) = server.get_event() {
+        match event {
+            ServerEvent::ClientConnected { client_id } => {
+                // Connection confirmed by RenetServer, now wait for IdentifyShard message
+                info!(client_id = %client_id, "Shard client connected (RenetServer), awaiting identification");
+            }
+            ServerEvent::ClientDisconnected { client_id, reason } => {
+                // Authoritative disconnect: remove from our tracking
+                if let Some(shard) = connected_shards.shards.remove(&client_id) {
+                    info!(
+                        client_id = %client_id,
+                        shard_id = %shard.shard_id,
+                        reason = ?reason,
+                        "Shard disconnected from replication server"
+                    );
+                    // TODO: Handle sector reassignment
+                } else {
+                     // This case might happen if the client disconnected before identifying
+                     info!(
+                        client_id = %client_id,
+                        reason = ?reason,
+                        "Unidentified client disconnected from shard server"
+                    );
+                }
+            }
+        }
+    }
+
+    // Process messages from identified clients
+    for client_id in server.clients_id() { // Iterate connected clients according to RenetServer
         while let Some(message) = server.receive_message(client_id, SHARD_CHANNEL_RELIABLE) {
-            match bincode::serde::decode_from_slice::<ShardToReplicationMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) {
+            match bincode::serde::decode_from_slice::<ShardToReplicationMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) { // Use bincode::serde::decode_from_slice
                 Ok(ShardToReplicationMessage::IdentifyShard { shard_id, sectors }) => {
                     info!(
                         client_id = %client_id,
@@ -323,35 +378,6 @@ fn handle_server_events(
                         client_id = %client_id,
                         error = %e,
                         "Failed to deserialize message from shard"
-                    );
-                }
-            }
-        }
-    }
-
-    // Use get_event() instead of events() and make server mutable
-    while let Some(event) = server.get_event() {
-        match event {
-            ServerEvent::ClientConnected { client_id } => {
-                info!(client_id = %client_id, "Shard client connected, awaiting identification");
-            }
-            ServerEvent::ClientDisconnected { client_id, reason } => {
-                // Remove from connected shards if it was a shard
-                if let Some(shard) = connected_shards.shards.remove(&client_id) {
-                    info!(
-                        client_id = %client_id,
-                        shard_id = %shard.shard_id,
-                        reason = ?reason,
-                        "Shard disconnected from replication server"
-                    );
-
-                    // Here you could reassign the shard's sectors to other shards
-                    // or mark them as unassigned
-                } else {
-                    info!(
-                        client_id = %client_id,
-                        reason = ?reason,
-                        "Unidentified client disconnected from shard server"
                     );
                 }
             }

@@ -8,6 +8,7 @@ use bevy_replicon::prelude::{ConnectedClient, ReplicatedClient};
 use bevy_replicon_renet2::RepliconRenetPlugins;
 use std::{error::Error, net::SocketAddr};
 use tracing::{error, info, warn};
+use bevy_renet2::netcode::NetcodeClientPlugin;
 
 pub const REPLICATION_SERVER_DEFAULT_PORT: u16 = 5000;
 
@@ -41,7 +42,8 @@ impl Plugin for ReplicationTopologyPlugin {
             // Add Replicon only if the feature is enabled
             #[cfg(feature = "replicon")]
             {
-                app.add_plugins(RenetServerPlugin);
+                // Add the core bevy_renet2 server plugin for shard communication - REMOVED, as RepliconRenetServerPlugin adds it internally
+                // app.add_plugins(RenetServerPlugin);
                 app.add_plugins(RepliconRenetPlugins);
                 
                 // Add system to mark clients for replication
@@ -52,6 +54,7 @@ impl Plugin for ReplicationTopologyPlugin {
         if is_shard {
             // Add the shard client plugin for direct renet2 communication with replication server
             app.add_plugins(RenetClientPlugin);
+            app.add_plugins(NetcodeClientPlugin);
             app.add_plugins(super::shard_communication::ShardClientPlugin);
         }
 
@@ -90,12 +93,17 @@ impl Plugin for ReplicationTopologyPlugin {
             let config2 = replication_config.clone();
             // Initialize the shard server component on the replication server
             app.add_systems(Startup, move |mut commands: Commands| {
-                if let Err(e) = super::shard_communication::init_shard_server(
-                    &mut commands,
+                match super::shard_communication::init_shard_server(
                     REPLICATION_SERVER_SHARD_PORT,
                     config2.protocol_id,
                 ) {
-                    error!("Failed to initialize shard server component: {}", e);
+                    Ok(listener) => {
+                        commands.insert_resource(listener); // Insert the returned listener as a resource
+                        info!("Shard listener component initialized and inserted as resource.");
+                    }
+                    Err(e) => {
+                        error!("Failed to initialize shard server component: {}", e);
+                    }
                 }
             });
 
