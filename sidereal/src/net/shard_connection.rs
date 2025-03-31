@@ -2,7 +2,7 @@ use super::config::{ReplicationServerConfig, ShardConfig};
 use super::connection::init_server;
 use super::shard_communication::{REPLICATION_SERVER_SHARD_PORT, init_shard_client};
 use bevy::prelude::*;
-#[cfg(feature = "replicon")]
+use bevy_renet2::prelude::{RenetClientPlugin, RenetServerPlugin};
 use bevy_replicon::prelude::{ConnectedClient, ReplicatedClient};
 #[cfg(feature = "replicon")]
 use bevy_replicon_renet2::RepliconRenetPlugins;
@@ -35,12 +35,15 @@ impl Plugin for ReplicationTopologyPlugin {
             panic!("Cannot be both a Shard Server and a Replication Server in the same instance.");
         }
 
-        // Add Replicon only if the feature is enabled and we're a replication server
-        #[cfg(feature = "replicon")]
-        {
-            app.add_plugins(RepliconRenetPlugins);
-
-            if is_replication_server {
+        // Only add Replicon plugins if this is a replication server
+        // This prevents the shard server from loading Replicon-related code
+        if is_replication_server {
+            // Add Replicon only if the feature is enabled
+            #[cfg(feature = "replicon")]
+            {
+                app.add_plugins(RenetServerPlugin);
+                app.add_plugins(RepliconRenetPlugins);
+                
                 // Add system to mark clients for replication
                 app.add_systems(Update, mark_clients_as_replicated);
             }
@@ -48,6 +51,7 @@ impl Plugin for ReplicationTopologyPlugin {
 
         if is_shard {
             // Add the shard client plugin for direct renet2 communication with replication server
+            app.add_plugins(RenetClientPlugin);
             app.add_plugins(super::shard_communication::ShardClientPlugin);
         }
 

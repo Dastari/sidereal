@@ -27,7 +27,7 @@ fn setup_app() -> App {
         RemoteHttpPlugin::default(),
         RepliconPlugins,
         RepliconRenetPlugins,
-        SiderealPlugin,
+        SiderealPlugin::default(),
     ));
     debug_assert!(
         app.world().contains_resource::<Time>(),

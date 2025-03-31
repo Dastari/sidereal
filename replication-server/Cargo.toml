@@ -26,7 +26,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 
 tracing-subscriber = "0.3"
-bincode = "2.0.0"
+bincode = {workspace = true }
 
 
 [features]

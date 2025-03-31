@@ -3,9 +3,6 @@
 // of the bi-directional setup.
 
 use bevy::prelude::*;
-use bevy::time::common_conditions::on_timer;
-#[cfg(feature = "replicon")]
-use bevy_replicon::prelude::*;
 #[cfg(feature = "replicon")]
 use bevy_replicon_renet2::renet2::{RenetClient, RenetServer};
 use std::net::{IpAddr, SocketAddr, UdpSocket};

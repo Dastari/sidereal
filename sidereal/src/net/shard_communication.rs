@@ -10,15 +10,14 @@ use renet2::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     net::{SocketAddr, UdpSocket},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::{error, info};
+use tracing::{error, info, debug};
 use uuid::Uuid;
 
-use super::config::DEFAULT_PROTOCOL_ID;
 
 // --- Constants ---
 pub const REPLICATION_SERVER_SHARD_PORT: u16 = 5001; // Different port from client connections
@@ -94,14 +93,14 @@ pub struct ConnectedShards {
 #[derive(Debug, Clone)]
 pub struct ShardInfo {
     pub shard_id: Uuid,
-    pub sectors: Vec<(i32, i32)>, // Assigned sectors for this shard
+    pub sectors: HashSet<(i32, i32)>,
     pub connected_at: std::time::SystemTime,
 }
 
 // --- Shard Resources ---
 #[derive(Resource, Default, Debug)]
 pub struct AssignedSectors {
-    pub sectors: Vec<(i32, i32)>,
+    pub sectors: HashSet<(i32, i32)>,
     pub dirty: bool, // Set to true when sectors have changed
 }
 
@@ -249,16 +248,16 @@ impl Plugin for ShardServerPlugin {
 
 impl Plugin for ShardClientPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<AssignedSectors>().add_systems(
-            Update,
-            (
-                receive_replication_messages,
-                send_entity_updates_to_replication,
-                send_shard_identification,
-                handle_sector_assignments,
-            )
-                .chain(),
-        );
+        app.init_resource::<AssignedSectors>()
+            .add_systems(
+                Update,
+                (
+                    log_connection_status,
+                    send_shard_identification.run_if(resource_exists::<RenetClient>),
+                    receive_replication_messages.run_if(resource_exists::<RenetClient>),
+                    handle_sector_assignments,
+                ),
+            );
     }
 }
 
@@ -269,7 +268,7 @@ fn handle_server_events(
 ) {
     for client_id in server.clients_id() {
         while let Some(message) = server.receive_message(client_id, SHARD_CHANNEL_RELIABLE) {
-            match serde_json::from_slice::<ShardToReplicationMessage>(&message) {
+            match bincode::serde::decode_from_slice::<ShardToReplicationMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) {
                 Ok(ShardToReplicationMessage::IdentifyShard { shard_id, sectors }) => {
                     info!(
                         client_id = %client_id,
@@ -280,7 +279,7 @@ fn handle_server_events(
                     // Store or update shard information
                     let shard_info = ShardInfo {
                         shard_id,
-                        sectors: sectors.clone(),
+                        sectors: sectors.clone().into_iter().collect(),
                         connected_at: std::time::SystemTime::now(),
                     };
 
@@ -290,12 +289,13 @@ fn handle_server_events(
                     // This is where we could assign sectors based on load balancing
                     if sectors.is_empty() {
                         // Assign some initial sectors (just for example)
-                        let initial_sectors = vec![(0, 0), (0, 1), (1, 0), (1, 1)];
+                        let initial_sectors: HashSet<(i32, i32)> =
+                            [(0, 0), (0, 1), (1, 0), (1, 1)].iter().cloned().collect();
                         let assign_message = ReplicationToShardMessage::AssignSectors {
-                            sectors: initial_sectors.clone(),
+                            sectors: initial_sectors.iter().cloned().collect(),
                         };
 
-                        if let Ok(bytes) = serde_json::to_vec(&assign_message) {
+                        if let Ok(bytes) = bincode::serde::encode_to_vec(&assign_message, bincode::config::standard()) {
                             server.send_message(client_id, SHARD_CHANNEL_RELIABLE, bytes);
                             info!(
                                 client_id = %client_id,
@@ -306,7 +306,7 @@ fn handle_server_events(
 
                             // Update stored sectors
                             if let Some(shard) = connected_shards.shards.get_mut(&client_id) {
-                                shard.sectors = initial_sectors;
+                                shard.sectors.extend(initial_sectors);
                             }
                         }
                     }
@@ -385,10 +385,34 @@ fn handle_sector_assignments(assigned_sectors: Res<AssignedSectors>, mut command
     });
 }
 
-/// Receive messages from the replication server to a shard
+/// System to log connection status periodically
+fn log_connection_status(
+    client: Option<Res<RenetClient>>,
+    time: Res<Time>,
+    mut last_log: Local<f64>,
+) {
+    // Only log every 5 seconds
+    let current_time = time.elapsed().as_secs_f64();
+    if current_time - *last_log < 5.0 {
+        return;
+    }
+    
+    *last_log = current_time;
+    
+    if let Some(client) = client {
+        if client.is_connected() {
+            info!("Connected to replication server");
+        } else {
+            info!("Not connected to replication server");
+        }
+    } else {
+        debug!("RenetClient not available");
+    }
+}
+
+/// System to receive messages from the replication server
 fn receive_replication_messages(
     mut client: ResMut<RenetClient>,
-    config: ResMut<super::config::ShardConfig>,
     mut assigned_sectors: ResMut<AssignedSectors>,
 ) {
     if !client.is_connected() {
@@ -397,8 +421,7 @@ fn receive_replication_messages(
 
     // Handle unreliable messages (entity updates, etc.)
     while let Some(message) = client.receive_message(SHARD_CHANNEL_UNRELIABLE) {
-        // Use serde_json instead of bincode to avoid compatibility issues
-        match serde_json::from_slice::<ReplicationToShardMessage>(&message) {
+        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) {
             Ok(repl_msg) => {
                 match repl_msg {
                     ReplicationToShardMessage::InitializeSector {
@@ -421,16 +444,11 @@ fn receive_replication_messages(
                         // Remove an entity from the simulation
                     }
                     ReplicationToShardMessage::AssignSectors { sectors } => {
-                        info!("Received sector assignment: {:?}", sectors);
-
-                        info!(
-                            shard_id = %config.shard_id,
-                            "Shard server assigned {} sectors by replication server",
-                            sectors.len()
-                        );
+                        let sector_set: HashSet<(i32, i32)> = sectors.into_iter().collect();
+                        info!("Received sector assignment: {:?}", sector_set);
 
                         // Store the assigned sectors and mark as dirty for processing
-                        assigned_sectors.sectors = sectors;
+                        assigned_sectors.sectors = sector_set;
                         assigned_sectors.dirty = true;
                     }
                     ReplicationToShardMessage::PlayerCommand {
@@ -452,18 +470,18 @@ fn receive_replication_messages(
 
     // Handle reliable messages (commands, etc.)
     while let Some(message) = client.receive_message(SHARD_CHANNEL_RELIABLE) {
-        match serde_json::from_slice::<ReplicationToShardMessage>(&message) {
+        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) {
             Ok(repl_msg) => {
                 match repl_msg {
                     ReplicationToShardMessage::AssignSectors { sectors } => {
+                        let sector_set: HashSet<(i32, i32)> = sectors.into_iter().collect();
                         info!(
-                            shard_id = %config.shard_id,
                             "Shard server assigned {} sectors by replication server (reliable channel)",
-                            sectors.len()
+                            sector_set.len()
                         );
 
                         // Store the assigned sectors and mark as dirty for processing
-                        assigned_sectors.sectors = sectors;
+                        assigned_sectors.sectors = sector_set;
                         assigned_sectors.dirty = true;
                     }
                     _ => {
@@ -497,7 +515,7 @@ fn send_entity_updates_to_replication(mut client: ResMut<RenetClient>) {
 
     if !updates.is_empty() {
         let message = ShardToReplicationMessage::EntityUpdates(updates.clone());
-        match serde_json::to_vec(&message) {
+        match bincode::serde::encode_to_vec(&message, bincode::config::standard()) {
             Ok(bytes) => {
                 client.send_message(SHARD_CHANNEL_UNRELIABLE, bytes);
                 info!(
@@ -534,7 +552,7 @@ fn send_shard_identification(
             sectors: Vec::new(),
         };
 
-        match serde_json::to_vec(&message) {
+        match bincode::serde::encode_to_vec(&message, bincode::config::standard()) {
             Ok(bytes) => {
                 client.send_message(SHARD_CHANNEL_RELIABLE, bytes);
                 *sent = true;

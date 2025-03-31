@@ -15,14 +15,14 @@ bevy_replicon_renet2 = "0.7.0"
 bevy_renet2 = "0.7.0"
 renet2 = { version = "0.7.0"}
 
-bincode = "2.0.0"
+bincode ={version = "2.0.1", features = ["serde"] }
 env_logger = "0.11.7"
 serde_json = "1.0.140"
 tracing = "0.1.41"
 tokio = "1.44.1"
 
 serde = { version = "1.0.219", features = ["derive"] }
-uuid = { version = "1.12.0", features = ["v4", "serde"] }
+uuid = { version = "1.12.1", features = ["v4", "serde"] }
 
 [profile.dev]
 opt-level = 3

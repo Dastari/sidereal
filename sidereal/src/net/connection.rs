@@ -15,7 +15,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tracing::info;
-use uuid::Uuid;
 
 /// Plugin for Replicon-based client-server networking
 pub struct NetworkingPlugin {

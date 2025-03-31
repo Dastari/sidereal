@@ -20,7 +20,7 @@ renet2 = { workspace = true }
 bevy_remote = "0.15.3"
 
 # Other
-uuid = { workspace = true}
+uuid = { workspace = true, features=["serde"]}
 serde = { workspace = true}
 serde_json = { workspace = true }
 tracing = {workspace = true}

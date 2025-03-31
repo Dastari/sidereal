@@ -5,23 +5,31 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Bevy core dependencies
 bevy = { workspace = true }
-bevy_state = {workspace= true}
+bevy_state = { workspace = true }
 bevy_remote = "0.15.3"
 
+# No Replicon dependencies - we don't need them for shard server
+# bevy_replicon = { workspace = true }
+# bevy_replicon_renet2 = { workspace = true }
+
+# We do need renet2 for direct communication with replication server
+bevy_renet2 = { workspace = true, features = ["netcode"] }
+renet2 = { workspace = true }
+
+# Other dependencies
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-uuid = {workspace = true }
-bincode = {workspace = true }
-tracing = {workspace = true}
-
-
+uuid = { workspace = true }
+bincode = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = "0.3"
 avian2d = "0.2.1"
 dotenv = "0.15.0"
 
-# Explicitly disable replicon feature for sidereal
+# Use sidereal without Replicon features
 sidereal = { path = "../sidereal", default-features = false }
 
 [features]

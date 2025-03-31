@@ -8,10 +8,10 @@ use bevy::transform::TransformPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_state::app::StatesPlugin;
-// SiderealPlugin now has runtime protection against Replicon
 use sidereal::ecs::plugins::SiderealPlugin;
-use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
-use sidereal::net::{ClientNetworkPlugin, ShardConfig, ReplicationTopologyPlugin};
+use sidereal::net::config::DEFAULT_PROTOCOL_ID;
+use sidereal::net::utils::ClientNetworkPlugin;
+use sidereal::net::{ShardConfig, shard_communication::{ShardClientPlugin, REPLICATION_SERVER_SHARD_PORT}};
 use std::env;
 use std::time::Duration;
 use uuid::Uuid;
@@ -47,7 +47,7 @@ fn main() {
     let shard_config = ShardConfig {
         shard_id: Uuid::new_v4(),
         protocol_id: DEFAULT_PROTOCOL_ID,
-        replication_server_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT)
+        replication_server_addr: format!("127.0.0.1:{}", REPLICATION_SERVER_SHARD_PORT)
             .parse()
             .expect("Failed to parse replication server address"),
         bind_addr: "127.0.0.1:0".parse().expect("Failed to parse bind address"),
@@ -83,18 +83,41 @@ fn main() {
                 ),
         ))
         .add_plugins((
-            // Use SiderealPlugin with Replicon disabled for shard server
+            // Use SiderealPlugin with Replicon disabled
             SiderealPlugin::without_replicon(),
             ClientNetworkPlugin,
-            // Use the topology plugin which will add ShardClientPlugin for us
-            ReplicationTopologyPlugin {
-                shard_config: Some(shard_config.clone()),
-                replication_server_config: None,
-            },
+            // Directly add the ShardClientPlugin which handles communications with the replication server
+            ShardClientPlugin,
         ))
         .insert_resource(shard_config)
+        .add_systems(Startup, init_shard_connection)
         .add_systems(Update, log_status)
         .run();
+}
+
+// Initialize connection to the replication server directly 
+fn init_shard_connection(
+    mut commands: Commands,
+    config: Res<ShardConfig>,
+) {
+    info!(
+        shard_id = %config.shard_id,
+        "Connecting to replication server at {}",
+        config.replication_server_addr
+    );
+    
+    match sidereal::net::shard_communication::init_shard_client(
+        &mut commands,
+        config.replication_server_addr,
+        config.protocol_id,
+        config.shard_id,
+    ) {
+        Ok(_) => info!("Shard client connection initialized"),
+        Err(e) => {
+            error!("Failed to initialize shard client: {}", e);
+            panic!("Failed to initialize shard client: {}", e);
+        }
+    }
 }
 
 // Simplified logging function

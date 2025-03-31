@@ -6,6 +6,7 @@ use bevy_replicon_renet2::renet2::{ChannelConfig, ConnectionConfig, SendType};
 use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
+use crate::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
 
 // --- Constants ---
 pub const DEFAULT_PROTOCOL_ID: u64 = 7;
@@ -91,7 +92,7 @@ impl Default for ShardConfig {
     fn default() -> Self {
         Self {
             bind_addr: "127.0.0.1:0".parse().expect("Invalid default bind_addr"),
-            replication_server_addr: format!("127.0.0.1:{}", DEFAULT_REPLICATION_PORT)
+            replication_server_addr: format!("127.0.0.1:{}", REPLICATION_SERVER_SHARD_PORT)
                 .parse()
                 .expect("Invalid default replication_server_addr"),
             shard_id: Uuid::new_v4(),
