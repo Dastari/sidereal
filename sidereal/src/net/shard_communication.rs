@@ -2,12 +2,11 @@
 
 use bevy::prelude::*;
 use bevy_renet2::netcode::{
-    ClientAuthentication, ServerAuthentication, ServerSetupConfig,
-    NetcodeClientTransport, NetcodeServerTransport, NativeSocket
+    ClientAuthentication, NativeSocket, NetcodeClientTransport, NetcodeServerTransport,
+    ServerAuthentication, ServerSetupConfig,
 };
-use renet2::{
-    RenetClient, RenetServer, ServerEvent, ChannelConfig, SendType
-};
+use bincode;
+use renet2::{ChannelConfig, RenetClient, RenetServer, SendType, ServerEvent};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -15,10 +14,8 @@ use std::{
     net::{SocketAddr, UdpSocket},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::{error, info, debug};
+use tracing::{debug, error, info};
 use uuid::Uuid;
-use bincode;
-
 
 // --- Constants ---
 pub const REPLICATION_SERVER_SHARD_PORT: u16 = 5001; // Different port from client connections
@@ -179,10 +176,7 @@ pub fn init_shard_client(
 }
 
 /// Initialize a replication server that shards connect to
-pub fn init_shard_server(
-    port: u16,
-    protocol_id: u64,
-) -> Result<ShardListener, Box<dyn Error>> {
+pub fn init_shard_server(port: u16, protocol_id: u64) -> Result<ShardListener, Box<dyn Error>> {
     let server_addr = SocketAddr::new("0.0.0.0".parse()?, port);
     let socket = UdpSocket::bind(server_addr)?;
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
@@ -236,10 +230,7 @@ pub fn init_shard_server(
     let transport = NetcodeServerTransport::new(setup_config, socket)?;
 
     // Return the ShardListener containing the server and transport
-    Ok(ShardListener {
-        server,
-        transport,
-    })
+    Ok(ShardListener { server, transport })
 }
 
 // --- Plugins ---
@@ -249,31 +240,30 @@ pub struct ShardClientPlugin;
 impl Plugin for ShardServerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ConnectedShards>()
-            .add_systems(Update, manual_shard_server_update.run_if(resource_exists::<ShardListener>))
+            .add_systems(
+                Update,
+                manual_shard_server_update.run_if(resource_exists::<ShardListener>),
+            )
             .add_systems(Update, (handle_server_events, log_shard_stats));
     }
 }
 
 impl Plugin for ShardClientPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<AssignedSectors>()
-            .add_systems(
-                Update,
-                (
-                    log_connection_status,
-                    send_shard_identification.run_if(resource_exists::<RenetClient>),
-                    receive_replication_messages.run_if(resource_exists::<RenetClient>),
-                    handle_sector_assignments,
-                ),
-            );
+        app.init_resource::<AssignedSectors>().add_systems(
+            Update,
+            (
+                log_connection_status,
+                send_shard_identification.run_if(resource_exists::<RenetClient>),
+                receive_replication_messages.run_if(resource_exists::<RenetClient>),
+                handle_sector_assignments,
+            ),
+        );
     }
 }
 
 // --- Manual Update System ---
-fn manual_shard_server_update(
-    mut listener: ResMut<ShardListener>,
-    time: Res<Time>,
-) {
+fn manual_shard_server_update(mut listener: ResMut<ShardListener>, time: Res<Time>) {
     // Destructure listener to get independent mutable borrows of server and transport
     let ShardListener { server, transport } = listener.as_mut();
 
@@ -309,8 +299,8 @@ fn handle_server_events(
                     );
                     // TODO: Handle sector reassignment
                 } else {
-                     // This case might happen if the client disconnected before identifying
-                     info!(
+                    // This case might happen if the client disconnected before identifying
+                    info!(
                         client_id = %client_id,
                         reason = ?reason,
                         "Unidentified client disconnected from shard server"
@@ -321,9 +311,16 @@ fn handle_server_events(
     }
 
     // Process messages from identified clients
-    for client_id in server.clients_id() { // Iterate connected clients according to RenetServer
+    for client_id in server.clients_id() {
+        // Iterate connected clients according to RenetServer
         while let Some(message) = server.receive_message(client_id, SHARD_CHANNEL_RELIABLE) {
-            match bincode::serde::decode_from_slice::<ShardToReplicationMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) { // Use bincode::serde::decode_from_slice
+            match bincode::serde::decode_from_slice::<ShardToReplicationMessage, _>(
+                &message,
+                bincode::config::standard(),
+            )
+            .map(|(v, _)| v)
+            {
+                // Use bincode::serde::decode_from_slice
                 Ok(ShardToReplicationMessage::IdentifyShard { shard_id, sectors }) => {
                     info!(
                         client_id = %client_id,
@@ -350,7 +347,10 @@ fn handle_server_events(
                             sectors: initial_sectors.iter().cloned().collect(),
                         };
 
-                        if let Ok(bytes) = bincode::serde::encode_to_vec(&assign_message, bincode::config::standard()) {
+                        if let Ok(bytes) = bincode::serde::encode_to_vec(
+                            &assign_message,
+                            bincode::config::standard(),
+                        ) {
                             server.send_message(client_id, SHARD_CHANNEL_RELIABLE, bytes);
                             info!(
                                 client_id = %client_id,
@@ -422,9 +422,9 @@ fn log_connection_status(
     if current_time - *last_log < 5.0 {
         return;
     }
-    
+
     *last_log = current_time;
-    
+
     if let Some(client) = client {
         if client.is_connected() {
             info!("Connected to replication server");
@@ -447,7 +447,12 @@ fn receive_replication_messages(
 
     // Handle unreliable messages (entity updates, etc.)
     while let Some(message) = client.receive_message(SHARD_CHANNEL_UNRELIABLE) {
-        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) {
+        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(
+            &message,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        {
             Ok(repl_msg) => {
                 match repl_msg {
                     ReplicationToShardMessage::InitializeSector {
@@ -496,7 +501,12 @@ fn receive_replication_messages(
 
     // Handle reliable messages (commands, etc.)
     while let Some(message) = client.receive_message(SHARD_CHANNEL_RELIABLE) {
-        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v) {
+        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(
+            &message,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        {
             Ok(repl_msg) => {
                 match repl_msg {
                     ReplicationToShardMessage::AssignSectors { sectors } => {

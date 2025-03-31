@@ -85,9 +85,10 @@ fn main() {
         .add_plugins((
             SiderealPlugin::without_replicon(),
             ClientNetworkPlugin,
-            ShardPlugin { config: shard_config.clone() },
+            ShardPlugin {
+                config: shard_config.clone(),
+            },
         ))
         .insert_resource(shard_config)
         .run();
 }
-

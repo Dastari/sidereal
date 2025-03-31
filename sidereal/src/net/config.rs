@@ -1,12 +1,12 @@
 // sidereal/src/net/config.rs
 
+use crate::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
 use bevy::prelude::*;
 #[cfg(feature = "replicon")]
 use bevy_replicon_renet2::renet2::{ChannelConfig, ConnectionConfig, SendType};
 use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
-use crate::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
 
 // --- Constants ---
 pub const DEFAULT_PROTOCOL_ID: u64 = 7;

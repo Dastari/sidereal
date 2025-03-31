@@ -57,9 +57,14 @@ fn main() {
         .add_plugins((
             RepliconPlugins,
             ServerNetworkPlugin,
-            ReplicationServerPlugin { config: replication_config },
+            ReplicationServerPlugin {
+                config: replication_config,
+            },
         ))
-        .add_plugins((SiderealPlugin::default().with_replicon(true), SceneLoaderPlugin))
+        .add_plugins((
+            SiderealPlugin::default().with_replicon(true),
+            SceneLoaderPlugin,
+        ))
         .add_systems(
             OnEnter(SceneState::Completed),
             mark_entities_for_replication,

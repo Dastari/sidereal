@@ -7,7 +7,7 @@ use bevy_replicon::shared::replication::replication_registry::ReplicationRegistr
 use tracing::warn;
 
 /// Main plugin for Sidereal type registration and replication
-/// 
+///
 /// Usage options:
 /// - Use with default settings for replication server and game clients
 /// - Use with `with_replicon(false)` for shard servers
@@ -31,7 +31,7 @@ impl SiderealPlugin {
             replicon_enabled: false,
         }
     }
-    
+
     /// Set whether to use Replicon
     pub fn with_replicon(mut self, enabled: bool) -> Self {
         self.replicon_enabled = enabled;
@@ -45,7 +45,7 @@ impl Plugin for SiderealPlugin {
         if self.replicon_enabled {
             // Only try to add Replicon components if the app has RepliconPlugin
             let has_replicon = app.world().contains_resource::<ReplicationRegistry>();
-            
+
             if has_replicon {
                 // Register the components for replication
                 app.replicate::<Name>()
@@ -58,13 +58,15 @@ impl Plugin for SiderealPlugin {
                     .replicate::<Sector>()
                     .replicate::<Position>()
                     .replicate::<Rotation>();
-                
+
                 // Make sure the ReplicationRegistry resource exists
                 if !app.world().contains_resource::<ReplicationRegistry>() {
                     app.init_resource::<ReplicationRegistry>();
                 }
             } else {
-                warn!("SiderealPlugin is configured to use Replicon, but RepliconPlugin has not been added. Skipping replication setup.");
+                warn!(
+                    "SiderealPlugin is configured to use Replicon, but RepliconPlugin has not been added. Skipping replication setup."
+                );
             }
         }
 
@@ -82,4 +84,3 @@ impl Plugin for SiderealPlugin {
             .register_type::<Rotation>();
     }
 }
-

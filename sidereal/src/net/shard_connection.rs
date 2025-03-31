@@ -1,13 +1,16 @@
 use super::config::{ReplicationServerConfig, ShardConfig};
 use super::connection::init_server;
-use super::shard_communication::{REPLICATION_SERVER_SHARD_PORT, init_shard_client, init_shard_server, ShardServerPlugin, ShardClientPlugin, ShardListener};
+use super::shard_communication::{
+    REPLICATION_SERVER_SHARD_PORT, ShardClientPlugin, ShardServerPlugin, init_shard_client,
+    init_shard_server,
+};
 use bevy::prelude::*;
+use bevy_renet2::netcode::NetcodeClientPlugin;
 use bevy_renet2::prelude::RenetClientPlugin;
 use bevy_replicon::prelude::{ConnectedClient, ReplicatedClient};
 use bevy_replicon_renet2::RepliconRenetPlugins;
 use std::{error::Error, net::SocketAddr};
-use tracing::{error, info, warn};
-use bevy_renet2::netcode::NetcodeClientPlugin;
+use tracing::{info, warn};
 
 pub const REPLICATION_SERVER_DEFAULT_PORT: u16 = 5000;
 
@@ -59,9 +62,11 @@ impl Plugin for ReplicationServerPlugin {
 
 // System to initialize shard client components
 fn init_shard_system(mut commands: Commands, config: Res<ShardConfig>) {
-    init_shard(&mut commands, &config)
-        .expect("Failed to initialize shard client connection");
-    info!(shard_id = config.shard_id.to_string(), "Shard networking initialized successfully");
+    init_shard(&mut commands, &config).expect("Failed to initialize shard client connection");
+    info!(
+        shard_id = config.shard_id.to_string(),
+        "Shard networking initialized successfully"
+    );
 }
 
 // System to initialize replication server components for game clients
@@ -73,10 +78,7 @@ fn init_replication_server_system(mut commands: Commands, config: Res<Replicatio
 
 // System to initialize shard listener components on the replication server
 fn init_shard_server_system(mut commands: Commands, config: Res<ReplicationServerConfig>) {
-    match init_shard_server(
-        REPLICATION_SERVER_SHARD_PORT,
-        config.protocol_id,
-    ) {
+    match init_shard_server(REPLICATION_SERVER_SHARD_PORT, config.protocol_id) {
         Ok(listener) => {
             commands.insert_resource(listener);
             info!("Shard listener component initialized and inserted as resource.");
