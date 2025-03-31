@@ -1,101 +1,94 @@
 use super::config::{ReplicationServerConfig, ShardConfig};
 use super::connection::init_server;
-use super::shard_communication::{REPLICATION_SERVER_SHARD_PORT, init_shard_client};
+use super::shard_communication::{REPLICATION_SERVER_SHARD_PORT, init_shard_client, init_shard_server, ShardServerPlugin, ShardClientPlugin, ShardListener};
 use bevy::prelude::*;
 use bevy_renet2::prelude::RenetClientPlugin;
-use bevy_replicon::prelude::*;
+use bevy_replicon::prelude::{ConnectedClient, ReplicatedClient};
 use bevy_replicon_renet2::RepliconRenetPlugins;
 use std::{error::Error, net::SocketAddr};
 use tracing::{error, info, warn};
 use bevy_renet2::netcode::NetcodeClientPlugin;
 
 pub const REPLICATION_SERVER_DEFAULT_PORT: u16 = 5000;
-pub struct ReplicationTopologyPlugin {
-    pub shard_config: Option<ShardConfig>,
-    pub replication_server_config: Option<ReplicationServerConfig>,
+
+// === New Separate Plugins ===
+
+/// Plugin to configure and run the application as a Shard Server.
+pub struct ShardPlugin {
+    pub config: ShardConfig,
 }
 
-impl Default for ReplicationTopologyPlugin {
-    fn default() -> Self {
-        Self {
-            shard_config: None,
-            replication_server_config: None,
-        }
-    }
-}
-
-impl Plugin for ReplicationTopologyPlugin {
+impl Plugin for ShardPlugin {
     fn build(&self, app: &mut App) {
-        let is_shard = self.shard_config.is_some();
-        let is_replication_server = self.replication_server_config.is_some();
+        app
+            // Add core plugins for shard client connection to replication server
+            .add_plugins(RenetClientPlugin)
+            .add_plugins(NetcodeClientPlugin)
+            .add_plugins(ShardClientPlugin) // Our custom logic
+            // Insert config and add initialization system
+            .insert_resource(self.config.clone())
+            .add_systems(Startup, init_shard_system);
+    }
+}
 
-        if is_shard && is_replication_server {
-            panic!("Cannot be both a Shard Server and a Replication Server in the same instance.");
-        }
-        if is_replication_server {
-            #[cfg(feature = "replicon")]
-            {
-                app.add_plugins(RepliconRenetPlugins);
-                app.add_systems(Update, mark_clients_as_replicated);
-            }
-        }
+/// Plugin to configure and run the application as a Replication Server.
+pub struct ReplicationServerPlugin {
+    pub config: ReplicationServerConfig,
+}
 
-        if is_shard {
-            app.add_plugins(RenetClientPlugin);
-            app.add_plugins(NetcodeClientPlugin);
-            app.add_plugins(super::shard_communication::ShardClientPlugin);
-        }
-
-        if let Some(shard_config) = self.shard_config.clone() {
-            app.add_systems(Startup, move |mut commands: Commands| {
-                match init_shard(&mut commands, &shard_config) {
-                    Ok(_) => {
-                        info!(
-                            shard_id = shard_config.shard_id.to_string(),
-                            "Shard initialized successfully"
-                        )
-                    }
-                    Err(e) => {
-                        error!(
-                            shard_id = shard_config.shard_id.to_string(),
-                            "Failed to initialize shard: {}", e
-                        )
-                    }
-                }
-            });
+impl Plugin for ReplicationServerPlugin {
+    fn build(&self, app: &mut App) {
+        // Add Replicon plugins for game client connections
+        #[cfg(feature = "replicon")]
+        {
+            app.add_plugins(RepliconRenetPlugins)
+                .add_systems(Update, mark_clients_as_replicated);
         }
 
-        if let Some(replication_config) = self.replication_server_config.clone() {
-            let config1 = replication_config.clone();
-            app.add_systems(
-                Startup,
-                move |mut commands: Commands| match init_replication_server(&mut commands, &config1)
-                {
-                    Ok(_) => info!("Replication server initialized successfully"),
-                    Err(e) => error!("Failed to initialize replication server: {}", e),
-                },
-            );
-            let config2 = replication_config.clone();
-            app.add_systems(Startup, move |mut commands: Commands| {
-                match super::shard_communication::init_shard_server(
-                    REPLICATION_SERVER_SHARD_PORT,
-                    config2.protocol_id,
-                ) {
-                    Ok(listener) => {
-                        commands.insert_resource(listener); // Insert the returned listener as a resource
-                        info!("Shard listener component initialized and inserted as resource.");
-                    }
-                    Err(e) => {
-                        error!("Failed to initialize shard server component: {}", e);
-                    }
-                }
-            });
+        app
+            // Add custom plugin for handling shard connections
+            .add_plugins(ShardServerPlugin)
+            // Insert config and add initialization systems
+            .insert_resource(self.config.clone())
+            .add_systems(Startup, init_replication_server_system)
+            .add_systems(Startup, init_shard_server_system);
+    }
+}
 
-            // Add the plugin for handling shard server events (connections, messages)
-            app.add_plugins(super::shard_communication::ShardServerPlugin);
+// === Helper Systems ===
+
+// System to initialize shard client components
+fn init_shard_system(mut commands: Commands, config: Res<ShardConfig>) {
+    init_shard(&mut commands, &config)
+        .expect("Failed to initialize shard client connection");
+    info!(shard_id = config.shard_id.to_string(), "Shard networking initialized successfully");
+}
+
+// System to initialize replication server components for game clients
+fn init_replication_server_system(mut commands: Commands, config: Res<ReplicationServerConfig>) {
+    init_replication_server(&mut commands, &config)
+        .expect("Failed to initialize replication server (for game clients)");
+    info!("Replication server (client-facing) initialized successfully");
+}
+
+// System to initialize shard listener components on the replication server
+fn init_shard_server_system(mut commands: Commands, config: Res<ReplicationServerConfig>) {
+    match init_shard_server(
+        REPLICATION_SERVER_SHARD_PORT,
+        config.protocol_id,
+    ) {
+        Ok(listener) => {
+            commands.insert_resource(listener);
+            info!("Shard listener component initialized and inserted as resource.");
+        }
+        Err(e) => {
+            // Use expect here as well, as the replication server cannot function without the shard listener
+            panic!("Failed to initialize shard server component: {}", e);
         }
     }
 }
+
+// === Old Combined Plugin (To be deleted) ===
 
 /// Initialize a shard: starts a server for game clients and a client for the replication server.
 pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), Box<dyn Error>> {
@@ -161,7 +154,7 @@ pub fn init_replication_server(
 #[cfg(feature = "replicon")]
 fn mark_clients_as_replicated(
     mut commands: Commands,
-    clients: Query<Entity, (With<ConnectedClient>, Without<ReplicatedClient>)>,
+    clients: Query<Entity, Added<ConnectedClient>>,
 ) {
     for client in clients.iter() {
         commands.entity(client).insert(ReplicatedClient);

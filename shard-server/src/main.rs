@@ -11,7 +11,7 @@ use bevy_state::app::StatesPlugin;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::DEFAULT_PROTOCOL_ID;
 use sidereal::net::utils::ClientNetworkPlugin;
-use sidereal::net::{ShardConfig, ReplicationTopologyPlugin, shard_communication::REPLICATION_SERVER_SHARD_PORT};
+use sidereal::net::{ShardConfig, ShardPlugin, shard_communication::REPLICATION_SERVER_SHARD_PORT};
 use std::env;
 use std::time::Duration;
 use uuid::Uuid;
@@ -85,10 +85,7 @@ fn main() {
         .add_plugins((
             SiderealPlugin::without_replicon(),
             ClientNetworkPlugin,
-            ReplicationTopologyPlugin {
-                shard_config: Some(shard_config.clone()),
-                replication_server_config: None,
-            },
+            ShardPlugin { config: shard_config.clone() },
         ))
         .insert_resource(shard_config)
         .run();

@@ -13,7 +13,7 @@ use sidereal::ecs::components::Object;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
 use sidereal::net::shard_communication::{ConnectedShards, REPLICATION_SERVER_SHARD_PORT};
-use sidereal::net::{ReplicationServerConfig, ReplicationTopologyPlugin, ServerNetworkPlugin};
+use sidereal::net::{ReplicationServerConfig, ReplicationServerPlugin, ServerNetworkPlugin};
 
 use tracing::{Level, debug, info};
 
@@ -57,10 +57,7 @@ fn main() {
         .add_plugins((
             RepliconPlugins,
             ServerNetworkPlugin,
-            ReplicationTopologyPlugin {
-                replication_server_config: Some(replication_config),
-                shard_config: None,
-            },
+            ReplicationServerPlugin { config: replication_config },
         ))
         .add_plugins((SiderealPlugin::default().with_replicon(true), SceneLoaderPlugin))
         .add_systems(
