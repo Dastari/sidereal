@@ -1,5 +1,6 @@
 use super::config::{DEFAULT_PROTOCOL_ID, create_stable_connection_config}; // Adjusted import
 use bevy::prelude::*;
+#[cfg(feature = "replicon")]
 use bevy_replicon_renet2::{
     RepliconRenetPlugins,
     netcode::{
@@ -14,6 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tracing::info;
+use uuid::Uuid;
 
 /// Plugin for Replicon-based client-server networking
 pub struct NetworkingPlugin {
@@ -43,6 +45,7 @@ pub fn default_connection_config() -> ConnectionConfig {
 }
 
 /// Initializes Renet server resources for game clients.
+#[cfg(feature = "replicon")]
 pub fn init_server(
     commands: &mut Commands,
     server_port: u16,

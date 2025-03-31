@@ -1,6 +1,7 @@
 // sidereal/src/net/config.rs
 
 use bevy::prelude::*;
+#[cfg(feature = "replicon")]
 use bevy_replicon_renet2::renet2::{ChannelConfig, ConnectionConfig, SendType};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -13,6 +14,7 @@ pub const DEFAULT_REPLICATION_PORT: u16 = 5000;
 // --- Connection Configuration Helper ---
 
 /// Creates a Renet2 ConnectionConfig with explicitly defined channels compatible with Replicon.
+#[cfg(feature = "replicon")]
 pub fn create_stable_connection_config() -> ConnectionConfig {
     let server_channels_config = vec![
         ChannelConfig {

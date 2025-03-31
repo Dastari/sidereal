@@ -1,17 +1,12 @@
 use super::config::{ReplicationServerConfig, ShardConfig};
-use super::connection::{init_client, init_server};
-use super::shard_communication::{init_shard_client, REPLICATION_SERVER_SHARD_PORT};
+use super::connection::init_server;
+use super::shard_communication::{REPLICATION_SERVER_SHARD_PORT, init_shard_client};
 use bevy::prelude::*;
 #[cfg(feature = "replicon")]
 use bevy_replicon::prelude::{ConnectedClient, ReplicatedClient};
 #[cfg(feature = "replicon")]
 use bevy_replicon_renet2::RepliconRenetPlugins;
-use renet2::ServerEvent;
-use uuid::Uuid;
-use std::{
-    error::Error,
-    net::{IpAddr, SocketAddr},
-};
+use std::{error::Error, net::SocketAddr};
 use tracing::{error, info, warn};
 
 pub const REPLICATION_SERVER_DEFAULT_PORT: u16 = 5000;
@@ -44,7 +39,7 @@ impl Plugin for ReplicationTopologyPlugin {
         #[cfg(feature = "replicon")]
         {
             app.add_plugins(RepliconRenetPlugins);
-            
+
             if is_replication_server {
                 // Add system to mark clients for replication
                 app.add_systems(Update, mark_clients_as_replicated);
@@ -78,13 +73,15 @@ impl Plugin for ReplicationTopologyPlugin {
         if let Some(replication_config) = self.replication_server_config.clone() {
             // Clone the config before using it in both closures
             let config1 = replication_config.clone();
-            app.add_systems(Startup, move |mut commands: Commands| {
-                match init_replication_server(&mut commands, &config1) {
+            app.add_systems(
+                Startup,
+                move |mut commands: Commands| match init_replication_server(&mut commands, &config1)
+                {
                     Ok(_) => info!("Replication server initialized successfully"),
                     Err(e) => error!("Failed to initialize replication server: {}", e),
-                }
-            });
-            
+                },
+            );
+
             // Use a different clone for the second closure
             let config2 = replication_config.clone();
             // Initialize the shard server component on the replication server
@@ -97,7 +94,7 @@ impl Plugin for ReplicationTopologyPlugin {
                     error!("Failed to initialize shard server component: {}", e);
                 }
             });
-            
+
             // Add the plugin for handling shard server events (connections, messages)
             app.add_plugins(super::shard_communication::ShardServerPlugin);
         }
@@ -124,7 +121,7 @@ pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), B
         shard_id = config.shard_id.to_string(),
         "Initializing shard client (connecting to replication server)..."
     );
-    
+
     // Use the new shard_communication init function
     init_shard_client(
         commands,
@@ -132,7 +129,7 @@ pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), B
         config.protocol_id,
         config.shard_id,
     )?;
-    
+
     info!(
         shard_id = config.shard_id.to_string(),
         "Shard client component initialized."
@@ -143,7 +140,7 @@ pub fn init_shard(commands: &mut Commands, config: &ShardConfig) -> Result<(), B
         ..config.clone()
     };
     commands.insert_resource(final_config);
-    
+
     // We don't need to add the ShardClientPlugin here - it should be added
     // in the plugin's build method based on shard_config.is_some()
 

@@ -12,8 +12,8 @@ use game::scene_loader::SceneState;
 use sidereal::ecs::components::Object;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
-use sidereal::net::{ReplicationServerConfig, ReplicationTopologyPlugin, ServerNetworkPlugin};
 use sidereal::net::shard_communication::{ConnectedShards, REPLICATION_SERVER_SHARD_PORT};
+use sidereal::net::{ReplicationServerConfig, ReplicationTopologyPlugin, ServerNetworkPlugin};
 
 use tracing::{Level, debug, info};
 
@@ -62,15 +62,12 @@ fn main() {
                 shard_config: None,
             },
         ))
-        .add_plugins((SiderealPlugin, SceneLoaderPlugin))
+        .add_plugins((SiderealPlugin::default().with_replicon(true), SceneLoaderPlugin))
         .add_systems(
             OnEnter(SceneState::Completed),
             mark_entities_for_replication,
         )
-        .add_systems(Update, (
-            log_marked_entities,
-            log_shard_connections,
-        ))
+        .add_systems(Update, (log_marked_entities, log_shard_connections))
         .run();
 }
 
@@ -115,16 +112,21 @@ fn log_shard_connections(
     let current_time = time.elapsed().as_secs_f64();
     if current_time - *last_log > 60.0 {
         *last_log = current_time;
-        
+
         if let Some(shards) = shards {
             let count = shards.shards.len();
             if count > 0 {
-                info!("Replication server is managing {} connected shard servers", count);
-                
+                info!(
+                    "Replication server is managing {} connected shard servers",
+                    count
+                );
+
                 for (client_id, shard) in &shards.shards {
                     info!(
                         "Shard {} (client_id: {}) managing {} sectors",
-                        shard.shard_id, client_id, shard.sectors.len()
+                        shard.shard_id,
+                        client_id,
+                        shard.sectors.len()
                     );
                 }
             } else {

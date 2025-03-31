@@ -8,7 +8,7 @@ use bevy::transform::TransformPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_state::app::StatesPlugin;
-// SiderealPlugin now properly respects the replicon feature flag
+// SiderealPlugin now has runtime protection against Replicon
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
 use sidereal::net::{ClientNetworkPlugin, ShardConfig, ReplicationTopologyPlugin};
@@ -83,7 +83,8 @@ fn main() {
                 ),
         ))
         .add_plugins((
-            SiderealPlugin, // Now safe to use without Replicon
+            // Use SiderealPlugin with Replicon disabled for shard server
+            SiderealPlugin::without_replicon(),
             ClientNetworkPlugin,
             // Use the topology plugin which will add ShardClientPlugin for us
             ReplicationTopologyPlugin {
