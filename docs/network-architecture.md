@@ -41,24 +41,20 @@ To meet Sidereal's networking requirements, we'll use a hybrid approach combinin
 - **Client-Replication Server Communication:** We'll use **bevy_replicon_renet2** (v0.7.0) to handle all communication between game clients and the replication server. This library provides seamless integration between Replicon's ECS replication framework and renet2's networking capabilities. Using Replicon here gives us automatic entity replication, client prediction, and other game-networking features with minimal code.
 
 - **Replication Server-Shard Server Communication:** For communication between the replication server and shard servers, we'll use **renet2** (v0.7.0) directly with **bevy_renet2** (v0.7.0) for Bevy integration. This approach gives us more control over the exact data being transmitted between servers, without the overhead of Replicon's full entity replication system which isn't needed for server-to-server communication.
+    - **Client:** The shard server connects as a client using `RenetClient` and `NetcodeClientTransport`. It requires the `RenetClientPlugin` and `NetcodeClientPlugin` from `bevy_renet2` to be added to the app.
+    - **Server:** The replication server listens for shards using a separate `RenetServer` and `NetcodeServerTransport` instance.
 
-### Understanding the Renet2 Ecosystem
+- **Replication Server-Shard Server Communication:** For communication between the replication server and shard servers, we'll use **renet2** (v0.7.0) directly with **bevy_renet2** (v0.7.0) for Bevy integration. This approach gives us more control over the exact data being transmitted between servers, without the overhead of Replicon's full entity replication system which isn't needed for server-to-server communication.
 
-It's important to clarify the distinction between several related crates:
+- **Client-facing Server:** Uses `bevy_replicon_renet2` for game clients. This server will handle entity replication to clients using Replicon's automatic ECS synchronization.
+    - **Important Plugin Interaction:** `bevy_replicon_renet2`'s `RepliconRenetPlugins` internally adds the core `bevy_renet2` server plugins (`RenetServerPlugin`, `NetcodeServerPlugin`). This is crucial because explicitly adding these core plugins again for the shard-facing server will cause a Bevy panic due to duplicate plugin registration.
 
-- **renet2** (v0.7.0): The core networking library that handles reliable and unreliable UDP-based messaging, with features for connection management, channels with different reliability guarantees, and authentication.
-
-- **bevy_renet2** (v0.7.0): A thin integration layer for using renet2 with Bevy. It provides systems to call update functions on RenetClient and RenetServer, and requires these components to be added as resources. The setup is similar to using renet2 directly but with Bevy-specific optimizations.
-
-- **bevy_replicon_renet2** (v0.7.0): An integration of bevy_renet2 as a messaging backend for bevy_replicon. It includes a WebTransport backend for browsers and enables servers that can manage multi-platform clients simultaneously. We'll use this only for client-replication server communication.
-
-### Replication Server Network Configuration
-
-The replication server will need to run **two separate renet2 servers**:
-
-1. **Client-facing Server:** Uses bevy_replicon_renet2 for game clients. This server will handle entity replication to clients using Replicon's automatic ECS synchronization.
-
-2. **Shard-facing Server:** Uses renet2/bevy_renet2 directly for communication with shard servers. This server will use custom message types for efficient server-to-server communication.
+- **Shard-facing Server:** Uses `renet2`/`bevy_renet2` directly for communication with shard servers. This server will use custom message types for efficient server-to-server communication.
+    - **Manual Management:** Because Bevy only allows one instance of each resource type (e.g., `RenetServer`, `NetcodeServerTransport`), and the client-facing server uses the standard resources managed by `RepliconRenetPlugins`, the shard-facing server components *must* be managed manually. This involves:
+        1. Defining a custom resource, e.g., `ShardListener { server: RenetServer, transport: NetcodeServerTransport }`.
+        2. Creating the `RenetServer` and `NetcodeServerTransport` for shards in a `Startup` system, packaging them into `ShardListener`, and inserting *that* resource.
+        3. Adding a custom `Update` system (e.g., `manual_shard_server_update`) that accesses `ResMut<ShardListener>` and manually calls `transport.update(delta, &mut server)` and `server.update(delta)`.
+        4. Adapting event/message handling systems (like `handle_server_events`) to access the server via the `ShardListener` resource instead of `ResMut<RenetServer>`.
 
 This dual-server approach is necessary because:
 - The client and shard connections require different handling (Replicon ECS replication vs. direct messaging)
@@ -109,7 +105,11 @@ struct EntityUpdate {
 // ... other struct definitions
 ```
 
-We'll use bincode (v2.0.0) for efficient binary serialization of these messages.
+We'll use `bincode` (v2.x) for efficient binary serialization of these messages. Because our messages include external types like `uuid::Uuid` which provide `serde` compatibility via feature flags (but not direct `bincode::Encode`/`Decode` implementations), we must:
+1. Enable the `serde` feature for the `bincode` crate itself in `Cargo.toml`.
+2. Enable the `serde` feature for dependencies like `uuid` in `Cargo.toml`.
+3. Use the `bincode::serde::*` functions (e.g., `bincode::serde::encode_to_vec`, `bincode::serde::decode_from_slice`) for serialization/deserialization, rather than the main `bincode::encode_*`/`decode_*` functions or the direct `bincode::Encode`/`Decode` derive macros on our message types.
+4. Ensure our message types derive `serde::Serialize` and `serde::Deserialize`.
 
 ## Entity State Replication Protocol
 
@@ -147,8 +147,8 @@ fn main() {
         // Client-facing networking with Replicon
         .add_plugins(RepliconPlugins)
         .add_plugins(RepliconRenetPlugins)
-        // Shard-facing networking with direct renet2
-        .add_plugins(RenetServerPlugin)
+        // Shard-facing networking: Core plugins are added by RepliconRenetPlugins above.
+        // We add our custom plugin containing the ShardListener resource and update systems.
         .insert_resource(setup_shard_server_config()) // Custom function to set up shard-facing server
         // Remaining resources and systems...
         .add_systems(Update, handle_shard_messages)
@@ -159,14 +159,15 @@ fn main() {
 }
 
 fn handle_shard_messages(
-    mut shard_server: ResMut<RenetServer>,
+    mut shard_listener: ResMut<ShardListener>, // Access manually managed server
     mut commands: Commands,
     mut world_entities: ResMut<WorldEntityRegistry>,
     mut query: Query<(&Id, &mut Transform, &mut Velocity)>,
 ) {
     // Process messages from all connected shards
-    for client_id in shard_server.clients_id() {
-        while let Some(message) = shard_server.receive_message(client_id, SHARD_CHANNEL_UNRELIABLE) {
+    let server = &mut shard_listener.server;
+    for client_id in server.clients_id() {
+        while let Some(message) = server.receive_message(client_id, SHARD_CHANNEL_UNRELIABLE) {
             if let Ok(ShardToReplicationMessage::EntityUpdates(updates)) = bincode::deserialize(&message) {
                 for update in updates {
                     // Apply entity updates to the ECS world
@@ -192,6 +193,7 @@ fn main() {
         .add_plugins(GameLogicPlugin)
         // Connect to replication server
         .add_plugins(RenetClientPlugin)
+        .add_plugins(NetcodeClientPlugin) // Handles RenetClient updates
         .insert_resource(setup_replication_client_config()) // Custom function to set up client
         // Systems
         .add_systems(PreUpdate, receive_replication_messages)
@@ -218,7 +220,7 @@ fn send_entity_updates_to_replication(
     
     if !updates.is_empty() {
         let message = ShardToReplicationMessage::EntityUpdates(updates);
-        let bytes = bincode::serialize(&message).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap(); // Use bincode::serde
         replication_client.send_message(SHARD_CHANNEL_UNRELIABLE, bytes);
     }
 }
@@ -231,10 +233,9 @@ The updated architecture maintains all the scalability benefits of the original 
 1. **Separate Network Stacks:** By using different networking approaches for client and shard communication, we can optimize each for its specific needs.
 
 2. **Efficient Server-to-Server Communication:** Direct renet2 messaging between replication and shard servers allows us to fine-tune exactly what data is transmitted, minimizing bandwidth usage.
+    - The use of `bincode` (via its `serde` module) provides efficient binary serialization. Ensuring compatible versions of dependencies like `uuid` (e.g., v1.12 for Bevy 0.15) with the necessary `serde` feature enabled is important.
 
 3. **Flexible Deployment:** The replication server can handle both client and shard connections independently, allowing for separate scaling strategies if needed.
-
-4. **Optimized Client Experience:** Clients still benefit from the high-level features of Replicon for entity replication, interpolation, and prediction.
 
 ### Docker Deployment and Scaling
 

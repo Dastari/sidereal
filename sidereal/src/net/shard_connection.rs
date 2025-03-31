@@ -3,16 +3,13 @@ use super::connection::init_server;
 use super::shard_communication::{REPLICATION_SERVER_SHARD_PORT, init_shard_client};
 use bevy::prelude::*;
 use bevy_renet2::prelude::RenetClientPlugin;
-use bevy_replicon::prelude::{ConnectedClient, ReplicatedClient};
-#[cfg(feature = "replicon")]
+use bevy_replicon::prelude::*;
 use bevy_replicon_renet2::RepliconRenetPlugins;
 use std::{error::Error, net::SocketAddr};
 use tracing::{error, info, warn};
 use bevy_renet2::netcode::NetcodeClientPlugin;
 
 pub const REPLICATION_SERVER_DEFAULT_PORT: u16 = 5000;
-
-/// Sets up the appropriate networking role (Replication Server or Shard Client/Server).
 pub struct ReplicationTopologyPlugin {
     pub shard_config: Option<ShardConfig>,
     pub replication_server_config: Option<ReplicationServerConfig>,
@@ -35,24 +32,15 @@ impl Plugin for ReplicationTopologyPlugin {
         if is_shard && is_replication_server {
             panic!("Cannot be both a Shard Server and a Replication Server in the same instance.");
         }
-
-        // Only add Replicon plugins if this is a replication server
-        // This prevents the shard server from loading Replicon-related code
         if is_replication_server {
-            // Add Replicon only if the feature is enabled
             #[cfg(feature = "replicon")]
             {
-                // Add the core bevy_renet2 server plugin for shard communication - REMOVED, as RepliconRenetServerPlugin adds it internally
-                // app.add_plugins(RenetServerPlugin);
                 app.add_plugins(RepliconRenetPlugins);
-                
-                // Add system to mark clients for replication
                 app.add_systems(Update, mark_clients_as_replicated);
             }
         }
 
         if is_shard {
-            // Add the shard client plugin for direct renet2 communication with replication server
             app.add_plugins(RenetClientPlugin);
             app.add_plugins(NetcodeClientPlugin);
             app.add_plugins(super::shard_communication::ShardClientPlugin);
@@ -78,7 +66,6 @@ impl Plugin for ReplicationTopologyPlugin {
         }
 
         if let Some(replication_config) = self.replication_server_config.clone() {
-            // Clone the config before using it in both closures
             let config1 = replication_config.clone();
             app.add_systems(
                 Startup,
@@ -88,10 +75,7 @@ impl Plugin for ReplicationTopologyPlugin {
                     Err(e) => error!("Failed to initialize replication server: {}", e),
                 },
             );
-
-            // Use a different clone for the second closure
             let config2 = replication_config.clone();
-            // Initialize the shard server component on the replication server
             app.add_systems(Startup, move |mut commands: Commands| {
                 match super::shard_communication::init_shard_server(
                     REPLICATION_SERVER_SHARD_PORT,

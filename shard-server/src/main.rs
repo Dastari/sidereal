@@ -83,25 +83,14 @@ fn main() {
                 ),
         ))
         .add_plugins((
-            // Use SiderealPlugin with Replicon disabled
             SiderealPlugin::without_replicon(),
             ClientNetworkPlugin,
-            // Directly add the ShardClientPlugin which handles communications with the replication server
             ReplicationTopologyPlugin {
                 shard_config: Some(shard_config.clone()),
                 replication_server_config: None,
             },
         ))
         .insert_resource(shard_config)
-        .add_systems(Update, log_status)
         .run();
 }
 
-// Simplified logging function
-fn log_status(time: Res<Time>) {
-    // Log every minute
-    let seconds = time.elapsed().as_secs_f64() as u64;
-    if seconds % 60 == 0 && seconds > 0 {
-        info!("Shard server running for {} seconds", seconds);
-    }
-}
