@@ -77,10 +77,8 @@ impl Plugin for Renet2ClientPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.config.clone());
 
-        // Initialize client in a separate system to avoid borrow issues
         app.add_systems(Startup, init_client_system);
 
-        // Add tracking resources and systems if enabled
         if self.tracking_enabled {
             app.init_resource::<AssignedSectors>()
                 .add_systems(
@@ -107,30 +105,37 @@ fn init_client_system(world: &mut World) {
 }
 
 fn init_renet2_client(world: &mut World) -> Result<(), Box<dyn Error>> {
-    let config = world.resource::<Renet2ClientConfig>();
-    let socket = UdpSocket::bind(config.bind_addr)?;
+    let server_addr = {
+        let config = world.resource::<Renet2ClientConfig>();
+        config.server_addr
+    };
+    
+    let socket = UdpSocket::bind(world.resource::<Renet2ClientConfig>().bind_addr)?;
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
-    let client_id = config.shard_id.as_u128() as u64;
+    let client_id = world.resource::<Renet2ClientConfig>().shard_id.as_u128() as u64;
+    let protocol_id = world.resource::<Renet2ClientConfig>().protocol_id;
 
     let connection_config = create_connection_config();
     let client = RenetClient::new(connection_config, false);
 
     let authentication = ClientAuthentication::Unsecure {
         client_id,
-        protocol_id: config.protocol_id,
-        server_addr: config.server_addr,
+        protocol_id,
+        server_addr,
         user_data: None,
         socket_id: 0,
     };
 
     let socket = NativeSocket::new(socket)?;
     let transport = NetcodeClientTransport::new(current_time, authentication, socket)?;
-    // Insert resources using a tuple to avoid multiple mutable borrows
-    world.insert_resource((client, transport));
+
+    // Insert resources separately
+    world.insert_resource(client);
+    world.insert_resource(transport);
 
     info!(
         "Shard client initialized connecting to {}",
-        config.server_addr
+        server_addr
     );
 
     Ok(())
@@ -212,9 +217,6 @@ fn receive_replication_messages(
                 } else {
                     warn!(sector = ?sector_coords, "Received unassignment for sector not currently assigned");
                 }
-            }
-            Ok(other_msg) => {
-                 warn!("Received unhandled reliable message type: {:?}", std::any::type_name_of_val(&other_msg));
             }
             Err(e) => error!("Failed to deserialize reliable message: {:?}", e),
         }

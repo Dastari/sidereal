@@ -6,13 +6,7 @@ use bevy_replicon::prelude::*;
 use bevy_replicon::shared::replication::replication_registry::ReplicationRegistry;  
 use tracing::warn;
 
-/// Main plugin for Sidereal type registration and replication
-///
-/// Usage options:
-/// - Use with default settings for replication server and game clients
-/// - Use with `with_replicon(false)` for shard servers
 pub struct SiderealPlugin {
-    /// Whether to use Replicon features
     replicon_enabled: bool,
 }
 
@@ -25,14 +19,12 @@ impl Default for SiderealPlugin {
 }
 
 impl SiderealPlugin {
-    /// Create a new SiderealPlugin with Replicon disabled
     pub fn without_replicon() -> Self {
         Self {
             replicon_enabled: false,
         }
     }
 
-    /// Set whether to use Replicon
     pub fn with_replicon(mut self, enabled: bool) -> Self {
         self.replicon_enabled = enabled;
         self
@@ -41,9 +33,7 @@ impl SiderealPlugin {
 
 impl Plugin for SiderealPlugin {
     fn build(&self, app: &mut App) {
-        // --- Replication Registration (only when replicon is enabled) ---
         if self.replicon_enabled {
-            // Only try to add Replicon components if the app has RepliconPlugin
             let has_replicon = app.world().contains_resource::<ReplicationRegistry>();
 
             if has_replicon {

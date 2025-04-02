@@ -15,7 +15,7 @@ use net::renet2_server::Renet2ServerPlugin;
 use net::replicon_server::RepliconServerPlugin;
 use game::sector_manager::SectorManagerPlugin;
 
-use tracing::{Level, debug, info};
+use tracing::{Level, info};
 
 fn main() {
     #[cfg(debug_assertions)]
