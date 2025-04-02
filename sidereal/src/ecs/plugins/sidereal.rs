@@ -3,7 +3,7 @@ use crate::ecs::components::*; // Assuming Object and Sector are here
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
-use bevy_replicon::shared::replication::replication_registry::ReplicationRegistry;
+use bevy_replicon::shared::replication::replication_registry::ReplicationRegistry;  
 use tracing::warn;
 
 /// Main plugin for Sidereal type registration and replication

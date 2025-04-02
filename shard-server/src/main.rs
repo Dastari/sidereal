@@ -1,4 +1,6 @@
 mod game;
+mod net;
+
 use avian2d::prelude::*;
 use bevy::asset::AssetPlugin;
 use bevy::hierarchy::HierarchyPlugin;
@@ -10,20 +12,19 @@ use bevy_remote::http::RemoteHttpPlugin;
 use bevy_state::app::StatesPlugin;
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::DEFAULT_PROTOCOL_ID;
-use sidereal::net::utils::ClientNetworkPlugin;
-use sidereal::net::{ShardConfig, ShardPlugin, shard_communication::REPLICATION_SERVER_SHARD_PORT};
-use std::env;
+use sidereal::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
+use net::renet2_client::{Renet2ClientPlugin, Renet2ClientConfig};
 use std::time::Duration;
 use uuid::Uuid;
 
-use tracing::{Level, info, warn};
+use tracing::{Level, info};
 
 fn main() {
     #[cfg(debug_assertions)]
     unsafe {
         std::env::set_var(
             "RUST_LOG",
-            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,sidereal=debug",
+            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,sidereal=debug,shard_server=debug",
         );
     }
 
@@ -32,28 +33,16 @@ fn main() {
         .with_max_level(Level::DEBUG)
         .init();
 
-    let args: Vec<String> = env::args().collect();
-
-    let shard_id = args
-        .get(1)
-        .map_or(Ok(1), |arg| arg.parse::<u64>())
-        .unwrap_or_else(|e| {
-            warn!("Failed to parse shard ID arg: {}. Defaulting to 1.", e);
-            1
-        });
-
-    info!("Initializing Sidereal Shard Server with ID: {}", shard_id);
-
-    let shard_config = ShardConfig {
+    let client_config = Renet2ClientConfig {
         shard_id: Uuid::new_v4(),
         protocol_id: DEFAULT_PROTOCOL_ID,
-        replication_server_addr: format!("127.0.0.1:{}", REPLICATION_SERVER_SHARD_PORT)
+        server_addr: format!("127.0.0.1:{}", REPLICATION_SERVER_SHARD_PORT)
             .parse()
             .expect("Failed to parse replication server address"),
         bind_addr: "127.0.0.1:0".parse().expect("Failed to parse bind address"),
     };
 
-    info!("Initial shard configuration: {:?}", shard_config);
+    info!("Initial shard configuration: {:?}", client_config);
 
     App::new()
         .add_plugins(
@@ -82,13 +71,10 @@ fn main() {
                     "GET, POST, PUT, DELETE, OPTIONS",
                 ),
         ))
+        .add_plugins(Renet2ClientPlugin::with_config(client_config))
         .add_plugins((
+            
             SiderealPlugin::without_replicon(),
-            ClientNetworkPlugin,
-            ShardPlugin {
-                config: shard_config.clone(),
-            },
         ))
-        .insert_resource(shard_config)
         .run();
 }

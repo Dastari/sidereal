@@ -1,29 +1,28 @@
 mod database;
 mod game;
+mod net;
 
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
-use bevy_replicon::prelude::*;
 use bevy_state::app::StatesPlugin;
 use game::SceneLoaderPlugin;
 use std::time::Duration;
 
-use game::scene_loader::SceneState;
-use sidereal::ecs::components::Object;
 use sidereal::ecs::plugins::SiderealPlugin;
-use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICATION_PORT};
-use sidereal::net::shard_communication::{ConnectedShards, REPLICATION_SERVER_SHARD_PORT};
-use sidereal::net::{ReplicationServerConfig, ReplicationServerPlugin, ServerNetworkPlugin};
+use sidereal::net::config::{RepliconServerConfig, DEFAULT_PROTOCOL_ID, DEFAULT_REPLICON_PORT};
+
+use net::renet2_server::Renet2ServerPlugin;
+use net::replicon_server::RepliconServerPlugin;
+use game::sector_manager::SectorManagerPlugin;
 
 use tracing::{Level, debug, info};
 
 fn main() {
     #[cfg(debug_assertions)]
     unsafe {
-        // TODO: Audit that the environment access only happens in single-threaded code.
         std::env::set_var(
             "RUST_LOG",
-            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn",
+            "info,bevy_app=info,bevy_ecs=info,renetcode2=info,renet2=info,bevy_replicon=warn,replication_server=debug",
         );
     }
     tracing_subscriber::fmt()
@@ -31,111 +30,38 @@ fn main() {
         .with_max_level(Level::DEBUG)
         .init();
 
-    info!("Starting Sidereal Replication Server");
+    info!("Starting Sidereal Replicon Server");
 
-    let replication_bind_addr = format!("0.0.0.0:{}", DEFAULT_REPLICATION_PORT)
+    let replicon_bind_addr = format!("0.0.0.0:{}", DEFAULT_REPLICON_PORT)
         .parse()
-        .expect("Failed to parse default replication server address");
+        .expect("Failed to parse default replicon server address");
 
-    let replication_config = ReplicationServerConfig {
-        bind_addr: replication_bind_addr,
+    let replicon_config = RepliconServerConfig {
+        bind_addr: replicon_bind_addr,
         protocol_id: DEFAULT_PROTOCOL_ID,
     };
 
-    info!("Replication server configuration: {:?}", replication_config);
-    info!("Shard server port: {}", REPLICATION_SERVER_SHARD_PORT);
+    info!("Replicon server configuration: {:?}", replicon_config);
 
     App::new()
         .add_plugins(
             MinimalPlugins
                 .set(bevy::app::ScheduleRunnerPlugin::run_loop(
-                    Duration::from_secs_f64(1.0 / 60.0),
+                    Duration::from_secs_f64(1.0 / 20.0),
                 ))
                 .build(),
         )
         .add_plugins((HierarchyPlugin, TransformPlugin, StatesPlugin))
         .add_plugins((
-            RepliconPlugins,
-            ServerNetworkPlugin,
-            ReplicationServerPlugin {
-                config: replication_config,
-            },
+            RepliconServerPlugin::with_config(replicon_config),
+            Renet2ServerPlugin::default(),
+            
         ))
         .add_plugins((
+            SectorManagerPlugin,
             SiderealPlugin::default().with_replicon(true),
             SceneLoaderPlugin,
         ))
-        .add_systems(
-            OnEnter(SceneState::Completed),
-            mark_entities_for_replication,
-        )
-        .add_systems(Update, (log_marked_entities, log_shard_connections))
         .run();
 }
 
-fn mark_entities_for_replication(
-    mut commands: Commands,
-    query: Query<Entity, (With<Object>, Without<Replicated>)>,
-) {
-    let mut count = 0;
-    for entity in query.iter() {
-        commands.entity(entity).insert(Replicated);
-        count += 1;
-    }
-
-    if count > 0 {
-        info!("Marked {} loaded scene entities for replication", count);
-    }
-}
-
-fn log_marked_entities(query: Query<(Entity, Option<&Name>), Added<Replicated>>) {
-    for (entity, name) in query.iter() {
-        if let Some(name) = name {
-            debug!(
-                "Entity '{:}' ({:?}) marked as Replicated on server",
-                name, entity
-            );
-        } else {
-            debug!(
-                "Entity {:?} marked as Replicated on server (no name)",
-                entity
-            );
-        }
-    }
-}
-
-// System to monitor shard connections
-fn log_shard_connections(
-    shards: Option<Res<ConnectedShards>>,
-    time: Res<Time>,
-    mut last_log: Local<f64>,
-) {
-    // Log every 60 seconds
-    let current_time = time.elapsed().as_secs_f64();
-    if current_time - *last_log > 60.0 {
-        *last_log = current_time;
-
-        if let Some(shards) = shards {
-            let count = shards.shards.len();
-            if count > 0 {
-                info!(
-                    "Replication server is managing {} connected shard servers",
-                    count
-                );
-
-                for (client_id, shard) in &shards.shards {
-                    info!(
-                        "Shard {} (client_id: {}) managing {} sectors",
-                        shard.shard_id,
-                        client_id,
-                        shard.sectors.len()
-                    );
-                }
-            } else {
-                debug!("No shard servers connected to replication server");
-            }
-        } else {
-            debug!("Shard tracking system not initialized");
-        }
-    }
-}
