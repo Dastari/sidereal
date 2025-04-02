@@ -77,14 +77,8 @@ impl Plugin for Renet2ClientPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.config.clone());
 
-        match init_client(&mut app.world_mut()) {
-            Ok(_) => {
-                info!("Initialized shard client for replication connection");
-            }
-            Err(e) => {
-                warn!("Failed to initialize shard client: {}", e);
-            }
-        }
+        // Initialize client in a separate system to avoid borrow issues
+        app.add_systems(Startup, init_client_system);
 
         // Add tracking resources and systems if enabled
         if self.tracking_enabled {
@@ -101,6 +95,14 @@ impl Plugin for Renet2ClientPlugin {
         }
 
         info!("Renet2 client plugin initialized");
+    }
+}
+
+fn init_client_system(world: &mut World) {
+    if let Err(e) = init_renet2_client(world) {
+        warn!("Failed to initialize shard client: {}", e);
+    } else {
+        info!("Initialized shard client for replication connection");
     }
 }
 
@@ -123,9 +125,8 @@ fn init_renet2_client(world: &mut World) -> Result<(), Box<dyn Error>> {
 
     let socket = NativeSocket::new(socket)?;
     let transport = NetcodeClientTransport::new(current_time, authentication, socket)?;
-
-    world.insert_resource(client);
-    world.insert_resource(transport);
+    // Insert resources using a tuple to avoid multiple mutable borrows
+    world.insert_resource((client, transport));
 
     info!(
         "Shard client initialized connecting to {}",
