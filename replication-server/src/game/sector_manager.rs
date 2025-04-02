@@ -9,9 +9,7 @@ use uuid::Uuid;
 
 // Updated imports to use sidereal crate paths where necessary
 use sidereal::ecs::components::sector::Sector;
-use sidereal::net::shard_communication::{
-    ReplicationToShardMessage, SHARD_CHANNEL_RELIABLE,
-};
+use sidereal::net::shard_communication::{ReplicationToShardMessage, SHARD_CHANNEL_RELIABLE};
 // Import server-specific listener from its new location (assuming net/shard_management.rs)
 use crate::net::renet2_server::ShardListener;
 
@@ -110,7 +108,8 @@ impl SectorManager {
 
             // Mark all sectors managed by this shard as unloaded
             for sector in shard.sectors.iter() {
-                self.sector_map.insert(sector.clone(), SectorAssignmentState::Unloaded);
+                self.sector_map
+                    .insert(sector.clone(), SectorAssignmentState::Unloaded);
             }
 
             info!(
@@ -213,7 +212,8 @@ impl SectorManager {
         if let Some(shard_id) = self.select_best_shard_for_sector(&sector) {
             if let Some(shard) = self.shards.get_mut(&shard_id) {
                 // Mark the sector as loading
-                self.sector_map.insert(sector.clone(), SectorAssignmentState::Loading { shard_id });
+                self.sector_map
+                    .insert(sector.clone(), SectorAssignmentState::Loading { shard_id });
 
                 // Add the sector to the shard's managed sectors
                 shard.sectors.insert(sector.clone());
@@ -239,9 +239,13 @@ impl SectorManager {
         let sector = Sector::new(sector_coords.0, sector_coords.1);
 
         // Ensure the sector exists and is in Loading state for this shard
-        if let Some(SectorAssignmentState::Loading { shard_id: loading_shard }) = self.sector_map.get(&sector) {
+        if let Some(SectorAssignmentState::Loading {
+            shard_id: loading_shard,
+        }) = self.sector_map.get(&sector)
+        {
             if *loading_shard == shard_id {
-                self.sector_map.insert(sector.clone(), SectorAssignmentState::Active { shard_id });
+                self.sector_map
+                    .insert(sector.clone(), SectorAssignmentState::Active { shard_id });
                 info!(
                     shard_id = %shard_id,
                     sector = ?sector,
@@ -271,7 +275,10 @@ impl SectorManager {
             let shard_id = *shard_id;
             if let Some(shard) = self.shards.get(&shard_id) {
                 // Mark sector as unloading
-                self.sector_map.insert(sector.clone(), SectorAssignmentState::Unloading { shard_id });
+                self.sector_map.insert(
+                    sector.clone(),
+                    SectorAssignmentState::Unloading { shard_id },
+                );
 
                 info!(
                     shard_id = %shard_id,
@@ -291,9 +298,13 @@ impl SectorManager {
         let sector = Sector::new(sector_coords.0, sector_coords.1);
 
         // Ensure the sector exists and is in Unloading state for this shard
-        if let Some(SectorAssignmentState::Unloading { shard_id: unloading_shard }) = self.sector_map.get(&sector) {
+        if let Some(SectorAssignmentState::Unloading {
+            shard_id: unloading_shard,
+        }) = self.sector_map.get(&sector)
+        {
             if *unloading_shard == shard_id {
-                self.sector_map.insert(sector.clone(), SectorAssignmentState::Unloaded);
+                self.sector_map
+                    .insert(sector.clone(), SectorAssignmentState::Unloaded);
 
                 // Remove sector from shard's managed sectors
                 if let Some(shard) = self.shards.get_mut(&shard_id) {
@@ -325,9 +336,9 @@ impl SectorManager {
     /// Get the shard ID and client ID responsible for a sector
     pub fn get_sector_shard(&self, sector: &Sector) -> Option<(Uuid, u64)> {
         match self.sector_map.get(sector) {
-            Some(SectorAssignmentState::Active { shard_id }) |
-            Some(SectorAssignmentState::Loading { shard_id }) |
-            Some(SectorAssignmentState::Unloading { shard_id }) => {
+            Some(SectorAssignmentState::Active { shard_id })
+            | Some(SectorAssignmentState::Loading { shard_id })
+            | Some(SectorAssignmentState::Unloading { shard_id }) => {
                 if let Some(shard) = self.shards.get(shard_id) {
                     Some((*shard_id, shard.client_id))
                 } else {
@@ -358,12 +369,12 @@ impl SectorManager {
         let now = SystemTime::now();
         self.empty_sectors
             .iter()
-            .filter_map(|(sector, empty_since)| {
-                match now.duration_since(*empty_since) {
+            .filter_map(
+                |(sector, empty_since)| match now.duration_since(*empty_since) {
                     Ok(duration) if duration >= SECTOR_DEACTIVATION_TIMEOUT => Some(sector.clone()),
                     _ => None,
-                }
-            })
+                },
+            )
             .collect()
     }
 
@@ -376,11 +387,12 @@ impl SectorManager {
         let mut candidates = Vec::new();
 
         // Identify overloaded shards
-        let overloaded_shards: Vec<_> = self.shards
+        let overloaded_shards: Vec<_> = self
+            .shards
             .iter()
             .filter(|(_, shard)| {
-                let load = shard.load_stats.entity_count +
-                           (shard.load_stats.player_count * PLAYER_WEIGHT);
+                let load =
+                    shard.load_stats.entity_count + (shard.load_stats.player_count * PLAYER_WEIGHT);
                 load > LOAD_THRESHOLD
             })
             .collect();
@@ -393,7 +405,8 @@ impl SectorManager {
         for (shard_id, shard) in overloaded_shards {
             // Find sectors on the edge of this shard's territory
             // (those that have the fewest adjacent sectors also managed by this shard)
-            let edge_sectors: Vec<_> = shard.sectors
+            let edge_sectors: Vec<_> = shard
+                .sectors
                 .iter()
                 .filter(|sector| {
                     // A sector is on the edge if it has fewer than 4 adjacent sectors
@@ -453,7 +466,7 @@ impl SectorManager {
         &mut self,
         client_id: u64,
         shard_id: Uuid,
-        sectors: Vec<(i32, i32)>
+        sectors: Vec<(i32, i32)>,
     ) -> Vec<(i32, i32)> {
         // Check if this is a known shard
         if let Some(existing_shard_id) = self.client_to_shard.get(&client_id).copied() {
@@ -473,9 +486,8 @@ impl SectorManager {
             self.register_shard(shard_id, client_id);
         }
 
-        let sectors_set: HashSet<Sector> = sectors.iter()
-            .map(|(x, y)| Sector::new(*x, *y))
-            .collect();
+        let sectors_set: HashSet<Sector> =
+            sectors.iter().map(|(x, y)| Sector::new(*x, *y)).collect();
         let mut new_sectors = Vec::new();
 
         if sectors_set.is_empty() {
@@ -491,10 +503,15 @@ impl SectorManager {
                     let sector = Sector::new(x, y);
 
                     // Only assign if sector is unloaded
-                    if !self.sector_map.contains_key(&sector) ||
-                        matches!(self.sector_map.get(&sector), Some(SectorAssignmentState::Unloaded)) {
+                    if !self.sector_map.contains_key(&sector)
+                        || matches!(
+                            self.sector_map.get(&sector),
+                            Some(SectorAssignmentState::Unloaded)
+                        )
+                    {
                         // Mark as loading
-                        self.sector_map.insert(sector.clone(), SectorAssignmentState::Loading { shard_id });
+                        self.sector_map
+                            .insert(sector.clone(), SectorAssignmentState::Loading { shard_id });
 
                         // Add to shard's managed sectors
                         if let Some(shard) = self.shards.get_mut(&shard_id) {
@@ -522,10 +539,17 @@ impl SectorManager {
                     for y in -5..5 {
                         let sector = Sector::new(x, y);
 
-                        if !self.sector_map.contains_key(&sector) ||
-                            matches!(self.sector_map.get(&sector), Some(SectorAssignmentState::Unloaded)) {
+                        if !self.sector_map.contains_key(&sector)
+                            || matches!(
+                                self.sector_map.get(&sector),
+                                Some(SectorAssignmentState::Unloaded)
+                            )
+                        {
                             // Mark as loading
-                            self.sector_map.insert(sector.clone(), SectorAssignmentState::Loading { shard_id });
+                            self.sector_map.insert(
+                                sector.clone(),
+                                SectorAssignmentState::Loading { shard_id },
+                            );
 
                             // Add to shard's managed sectors
                             if let Some(shard) = self.shards.get_mut(&shard_id) {
@@ -581,7 +605,8 @@ impl SectorManager {
                         shard.sectors.insert(sector.clone());
 
                         // Update sector map
-                        self.sector_map.insert(sector.clone(), SectorAssignmentState::Active { shard_id });
+                        self.sector_map
+                            .insert(sector.clone(), SectorAssignmentState::Active { shard_id });
                         info!(
                             shard_id = %shard_id,
                             sector = ?sector,
@@ -624,7 +649,7 @@ fn check_deactivation_candidates(
         if let Some((shard_id, client_id)) = sector_manager.deactivate_sector(sector.clone()) {
             // Send unassign message to the shard
             let message = ReplicationToShardMessage::UnassignSector {
-                sector_coords: sector.clone()
+                sector_coords: sector.clone(),
             };
 
             match bincode::serde::encode_to_vec(&message, bincode::config::standard()) {
@@ -674,13 +699,15 @@ fn rebalance_sectors(
             }
 
             // Get client IDs for both shards
-            let source_client_id = if let Some(shard) = sector_manager.shards.get(&source_shard_id) {
+            let source_client_id = if let Some(shard) = sector_manager.shards.get(&source_shard_id)
+            {
                 shard.client_id
             } else {
                 continue;
             };
 
-            let _target_client_id = if let Some(shard) = sector_manager.shards.get(&target_shard_id) {
+            let _target_client_id = if let Some(shard) = sector_manager.shards.get(&target_shard_id)
+            {
                 shard.client_id
             } else {
                 continue;
@@ -688,7 +715,7 @@ fn rebalance_sectors(
 
             // Step 1: Send unassign message to source shard
             let unassign_message = ReplicationToShardMessage::UnassignSector {
-                sector_coords: sector.clone()
+                sector_coords: sector.clone(),
             };
 
             match bincode::serde::encode_to_vec(&unassign_message, bincode::config::standard()) {
@@ -702,7 +729,12 @@ fn rebalance_sectors(
                     );
 
                     // Update sector map to show it's unloading from source shard
-                    sector_manager.sector_map.insert(sector.clone(), SectorAssignmentState::Unloading { shard_id: source_shard_id });
+                    sector_manager.sector_map.insert(
+                        sector.clone(),
+                        SectorAssignmentState::Unloading {
+                            shard_id: source_shard_id,
+                        },
+                    );
 
                     // Step 2: Assign to target shard (will be done when source shard confirms removal)
                     // We don't immediately assign to the target shard to avoid race conditions
@@ -710,7 +742,10 @@ fn rebalance_sectors(
                     // 1. Source shard confirms removal via SectorRemoved message
                     // 2. Then we'll send AssignSector to target shard with any necessary entity data
                 }
-                Err(e) => error!("Failed to serialize sector unassignment for rebalance: {:?}", e),
+                Err(e) => error!(
+                    "Failed to serialize sector unassignment for rebalance: {:?}",
+                    e
+                ),
             }
         }
     }
@@ -743,19 +778,24 @@ fn handle_entity_transitions(
             // Here we're just showing the logic flow
 
             // Update the entity's Sector component
-            commands.entity(entity).insert(Sector::new(current_sector.x, current_sector.y));
+            commands
+                .entity(entity)
+                .insert(Sector::new(current_sector.x, current_sector.y));
 
             // Look up current sector assignment state
             match sector_manager.sector_map.get(&current_sector) {
                 // Case A: same shard manages both sectors
                 Some(SectorAssignmentState::Active { shard_id }) => {
                     let current_sector_tuple = Sector::new(sector.x, sector.y);
-                    let old_shard_id = sector_manager.get_sector_shard(&current_sector_tuple)
+                    let old_shard_id = sector_manager
+                        .get_sector_shard(&current_sector_tuple)
                         .map(|(id, _)| id);
 
                     if old_shard_id == Some(*shard_id) {
                         // Send acknowledge transition to the shard
-                        if let Some((_, _client_id)) = sector_manager.get_sector_shard(&current_sector_tuple) {
+                        if let Some((_, _client_id)) =
+                            sector_manager.get_sector_shard(&current_sector_tuple)
+                        {
                             // Send AcknowledgeTransition message
                             // (not implemented in our message types yet)
                         }
@@ -818,7 +858,9 @@ fn log_sector_assignment_status(
 
     // If there are any sectors in Loading state, list them
     if loading_count > 0 {
-        let loading_sectors: Vec<_> = sector_manager.sector_map.iter()
+        let loading_sectors: Vec<_> = sector_manager
+            .sector_map
+            .iter()
             .filter_map(|(sector, state)| match state {
                 SectorAssignmentState::Loading { shard_id } => Some((sector, shard_id)),
                 _ => None,
@@ -828,12 +870,16 @@ fn log_sector_assignment_status(
         info!("Sectors in Loading state:");
         for (sector, shard_id) in loading_sectors {
             // Try to find the client_id for this shard_id
-            let client_id = sector_manager.shards.get(shard_id)
+            let client_id = sector_manager
+                .shards
+                .get(shard_id)
                 .map(|info| info.client_id.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            info!("  - Sector {:?} being loaded by shard {} (client_id: {})",
-                 sector, shard_id, client_id);
+            info!(
+                "  - Sector {:?} being loaded by shard {} (client_id: {})",
+                sector, shard_id, client_id
+            );
 
             // Calculate how long the sector has been in Loading state
             // This would require tracking when the sector was set to Loading,
@@ -843,7 +889,9 @@ fn log_sector_assignment_status(
 
     // Also log active sectors if any
     if active_count > 0 {
-        let active_sectors: Vec<_> = sector_manager.sector_map.iter()
+        let active_sectors: Vec<_> = sector_manager
+            .sector_map
+            .iter()
             .filter_map(|(sector, state)| match state {
                 SectorAssignmentState::Active { shard_id } => Some((sector, shard_id)),
                 _ => None,
@@ -864,12 +912,14 @@ pub struct SectorManagerPlugin;
 
 impl Plugin for SectorManagerPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SectorManager>()
-            .add_systems(Update, (
+        app.init_resource::<SectorManager>().add_systems(
+            Update,
+            (
                 check_deactivation_candidates,
                 rebalance_sectors,
                 handle_entity_transitions, // Keep placeholder for now
                 log_sector_assignment_status,
-            ));
+            ),
+        );
     }
-} 
+}

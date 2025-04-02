@@ -10,13 +10,13 @@ use std::{
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use sidereal::{create_connection_config, ecs::components::sector::Sector};
-use sidereal::net::shard_communication::{
-    ReplicationToShardMessage, ShardToReplicationMessage, SHARD_CHANNEL_RELIABLE,
-    SHARD_CHANNEL_UNRELIABLE,
-};
 use sidereal::net::config::DEFAULT_PROTOCOL_ID;
 use sidereal::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
+use sidereal::net::shard_communication::{
+    ReplicationToShardMessage, SHARD_CHANNEL_RELIABLE, SHARD_CHANNEL_UNRELIABLE,
+    ShardToReplicationMessage,
+};
+use sidereal::{create_connection_config, ecs::components::sector::Sector};
 
 #[derive(Resource, Default, Debug)]
 pub struct AssignedSectors {
@@ -80,16 +80,16 @@ impl Plugin for Renet2ClientPlugin {
         app.add_systems(Startup, init_client_system);
 
         if self.tracking_enabled {
-            app.init_resource::<AssignedSectors>()
-                .add_systems(
-                    Update,
-                    (
-                        log_connection_status.run_if(resource_exists::<RenetClient>),
-                        send_shard_identification.run_if(resource_exists::<RenetClient>),
-                        receive_replication_messages.run_if(resource_exists::<RenetClient>),
-                        send_load_stats.run_if(resource_exists::<RenetClient>),
-                    ).chain(),
-                );
+            app.init_resource::<AssignedSectors>().add_systems(
+                Update,
+                (
+                    log_connection_status.run_if(resource_exists::<RenetClient>),
+                    send_shard_identification.run_if(resource_exists::<RenetClient>),
+                    receive_replication_messages.run_if(resource_exists::<RenetClient>),
+                    send_load_stats.run_if(resource_exists::<RenetClient>),
+                )
+                    .chain(),
+            );
         }
 
         info!("Renet2 client plugin initialized");
@@ -109,7 +109,7 @@ fn init_renet2_client(world: &mut World) -> Result<(), Box<dyn Error>> {
         let config = world.resource::<Renet2ClientConfig>();
         config.server_addr
     };
-    
+
     let socket = UdpSocket::bind(world.resource::<Renet2ClientConfig>().bind_addr)?;
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let client_id = world.resource::<Renet2ClientConfig>().shard_id.as_u128() as u64;
@@ -133,10 +133,7 @@ fn init_renet2_client(world: &mut World) -> Result<(), Box<dyn Error>> {
     world.insert_resource(client);
     world.insert_resource(transport);
 
-    info!(
-        "Shard client initialized connecting to {}",
-        server_addr
-    );
+    info!("Shard client initialized connecting to {}", server_addr);
 
     Ok(())
 }
@@ -172,22 +169,34 @@ fn receive_replication_messages(
     if !client.is_connected() {
         return;
     }
-    
+
     // Process reliable messages first (more critical)
     while let Some(message) = client.receive_message(SHARD_CHANNEL_RELIABLE) {
         debug!("Received message on RELIABLE channel");
-        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v)
+        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(
+            &message,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
         {
             Ok(ReplicationToShardMessage::AssignSectors { sectors }) => {
-                info!(count = sectors.len(), "Received AssignSectors command (RELIABLE)");
+                info!(
+                    count = sectors.len(),
+                    "Received AssignSectors command (RELIABLE)"
+                );
                 let mut changed = false;
                 for sector in sectors {
                     if assigned_sectors.sectors.insert(sector.clone()) {
                         info!(sector = ?sector, "Added assigned sector");
                         changed = true;
                         // Send confirmation back immediately
-                        let confirm_message = ShardToReplicationMessage::SectorReady { sector_coords: sector.clone() };
-                        if let Ok(bytes) = bincode::serde::encode_to_vec(&confirm_message, bincode::config::standard()) {
+                        let confirm_message = ShardToReplicationMessage::SectorReady {
+                            sector_coords: sector.clone(),
+                        };
+                        if let Ok(bytes) = bincode::serde::encode_to_vec(
+                            &confirm_message,
+                            bincode::config::standard(),
+                        ) {
                             client.send_message(SHARD_CHANNEL_RELIABLE, bytes);
                             info!(sector = ?sector, "Sent SectorReady confirmation");
                         } else {
@@ -207,8 +216,12 @@ fn receive_replication_messages(
                     assigned_sectors.dirty = true;
                     info!("Marked assigned sectors as dirty due to UnassignSector");
                     // Send confirmation back
-                    let confirm_message = ShardToReplicationMessage::SectorRemoved { sector_coords: sector_coords.clone() };
-                     if let Ok(bytes) = bincode::serde::encode_to_vec(&confirm_message, bincode::config::standard()) {
+                    let confirm_message = ShardToReplicationMessage::SectorRemoved {
+                        sector_coords: sector_coords.clone(),
+                    };
+                    if let Ok(bytes) =
+                        bincode::serde::encode_to_vec(&confirm_message, bincode::config::standard())
+                    {
                         client.send_message(SHARD_CHANNEL_RELIABLE, bytes);
                         info!(sector = ?sector_coords, "Sent SectorRemoved confirmation");
                     } else {
@@ -223,12 +236,19 @@ fn receive_replication_messages(
     }
 
     // Process unreliable messages (less critical state updates)
-     while let Some(message) = client.receive_message(SHARD_CHANNEL_UNRELIABLE) {
+    while let Some(message) = client.receive_message(SHARD_CHANNEL_UNRELIABLE) {
         debug!("Received message on UNRELIABLE channel");
-        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(&message, bincode::config::standard()).map(|(v, _)| v)
+        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(
+            &message,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
         {
             Ok(msg) => {
-                warn!("Received unhandled unreliable message type: {:?}", std::any::type_name_of_val(&msg));
+                warn!(
+                    "Received unhandled unreliable message type: {:?}",
+                    std::any::type_name_of_val(&msg)
+                );
             }
             Err(e) => error!("Failed to deserialize unreliable message: {:?}", e),
         }
@@ -264,35 +284,34 @@ fn send_shard_identification(
     }
 }
 
-fn send_load_stats(
-    mut client: ResMut<RenetClient>,
-    time: Res<Time>,
-    mut last_update: Local<f64>,
-) {
+fn send_load_stats(mut client: ResMut<RenetClient>, time: Res<Time>, mut last_update: Local<f64>) {
     if !client.is_connected() {
         return;
     }
-    
+
     let current_time = time.elapsed().as_secs_f64();
     if current_time - *last_update < 10.0 {
         return;
     }
     *last_update = current_time;
-    
+
     // Placeholder counts - replace with actual queries
     let entity_count = 100; // TODO: Replace with query.iter().count() or similar
-    let player_count = 5;   // TODO: Replace with query for players
-    
+    let player_count = 5; // TODO: Replace with query for players
+
     let message = ShardToReplicationMessage::ShardLoadUpdate {
         entity_count,
         player_count,
     };
-    
+
     match bincode::serde::encode_to_vec(&message, bincode::config::standard()) {
         Ok(bytes) => {
             client.send_message(SHARD_CHANNEL_RELIABLE, bytes);
-            debug!("Sent load update (entities={}, players={})", entity_count, player_count);
+            debug!(
+                "Sent load update (entities={}, players={})",
+                entity_count, player_count
+            );
         }
         Err(e) => error!("Failed to serialize load update: {:?}", e),
     }
-} 
+}

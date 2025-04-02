@@ -1,13 +1,13 @@
-use bevy_replicon::{prelude::Replicated, RepliconPlugins};
-use sidereal::{net::config::{create_connection_config, DEFAULT_PROTOCOL_ID}, Object, RepliconServerConfig}; 
 use bevy::prelude::*;
+use bevy_replicon::{RepliconPlugins, prelude::Replicated};
 use bevy_replicon_renet2::{
     RepliconRenetPlugins,
-    netcode::{
-         NativeSocket, NetcodeServerTransport,
-        ServerAuthentication, ServerSetupConfig,
-    },
+    netcode::{NativeSocket, NetcodeServerTransport, ServerAuthentication, ServerSetupConfig},
     renet2::{ConnectionConfig, RenetServer},
+};
+use sidereal::{
+    Object, RepliconServerConfig,
+    net::config::{DEFAULT_PROTOCOL_ID, create_connection_config},
 };
 use std::{
     error::Error,
@@ -53,8 +53,11 @@ impl Plugin for RepliconServerPlugin {
             .insert_resource(self.config.clone());
 
         if self.replication_enabled {
-            app.add_systems(OnEnter(SceneState::Completed), mark_entities_for_replication)
-                .add_systems(Update, log_marked_entities);
+            app.add_systems(
+                OnEnter(SceneState::Completed),
+                mark_entities_for_replication,
+            )
+            .add_systems(Update, log_marked_entities);
         }
         app.add_systems(Startup, init_replicon_server_system);
         info!("Replicon Renet2 networking plugins added.");
@@ -62,11 +65,15 @@ impl Plugin for RepliconServerPlugin {
 }
 
 pub fn default_connection_config() -> ConnectionConfig {
-    create_connection_config() 
+    create_connection_config()
 }
 
 fn init_replicon_server_system(mut commands: Commands, config: Res<RepliconServerConfig>) {
-    match init_server(&mut commands, config.bind_addr.port(), Some(config.protocol_id)) {
+    match init_server(
+        &mut commands,
+        config.bind_addr.port(),
+        Some(config.protocol_id),
+    ) {
         Ok(_) => info!("Replicon server initialized successfully"),
         Err(e) => warn!("Failed to initialize replicon server: {}", e),
     }
@@ -104,7 +111,10 @@ pub fn init_server(
 
     commands.insert_resource(server);
     commands.insert_resource(transport);
-    info!("Server resources initialized with {} max clients", max_clients);
+    info!(
+        "Server resources initialized with {} max clients",
+        max_clients
+    );
 
     Ok(())
 }

@@ -32,12 +32,8 @@ pub enum ShardToReplicationMessage {
 /// Messages sent from the Replication Server to a Shard Server
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ReplicationToShardMessage {
-    AssignSectors {
-        sectors: Vec<Sector>,
-    },
-    UnassignSector {
-        sector_coords: Sector,
-    },
+    AssignSectors { sectors: Vec<Sector> },
+    UnassignSector { sector_coords: Sector },
     // Add SectorInitialState here later
     // Add EntityEnterSector here later
     // Add AcknowledgeTransition here later

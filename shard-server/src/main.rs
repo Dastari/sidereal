@@ -10,10 +10,10 @@ use bevy::transform::TransformPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_state::app::StatesPlugin;
+use net::renet2_client::{Renet2ClientConfig, Renet2ClientPlugin};
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::DEFAULT_PROTOCOL_ID;
 use sidereal::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
-use net::renet2_client::{Renet2ClientPlugin, Renet2ClientConfig};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -72,9 +72,6 @@ fn main() {
                 ),
         ))
         .add_plugins(Renet2ClientPlugin::with_config(client_config))
-        .add_plugins((
-            
-            SiderealPlugin::without_replicon(),
-        ))
+        .add_plugins((SiderealPlugin::without_replicon(),))
         .run();
 }

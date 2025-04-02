@@ -13,18 +13,17 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use sidereal::ecs::components::sector::Sector;
-use sidereal::net::shard_communication::{
-    ShardToReplicationMessage, SHARD_CHANNEL_RELIABLE,
-    REPLICATION_SERVER_SHARD_PORT, 
-};
 use sidereal::net::config::DEFAULT_PROTOCOL_ID;
+use sidereal::net::shard_communication::{
+    REPLICATION_SERVER_SHARD_PORT, SHARD_CHANNEL_RELIABLE, ShardToReplicationMessage,
+};
 
 #[derive(Resource, Default)]
 pub struct ConnectedShards {
     pub shards: HashMap<u64, ShardInfo>,
 }
 
-#[derive(Debug, Clone)] 
+#[derive(Debug, Clone)]
 pub struct ShardInfo {
     pub shard_id: Uuid,
     pub sectors: HashSet<Sector>,
@@ -198,9 +197,12 @@ fn handle_server_events(
                     info!(client_id = %client_id, sector = ?sector_coords, "Shard confirmed SectorReady");
                 }
                 Ok(ShardToReplicationMessage::SectorRemoved { sector_coords }) => {
-                     info!(client_id = %client_id, sector = ?sector_coords, "Shard confirmed SectorRemoved");
+                    info!(client_id = %client_id, sector = ?sector_coords, "Shard confirmed SectorRemoved");
                 }
-                Ok(ShardToReplicationMessage::ShardLoadUpdate { entity_count, player_count }) => {
+                Ok(ShardToReplicationMessage::ShardLoadUpdate {
+                    entity_count,
+                    player_count,
+                }) => {
                     debug!(client_id = %client_id, entity_count = entity_count, player_count = player_count, "Received shard load update");
                 }
                 Err(e) => {
@@ -232,7 +234,7 @@ fn log_shard_stats(
     info!("Connected shard servers: {}", connected_shards.shards.len());
 
     for (client_id, shard) in &connected_shards.shards {
-         let uptime = match shard.connected_at.elapsed() {
+        let uptime = match shard.connected_at.elapsed() {
             Ok(duration) => {
                 let hours = duration.as_secs() / 3600;
                 let minutes = (duration.as_secs() % 3600) / 60;
@@ -250,4 +252,4 @@ fn log_shard_stats(
         );
     }
     info!("===================================");
-} 
+}

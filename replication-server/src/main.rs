@@ -9,11 +9,11 @@ use game::SceneLoaderPlugin;
 use std::time::Duration;
 
 use sidereal::ecs::plugins::SiderealPlugin;
-use sidereal::net::config::{RepliconServerConfig, DEFAULT_PROTOCOL_ID, DEFAULT_REPLICON_PORT};
+use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICON_PORT, RepliconServerConfig};
 
+use game::sector_manager::SectorManagerPlugin;
 use net::renet2_server::Renet2ServerPlugin;
 use net::replicon_server::RepliconServerPlugin;
-use game::sector_manager::SectorManagerPlugin;
 
 use tracing::{Level, info};
 
@@ -55,7 +55,6 @@ fn main() {
         .add_plugins((
             RepliconServerPlugin::with_config(replicon_config),
             Renet2ServerPlugin::default(),
-            
         ))
         .add_plugins((
             SectorManagerPlugin,
@@ -64,4 +63,3 @@ fn main() {
         ))
         .run();
 }
-
