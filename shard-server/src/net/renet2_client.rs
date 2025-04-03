@@ -10,13 +10,14 @@ use std::{
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use sidereal::net::config::DEFAULT_PROTOCOL_ID;
-use sidereal::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
-use sidereal::net::shard_communication::{
-    ReplicationToShardMessage, SHARD_CHANNEL_RELIABLE, SHARD_CHANNEL_UNRELIABLE,
-    ShardToReplicationMessage,
+use sidereal::ecs::components::sector::Sector;
+use sidereal::net::config::{
+    DEFAULT_PROTOCOL_ID, DEFAULT_RENET2_PORT, SHARD_CHANNEL_RELIABLE, SHARD_CHANNEL_UNRELIABLE,
+    create_connection_config,
 };
-use sidereal::{create_connection_config, ecs::components::sector::Sector};
+use sidereal::net::messages::{ReplicationToShardMessage, ShardToReplicationMessage};
+
+
 
 #[derive(Resource, Default, Debug)]
 pub struct AssignedSectors {
@@ -36,13 +37,19 @@ impl Default for Renet2ClientConfig {
     fn default() -> Self {
         Self {
             bind_addr: "127.0.0.1:0".parse().expect("Invalid default bind address"),
-            server_addr: format!("127.0.0.1:{}", REPLICATION_SERVER_SHARD_PORT)
+            server_addr: format!("127.0.0.1:{}", DEFAULT_RENET2_PORT)
                 .parse()
                 .expect("Invalid default server address"),
             shard_id: Uuid::new_v4(),
             protocol_id: DEFAULT_PROTOCOL_ID,
         }
     }
+}
+
+#[derive(Resource)]
+pub struct Renet2ClientListener {
+    pub client: RenetClient,
+    pub transport: NetcodeClientTransport,
 }
 
 pub struct Renet2ClientPlugin {
@@ -78,17 +85,27 @@ impl Plugin for Renet2ClientPlugin {
         app.insert_resource(self.config.clone());
 
         app.add_systems(Startup, init_client_system);
+        app.add_systems(Update, client_update.run_if(resource_exists::<Renet2ClientListener>));
 
+        app.add_systems(
+            Update,
+            send_shard_identification.run_if(resource_exists::<Renet2ClientListener>),
+        );
+
+        app.add_systems(
+            Update,
+            receive_replication_messages.run_if(resource_exists::<Renet2ClientListener>),
+        );
+        
         if self.tracking_enabled {
             app.init_resource::<AssignedSectors>().add_systems(
                 Update,
                 (
-                    log_connection_status.run_if(resource_exists::<RenetClient>),
-                    send_shard_identification.run_if(resource_exists::<RenetClient>),
-                    receive_replication_messages.run_if(resource_exists::<RenetClient>),
-                    send_load_stats.run_if(resource_exists::<RenetClient>),
+                    log_connection_status,
+                    send_load_stats,
                 )
-                    .chain(),
+                    .chain()
+                    .after(client_update),
             );
         }
 
@@ -100,9 +117,12 @@ fn init_client_system(world: &mut World) {
     if let Err(e) = init_renet2_client(world) {
         warn!("Failed to initialize shard client: {}", e);
     } else {
-        info!("Initialized shard client for replication connection");
+        info!("Initialized shard client for renet2 connection");
     }
 }
+
+
+
 
 fn init_renet2_client(world: &mut World) -> Result<(), Box<dyn Error>> {
     let server_addr = {
@@ -130,8 +150,7 @@ fn init_renet2_client(world: &mut World) -> Result<(), Box<dyn Error>> {
     let transport = NetcodeClientTransport::new(current_time, authentication, socket)?;
 
     // Insert resources separately
-    world.insert_resource(client);
-    world.insert_resource(transport);
+    world.insert_resource(Renet2ClientListener { client, transport });
 
     info!("Shard client initialized connecting to {}", server_addr);
 
@@ -140,7 +159,7 @@ fn init_renet2_client(world: &mut World) -> Result<(), Box<dyn Error>> {
 
 /// System to log connection status periodically
 fn log_connection_status(
-    client: Option<Res<RenetClient>>,
+    listener: Res<Renet2ClientListener>,
     time: Res<Time>,
     mut last_log: Local<f64>,
 ) {
@@ -150,22 +169,20 @@ fn log_connection_status(
     }
     *last_log = current_time;
 
-    if let Some(client) = client {
-        if client.is_connected() {
-            info!("Shard Status: Connected to Replication Server");
-        } else {
-            info!("Shard Status: Disconnected from Replication Server");
-        }
+    let Renet2ClientListener { client, transport } = listener.as_ref();
+    if client.is_connected() {
+        info!("Shard Status: Connected to Replication Server");
     } else {
-        debug!("Shard Status: RenetClient not available");
+            info!("Shard Status: Disconnected from Replication Server");
     }
 }
 
 /// System to receive messages from the replication server
 fn receive_replication_messages(
-    mut client: ResMut<RenetClient>,
+    mut listener: ResMut<Renet2ClientListener>,
     mut assigned_sectors: ResMut<AssignedSectors>,
 ) {
+    let Renet2ClientListener { client, transport } = listener.as_mut();
     if !client.is_connected() {
         return;
     }
@@ -235,43 +252,24 @@ fn receive_replication_messages(
         }
     }
 
-    // Process unreliable messages (less critical state updates)
-    while let Some(message) = client.receive_message(SHARD_CHANNEL_UNRELIABLE) {
-        debug!("Received message on UNRELIABLE channel");
-        match bincode::serde::decode_from_slice::<ReplicationToShardMessage, _>(
-            &message,
-            bincode::config::standard(),
-        )
-        .map(|(v, _)| v)
-        {
-            Ok(msg) => {
-                warn!(
-                    "Received unhandled unreliable message type: {:?}",
-                    std::any::type_name_of_val(&msg)
-                );
-            }
-            Err(e) => error!("Failed to deserialize unreliable message: {:?}", e),
-        }
-    }
 }
 
 /// Send shard identification to replication server on connection
 fn send_shard_identification(
-    mut client: ResMut<RenetClient>,
+    mut listener: ResMut<Renet2ClientListener>,
     config: Res<Renet2ClientConfig>,
     mut sent: Local<bool>,
 ) {
+    let Renet2ClientListener { client, transport } = listener.as_mut();
     if !client.is_connected() {
         *sent = false;
         return;
     }
 
-    // Only send identification once when we connect
     if !*sent {
         info!(shard_id = %config.shard_id, "Sending shard identification to replication server");
         let message = ShardToReplicationMessage::IdentifyShard {
             shard_id: config.shard_id,
-            sectors: Vec::new(), // Start with empty, let server assign
         };
         match bincode::serde::encode_to_vec(&message, bincode::config::standard()) {
             Ok(bytes) => {
@@ -284,7 +282,8 @@ fn send_shard_identification(
     }
 }
 
-fn send_load_stats(mut client: ResMut<RenetClient>, time: Res<Time>, mut last_update: Local<f64>) {
+fn send_load_stats(mut listener: ResMut<Renet2ClientListener>, time: Res<Time>, mut last_update: Local<f64>) {
+    let Renet2ClientListener { client, transport } = listener.as_mut();
     if !client.is_connected() {
         return;
     }
@@ -313,5 +312,16 @@ fn send_load_stats(mut client: ResMut<RenetClient>, time: Res<Time>, mut last_up
             );
         }
         Err(e) => error!("Failed to serialize load update: {:?}", e),
+    }
+}
+
+fn client_update(
+    mut listener: ResMut<Renet2ClientListener>,
+    time: Res<Time>,
+) {
+    let Renet2ClientListener { client, transport } = listener.as_mut();
+    client.update(time.delta());
+    if let Err(e) = transport.update(time.delta(), client) {
+        error!("Client transport update error: {:?}", e);
     }
 }

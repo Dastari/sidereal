@@ -4,21 +4,91 @@ use std::{
     collections::{HashMap, HashSet},
     time::{Duration, SystemTime},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
-// Updated imports to use sidereal crate paths where necessary
 use sidereal::ecs::components::sector::Sector;
-use sidereal::net::shard_communication::{ReplicationToShardMessage, SHARD_CHANNEL_RELIABLE};
-// Import server-specific listener from its new location (assuming net/shard_management.rs)
-use crate::net::renet2_server::ShardListener;
+use sidereal::net::config::SHARD_CHANNEL_RELIABLE;
+use sidereal::net::messages::ReplicationToShardMessage;
 
-// Constants for sector management
+use crate::net::renet2_server::Renet2ServerListener;
+
 const SECTOR_SIZE: f32 = 1000.0; // Size of a sector in world units
 const LOAD_REBALANCE_INTERVAL: f64 = 60.0; // In seconds
 const PLAYER_WEIGHT: u32 = 10; // Weight of a player in load calculations
 const LOAD_THRESHOLD: u32 = 100; // Load threshold for considering a shard as overloaded
 const SECTOR_DEACTIVATION_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+
+#[derive(Resource, Default)]
+pub struct EntityTracker {
+    sector_to_entities: HashMap<Sector, HashSet<Entity>>,
+    entity_to_sector: HashMap<Entity, Sector>,
+}
+
+impl EntityTracker {
+    fn new() -> Self {
+        Self {
+            sector_to_entities: HashMap::new(),
+            entity_to_sector: HashMap::new(),
+        }
+    }
+
+    /// Register an entity as being in a sector
+    pub fn register_entity(&mut self, entity: Entity, sector: &Sector) {
+        // Remove entity from previous sector if it existed
+        if let Some(old_sector) = self.entity_to_sector.get(&entity) {
+            if old_sector != sector {
+                if let Some(entities) = self.sector_to_entities.get_mut(old_sector) {
+                    entities.remove(&entity);
+
+                    // If sector is now empty, we might eventually want to deactivate it
+                    if entities.is_empty() {
+                        self.sector_to_entities.remove(old_sector);
+                    }
+                }
+            } else {
+                // Entity is already in this sector
+                return;
+            }
+        }
+
+        // Add entity to new sector
+        self.entity_to_sector.insert(entity, sector.clone());
+        self.sector_to_entities
+            .entry(sector.clone())
+            .or_insert_with(HashSet::new)
+            .insert(entity);
+    }
+
+    /// Remove an entity when it's despawned
+    pub fn remove_entity(&mut self, entity: Entity) {
+        if let Some(sector) = self.entity_to_sector.remove(&entity) {
+            if let Some(entities) = self.sector_to_entities.get_mut(&sector) {
+                entities.remove(&entity);
+
+                // If sector is now empty, remove it from tracking
+                if entities.is_empty() {
+                    self.sector_to_entities.remove(&sector);
+                }
+            }
+        }
+    }
+
+    /// Get all entities in a sector
+    pub fn get_entities_in_sector(&self, sector: &Sector) -> Option<&HashSet<Entity>> {
+        self.sector_to_entities.get(sector)
+    }
+
+    /// Get all active sectors (sectors with at least one entity)
+    pub fn get_active_sectors(&self) -> Vec<Sector> {
+        self.sector_to_entities.keys().cloned().collect()
+    }
+
+    /// Get the current sector of an entity
+    pub fn get_entity_sector(&self, entity: &Entity) -> Option<&Sector> {
+        self.entity_to_sector.get(entity)
+    }
+}
 
 /// Load statistics for a shard
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +113,7 @@ impl Default for ShardLoadStats {
 #[derive(Debug, Clone)]
 pub struct ShardInfo {
     pub shard_id: Uuid,
-    pub client_id: u64, // RenetServer client ID
+    pub client_id: u64, 
     pub sectors: HashSet<Sector>,
     pub connected_at: SystemTime,
     pub load_stats: ShardLoadStats,
@@ -123,9 +193,11 @@ impl SectorManager {
     /// Update load statistics for a shard
     pub fn update_shard_load(&mut self, shard_id: Uuid, stats: ShardLoadStats) {
         if let Some(shard) = self.shards.get_mut(&shard_id) {
+            let entity_count = stats.entity_count;
+            let player_count = stats.player_count;
             shard.load_stats = stats;
             shard.last_load_update = SystemTime::now();
-            debug!(shard_id = %shard_id, "Updated shard load stats");
+            trace!(shard_id = %shard_id, "Updated shard load stats: {} entities, {} players", entity_count, player_count);
         }
     }
 
@@ -192,6 +264,11 @@ impl SectorManager {
             Some(SectorAssignmentState::Active { shard_id }) => {
                 // Already active
                 if let Some(shard) = self.shards.get(shard_id) {
+                    trace!(
+                        shard_id = %shard_id,
+                        sector = ?sector,
+                        "Sector already active on shard"
+                    );
                     return Some((*shard_id, shard.client_id));
                 }
                 return None;
@@ -199,13 +276,31 @@ impl SectorManager {
             Some(SectorAssignmentState::Loading { shard_id }) => {
                 // Already loading
                 if let Some(shard) = self.shards.get(shard_id) {
+                    trace!(
+                        shard_id = %shard_id,
+                        sector = ?sector,
+                        "Sector already loading on shard"
+                    );
                     return Some((*shard_id, shard.client_id));
                 }
+                return None;
+            }
+            Some(SectorAssignmentState::Unloading { .. }) => {
+                // Currently unloading, wait for it to complete
+                debug!(
+                    sector = ?sector,
+                    "Sector is currently unloading, will wait for completion before activating"
+                );
                 return None;
             }
             _ => {
                 // Not active or loading, continue with activation
             }
+        }
+
+        // If no shards are available, return None
+        if self.shards.is_empty() {
+            return None;
         }
 
         // Select the best shard for this sector
@@ -221,7 +316,7 @@ impl SectorManager {
                 // Remove from empty sectors if it was there
                 self.empty_sectors.remove(&sector);
 
-                info!(
+                debug!(
                     shard_id = %shard_id,
                     sector = ?sector,
                     "Activating sector on shard"
@@ -229,6 +324,11 @@ impl SectorManager {
 
                 return Some((shard_id, shard.client_id));
             }
+        } else {
+            warn!(
+                sector = ?sector,
+                "Failed to select a suitable shard for sector activation"
+            );
         }
 
         None
@@ -337,8 +437,7 @@ impl SectorManager {
     pub fn get_sector_shard(&self, sector: &Sector) -> Option<(Uuid, u64)> {
         match self.sector_map.get(sector) {
             Some(SectorAssignmentState::Active { shard_id })
-            | Some(SectorAssignmentState::Loading { shard_id })
-            | Some(SectorAssignmentState::Unloading { shard_id }) => {
+            | Some(SectorAssignmentState::Loading { shard_id }) => {
                 if let Some(shard) = self.shards.get(shard_id) {
                     Some((*shard_id, shard.client_id))
                 } else {
@@ -353,14 +452,14 @@ impl SectorManager {
     pub fn mark_sector_empty(&mut self, sector: Sector) {
         if !self.empty_sectors.contains_key(&sector) {
             self.empty_sectors.insert(sector.clone(), SystemTime::now());
-            debug!(sector = ?sector, "Marked sector as empty");
+            trace!(sector = ?sector, "Marked sector as empty");
         }
     }
 
     /// Mark a sector as non-empty (has significant entities)
     pub fn mark_sector_non_empty(&mut self, sector: Sector) {
         if self.empty_sectors.remove(&sector).is_some() {
-            debug!(sector = ?sector, "Marked sector as non-empty");
+            trace!(sector = ?sector, "Marked sector as non-empty");
         }
     }
 
@@ -459,6 +558,47 @@ impl SectorManager {
         }
 
         sectors
+    }
+
+    /// Update sector map based on active entities
+    pub fn update_active_sectors(&mut self, active_sectors: &[Sector]) {
+        // First collect sectors that need to be marked as empty
+        let to_mark_empty: Vec<Sector> = self
+            .sector_map
+            .keys()
+            .filter(|sector| {
+                !active_sectors.contains(sector)
+                    && !self.empty_sectors.contains_key(sector)
+                    && matches!(
+                        self.sector_map.get(sector),
+                        Some(SectorAssignmentState::Active { .. })
+                    )
+            })
+            .cloned()
+            .collect();
+
+        // Now mark them as empty
+        for sector in to_mark_empty {
+            self.mark_sector_empty(sector);
+        }
+
+        // Then ensure we have active sectors in the map
+        for sector in active_sectors {
+            // If sector is marked as empty but now has entities, mark it as non-empty
+            if self.empty_sectors.contains_key(sector) {
+                self.mark_sector_non_empty(sector.clone());
+            }
+
+            // If sector is not in our map or is unloaded, try to activate it
+            if !self.sector_map.contains_key(sector)
+                || matches!(
+                    self.sector_map.get(sector),
+                    Some(SectorAssignmentState::Unloaded)
+                )
+            {
+                self.activate_sector(sector.clone());
+            }
+        }
     }
 
     /// Handle a shard identification message to register or update a shard
@@ -621,13 +761,45 @@ impl SectorManager {
     }
 }
 
+/// System to handle entity transitions between sectors
+fn handle_entity_transitions(
+    mut commands: Commands,
+    mut entity_tracker: ResMut<EntityTracker>,
+    mut sector_manager: ResMut<SectorManager>,
+    query: Query<(Entity, &Transform, Option<&Sector>)>,
+) {
+    for (entity, transform, maybe_sector) in query.iter() {
+        let position = (transform.translation.x, transform.translation.y);
+        let current_sector = sector_manager.world_pos_to_sector(position);
+
+        // Check if sector needs to be updated
+        match maybe_sector {
+            Some(sector) if sector.x == current_sector.x && sector.y == current_sector.y => {
+                // Sector hasn't changed, just register with tracker
+                entity_tracker.register_entity(entity, &current_sector);
+            }
+            _ => {
+                // Sector missing or has changed, update it
+                commands.entity(entity).insert(current_sector.clone());
+                entity_tracker.register_entity(entity, &current_sector);
+            }
+        }
+    }
+
+    // Update sector manager with current active sectors
+    let active_sectors = entity_tracker.get_active_sectors();
+    sector_manager.update_active_sectors(&active_sectors);
+}
+
 /// System to check for sectors that need deactivation
 fn check_deactivation_candidates(
+    entity_tracker: Res<EntityTracker>,
     mut sector_manager: ResMut<SectorManager>,
-    mut shard_listener: ResMut<ShardListener>,
+    mut listener: ResMut<Renet2ServerListener>,
     time: Res<Time>,
     mut last_check: Local<f64>,
 ) {
+    let server = &mut listener.server;
     // Only check periodically
     let current_time = time.elapsed().as_secs_f64();
     if current_time - *last_check < 30.0 {
@@ -641,11 +813,20 @@ fn check_deactivation_candidates(
         return;
     }
 
-    // Get server for sending messages
-    let server = &mut shard_listener.server;
+    // Filter out sectors that still have entities
+    let actual_candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|sector| {
+            let entities = entity_tracker.get_entities_in_sector(sector);
+            entities.is_none() || entities.unwrap().is_empty()
+        })
+        .collect();
 
+    if actual_candidates.is_empty() {
+        return;
+    }
     // Initiate deactivation for each candidate
-    for sector in candidates {
+    for sector in actual_candidates {
         if let Some((shard_id, client_id)) = sector_manager.deactivate_sector(sector.clone()) {
             // Send unassign message to the shard
             let message = ReplicationToShardMessage::UnassignSector {
@@ -669,11 +850,13 @@ fn check_deactivation_candidates(
 
 /// System to periodically rebalance sector load
 fn rebalance_sectors(
+    entity_tracker: Res<EntityTracker>,
     mut sector_manager: ResMut<SectorManager>,
-    mut shard_listener: ResMut<ShardListener>,
+    mut listener: ResMut<Renet2ServerListener>,
     time: Res<Time>,
     mut last_rebalance: Local<f64>,
 ) {
+    let server = &mut listener.server;
     // Only rebalance periodically
     let current_time = time.elapsed().as_secs_f64();
     if current_time - *last_rebalance < LOAD_REBALANCE_INTERVAL {
@@ -681,16 +864,28 @@ fn rebalance_sectors(
     }
     *last_rebalance = current_time;
 
+    // Skip rebalancing if we have fewer than 2 shards
+    if sector_manager.shards.len() <= 1 {
+        return;
+    }
+
     // Get candidates for rebalancing
     let candidates = sector_manager.get_rebalance_candidates();
     if candidates.is_empty() {
         return;
     }
 
-    let server = &mut shard_listener.server;
-
     // Process each candidate for rebalancing
     for (sector, source_shard_id) in candidates {
+        // Verify sector still has entities before rebalancing
+        if let Some(entities) = entity_tracker.get_entities_in_sector(&sector) {
+            if entities.is_empty() {
+                continue; // Skip empty sectors
+            }
+        } else {
+            continue; // Skip if sector has no entities
+        }
+
         // Find a better shard for this sector
         if let Some(target_shard_id) = sector_manager.select_best_shard_for_sector(&sector) {
             // Skip if best shard is the current one
@@ -737,10 +932,9 @@ fn rebalance_sectors(
                     );
 
                     // Step 2: Assign to target shard (will be done when source shard confirms removal)
-                    // We don't immediately assign to the target shard to avoid race conditions
                     // The flow will be:
                     // 1. Source shard confirms removal via SectorRemoved message
-                    // 2. Then we'll send AssignSector to target shard with any necessary entity data
+                    // 2. Then the sector will be automatically activated on a new shard
                 }
                 Err(e) => error!(
                     "Failed to serialize sector unassignment for rebalance: {:?}",
@@ -751,80 +945,26 @@ fn rebalance_sectors(
     }
 }
 
-/// System to handle entity transitions between sectors
-fn handle_entity_transitions(
-    mut commands: Commands,
-    mut sector_manager: ResMut<SectorManager>,
-    mut shard_listener: ResMut<ShardListener>,
-    query: Query<(Entity, &Sector, &Transform)>,
+/// System to clean up entities when they're despawned
+fn cleanup_despawned_entities(
+    mut entity_tracker: ResMut<EntityTracker>,
+    mut removed_entities: RemovedComponents<Transform>,
 ) {
-    let _server = &mut shard_listener.server;
-
-    // This is a placeholder implementation since we don't have the complete entity transition
-    // message handling yet. In the real implementation, we would receive EntityTransitionRequest
-    // messages from shards and handle them according to the sector-manager.md document.
-
-    // For each entity with a sector component
-    for (entity, sector, transform) in query.iter() {
-        // Convert position to world coordinates
-        let position = (transform.translation.x, transform.translation.y);
-
-        // Calculate the current sector based on position
-        let current_sector = sector_manager.world_pos_to_sector(position);
-
-        // If entity is not in the right sector, handle transition
-        if current_sector.x != sector.x || current_sector.y != sector.y {
-            // This would normally be part of handling an EntityTransitionRequest message
-            // Here we're just showing the logic flow
-
-            // Update the entity's Sector component
-            commands
-                .entity(entity)
-                .insert(Sector::new(current_sector.x, current_sector.y));
-
-            // Look up current sector assignment state
-            match sector_manager.sector_map.get(&current_sector) {
-                // Case A: same shard manages both sectors
-                Some(SectorAssignmentState::Active { shard_id }) => {
-                    let current_sector_tuple = Sector::new(sector.x, sector.y);
-                    let old_shard_id = sector_manager
-                        .get_sector_shard(&current_sector_tuple)
-                        .map(|(id, _)| id);
-
-                    if old_shard_id == Some(*shard_id) {
-                        // Send acknowledge transition to the shard
-                        if let Some((_, _client_id)) =
-                            sector_manager.get_sector_shard(&current_sector_tuple)
-                        {
-                            // Send AcknowledgeTransition message
-                            // (not implemented in our message types yet)
-                        }
-                    } else {
-                        // Case B: different shards
-                        // This would involve transferring entity between shards
-                        // Described in the sector-manager.md document
-                    }
-                }
-                // Case C: sector is not active, need to activate it
-                _ => {
-                    // Activate the sector
-                    sector_manager.activate_sector(current_sector);
-                    // This will eventually lead to case A or B once sector becomes active
-                }
-            }
-        }
+    for entity in removed_entities.read() {
+        entity_tracker.remove_entity(entity);
     }
 }
 
 /// System to periodically log sector assignment status
 fn log_sector_assignment_status(
+    entity_tracker: Res<EntityTracker>,
     sector_manager: Res<SectorManager>,
     time: Res<Time>,
     mut last_log: Local<f64>,
 ) {
-    // Log every 10 seconds instead of 30
+    // Log every 30 seconds instead of 10 to reduce spam
     let current_time = time.elapsed().as_secs_f64();
-    if current_time - *last_log < 10.0 {
+    if current_time - *last_log < 30.0 {
         return;
     }
     *last_log = current_time;
@@ -849,14 +989,37 @@ fn log_sector_assignment_status(
         }
     }
 
-    info!("===== SECTOR ASSIGNMENT STATUS =====");
-    info!("Total tracked sectors: {}", sector_manager.sector_map.len());
-    info!("  - Unloaded: {}", unloaded_count);
-    info!("  - Loading: {}", loading_count);
-    info!("  - Active: {}", active_count);
-    info!("  - Unloading: {}", unloading_count);
+    // Count active entities by sector
+    let entity_count: usize = entity_tracker
+        .get_active_sectors()
+        .iter()
+        .map(|sector| {
+            if let Some(entities) = entity_tracker.get_entities_in_sector(sector) {
+                entities.len()
+            } else {
+                0
+            }
+        })
+        .sum();
 
-    // If there are any sectors in Loading state, list them
+    // Use debug level for regular status updates instead of info
+    debug!("===== SECTOR ASSIGNMENT STATUS =====");
+    debug!("Total tracked sectors: {}", sector_manager.sector_map.len());
+    debug!("  - Unloaded: {}", unloaded_count);
+    debug!("  - Loading: {}", loading_count);
+    debug!("  - Active: {}", active_count);
+    debug!("  - Unloading: {}", unloading_count);
+    debug!("Total entities tracked: {}", entity_count);
+
+    // Log important state changes at info level
+    if loading_count > 0 || unloading_count > 0 {
+        info!(
+            "Sector state changes in progress: {} loading, {} unloading",
+            loading_count, unloading_count
+        );
+    }
+
+    // If there are any sectors in Loading state, list them at debug level
     if loading_count > 0 {
         let loading_sectors: Vec<_> = sector_manager
             .sector_map
@@ -867,7 +1030,7 @@ fn log_sector_assignment_status(
             })
             .collect();
 
-        info!("Sectors in Loading state:");
+        debug!("Sectors in Loading state:");
         for (sector, shard_id) in loading_sectors {
             // Try to find the client_id for this shard_id
             let client_id = sector_manager
@@ -876,19 +1039,15 @@ fn log_sector_assignment_status(
                 .map(|info| info.client_id.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            info!(
+            debug!(
                 "  - Sector {:?} being loaded by shard {} (client_id: {})",
                 sector, shard_id, client_id
             );
-
-            // Calculate how long the sector has been in Loading state
-            // This would require tracking when the sector was set to Loading,
-            // which we don't currently do. But it would be useful to add in the future.
         }
     }
 
-    // Also log active sectors if any
-    if active_count > 0 {
+    // Only log active sectors at trace level to minimize spam
+    if active_count > 0 && tracing::level_enabled!(tracing::Level::TRACE) {
         let active_sectors: Vec<_> = sector_manager
             .sector_map
             .iter()
@@ -898,13 +1057,22 @@ fn log_sector_assignment_status(
             })
             .collect();
 
-        info!("Sectors in Active state:");
+        trace!("Sectors in Active state:");
         for (sector, shard_id) in active_sectors {
-            info!("  - Sector {:?} active on shard {}", sector, shard_id);
+            // Count entities in this sector
+            let entity_count = entity_tracker
+                .get_entities_in_sector(sector)
+                .map(|set| set.len())
+                .unwrap_or(0);
+
+            trace!(
+                "  - Sector {:?} active on shard {} with {} entities",
+                sector, shard_id, entity_count
+            );
         }
     }
 
-    info!("====================================");
+    debug!("====================================");
 }
 
 /// Plugin that sets up the sector management systems
@@ -912,14 +1080,17 @@ pub struct SectorManagerPlugin;
 
 impl Plugin for SectorManagerPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SectorManager>().add_systems(
-            Update,
-            (
-                check_deactivation_candidates,
-                rebalance_sectors,
-                handle_entity_transitions, // Keep placeholder for now
-                log_sector_assignment_status,
-            ),
-        );
+        app.init_resource::<SectorManager>()
+            .init_resource::<EntityTracker>()
+            .add_systems(
+                Update,
+                (
+                    handle_entity_transitions,
+                    cleanup_despawned_entities,
+                    check_deactivation_candidates,
+                    rebalance_sectors,
+                    log_sector_assignment_status,
+                ),
+            );
     }
 }

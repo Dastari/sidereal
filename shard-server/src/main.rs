@@ -12,8 +12,7 @@ use bevy_remote::http::RemoteHttpPlugin;
 use bevy_state::app::StatesPlugin;
 use net::renet2_client::{Renet2ClientConfig, Renet2ClientPlugin};
 use sidereal::ecs::plugins::SiderealPlugin;
-use sidereal::net::config::DEFAULT_PROTOCOL_ID;
-use sidereal::net::shard_communication::REPLICATION_SERVER_SHARD_PORT;
+use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_RENET2_PORT};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -36,7 +35,7 @@ fn main() {
     let client_config = Renet2ClientConfig {
         shard_id: Uuid::new_v4(),
         protocol_id: DEFAULT_PROTOCOL_ID,
-        server_addr: format!("127.0.0.1:{}", REPLICATION_SERVER_SHARD_PORT)
+        server_addr: format!("127.0.0.1:{}", DEFAULT_RENET2_PORT)
             .parse()
             .expect("Failed to parse replication server address"),
         bind_addr: "127.0.0.1:0".parse().expect("Failed to parse bind address"),

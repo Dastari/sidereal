@@ -1,6 +1,7 @@
 pub mod config;
 pub mod connection;
-pub mod shard_communication;
+pub mod messages;
 
 pub use config::*;
-pub use shard_communication::*;
+pub use connection::*;
+pub use messages::*;

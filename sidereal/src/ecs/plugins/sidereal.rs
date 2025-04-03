@@ -1,9 +1,9 @@
-use crate::ecs::components::id::Id;
-use crate::ecs::components::*; // Assuming Object and Sector are here
-use avian2d::prelude::*;
-use bevy::prelude::*;
+use crate::ecs::components::*;
 use bevy_replicon::prelude::*;
 use bevy_replicon::shared::replication::replication_registry::ReplicationRegistry;
+
+use avian2d::prelude::*;
+use bevy::prelude::*;
 use tracing::warn;
 
 pub struct SiderealPlugin {
@@ -37,9 +37,8 @@ impl Plugin for SiderealPlugin {
             let has_replicon = app.world().contains_resource::<ReplicationRegistry>();
 
             if has_replicon {
-                // Register the components for replication
                 app.replicate::<Name>()
-                    .replicate::<Transform>() // Keep this for now, might be redundant later
+                    .replicate::<Transform>()
                     .replicate::<Id>()
                     .replicate::<LinearVelocity>()
                     .replicate::<AngularVelocity>()
@@ -49,7 +48,6 @@ impl Plugin for SiderealPlugin {
                     .replicate::<Position>()
                     .replicate::<Rotation>();
 
-                // Make sure the ReplicationRegistry resource exists
                 if !app.world().contains_resource::<ReplicationRegistry>() {
                     app.init_resource::<ReplicationRegistry>();
                 }
@@ -60,8 +58,6 @@ impl Plugin for SiderealPlugin {
             }
         }
 
-        // --- Type Registration (for reflection, inspector, etc.) ---
-        // Always enabled regardless of Replicon mode
         app.register_type::<Name>()
             .register_type::<Transform>()
             .register_type::<Id>()

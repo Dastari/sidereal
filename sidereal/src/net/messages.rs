@@ -4,16 +4,11 @@ use uuid::Uuid;
 // Import Sector struct from its canonical location
 use crate::ecs::components::sector::Sector;
 
-pub const REPLICATION_SERVER_SHARD_PORT: u16 = 5001;
-pub const SHARD_CHANNEL_UNRELIABLE: u8 = 0;
-pub const SHARD_CHANNEL_RELIABLE: u8 = 1;
-
 /// Messages sent from a Shard Server to the Replication Server
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ShardToReplicationMessage {
     IdentifyShard {
         shard_id: Uuid,
-        sectors: Vec<Sector>, // Sectors the shard *thinks* it owns (usually empty on first connect)
     },
     SectorReady {
         sector_coords: Sector, // Sent by shard when it's ready to simulate an assigned sector

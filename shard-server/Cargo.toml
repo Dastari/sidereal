@@ -16,7 +16,7 @@ bevy_remote = "0.15.3"
 
 # We do need renet2 for direct communication with replication server
 bevy_renet2 = { workspace = true, features = ["netcode"] }
-renet2 = { workspace = true }
+renet2.workspace = true
 
 # Other dependencies
 serde = { workspace = true }

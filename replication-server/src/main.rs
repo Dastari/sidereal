@@ -5,20 +5,19 @@ mod net;
 use bevy::hierarchy::HierarchyPlugin;
 use bevy::prelude::*;
 use bevy_state::app::StatesPlugin;
-use game::SceneLoaderPlugin;
 use std::time::Duration;
 
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICON_PORT, RepliconServerConfig};
 
-use game::sector_manager::SectorManagerPlugin;
+use game::{SceneLoaderPlugin, SectorManagerPlugin, ShardManagerPlugin};
 use net::renet2_server::Renet2ServerPlugin;
 use net::replicon_server::RepliconServerPlugin;
 
 use tracing::{Level, info};
 
 fn main() {
-    #[cfg(debug_assertions)]
+    #[cfg(debug_assertions)]    
     unsafe {
         std::env::set_var(
             "RUST_LOG",
@@ -53,12 +52,13 @@ fn main() {
         )
         .add_plugins((HierarchyPlugin, TransformPlugin, StatesPlugin))
         .add_plugins((
-            RepliconServerPlugin::with_config(replicon_config),
+            // RepliconServerPlugin::with_config(replicon_config),
             Renet2ServerPlugin::default(),
         ))
         .add_plugins((
-            SectorManagerPlugin,
             SiderealPlugin::default().with_replicon(true),
+            ShardManagerPlugin,
+            SectorManagerPlugin,
             SceneLoaderPlugin,
         ))
         .run();
