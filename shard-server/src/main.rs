@@ -72,6 +72,7 @@ fn main() {
                 ),
         ))
         .add_plugins(Renet2ClientPlugin::with_config(client_config))
-        .add_plugins((SiderealPlugin::without_replicon(), ShardManagerPlugin))
+        .add_plugins(ShardManagerPlugin)
+        .add_plugins(SiderealPlugin::without_replicon())
         .run();
 }
