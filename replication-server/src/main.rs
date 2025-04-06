@@ -12,12 +12,11 @@ use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_REPLICON_PORT, Replicon
 
 use game::{SceneLoaderPlugin, SectorManagerPlugin, ShardManagerPlugin};
 use net::renet2_server::Renet2ServerPlugin;
-use net::replicon_server::RepliconServerPlugin;
 
 use tracing::{Level, info};
 
 fn main() {
-    #[cfg(debug_assertions)]    
+    #[cfg(debug_assertions)]
     unsafe {
         std::env::set_var(
             "RUST_LOG",
@@ -46,7 +45,7 @@ fn main() {
         .add_plugins(
             MinimalPlugins
                 .set(bevy::app::ScheduleRunnerPlugin::run_loop(
-                    Duration::from_secs_f64(1.0 / 20.0),
+                    Duration::from_secs_f64(1.0 / 30.0),
                 ))
                 .build(),
         )
@@ -58,8 +57,8 @@ fn main() {
         .add_plugins((
             SiderealPlugin::default().with_replicon(true),
             ShardManagerPlugin,
-            SectorManagerPlugin,
-            SceneLoaderPlugin,
+            // SectorManagerPlugin,
+            // SceneLoaderPlugin,
         ))
         .run();
 }

@@ -10,6 +10,7 @@ use bevy::transform::TransformPlugin;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
 use bevy_state::app::StatesPlugin;
+use game::shard_manager::ShardManagerPlugin;
 use net::renet2_client::{Renet2ClientConfig, Renet2ClientPlugin};
 use sidereal::ecs::plugins::SiderealPlugin;
 use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_RENET2_PORT};
@@ -47,7 +48,7 @@ fn main() {
         .add_plugins(
             MinimalPlugins
                 .set(bevy::app::ScheduleRunnerPlugin::run_loop(
-                    Duration::from_secs_f64(1.0 / 60.0),
+                    Duration::from_secs_f64(1.0 / 30.0),
                 ))
                 .build(),
         )
@@ -71,6 +72,6 @@ fn main() {
                 ),
         ))
         .add_plugins(Renet2ClientPlugin::with_config(client_config))
-        .add_plugins((SiderealPlugin::without_replicon(),))
+        .add_plugins((SiderealPlugin::without_replicon(), ShardManagerPlugin))
         .run();
 }

@@ -47,7 +47,6 @@ Assumes Shard Servers connect via a non-Replicon channel (e.g., Renet) for manag
   1.  Shards periodically (e.g., every 5-10 seconds) send `ShardLoadUpdate { stats: ShardLoadStats }` message.
   2.  `ShardLoadStats` should initially contain:
       - `entity_count: u32`
-      - `player_count: u32`
       - (Optional Future): `avg_tick_time_ms: f32`, `cpu_load_percent: f32` (Note: CPU/memory can be hard to report reliably).
   3.  Replication Server updates the corresponding `ShardInfo` in `ActiveShards`.
 - **Sector Assignment:**

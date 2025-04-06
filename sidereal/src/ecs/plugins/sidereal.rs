@@ -1,5 +1,7 @@
 use crate::ecs::components::*;
+#[cfg(feature = "replicon")]
 use bevy_replicon::prelude::*;
+#[cfg(feature = "replicon")]
 use bevy_replicon::shared::replication::replication_registry::ReplicationRegistry;
 
 use avian2d::prelude::*;
@@ -33,6 +35,7 @@ impl SiderealPlugin {
 
 impl Plugin for SiderealPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(feature = "replicon")]
         if self.replicon_enabled {
             let has_replicon = app.world().contains_resource::<ReplicationRegistry>();
 

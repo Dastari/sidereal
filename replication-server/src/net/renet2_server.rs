@@ -2,8 +2,10 @@ use bevy::prelude::*;
 use bevy_renet2::netcode::{NetcodeServerTransport, ServerAuthentication, ServerSetupConfig};
 use bevy_renet2::prelude::RenetServer;
 use bevy_renet2::prelude::ServerEvent;
-use sidereal::{create_connection_config, ShardToReplicationMessage, SHARD_CHANNEL_RELIABLE};
-use sidereal::net::config::{DEFAULT_PROTOCOL_ID, DEFAULT_RENET2_PORT};
+use sidereal::net::config::{
+    DEFAULT_PROTOCOL_ID, DEFAULT_RENET2_PORT,  create_connection_config,
+};
+
 use std::{
     error::Error,
     net::{SocketAddr, UdpSocket},
@@ -16,7 +18,6 @@ pub struct Renet2ServerListener {
     pub server: RenetServer,
     pub transport: NetcodeServerTransport,
 }
-
 
 #[derive(Resource, Debug, Clone)]
 pub struct Renet2ServerConfig {
@@ -51,10 +52,7 @@ impl Default for Renet2ServerPlugin {
 
 impl Renet2ServerPlugin {
     pub fn with_config(config: Renet2ServerConfig) -> Self {
-        Self {
-            config,
-
-        }
+        Self { config }
     }
 }
 
@@ -67,19 +65,15 @@ impl Plugin for Renet2ServerPlugin {
             Update,
             server_update.run_if(resource_exists::<Renet2ServerListener>),
         );
-        
-        app.add_systems(
-            Update,
-            handle_server_events
-                .after(server_update),
-        );
+
+        app.add_systems(Update, handle_server_events.after(server_update));
 
         info!("Renet2 shard server plugin initialized");
     }
 }
 
 fn init_server_system(world: &mut World) {
-    if let Err(e) = init_renet2_server( world) {
+    if let Err(e) = init_renet2_server(world) {
         warn!("Failed to initialize renet2 server: {}", e);
     } else {
         info!("Initialized renet2 server");
@@ -92,7 +86,7 @@ fn init_renet2_server(world: &mut World) -> Result<(), Box<dyn Error>> {
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?;
 
     let connection_config = create_connection_config();
-    
+
     let server = RenetServer::new(connection_config);
 
     let setup_config = ServerSetupConfig {
@@ -111,26 +105,21 @@ fn init_renet2_server(world: &mut World) -> Result<(), Box<dyn Error>> {
         config.bind_addr, config.max_shards
     );
 
-    let listener = Renet2ServerListener {
-        server,
-        transport,
-    };
+    let listener = Renet2ServerListener { server, transport };
     world.insert_resource(listener);
     Ok(())
 }
 
-pub fn server_update(mut listener: ResMut<Renet2ServerListener>,time: Res<Time>) {
+pub fn server_update(mut listener: ResMut<Renet2ServerListener>, time: Res<Time>) {
     let Renet2ServerListener { server, transport } = listener.as_mut();
-   server.update(time.delta());
+    server.update(time.delta());
 
     if let Err(e) = transport.update(time.delta(), server) {
         error!("Shard transport update error: {:?}", e);
     }
 }
 
-fn handle_server_events(
-    mut listener: ResMut<Renet2ServerListener>,
-) {
+fn handle_server_events(mut listener: ResMut<Renet2ServerListener>) {
     let server = &mut listener.server;
     while let Some(event) = server.get_event() {
         match event {
@@ -146,33 +135,15 @@ fn handle_server_events(
             }
         }
     }
-       for client_id in server.clients_id() {
-        while let Some(message) = server.receive_message(client_id, SHARD_CHANNEL_RELIABLE) {
-            info!("Received message from client {}: {:?}", client_id, message);
-            match bincode::serde::decode_from_slice::<ShardToReplicationMessage, _>(
-                &message,
-                bincode::config::standard(),
-            )
-            .map(|(v, _)| v)
-            {
-                Ok(ShardToReplicationMessage::IdentifyShard { shard_id }) => {
-                    info!(client_id = %client_id, shard_id = %shard_id, "Shard connected and identified");
-                }
-                Ok(ShardToReplicationMessage::SectorReady { sector_coords }) => {
-                    info!(client_id = %client_id, sector = ?sector_coords, "Shard confirmed SectorReady");
-                }
-                Ok(ShardToReplicationMessage::SectorRemoved { sector_coords }) => {
-                    info!(client_id = %client_id, sector = ?sector_coords, "Shard confirmed SectorRemoved");
-                }
-                Ok(ShardToReplicationMessage::ShardLoadUpdate {
-                    entity_count,
-                    player_count,
-                }) => {
-                    debug!(client_id = %client_id, entity_count = entity_count, player_count = player_count, "Received shard load update");
-                }
-                Err(e) => {
-                    error!(client_id = %client_id, error = %e, "Failed to deserialize message from shard");
-                }
+    let channels = [0, 1, 2]; // Try all channels
+    for client_id in server.clients_id() {
+        for &channel in &channels {
+            while let Some(message) = server.receive_message(client_id, channel) {
+                info!(
+                    "Received message on channel {} from client {}: {:?}",
+                    channel, client_id, message
+                );
+                // Now try to parse...
             }
         }
     }

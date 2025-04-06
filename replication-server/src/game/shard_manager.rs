@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use bevy::prelude::*;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::net::renet2_server::Renet2ServerListener;
-use sidereal::net::config::{SHARD_CHANNEL_RELIABLE, SHARD_CHANNEL_UNRELIABLE, SHARD_CHANNEL_DEFAULT};
+use sidereal::net::config::{
+    SHARD_CHANNEL_DEFAULT, SHARD_CHANNEL_RELIABLE, SHARD_CHANNEL_UNRELIABLE,
+};
 use sidereal::net::messages::ShardToReplicationMessage;
 
 #[derive(Resource)]
@@ -15,7 +17,9 @@ pub struct ConnectedShards {
 
 impl Default for ConnectedShards {
     fn default() -> Self {
-        Self { shards: HashMap::new() }
+        Self {
+            shards: HashMap::new(),
+        }
     }
 }
 
@@ -29,12 +33,13 @@ pub struct ShardManagerPlugin;
 impl Plugin for ShardManagerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ConnectedShards::default());
-        // app.add_systems(
-        //     Update,
-        //     (log_shard_stats, handle_shard_events.run_if(
-        //         resource_exists::<Renet2ServerListener>
-        //     )),
-        // );
+        app.add_systems(
+            Update,
+            (
+                log_shard_stats,
+                handle_shard_events.run_if(resource_exists::<Renet2ServerListener>),
+            ),
+        );
 
         info!("Shard manager plugin initialized");
     }
@@ -47,30 +52,16 @@ fn handle_shard_events(
     let server = &mut listener.server;
 
     for client_id in server.clients_id() {
-        for &channel in &[SHARD_CHANNEL_RELIABLE, SHARD_CHANNEL_UNRELIABLE, SHARD_CHANNEL_DEFAULT] {
+        for &channel in &[
+            SHARD_CHANNEL_RELIABLE,
+            SHARD_CHANNEL_UNRELIABLE,
+            SHARD_CHANNEL_DEFAULT,
+        ] {
             if let Some(message) = server.receive_message(client_id, channel) {
-                info!(
-                    client_id = %client_id, 
-                    channel = channel, 
-                    bytes = message.len(), 
-                    "Received message on channel {}", 
-                    channel
-                );
-                
-                debug!("Received message bytes: {:?}", message);
-                
-                // Try to determine if this might be an IdentifyShard message by looking at its structure
-                if message.len() >= 16 {
-                    // A UUID is 16 bytes, so this could be a shard identification message
-                    debug!("Possible IdentifyShard message detected");
-                }
-                
-                // Try to decode as ShardToReplicationMessage
                 let result = bincode::serde::decode_from_slice::<ShardToReplicationMessage, _>(
                     &message,
                     bincode::config::standard(),
                 );
-                
                 match result {
                     Ok((msg, _)) => match msg {
                         ShardToReplicationMessage::IdentifyShard { shard_id } => {
@@ -104,7 +95,6 @@ fn handle_shard_events(
         }
     }
 }
-
 
 fn log_shard_stats(
     connected_shards: Res<ConnectedShards>,

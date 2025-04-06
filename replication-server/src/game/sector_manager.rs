@@ -113,7 +113,7 @@ impl Default for ShardLoadStats {
 #[derive(Debug, Clone)]
 pub struct ShardInfo {
     pub shard_id: Uuid,
-    pub client_id: u64, 
+    pub client_id: u64,
     pub sectors: HashSet<Sector>,
     pub connected_at: SystemTime,
     pub load_stats: ShardLoadStats,

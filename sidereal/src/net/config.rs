@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use renet2::{ConnectionConfig, ChannelConfig, SendType};
+use renet2::{ChannelConfig, ConnectionConfig, SendType};
 use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
@@ -16,7 +16,7 @@ pub const SHARD_CHANNEL_MAX: u8 = 3;
 pub fn create_connection_config() -> ConnectionConfig {
     let channels_config = vec![
         ChannelConfig {
-            // Channel 0: Server Messages (reliable ordered) 
+            // Channel 0: Server Messages (reliable ordered)
             channel_id: SHARD_CHANNEL_RELIABLE,
             max_memory_usage_bytes: 10 * 1024 * 1024,
             send_type: SendType::ReliableOrdered {
@@ -24,7 +24,7 @@ pub fn create_connection_config() -> ConnectionConfig {
             },
         },
         ChannelConfig {
-            // Channel 1: Component Changes (unreliable) 
+            // Channel 1: Component Changes (unreliable)
             channel_id: SHARD_CHANNEL_UNRELIABLE,
             max_memory_usage_bytes: 20 * 1024 * 1024,
             send_type: SendType::Unreliable,
