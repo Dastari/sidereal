@@ -8,7 +8,7 @@ The `SectorManager` will:
 
 - Divide the infinite 2D world into a grid of fixed-size sectors (e.g., 1000x1000 units).
 - Track the state of each sector (e.g., Unloaded, Loading, Active, Unloading).
-- Keep track of which entities reside within which sector (likely via a `Sector` component on entities within the Replication Server's ECS).
+- Keep track of which entities reside within which sector using the games Sector component
 - Manage a pool of connected and registered Shard Servers.
 - Dynamically assign active or activating sectors to specific Shard Servers for simulation.
 - Implement a load balancing strategy to distribute sectors fairly and efficiently among shards, aiming to cluster adjacent sectors on the same shard where possible.

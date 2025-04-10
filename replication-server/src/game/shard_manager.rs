@@ -15,6 +15,12 @@ pub struct ConnectedShards {
     pub shards: HashMap<u64, ShardInfo>,
 }
 
+#[derive(Event)]
+pub enum ShardEvent {
+    OnConnect { client_id: u64, shard_id: Uuid },
+    OnDisconnect { client_id: u64, shard_id: Uuid },
+}
+
 impl Default for ConnectedShards {
     fn default() -> Self {
         Self {
@@ -33,6 +39,7 @@ pub struct ShardManagerPlugin;
 impl Plugin for ShardManagerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ConnectedShards::default());
+        app.add_event::<ShardEvent>();
         app.add_systems(
             Update,
             (
@@ -48,6 +55,7 @@ impl Plugin for ShardManagerPlugin {
 fn handle_shard_events(
     mut listener: ResMut<Renet2ServerListener>,
     mut connected_shards: ResMut<ConnectedShards>,
+    mut shard_events: EventWriter<ShardEvent>,
 ) {
     let server = &mut listener.server;
 
@@ -72,20 +80,12 @@ fn handle_shard_events(
                                 connected_at: std::time::SystemTime::now(),
                             };
 
-                            connected_shards.shards.insert(client_id, shard_info);
+                            if connected_shards.shards.insert(client_id, shard_info).is_none() {
+                                // Only send event if it was newly inserted
+                                shard_events.send(ShardEvent::OnConnect { client_id, shard_id });
+                            }
                         }
-                        ShardToReplicationMessage::SectorReady { sector_coords } => {
-                            info!(client_id = %client_id, sector = ?sector_coords, "Shard confirmed SectorReady");
-                        }
-                        ShardToReplicationMessage::SectorRemoved { sector_coords } => {
-                            info!(client_id = %client_id, sector = ?sector_coords, "Shard confirmed SectorRemoved");
-                        }
-                        ShardToReplicationMessage::ShardLoadUpdate {
-                            entity_count,
-                            player_count,
-                        } => {
-                            debug!(client_id = %client_id, entity_count = entity_count, player_count = player_count, "Received shard load update");
-                        }
+                        _ => {}
                     },
                     Err(e) => {
                         error!(client_id = %client_id, error = %e, "Failed to deserialize message from shard on channel {}", channel);
