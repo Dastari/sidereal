@@ -689,6 +689,8 @@ impl BootstrapDispatcher for DirectBootstrapDispatcher {
                         "position_m": [0.0, 0.0, 0.0],
                         "velocity_mps": [0.0, 0.0, 0.0],
                         "heading_rad": 0.0,
+                        "engine_max_accel_mps2": 171_000.0,
+                        "engine_ramp_to_max_s": 5.0,
                         "health": 100.0,
                         "max_health": 100.0
                     }),

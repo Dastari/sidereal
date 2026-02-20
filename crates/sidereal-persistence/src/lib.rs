@@ -17,6 +17,19 @@ pub enum PersistenceError {
 
 pub type Result<T> = std::result::Result<T, PersistenceError>;
 
+pub fn encode_reflect_component(type_path: &str, component_value: JsonValue) -> JsonValue {
+    let mut envelope = JsonMap::new();
+    envelope.insert(type_path.to_string(), component_value);
+    JsonValue::Object(envelope)
+}
+
+pub fn decode_reflect_component<'a>(
+    payload: &'a JsonValue,
+    expected_type_path: &str,
+) -> Option<&'a JsonValue> {
+    payload.as_object()?.get(expected_type_path)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GraphComponentRecord {
     pub component_id: String,
@@ -545,5 +558,14 @@ mod tests {
         assert_eq!(s, "player:1");
         let json = parse_agtype_json("{\"x\":1}::agtype".to_string()).expect("json");
         assert_eq!(json["x"], 1);
+    }
+
+    #[test]
+    fn reflect_envelope_roundtrip() {
+        let payload = serde_json::json!({"fuel_kg": 42.0});
+        let envelope = encode_reflect_component("sidereal_game::FuelTank", payload.clone());
+        let decoded =
+            decode_reflect_component(&envelope, "sidereal_game::FuelTank").expect("decode");
+        assert_eq!(decoded, &payload);
     }
 }

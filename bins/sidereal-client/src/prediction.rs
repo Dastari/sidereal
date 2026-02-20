@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
+
 /// Client-side prediction, reconciliation, and interpolation for networked entities.
 ///
 /// Architecture:

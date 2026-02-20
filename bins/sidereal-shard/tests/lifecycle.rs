@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
 use sidereal_game::SiderealGamePlugin;
 use sidereal_game::generated::components::{
-    DisplayName, Engine, FlightComputer, FlightComputerProfile, Hardpoint, HealthPool,
+    DisplayName, Engine, FlightComputer, Hardpoint, HealthPool,
 };
 use sidereal_net::{WorldComponentDelta, WorldDeltaEntity};
 use sidereal_persistence::GraphPersistence;
@@ -120,12 +120,10 @@ fn world_to_deltas(app: &mut App) -> Vec<WorldDeltaEntity> {
                 component_id: format!("{}:flight_computer", sid.0),
                 component_kind: "flight_computer".to_string(),
                 properties: serde_json::json!({
-                    "profile": match flight_computer.profile {
-                        FlightComputerProfile::ManualAssist => "ManualAssist",
-                        FlightComputerProfile::CruiseAssist => "CruiseAssist",
-                        FlightComputerProfile::Autopilot => "Autopilot",
-                    },
-                    "throttle": flight_computer.throttle
+                    "profile": flight_computer.profile,
+                    "throttle": flight_computer.throttle,
+                    "yaw_input": flight_computer.yaw_input,
+                    "turn_rate_deg_s": flight_computer.turn_rate_deg_s
                 }),
             });
         }
@@ -133,7 +131,7 @@ fn world_to_deltas(app: &mut App) -> Vec<WorldDeltaEntity> {
             components.push(WorldComponentDelta {
                 component_id: format!("{}:health_pool", sid.0),
                 component_kind: "health_pool".to_string(),
-                properties: serde_json::json!({"hp": health_pool.hp, "max_hp": health_pool.max_hp}),
+                properties: serde_json::json!({"current": health_pool.current, "maximum": health_pool.maximum}),
             });
         }
 
@@ -251,35 +249,40 @@ fn hydrate_world_from_graph(app: &mut App, persistence: &mut GraphPersistence) {
                     }
                 }
                 "flight_computer" => {
-                    let profile = match component
-                        .properties
-                        .get("profile")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("ManualAssist")
-                    {
-                        "CruiseAssist" => FlightComputerProfile::CruiseAssist,
-                        "Autopilot" => FlightComputerProfile::Autopilot,
-                        _ => FlightComputerProfile::ManualAssist,
-                    };
                     entity_commands.insert(FlightComputer {
-                        profile,
+                        profile: component
+                            .properties
+                            .get("profile")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("ManualAssist")
+                            .to_string(),
                         throttle: component
                             .properties
                             .get("throttle")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or_default() as f32,
+                        yaw_input: component
+                            .properties
+                            .get("yaw_input")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or_default() as f32,
+                        turn_rate_deg_s: component
+                            .properties
+                            .get("turn_rate_deg_s")
                             .and_then(|v| v.as_f64())
                             .unwrap_or_default() as f32,
                     });
                 }
                 "health_pool" => {
                     entity_commands.insert(HealthPool {
-                        hp: component
+                        current: component
                             .properties
-                            .get("hp")
+                            .get("current")
                             .and_then(|v| v.as_f64())
                             .unwrap_or_default() as f32,
-                        max_hp: component
+                        maximum: component
                             .properties
-                            .get("max_hp")
+                            .get("maximum")
                             .and_then(|v| v.as_f64())
                             .unwrap_or_default() as f32,
                     });
@@ -347,12 +350,14 @@ fn shard_avian_hydration_persistence_roundtrip() {
         SidEntityId(ship_id.clone()),
         DisplayName("ISS Shard Lifecycle".to_string()),
         FlightComputer {
-            profile: FlightComputerProfile::CruiseAssist,
+            profile: "CruiseAssist".to_string(),
             throttle: 0.62,
+            yaw_input: 0.0,
+            turn_rate_deg_s: 45.0,
         },
         HealthPool {
-            hp: 100.0,
-            max_hp: 100.0,
+            current: 100.0,
+            maximum: 100.0,
         },
         RigidBody::Dynamic,
         Position::from_xyz(0.0, 0.0, 0.0),

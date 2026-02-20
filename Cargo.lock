@@ -6982,8 +6982,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sidereal-core",
+ "sidereal-game",
  "sidereal-net",
  "sidereal-sim-core",
+ "uuid",
 ]
 
 [[package]]
@@ -7080,6 +7082,7 @@ dependencies = [
  "avian3d",
  "bevy",
  "bevy_remote",
+ "jsonwebtoken",
  "lightyear",
  "postgres",
  "serde",

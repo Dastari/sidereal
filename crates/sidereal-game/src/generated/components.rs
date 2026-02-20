@@ -114,12 +114,13 @@ pub struct ShipTag;
 #[require(EntityGuid)]
 pub struct ModuleTag;
 
-#[derive(Debug, Clone, Copy, Reflect, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Reflect, Serialize, Deserialize, PartialEq, Eq)]
 #[reflect(Serialize, Deserialize)]
 pub enum OwnerKind {
     Player,
     Faction,
     World,
+    #[default]
     Unowned,
 }
 
@@ -128,11 +129,68 @@ pub enum OwnerKind {
 #[require(EntityGuid)]
 pub struct OwnerId(pub String);
 
-impl Default for OwnerKind {
-    fn default() -> Self {
-        OwnerKind::Unowned
-    }
+#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct ScannerRangeM(pub f32);
+
+#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct ScannerComponent {
+    pub base_range_m: f32,
+    pub level: u8,
 }
+
+#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct ScannerRangeBuff {
+    pub additive_m: f32,
+    pub multiplier: f32,
+}
+
+#[derive(Debug, Clone, Reflect, Serialize, Deserialize, PartialEq)]
+#[reflect(Serialize, Deserialize)]
+pub struct InventoryEntry {
+    pub item_entity_id: Uuid,
+    pub quantity: u32,
+    pub unit_mass_kg: f32,
+}
+
+#[derive(Debug, Clone, Component, Reflect, Serialize, Deserialize, PartialEq, Default)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct Inventory {
+    pub entries: Vec<InventoryEntry>,
+}
+
+#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct BaseMassKg(pub f32);
+
+#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq, Default)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct CargoMassKg(pub f32);
+
+#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq, Default)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct ModuleMassKg(pub f32);
+
+#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct TotalMassKg(pub f32);
+
+#[derive(
+    Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq, Eq, Default,
+)]
+#[reflect(Component, Serialize, Deserialize)]
+#[require(EntityGuid)]
+pub struct MassDirty;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentRegistryEntry {
@@ -163,6 +221,16 @@ pub fn register_generated_components(app: &mut App) {
         .register_type::<ShipTag>()
         .register_type::<ModuleTag>()
         .register_type::<OwnerKind>()
+        .register_type::<ScannerRangeM>()
+        .register_type::<ScannerComponent>()
+        .register_type::<ScannerRangeBuff>()
+        .register_type::<InventoryEntry>()
+        .register_type::<Inventory>()
+        .register_type::<BaseMassKg>()
+        .register_type::<CargoMassKg>()
+        .register_type::<ModuleMassKg>()
+        .register_type::<TotalMassKg>()
+        .register_type::<MassDirty>()
         .register_type::<OwnerId>()
         .insert_resource(GeneratedComponentRegistry {
             entries: generated_component_registry(),
@@ -187,6 +255,15 @@ pub fn generated_component_registry() -> Vec<ComponentRegistryEntry> {
         entry::<CollisionAabbM>("collision_aabb_m"),
         entry::<ShipTag>("ship_tag"),
         entry::<ModuleTag>("module_tag"),
+        entry::<ScannerRangeM>("scanner_range_m"),
+        entry::<ScannerComponent>("scanner_component"),
+        entry::<ScannerRangeBuff>("scanner_range_buff"),
+        entry::<Inventory>("inventory"),
+        entry::<BaseMassKg>("base_mass_kg"),
+        entry::<CargoMassKg>("cargo_mass_kg"),
+        entry::<ModuleMassKg>("module_mass_kg"),
+        entry::<TotalMassKg>("total_mass_kg"),
+        entry::<MassDirty>("mass_dirty"),
         entry::<OwnerId>("owner_id"),
     ]
 }

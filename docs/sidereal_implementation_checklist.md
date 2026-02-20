@@ -42,6 +42,8 @@ The `bins/sidereal-shard` binary exists but is not currently used. See `bins/sid
   - [x] `GET /world/me` returns starter ship + asset descriptors without manual retries.
 - [ ] Native client login/register UX closes loop:
   - [x] Auth UI works end-to-end (register/login/forgot).
+  - [x] Dialog UI system implemented for persistent error/warning/info modals.
+  - [x] Error handling uses dialog system (world load failures, protocol errors).
   - [x] Asset stream fetch succeeds for `corvette_01` + starfield shader assets.
   - [ ] Player enters world and can thrust/turn/logout with HUD telemetry visible.
 - [x] Client auth/in-world lifecycle uses state-scoped entity cleanup (Bevy state transitions, not manual despawn loops).
@@ -62,7 +64,7 @@ The `bins/sidereal-shard` binary exists but is not currently used. See `bins/sid
 - [ ] Starter ship uses `corvette_01` model and includes baseline gameplay components (`EntityGuid`, `DisplayName`, `PositionM`, `VelocityMps`, `HealthPool`, `FlightComputer`, `Hardpoint`/module attachments as applicable).
 - [ ] On successful auth, client calls `/world/me` and receives starter ship state + required asset descriptors.
 - [ ] Client requests and receives streamed asset bytes for `corvette_01` and starfield shader assets from backend stream endpoints.
-- [ ] Entering world shows a top-down camera view (camera projection decision documented: orthographic vs perspective) with starfield running.
+- [ ] Entering world shows a top-down camera view (camera projection decision documented: orthographic vs perspective) with shader-driven starfield running as a camera-attached background fed by client camera/ship motion (velocity + acceleration) uniforms.
 - [ ] Player can thrust/turn, receives authoritative updates, and logout returns cleanly to auth state.
 - [ ] In-world HUD shows at least coordinates, velocity, and health from authoritative/state-reconciled data.
 - [ ] Visibility/data-permission pipeline is enforced for gameplay replication payloads before network serialization.

@@ -106,6 +106,8 @@ pub struct WorldMeResponse {
     pub heading_rad: f32,
     pub health: f32,
     pub max_health: f32,
+    pub engine_max_accel_mps2: f32,
+    pub engine_ramp_to_max_s: f32,
     pub model_asset_id: String,
     pub starfield_shader_asset_id: String,
     pub assets: Vec<StreamAssetDescriptor>,
@@ -224,6 +226,16 @@ async fn world_me(
         .and_then(|v| v.as_str())
         .unwrap_or("starfield_wgsl")
         .to_string();
+    let engine_max_accel_mps2 = ship
+        .properties
+        .get("engine_max_accel_mps2")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(80.0) as f32;
+    let engine_ramp_to_max_s = ship
+        .properties
+        .get("engine_ramp_to_max_s")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(5.0) as f32;
 
     let assets = vec![
         StreamAssetDescriptor {
@@ -241,6 +253,10 @@ async fn world_me(
         StreamAssetDescriptor {
             asset_id: "starfield_wgsl".to_string(),
             relative_cache_path: "shaders/starfield.wgsl".to_string(),
+        },
+        StreamAssetDescriptor {
+            asset_id: "space_background_wgsl".to_string(),
+            relative_cache_path: "shaders/simple_space_background.wgsl".to_string(),
         },
     ];
 
@@ -270,6 +286,8 @@ async fn world_me(
             .get("max_health")
             .and_then(|v| v.as_f64())
             .unwrap_or(100.0) as f32,
+        engine_max_accel_mps2,
+        engine_ramp_to_max_s,
         model_asset_id,
         starfield_shader_asset_id,
         assets,
@@ -403,6 +421,10 @@ fn resolve_asset_stream_path(asset_id: &str) -> Option<(&'static FsPath, &'stati
             FsPath::new("shaders/starfield.wgsl"),
             "text/plain; charset=utf-8",
         )),
+        "space_background_wgsl" => Some((
+            FsPath::new("shaders/simple_space_background.wgsl"),
+            "text/plain; charset=utf-8",
+        )),
         _ => None,
     }
 }
@@ -417,6 +439,7 @@ mod tests {
         assert!(resolve_asset_stream_path("corvette_01_bin").is_some());
         assert!(resolve_asset_stream_path("corvette_01_png").is_some());
         assert!(resolve_asset_stream_path("starfield_wgsl").is_some());
+        assert!(resolve_asset_stream_path("space_background_wgsl").is_some());
         assert!(resolve_asset_stream_path("unknown").is_none());
     }
 

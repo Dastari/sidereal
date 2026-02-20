@@ -9,15 +9,15 @@ use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
 use crate::{
-    CollisionAabbM, DisplayName, Engine, EntityGuid, FlightComputer, FuelTank, Hardpoint,
-    HealthPool, MassKg, MountedOn, OwnerId, PositionM, ShardAssignment, ShipTag, SizeM,
-    VelocityMps,
+    BaseMassKg, CargoMassKg, CollisionAabbM, DisplayName, Engine, EntityGuid, FlightComputer,
+    FuelTank, Hardpoint, HealthPool, Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn,
+    OwnerId, PositionM, ShardAssignment, ShipTag, SizeM, TotalMassKg, VelocityMps,
 };
 
 /// Complete component bundle for the Prospector-class corvette
 /// This is the canonical starter ship granted on registration
 #[derive(Bundle, Debug, Clone)]
-pub struct CorvetteShipBundle {
+pub struct CorvetteBundle {
     // Identity
     pub entity_guid: EntityGuid,
     pub ship_tag: ShipTag,
@@ -29,6 +29,12 @@ pub struct CorvetteShipBundle {
 
     // Physical properties
     pub mass: MassKg,
+    pub base_mass: BaseMassKg,
+    pub cargo_mass: CargoMassKg,
+    pub module_mass: ModuleMassKg,
+    pub total_mass: TotalMassKg,
+    pub mass_dirty: MassDirty,
+    pub inventory: Inventory,
     pub size: SizeM,
     pub collision: CollisionAabbM,
 
@@ -97,7 +103,7 @@ pub fn spawn_corvette(
 
     // Spawn the hull entity with all core components
     let ship_entity = commands
-        .spawn(CorvetteShipBundle {
+        .spawn(CorvetteBundle {
             entity_guid: EntityGuid(ship_guid),
             ship_tag: ShipTag,
             display_name: DisplayName(
@@ -109,6 +115,12 @@ pub fn spawn_corvette(
             position: PositionM(spawn_position),
             velocity: VelocityMps(config.spawn_velocity),
             mass: MassKg(15000.0), // 15 metric tons base mass
+            base_mass: BaseMassKg(15000.0),
+            cargo_mass: CargoMassKg(0.0),
+            module_mass: ModuleMassKg(0.0),
+            total_mass: TotalMassKg(15000.0),
+            mass_dirty: MassDirty,
+            inventory: Inventory::default(),
             size: SizeM {
                 length: 25.0,
                 width: 12.0,
@@ -185,7 +197,7 @@ fn spawn_corvette_modules(
             profile: "basic_fly_by_wire".to_string(),
             throttle: 0.0,
             yaw_input: 0.0,
-            turn_rate_deg_s: 90.0,
+            turn_rate_deg_s: 45.0,
         },
         MountedOn {
             parent_entity_id: ship_guid,

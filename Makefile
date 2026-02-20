@@ -2,11 +2,11 @@ SHELL := /bin/bash
 
 PG_URL ?= postgres://sidereal:sidereal@127.0.0.1:5432/sidereal
 SIDEREAL_PG_PORT ?= 5432
-GATEWAY_BIND ?= 127.0.0.1:8080
+GATEWAY_BIND ?= 0.0.0.0:8080
 GATEWAY_JWT_SECRET ?= 0123456789abcdef0123456789abcdef
 ASSET_ROOT ?= ./data
 
-REPLICATION_UDP_BIND ?= 127.0.0.1:7001
+REPLICATION_UDP_BIND ?= 0.0.0.0:7001
 REPLICATION_UDP_ADDR ?= 127.0.0.1:7001
 SHARD_UDP_BIND ?= 127.0.0.1:7002
 CLIENT_UDP_BIND ?= 127.0.0.1:7003
@@ -15,7 +15,7 @@ REPLICATION_CONTROL_UDP_BIND ?= 127.0.0.1:9004
 REPLICATION_CONTROL_UDP_ADDR ?= 127.0.0.1:9004
 GATEWAY_REPLICATION_CONTROL_UDP_BIND ?= 0.0.0.0:0
 
-.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check run-gateway run-replication run-shard run-client run-client-headless dev-stack dev-stack-client register-demo
+.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client-headless dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -32,6 +32,12 @@ help:
 	@echo "  make clippy             cargo clippy --workspace --all-targets -- -D warnings"
 	@echo "  make check              cargo check --workspace"
 	@echo "  make wasm-check         cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu"
+	@echo "  make windows-check      cargo check client for x86_64-pc-windows-gnu"
+	@echo "  make windows-build      Debug build client .exe"
+	@echo "  make windows-release    Release build client .exe"
+	@echo "  make target-size        Show target/ disk usage summary"
+	@echo "  make clean-lite         Remove incremental/debug caches (keeps release artifacts)"
+	@echo "  make clean-full         Remove all cargo build artifacts (cargo clean)"
 	@echo "  make test               Run key crate tests"
 	@echo ""
 	@echo "Runtime:"
@@ -71,6 +77,37 @@ check:
 
 wasm-check:
 	cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
+
+windows-check:
+	cargo check -p sidereal-client --target x86_64-pc-windows-gnu
+
+windows-build:
+	cargo build -p sidereal-client --target x86_64-pc-windows-gnu
+	@echo "Built: target/x86_64-pc-windows-gnu/debug/sidereal-client.exe"
+
+windows-release:
+	cargo build -p sidereal-client --target x86_64-pc-windows-gnu --release
+	@echo "Built: target/x86_64-pc-windows-gnu/release/sidereal-client.exe"
+
+target-size:
+	@if [ -d target ]; then \
+		echo "target/ total:"; \
+		du -sh target; \
+		echo ""; \
+		echo "target/* breakdown:"; \
+		du -sh target/* 2>/dev/null | sort -h; \
+	else \
+		echo "No target/ directory yet."; \
+	fi
+
+clean-lite:
+	@echo "Removing incremental/debug caches under target/ ..."
+	rm -rf target/debug/incremental target/debug/.fingerprint target/debug/build
+	@echo "Done. Use 'make target-size' to inspect remaining artifacts."
+
+clean-full:
+	cargo clean
+	@echo "Done. Full cargo artifacts removed."
 
 test:
 	cargo test -p sidereal-replication

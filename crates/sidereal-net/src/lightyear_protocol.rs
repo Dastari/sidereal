@@ -16,6 +16,13 @@ pub struct ClientInputMessage {
     pub tick: u64,
 }
 
+/// Client authenticates replication session and binds transport identity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientAuthMessage {
+    pub player_entity_id: String,
+    pub access_token: String,
+}
+
 /// Replication sends state to clients
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplicationStateMessage {
@@ -37,9 +44,17 @@ impl ReplicationStateMessage {
 }
 
 impl ClientInputMessage {
-    pub fn from_axis_inputs(player_entity_id: String, tick: u64, thrust: f32, turn: f32) -> Self {
+    pub fn from_axis_inputs(
+        player_entity_id: String,
+        tick: u64,
+        thrust: f32,
+        turn: f32,
+        brake: bool,
+    ) -> Self {
         let mut actions = Vec::new();
-        if thrust > 0.0 {
+        if brake {
+            actions.push(EntityAction::Brake);
+        } else if thrust > 0.0 {
             actions.push(EntityAction::ThrustForward);
         } else if thrust < 0.0 {
             actions.push(EntityAction::ThrustReverse);
@@ -66,6 +81,7 @@ impl ClientInputMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum LightyearWireMessage {
+    ClientAuth(ClientAuthMessage),
     ClientInput(ClientInputMessage),
     ReplicationState(ReplicationStateMessage),
 }
@@ -78,6 +94,8 @@ pub struct InputChannel;
 pub struct StateChannel;
 
 pub fn register_lightyear_protocol(app: &mut App) {
+    app.register_message::<ClientAuthMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ClientInputMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ReplicationStateMessage>()

@@ -71,6 +71,7 @@ Client plane:
 - `sidereal-client` (single workspace member): realtime client with prediction/rollback/interpolation. Builds as a native binary and as a WASM `cdylib` library from the same source. See section 3.3 for architecture details.
 - `sidereal-client` enables `bevy_remote` protocol for local/remote inspection tooling parity with server runtimes.
 - Both the native binary target and the WASM library target must stay CI-green. Gameplay and simulation code is shared; only the transport adapter and platform init code differ.
+- Client UI follows the design system documented in `docs/ui_design_guide.md` (space-themed aesthetic, consistent color palette, component patterns). Error handling uses persistent modal dialogs (`dialog_ui::DialogQueue`) for failures requiring user acknowledgment.
 
 ### 3.2 Networking Strategy
 
@@ -176,7 +177,7 @@ In the WASM build, the transport adapter:
 
 A Cargo feature flag (`wasm`) for the client is not the right model. `cfg(target_arch = "wasm32")` is set automatically by the Rust toolchain when targeting WASM and cannot be accidentally miscombined with native builds. Feature flags can.
 
-The client is one workspace member (`crates/sidereal-client`) with both targets declared in its `Cargo.toml`:
+The client is one workspace member (`bins/sidereal-client`) with both targets declared in its `Cargo.toml`:
 
 ```toml
 [[bin]]
@@ -200,12 +201,12 @@ Build commands:
 cargo build -p sidereal-client
 
 # WASM (requires wasm-pack or cargo build with wasm32 target)
-wasm-pack build crates/sidereal-client --target web --out-dir ../../dist/web
+wasm-pack build bins/sidereal-client --target web --out-dir ../../dist/web
 # or
 cargo build -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
 ```
 
-This replaces the previously listed `bins/sidereal-client-web` binary. There is no separate web binary; the WASM artifact comes from the library target of `crates/sidereal-client`.
+This replaces the previously listed `bins/sidereal-client-web` binary. There is no separate web binary; the WASM artifact comes from the library target of `bins/sidereal-client`.
 
 ## 4. Tick, Time, and Input Model
 
@@ -301,7 +302,7 @@ Render rule:
 
 ### 5.3 Physics Parity Rule
 
-- Shared deterministic movement/control math lives in `sidereal-sim-core`.
+- Shared deterministic movement/control logic lives in shared crates. Current baseline uses `sidereal-game` systems for action/fuel/thrust rules on both client and server, while `sidereal-sim-core` hosts pure deterministic helpers.
 - Client/server step semantics must match (turn/thrust ordering, damping, timestep assumptions).
 - Full client Avian prediction for controlled entity is a phased upgrade after baseline parity and stability metrics are acceptable.
 
@@ -703,6 +704,13 @@ Recommended pattern:
 3. Recompute once in a system (`TotalMassKg`) and clear `MassDirty`.
 4. Physics systems read `TotalMassKg` only.
 
+Current v3 runtime behavior:
+- Replication hydration rebuilds persisted parent/child hierarchy links into Bevy transform hierarchy using persisted `parent_entity_id`.
+- Hardpoints are hydrated as normal entities and linked into the hierarchy, so child transforms inherit parent transforms and local offsets.
+- `recompute_total_mass` derives `CargoMassKg`, `ModuleMassKg`, and `TotalMassKg` from inventories + mounted module trees and synchronizes Avian mass at runtime.
+- Runtime hydration applies all registered generated component envelopes via reflection (`AppTypeRegistry` + `TypedReflectDeserializer` + `ReflectCommandExt::insert_reflect`) so newly registered persistable components hydrate without per-component manual insertion code.
+- Runtime persistence emission refreshes component payloads from reflected ECS state (`TypedReflectSerializer` over registered generated component kinds), so newly registered persistable components are included in outgoing/pending persistence payloads without per-component manual serialization wiring.
+
 Why:
 
 - avoids repeated hot-path aggregation
@@ -987,6 +995,7 @@ Gateway endpoints:
 - `POST /auth/password-reset/confirm`
 - `GET /auth/me`
 - `GET /world/me` (JWT-authenticated player world bootstrap snapshot for client login handoff)
+  - includes starter ship movement tuning required for client/shared module wiring (for example `engine_max_accel_mps2`, `engine_ramp_to_max_s`)
 - `GET /assets/stream/{asset_id}` (JWT-authenticated streaming asset endpoint for client cache population)
 - Asset bootstrap metadata is delivered on the authenticated replication/control channel (not HTTP asset file endpoints).
 - Current scaffold behavior: password reset request returns a reset token in response for local/dev flow verification; production delivery should move to out-of-band mail/SMS and stop returning raw tokens.
@@ -998,7 +1007,7 @@ Required lifecycle:
 1. gateway creates account record and `player_entity_id` (`player:<account_uuid>`),
 2. gateway requests replication bootstrap command,
 3. replication persists bootstrap receipt and applies bootstrap idempotently (`account_id` unique; duplicate commands are recorded but not re-applied),
-4. replication performs world bootstrap in graph if player owns none (current scaffold creates starter `Ship` metadata with `asset_id=corvette_01`),
+4. replication performs world bootstrap in graph if player owns none (current scaffold creates starter `Ship` metadata with `asset_id=corvette_01` plus persisted engine tuning fields consumed by client/shared movement modules),
 5. login does not create gameplay entities.
 
 This keeps auth as entry authority and world bootstrap in replication-owned world pipeline.
@@ -1006,6 +1015,7 @@ This keeps auth as entry authority and world bootstrap in replication-owned worl
 ### 11.4 Session to Gameplay Identity
 
 - all gameplay routing derives from authenticated `player_entity_id` claim,
+- replication binds transport session identity (`RemoteId`/peer) to authenticated `player_entity_id` and rejects mismatched input claims from client packets,
 - entitlement/ownership loading is graph-based,
 - controlled entity selection must remain ownership-authorized.
 
@@ -1152,11 +1162,11 @@ Binaries:
 
 Client (single crate, dual targets):
 
-- `crates/sidereal-client`: the client workspace member. Produces a native binary via `[[bin]]` and a WASM `cdylib` library via `[lib]`. There is no separate `sidereal-client-web` crate; the WASM artifact is the library target of this crate. See section 3.3 for rationale and build commands. Platform branching is done with `cfg(target_arch = "wasm32")`, never with cargo feature flags.
+- `bins/sidereal-client`: the client workspace member. Produces a native binary via `[[bin]]` and a WASM `cdylib` library via `[lib]`. There is no separate `sidereal-client-web` crate; the WASM artifact is the library target of this crate. See section 3.3 for rationale and build commands. Platform branching is done with `cfg(target_arch = "wasm32")`, never with cargo feature flags.
 
 Folder layout guidance:
 
-- `docs/`: design/ADRs/protocol/runtime defaults.
+- `docs/`: design/ADRs/protocol/runtime defaults/UI design system.
 - `docker/` + `docker-compose.yaml`: local infra.
 - `data/`: dev asset and DB data mounts.
 - `scripts/`: repeatable local orchestration/dev flows.
@@ -1410,7 +1420,7 @@ sqlx::query("SET search_path = public;").execute(conn).await?;
 - Remote entities rendered via snapshot-buffer interpolation.
 - Server-authorized redaction working (owned vs non-owned visibility differences).
 - Graph persistence + startup hydration functioning with no periodic DB->live overwrite.
-- Shared `sidereal-sim-core` used by shard and client prediction path.
+- Shared gameplay logic (`sidereal-game`) is used by both server and client paths so intent validation/fuel/engine behavior remain aligned; `sidereal-sim-core` remains available for pure deterministic helper math.
 - Asset IDs delivered with placeholder fallback and no gameplay impact from missing assets.
 - Native and WASM clients both build in CI with shared gameplay code and transport-specific adapters only at boundary layers; WASM CI validation includes WebGPU-enabled build settings.
 - Baseline docs/decisions/coding standards synchronized with implementation.

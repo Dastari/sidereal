@@ -28,6 +28,8 @@ pub enum EntityAction {
     ThrustReverse,
     /// Stop all thrust (throttle zero)
     ThrustNeutral,
+    /// Active flight-computer braking to drive linear velocity toward zero
+    Brake,
     /// Yaw left (turn counterclockwise)
     YawLeft,
     /// Yaw right (turn clockwise)

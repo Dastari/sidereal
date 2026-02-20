@@ -4,11 +4,13 @@ pub mod actions;
 pub mod corvette;
 pub mod flight;
 pub mod generated;
+pub mod mass;
 
 // Re-export commonly used items
 pub use actions::*;
 pub use corvette::*;
 pub use generated::components::*;
+pub use mass::recompute_total_mass;
 
 // Re-export flight systems (not components, those come from generated)
 pub use flight::{apply_engine_thrust, process_flight_actions};
@@ -30,6 +32,7 @@ impl Plugin for SiderealGamePlugin {
             (
                 validate_action_capabilities,
                 process_flight_actions,
+                recompute_total_mass,
                 apply_engine_thrust,
             )
                 .chain(),

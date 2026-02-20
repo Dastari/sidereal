@@ -5,8 +5,8 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
 use crate::{
-    AuthAction, ClientAppState, ClientSession, FocusField, active_field_mut, is_printable_char,
-    mask, submit_auth_request,
+    AssetRootPath, AuthAction, ClientAppState, ClientSession, FocusField, active_field_mut,
+    dialog_ui, is_printable_char, mask, submit_auth_request,
 };
 
 #[derive(Component)]
@@ -88,9 +88,9 @@ pub fn register_auth_ui(app: &mut App) {
     );
 }
 
-fn setup_auth_screen(mut commands: Commands<'_, '_>, asset_server: Res<'_, AssetServer>) {
-    let font_bold = asset_server.load("data/fonts/FiraSans-Bold.ttf");
-    let font_regular = asset_server.load("data/fonts/FiraSans-Regular.ttf");
+fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, crate::EmbeddedFonts>) {
+    let font_bold = fonts.bold.clone();
+    let font_regular = fonts.regular.clone();
 
     commands.spawn((Camera2d, DespawnOnExit(ClientAppState::Auth)));
 
@@ -365,6 +365,8 @@ fn handle_auth_keyboard_input(
     keys: Res<'_, ButtonInput<KeyCode>>,
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
+    mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
+    asset_root: Res<'_, AssetRootPath>,
 ) {
     let mut submit = false;
     for event in keyboard_input_reader.read() {
@@ -420,7 +422,12 @@ fn handle_auth_keyboard_input(
     }
 
     if submit {
-        submit_auth_request(&mut session, &mut next_state);
+        submit_auth_request(
+            &mut session,
+            &mut next_state,
+            &mut dialog_queue,
+            &asset_root,
+        );
     }
 }
 
@@ -438,6 +445,8 @@ fn handle_auth_button_interactions(
     >,
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
+    mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
+    asset_root: Res<'_, AssetRootPath>,
 ) {
     for (interaction, button, mut bg, input_box) in &mut interactions {
         match *interaction {
@@ -452,7 +461,12 @@ fn handle_auth_button_interactions(
                 match button.0 {
                     AuthButtonKind::Submit => {
                         *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));
-                        submit_auth_request(&mut session, &mut next_state);
+                        submit_auth_request(
+                            &mut session,
+                            &mut next_state,
+                            &mut dialog_queue,
+                            &asset_root,
+                        );
                     }
                     AuthButtonKind::SwitchFlow(action) => {
                         session.selected_action = action;
@@ -501,24 +515,31 @@ fn handle_auth_button_interactions(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn update_auth_text(
     session: Res<'_, ClientSession>,
-    mut status_query: Query<'_, '_, (&mut Text, &mut TextColor), With<AuthUiStatusText>>,
-    mut flow_query: Query<'_, '_, &mut Text, With<AuthUiFlowTitle>>,
-    mut submit_label_query: Query<'_, '_, &mut Text, With<AuthUiSubmitLabel>>,
+    mut text_sets: ParamSet<
+        '_,
+        '_,
+        (
+            Query<'_, '_, (&mut Text, &mut TextColor), With<AuthUiStatusText>>,
+            Query<'_, '_, &mut Text, With<AuthUiFlowTitle>>,
+            Query<'_, '_, &mut Text, With<AuthUiSubmitLabel>>,
+        ),
+    >,
 ) {
     let flow_title = flow_title(session.selected_action);
 
-    for mut text in &mut flow_query {
+    for mut text in &mut text_sets.p1() {
         text.0 = flow_title.to_string();
     }
 
     let submit_label = submit_label(session.selected_action);
-    for mut text in &mut submit_label_query {
+    for mut text in &mut text_sets.p2() {
         text.0 = submit_label.to_string();
     }
 
-    for (mut text, mut color) in &mut status_query {
+    for (mut text, mut color) in &mut text_sets.p0() {
         text.0 = session.status.clone();
         *color =
             if session.status.starts_with("Request failed") || session.status.contains("failed") {
