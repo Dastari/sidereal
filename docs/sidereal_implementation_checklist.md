@@ -1,7 +1,7 @@
 # Sidereal v3 Implementation Checklist
 
-Status: Planned implementation guide
-Date: 2026-02-19
+Status: Active implementation tracker
+Date: 2026-02-21
 Primary spec: `docs/sidereal_design_document.md`
 
 ## Architecture Note (Updated 2026-02-19)
@@ -9,8 +9,8 @@ Primary spec: `docs/sidereal_design_document.md`
 **Simplified Architecture:** Shard servers are reserved for future multi-shard spatial partitioning. Current implementation consolidates all simulation into the replication server for faster iteration and simpler deployment.
 
 ```
-Client ←→ Gateway (HTTP/REST: auth, /world/me, /assets/stream)
-Client ←→ Replication (Lightyear UDP/WebRTC: game input/state)
+Client ←→ Gateway (HTTP/REST: auth only)
+Client ←→ Replication (Lightyear UDP/WebRTC: auth bind, asset stream, game input/state)
 Replication ←→ Database (persistence)
 ```
 
@@ -39,32 +39,80 @@ The `bins/sidereal-shard` binary exists but is not currently used. See `bins/sid
 - [x] Registration to playable world path is deterministic:
   - [x] `POST /auth/register` creates account and dispatches bootstrap command once.
   - [x] Active bootstrap dispatcher path creates starter ship world state for that account (`direct` by default; optional `udp` handoff to replication).
-  - [x] `GET /world/me` returns starter ship + asset descriptors without manual retries.
+  - [x] Starter ship bootstrap remains replication-owned; client bootstrap does not depend on `/world/me`.
 - [ ] Native client login/register UX closes loop:
   - [x] Auth UI works end-to-end (register/login/forgot).
   - [x] Dialog UI system implemented for persistent error/warning/info modals.
   - [x] Error handling uses dialog system (world load failures, protocol errors).
-  - [x] Asset stream fetch succeeds for `corvette_01` + starfield shader assets.
+  - [x] Replication-control-channel asset stream succeeds for `corvette_01` + starfield shader assets.
   - [ ] Player enters world and can thrust/turn/logout with HUD telemetry visible.
 - [x] Client auth/in-world lifecycle uses state-scoped entity cleanup (Bevy state transitions, not manual despawn loops).
 - [x] Required Components baseline added for core generated gameplay components.
 - [x] Fallible-query pattern audit completed for active runtime systems touched in current vertical slice.
 - [ ] Transport remains parity-gated during this vertical slice:
-  - [ ] Lightyear replication/native-client e2e transport test stays green.
+  - [x] Lightyear replication/native-client e2e transport test stays green.
   - [ ] Native and WASM client compile checks stay green on every change.
 - [ ] Visibility/scan-intel grass-roots foundations are enforced in all new network payload work:
   - [ ] Apply authorization-scope vs delivery-scope separation before serialization.
   - [ ] Apply field-level redaction masks server-side (never trust client-side filtering).
   - [ ] Ensure grant expiry/revocation paths immediately revert to redacted baseline.
 
+## Current Runtime Status (2026-02-20)
+
+### Working now
+
+- [x] End-to-end auth flow is visible and debuggable (auth UI + persistent dialog UI + bootstrap watchdog).
+- [x] Replication auth binding succeeds when JWT env is consistent across gateway/replication.
+- [x] Re-login no longer crashes due to stale client runtime entity registry state.
+- [x] Ship model rendering works from streamed `corvette_01` assets after login.
+- [x] Visibility fallback chain is live (focused entity -> controlled entity -> persisted camera -> origin).
+- [x] Public and faction visibility policy is implemented in replication visibility filtering (`PublicVisibility`, `FactionId`, `FactionVisibility`).
+- [x] Component-level replication visibility metadata is introduced (`ReplicationVisibility::{Public, OwnerOnly}`) and used in non-owner redaction.
+
+### Known issues still open (critical path)
+
+- [x] Fullscreen background layers (starfield/space background) are not consistently visible in all sessions.
+  - **Fix (2026-02-21):** Root cause was missing `RenderLayers` isolation — UI overlay camera re-rendered opaque backdrops over 3D scene. Added dedicated `BACKDROP_RENDER_LAYER` for backdrop Camera2d + all Mesh2d backdrop entities. Added unconditional dark `ColorMaterial` fallback background. Needs live confirmation.
+- [x] Flight feel tuning is not yet acceptable (acceleration/brake responsiveness and residual velocity jitter).
+  - **Fix (2026-02-21):** Root cause was client-side Avian `LinearDamping`/`AngularDamping` fighting server reconciliation corrections. Client controlled entity now has zero damping and trusts server velocity authoritatively. Server brake/stabilization constants rebalanced for faster settle. Camera smoothing improved. Needs live confirmation.
+- [ ] Logout/login account-switch behavior on a reused transport session still needs long-session soak validation.
+- [ ] Visibility is still partially property-key based; remaining always-visible property compatibility list must be retired by componentizing/linking remaining fields.
+
+## Deviation Log (from initial plan)
+
+- [x] **Temporary asset-stream hardening:** replication currently forces baseline background shader asset IDs (`starfield_wgsl`, `space_background_wgsl`) into required stream candidates to avoid blank-space regressions.  
+  - Planned end state: environment/map zones drive required fullscreen layer assets dynamically; global forced list removed.
+- [x] **Auth remote-session behavior adjusted:** replication now permits valid authenticated rebind on the same remote endpoint (old player -> new player) to support logout/login account switching without requiring process restart.
+- [x] **Visibility implementation sequencing changed:** component-level visibility metadata was introduced before full property schema migration.  
+  - Planned end state: minimize/eliminate `ALWAYS_VISIBLE_PROPERTIES` by migrating residual property-only fields to generated/public components.
+- [x] **Starter bootstrap persistence clarified:** new-player bootstrap now persists required module graph entities (engine/fuel/mount) as part of authoritative world-init data rather than relying on hydration-time fallback mutation.
+
+## Remediation Alignment Update (2026-02-21)
+
+- [x] Runtime-sync insertion drift reduced: shared generic insertion helper now powers both world-delta and graph-record registered-component decode/insert paths.
+- [x] Reconciliation contract remains explicit (`acked_input_tick` in protocol payload) and client prune/replay hooks remain wired.
+- [x] Replication input hardening now includes concrete drop-reason metrics in addition to existing tick window + rate-limit + bounded queue controls.
+- [x] Shared gameplay authority boundary coverage improved: non-flight actions are explicitly verified not to mutate flight intent state.
+- [x] Shared corvette asset-id default now feeds replication bootstrap and replication broadcast world-state assembly.
+- [x] Headless transport e2e path now uses authenticated session binding in tests (JWT + player id), and replication logs accepted inputs for observability.
+- [ ] Runtime blocker closure still requires manual live validation (ship stops cleanly, backgrounds visible, camera smooth, no mass/inertia warnings). Code fixes for all reported issues landed 2026-02-21; awaiting live playtest confirmation.
+- [ ] `ALWAYS_VISIBLE_PROPERTIES` compatibility list still exists and must be reduced further as remaining property-only fields are componentized.
+- [ ] WASM parity remains intentionally deferred until non-WASM remediation phases and documentation closure are complete.
+
 ## Target Gameplay Loop (Acceptance Criteria)
 
 - [ ] Launch native client and immediately see auth UX with these flows: register, login, forgot-password request, forgot-password confirm.
 - [ ] Registering a brand-new account creates exactly one starter player ship through replication bootstrap.
 - [ ] Starter ship uses `corvette_01` model and includes baseline gameplay components (`EntityGuid`, `DisplayName`, `PositionM`, `VelocityMps`, `HealthPool`, `FlightComputer`, `Hardpoint`/module attachments as applicable).
-- [ ] On successful auth, client calls `/world/me` and receives starter ship state + required asset descriptors.
-- [ ] Client requests and receives streamed asset bytes for `corvette_01` and starfield shader assets from backend stream endpoints.
-- [ ] Entering world shows a top-down camera view (camera projection decision documented: orthographic vs perspective) with shader-driven starfield running as a camera-attached background fed by client camera/ship motion (velocity + acceleration) uniforms.
+- [ ] On successful auth, client calls `/auth/me` for identity and binds replication session with `player_entity_id`.
+- [ ] Initial visible world state (including controlled ship spawn) comes from replication stream, not `/world/me`.
+- [ ] Client receives streamed asset bytes for `corvette_01` and starfield shader assets on replication control channel.
+- [ ] Replication visibility anchor uses fallback chain (focused entity -> controlled entity -> persisted camera position -> origin) and is backed by persisted player runtime view state.
+- [ ] Entering world shows a top-down camera view (camera projection decision documented: orthographic vs perspective) with fullscreen background layers coming from replication entities/components (not hardcoded client assumptions), including shader-driven starfield behavior when the replicated layer config enables it.
+- [ ] Client gameplay asset loads route through a local asset manager facade that serves local cache hits and handles stream misses without direct gameplay-path bypass.
+- [ ] Asset stream protocol supports checksum/version request+ack flow (`asset_request`, `asset_ack`) between client and replication.
+- [ ] Initial asset bootstrap shows centered loading progress and only activates gameplay camera once bootstrap-required assets are ready.
+- [ ] In-world incremental asset streaming shows a bottom-right network activity indicator without blocking simulation/input.
 - [ ] Player can thrust/turn, receives authoritative updates, and logout returns cleanly to auth state.
 - [ ] In-world HUD shows at least coordinates, velocity, and health from authoritative/state-reconciled data.
 - [ ] Visibility/data-permission pipeline is enforced for gameplay replication payloads before network serialization.
@@ -174,6 +222,7 @@ The protocol was updated to remove shard-specific messages. The following files 
 - [x] Avian force-based physics working in test environment
 - [x] Bootstrap command handling (creates starter ships in database)
 - [x] Visibility filtering (`bins/sidereal-replication/src/visibility.rs`)
+- [x] Visibility supports data-driven public entities and faction visibility (`PublicVisibility`, `FactionId`, `FactionVisibility`), including no-ship player sessions.
 
 **🚧 In Progress - Critical Path to Playable Loop:**
 
@@ -263,7 +312,7 @@ Integration tests required:
 
 2. **Send EntityActions to Replication** (`bins/sidereal-client/src/main.rs`)
    - [ ] Create `ClientInputMessage` with:
-     - `player_entity_id` (from `/world/me` response)
+     - `player_entity_id` (from `/auth/me` response / authenticated session binding)
      - `actions: Vec<EntityAction>` (accumulated this tick)
      - `tick: u64` (client tick counter)
    - [ ] Send via Lightyear `MessageSender<ClientInputMessage>`
@@ -290,14 +339,15 @@ Integration tests required:
      ```
    - [ ] Update every frame in `Update` schedule
 
-5. **Client-Side Prediction (Optional for MVP, Recommended)**
-   - [ ] Apply same action systems locally (`process_flight_actions`, `apply_engine_thrust`)
-   - [ ] Run local Avian simulation
+5. **Client-Side Prediction (Full Avian Prediction via Isolated Resimulation)**
+   - [ ] Extract deterministic math from `process_flight_actions` and `apply_engine_thrust` into pure helpers.
+   - [ ] Buffer raw input intents locally alongside historical states.
    - [ ] When server state arrives:
-     - Compare with predicted state at that tick
-     - If divergence > threshold: rollback to server state, replay unacked inputs
-     - Smooth correction over time
-   - [ ] Use `bins/sidereal-client/src/prediction.rs` (needs Avian integration)
+     - Compare with predicted state at that tick.
+     - If divergence > threshold: rollback Avian components (`Position`, `LinearVelocity`, etc.) to server state.
+     - Replay unacked inputs by manually integrating forces/torques for the controlled entity using Avian's internal formulas, ensuring perfect parity without fast-forwarding the whole world.
+     - Smooth visual correction over time.
+   - [ ] Use `bins/sidereal-client/src/prediction.rs` for replay loop.
 
 ### Data Flow
 

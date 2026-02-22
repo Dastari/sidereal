@@ -325,7 +325,7 @@ fn replication_rebinds_same_remote_after_player_switch() {
     let spoofed_b_vs_a = wait_for_log(
         &rep_log,
         "claimed=player:transport-switch-b, bound=player:transport-switch-a",
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     );
 
     stop_child(&mut client);

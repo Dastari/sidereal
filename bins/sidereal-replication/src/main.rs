@@ -1644,17 +1644,16 @@ fn receive_client_auth_messages(
                 .insert(remote_id.0, claims.player_entity_id.clone())
             {
                 if previous_player != claims.player_entity_id.as_str() {
-                    // Find the old client_entity associated with this previous player
-                    let old_client_entity = bindings.by_client_entity.iter().find(|(_, v)| v == &&previous_player).map(|(k, _)| *k);
-                    
                     // Update client_entity binding if remote_id was bound to another client_entity
                     bindings.by_client_entity.retain(|_, v| v != &previous_player);
-                    
-                    // Also unregister the old player from visibility registry
-                    if let Some(old_entity) = old_client_entity {
-                        visibility_registry.unregister_client(old_entity);
-                    }
                 }
+            }
+            
+            // Clean up any other client_entity that claims to be this same player, since the player is now on THIS client_entity.
+            let old_client_entity_for_new_player = bindings.by_client_entity.iter().find(|(k, v)| v == &&claims.player_entity_id && *k != &client_entity).map(|(k, _)| *k);
+            if let Some(old_entity) = old_client_entity_for_new_player {
+                bindings.by_client_entity.remove(&old_entity);
+                visibility_registry.unregister_client(old_entity);
             }
 
             // Force a fresh manifest/request cycle after auth/rebind on this remote.

@@ -302,9 +302,11 @@ Render rule:
 
 ### 5.3 Physics Parity Rule
 
-- Shared deterministic movement/control logic lives in shared crates. Current baseline uses `sidereal-game` systems for action/fuel/thrust rules on both client and server, while `sidereal-sim-core` hosts pure deterministic helpers.
-- Client/server step semantics must match (turn/thrust ordering, damping, timestep assumptions).
-- Full client Avian prediction for controlled entity is a phased upgrade after baseline parity and stability metrics are acceptable.
+- Shared deterministic movement/control logic lives in shared crates (`sidereal-game`).
+- Client uses Full Avian Prediction for the controlled entity. To avoid fast-forwarding the entire physics world (which would cause remote entities to jitter), the client uses an **Isolated Simulation** approach:
+  - It extracts the core math from the flight systems into pure deterministic functions.
+  - It manually recalculates and integrates forces/torques using Avian's internal formulas (`v += (f / m) * dt`, `p += v * dt`) solely for the controlled entity during the rollback/replay loop.
+- Client/server step semantics must perfectly match (turn/thrust ordering, damping, timestep assumptions).
 
 ## 6. Visibility and Data Permissions (Security-Critical)
 
@@ -994,10 +996,17 @@ Gateway endpoints:
 - `POST /auth/password-reset/request`
 - `POST /auth/password-reset/confirm`
 - `GET /auth/me`
-- `GET /world/me` (JWT-authenticated player world bootstrap snapshot for client login handoff)
-  - includes starter ship movement tuning required for client/shared module wiring (for example `engine_max_accel_mps2`, `engine_ramp_to_max_s`)
-- `GET /assets/stream/{asset_id}` (JWT-authenticated streaming asset endpoint for client cache population)
-- Asset bootstrap metadata is delivered on the authenticated replication/control channel (not HTTP asset file endpoints).
+- `GET /world/me` (legacy/debug endpoint; gameplay clients must not use this for startup world spawn)
+- `GET /assets/stream/{asset_id}` (legacy/debug endpoint; gameplay clients must not use HTTP asset fetch for runtime bootstrap)
+- Runtime client bootstrap requirements:
+  - world spawn/bootstrap comes from replicated visible world state on the authenticated replication stream,
+  - asset bootstrap metadata and byte payloads are delivered on the authenticated replication/control channel (no HTTP asset file bootstrap),
+  - fullscreen background layers (for example starfield/region-specific shader layers) are represented as replicated entities/components and not hardcoded in the client,
+  - replication visibility anchor selection must use persisted player runtime view state fallback order:
+    1) focused entity position if the focused entity still exists,
+    2) controlled entity position if the controlled entity still exists,
+    3) last persisted camera position,
+    4) `0,0,0` fallback.
 - Current scaffold behavior: password reset request returns a reset token in response for local/dev flow verification; production delivery should move to out-of-band mail/SMS and stop returning raw tokens.
 
 ### 11.3 Registration and Starter Ship Bootstrap
@@ -1018,6 +1027,7 @@ This keeps auth as entry authority and world bootstrap in replication-owned worl
 - replication binds transport session identity (`RemoteId`/peer) to authenticated `player_entity_id` and rejects mismatched input claims from client packets,
 - entitlement/ownership loading is graph-based,
 - controlled entity selection must remain ownership-authorized.
+- player runtime view state persistence is replication-owned (`last_controlled_entity_id`, `last_focused_entity_id`, `last_camera_position_m`) and updated from authenticated gameplay session signals.
 
 ## 12. Asset Delivery and Streaming (Ground Support)
 
@@ -1049,6 +1059,9 @@ Stream protocol requirements:
 - backend streams assets in chunked frames with resumable offsets,
 - each asset includes `asset_version` + `sha256` and optional parent version for delta/chunk reuse.
 - server-side cache generation scripts are not part of runtime behavior; cache assembly is performed client-side from streamed chunks.
+- runtime client systems resolve non-embedded assets through the local asset manager interface only (no direct gameplay-path filesystem/source bypasses).
+- initial world reveal waits for bootstrap-required assets with centered loading progress; after bootstrap, incremental streaming is non-blocking with an in-world network activity indicator.
+- runtime stream control supports explicit client request/ack messages so cache/version mismatches can be reconciled incrementally after bootstrap.
 
 Versioning and invalidation requirements:
 
@@ -1379,6 +1392,12 @@ Visibility pseudo-code:
 
 ```rust
 fn compute_visibility(player: &PlayerState, entity: &EntityState) -> Visibility {
+    if entity.is_publicly_visible() {
+        return Visibility::Full;
+    }
+    if player.is_same_faction(entity) && entity.is_faction_visible() {
+        return Visibility::Full;
+    }
     if player.owns(entity.id) || player.owns_parent_of(entity.id) {
         return Visibility::Full;
     }
@@ -1420,7 +1439,7 @@ sqlx::query("SET search_path = public;").execute(conn).await?;
 - Remote entities rendered via snapshot-buffer interpolation.
 - Server-authorized redaction working (owned vs non-owned visibility differences).
 - Graph persistence + startup hydration functioning with no periodic DB->live overwrite.
-- Shared gameplay logic (`sidereal-game`) is used by both server and client paths so intent validation/fuel/engine behavior remain aligned; `sidereal-sim-core` remains available for pure deterministic helper math.
+- Shared gameplay logic (`sidereal-game`) is used by both server and client paths so intent validation/fuel/engine behavior remain aligned. Client prediction perfectly mirrors server Avian physics via isolated resimulation of the controlled entity.
 - Asset IDs delivered with placeholder fallback and no gameplay impact from missing assets.
 - Native and WASM clients both build in CI with shared gameplay code and transport-specific adapters only at boundary layers; WASM CI validation includes WebGPU-enabled build settings.
 - Baseline docs/decisions/coding standards synchronized with implementation.
