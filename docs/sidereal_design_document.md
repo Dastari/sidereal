@@ -189,6 +189,81 @@ Rules:
 - unauthorized data is never serialized,
 - ownership/faction/public policies are applied server-side,
 - visibility is computed over entities generically (not ship-only assumptions).
+- client visibility is server-decided; clients cannot self-upgrade visibility by local inference/culling tricks.
+
+### 7.1 Scope Definitions
+
+- `world truth`: authoritative shard/replication runtime state for all entities/components.
+- `authorization scope`: what the player is allowed to know at all (ownership, attachments, scanner reach, scan grants, faction/public policy).
+- `delivery scope`: what the active client session receives right now (camera/focus culling and stream policy) from the authorized set.
+
+A client may be authorized for more than it currently receives on a given stream.
+
+### 7.2 Authorization and Fog-of-War Contract
+
+- Scanner range is server-enforced fog-of-war for non-owned entities.
+- Default scanner authorization floor is `300m` around the player's controlled-entity observer position.
+- Scanner authorization aggregates over all owned entities (not only the currently controlled entity), including valid ownership/attachment chains.
+- Non-public entities outside active scanner authorization must not be delivered.
+- Visibility exceptions are explicit and server-enforced:
+  - entities owned by the player are always authorized,
+  - entities marked `PublicVisibility` are authorized as policy allows,
+  - entities marked `FactionVisibility` are authorized to matching factions.
+- Unauthorized entities previously delivered must be removed via authoritative removal flow.
+
+### 7.3 Sensitive Data Rule and Redaction
+
+- Physical presence visibility does not imply internal state visibility.
+- By default, non-owned observed entities expose physical/render-safe data only (for example position, velocity, orientation, render/body identifiers).
+- Sensitive internals must be omitted unless explicitly authorized:
+  - cargo manifests and transfer details,
+  - private subsystem internals/loadouts,
+  - hidden operational state.
+- Redaction is applied server-side before transport encoding on every stream.
+
+### 7.4 Scan Intel Grant Model
+
+- Deep intel is unlocked by explicit, temporary server-side scan grants.
+- A grant binds observer, target, field scope, source, and expiry.
+- Initial field scopes include:
+  - `physical_public`,
+  - `combat_profile`,
+  - `cargo_summary`,
+  - `cargo_manifest`,
+  - `systems_detail`.
+- Final payload masking is computed by server policy:
+  - base authorization,
+  - active grants for `(observer, target)`,
+  - resulting field redaction mask.
+- Grant expiry or revocation must immediately restore redacted output.
+
+### 7.5 Camera-Centered Delivery Contract (Required)
+
+- In addition to scanner/authorization visibility, replication delivery must apply camera-centered network culling as a client optimization filter.
+- Client `ClientViewUpdateMessage.camera_position_m` is the culling anchor for delivery scope, not a persistence-only field.
+- For top-down gameplay, camera delivery culling uses XY coordinates only (`x`, `y`); `z` is not part of the culling decision.
+- The server must avoid delivering replication updates for entities outside the camera delivery volume that the client cannot render.
+- Camera delivery culling includes an additional configurable edge buffer radius beyond the visible viewport bounds so fast-moving entities do not snap/pop in at the boundary.
+- Camera-centered delivery culling must never bypass authorization/ownership/faction/public visibility policy; it is an additional narrowing filter only.
+
+### 7.6 Stream Tiers (Direction)
+
+- Visibility and redaction policy is shared across streams; streams differ by rate/radius/detail.
+- `focus_stream`: high-rate, local gameplay fidelity.
+- `strategic_stream`: lower-rate, wider-radius minimap/contact picture with coarse kinematics.
+- `intel_stream`: event-driven scan/intel grant updates with only grant-authorized fields.
+- Client subscription to additional streams must not widen authorization rules.
+
+### 7.7 Spatial Query and Scaling Requirements
+
+- Visibility selection must use spatial indexing/query acceleration, not full-world scans per client tick.
+- Spatial queries must include:
+  - nearby cells for focus/delivery radii,
+  - owned/scanner-derived authorization coverage.
+- Keep explicit performance telemetry for visibility queries:
+  - candidates per frame,
+  - included entities per frame,
+  - query time budget per client.
 
 ## 8. Auth and Session Identity
 

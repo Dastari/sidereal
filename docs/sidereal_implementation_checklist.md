@@ -52,6 +52,36 @@ Primary spec: `docs/sidereal_design_document.md`
 - [ ] Keep visibility/range logic generic over entities.
 - [ ] Validate ownership/faction/public visibility behavior under live multi-client scenarios.
 - [ ] Verify unauthorized fields are never serialized.
+- [ ] Enforce scope separation:
+  - [ ] Keep world truth, authorization scope, and delivery scope as distinct server-side stages.
+  - [ ] Ensure client stream subscriptions never widen authorization.
+- [ ] Enforce and verify default scanner visibility floor behavior:
+  - [ ] Treat scanner range as server-enforced fog-of-war in replication delivery logic.
+  - [ ] Player observer uses default `300m` scanner floor when no scanner modules extend range.
+  - [ ] Aggregate authorization/scanner coverage over all owned entities and attachment chains, not only current control focus.
+  - [ ] Non-public entities outside scanner range are not delivered to that client.
+  - [ ] Ownership/public/faction visibility exceptions are preserved as explicit policy rules.
+- [ ] Implement and verify sensitive-data redaction:
+  - [ ] Non-owned contacts receive physical/render-safe fields by default.
+  - [ ] Cargo manifests/private subsystem internals/transfer details remain omitted unless explicitly authorized.
+  - [ ] Entities leaving authorization are removed through authoritative removal flow.
+- [ ] Implement scan-intel grant pipeline:
+  - [ ] Store temporary grants with observer-target scope, source, and expiry.
+  - [ ] Apply grant field scopes (`physical_public`, `combat_profile`, `cargo_summary`, `cargo_manifest`, `systems_detail`) when building outbound payload masks.
+  - [ ] Revoke/expire grants to immediate redaction reversion.
+- [ ] Implement camera-centered replication delivery culling (network bind culling):
+  - [ ] Use `ClientViewUpdateMessage.camera_position_m` as delivery culling anchor in replication visibility/delivery flow.
+  - [ ] Apply camera culling in top-down XY space only (`x`, `y`), excluding `z` from culling decisions.
+  - [ ] Add configurable edge buffer radius outside camera viewport bounds to prevent high-speed boundary snap-in/pop-in.
+  - [ ] Prevent replication delivery for entities outside camera delivery volume when they cannot be rendered client-side.
+  - [ ] Keep camera culling as an additional narrowing filter after authorization/visibility policy (never a bypass).
+  - [ ] Add integration coverage demonstrating scanner visibility + camera delivery culling interaction.
+- [ ] Add stream-tiered delivery behavior:
+  - [ ] Keep focus/local stream, strategic/minimap stream, and intel/scan-result stream permission-filtered by shared redaction policy.
+  - [ ] Validate that strategic/intel streams do not leak unauthorized internals.
+- [ ] Add spatial query scaling work:
+  - [ ] Use spatial indexing for visibility candidate selection instead of full-world per-client scans.
+  - [ ] Track visibility query metrics (`candidates_per_frame`, `included_per_frame`, `query_time_per_client`).
 
 ## 6. WASM and Transport Direction
 
