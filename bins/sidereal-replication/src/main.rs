@@ -1,14 +1,17 @@
+mod bootstrap_runtime;
 mod visibility;
 
 use avian3d::prelude::*;
 use bevy::asset::{AssetApp, AssetPlugin};
-use bevy::ecs::reflect::{AppTypeRegistry, ReflectCommandExt};
+use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::log::LogPlugin;
+use bevy::log::{error, info, warn};
 use bevy::prelude::*;
-use bevy::reflect::serde::{TypedReflectDeserializer, TypedReflectSerializer};
+use bevy::reflect::serde::TypedReflectSerializer;
 use bevy::scene::ScenePlugin;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
+use bootstrap_runtime::BootstrapShipReceiver;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::ServerPlugins;
@@ -18,32 +21,43 @@ use lightyear::prelude::{
     ChannelRegistry, LocalAddr, MessageReceiver, RemoteId, Server, ServerMultiMessageSender,
     Transport,
 };
-use serde::de::DeserializeSeed;
+use sidereal_asset_runtime::{
+    AssetCatalogEntry, asset_version_from_sha256_hex, default_asset_dependencies,
+    default_streamable_asset_sources, expand_required_assets, gltf_dependency_relative_paths,
+    sha256_hex,
+};
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
-    ActionCapabilities, ActionQueue, BaseMassKg, CargoMassKg, Engine, EntityAction, EntityGuid,
-    FlightComputer, FuelTank, GeneratedComponentRegistry, Hardpoint, HealthPool, Inventory,
-    MassDirty, MassKg, ModuleMassKg, MountedOn, OwnerId, PositionM, ScannerComponent,
+    ActionQueue, BaseMassKg, CargoMassKg, Engine, EntityAction, EntityGuid, FactionId,
+    FactionVisibility, FlightComputer, FlightTuning, FuelTank, FullscreenLayer,
+    GeneratedComponentRegistry, Hardpoint, HeadingRad, HealthPool, Inventory, MassDirty, MassKg,
+    ModuleMassKg, MountedOn, OwnerId, PositionM, PublicVisibility, ScannerComponent,
     ScannerRangeBuff, ScannerRangeM, SiderealGamePlugin, TotalMassKg, VelocityMps,
+    default_corvette_asset_id, default_corvette_flight_computer, default_corvette_flight_tuning,
+    default_corvette_health_pool, default_corvette_mass_kg, default_flight_action_capabilities,
+    default_space_background_shader_asset_id, default_starfield_shader_asset_id,
+    is_flight_control_action, total_scanner_range_for_parent,
 };
 use sidereal_net::{
-    ClientAuthMessage, ClientInputMessage, ControlChannel, InputChannel, ReplicationStateMessage,
-    StateChannel, WorldComponentDelta, WorldDeltaEntity, WorldStateDelta,
-    register_lightyear_protocol,
+    AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
+    ClientAuthMessage, ClientInputMessage, ClientViewUpdateMessage, ControlChannel, InputChannel,
+    PlayerRuntimeViewState, ReplicationStateMessage, StateChannel, WorldComponentDelta,
+    WorldDeltaEntity, WorldStateDelta, register_lightyear_protocol,
 };
-use sidereal_persistence::{
-    GraphComponentRecord, GraphPersistence, decode_reflect_component, encode_reflect_component,
-};
-use sidereal_replication::bootstrap::{BootstrapProcessor, PostgresBootstrapStore};
+use sidereal_persistence::GraphPersistence;
 use sidereal_replication::state::{
     flush_pending_updates, hydrate_known_entity_ids, ingest_world_delta,
 };
+use sidereal_runtime_sync::{
+    component_record, component_type_path_map,
+    decode_graph_component_payload as decode_component_payload, format_component_id,
+    insert_registered_components_from_graph_records, parse_guid_from_entity_id, parse_vec3_value,
+    wrap_component_payload,
+};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::net::UdpSocket;
-use std::sync::{Mutex, mpsc};
-
-use std::thread;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use visibility::{
     ClientControlledEntityPositionMap, ClientVisibilityHistory, ClientVisibilityRegistry,
@@ -117,24 +131,160 @@ struct AuthenticatedClientBindings {
     by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
 }
 
+#[derive(Resource, Default)]
+struct AssetStreamServerState {
+    sent_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
+    pending_requested_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
+    acked_assets_by_remote: HashMap<lightyear::prelude::PeerId, HashMap<String, u64>>,
+}
+
+#[derive(Resource, Default)]
+struct AssetDependencyMap {
+    dependencies_by_asset_id: HashMap<String, Vec<String>>,
+}
+
+#[derive(Resource, Default)]
+struct PlayerRuntimeViewRegistry {
+    by_player_entity_id: HashMap<String, PlayerRuntimeViewState>,
+}
+
+#[derive(Resource, Default)]
+struct PlayerRuntimeViewDirtySet {
+    player_entity_ids: HashSet<String>,
+}
+
+#[derive(Resource, Default)]
+struct LatestReplicationWorld {
+    world: WorldStateDelta,
+}
+
+#[derive(Resource, Default)]
+struct EntityPositionCache {
+    by_entity_id: HashMap<String, Vec3>,
+}
+
+#[derive(Resource, Default)]
+struct ClientInputTickTracker {
+    last_accepted_tick_by_player_entity_id: HashMap<String, u64>,
+}
+
+#[derive(Resource, Default)]
+struct ClientInputRateLimiter {
+    by_player_entity_id: HashMap<String, InputRateWindow>,
+}
+
+#[derive(Resource, Debug, Default)]
+struct ClientInputDropMetrics {
+    accepted_inputs: u64,
+    future_tick: u64,
+    duplicate_or_out_of_order_tick: u64,
+    rate_limited: u64,
+    oversized_packet: u64,
+    empty_after_filter: u64,
+    unbound_client: u64,
+    spoofed_player_id: u64,
+}
+
+#[derive(Resource, Debug, Default)]
+struct ClientInputDropMetricsLogState {
+    last_logged_at_s: f64,
+    last_accepted_inputs: u64,
+}
+
+impl ClientInputDropMetrics {
+    fn record_accepted(&mut self) {
+        self.accepted_inputs = self.accepted_inputs.saturating_add(1);
+    }
+
+    fn record(&mut self, reason: InputDropReason) {
+        match reason {
+            InputDropReason::FutureTick => self.future_tick = self.future_tick.saturating_add(1),
+            InputDropReason::DuplicateOrOutOfOrderTick => {
+                self.duplicate_or_out_of_order_tick =
+                    self.duplicate_or_out_of_order_tick.saturating_add(1);
+            }
+            InputDropReason::RateLimited => {
+                self.rate_limited = self.rate_limited.saturating_add(1);
+            }
+            InputDropReason::OversizedPacket => {
+                self.oversized_packet = self.oversized_packet.saturating_add(1);
+            }
+            InputDropReason::EmptyAfterFilter => {
+                self.empty_after_filter = self.empty_after_filter.saturating_add(1);
+            }
+            InputDropReason::UnboundClient => {
+                self.unbound_client = self.unbound_client.saturating_add(1);
+            }
+            InputDropReason::SpoofedPlayerId => {
+                self.spoofed_player_id = self.spoofed_player_id.saturating_add(1);
+            }
+        }
+    }
+
+    fn total_drops(&self) -> u64 {
+        self.future_tick
+            .saturating_add(self.duplicate_or_out_of_order_tick)
+            .saturating_add(self.rate_limited)
+            .saturating_add(self.oversized_packet)
+            .saturating_add(self.empty_after_filter)
+            .saturating_add(self.unbound_client)
+            .saturating_add(self.spoofed_player_id)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InputDropReason {
+    FutureTick,
+    DuplicateOrOutOfOrderTick,
+    RateLimited,
+    OversizedPacket,
+    EmptyAfterFilter,
+    UnboundClient,
+    SpoofedPlayerId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InputRateWindow {
+    window_started_at_s: f64,
+    accepted_count: u32,
+}
+
+fn should_accept_input_message(
+    limiter: &mut ClientInputRateLimiter,
+    player_entity_id: &str,
+    now_s: f64,
+    max_messages_per_window: u32,
+    window_duration_s: f64,
+) -> bool {
+    let window = limiter
+        .by_player_entity_id
+        .entry(player_entity_id.to_string())
+        .or_insert(InputRateWindow {
+            window_started_at_s: now_s,
+            accepted_count: 0,
+        });
+    if now_s - window.window_started_at_s >= window_duration_s {
+        window.window_started_at_s = now_s;
+        window.accepted_count = 0;
+    }
+    if window.accepted_count >= max_messages_per_window {
+        return false;
+    }
+    window.accepted_count = window.accepted_count.saturating_add(1);
+    true
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct AccessTokenClaims {
     player_entity_id: String,
 }
 
-/// Channel for bootstrap thread to request ship spawning in the Bevy world
-#[derive(Resource)]
-struct BootstrapShipReceiver(Mutex<mpsc::Receiver<BootstrapShipCommand>>);
-
-#[derive(Debug, Clone)]
-struct BootstrapShipCommand {
-    #[allow(dead_code)]
-    account_id: uuid::Uuid,
-    player_entity_id: String,
-    ship_entity_id: String,
-}
-
 type ConnectedClientFilter = (With<ClientOf>, With<Connected>);
+static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn is_allowed_control_action(action: EntityAction) -> bool {
+    is_flight_control_action(action)
+}
 
 fn main() {
     let remote_cfg = match RemoteInspectConfig::from_env("REPLICATION", 15713) {
@@ -169,7 +319,10 @@ fn main() {
         )
             .chain(),
     );
-    app.add_systems(Startup, start_replication_control_listener);
+    app.add_systems(
+        Startup,
+        bootstrap_runtime::start_replication_control_listener,
+    );
     app.add_observer(log_replication_client_connected);
     app.insert_resource(ReplicationOutboundQueue::default());
     app.insert_resource(ClientVisibilityRegistry::default());
@@ -177,14 +330,32 @@ fn main() {
     app.insert_resource(ClientVisibilityHistory::default());
     app.insert_resource(PlayerControlledEntityMap::default());
     app.insert_resource(AuthenticatedClientBindings::default());
+    app.insert_resource(AssetStreamServerState::default());
+    app.insert_resource(PlayerRuntimeViewRegistry::default());
+    app.insert_resource(PlayerRuntimeViewDirtySet::default());
+    app.insert_resource(LatestReplicationWorld::default());
+    app.insert_resource(EntityPositionCache::default());
+    app.insert_resource(ClientInputTickTracker::default());
+    app.insert_resource(ClientInputRateLimiter::default());
+    app.insert_resource(ClientInputDropMetrics::default());
+    app.insert_resource(ClientInputDropMetricsLogState::default());
+    app.insert_resource(AssetDependencyMap {
+        dependencies_by_asset_id: default_asset_dependencies(),
+    });
     app.add_systems(
         Update,
         (
             ensure_server_transport_channels,
             cleanup_client_auth_bindings,
             receive_client_auth_messages,
+            receive_client_view_updates,
+            receive_client_asset_requests,
+            receive_client_asset_acks,
+            stream_bootstrap_assets_to_authenticated_clients,
             receive_client_inputs,
+            report_input_drop_metrics,
             process_bootstrap_ship_commands,
+            enforce_planar_ship_motion,
             sync_simulated_ship_components,
             update_client_controlled_entity_positions,
             compute_controlled_entity_scanner_ranges,
@@ -192,12 +363,10 @@ fn main() {
             refresh_component_payloads_from_reflection,
             broadcast_replication_state,
             flush_replication_persistence,
+            flush_player_runtime_view_state_persistence,
         )
             .chain(),
     );
-    app.add_systems(Startup, || {
-        println!("sidereal-replication scaffold");
-    });
     app.run();
 }
 
@@ -261,13 +430,14 @@ fn spawn_simulation_entity(
     controlled_entity_map: &mut PlayerControlledEntityMap,
     entity_id: &str,
     player_entity_id: &str,
-    pos: Vec3,
-    vel: Vec3,
-    health: f32,
-    max_health: f32,
+    mut pos: Vec3,
+    mut vel: Vec3,
 ) {
+    pos.z = 0.0;
+    vel.z = 0.0;
     let ship_guid = parse_guid_from_entity_id(entity_id).unwrap_or_else(uuid::Uuid::new_v4);
 
+    let default_health_pool = default_corvette_health_pool();
     let entity = commands
         .spawn((
             Name::new(entity_id.to_string()),
@@ -278,37 +448,21 @@ fn spawn_simulation_entity(
             EntityGuid(ship_guid),
             OwnerId(player_entity_id.to_string()),
             ActionQueue::default(),
-            ActionCapabilities {
-                supported: vec![
-                    EntityAction::ThrustForward,
-                    EntityAction::ThrustReverse,
-                    EntityAction::ThrustNeutral,
-                    EntityAction::Brake,
-                    EntityAction::YawLeft,
-                    EntityAction::YawRight,
-                    EntityAction::YawNeutral,
-                ],
-            },
-            FlightComputer {
-                profile: "basic_fly_by_wire".to_string(),
-                throttle: 0.0,
-                yaw_input: 0.0,
-                turn_rate_deg_s: 45.0,
-            },
-            HealthPool {
-                current: health,
-                maximum: max_health,
-            },
+            default_flight_action_capabilities(),
+            default_corvette_flight_computer(),
+            default_corvette_flight_tuning(),
+            default_health_pool,
             PositionM(pos),
             VelocityMps(vel),
+            HeadingRad(0.0),
             Transform::from_translation(pos),
         ))
         .insert((
-            MassKg(15_000.0),
-            BaseMassKg(15_000.0),
+            MassKg(default_corvette_mass_kg()),
+            BaseMassKg(default_corvette_mass_kg()),
             CargoMassKg(0.0),
             ModuleMassKg(0.0),
-            TotalMassKg(15_000.0),
+            TotalMassKg(default_corvette_mass_kg()),
             MassDirty,
             Inventory::default(),
         ))
@@ -319,8 +473,12 @@ fn spawn_simulation_entity(
             Rotation::default(),
             LinearVelocity(vel),
             AngularVelocity::default(),
-            LinearDamping(0.12),
-            AngularDamping(0.35),
+            LockedAxes::new()
+                .lock_translation_z()
+                .lock_rotation_x()
+                .lock_rotation_y(),
+            LinearDamping(0.0),
+            AngularDamping(0.0),
         ))
         .id();
     controlled_entity_map
@@ -417,38 +575,42 @@ fn hydrate_simulation_entities(
             parse_guid_from_entity_id(&record.entity_id).unwrap_or_else(uuid::Uuid::new_v4);
         ship_guid_by_entity_id.insert(record.entity_id.clone(), ship_guid);
 
-        let pos = record
+        let mut pos = record
             .properties
             .get("position_m")
             .and_then(parse_vec3_value)
             .unwrap_or(Vec3::ZERO);
-        let vel = record
+        let mut vel = record
             .properties
             .get("velocity_mps")
             .and_then(parse_vec3_value)
             .unwrap_or(Vec3::ZERO);
+        pos.z = 0.0;
+        vel.z = 0.0;
         let heading_rad = record
             .properties
             .get("heading_rad")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0) as f32;
-        let health_pool = health_pool_from_record(record, &type_paths).unwrap_or(HealthPool {
-            current: 100.0,
-            maximum: 100.0,
-        });
-        let flight_computer =
-            flight_computer_from_record(record, &type_paths).unwrap_or(FlightComputer {
-                profile: "basic_fly_by_wire".to_string(),
-                throttle: 0.0,
-                yaw_input: 0.0,
-                turn_rate_deg_s: 45.0,
-            });
+        let health_pool = health_pool_from_record(record, &type_paths)
+            .unwrap_or_else(default_corvette_health_pool);
+        let flight_computer = flight_computer_from_record(record, &type_paths)
+            .unwrap_or_else(default_corvette_flight_computer);
+        let flight_tuning = flight_tuning_from_record(record, &type_paths)
+            .unwrap_or_else(default_corvette_flight_tuning);
         let scanner_range =
             scanner_range_from_record(record, &type_paths).unwrap_or(ScannerRangeM(0.0));
         let scanner_component = scanner_component_from_record(record, &type_paths);
         let scanner_buff = scanner_range_buff_from_record(record, &type_paths);
-        let mass_kg = mass_kg_from_record(record, &type_paths).unwrap_or(MassKg(15_000.0));
-        let base_mass = base_mass_from_record(record, &type_paths).unwrap_or(BaseMassKg(mass_kg.0));
+        let faction_id = faction_id_from_record(record, &type_paths);
+        let faction_visibility =
+            has_marker_component_record(record, "faction_visibility").then_some(FactionVisibility);
+        let public_visibility =
+            has_marker_component_record(record, "public_visibility").then_some(PublicVisibility);
+        let mass_kg =
+            mass_kg_from_record(record, &type_paths).unwrap_or(MassKg(default_corvette_mass_kg()));
+        let base_mass = base_mass_from_record(record, &type_paths)
+            .unwrap_or(BaseMassKg(default_corvette_mass_kg()));
         let cargo_mass = cargo_mass_from_record(record, &type_paths).unwrap_or(CargoMassKg(0.0));
         let module_mass = module_mass_from_record(record, &type_paths).unwrap_or(ModuleMassKg(0.0));
         let total_mass =
@@ -464,23 +626,15 @@ fn hydrate_simulation_entities(
             EntityGuid(ship_guid),
             OwnerId(player_entity_id.clone()),
             ActionQueue::default(),
-            ActionCapabilities {
-                supported: vec![
-                    EntityAction::ThrustForward,
-                    EntityAction::ThrustReverse,
-                    EntityAction::ThrustNeutral,
-                    EntityAction::Brake,
-                    EntityAction::YawLeft,
-                    EntityAction::YawRight,
-                    EntityAction::YawNeutral,
-                ],
-            },
+            default_flight_action_capabilities(),
             flight_computer,
+            flight_tuning,
             health_pool,
             PositionM(pos),
             VelocityMps(vel),
+            HeadingRad(heading_rad),
             scanner_range,
-            Transform::from_translation(pos).with_rotation(Quat::from_rotation_z(-heading_rad)),
+            Transform::from_translation(pos).with_rotation(Quat::from_rotation_z(heading_rad)),
         ));
         entity_commands.insert((
             mass_kg,
@@ -497,19 +651,32 @@ fn hydrate_simulation_entities(
         if let Some(scanner_buff) = scanner_buff {
             entity_commands.insert(scanner_buff);
         }
+        if let Some(faction_id) = faction_id {
+            entity_commands.insert(faction_id);
+        }
+        if let Some(faction_visibility) = faction_visibility {
+            entity_commands.insert(faction_visibility);
+        }
+        if let Some(public_visibility) = public_visibility {
+            entity_commands.insert(public_visibility);
+        }
         let entity = entity_commands
             .insert((
                 RigidBody::Dynamic,
                 Collider::cuboid(6.0, 3.0, 2.0),
                 Position(pos),
-                Rotation(Quat::from_rotation_z(-heading_rad)),
+                Rotation(Quat::from_rotation_z(heading_rad)),
                 LinearVelocity(vel),
                 AngularVelocity::default(),
-                LinearDamping(0.12),
-                AngularDamping(0.35),
+                LockedAxes::new()
+                    .lock_translation_z()
+                    .lock_rotation_x()
+                    .lock_rotation_y(),
+                LinearDamping(0.0),
+                AngularDamping(0.0),
             ))
             .id();
-        insert_registered_components(
+        insert_registered_components_from_graph_records(
             &mut commands,
             entity,
             &record.components,
@@ -522,6 +689,12 @@ fn hydrate_simulation_entities(
             .insert(player_entity_id, entity);
         spawned_entity_by_entity_id.insert(record.entity_id.clone(), entity);
         hydrated_ships = hydrated_ships.saturating_add(1);
+    }
+
+    if hydrated_ships > 0 && hydrated_modules == 0 {
+        warn!(
+            "replication hydration restored ships without modules; keeping authoritative no-module state"
+        );
     }
 
     // Pass 2: hardpoint entities with Bevy parent-child hierarchy links.
@@ -540,6 +713,15 @@ fn hydrate_simulation_entities(
         if let Some(owner) = owner_id_from_record(record, &type_paths) {
             entity_commands.insert(owner);
         }
+        if let Some(faction_id) = faction_id_from_record(record, &type_paths) {
+            entity_commands.insert(faction_id);
+        }
+        if has_marker_component_record(record, "faction_visibility") {
+            entity_commands.insert(FactionVisibility);
+        }
+        if has_marker_component_record(record, "public_visibility") {
+            entity_commands.insert(PublicVisibility);
+        }
         if let Some(mass_kg) = mass_kg_from_record(record, &type_paths) {
             entity_commands.insert(mass_kg);
         }
@@ -547,7 +729,7 @@ fn hydrate_simulation_entities(
             entity_commands.insert(inventory);
         }
         let hardpoint_entity = entity_commands.id();
-        insert_registered_components(
+        insert_registered_components_from_graph_records(
             &mut commands,
             hardpoint_entity,
             &record.components,
@@ -586,6 +768,15 @@ fn hydrate_simulation_entities(
         if let Some(owner) = owner_id_from_record(record, &type_paths) {
             entity_commands.insert(owner);
         }
+        if let Some(faction_id) = faction_id_from_record(record, &type_paths) {
+            entity_commands.insert(faction_id);
+        }
+        if has_marker_component_record(record, "faction_visibility") {
+            entity_commands.insert(FactionVisibility);
+        }
+        if has_marker_component_record(record, "public_visibility") {
+            entity_commands.insert(PublicVisibility);
+        }
         if let Some(engine) = engine_from_record(record, &type_paths) {
             entity_commands.insert(engine);
         }
@@ -611,7 +802,7 @@ fn hydrate_simulation_entities(
             entity_commands.insert(inventory);
         }
         let module_entity = entity_commands.id();
-        insert_registered_components(
+        insert_registered_components_from_graph_records(
             &mut commands,
             module_entity,
             &record.components,
@@ -641,93 +832,43 @@ fn hydrate_simulation_entities(
     );
 }
 
-fn parse_vec3_value(value: &serde_json::Value) -> Option<Vec3> {
-    let arr = value.as_array()?;
-    if arr.len() != 3 {
-        return None;
-    }
-    Some(Vec3::new(
-        arr[0].as_f64()? as f32,
-        arr[1].as_f64()? as f32,
-        arr[2].as_f64()? as f32,
-    ))
-}
-
-fn parse_guid_from_entity_id(entity_id: &str) -> Option<uuid::Uuid> {
-    entity_id
-        .split(':')
-        .nth(1)
-        .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
-}
-
-fn component_type_path_map(registry: &GeneratedComponentRegistry) -> HashMap<String, String> {
-    registry
-        .entries
-        .iter()
-        .map(|entry| {
-            (
-                entry.component_kind.to_string(),
-                entry.type_path.to_string(),
-            )
-        })
-        .collect::<HashMap<_, _>>()
-}
-
-fn wrap_component_payload(
-    component_kind: &str,
-    payload: serde_json::Value,
+fn fullscreen_layer_delta(
+    entity_id: &str,
+    layer_kind: &str,
+    shader_asset_id: &str,
+    layer_order: i32,
     type_paths: &HashMap<String, String>,
-) -> serde_json::Value {
-    if let Some(type_path) = type_paths.get(component_kind) {
-        encode_reflect_component(type_path, payload)
-    } else {
-        payload
-    }
-}
-
-fn decode_component_payload<'a>(
-    component: &'a GraphComponentRecord,
-    type_paths: &HashMap<String, String>,
-) -> Option<&'a serde_json::Value> {
-    let expected_type_path = type_paths.get(&component.component_kind)?;
-    decode_reflect_component(&component.properties, expected_type_path)
-        .or(Some(&component.properties))
-}
-
-fn component_record<'a>(
-    components: &'a [GraphComponentRecord],
-    kind: &str,
-) -> Option<&'a GraphComponentRecord> {
-    components
-        .iter()
-        .find(|component| component.component_kind == kind)
-}
-
-fn insert_registered_components(
-    commands: &mut Commands<'_, '_>,
-    entity: Entity,
-    components: &[GraphComponentRecord],
-    type_paths: &HashMap<String, String>,
-    app_type_registry: &AppTypeRegistry,
-) {
-    let type_registry = app_type_registry.read();
-    for component in components {
-        let Some(type_path) = type_paths.get(&component.component_kind) else {
-            continue;
-        };
-        let Some(type_registration) = type_registry.get_with_type_path(type_path) else {
-            continue;
-        };
-        let Some(payload) = decode_component_payload(component, type_paths) else {
-            continue;
-        };
-        let payload_str = payload.to_string();
-        let typed = TypedReflectDeserializer::new(type_registration, &type_registry);
-        let mut deserializer = serde_json::Deserializer::from_str(&payload_str);
-        let Ok(reflect_component) = typed.deserialize(&mut deserializer) else {
-            continue;
-        };
-        commands.entity(entity).insert_reflect(reflect_component);
+) -> WorldDeltaEntity {
+    let component = FullscreenLayer {
+        layer_kind: layer_kind.to_string(),
+        shader_asset_id: shader_asset_id.to_string(),
+        layer_order,
+    };
+    WorldDeltaEntity {
+        entity_id: entity_id.to_string(),
+        labels: vec!["Entity".to_string(), "Environment".to_string()],
+        properties: serde_json::json!({
+            "entity_id": entity_id,
+            "global_visibility": true,
+            "layer_kind": layer_kind,
+            "asset_id": shader_asset_id,
+        }),
+        components: vec![WorldComponentDelta {
+            component_id: format!("{entity_id}:fullscreen_layer"),
+            component_kind: "fullscreen_layer".to_string(),
+            properties: wrap_component_payload(
+                "fullscreen_layer",
+                serde_json::to_value(&component).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "layer_kind": layer_kind,
+                        "shader_asset_id": shader_asset_id,
+                        "layer_order": layer_order,
+                    })
+                }),
+                type_paths,
+            ),
+        }],
+        removed: false,
     }
 }
 
@@ -762,7 +903,7 @@ fn serialize_registered_components_for_entity(
             continue;
         };
         components.push(WorldComponentDelta {
-            component_id: format!("{entity_id}:{}", entry.component_kind),
+            component_id: format_component_id(entity_id, entry.component_kind),
             component_kind: entry.component_kind.to_string(),
             properties: wrap_component_payload(entry.component_kind, payload, type_paths),
         });
@@ -783,32 +924,6 @@ fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AccessTokenClaim
     .map(|decoded| decoded.claims)
 }
 
-fn apply_range_buff(base_range_m: f32, buff: &ScannerRangeBuff) -> f32 {
-    let multiplier = if buff.multiplier <= 0.0 {
-        1.0
-    } else {
-        buff.multiplier
-    };
-    (base_range_m + buff.additive_m).max(0.0) * multiplier
-}
-
-fn compute_scanner_contribution(
-    scanner: &ScannerComponent,
-    buff: Option<&ScannerRangeBuff>,
-) -> f32 {
-    let level_multiplier = if scanner.level == 0 {
-        1.0
-    } else {
-        scanner.level as f32
-    };
-    let base = scanner.base_range_m.max(0.0) * level_multiplier;
-    if let Some(buff) = buff {
-        apply_range_buff(base, buff)
-    } else {
-        base
-    }
-}
-
 fn owner_id_from_record(
     record: &sidereal_persistence::GraphEntityRecord,
     type_paths: &HashMap<String, String>,
@@ -816,6 +931,22 @@ fn owner_id_from_record(
     let component = component_record(&record.components, "owner_id")?;
     let payload = decode_component_payload(component, type_paths)?;
     serde_json::from_value::<OwnerId>(payload.clone()).ok()
+}
+
+fn faction_id_from_record(
+    record: &sidereal_persistence::GraphEntityRecord,
+    type_paths: &HashMap<String, String>,
+) -> Option<FactionId> {
+    let component = component_record(&record.components, "faction_id")?;
+    let payload = decode_component_payload(component, type_paths)?;
+    serde_json::from_value::<FactionId>(payload.clone()).ok()
+}
+
+fn has_marker_component_record(
+    record: &sidereal_persistence::GraphEntityRecord,
+    component_kind: &str,
+) -> bool {
+    component_record(&record.components, component_kind).is_some()
 }
 
 fn health_pool_from_record(
@@ -834,6 +965,15 @@ fn flight_computer_from_record(
     let component = component_record(&record.components, "flight_computer")?;
     let payload = decode_component_payload(component, type_paths)?;
     serde_json::from_value::<FlightComputer>(payload.clone()).ok()
+}
+
+fn flight_tuning_from_record(
+    record: &sidereal_persistence::GraphEntityRecord,
+    type_paths: &HashMap<String, String>,
+) -> Option<FlightTuning> {
+    let component = component_record(&record.components, "flight_tuning")?;
+    let payload = decode_component_payload(component, type_paths)?;
+    serde_json::from_value::<FlightTuning>(payload.clone()).ok()
 }
 
 fn mounted_on_from_record(
@@ -964,93 +1104,13 @@ fn scanner_range_buff_from_record(
     serde_json::from_value::<ScannerRangeBuff>(payload.clone()).ok()
 }
 
-fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
-    let bind_addr = std::env::var("REPLICATION_CONTROL_UDP_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:9004".to_string());
-    let database_url = std::env::var("REPLICATION_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
-
-    let socket = match UdpSocket::bind(&bind_addr) {
-        Ok(socket) => socket,
-        Err(err) => {
-            eprintln!("failed to bind replication control UDP listener on {bind_addr}: {err}");
-            return;
-        }
-    };
-    let store = match PostgresBootstrapStore::connect(&database_url) {
-        Ok(store) => store,
-        Err(err) => {
-            eprintln!("failed to connect replication bootstrap store: {err}");
-            return;
-        }
-    };
-    let mut processor = match BootstrapProcessor::new(store) {
-        Ok(processor) => processor,
-        Err(err) => {
-            eprintln!("failed to initialize replication bootstrap processor: {err}");
-            return;
-        }
-    };
-
-    let (tx, rx) = mpsc::channel::<BootstrapShipCommand>();
-    commands.insert_resource(BootstrapShipReceiver(Mutex::new(rx)));
-
-    println!("replication control UDP listening on {bind_addr}");
-    thread::spawn(move || {
-        let db_url = database_url;
-        loop {
-            let mut buf = vec![0_u8; 8192];
-            let (size, from) = match socket.recv_from(&mut buf) {
-                Ok(v) => v,
-                Err(err) => {
-                    eprintln!("replication control recv error: {err}");
-                    continue;
-                }
-            };
-            let payload = &buf[..size];
-            match processor.handle_payload(payload) {
-                Ok(result) => {
-                    println!(
-                        "replication bootstrap processed from {from}: account_id={}, player_entity_id={}, applied={}",
-                        result.account_id, result.player_entity_id, result.applied
-                    );
-                    if result.applied {
-                        if let Err(err) = bootstrap_starter_ship(
-                            &db_url,
-                            result.account_id,
-                            &result.player_entity_id,
-                        ) {
-                            eprintln!(
-                                "replication bootstrap world-init failed for account {}: {err}",
-                                result.account_id
-                            );
-                        } else {
-                            let ship_entity_id = format!("ship:{}", result.account_id);
-                            let _ = tx.send(BootstrapShipCommand {
-                                account_id: result.account_id,
-                                player_entity_id: result.player_entity_id,
-                                ship_entity_id,
-                            });
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!("replication control message rejected from {from}: {err}");
-                }
-            }
-        }
-    });
-}
-
 fn process_bootstrap_ship_commands(
     mut commands: Commands<'_, '_>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
     receiver: Option<Res<'_, BootstrapShipReceiver>>,
 ) {
     let Some(receiver) = receiver else { return };
-    let Ok(rx) = receiver.0.lock() else { return };
-
-    while let Ok(cmd) = rx.try_recv() {
+    for cmd in bootstrap_runtime::drain_bootstrap_ship_commands(receiver.as_ref()) {
         if controlled_entity_map
             .by_player_entity_id
             .contains_key(&cmd.player_entity_id)
@@ -1066,78 +1126,10 @@ fn process_bootstrap_ship_commands(
             &mut controlled_entity_map,
             &cmd.ship_entity_id,
             &cmd.player_entity_id,
+            bootstrap_runtime::starter_spawn_position(cmd.account_id),
             Vec3::ZERO,
-            Vec3::ZERO,
-            100.0,
-            100.0,
         );
     }
-}
-
-fn bootstrap_starter_ship(
-    database_url: &str,
-    account_id: uuid::Uuid,
-    player_entity_id: &str,
-) -> sidereal_persistence::Result<()> {
-    let mut persistence = GraphPersistence::connect(database_url)?;
-    persistence.ensure_schema()?;
-
-    let ship_entity_id = format!("ship:{account_id}");
-    let account_id_s = account_id.to_string();
-    let starter_world = vec![
-        WorldDeltaEntity {
-            entity_id: player_entity_id.to_string(),
-            labels: vec!["Entity".to_string(), "Player".to_string()],
-            properties: serde_json::json!({
-                "owner_account_id": account_id_s,
-                "player_entity_id": player_entity_id,
-            }),
-            components: vec![WorldComponentDelta {
-                component_id: format!("{player_entity_id}:display_name"),
-                component_kind: "display_name".to_string(),
-                properties: serde_json::json!({"value": "Pilot"}),
-            }],
-            removed: false,
-        },
-        WorldDeltaEntity {
-            entity_id: ship_entity_id.clone(),
-            labels: vec!["Entity".to_string(), "Ship".to_string()],
-            properties: serde_json::json!({
-                "owner_account_id": account_id.to_string(),
-                "player_entity_id": player_entity_id,
-                "name": "Corvette",
-                "asset_id": "corvette_01",
-                "starfield_shader_asset_id": "starfield_wgsl",
-                "position_m": [0.0, 0.0, 0.0],
-                "velocity_mps": [0.0, 0.0, 0.0],
-                "heading_rad": 0.0,
-                "engine_max_accel_mps2": 171_000.0,
-                "engine_ramp_to_max_s": 5.0,
-                "health": 100.0,
-                "max_health": 100.0
-            }),
-            components: vec![
-                WorldComponentDelta {
-                    component_id: format!("{ship_entity_id}:display_name"),
-                    component_kind: "display_name".to_string(),
-                    properties: serde_json::json!({"value": "Corvette"}),
-                },
-                WorldComponentDelta {
-                    component_id: format!("{ship_entity_id}:flight_computer"),
-                    component_kind: "flight_computer".to_string(),
-                    properties: serde_json::json!({"profile": "ManualAssist", "throttle": 0.0}),
-                },
-                WorldComponentDelta {
-                    component_id: format!("{ship_entity_id}:health_pool"),
-                    component_kind: "health_pool".to_string(),
-                    properties: serde_json::json!({"hp": 100.0, "max_hp": 100.0}),
-                },
-            ],
-            removed: false,
-        },
-    ];
-    persistence.persist_world_delta(&starter_world, 0)?;
-    Ok(())
 }
 
 fn init_replication_runtime(world: &mut World) {
@@ -1172,6 +1164,13 @@ fn init_replication_runtime(world: &mut World) {
             HashSet::new()
         }
     };
+    let loaded_view_states = match persistence.load_player_view_states() {
+        Ok(states) => states,
+        Err(err) => {
+            eprintln!("replication runtime init failed loading player view state: {err}");
+            Vec::new()
+        }
+    };
 
     let persist_interval = Duration::from_secs_f32(persist_interval_s);
     let snapshot_interval = Duration::from_secs(snapshot_interval_s);
@@ -1186,6 +1185,11 @@ fn init_replication_runtime(world: &mut World) {
         last_snapshot_at: Instant::now(),
         last_persisted_state: HashMap::new(),
     });
+    let mut view_registry = world.resource_mut::<PlayerRuntimeViewRegistry>();
+    view_registry.by_player_entity_id = loaded_view_states
+        .into_iter()
+        .map(|state| (state.player_entity_id.clone(), state))
+        .collect::<HashMap<_, _>>();
 }
 
 fn start_lightyear_server(mut commands: Commands<'_, '_>) {
@@ -1210,7 +1214,7 @@ fn start_lightyear_server(mut commands: Commands<'_, '_>) {
         ))
         .id();
     commands.trigger(Start { entity: server });
-    println!("replication lightyear UDP server starting on {bind_addr}");
+    info!("replication lightyear UDP server starting on {}", bind_addr);
 }
 
 fn ensure_server_transport_channels(
@@ -1230,12 +1234,18 @@ fn ensure_server_transport_channels(
         if !transport.has_sender::<StateChannel>() {
             transport.add_sender_from_registry::<StateChannel>(&registry);
         }
+        if !transport.has_sender::<ControlChannel>() {
+            transport.add_sender_from_registry::<ControlChannel>(&registry);
+        }
     }
 }
 
 fn cleanup_client_auth_bindings(
     clients: Query<'_, '_, (Entity, &RemoteId), With<ClientOf>>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
+    mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
+    mut input_rate_limiter: ResMut<'_, ClientInputRateLimiter>,
+    mut stream_state: ResMut<'_, AssetStreamServerState>,
 ) {
     let live_clients = clients
         .iter()
@@ -1251,6 +1261,318 @@ fn cleanup_client_auth_bindings(
     bindings
         .by_remote_id
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+    let live_player_entity_ids = bindings
+        .by_client_entity
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>();
+    input_tick_tracker
+        .last_accepted_tick_by_player_entity_id
+        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+    input_rate_limiter
+        .by_player_entity_id
+        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+    stream_state
+        .sent_asset_ids_by_remote
+        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+    stream_state
+        .pending_requested_asset_ids_by_remote
+        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+    stream_state
+        .acked_assets_by_remote
+        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+}
+
+const ASSET_STREAM_CHUNK_BYTES: usize = 1024;
+
+fn always_required_stream_asset_ids() -> [&'static str; 3] {
+    [
+        default_corvette_asset_id(),
+        default_starfield_shader_asset_id(),
+        default_space_background_shader_asset_id(),
+    ]
+}
+
+fn asset_root_dir() -> PathBuf {
+    PathBuf::from(std::env::var("ASSET_ROOT").unwrap_or_else(|_| "./data".to_string()))
+}
+
+fn load_asset_bytes(relative_cache_path: &str) -> Option<Vec<u8>> {
+    let asset_root = asset_root_dir();
+    let rooted_path = asset_root.join(relative_cache_path);
+    if let Ok(bytes) = std::fs::read(&rooted_path) {
+        return Some(bytes);
+    }
+    let cache_path = asset_root.join("cache_stream").join(relative_cache_path);
+    std::fs::read(cache_path).ok()
+}
+
+fn collect_world_asset_ids(world: &WorldStateDelta) -> HashSet<String> {
+    world
+        .updates
+        .iter()
+        .filter(|update| !update.removed)
+        .filter_map(|update| update.properties.get("asset_id").and_then(|v| v.as_str()))
+        .map(ToString::to_string)
+        .collect::<HashSet<_>>()
+}
+
+fn receive_client_asset_requests(
+    mut receivers: Query<
+        '_,
+        '_,
+        (Entity, &RemoteId, &mut MessageReceiver<AssetRequestMessage>),
+        With<ClientOf>,
+    >,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    mut stream_state: ResMut<'_, AssetStreamServerState>,
+) {
+    for (client_entity, remote_id, mut receiver) in &mut receivers {
+        for message in receiver.receive() {
+            let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
+                continue;
+            };
+            let pending = stream_state
+                .pending_requested_asset_ids_by_remote
+                .entry(remote_id.0)
+                .or_default();
+            let mut accepted = 0usize;
+            for request in &message.requests {
+                pending.insert(request.asset_id.clone());
+                accepted += 1;
+            }
+            info!(
+                "replication received asset requests remote={:?} player={} count={}",
+                remote_id.0, bound_player, accepted
+            );
+        }
+    }
+}
+
+fn receive_client_asset_acks(
+    mut receivers: Query<
+        '_,
+        '_,
+        (Entity, &RemoteId, &mut MessageReceiver<AssetAckMessage>),
+        With<ClientOf>,
+    >,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    mut stream_state: ResMut<'_, AssetStreamServerState>,
+) {
+    for (client_entity, remote_id, mut receiver) in &mut receivers {
+        for message in receiver.receive() {
+            let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
+                continue;
+            };
+            stream_state
+                .acked_assets_by_remote
+                .entry(remote_id.0)
+                .or_default()
+                .insert(message.asset_id.clone(), message.asset_version);
+            info!(
+                "replication received asset ack remote={:?} player={} asset_id={} version={} sha256={}",
+                remote_id.0,
+                bound_player,
+                message.asset_id,
+                message.asset_version,
+                message.sha256_hex
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_bootstrap_assets_to_authenticated_clients(
+    server_query: Query<'_, '_, &Server, With<RawServer>>,
+    mut sender: ServerMultiMessageSender<'_, '_, With<Connected>>,
+    clients: Query<'_, '_, (Entity, &RemoteId), With<ClientOf>>,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    visibility_registry: Res<'_, ClientVisibilityRegistry>,
+    position_map: Res<'_, ClientControlledEntityPositionMap>,
+    view_registry: Res<'_, PlayerRuntimeViewRegistry>,
+    entity_position_cache: Res<'_, EntityPositionCache>,
+    latest_world: Res<'_, LatestReplicationWorld>,
+    dependency_map: Res<'_, AssetDependencyMap>,
+    mut stream_state: ResMut<'_, AssetStreamServerState>,
+) {
+    let Ok(server) = server_query.single() else {
+        return;
+    };
+
+    for (client_entity, remote_id) in &clients {
+        let Some(_bound_player_entity_id) = bindings.by_client_entity.get(&client_entity) else {
+            continue;
+        };
+        let visibility_ctx = visibility_context_for_client(
+            client_entity,
+            &visibility_registry,
+            &position_map,
+            &view_registry.by_player_entity_id,
+            &entity_position_cache.by_entity_id,
+        );
+        let Some(visible_world) = apply_visibility_filter(&latest_world.world, &visibility_ctx)
+        else {
+            continue;
+        };
+        let mut required_asset_ids = collect_world_asset_ids(&visible_world);
+        required_asset_ids.extend(
+            always_required_stream_asset_ids()
+                .iter()
+                .map(|asset_id| (*asset_id).to_string()),
+        );
+        let source_by_asset_id = default_streamable_asset_sources()
+            .iter()
+            .map(|source| (source.asset_id, source))
+            .collect::<HashMap<_, _>>();
+        let asset_id_by_relative_path = default_streamable_asset_sources()
+            .iter()
+            .map(|source| (source.relative_cache_path, source.asset_id))
+            .collect::<HashMap<_, _>>();
+        let mut discovered_dependency_asset_ids = HashSet::<String>::new();
+        for asset_id in &required_asset_ids {
+            let Some(source) = source_by_asset_id.get(asset_id.as_str()) else {
+                continue;
+            };
+            if !source.relative_cache_path.ends_with(".gltf") {
+                continue;
+            }
+            let Some(gltf_bytes) = load_asset_bytes(source.relative_cache_path) else {
+                continue;
+            };
+            for dep_path in gltf_dependency_relative_paths(source.relative_cache_path, &gltf_bytes)
+            {
+                if let Some(dep_asset_id) = asset_id_by_relative_path.get(dep_path.as_str()) {
+                    discovered_dependency_asset_ids.insert((*dep_asset_id).to_string());
+                }
+            }
+        }
+        required_asset_ids.extend(discovered_dependency_asset_ids);
+        let required_asset_ids = expand_required_assets(
+            &required_asset_ids,
+            &dependency_map.dependencies_by_asset_id,
+        );
+        let requested_asset_ids = stream_state
+            .pending_requested_asset_ids_by_remote
+            .entry(remote_id.0)
+            .or_default()
+            .clone();
+        let candidate_asset_ids = required_asset_ids
+            .union(&requested_asset_ids)
+            .cloned()
+            .collect::<HashSet<_>>();
+        if candidate_asset_ids.is_empty() {
+            continue;
+        }
+        let pending_asset_ids = {
+            let sent_asset_ids = stream_state
+                .sent_asset_ids_by_remote
+                .entry(remote_id.0)
+                .or_default();
+            candidate_asset_ids
+                .into_iter()
+                .filter(|asset_id| {
+                    requested_asset_ids.contains(asset_id) || !sent_asset_ids.contains(asset_id)
+                })
+                .collect::<HashSet<_>>()
+        };
+        if pending_asset_ids.is_empty() {
+            continue;
+        }
+
+        let mut payloads = Vec::<(AssetCatalogEntry, Vec<u8>)>::new();
+        for asset in default_streamable_asset_sources()
+            .iter()
+            .filter(|asset| pending_asset_ids.contains(asset.asset_id))
+        {
+            let Some(bytes) = load_asset_bytes(asset.relative_cache_path) else {
+                warn!(
+                    "replication asset stream skipping missing asset {} ({})",
+                    asset.asset_id, asset.relative_cache_path
+                );
+                continue;
+            };
+            let chunk_count = bytes.len().div_ceil(ASSET_STREAM_CHUNK_BYTES) as u32;
+            let sha256 = sha256_hex(&bytes);
+            let asset_version = asset_version_from_sha256_hex(&sha256);
+            payloads.push((
+                AssetCatalogEntry {
+                    asset_id: asset.asset_id.to_string(),
+                    relative_cache_path: asset.relative_cache_path.to_string(),
+                    content_type: asset.content_type.to_string(),
+                    byte_len: bytes.len() as u64,
+                    chunk_count,
+                    asset_version,
+                    sha256_hex: sha256,
+                },
+                bytes,
+            ));
+        }
+
+        if payloads.is_empty() {
+            continue;
+        }
+
+        let manifest = AssetStreamManifestMessage {
+            assets: payloads.iter().map(|(entry, _)| entry.clone()).collect(),
+        };
+        let streamed_asset_ids = payloads
+            .iter()
+            .map(|(entry, _)| entry.asset_id.clone())
+            .collect::<Vec<_>>();
+        let target = lightyear::prelude::NetworkTarget::Single(remote_id.0);
+        if let Err(err) =
+            sender.send::<AssetStreamManifestMessage, ControlChannel>(&manifest, server, &target)
+        {
+            error!("replication failed sending asset manifest: {}", err);
+            continue;
+        }
+
+        let mut send_failed = false;
+        for (entry, bytes) in payloads {
+            for (chunk_index, chunk) in bytes.chunks(ASSET_STREAM_CHUNK_BYTES).enumerate() {
+                let message = AssetStreamChunkMessage {
+                    asset_id: entry.asset_id.clone(),
+                    relative_cache_path: entry.relative_cache_path.clone(),
+                    chunk_index: chunk_index as u32,
+                    chunk_count: entry.chunk_count,
+                    bytes: chunk.to_vec(),
+                };
+                if let Err(err) = sender
+                    .send::<AssetStreamChunkMessage, ControlChannel>(&message, server, &target)
+                {
+                    error!("replication failed sending asset chunk: {}", err);
+                    send_failed = true;
+                    break;
+                }
+            }
+            if send_failed {
+                break;
+            }
+        }
+        if !send_failed {
+            let sent_snapshot = {
+                let sent_asset_ids = stream_state
+                    .sent_asset_ids_by_remote
+                    .entry(remote_id.0)
+                    .or_default();
+                for asset_id in streamed_asset_ids {
+                    sent_asset_ids.insert(asset_id);
+                }
+                sent_asset_ids.clone()
+            };
+            if let Some(pending_requests) = stream_state
+                .pending_requested_asset_ids_by_remote
+                .get_mut(&remote_id.0)
+            {
+                pending_requests.retain(|asset_id| !sent_snapshot.contains(asset_id));
+            }
+            info!(
+                "replication streamed bootstrap assets to remote={:?} assets_total_sent={}",
+                remote_id.0,
+                sent_snapshot.len()
+            );
+        }
+    }
 }
 
 fn receive_client_auth_messages(
@@ -1262,10 +1584,23 @@ fn receive_client_auth_messages(
     >,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
+    mut view_registry: ResMut<'_, PlayerRuntimeViewRegistry>,
+    mut dirty_view_states: ResMut<'_, PlayerRuntimeViewDirtySet>,
+    mut stream_state: ResMut<'_, AssetStreamServerState>,
 ) {
     let jwt_secret = match std::env::var("GATEWAY_JWT_SECRET") {
         Ok(secret) if secret.len() >= 32 => secret,
-        _ => return,
+        _ => {
+            if MISSING_GATEWAY_JWT_SECRET_WARNED
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                warn!(
+                    "replication auth binding disabled: missing/invalid GATEWAY_JWT_SECRET (expected >=32 chars)"
+                );
+            }
+            return;
+        }
     };
 
     for (client_entity, remote_id, mut receiver) in &mut auth_receivers {
@@ -1273,7 +1608,7 @@ fn receive_client_auth_messages(
             let claims = match decode_access_token(&message.access_token, &jwt_secret) {
                 Some(claims) => claims,
                 None => {
-                    eprintln!(
+                    warn!(
                         "replication rejected client auth: invalid token for client {:?}",
                         client_entity
                     );
@@ -1281,7 +1616,7 @@ fn receive_client_auth_messages(
                 }
             };
             if claims.player_entity_id != message.player_entity_id {
-                eprintln!(
+                warn!(
                     "replication rejected client auth: token player mismatch for client {:?}",
                     client_entity
                 );
@@ -1291,24 +1626,106 @@ fn receive_client_auth_messages(
             if let Some(bound_player) = bindings.by_remote_id.get(&remote_id.0)
                 && bound_player != &claims.player_entity_id
             {
-                eprintln!(
-                    "replication rejected client auth: remote {:?} already bound to {}",
-                    remote_id.0, bound_player
+                info!(
+                    "replication rebinding remote {:?} from {} to {}",
+                    remote_id.0, bound_player, claims.player_entity_id
                 );
-                continue;
             }
 
-            bindings
+            if let Some(previous_player) = bindings
                 .by_client_entity
-                .insert(client_entity, claims.player_entity_id.clone());
-            bindings
+                .insert(client_entity, claims.player_entity_id.clone())
+                && previous_player != claims.player_entity_id.as_str()
+            {
+                dirty_view_states.player_entity_ids.insert(previous_player);
+            }
+            if let Some(previous_player) = bindings
                 .by_remote_id
-                .insert(remote_id.0, claims.player_entity_id.clone());
-            visibility_registry.register_client(client_entity, claims.player_entity_id);
+                .insert(remote_id.0, claims.player_entity_id.clone())
+            {
+                if previous_player != claims.player_entity_id.as_str() {
+                    // Find the old client_entity associated with this previous player
+                    let old_client_entity = bindings.by_client_entity.iter().find(|(_, v)| v == &&previous_player).map(|(k, _)| *k);
+                    
+                    // Update client_entity binding if remote_id was bound to another client_entity
+                    bindings.by_client_entity.retain(|_, v| v != &previous_player);
+                    
+                    // Also unregister the old player from visibility registry
+                    if let Some(old_entity) = old_client_entity {
+                        visibility_registry.unregister_client(old_entity);
+                    }
+                }
+            }
+
+            // Force a fresh manifest/request cycle after auth/rebind on this remote.
+            stream_state.sent_asset_ids_by_remote.remove(&remote_id.0);
+            stream_state
+                .pending_requested_asset_ids_by_remote
+                .remove(&remote_id.0);
+            stream_state.acked_assets_by_remote.remove(&remote_id.0);
+
+            visibility_registry.register_client(client_entity, claims.player_entity_id.clone());
+            view_registry
+                .by_player_entity_id
+                .entry(claims.player_entity_id.clone())
+                .or_insert_with(|| PlayerRuntimeViewState {
+                    player_entity_id: claims.player_entity_id.clone(),
+                    updated_at_epoch_s: unix_epoch_now_i64(),
+                    ..Default::default()
+                });
+            dirty_view_states
+                .player_entity_ids
+                .insert(claims.player_entity_id.clone());
+            info!(
+                "replication client authenticated and bound: client={:?} remote={:?} player_entity_id={}",
+                client_entity, remote_id.0, claims.player_entity_id
+            );
         }
     }
 }
 
+fn receive_client_view_updates(
+    mut receivers: Query<
+        '_,
+        '_,
+        (Entity, &mut MessageReceiver<ClientViewUpdateMessage>),
+        With<ClientOf>,
+    >,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    mut view_registry: ResMut<'_, PlayerRuntimeViewRegistry>,
+    mut dirty_view_states: ResMut<'_, PlayerRuntimeViewDirtySet>,
+) {
+    for (client_entity, mut receiver) in &mut receivers {
+        for message in receiver.receive() {
+            let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
+                continue;
+            };
+            if bound_player != &message.player_entity_id {
+                eprintln!(
+                    "replication dropped client view update from {:?}: player mismatch {} != {}",
+                    client_entity, message.player_entity_id, bound_player
+                );
+                continue;
+            }
+            let entry = view_registry
+                .by_player_entity_id
+                .entry(bound_player.clone())
+                .or_insert_with(|| PlayerRuntimeViewState {
+                    player_entity_id: bound_player.clone(),
+                    ..Default::default()
+                });
+            entry.last_focused_entity_id = message.focused_entity_id.clone();
+            entry.last_controlled_entity_id = message.controlled_entity_id.clone();
+            entry.last_camera_position_m = Some(message.camera_position_m);
+            entry.updated_at_epoch_s = unix_epoch_now_i64();
+            dirty_view_states
+                .player_entity_ids
+                .insert(bound_player.clone());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn receive_client_inputs(
     mut receivers: Query<
         '_,
@@ -1318,39 +1735,183 @@ fn receive_client_inputs(
     >,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     bindings: Res<'_, AuthenticatedClientBindings>,
+    mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
+    mut input_rate_limiter: ResMut<'_, ClientInputRateLimiter>,
+    mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
+    time: Res<'_, Time>,
     mut actions: Query<'_, '_, &mut ActionQueue, With<SimulatedControlledEntity>>,
 ) {
+    const MAX_FORWARD_TICK_JUMP: u64 = 120;
+    const MAX_ACTIONS_PER_PACKET: usize = 16;
+    const INPUT_RATE_WINDOW_S: f64 = 1.0;
+    const MAX_INPUT_MESSAGES_PER_WINDOW: u32 = 90;
+    let now_s = time.elapsed_secs_f64();
     for (client_entity, mut receiver) in &mut receivers {
         for message in receiver.receive() {
             let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
+                input_drop_metrics.record(InputDropReason::UnboundClient);
                 continue;
             };
             if bound_player != &message.player_entity_id {
+                input_drop_metrics.record(InputDropReason::SpoofedPlayerId);
                 eprintln!(
                     "replication dropped spoofed input for client {:?}: claimed={}, bound={}",
                     client_entity, message.player_entity_id, bound_player
                 );
                 continue;
             }
+            if !should_accept_input_message(
+                &mut input_rate_limiter,
+                bound_player,
+                now_s,
+                MAX_INPUT_MESSAGES_PER_WINDOW,
+                INPUT_RATE_WINDOW_S,
+            ) {
+                input_drop_metrics.record(InputDropReason::RateLimited);
+                debug!(
+                    "replication dropped rate-limited input player_entity_id={} client={:?}",
+                    bound_player, client_entity
+                );
+                continue;
+            }
+            if let Some(last_tick) = input_tick_tracker
+                .last_accepted_tick_by_player_entity_id
+                .get(bound_player)
+                .copied()
+            {
+                if message.tick <= last_tick {
+                    input_drop_metrics.record(InputDropReason::DuplicateOrOutOfOrderTick);
+                    debug!(
+                        "replication dropped duplicate/out-of-order input tick={} last_tick={} client={:?}",
+                        message.tick, last_tick, client_entity
+                    );
+                    continue;
+                }
+                if message.tick > last_tick.saturating_add(MAX_FORWARD_TICK_JUMP) {
+                    input_drop_metrics.record(InputDropReason::FutureTick);
+                    debug!(
+                        "replication dropped implausible forward input tick jump tick={} last_tick={} client={:?}",
+                        message.tick, last_tick, client_entity
+                    );
+                    continue;
+                }
+            }
+            if message.actions.len() > MAX_ACTIONS_PER_PACKET {
+                input_drop_metrics.record(InputDropReason::OversizedPacket);
+                debug!(
+                    "replication dropped oversized input packet actions={} client={:?}",
+                    message.actions.len(),
+                    client_entity
+                );
+                continue;
+            }
+            let allowed_actions = message
+                .actions
+                .iter()
+                .copied()
+                .filter(|action| is_allowed_control_action(*action))
+                .collect::<Vec<_>>();
+            if allowed_actions.is_empty() {
+                input_drop_metrics.record(InputDropReason::EmptyAfterFilter);
+                debug!(
+                    "replication dropped input packet with no allowed actions client={:?}",
+                    client_entity
+                );
+                continue;
+            }
+            debug!(
+                "replication received client input: player_entity_id={} tick={} actions={}",
+                bound_player,
+                message.tick,
+                allowed_actions.len()
+            );
             if let Some(controlled_entity) =
                 controlled_entity_map.by_player_entity_id.get(bound_player)
                 && let Ok(mut queue) = actions.get_mut(*controlled_entity)
             {
-                for action in &message.actions {
-                    queue.push(*action);
+                for action in allowed_actions {
+                    queue.push(action);
                 }
+                input_tick_tracker
+                    .last_accepted_tick_by_player_entity_id
+                    .insert(bound_player.clone(), message.tick);
+                input_drop_metrics.record_accepted();
+            } else {
+                debug!(
+                    "replication accepted input for unspawned controlled entity player_entity_id={} tick={}",
+                    bound_player, message.tick
+                );
+                input_tick_tracker
+                    .last_accepted_tick_by_player_entity_id
+                    .insert(bound_player.clone(), message.tick);
+                input_drop_metrics.record_accepted();
             }
         }
     }
+}
+
+fn report_input_drop_metrics(
+    time: Res<'_, Time>,
+    metrics: Res<'_, ClientInputDropMetrics>,
+    mut state: ResMut<'_, ClientInputDropMetricsLogState>,
+) {
+    const LOG_INTERVAL_S: f64 = 5.0;
+    let now = time.elapsed_secs_f64();
+    let interval_s = now - state.last_logged_at_s;
+    if interval_s < LOG_INTERVAL_S {
+        return;
+    }
+    let accepted_delta = metrics
+        .accepted_inputs
+        .saturating_sub(state.last_accepted_inputs);
+    let accepted_per_s = if interval_s > 0.0 {
+        accepted_delta as f64 / interval_s
+    } else {
+        0.0
+    };
+    if accepted_delta == 0 && metrics.total_drops() == 0 {
+        state.last_logged_at_s = now;
+        return;
+    }
+    state.last_logged_at_s = now;
+    state.last_accepted_inputs = metrics.accepted_inputs;
+    info!(
+        "replication input summary accepted={} accepted_per_s={:.1} drops_total={} future={} duplicate_or_out_of_order={} rate_limited={} oversized={} empty_after_filter={} unbound={} spoofed={}",
+        accepted_delta,
+        accepted_per_s,
+        metrics.total_drops(),
+        metrics.future_tick,
+        metrics.duplicate_or_out_of_order_tick,
+        metrics.rate_limited,
+        metrics.oversized_packet,
+        metrics.empty_after_filter,
+        metrics.unbound_client,
+        metrics.spoofed_player_id
+    );
 }
 
 /// Update controlled-entity positions so visibility filtering can apply delivery culling.
 fn update_client_controlled_entity_positions(
     entities: Query<'_, '_, (&SimulatedControlledEntity, &Position)>,
     mut position_map: ResMut<'_, ClientControlledEntityPositionMap>,
+    mut view_registry: ResMut<'_, PlayerRuntimeViewRegistry>,
+    mut dirty_view_states: ResMut<'_, PlayerRuntimeViewDirtySet>,
 ) {
     for (entity, position) in &entities {
         position_map.update_position(&entity.player_entity_id, position.0);
+        let entry = view_registry
+            .by_player_entity_id
+            .entry(entity.player_entity_id.clone())
+            .or_insert_with(|| PlayerRuntimeViewState {
+                player_entity_id: entity.player_entity_id.clone(),
+                ..Default::default()
+            });
+        entry.last_controlled_entity_id = Some(entity.entity_id.clone());
+        entry.last_camera_position_m = Some([position.0.x, position.0.y, position.0.z]);
+        entry.updated_at_epoch_s = unix_epoch_now_i64();
+        dirty_view_states
+            .player_entity_ids
+            .insert(entity.player_entity_id.clone());
     }
 }
 
@@ -1375,24 +1936,17 @@ fn compute_controlled_entity_scanner_ranges(
     >,
 ) {
     for (entity_guid, mut scanner_range, own_scanner, own_buff) in &mut controlled_entities {
-        let mut total_range = visibility::DEFAULT_VIEW_RANGE_M;
-
-        if let Some(scanner) = own_scanner {
-            total_range += compute_scanner_contribution(scanner, own_buff);
-        } else if let Some(buff) = own_buff {
-            total_range = apply_range_buff(total_range, buff);
-        }
-
-        for (mounted_on, scanner, buff) in &scanner_modules {
-            if mounted_on.parent_entity_id == entity_guid.0 {
-                total_range += compute_scanner_contribution(scanner, buff);
-            }
-        }
-
-        scanner_range.0 = total_range.max(visibility::DEFAULT_VIEW_RANGE_M);
+        scanner_range.0 = total_scanner_range_for_parent(
+            entity_guid.0,
+            visibility::DEFAULT_VIEW_RANGE_M,
+            own_scanner,
+            own_buff,
+            scanner_modules.iter(),
+        );
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn sync_simulated_ship_components(
     mut ships: Query<
         '_,
@@ -1400,17 +1954,57 @@ fn sync_simulated_ship_components(
         (
             &Position,
             &LinearVelocity,
+            &Rotation,
             &mut Transform,
             &mut PositionM,
             &mut VelocityMps,
+            &mut HeadingRad,
         ),
         With<SimulatedControlledEntity>,
     >,
 ) {
-    for (position, velocity, mut transform, mut position_m, mut velocity_mps) in &mut ships {
-        transform.translation = position.0;
-        position_m.0 = position.0;
-        velocity_mps.0 = velocity.0;
+    for (
+        position,
+        velocity,
+        rotation,
+        mut transform,
+        mut position_m,
+        mut velocity_mps,
+        mut heading_rad,
+    ) in &mut ships
+    {
+        let mut planar_position = position.0;
+        planar_position.z = 0.0;
+        let mut planar_velocity = velocity.0;
+        planar_velocity.z = 0.0;
+        transform.translation = planar_position;
+        transform.rotation = rotation.0;
+        position_m.0 = planar_position;
+        velocity_mps.0 = planar_velocity;
+        heading_rad.0 = rotation.0.to_euler(EulerRot::ZYX).0;
+    }
+}
+
+fn enforce_planar_ship_motion(
+    mut ships: Query<
+        '_,
+        '_,
+        (
+            &mut Position,
+            &mut LinearVelocity,
+            &mut Rotation,
+            &mut AngularVelocity,
+        ),
+        With<SimulatedControlledEntity>,
+    >,
+) {
+    for (mut position, mut velocity, mut rotation, mut angular_velocity) in &mut ships {
+        position.0.z = 0.0;
+        velocity.0.z = 0.0;
+        angular_velocity.0.x = 0.0;
+        angular_velocity.0.y = 0.0;
+        let heading = rotation.0.to_euler(EulerRot::ZYX).0;
+        rotation.0 = Quat::from_rotation_z(heading);
     }
 }
 
@@ -1432,6 +2026,9 @@ fn collect_local_simulation_state(
             Option<&ScannerRangeM>,
             Option<&ScannerComponent>,
             Option<&ScannerRangeBuff>,
+            Option<&FactionId>,
+            Option<&FactionVisibility>,
+            Option<&PublicVisibility>,
         ),
     >,
     ship_mass_meta: Query<
@@ -1454,6 +2051,9 @@ fn collect_local_simulation_state(
             &Hardpoint,
             Option<&ChildOf>,
             Option<&OwnerId>,
+            Option<&FactionId>,
+            Option<&FactionVisibility>,
+            Option<&PublicVisibility>,
             Option<&MassKg>,
             Option<&Inventory>,
         ),
@@ -1472,6 +2072,9 @@ fn collect_local_simulation_state(
             Option<&ScannerRangeM>,
             Option<&ScannerComponent>,
             Option<&ScannerRangeBuff>,
+            Option<&FactionId>,
+            Option<&FactionVisibility>,
+            Option<&PublicVisibility>,
             Option<&MassKg>,
             Option<&Inventory>,
         ),
@@ -1481,6 +2084,8 @@ fn collect_local_simulation_state(
     component_registry: Res<'_, GeneratedComponentRegistry>,
     runtime: Option<NonSendMut<'_, ReplicationRuntime>>,
     mut outbound: ResMut<'_, ReplicationOutboundQueue>,
+    mut latest_world: ResMut<'_, LatestReplicationWorld>,
+    mut entity_position_cache: ResMut<'_, EntityPositionCache>,
 ) {
     let Some(mut runtime) = runtime else {
         return;
@@ -1502,6 +2107,9 @@ fn collect_local_simulation_state(
         scanner_range,
         scanner_component,
         scanner_buff,
+        faction_id,
+        faction_visibility,
+        public_visibility,
     ) in &ships
     {
         let (mass_kg, base_mass, cargo_mass, module_mass, total_mass, inventory) = ship_mass_meta
@@ -1526,12 +2134,17 @@ fn collect_local_simulation_state(
             properties: serde_json::json!({
                 "entity_id": controlled_entity.entity_id.as_str(),
                 "player_entity_id": controlled_entity.player_entity_id.as_str(),
+                "asset_id": default_corvette_asset_id(),
+                "accepts_player_input": true,
                 "position_m": [position.0.x, position.0.y, position.0.z],
                 "velocity_mps": [velocity.0.x, velocity.0.y, velocity.0.z],
                 "heading_rad": heading_rad,
                 "health": health.current,
                 "max_health": health.maximum,
                 "scanner_range_m": scanner_range.map(|r| r.0).unwrap_or(0.0),
+                "faction_id": faction_id.map(|f| f.0.as_str()).unwrap_or(""),
+                "faction_visibility": faction_visibility.is_some(),
+                "global_visibility": public_visibility.is_some(),
                 "mass_kg": mass_kg.map(|m| m.0).unwrap_or(0.0),
                 "base_mass_kg": base_mass.map(|m| m.0).unwrap_or(0.0),
                 "cargo_mass_kg": cargo_mass.map(|m| m.0).unwrap_or(0.0),
@@ -1584,6 +2197,15 @@ fn collect_local_simulation_state(
                     properties: wrap_component_payload(
                         "scanner_range_m",
                         serde_json::json!(scanner_range.map(|r| r.0).unwrap_or(0.0)),
+                        &type_paths,
+                    ),
+                },
+                WorldComponentDelta {
+                    component_id: format!("{}:heading_rad", controlled_entity.entity_id),
+                    component_kind: "heading_rad".to_string(),
+                    properties: wrap_component_payload(
+                        "heading_rad",
+                        serde_json::json!(heading_rad),
                         &type_paths,
                     ),
                 },
@@ -1696,6 +2318,42 @@ fn collect_local_simulation_state(
                 ),
             });
         }
+        if let Some(faction_id) = faction_id {
+            delta_entity.components.push(WorldComponentDelta {
+                component_id: format!("{}:faction_id", controlled_entity.entity_id),
+                component_kind: "faction_id".to_string(),
+                properties: wrap_component_payload(
+                    "faction_id",
+                    serde_json::to_value(faction_id)
+                        .unwrap_or_else(|_| serde_json::json!(faction_id.0.as_str())),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(faction_visibility) = faction_visibility {
+            delta_entity.components.push(WorldComponentDelta {
+                component_id: format!("{}:faction_visibility", controlled_entity.entity_id),
+                component_kind: "faction_visibility".to_string(),
+                properties: wrap_component_payload(
+                    "faction_visibility",
+                    serde_json::to_value(faction_visibility)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(public_visibility) = public_visibility {
+            delta_entity.components.push(WorldComponentDelta {
+                component_id: format!("{}:public_visibility", controlled_entity.entity_id),
+                component_kind: "public_visibility".to_string(),
+                properties: wrap_component_payload(
+                    "public_visibility",
+                    serde_json::to_value(public_visibility)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                    &type_paths,
+                ),
+            });
+        }
 
         broadcast_updates.push(delta_entity.clone());
 
@@ -1731,18 +2389,29 @@ fn collect_local_simulation_state(
     for (ship_entity, controlled_entity, ..) in &ships {
         entity_id_by_entity.insert(ship_entity, controlled_entity.entity_id.clone());
     }
-    for (entity_guid, _, _, _, _, _) in &hardpoints {
+    for (entity_guid, _, _, _, _, _, _, _, _) in &hardpoints {
         if let Some((entity, _)) = guid_lookup.iter().find(|(_, guid)| guid.0 == entity_guid.0) {
             entity_id_by_entity.insert(entity, format!("hardpoint:{}", entity_guid.0));
         }
     }
-    for (entity_guid, _, _, _, _, _, _, _, _, _, _) in &modules {
+    for (entity_guid, _, _, _, _, _, _, _, _, _, _, _, _, _) in &modules {
         if let Some((entity, _)) = guid_lookup.iter().find(|(_, guid)| guid.0 == entity_guid.0) {
             entity_id_by_entity.insert(entity, format!("module:{}", entity_guid.0));
         }
     }
 
-    for (entity_guid, hardpoint, child_of, owner_id, mass_kg, inventory) in &hardpoints {
+    for (
+        entity_guid,
+        hardpoint,
+        child_of,
+        owner_id,
+        faction_id,
+        faction_visibility,
+        public_visibility,
+        mass_kg,
+        inventory,
+    ) in &hardpoints
+    {
         let hardpoint_entity_id = format!("hardpoint:{}", entity_guid.0);
         let parent_entity_id = child_of
             .and_then(|child| entity_id_by_entity.get(&child.parent()))
@@ -1770,6 +2439,42 @@ fn collect_local_simulation_state(
                     "owner_id",
                     serde_json::to_value(owner_id)
                         .unwrap_or_else(|_| serde_json::json!(owner_id.0.clone())),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(faction_id) = faction_id {
+            components.push(WorldComponentDelta {
+                component_id: format!("{hardpoint_entity_id}:faction_id"),
+                component_kind: "faction_id".to_string(),
+                properties: wrap_component_payload(
+                    "faction_id",
+                    serde_json::to_value(faction_id)
+                        .unwrap_or_else(|_| serde_json::json!(faction_id.0.as_str())),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(faction_visibility) = faction_visibility {
+            components.push(WorldComponentDelta {
+                component_id: format!("{hardpoint_entity_id}:faction_visibility"),
+                component_kind: "faction_visibility".to_string(),
+                properties: wrap_component_payload(
+                    "faction_visibility",
+                    serde_json::to_value(faction_visibility)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(public_visibility) = public_visibility {
+            components.push(WorldComponentDelta {
+                component_id: format!("{hardpoint_entity_id}:public_visibility"),
+                component_kind: "public_visibility".to_string(),
+                properties: wrap_component_payload(
+                    "public_visibility",
+                    serde_json::to_value(public_visibility)
+                        .unwrap_or_else(|_| serde_json::json!({})),
                     &type_paths,
                 ),
             });
@@ -1808,6 +2513,9 @@ fn collect_local_simulation_state(
                 "offset_m": [hardpoint.offset_m.x, hardpoint.offset_m.y, hardpoint.offset_m.z],
                 "parent_entity_id": parent_entity_id,
                 "owner_entity_id": parent_entity_id,
+                "faction_id": faction_id.map(|f| f.0.as_str()).unwrap_or(""),
+                "faction_visibility": faction_visibility.is_some(),
+                "global_visibility": public_visibility.is_some(),
             }),
             components,
             removed: false,
@@ -1826,6 +2534,9 @@ fn collect_local_simulation_state(
         scanner_range,
         scanner_component,
         scanner_buff,
+        faction_id,
+        faction_visibility,
+        public_visibility,
         mass_kg,
         inventory,
     ) in &modules
@@ -1852,6 +2563,42 @@ fn collect_local_simulation_state(
                     "owner_id",
                     serde_json::to_value(owner)
                         .unwrap_or_else(|_| serde_json::json!(owner.0.clone())),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(faction_id) = faction_id {
+            components.push(WorldComponentDelta {
+                component_id: format!("{module_entity_id}:faction_id"),
+                component_kind: "faction_id".to_string(),
+                properties: wrap_component_payload(
+                    "faction_id",
+                    serde_json::to_value(faction_id)
+                        .unwrap_or_else(|_| serde_json::json!(faction_id.0.as_str())),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(faction_visibility) = faction_visibility {
+            components.push(WorldComponentDelta {
+                component_id: format!("{module_entity_id}:faction_visibility"),
+                component_kind: "faction_visibility".to_string(),
+                properties: wrap_component_payload(
+                    "faction_visibility",
+                    serde_json::to_value(faction_visibility)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                    &type_paths,
+                ),
+            });
+        }
+        if let Some(public_visibility) = public_visibility {
+            components.push(WorldComponentDelta {
+                component_id: format!("{module_entity_id}:public_visibility"),
+                component_kind: "public_visibility".to_string(),
+                properties: wrap_component_payload(
+                    "public_visibility",
+                    serde_json::to_value(public_visibility)
+                        .unwrap_or_else(|_| serde_json::json!({})),
                     &type_paths,
                 ),
             });
@@ -1980,6 +2727,9 @@ fn collect_local_simulation_state(
                 "parent_entity_id": mounted_on_entity_id,
                 "hardpoint_id": mounted_on.hardpoint_id,
                 "scanner_range_m": scanner_range.map(|r| r.0).unwrap_or(0.0),
+                "faction_id": faction_id.map(|f| f.0.as_str()).unwrap_or(""),
+                "faction_visibility": faction_visibility.is_some(),
+                "global_visibility": public_visibility.is_some(),
             }),
             components,
             removed: false,
@@ -1987,6 +2737,22 @@ fn collect_local_simulation_state(
         broadcast_updates.push(module_delta.clone());
         dirty_updates.push(module_delta);
     }
+
+    // Global scene layers are data-driven and replicated like any other entity.
+    broadcast_updates.push(fullscreen_layer_delta(
+        "environment:layer:space_background",
+        "space_background",
+        "space_background_wgsl",
+        -200,
+        &type_paths,
+    ));
+    broadcast_updates.push(fullscreen_layer_delta(
+        "environment:layer:starfield",
+        "starfield",
+        "starfield_wgsl",
+        -190,
+        &type_paths,
+    ));
 
     if broadcast_updates.is_empty() {
         return;
@@ -1999,6 +2765,22 @@ fn collect_local_simulation_state(
     let broadcast_world = WorldStateDelta {
         updates: broadcast_updates,
     };
+    latest_world.world = broadcast_world.clone();
+    for update in &latest_world.world.updates {
+        if update.removed {
+            entity_position_cache.by_entity_id.remove(&update.entity_id);
+            continue;
+        }
+        if let Some(position) = update
+            .properties
+            .get("position_m")
+            .and_then(parse_vec3_value)
+        {
+            entity_position_cache
+                .by_entity_id
+                .insert(update.entity_id.clone(), position);
+        }
+    }
     outbound.messages.push(QueuedReplicationDelta {
         tick,
         world: broadcast_world,
@@ -2157,12 +2939,58 @@ fn flush_replication_persistence(runtime: Option<NonSendMut<'_, ReplicationRunti
     }
 }
 
+fn flush_player_runtime_view_state_persistence(
+    runtime: Option<NonSendMut<'_, ReplicationRuntime>>,
+    view_registry: Res<'_, PlayerRuntimeViewRegistry>,
+    mut dirty_view_states: ResMut<'_, PlayerRuntimeViewDirtySet>,
+) {
+    let Some(mut runtime) = runtime else {
+        return;
+    };
+    if dirty_view_states.player_entity_ids.is_empty() {
+        return;
+    }
+
+    let pending_player_ids = dirty_view_states
+        .player_entity_ids
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut persisted = Vec::<String>::new();
+    for player_entity_id in pending_player_ids {
+        let Some(view_state) = view_registry.by_player_entity_id.get(&player_entity_id) else {
+            persisted.push(player_entity_id);
+            continue;
+        };
+        match runtime.persistence.upsert_player_view_state(view_state) {
+            Ok(()) => persisted.push(player_entity_id),
+            Err(err) => eprintln!("replication failed persisting player view state: {err}"),
+        }
+    }
+    for player_entity_id in persisted {
+        dirty_view_states
+            .player_entity_ids
+            .remove(&player_entity_id);
+    }
+}
+
+fn unix_epoch_now_i64() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|v| v.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn broadcast_replication_state(
     mut outbound: ResMut<'_, ReplicationOutboundQueue>,
     server_query: Query<'_, '_, &Server, With<RawServer>>,
     clients: Query<'_, '_, (Entity, &RemoteId), ConnectedClientFilter>,
     visibility_registry: Res<'_, ClientVisibilityRegistry>,
     position_map: Res<'_, ClientControlledEntityPositionMap>,
+    view_registry: Res<'_, PlayerRuntimeViewRegistry>,
+    entity_position_cache: Res<'_, EntityPositionCache>,
+    input_tick_tracker: Res<'_, ClientInputTickTracker>,
     mut visibility_history: ResMut<'_, ClientVisibilityHistory>,
     mut sender: ServerMultiMessageSender<'_, '_, With<Connected>>,
 ) {
@@ -2183,8 +3011,13 @@ fn broadcast_replication_state(
 
     for queued in outbound.messages.drain(..) {
         for (client_entity, remote_id) in &clients {
-            let visibility_ctx =
-                visibility_context_for_client(client_entity, &visibility_registry, &position_map);
+            let visibility_ctx = visibility_context_for_client(
+                client_entity,
+                &visibility_registry,
+                &position_map,
+                &view_registry.by_player_entity_id,
+                &entity_position_cache.by_entity_id,
+            );
             let Some(mut filtered_world) = apply_visibility_filter(&queued.world, &visibility_ctx)
             else {
                 visibility_history
@@ -2220,7 +3053,20 @@ fn broadcast_replication_state(
                 .insert(client_entity, current_visible);
 
             let target = delivery_target_for_session(&visibility_ctx, remote_id.0);
-            let message = match ReplicationStateMessage::from_world(queued.tick, &filtered_world) {
+            let acked_input_tick = visibility_registry
+                .get_player_id(client_entity)
+                .and_then(|player_id| {
+                    input_tick_tracker
+                        .last_accepted_tick_by_player_entity_id
+                        .get(player_id)
+                        .copied()
+                })
+                .unwrap_or(0);
+            let message = match ReplicationStateMessage::from_world(
+                queued.tick,
+                acked_input_tick,
+                &filtered_world,
+            ) {
                 Ok(message) => message,
                 Err(err) => {
                     eprintln!(
@@ -2244,7 +3090,7 @@ fn log_replication_client_connected(
     clients: Query<'_, '_, (), With<ClientOf>>,
 ) {
     if clients.get(trigger.entity).is_ok() {
-        println!(
+        info!(
             "replication lightyear client connected entity={:?}",
             trigger.entity
         );
@@ -2321,12 +3167,26 @@ mod tests {
         let mut registry = ClientVisibilityRegistry::default();
         registry.register_client(client, "player:abc".to_string());
         let positions = ClientControlledEntityPositionMap::default();
+        let player_views = HashMap::new();
+        let entity_positions = HashMap::new();
 
-        let auth = visibility_context_for_client(client, &registry, &positions);
+        let auth = visibility_context_for_client(
+            client,
+            &registry,
+            &positions,
+            &player_views,
+            &entity_positions,
+        );
         assert_eq!(auth.scope, visibility::VisibilityScope::Authenticated);
         assert_eq!(auth.player_entity_id.as_deref(), Some("player:abc"));
 
-        let unknown = visibility_context_for_client(Entity::from_bits(7), &registry, &positions);
+        let unknown = visibility_context_for_client(
+            Entity::from_bits(7),
+            &registry,
+            &positions,
+            &player_views,
+            &entity_positions,
+        );
         assert_eq!(unknown.scope, visibility::VisibilityScope::None);
         assert!(unknown.player_entity_id.is_none());
     }
@@ -2343,11 +3203,18 @@ mod tests {
                         "position_m": [100.0, 200.0, 0.0],
                         "health": 1000.0,
                     }),
-                    components: vec![WorldComponentDelta {
-                        component_id: "ship:1:owner_id".to_string(),
-                        component_kind: "owner_id".to_string(),
-                        properties: serde_json::json!("player:alice"),
-                    }],
+                    components: vec![
+                        WorldComponentDelta {
+                            component_id: "ship:1:owner_id".to_string(),
+                            component_kind: "owner_id".to_string(),
+                            properties: serde_json::json!("player:alice"),
+                        },
+                        WorldComponentDelta {
+                            component_id: "ship:1:position_m".to_string(),
+                            component_kind: "position_m".to_string(),
+                            properties: serde_json::json!([100.0, 200.0, 0.0]),
+                        },
+                    ],
                     removed: false,
                 },
                 WorldDeltaEntity {
@@ -2358,11 +3225,18 @@ mod tests {
                         "position_m": [110.0, 200.0, 0.0],
                         "health": 800.0,
                     }),
-                    components: vec![WorldComponentDelta {
-                        component_id: "ship:2:owner_id".to_string(),
-                        component_kind: "owner_id".to_string(),
-                        properties: serde_json::json!("player:bob"),
-                    }],
+                    components: vec![
+                        WorldComponentDelta {
+                            component_id: "ship:2:owner_id".to_string(),
+                            component_kind: "owner_id".to_string(),
+                            properties: serde_json::json!("player:bob"),
+                        },
+                        WorldComponentDelta {
+                            component_id: "ship:2:position_m".to_string(),
+                            component_kind: "position_m".to_string(),
+                            properties: serde_json::json!([110.0, 200.0, 0.0]),
+                        },
+                    ],
                     removed: false,
                 },
             ],
@@ -2380,15 +3254,123 @@ mod tests {
             .find(|e| e.entity_id == "ship:1")
             .unwrap();
         assert!(own_ship.properties.get("health").is_some());
-        assert_eq!(own_ship.components.len(), 1);
+        assert!(
+            own_ship
+                .components
+                .iter()
+                .any(|c| c.component_kind == "owner_id")
+        );
 
         let other_ship = filtered
             .updates
             .iter()
             .find(|e| e.entity_id == "ship:2")
             .unwrap();
-        assert!(other_ship.properties.get("position_m").is_some());
+        assert!(
+            other_ship
+                .components
+                .iter()
+                .any(|c| c.component_kind == "position_m")
+        );
         assert!(other_ship.properties.get("health").is_none());
-        assert_eq!(other_ship.components.len(), 0);
+        assert!(
+            other_ship
+                .components
+                .iter()
+                .all(|c| c.component_kind != "owner_id")
+        );
+    }
+
+    #[test]
+    fn input_rate_limiter_resets_after_window() {
+        let mut limiter = ClientInputRateLimiter::default();
+        assert!(should_accept_input_message(
+            &mut limiter,
+            "player:a",
+            0.0,
+            2,
+            1.0
+        ));
+        assert!(should_accept_input_message(
+            &mut limiter,
+            "player:a",
+            0.1,
+            2,
+            1.0
+        ));
+        assert!(!should_accept_input_message(
+            &mut limiter,
+            "player:a",
+            0.2,
+            2,
+            1.0
+        ));
+        assert!(should_accept_input_message(
+            &mut limiter,
+            "player:a",
+            1.2,
+            2,
+            1.0
+        ));
+    }
+
+    #[test]
+    fn input_rate_limiter_tracks_players_independently() {
+        let mut limiter = ClientInputRateLimiter::default();
+        assert!(should_accept_input_message(
+            &mut limiter,
+            "player:a",
+            0.0,
+            1,
+            1.0
+        ));
+        assert!(should_accept_input_message(
+            &mut limiter,
+            "player:b",
+            0.0,
+            1,
+            1.0
+        ));
+        assert!(!should_accept_input_message(
+            &mut limiter,
+            "player:a",
+            0.2,
+            1,
+            1.0
+        ));
+        assert!(!should_accept_input_message(
+            &mut limiter,
+            "player:b",
+            0.2,
+            1,
+            1.0
+        ));
+    }
+
+    #[test]
+    fn input_drop_metrics_records_reason_counts() {
+        let mut metrics = ClientInputDropMetrics::default();
+        metrics.record_accepted();
+        metrics.record_accepted();
+        metrics.record(InputDropReason::RateLimited);
+        metrics.record(InputDropReason::RateLimited);
+        metrics.record(InputDropReason::SpoofedPlayerId);
+
+        assert_eq!(metrics.accepted_inputs, 2);
+        assert_eq!(metrics.total_drops(), 3);
+        assert_eq!(metrics.rate_limited, 2);
+        assert_eq!(metrics.spoofed_player_id, 1);
+        assert_eq!(metrics.future_tick, 0);
+    }
+
+    #[test]
+    fn control_action_filter_allows_only_flight_inputs() {
+        assert!(is_allowed_control_action(EntityAction::ThrustForward));
+        assert!(is_allowed_control_action(EntityAction::ThrustNeutral));
+        assert!(is_allowed_control_action(EntityAction::YawLeft));
+        assert!(is_allowed_control_action(EntityAction::Brake));
+        assert!(!is_allowed_control_action(EntityAction::FirePrimary));
+        assert!(!is_allowed_control_action(EntityAction::ActivateShield));
+        assert!(!is_allowed_control_action(EntityAction::EngageAutopilot));
     }
 }
