@@ -10,9 +10,63 @@ use uuid::Uuid;
 
 use crate::{
     BaseMassKg, CargoMassKg, CollisionAabbM, DisplayName, Engine, EntityGuid, FlightComputer,
-    FuelTank, Hardpoint, HealthPool, Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn,
-    OwnerId, PositionM, ShardAssignment, ShipTag, SizeM, TotalMassKg, VelocityMps,
+    FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory, MassDirty, MassKg, MaxVelocityMps,
+    ModuleMassKg, MountedOn, OwnerId, ShardAssignment, ShipTag, SizeM, TotalMassKg,
 };
+
+pub fn default_corvette_flight_computer() -> FlightComputer {
+    FlightComputer {
+        profile: "basic_fly_by_wire".to_string(),
+        throttle: 0.0,
+        yaw_input: 0.0,
+        brake_active: false,
+        turn_rate_deg_s: 90.0,
+    }
+}
+
+pub fn default_corvette_mass_kg() -> f32 {
+    15_000.0
+}
+
+pub fn default_corvette_size() -> SizeM {
+    SizeM {
+        length: 25.0,
+        width: 12.0,
+        height: 8.0,
+    }
+}
+
+pub fn default_corvette_flight_tuning() -> FlightTuning {
+    FlightTuning {
+        max_linear_accel_mps2: 120.0,
+        passive_brake_accel_mps2: 3.0,
+        active_brake_accel_mps2: 20.0,
+        drag_per_s: 0.4,
+    }
+}
+
+pub fn default_corvette_max_velocity_mps() -> MaxVelocityMps {
+    MaxVelocityMps(600.0)
+}
+
+pub fn default_corvette_health_pool() -> HealthPool {
+    HealthPool {
+        current: 1000.0,
+        maximum: 1000.0,
+    }
+}
+
+pub fn default_corvette_asset_id() -> &'static str {
+    "corvette_01"
+}
+
+pub fn default_starfield_shader_asset_id() -> &'static str {
+    "starfield_wgsl"
+}
+
+pub fn default_space_background_shader_asset_id() -> &'static str {
+    "space_background_wgsl"
+}
 
 /// Complete component bundle for the Prospector-class corvette
 /// This is the canonical starter ship granted on registration
@@ -22,10 +76,6 @@ pub struct CorvetteBundle {
     pub entity_guid: EntityGuid,
     pub ship_tag: ShipTag,
     pub display_name: DisplayName,
-
-    // Spatial
-    pub position: PositionM,
-    pub velocity: VelocityMps,
 
     // Physical properties
     pub mass: MassKg,
@@ -40,6 +90,8 @@ pub struct CorvetteBundle {
 
     // Health/combat
     pub health: HealthPool,
+    pub flight_tuning: FlightTuning,
+    pub max_velocity_mps: MaxVelocityMps,
 
     // Ownership (only OwnerId is a component)
     pub owner_id: OwnerId,
@@ -98,9 +150,6 @@ pub fn spawn_corvette(
 ) -> (Uuid, CorvetteModuleGuids) {
     let ship_guid = Uuid::new_v4();
 
-    // Get spawn position (randomized if not specified)
-    let spawn_position = config.get_spawn_position();
-
     // Spawn the hull entity with all core components
     let ship_entity = commands
         .spawn(CorvetteBundle {
@@ -112,13 +161,11 @@ pub fn spawn_corvette(
                     .clone()
                     .unwrap_or_else(|| "Prospector-14".to_string()),
             ),
-            position: PositionM(spawn_position),
-            velocity: VelocityMps(config.spawn_velocity),
-            mass: MassKg(15000.0), // 15 metric tons base mass
-            base_mass: BaseMassKg(15000.0),
+            mass: MassKg(default_corvette_mass_kg()), // 15 metric tons base mass
+            base_mass: BaseMassKg(default_corvette_mass_kg()),
             cargo_mass: CargoMassKg(0.0),
             module_mass: ModuleMassKg(0.0),
-            total_mass: TotalMassKg(15000.0),
+            total_mass: TotalMassKg(default_corvette_mass_kg()),
             mass_dirty: MassDirty,
             inventory: Inventory::default(),
             size: SizeM {
@@ -129,10 +176,9 @@ pub fn spawn_corvette(
             collision: CollisionAabbM {
                 half_extents: Vec3::new(12.5, 6.0, 4.0),
             },
-            health: HealthPool {
-                current: 1000.0,
-                maximum: 1000.0,
-            },
+            health: default_corvette_health_pool(),
+            flight_tuning: default_corvette_flight_tuning(),
+            max_velocity_mps: default_corvette_max_velocity_mps(),
             owner_id: OwnerId(config.player_entity_id.clone()),
             shard_assignment: ShardAssignment(config.shard_id),
         })
@@ -193,12 +239,7 @@ fn spawn_corvette_modules(
     commands.spawn((
         EntityGuid(flight_computer_guid),
         DisplayName("Flight Computer MK1".to_string()),
-        FlightComputer {
-            profile: "basic_fly_by_wire".to_string(),
-            throttle: 0.0,
-            yaw_input: 0.0,
-            turn_rate_deg_s: 45.0,
-        },
+        default_corvette_flight_computer(),
         MountedOn {
             parent_entity_id: ship_guid,
             hardpoint_id: "computer_core".to_string(),
@@ -216,9 +257,10 @@ fn spawn_corvette_modules(
         EntityGuid(engine_left_guid),
         DisplayName("Engine Port".to_string()),
         Engine {
-            thrust_n: 50000.0,                    // 50kN thrust
-            burn_rate_kg_s: 0.5,                  // 0.5 kg/s fuel consumption
-            thrust_dir: Vec3::new(0.0, 0.0, 1.0), // Forward thrust
+            thrust: 1_200_000.0,
+            reverse_thrust: 600_000.0,
+            torque_thrust: 3_000_000.0,
+            burn_rate_kg_s: 0.8,
         },
         MountedOn {
             parent_entity_id: ship_guid,
@@ -250,9 +292,10 @@ fn spawn_corvette_modules(
         EntityGuid(engine_right_guid),
         DisplayName("Engine Starboard".to_string()),
         Engine {
-            thrust_n: 50000.0,
-            burn_rate_kg_s: 0.5,
-            thrust_dir: Vec3::new(0.0, 0.0, 1.0),
+            thrust: 1_200_000.0,
+            reverse_thrust: 600_000.0,
+            torque_thrust: 3_000_000.0,
+            burn_rate_kg_s: 0.8,
         },
         MountedOn {
             parent_entity_id: ship_guid,

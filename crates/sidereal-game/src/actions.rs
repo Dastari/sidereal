@@ -74,8 +74,14 @@ pub struct ActionQueue {
     pub pending: Vec<EntityAction>,
 }
 
+const MAX_PENDING_ACTIONS: usize = 128;
+
 impl ActionQueue {
     pub fn push(&mut self, action: EntityAction) {
+        if self.pending.len() >= MAX_PENDING_ACTIONS {
+            // Keep queue bounded under adverse network/input conditions.
+            self.pending.remove(0);
+        }
         self.pending.push(action);
     }
 
@@ -94,6 +100,26 @@ impl ActionQueue {
 pub struct ActionCapabilities {
     /// Set of actions this entity can process
     pub supported: Vec<EntityAction>,
+}
+
+pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
+    EntityAction::ThrustForward,
+    EntityAction::ThrustReverse,
+    EntityAction::ThrustNeutral,
+    EntityAction::Brake,
+    EntityAction::YawLeft,
+    EntityAction::YawRight,
+    EntityAction::YawNeutral,
+];
+
+pub fn is_flight_control_action(action: EntityAction) -> bool {
+    FLIGHT_CONTROL_ACTIONS.contains(&action)
+}
+
+pub fn default_flight_action_capabilities() -> ActionCapabilities {
+    ActionCapabilities {
+        supported: FLIGHT_CONTROL_ACTIONS.to_vec(),
+    }
 }
 
 impl ActionCapabilities {
@@ -129,5 +155,33 @@ pub fn validate_action_capabilities(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_queue_stays_bounded_under_burst() {
+        let mut queue = ActionQueue::default();
+        for i in 0..(MAX_PENDING_ACTIONS + 32) {
+            let action = if i % 2 == 0 {
+                EntityAction::ThrustForward
+            } else {
+                EntityAction::YawLeft
+            };
+            queue.push(action);
+        }
+        assert_eq!(queue.pending.len(), MAX_PENDING_ACTIONS);
+        assert_eq!(queue.pending[0], EntityAction::ThrustForward);
+    }
+
+    #[test]
+    fn default_flight_capabilities_match_allowlist() {
+        let caps = default_flight_action_capabilities();
+        assert_eq!(caps.supported, FLIGHT_CONTROL_ACTIONS.to_vec());
+        assert!(caps.can_handle(EntityAction::Brake));
+        assert!(!caps.can_handle(EntityAction::FirePrimary));
     }
 }

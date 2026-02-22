@@ -14,6 +14,7 @@ use sidereal_persistence::GraphPersistence;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
+use tracing::{error, info, warn};
 
 pub type SharedAuthService = Arc<AuthService>;
 
@@ -118,6 +119,7 @@ async fn register(
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<AuthTokens>, ApiError> {
     let tokens = service.register(&req.email, &req.password).await?;
+    info!("gateway register succeeded for email={}", req.email);
     Ok(Json(tokens))
 }
 
@@ -126,6 +128,7 @@ async fn login(
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<AuthTokens>, ApiError> {
     let tokens = service.login(&req.email, &req.password).await?;
+    info!("gateway login succeeded for email={}", req.email);
     Ok(Json(tokens))
 }
 
@@ -165,6 +168,10 @@ async fn me(
     let access_token = extract_bearer_token(&headers)?;
 
     let me = service.me(access_token).await?;
+    info!(
+        "gateway /auth/me resolved player_entity_id={}",
+        me.player_entity_id
+    );
     Ok(Json(MeResponse {
         account_id: me.account_id.to_string(),
         email: me.email,
@@ -358,6 +365,19 @@ impl From<AuthError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if self.status.is_server_error() {
+            error!(
+                "gateway API error status={} message={}",
+                self.status.as_u16(),
+                self.message
+            );
+        } else if self.status.is_client_error() {
+            warn!(
+                "gateway API client failure status={} message={}",
+                self.status.as_u16(),
+                self.message
+            );
+        }
         (
             self.status,
             Json(ErrorResponse {

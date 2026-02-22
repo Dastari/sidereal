@@ -550,6 +550,7 @@ dependencies = [
  "nalgebra",
  "parry3d",
  "parry3d-f64",
+ "serde",
  "slab",
  "smallvec",
  "thiserror 2.0.18",
@@ -1188,6 +1189,7 @@ dependencies = [
  "bevy_math",
  "bevy_reflect",
  "glam_matrix_extras",
+ "serde",
 ]
 
 [[package]]
@@ -1867,6 +1869,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88545c8b0fa8f3502b9a439c71fa6b596ee9e808bfb16f27a51c8c6f7405a657"
 dependencies = [
  "bevy",
+ "serde",
 ]
 
 [[package]]
@@ -3450,6 +3453,7 @@ checksum = "c4664468a60479272b880a8bfc00ad2915229b93d2b2d585556fb33f9ba80e72"
 dependencies = [
  "bevy_reflect",
  "glam 0.30.10",
+ "serde",
 ]
 
 [[package]]
@@ -5180,6 +5184,7 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
+ "serde",
  "simba",
  "typenum",
 ]
@@ -5347,6 +5352,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -5818,6 +5824,8 @@ dependencies = [
  "ordered-float",
  "rayon",
  "rstar",
+ "serde",
+ "serde_arrays",
  "simba",
  "slab",
  "smallvec",
@@ -5847,6 +5855,8 @@ dependencies = [
  "ordered-float",
  "rayon",
  "rstar",
+ "serde",
+ "serde_arrays",
  "simba",
  "slab",
  "smallvec",
@@ -6859,6 +6869,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_arrays"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94a16b99c5ea4fe3daccd14853ad260ec00ea043b2708d1fd1da3106dcd8d9df"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6962,11 +6981,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "sidereal-bg-sim"
+name = "sidereal-asset-runtime"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "sidereal-sim-core",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -6981,10 +7001,11 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sidereal-asset-runtime",
  "sidereal-core",
  "sidereal-game",
  "sidereal-net",
- "sidereal-sim-core",
+ "sidereal-runtime-sync",
  "uuid",
 ]
 
@@ -7004,7 +7025,6 @@ dependencies = [
  "bevy",
  "serde",
  "sidereal-core",
- "sidereal-sim-core",
  "uuid",
 ]
 
@@ -7030,34 +7050,22 @@ dependencies = [
  "tokio-postgres",
  "tokio-util",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "sidereal-input-map"
-version = "0.1.0"
-dependencies = [
- "sidereal-sim-core",
 ]
 
 [[package]]
 name = "sidereal-net"
 version = "0.1.0"
 dependencies = [
+ "avian3d",
  "bevy",
  "lightyear",
  "serde",
  "serde_json",
- "sidereal-core",
+ "sidereal-asset-runtime",
  "sidereal-game",
-]
-
-[[package]]
-name = "sidereal-orchestrator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "sidereal-core",
 ]
 
 [[package]]
@@ -7069,7 +7077,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sidereal-core",
- "sidereal-net",
  "thiserror 2.0.18",
  "uuid",
 ]
@@ -7087,46 +7094,26 @@ dependencies = [
  "postgres",
  "serde",
  "serde_json",
+ "sidereal-asset-runtime",
  "sidereal-core",
  "sidereal-game",
  "sidereal-net",
  "sidereal-persistence",
+ "sidereal-runtime-sync",
  "thiserror 2.0.18",
  "uuid",
 ]
 
 [[package]]
-name = "sidereal-shard"
+name = "sidereal-runtime-sync"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "avian3d",
  "bevy",
- "bevy_remote",
- "lightyear",
- "serde_json",
- "sidereal-core",
- "sidereal-game",
- "sidereal-net",
- "sidereal-persistence",
- "sidereal-sim-core",
- "uuid",
-]
-
-[[package]]
-name = "sidereal-sim-core"
-version = "0.1.0"
-dependencies = [
  "serde",
- "sidereal-core",
-]
-
-[[package]]
-name = "sidereal-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "sidereal-core",
+ "serde_json",
+ "sidereal-game",
+ "sidereal-persistence",
+ "uuid",
 ]
 
 [[package]]
@@ -7292,6 +7279,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "num-traits",
  "robust",
+ "serde",
  "smallvec",
 ]
 

@@ -17,18 +17,12 @@ use uuid::Uuid;
 
 use crate::actions::{ActionQueue, EntityAction};
 use crate::generated::components::{
-    Engine, EntityGuid, FlightComputer, FlightTuning, FuelTank, MountedOn, TotalMassKg,
+    Engine, EntityGuid, FlightComputer, FlightTuning, FuelTank, MaxVelocityMps, MountedOn, SizeM,
+    TotalMassKg,
 };
 
-const BRAKE_SENTINEL_THROTTLE: f32 = 2.0;
-const DEFAULT_MAX_LINEAR_SPEED_MPS: f32 = 600.0;
-const DEFAULT_TIME_TO_MAX_SPEED_S: f32 = 10.0;
-const DEFAULT_MAX_LINEAR_ACCEL_MPS2: f32 =
-    DEFAULT_MAX_LINEAR_SPEED_MPS / DEFAULT_TIME_TO_MAX_SPEED_S;
-const DEFAULT_PASSIVE_LINEAR_BRAKE_ACCEL_MPS2: f32 = 3.0;
-const DEFAULT_ACTIVE_LINEAR_BRAKE_ACCEL_MPS2: f32 = 12.0;
-const PASSIVE_ANGULAR_DAMP_GAIN: f32 = 6_000.0;
-const ACTIVE_ANGULAR_DAMP_GAIN: f32 = 12_000.0;
+const PASSIVE_ANGULAR_DAMP_RATE: f32 = 4.0;
+const ACTIVE_ANGULAR_DAMP_RATE: f32 = 10.0;
 const MAX_ANGULAR_VELOCITY_RAD_S: f32 = 2.0;
 const IDLE_LINEAR_SPEED_EPSILON_MPS: f32 = 3.0;
 const IDLE_ANGULAR_SPEED_EPSILON_RAD_S: f32 = 0.08;
@@ -40,7 +34,9 @@ type BodyForceQuery<'w, 's> = Query<
         &'static EntityGuid,
         &'static Transform,
         Option<&'static TotalMassKg>,
-        Option<&'static FlightTuning>,
+        &'static FlightTuning,
+        &'static MaxVelocityMps,
+        Option<&'static SizeM>,
         Forces,
     ),
 >;
@@ -75,6 +71,46 @@ fn compute_brake_decel_accel_mps2(
     target_accel_mps2.min(no_overshoot_accel_mps2)
 }
 
+pub fn is_brake_active(computer: &FlightComputer) -> bool {
+    computer.brake_active
+}
+
+pub fn apply_flight_action_to_computer(
+    computer: &mut FlightComputer,
+    action: EntityAction,
+) -> bool {
+    match action {
+        EntityAction::ThrustForward => {
+            computer.throttle = 1.0;
+            computer.brake_active = false;
+        }
+        EntityAction::ThrustReverse => {
+            computer.throttle = -0.7;
+            computer.brake_active = false;
+        }
+        EntityAction::ThrustNeutral => {
+            computer.throttle = 0.0;
+            computer.brake_active = false;
+        }
+        EntityAction::Brake => {
+            computer.throttle = 0.0;
+            computer.brake_active = true;
+            computer.yaw_input = 0.0;
+        }
+        EntityAction::YawLeft => {
+            computer.yaw_input = 1.0;
+            computer.brake_active = false;
+        }
+        EntityAction::YawRight => {
+            computer.yaw_input = -1.0;
+            computer.brake_active = false;
+        }
+        EntityAction::YawNeutral => computer.yaw_input = 0.0,
+        _ => return false,
+    }
+    true
+}
+
 /// System that processes actions and updates FlightComputer state
 pub fn process_flight_actions(
     mut query: Query<(&mut ActionQueue, &mut FlightComputer, Option<&MountedOn>)>,
@@ -85,22 +121,10 @@ pub fn process_flight_actions(
         }
 
         for action in queue.drain() {
-            match action {
-                EntityAction::ThrustForward => computer.throttle = 1.0,
-                EntityAction::ThrustReverse => computer.throttle = -0.7, // Reverse is typically weaker
-                EntityAction::ThrustNeutral => computer.throttle = 0.0,
-                EntityAction::Brake => {
-                    computer.throttle = BRAKE_SENTINEL_THROTTLE;
-                    computer.yaw_input = 0.0;
-                }
-                EntityAction::YawLeft => computer.yaw_input = 1.0,
-                EntityAction::YawRight => computer.yaw_input = -1.0,
-                EntityAction::YawNeutral => computer.yaw_input = 0.0,
-                _ => {
-                    // Flight computer doesn't handle this action
-                    if mounted_on.is_some() {
-                        debug!(action = ?action, "FlightComputer module ignoring non-flight action");
-                    }
+            if !apply_flight_action_to_computer(&mut computer, action) {
+                // Flight computer doesn't handle this action
+                if mounted_on.is_some() {
+                    debug!(action = ?action, "FlightComputer module ignoring non-flight action");
                 }
             }
         }
@@ -120,33 +144,37 @@ pub fn apply_engine_thrust(
 ) {
     let dt = time.delta_secs();
 
-    // Build map of control state by parent entity GUID
+    // Build map of control state by parent entity GUID.
+    // Non-mounted FlightComputers (directly on the hull entity, receiving ActionQueue input)
+    // always override mounted FC modules so the actual player input takes effect.
     let mut control_by_parent = HashMap::<Uuid, (f32, f32, f32, bool)>::new();
+    let mut hull_overrides = Vec::new();
     for (guid, computer, mounted_on) in &computers {
-        let parent_guid = if let Some(mount) = mounted_on {
-            // FlightComputer is a module, use parent GUID
-            mount.parent_entity_id
-        } else {
-            // FlightComputer is built-in to the entity
-            guid.0
-        };
-        let brake_active = computer.throttle >= BRAKE_SENTINEL_THROTTLE;
-
-        control_by_parent.entry(parent_guid).or_insert((
+        let brake_active = is_brake_active(computer);
+        let state = (
             computer.throttle,
             computer.yaw_input,
             computer.turn_rate_deg_s,
             brake_active,
-        ));
+        );
+        if let Some(mount) = mounted_on {
+            control_by_parent.entry(mount.parent_entity_id).or_insert(state);
+        } else {
+            hull_overrides.push((guid.0, state));
+        }
+    }
+    for (guid, state) in hull_overrides {
+        control_by_parent.insert(guid, state);
     }
 
-    // Aggregate engine thrust budget by parent GUID
-    let mut thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
-    let mut brake_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
+    // Aggregate engine thrust/torque budgets by parent GUID.
+    let mut forward_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
+    let mut reverse_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
+    let mut torque_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
     let mut fuel_exhausted_count = HashMap::<Uuid, usize>::new();
 
     for (mounted_on, engine, mut fuel_tank) in &mut engines {
-        let Some((throttle, _, _, brake_active)) =
+        let Some((throttle, yaw_input, _, brake_active)) =
             control_by_parent.get(&mounted_on.parent_entity_id)
         else {
             continue;
@@ -159,31 +187,29 @@ pub fn apply_engine_thrust(
             continue;
         }
 
-        let requested_burn_kg = if *brake_active {
-            engine.burn_rate_kg_s * dt
-        } else if *throttle != 0.0 {
-            engine.burn_rate_kg_s * throttle.abs() * dt
-        } else {
-            0.0
-        };
+        let throttle_demand = throttle.abs().clamp(0.0, 1.0);
+        let brake_demand = if *brake_active { 1.0 } else { 0.0 };
+        let yaw_demand = yaw_input.abs().clamp(0.0, 1.0);
+        let demand = throttle_demand.max(brake_demand).max(yaw_demand);
+        let requested_burn_kg = engine.burn_rate_kg_s * demand * dt;
 
         if requested_burn_kg > 0.0 {
             let actual_burn_kg = requested_burn_kg.min(fuel_tank.fuel_kg);
             let thrust_scale = actual_burn_kg / requested_burn_kg;
             fuel_tank.fuel_kg -= actual_burn_kg;
 
-            let force_mag = engine.thrust_n.abs() * thrust_scale;
-            if *brake_active {
-                brake_thrust_budget_by_parent
-                    .entry(mounted_on.parent_entity_id)
-                    .and_modify(|v| *v += force_mag)
-                    .or_insert(force_mag);
-            } else {
-                thrust_budget_by_parent
-                    .entry(mounted_on.parent_entity_id)
-                    .and_modify(|v| *v += force_mag)
-                    .or_insert(force_mag);
-            }
+            forward_thrust_budget_by_parent
+                .entry(mounted_on.parent_entity_id)
+                .and_modify(|v| *v += engine.thrust.abs() * thrust_scale)
+                .or_insert(engine.thrust.abs() * thrust_scale);
+            reverse_thrust_budget_by_parent
+                .entry(mounted_on.parent_entity_id)
+                .and_modify(|v| *v += engine.reverse_thrust.abs() * thrust_scale)
+                .or_insert(engine.reverse_thrust.abs() * thrust_scale);
+            torque_thrust_budget_by_parent
+                .entry(mounted_on.parent_entity_id)
+                .and_modify(|v| *v += engine.torque_thrust.abs() * thrust_scale)
+                .or_insert(engine.torque_thrust.abs() * thrust_scale);
         }
     }
 
@@ -193,8 +219,11 @@ pub fn apply_engine_thrust(
     }
 
     // Apply aggregated forces to parent bodies using Avian's Forces helper
-    for (guid, transform, total_mass, flight_tuning, mut forces) in &mut body_queries.p0() {
-        let mass_kg = total_mass.map(|mass| mass.0.max(1.0)).unwrap_or(15_000.0);
+    for (guid, transform, total_mass, flight_tuning, max_velocity, size_m, mut forces) in
+        &mut body_queries.p0()
+    {
+        let mass_kg = total_mass.map(|mass| mass.0.max(1.0)).unwrap_or(1.0);
+        let planar_moi_kg_m2 = planar_moment_of_inertia_z_kg_m2(mass_kg, size_m.copied());
         let control = control_by_parent.get(&guid.0).copied();
 
         if let Some((throttle, yaw_input, turn_rate_deg_s, brake_active)) = control {
@@ -202,9 +231,19 @@ pub fn apply_engine_thrust(
                 .get(&guid.0)
                 .copied()
                 .unwrap_or((Vec3::ZERO, Vec3::ZERO));
-            
-            let available_thrust = thrust_budget_by_parent.get(&guid.0).copied().unwrap_or(0.0);
-            let brake_available_thrust = brake_thrust_budget_by_parent.get(&guid.0).copied().unwrap_or(0.0);
+
+            let forward_available_thrust = forward_thrust_budget_by_parent
+                .get(&guid.0)
+                .copied()
+                .unwrap_or(0.0);
+            let reverse_available_thrust = reverse_thrust_budget_by_parent
+                .get(&guid.0)
+                .copied()
+                .unwrap_or(0.0);
+            let available_torque_thrust = torque_thrust_budget_by_parent
+                .get(&guid.0)
+                .copied()
+                .unwrap_or(0.0);
 
             let (force, torque) = compute_flight_forces(
                 (throttle, yaw_input, turn_rate_deg_s, brake_active),
@@ -212,9 +251,12 @@ pub fn apply_engine_thrust(
                 angular_velocity,
                 transform.rotation,
                 mass_kg,
+                planar_moi_kg_m2,
                 flight_tuning,
-                available_thrust,
-                brake_available_thrust,
+                max_velocity.0.max(1.0),
+                forward_available_thrust,
+                reverse_available_thrust,
+                available_torque_thrust,
                 dt,
             );
 
@@ -226,7 +268,11 @@ pub fn apply_engine_thrust(
         if let Some((throttle, _, _, brake_active)) = control_by_parent.get(&guid.0)
             && !*brake_active
             && *throttle != 0.0
-            && thrust_budget_by_parent.get(&guid.0).copied().unwrap_or(0.0) <= 0.0
+            && forward_thrust_budget_by_parent
+                .get(&guid.0)
+                .copied()
+                .unwrap_or(0.0)
+                <= 0.0
         {
             let exhausted = fuel_exhausted_count.get(&guid.0).copied().unwrap_or(0);
             if exhausted > 0 {
@@ -247,25 +293,29 @@ pub fn compute_flight_forces(
     angular_velocity: Vec3,
     rotation: Quat,
     mass_kg: f32,
-    flight_tuning: Option<&FlightTuning>,
-    available_thrust: f32,
-    brake_available_thrust: f32,
+    planar_moi_kg_m2: f32,
+    flight_tuning: &FlightTuning,
+    max_linear_speed_mps: f32,
+    forward_available_thrust: f32,
+    reverse_available_thrust: f32,
+    available_torque_thrust: f32,
     dt: f32,
 ) -> (Vec3, Vec3) {
+    if !velocity.is_finite()
+        || !angular_velocity.is_finite()
+        || !rotation.is_finite()
+        || !mass_kg.is_finite()
+        || !planar_moi_kg_m2.is_finite()
+        || !dt.is_finite()
+    {
+        return (Vec3::ZERO, Vec3::ZERO);
+    }
     let (throttle, yaw_input, turn_rate_deg_s, brake_active) = control;
-
-    let max_linear_speed_mps = flight_tuning
-        .map(|tuning| tuning.max_linear_speed_mps.max(1.0))
-        .unwrap_or(DEFAULT_MAX_LINEAR_SPEED_MPS);
-    let max_linear_accel_mps2 = flight_tuning
-        .map(|tuning| tuning.max_linear_accel_mps2.max(0.1))
-        .unwrap_or(DEFAULT_MAX_LINEAR_ACCEL_MPS2);
-    let passive_brake_accel_mps2 = flight_tuning
-        .map(|tuning| tuning.passive_brake_accel_mps2.max(0.1))
-        .unwrap_or(DEFAULT_PASSIVE_LINEAR_BRAKE_ACCEL_MPS2);
+    let max_linear_accel_mps2 = flight_tuning.max_linear_accel_mps2.max(0.1);
+    let passive_brake_accel_mps2 = flight_tuning.passive_brake_accel_mps2.max(0.1);
     let active_brake_accel_mps2 = flight_tuning
-        .map(|tuning| tuning.active_brake_accel_mps2.max(passive_brake_accel_mps2))
-        .unwrap_or(DEFAULT_ACTIVE_LINEAR_BRAKE_ACCEL_MPS2);
+        .active_brake_accel_mps2
+        .max(passive_brake_accel_mps2);
 
     let planar_velocity = Vec3::new(velocity.x, velocity.y, 0.0);
     let speed = planar_velocity.length();
@@ -284,8 +334,13 @@ pub fn compute_flight_forces(
     let mut applied_torque = Vec3::ZERO;
 
     if !brake_active && throttle != 0.0 {
-        let engine_accel_cap = if available_thrust > 0.0 {
-            available_thrust / mass_kg
+        let directional_thrust = if throttle > 0.0 {
+            forward_available_thrust
+        } else {
+            reverse_available_thrust
+        };
+        let engine_accel_cap = if directional_thrust > 0.0 {
+            directional_thrust / mass_kg
         } else {
             0.0
         };
@@ -293,32 +348,30 @@ pub fn compute_flight_forces(
         let accel_cap = accel_target.min(engine_accel_cap.max(0.0));
 
         let current_forward_speed = planar_velocity.dot(forward_axis_world);
-        let target_forward_speed =
-            max_linear_speed_mps * throttle.abs() * throttle.signum();
+        let target_forward_speed = max_linear_speed_mps * throttle.abs() * throttle.signum();
         let speed_delta = target_forward_speed - current_forward_speed;
-        
+
         // Use standard acceleration approach rather than immediate target velocity matching if below target speed
-        if dt > 0.0 && accel_cap > 0.0 {
-            if speed_delta.abs() > 0.01 {
-                let max_speed_step = accel_cap * dt;
-                let applied_step = speed_delta.clamp(-max_speed_step, max_speed_step);
-                let actual_accel = applied_step / dt;
-                let required_force = forward_axis_world * (actual_accel * mass_kg);
-                applied_force += required_force;
-            }
+        if dt > 0.0 && accel_cap > 0.0 && speed_delta.abs() > 0.01 {
+            let max_speed_step = accel_cap * dt;
+            let applied_step = speed_delta.clamp(-max_speed_step, max_speed_step);
+            let actual_accel = applied_step / dt;
+            let required_force = forward_axis_world * (actual_accel * mass_kg);
+            applied_force += required_force;
         }
 
         // Hard speed governor to prevent runaway values.
         if speed > max_linear_speed_mps {
             let overspeed = speed - max_linear_speed_mps;
-            let governor_accel =
-                (overspeed / dt.max(1e-6)).min(max_linear_accel_mps2 * 2.0);
+            let governor_accel = (overspeed / dt.max(1e-6)).min(max_linear_accel_mps2 * 2.0);
             let governor_force = -(planar_velocity / speed) * governor_accel * mass_kg;
             applied_force += governor_force;
         }
-    } else if brake_active && speed > 0.01 || !brake_active && speed > IDLE_LINEAR_SPEED_EPSILON_MPS && throttle == 0.0 {
-        let engine_limited_accel = if brake_available_thrust > 0.0 {
-            brake_available_thrust / mass_kg
+    } else if brake_active && speed > 0.01
+        || !brake_active && speed > IDLE_LINEAR_SPEED_EPSILON_MPS && throttle == 0.0
+    {
+        let engine_limited_accel = if reverse_available_thrust > 0.0 {
+            reverse_available_thrust / mass_kg
         } else {
             0.0
         };
@@ -335,23 +388,60 @@ pub fn compute_flight_forces(
     }
 
     if yaw_input != 0.0 {
-        let yaw_rate_rad_s = yaw_input * turn_rate_deg_s.to_radians();
-        // TODO: Proper torque calculation based on inertia tensor
-        let torque = Vec3::new(0.0, 0.0, yaw_rate_rad_s * 4000.0);
+        let target_angular_velocity_z = yaw_input * turn_rate_deg_s.to_radians();
+        let current_angular_velocity_z = angular_velocity.z;
+        let required_angular_accel_z =
+            (target_angular_velocity_z - current_angular_velocity_z) / dt.max(1e-6);
+        let commanded_torque_z = required_angular_accel_z * planar_moi_kg_m2;
+        let capped_torque_z =
+            commanded_torque_z.clamp(-available_torque_thrust, available_torque_thrust);
+        let torque = Vec3::new(0.0, 0.0, capped_torque_z);
         applied_torque += torque;
     } else {
         let angular_z = angular_velocity.z;
         if angular_z.abs() > 0.001 {
-            let gain = if brake_active {
-                ACTIVE_ANGULAR_DAMP_GAIN
+            let rate = if brake_active {
+                ACTIVE_ANGULAR_DAMP_RATE
             } else {
-                PASSIVE_ANGULAR_DAMP_GAIN
+                PASSIVE_ANGULAR_DAMP_RATE
             };
-            applied_torque += Vec3::new(0.0, 0.0, -angular_z * gain);
+            let damp_torque = -angular_z * rate * planar_moi_kg_m2;
+            applied_torque += Vec3::new(0.0, 0.0, damp_torque);
         }
     }
 
-    (applied_force, applied_torque)
+    (
+        sanitize_finite_vec3(applied_force),
+        sanitize_finite_vec3(applied_torque),
+    )
+}
+
+fn planar_moment_of_inertia_z_kg_m2(mass_kg: f32, size_m: Option<SizeM>) -> f32 {
+    let Some(size) = size_m else {
+        return mass_kg.max(1.0);
+    };
+    let length = size.length.max(0.1);
+    let width = size.width.max(0.1);
+    ((mass_kg * (length * length + width * width)) / 12.0).max(1.0)
+}
+
+/// Computes Avian-compatible 3D angular inertia from gameplay SizeM and mass.
+/// Uses the same formula as `planar_moment_of_inertia_z_kg_m2` for the Z-axis
+/// and analogous formulas for X and Y axes, ensuring Avian's physics integration
+/// produces results consistent with our flight force calculations.
+pub fn angular_inertia_from_size(mass_kg: f32, size: &SizeM) -> AngularInertia {
+    let m = mass_kg.max(1.0);
+    let l = size.length.max(0.1);
+    let w = size.width.max(0.1);
+    let h = size.height.max(0.1);
+    let ix = (m * (w * w + h * h)) / 12.0;
+    let iy = (m * (l * l + h * h)) / 12.0;
+    let iz = (m * (l * l + w * w)) / 12.0;
+    AngularInertia::new(Vec3::new(ix.max(1.0), iy.max(1.0), iz.max(1.0)))
+}
+
+fn sanitize_finite_vec3(value: Vec3) -> Vec3 {
+    if value.is_finite() { value } else { Vec3::ZERO }
 }
 
 /// Clamp angular velocity around Z to prevent excessive blur-spin.
@@ -390,7 +480,7 @@ pub fn stabilize_idle_motion(
         if mounted_on.is_some() {
             continue;
         }
-        let brake_active = computer.throttle >= BRAKE_SENTINEL_THROTTLE;
+        let brake_active = computer.brake_active;
         let neutral_throttle = computer.throttle.abs() <= f32::EPSILON;
         let neutral_yaw = computer.yaw_input.abs() <= f32::EPSILON;
         let planar_speed = Vec2::new(linear_velocity.0.x, linear_velocity.0.y).length();
@@ -442,6 +532,7 @@ mod tests {
                     profile: "basic_fly_by_wire".to_string(),
                     throttle: 0.0,
                     yaw_input: 0.0,
+                    brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
             ))
@@ -469,6 +560,7 @@ mod tests {
                     profile: "basic_fly_by_wire".to_string(),
                     throttle: 0.4,
                     yaw_input: 0.6,
+                    brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
             ))
@@ -476,7 +568,8 @@ mod tests {
         app.update();
 
         let computer = app.world().entity(entity).get::<FlightComputer>().unwrap();
-        assert!(computer.throttle >= BRAKE_SENTINEL_THROTTLE);
+        assert!(computer.brake_active);
+        assert!(computer.throttle.abs() < f32::EPSILON);
         assert!(computer.yaw_input.abs() < f32::EPSILON);
     }
 
@@ -494,6 +587,7 @@ mod tests {
                     profile: "basic_fly_by_wire".to_string(),
                     throttle: 0.25,
                     yaw_input: -0.5,
+                    brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
             ))
@@ -516,6 +610,7 @@ mod tests {
                     profile: "basic_fly_by_wire".to_string(),
                     throttle: 0.0,
                     yaw_input: 0.0,
+                    brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
                 LinearVelocity(Vec3::new(0.02, -0.03, 0.0)),
@@ -542,6 +637,7 @@ mod tests {
                     profile: "basic_fly_by_wire".to_string(),
                     throttle: 1.0,
                     yaw_input: 0.0,
+                    brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
                 LinearVelocity(Vec3::new(0.02, -0.03, 0.0)),
@@ -566,8 +662,9 @@ mod tests {
             .spawn((
                 FlightComputer {
                     profile: "basic_fly_by_wire".to_string(),
-                    throttle: BRAKE_SENTINEL_THROTTLE,
+                    throttle: 0.0,
                     yaw_input: 0.0,
+                    brake_active: true,
                     turn_rate_deg_s: 45.0,
                 },
                 LinearVelocity(Vec3::new(3.0, -1.0, 0.0)),
@@ -626,6 +723,7 @@ mod tests {
                     profile: "basic_fly_by_wire".to_string(),
                     throttle: 0.0,
                     yaw_input: 0.0,
+                    brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
                 AngularVelocity(Vec3::new(0.3, -0.4, 6.0)),
@@ -638,6 +736,7 @@ mod tests {
                     profile: "basic_fly_by_wire".to_string(),
                     throttle: 0.0,
                     yaw_input: 0.0,
+                    brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
                 MountedOn {

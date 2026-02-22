@@ -1,3 +1,4 @@
+use bevy::log::info;
 use bevy::prelude::*;
 
 /// Dialog UI System for client-side error/info/warning modals
@@ -141,6 +142,10 @@ fn show_next_dialog(
         return;
     };
 
+    info!(
+        "client dialog shown title='{}' severity={:?}",
+        dialog.title, dialog.severity
+    );
     dialog_queue.current = Some(dialog.clone());
 
     let font_bold = fonts.bold.clone();
@@ -273,6 +278,7 @@ fn handle_dialog_interactions(
     for (interaction, mut bg_color, mut border_color) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
+                info!("client dialog dismissed via button");
                 // Clear current dialog and despawn UI
                 dialog_queue.current = None;
                 for entity in &dialog_root {
@@ -294,6 +300,7 @@ fn handle_dialog_interactions(
     if !dialog_root.is_empty()
         && (keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::Escape))
     {
+        info!("client dialog dismissed via keyboard");
         dialog_queue.current = None;
         for entity in &dialog_root {
             commands.entity(entity).despawn();

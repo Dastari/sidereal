@@ -11,7 +11,6 @@ Project operating contract for human and AI contributors working in this reposit
 ## 2. Source-of-Truth Documentation
 
 - Primary architecture/spec: `docs/sidereal_design_document.md`
-- Implementation sequencing/checklists: `docs/sidereal_implementation_checklist.md`
 - UI design system and component patterns: `docs/ui_design_guide.md`
 - Workspace test area guidance: `tests/README.md`
 - Repo overview: `README.md`
@@ -28,6 +27,7 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Gameplay component source-of-truth is core (`crates/sidereal-game`); new persistable component families must flow through the shared component registry/generation path rather than ad-hoc per-service definitions.
 - Bevy hierarchy relationships (`Children`/parent-child) and modular mount relationships (for example hardpoints -> engines/shield generators/flight computers) must persist as graph relationships and hydrate back deterministically.
 - Visibility/range logic must be generic over entities (not ship-only). Use `ScannerRangeM`/related generic components for dynamic sensor range behavior; do not hardcode ship-specific visibility assumptions.
+- Visibility policy must preserve valid no-ship/no-engine states and support data-driven public/faction visibility (`PublicVisibility`, `FactionId`, `FactionVisibility`) without spawning fallback gameplay modules.
 - Replication input routing must be bound to authenticated session identity. Bind transport peer/session (`RemoteId`) to authenticated `player_entity_id` and reject mismatched claimed player IDs in subsequent input packets.
 - Hydration/persistence must preserve hierarchy semantics: persist parent-child and mount relationships, then rebuild Bevy hierarchy deterministically during hydration so child transform offsets remain correct.
 - Inventory-bearing entities must feed dynamic mass derivation (`CargoMassKg`/`ModuleMassKg`/`TotalMassKg`) and runtime physics mass updates so acceleration behavior reflects mounted modules and nested inventories.
@@ -36,6 +36,14 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Native may be the current delivery priority, but that never relaxes WASM parity requirements; client behavior and protocol changes must keep WASM in lockstep in the same change.
 - The client is one workspace member (`bins/sidereal-client`) with a native `[[bin]]` target and a WASM `[lib]` target. There is no separate `sidereal-client-web` crate.
 - Use generic entity terminology in systems/resources/APIs that are not inherently domain-specific. Avoid naming generic runtime structures with `Ship*` prefixes (for example visibility maps, control maps, authority registries). Reserve ship-specific names only for truly ship-only behavior.
+- Enforce single-writer motion ownership per runtime mode: for controlled predicted entities, only one fixed-tick pipeline may write authoritative motion state (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`). Visual interpolation/camera systems must not feed render transforms back into simulation state.
+- Do not reintroduce legacy gameplay mirror motion components (`PositionM`/`VelocityMps`/`HeadingRad`) for runtime replication or simulation paths; use Avian authoritative motion components directly.
+- Enforce gameplay-physics mass/inertia parity: whenever gameplay force/torque code depends on gameplay mass/inertia, Avian `Mass` and `AngularInertia` must be present and synchronized on the same entity from spawn/hydration onward and updated with runtime mass recomputation in the same simulation flow.
+- Persist/hydrate runtime state using graph records (`GraphEntityRecord`/`GraphComponentRecord`) and relationships as the canonical persistence shape. Do not introduce new `WorldStateDelta`/`WorldDeltaEntity`/`WorldComponentDelta` persistence paths.
+- Predicted local input intent is client-owned: do not overwrite pending local control intent for the controlled predicted entity with replicated server intent state; replicated control state is for confirmation/correction flow, not local intent ownership.
+- Simulation and prediction math must use fixed-step time resources only; frame-time deltas are render/UI-only and must not drive authoritative force/integration math.
+- When changing streamed shaders/material bindings, keep source and streamed cache shader paths in schema parity in the same change (or generate both from one source) so runtime does not diverge by load path.
+- Large runtime refactors must split mixed concerns into domain modules; avoid continuing monolithic growth in client/server entrypoints. Keep entrypoints focused on app wiring and plugin composition.
 - Platform branching uses `cfg(target_arch = "wasm32")` only. Never use a cargo feature flag to gate native-vs-WASM code paths; `target_arch` is set automatically by the compiler and cannot be miscombined.
 - WASM uses platform-specific network adapters only at the transport boundary. All gameplay, prediction, reconciliation, and ECS systems are shared and must compile for both targets without conditional compilation.
 - Browser transport direction is WebRTC-first (unreliable/unordered data channels for game state, ordered/reliable channel for session control). WebSocket is allowed only as an explicit fallback. New WASM transport work must not default to WebSocket.

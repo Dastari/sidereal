@@ -7,12 +7,21 @@ authors.workspace = true
 
 [features]
 default = []
-lightyear_protocol = ["dep:bevy", "dep:lightyear"]
+lightyear_protocol = [
+    "dep:avian3d",
+    "dep:bevy",
+    "dep:lightyear",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sidereal-game",
+    "dep:sidereal-asset-runtime",
+]
 
 [dependencies]
+avian3d = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
 lightyear = { workspace = true, optional = true }
-serde.workspace = true
-serde_json.workspace = true
-sidereal-core = { path = "../sidereal-core" }
-sidereal-game = { path = "../sidereal-game" }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sidereal-game = { path = "../sidereal-game", optional = true }
+sidereal-asset-runtime = { path = "../sidereal-asset-runtime", optional = true }

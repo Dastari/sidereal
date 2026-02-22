@@ -82,9 +82,9 @@ fn star_layer(uv: vec2<f32>, drift_dir: vec2<f32>, warp: f32, time: f32, is_back
             let cell_id = id + offset;
             let n = hash21(cell_id);
             
-            var density_threshold = 0.12;
+            var density_threshold = 0.25;
             if is_background {
-                density_threshold = 0.08;
+                density_threshold = 0.18;
             }
             
             let density_gate = fract(n * 911.0);
@@ -102,18 +102,18 @@ fn star_layer(uv: vec2<f32>, drift_dir: vec2<f32>, warp: f32, time: f32, is_back
             
             if is_background {
                 let star_type = fract(n * 789.0);
-                let radius = mix(0.012, 0.045, size * size);
+                let radius = mix(0.04, 0.12, size * size);
                 s = background_star(local, radius, star_type);
                 colors = star_color(n);
                 let twinkle_val = twinkle(cell_id, time, n);
-                brightness = mix(0.3, 0.9, size) * twinkle_val;
+                brightness = mix(0.4, 1.0, size) * twinkle_val;
             } else {
-                let radius = mix(0.006, 0.022, size * size);
+                let radius = mix(0.03, 0.08, size * size);
                 s = star(local, radius, drift_dir, warp);
                 let tint = 0.5 + 0.5 * sin(vec3<f32>(0.35, 0.52, 0.73) * fract(n * 2434.0) * 5.0);
                 colors = mix(vec3<f32>(0.74, 0.78, 0.86), vec3<f32>(0.96, 0.97, 1.0), tint);
                 let warp_boost = mix(1.0, 2.2, warp * warp);
-                brightness = mix(0.2, 0.75, size) * warp_boost;
+                brightness = mix(0.3, 0.85, size) * warp_boost;
             }
             
             col += s * brightness * colors;
@@ -210,11 +210,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         var fade: f32;
         
         if is_background {
-            scale = mix(200.0, 140.0, depth * 4.0);
-            fade = mix(0.08, 0.12, depth * 4.0);
+            scale = mix(50.0, 35.0, depth * 4.0);
+            fade = mix(0.12, 0.18, depth * 4.0);
         } else {
-            scale = mix(120.0, 50.0, (depth - 0.25) / 0.75);
-            fade = mix(0.1, 0.25, (depth - 0.25) / 0.75);
+            scale = mix(30.0, 12.0, (depth - 0.25) / 0.75);
+            fade = mix(0.15, 0.35, (depth - 0.25) / 0.75);
         }
         
         let layer_drift = travel * mix(0.15, 1.0, depth);

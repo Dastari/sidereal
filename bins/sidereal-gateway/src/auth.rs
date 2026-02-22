@@ -17,6 +17,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::{Client, NoTls};
+use tracing::error;
 use uuid::Uuid;
 
 const MIN_PASSWORD_LEN: usize = 12;
@@ -370,7 +371,7 @@ impl PostgresAuthStore {
             .map_err(|err| AuthError::Config(format!("postgres connect failed: {err}")))?;
         tokio::spawn(async move {
             if let Err(err) = connection.await {
-                eprintln!("gateway postgres connection ended: {err}");
+                error!("gateway postgres connection ended: {}", err);
             }
         });
         Ok(Self { client })

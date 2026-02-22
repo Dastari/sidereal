@@ -1,6 +1,7 @@
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::log::info;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
@@ -89,10 +90,9 @@ pub fn register_auth_ui(app: &mut App) {
 }
 
 fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, crate::EmbeddedFonts>) {
+    info!("client auth UI setup: spawning auth screen");
     let font_bold = fonts.bold.clone();
     let font_regular = fonts.regular.clone();
-
-    commands.spawn((Camera2d, DespawnOnExit(ClientAppState::Auth)));
 
     commands
         .spawn((

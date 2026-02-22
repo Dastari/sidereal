@@ -1,11 +1,12 @@
-use avian3d::prelude::Mass;
+use avian3d::prelude::{AngularInertia, Mass};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::flight::angular_inertia_from_size;
 use crate::generated::components::{
     BaseMassKg, CargoMassKg, EntityGuid, Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn,
-    TotalMassKg,
+    SizeM, TotalMassKg,
 };
 
 fn inventory_mass_kg(inventory: Option<&Inventory>) -> f32 {
@@ -62,25 +63,38 @@ fn child_inventory_tree_mass(
 
 #[allow(clippy::type_complexity)]
 pub fn recompute_total_mass(
-    mut roots: Query<
-        (
-            Entity,
-            &EntityGuid,
-            Option<&MassKg>,
-            Option<&BaseMassKg>,
-            Option<&Inventory>,
-            &mut CargoMassKg,
-            &mut ModuleMassKg,
-            &mut TotalMassKg,
-            Option<&MassDirty>,
-            Option<&mut Mass>,
-        ),
-        Without<MountedOn>,
-    >,
+    mut roots: ParamSet<(
+        Query<
+            (
+                Entity,
+                &EntityGuid,
+                Option<&MassKg>,
+                Option<&BaseMassKg>,
+                Option<&Inventory>,
+                &mut CargoMassKg,
+                &mut ModuleMassKg,
+                &mut TotalMassKg,
+                Option<&MassDirty>,
+                Option<&mut Mass>,
+                Option<&SizeM>,
+                Option<&mut AngularInertia>,
+            ),
+            Without<MountedOn>,
+        >,
+        Query<(&TotalMassKg, Option<&MassDirty>), Without<MountedOn>>,
+    )>,
     modules: Query<(&EntityGuid, &MountedOn, Option<&MassKg>, Option<&Inventory>)>,
     inventories: Query<(Entity, Option<&Inventory>)>,
     child_of: Query<(Entity, &ChildOf)>,
 ) {
+    let needs_recompute = roots
+        .p1()
+        .iter()
+        .any(|(total_mass, mass_dirty)| mass_dirty.is_some() || total_mass.0 <= 0.0);
+    if !needs_recompute {
+        return;
+    }
+
     let inventory_mass_by_entity = inventories
         .iter()
         .map(|(entity, inventory)| (entity, inventory_mass_kg(inventory)))
@@ -116,7 +130,9 @@ pub fn recompute_total_mass(
         mut total_mass,
         mass_dirty,
         maybe_avian_mass,
-    ) in &mut roots
+        maybe_size,
+        maybe_avian_inertia,
+    ) in &mut roots.p0()
     {
         if mass_dirty.is_none() && total_mass.0 > 0.0 {
             continue;
@@ -145,6 +161,9 @@ pub fn recompute_total_mass(
         total_mass.0 = computed_total;
         if let Some(mut avian_mass) = maybe_avian_mass {
             *avian_mass = Mass(computed_total);
+        }
+        if let (Some(mut avian_inertia), Some(size)) = (maybe_avian_inertia, maybe_size) {
+            *avian_inertia = angular_inertia_from_size(computed_total, size);
         }
     }
 }

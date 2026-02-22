@@ -9,7 +9,6 @@ authors.workspace = true
 avian3d.workspace = true
 bevy = { workspace = true, features = ["webgpu"] }
 sidereal-core = { path = "../../crates/sidereal-core" }
-sidereal-sim-core = { path = "../../crates/sidereal-sim-core" }
 serde.workspace = true
 serde_json.workspace = true
 

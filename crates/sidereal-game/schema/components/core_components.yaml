@@ -7,12 +7,6 @@ components:
   - component_kind: display_name
     rust_type: sidereal_game::generated::components::DisplayName
     persistable: true
-  - component_kind: position_m
-    rust_type: sidereal_game::generated::components::PositionM
-    persistable: true
-  - component_kind: velocity_mps
-    rust_type: sidereal_game::generated::components::VelocityMps
-    persistable: true
   - component_kind: shard_assignment
     rust_type: sidereal_game::generated::components::ShardAssignment
     persistable: true
@@ -32,6 +26,24 @@ components:
     rust_type: sidereal_game::generated::components::FlightComputer
     persistable: true
     script_policy: intent_only
+  - component_kind: flight_tuning
+    rust_type: sidereal_game::generated::components::FlightTuning
+    persistable: true
+  - component_kind: max_velocity_mps
+    rust_type: sidereal_game::generated::components::MaxVelocityMps
+    persistable: true
   - component_kind: health_pool
     rust_type: sidereal_game::generated::components::HealthPool
+    persistable: true
+  - component_kind: owner_id
+    rust_type: sidereal_game::generated::components::OwnerId
+    persistable: true
+  - component_kind: faction_id
+    rust_type: sidereal_game::generated::components::FactionId
+    persistable: true
+  - component_kind: faction_visibility
+    rust_type: sidereal_game::generated::components::FactionVisibility
+    persistable: true
+  - component_kind: public_visibility
+    rust_type: sidereal_game::generated::components::PublicVisibility
     persistable: true

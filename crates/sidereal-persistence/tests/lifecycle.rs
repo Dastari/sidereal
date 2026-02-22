@@ -1,5 +1,5 @@
-use sidereal_net::{WorldComponentDelta, WorldDeltaEntity};
 use sidereal_persistence::GraphPersistence;
+use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
 use uuid::Uuid;
 
 fn test_database_url() -> String {
@@ -12,9 +12,9 @@ fn unique_graph_name(prefix: &str) -> String {
     format!("{}_{}", prefix, Uuid::new_v4().simple())
 }
 
-fn make_ship_batch(ship_id: &str, hardpoint_id: &str, engine_id: &str) -> Vec<WorldDeltaEntity> {
+fn make_ship_batch(ship_id: &str, hardpoint_id: &str, engine_id: &str) -> Vec<GraphEntityRecord> {
     vec![
-        WorldDeltaEntity {
+        GraphEntityRecord {
             entity_id: ship_id.to_string(),
             labels: vec!["Entity".to_string(), "Ship".to_string()],
             properties: serde_json::json!({
@@ -24,25 +24,24 @@ fn make_ship_batch(ship_id: &str, hardpoint_id: &str, engine_id: &str) -> Vec<Wo
                 "mass_kg": 4200.0,
             }),
             components: vec![
-                WorldComponentDelta {
+                GraphComponentRecord {
                     component_id: format!("{ship_id}:display_name"),
                     component_kind: "display_name".to_string(),
                     properties: serde_json::json!({"value": "ISS Persistence"}),
                 },
-                WorldComponentDelta {
+                GraphComponentRecord {
                     component_id: format!("{ship_id}:flight_computer"),
                     component_kind: "flight_computer".to_string(),
                     properties: serde_json::json!({"profile": "CruiseAssist", "throttle": 0.58}),
                 },
-                WorldComponentDelta {
+                GraphComponentRecord {
                     component_id: format!("{ship_id}:health_pool"),
                     component_kind: "health_pool".to_string(),
                     properties: serde_json::json!({"hp": 98.0, "max_hp": 100.0}),
                 },
             ],
-            removed: false,
         },
-        WorldDeltaEntity {
+        GraphEntityRecord {
             entity_id: hardpoint_id.to_string(),
             labels: vec!["Entity".to_string(), "Hardpoint".to_string()],
             properties: serde_json::json!({
@@ -51,31 +50,32 @@ fn make_ship_batch(ship_id: &str, hardpoint_id: &str, engine_id: &str) -> Vec<Wo
                 "hardpoint_id": "engine_main",
                 "offset_m": [0.0, 0.0, -4.0],
             }),
-            components: vec![WorldComponentDelta {
+            components: vec![GraphComponentRecord {
                 component_id: format!("{hardpoint_id}:hardpoint"),
                 component_kind: "hardpoint".to_string(),
                 properties: serde_json::json!({"hardpoint_id": "engine_main", "offset_m": [0.0, 0.0, -4.0]}),
             }],
-            removed: false,
         },
-        WorldDeltaEntity {
+        GraphEntityRecord {
             entity_id: engine_id.to_string(),
             labels: vec!["Entity".to_string(), "Engine".to_string()],
             properties: serde_json::json!({
                 "parent_entity_id": ship_id,
                 "mounted_on_entity_id": hardpoint_id,
-                "thrust_n": 280000.0,
+                "thrust": 280000.0,
+                "reverse_thrust": 140000.0,
+                "torque_thrust": 112000.0,
             }),
-            components: vec![WorldComponentDelta {
+            components: vec![GraphComponentRecord {
                 component_id: format!("{engine_id}:engine"),
                 component_kind: "engine".to_string(),
                 properties: serde_json::json!({
-                    "thrust_n": 280000.0,
+                    "thrust": 280000.0,
+                    "reverse_thrust": 140000.0,
+                    "torque_thrust": 112000.0,
                     "burn_rate_kg_s": 18.0,
-                    "thrust_dir": [0.0, 0.0, 1.0]
                 }),
             }],
-            removed: false,
         },
     ]
 }
@@ -102,8 +102,8 @@ fn graph_persistence_full_lifecycle_ship_hardpoint_engine() {
 
     let mut updates = make_ship_batch(&ship_id, &hardpoint_id, &engine_id);
     persistence
-        .persist_world_delta(&updates, 100)
-        .expect("initial world delta should persist");
+        .persist_graph_records(&updates, 100)
+        .expect("initial graph records should persist");
 
     let mut hydrated = persistence
         .load_graph_records()
@@ -119,17 +119,13 @@ fn graph_persistence_full_lifecycle_ship_hardpoint_engine() {
     assert_eq!(ship.components.len(), 3);
 
     updates[0].properties["velocity_mps"] = serde_json::json!([19.0, 0.0, 0.0]);
-    updates[2].properties["thrust_n"] = serde_json::json!(300000.0);
-    updates.push(WorldDeltaEntity {
-        entity_id: hardpoint_id.clone(),
-        labels: Vec::new(),
-        properties: serde_json::json!({}),
-        components: Vec::new(),
-        removed: true,
-    });
+    updates[2].properties["thrust"] = serde_json::json!(300000.0);
     persistence
-        .persist_world_delta(&updates, 101)
-        .expect("second world delta should persist");
+        .persist_graph_records(&updates, 101)
+        .expect("second graph records should persist");
+    persistence
+        .remove_graph_entities(std::slice::from_ref(&hardpoint_id))
+        .expect("hardpoint removal should persist");
 
     let after = persistence
         .load_graph_records()

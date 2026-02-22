@@ -1,7 +1,10 @@
+mod legacy_envelope;
+
+pub use legacy_envelope::{ChannelClass, NetEnvelope, decode_envelope_json, encode_envelope_json};
+
 use postgres::{Client, NoTls};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use sidereal_net::WorldDeltaEntity;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -17,9 +20,24 @@ pub enum PersistenceError {
 
 pub type Result<T> = std::result::Result<T, PersistenceError>;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PlayerRuntimeViewState {
+    pub player_entity_id: String,
+    pub last_controlled_entity_id: Option<String>,
+    pub last_focused_entity_id: Option<String>,
+    pub last_camera_position_m: Option<[f32; 3]>,
+    pub updated_at_epoch_s: i64,
+}
+
+/// Sanitize a Rust type path into a key safe for AGE/Cypher property names.
+/// AGE strips characters like `:` from property keys, so we replace `::` with `__`.
+fn sanitize_type_path_key(type_path: &str) -> String {
+    type_path.replace("::", "__")
+}
+
 pub fn encode_reflect_component(type_path: &str, component_value: JsonValue) -> JsonValue {
     let mut envelope = JsonMap::new();
-    envelope.insert(type_path.to_string(), component_value);
+    envelope.insert(sanitize_type_path_key(type_path), component_value);
     JsonValue::Object(envelope)
 }
 
@@ -27,7 +45,8 @@ pub fn decode_reflect_component<'a>(
     payload: &'a JsonValue,
     expected_type_path: &str,
 ) -> Option<&'a JsonValue> {
-    payload.as_object()?.get(expected_type_path)
+    let key = sanitize_type_path_key(expected_type_path);
+    payload.as_object()?.get(&key)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -114,41 +133,94 @@ impl GraphPersistence {
             )
             .map_err(db_err("create snapshot marker table"))?;
 
+        self.client
+            .batch_execute(
+                "
+                CREATE TABLE IF NOT EXISTS replication_player_view_state (
+                    player_entity_id TEXT PRIMARY KEY,
+                    last_controlled_entity_id TEXT,
+                    last_focused_entity_id TEXT,
+                    last_camera_x DOUBLE PRECISION,
+                    last_camera_y DOUBLE PRECISION,
+                    last_camera_z DOUBLE PRECISION,
+                    updated_at_epoch_s BIGINT NOT NULL
+                );
+                ",
+            )
+            .map_err(db_err("create player view state table"))?;
+
         Ok(())
     }
 
-    pub fn persist_world_delta(&mut self, updates: &[WorldDeltaEntity], tick: u64) -> Result<()> {
-        let removed_entity_ids = updates
-            .iter()
-            .filter(|u| u.removed)
-            .map(|u| u.entity_id.clone())
-            .collect::<Vec<_>>();
-
-        let records = updates
-            .iter()
-            .filter(|u| !u.removed)
-            .map(|u| GraphEntityRecord {
-                entity_id: u.entity_id.clone(),
-                labels: if u.labels.is_empty() {
-                    vec!["Entity".to_string()]
-                } else {
-                    u.labels.clone()
-                },
-                properties: u.properties.clone(),
-                components: u
-                    .components
-                    .iter()
-                    .map(|c| GraphComponentRecord {
-                        component_id: c.component_id.clone(),
-                        component_kind: c.component_kind.clone(),
-                        properties: c.properties.clone(),
-                    })
-                    .collect::<Vec<_>>(),
+    pub fn load_player_view_states(&mut self) -> Result<Vec<PlayerRuntimeViewState>> {
+        let rows = self
+            .client
+            .query(
+                "
+                SELECT player_entity_id, last_controlled_entity_id, last_focused_entity_id,
+                       last_camera_x, last_camera_y, last_camera_z, updated_at_epoch_s
+                FROM replication_player_view_state
+                ",
+                &[],
+            )
+            .map_err(db_err("query player view states"))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let x = row.get::<_, Option<f64>>(3);
+                let y = row.get::<_, Option<f64>>(4);
+                let z = row.get::<_, Option<f64>>(5);
+                let camera = match (x, y, z) {
+                    (Some(x), Some(y), Some(z)) => Some([x as f32, y as f32, z as f32]),
+                    _ => None,
+                };
+                PlayerRuntimeViewState {
+                    player_entity_id: row.get::<_, String>(0),
+                    last_controlled_entity_id: row.get::<_, Option<String>>(1),
+                    last_focused_entity_id: row.get::<_, Option<String>>(2),
+                    last_camera_position_m: camera,
+                    updated_at_epoch_s: row.get::<_, i64>(6),
+                }
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>())
+    }
 
-        self.persist_graph_records(&records, tick)?;
-        self.remove_graph_entities(&removed_entity_ids)?;
+    pub fn upsert_player_view_state(&mut self, state: &PlayerRuntimeViewState) -> Result<()> {
+        let (x, y, z) = state
+            .last_camera_position_m
+            .map(|p| (Some(p[0] as f64), Some(p[1] as f64), Some(p[2] as f64)))
+            .unwrap_or((None, None, None));
+        self.client
+            .execute(
+                "
+                INSERT INTO replication_player_view_state (
+                    player_entity_id,
+                    last_controlled_entity_id,
+                    last_focused_entity_id,
+                    last_camera_x,
+                    last_camera_y,
+                    last_camera_z,
+                    updated_at_epoch_s
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+                ON CONFLICT (player_entity_id) DO UPDATE SET
+                    last_controlled_entity_id = EXCLUDED.last_controlled_entity_id,
+                    last_focused_entity_id = EXCLUDED.last_focused_entity_id,
+                    last_camera_x = EXCLUDED.last_camera_x,
+                    last_camera_y = EXCLUDED.last_camera_y,
+                    last_camera_z = EXCLUDED.last_camera_z,
+                    updated_at_epoch_s = EXCLUDED.updated_at_epoch_s
+                ",
+                &[
+                    &state.player_entity_id,
+                    &state.last_controlled_entity_id,
+                    &state.last_focused_entity_id,
+                    &x,
+                    &y,
+                    &z,
+                    &state.updated_at_epoch_s,
+                ],
+            )
+            .map_err(db_err("upsert player view state"))?;
         Ok(())
     }
 

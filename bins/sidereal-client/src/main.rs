@@ -5,7 +5,7 @@ mod auth_ui;
 mod dialog_ui;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod prediction;
+mod client;
 
 #[cfg(not(target_arch = "wasm32"))]
 use avian3d::prelude::*;
@@ -13,8 +13,6 @@ use avian3d::prelude::*;
 use bevy::asset::{AssetApp, AssetPlugin};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::camera::visibility::RenderLayers;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::ecs::reflect::AppTypeRegistry;
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::input::mouse::MouseWheel;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,22 +38,29 @@ use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::{PresentMode, Window, WindowPlugin};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::prediction::{
-    EntitySnapshot, InputHistory, InputHistoryEntry, ReconciliationState, RemoteEntity,
-    SnapshotBuffer, interpolate_remote_entities, replay_predicted_state_from_authoritative,
-};
+use crate::client::input::player_input_from_keyboard;
 #[cfg(not(target_arch = "wasm32"))]
 use bevy_remote::RemotePlugin;
 #[cfg(not(target_arch = "wasm32"))]
 use bevy_remote::http::RemoteHttpPlugin;
 #[cfg(not(target_arch = "wasm32"))]
+use lightyear::avian3d::plugin::AvianReplicationMode;
+#[cfg(not(target_arch = "wasm32"))]
+use lightyear::avian3d::prelude::LightyearAvianPlugin;
+#[cfg(not(target_arch = "wasm32"))]
+use lightyear::prediction::correction::CorrectionPolicy;
+#[cfg(not(target_arch = "wasm32"))]
+use lightyear::prediction::prelude::PredictionManager;
+#[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::client::ClientPlugins;
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::client::{Client, Connect, Connected, RawClient};
 #[cfg(not(target_arch = "wasm32"))]
+use lightyear::prelude::input::native::{ActionState, InputMarker};
+#[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::{
     ChannelRegistry, LocalAddr, MessageManager, MessageReceiver, MessageSender, PeerAddr,
-    Transport, UdpIo,
+    ReplicationReceiver, Transport, UdpIo,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use sidereal_asset_runtime::{
@@ -66,28 +71,22 @@ use sidereal_asset_runtime::{
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 #[cfg(not(target_arch = "wasm32"))]
 use sidereal_game::{
-    ActionQueue, FullscreenLayer, GeneratedComponentRegistry, HealthPool, SiderealGameCorePlugin,
-    SiderealGamePlugin, default_corvette_asset_id, default_flight_action_capabilities,
+    ActionQueue, EntityAction, EntityGuid, FullscreenLayer, Hardpoint, HealthPool, MountedOn,
+    OwnerId,
+    SiderealGamePlugin, SizeM, TotalMassKg, angular_inertia_from_size, default_corvette_asset_id,
+    default_corvette_mass_kg, default_corvette_size, default_flight_action_capabilities,
     default_space_background_shader_asset_id, default_starfield_shader_asset_id,
-    generated::components::{FlightTuning, TotalMassKg},
 };
 #[cfg(not(target_arch = "wasm32"))]
 use sidereal_net::{
     AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
-    ClientAuthMessage, ClientInputMessage, ClientViewUpdateMessage, ControlChannel, InputChannel,
-    ReplicationStateMessage, RequestedAsset, StateChannel, WorldComponentDelta,
+    ClientAuthMessage, ClientViewUpdateMessage, ControlChannel, PlayerInput, RequestedAsset,
     register_lightyear_protocol,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use sidereal_runtime_sync::{
-    RuntimeEntityHierarchy, component_type_path_map, extract_f32_from_world_delta,
-    extract_vec3_from_world_delta, insert_registered_components_from_world_deltas,
-    register_runtime_entity, remove_runtime_entity, update_parent_link_from_properties,
-};
+use sidereal_runtime_sync::{RuntimeEntityHierarchy, register_runtime_entity};
 #[cfg(not(target_arch = "wasm32"))]
-use sidereal_sim_core::EntityKinematics;
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::SocketAddr;
 #[cfg(not(target_arch = "wasm32"))]
@@ -150,8 +149,6 @@ struct ClientNetworkTick(u64);
 #[derive(Debug, Resource, Default)]
 struct ClientInputAckTracker {
     pending_ticks: VecDeque<u64>,
-    last_acked_tick: u64,
-    last_server_tick: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -271,25 +268,28 @@ struct DebugBlueOverlayEnabled(bool);
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Resource, Default)]
 struct StarfieldMotionState {
-    prev_velocity_xy: Vec2,
-    drift_xy: Vec2,
+    prev_speed: f32,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Resource)]
 struct CameraMotionState {
+    world_position_xy: Vec2,
+    smoothed_position_xy: Vec2,
     prev_position_xy: Vec2,
-    velocity_xy: Vec2,
     smoothed_velocity_xy: Vec2,
+    initialized: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Default for CameraMotionState {
     fn default() -> Self {
         Self {
+            world_position_xy: Vec2::ZERO,
+            smoothed_position_xy: Vec2::ZERO,
             prev_position_xy: Vec2::ZERO,
-            velocity_xy: Vec2::ZERO,
             smoothed_velocity_xy: Vec2::ZERO,
+            initialized: false,
         }
     }
 }
@@ -305,6 +305,73 @@ struct BootstrapWatchdogState {
     timeout_dialog_shown: bool,
     stream_stall_dialog_shown: bool,
     no_world_state_dialog_shown: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Resource, Default)]
+struct DeferredPredictedAdoptionState {
+    waiting_entity_id: Option<String>,
+    wait_started_at_s: Option<f64>,
+    last_warn_at_s: f64,
+    last_missing_components: String,
+    dialog_shown: bool,
+    resolved_samples: u64,
+    resolved_total_wait_s: f64,
+    resolved_max_wait_s: f64,
+    last_summary_at_s: f64,
+    last_runtime_summary_at_s: f64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Resource, Clone, Copy)]
+struct PredictionBootstrapTuning {
+    defer_warn_after_s: f64,
+    defer_warn_interval_s: f64,
+    defer_dialog_after_s: f64,
+    defer_summary_interval_s: f64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PredictionBootstrapTuning {
+    fn from_env() -> Self {
+        let parse = |key: &str, default: f64| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .unwrap_or(default)
+        };
+        Self {
+            defer_warn_after_s: parse("SIDEREAL_CLIENT_DEFER_WARN_AFTER_S", 1.0),
+            defer_warn_interval_s: parse("SIDEREAL_CLIENT_DEFER_WARN_INTERVAL_S", 1.0),
+            defer_dialog_after_s: parse("SIDEREAL_CLIENT_DEFER_DIALOG_AFTER_S", 4.0),
+            defer_summary_interval_s: parse("SIDEREAL_CLIENT_DEFER_SUMMARY_INTERVAL_S", 30.0),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Resource, Clone, Copy)]
+struct PredictionCorrectionTuning {
+    max_rollback_ticks: u16,
+    instant_correction: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PredictionCorrectionTuning {
+    fn from_env() -> Self {
+        let max_rollback_ticks = std::env::var("SIDEREAL_CLIENT_MAX_ROLLBACK_TICKS")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(100);
+        let instant_correction = std::env::var("SIDEREAL_CLIENT_INSTANT_CORRECTION")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        Self {
+            max_rollback_ticks,
+            instant_correction,
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -447,36 +514,15 @@ struct ControlledEntity {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Component, Default, Debug, Clone, Copy)]
-struct DisplayVelocity(Vec3);
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Component, Debug, Clone, Copy)]
-struct InterpolationState {
-    prev_position: Vec3,
-    prev_rotation: Quat,
-    current_position: Vec3,
-    current_rotation: Quat,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Default for InterpolationState {
-    fn default() -> Self {
-        Self {
-            prev_position: Vec3::ZERO,
-            prev_rotation: Quat::IDENTITY,
-            current_position: Vec3::ZERO,
-            current_rotation: Quat::IDENTITY,
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
 struct RemoteVisibleEntity {
     #[allow(dead_code)]
     entity_id: String,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Component)]
+struct RemoteEntity;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component, Clone)]
@@ -493,114 +539,37 @@ struct RemoteEntityRegistry {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone)]
-struct PendingControlledState {
-    message_tick: u64,
-    acked_input_tick: u64,
-    position_m: Vec3,
-    velocity_mps: Vec3,
-    heading_rad: f32,
+fn should_defer_controlled_predicted_adoption(
+    is_local_controlled: bool,
+    has_position: bool,
+    has_rotation: bool,
+    has_linear_velocity: bool,
+) -> bool {
+    is_local_controlled && (!has_position || !has_rotation || !has_linear_velocity)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Resource, Default)]
-struct PendingControlledReconciliation {
-    by_entity_id: HashMap<String, PendingControlledState>,
-}
+#[derive(Debug, Clone, Copy, Resource, Default)]
+struct LocalSimulationDebugMode(bool);
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Resource)]
-enum ClientPhysicsMode {
-    /// Default: server-authoritative with client extrapolation via Avian Kinematic body.
-    Predicted,
-    /// Full local simulation; ignore server reconciliation entirely.
-    /// Tests whether the client-side flight feel is smooth in isolation.
-    Local,
-    /// No client physics at all; snap to server state every tick.
-    /// Tests whether raw server state is smooth without client interference.
-    ServerOnly,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl ClientPhysicsMode {
+impl LocalSimulationDebugMode {
     fn from_env() -> Self {
-        match std::env::var("SIDEREAL_CLIENT_PHYSICS_MODE")
-            .unwrap_or_default()
-            .to_lowercase()
-            .as_str()
-        {
-            "local" => {
-                eprintln!(
-                    "[sidereal-client] PHYSICS MODE: local (full client simulation, no reconciliation)"
-                );
-                Self::Local
-            }
-            "server" | "server_only" | "serveronly" => {
-                eprintln!(
-                    "[sidereal-client] PHYSICS MODE: server-only (no client physics, snap to server)"
-                );
-                Self::ServerOnly
-            }
-            _ => Self::Predicted,
+        let enabled = std::env::var("SIDEREAL_CLIENT_PHYSICS_MODE")
+            .ok()
+            .is_some_and(|v| v.eq_ignore_ascii_case("local"));
+        if enabled {
+            eprintln!(
+                "[sidereal-client] LOCAL DEBUG SIMULATION: enabled (full local simulation, no reconciliation)"
+            );
         }
+        Self(enabled)
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-const HARD_SNAP_THRESHOLD_M: f32 = 10.0;
-#[cfg(not(target_arch = "wasm32"))]
-const SMOOTH_CORRECTION_RATE: f32 = 8.0;
-#[cfg(not(target_arch = "wasm32"))]
-const REPLICATION_TICK_HZ_F64: f64 = 30.0;
-#[cfg(not(target_arch = "wasm32"))]
-const STALE_REPLICATION_WINDOW_TICKS: u64 = 2;
-#[cfg(not(target_arch = "wasm32"))]
-const CAMERA_LOOK_AHEAD_DEADZONE_MPS: f32 = 10.0;
-#[cfg(not(target_arch = "wasm32"))]
-const CAMERA_LOOK_AHEAD_REVERSAL_DAMPING: f32 = 0.08;
-#[cfg(not(target_arch = "wasm32"))]
-const CAMERA_LOOK_AHEAD_MAX_OFFSET_DELTA_PER_S: f32 = 80.0;
+
 #[cfg(not(target_arch = "wasm32"))]
 const BACKDROP_RENDER_LAYER: usize = 1;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn default_flight_tuning() -> FlightTuning {
-    FlightTuning {
-        max_linear_speed_mps: 600.0,
-        max_linear_accel_mps2: 60.0,
-        passive_brake_accel_mps2: 3.0,
-        active_brake_accel_mps2: 12.0,
-        drag_per_s: 0.0,
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn flight_tuning_from_component_deltas(components: &[WorldComponentDelta]) -> Option<FlightTuning> {
-    components
-        .iter()
-        .find(|component| component.component_kind == "flight_tuning")
-        .and_then(|component| {
-            serde_json::from_value::<FlightTuning>(component.properties.clone()).ok()
-        })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn smooth_look_ahead_offset(
-    current: Vec2,
-    desired: Vec2,
-    alpha: f32,
-    max_offset_delta_per_s: f32,
-    dt: f32,
-) -> Vec2 {
-    let mut next = current.lerp(desired, alpha.clamp(0.0, 1.0));
-    let delta = next - current;
-    let max_step = (max_offset_delta_per_s * dt.max(0.0)).max(0.0);
-    let delta_len = delta.length();
-    if max_step > 0.0 && delta_len > max_step {
-        next = current + delta / delta_len * max_step;
-    }
-    next
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Component)]
@@ -658,6 +627,8 @@ struct SpaceBackgroundMaterial {
     viewport_time: Vec4,
     #[uniform(1)]
     colors: Vec4,
+    #[uniform(2)]
+    motion: Vec4,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -677,6 +648,7 @@ impl Default for SpaceBackgroundMaterial {
         Self {
             viewport_time: Vec4::new(1920.0, 1080.0, 0.0, 1.0),
             colors: Vec4::new(0.05, 0.08, 0.15, 1.0),
+            motion: Vec4::ZERO,
         }
     }
 }
@@ -701,12 +673,7 @@ struct TopDownCamera {
     max_distance: f32,
     zoom_units_per_wheel: f32,
     zoom_smoothness: f32,
-    look_ahead_fraction: f32,
-    look_ahead_max_speed: f32,
-    look_ahead_smoothness: f32,
     look_ahead_offset: Vec2,
-    filtered_velocity_xy: Vec2,
-    focus_smoothness: f32,
     filtered_focus_xy: Vec2,
     focus_initialized: bool,
 }
@@ -751,7 +718,6 @@ fn main() {
     let asset_root = std::env::var("SIDEREAL_ASSET_ROOT").unwrap_or_else(|_| ".".to_string());
 
     let mut app = App::new();
-    app.insert_resource(Time::<Fixed>::from_hz(30.0));
     if headless_transport {
         app.add_plugins(MinimalPlugins);
         app.add_plugins(bevy::log::LogPlugin::default());
@@ -792,19 +758,32 @@ fn main() {
         }
     }
 
-    let physics_mode = ClientPhysicsMode::from_env();
-    app.add_plugins(PhysicsPlugins::default().with_length_unit(1.0));
+    app.add_plugins(
+        PhysicsPlugins::default()
+            .with_length_unit(1.0)
+            .build()
+            .disable::<PhysicsTransformPlugin>()
+            .disable::<PhysicsInterpolationPlugin>(),
+    );
     app.insert_resource(Gravity(Vec3::ZERO));
-    if physics_mode == ClientPhysicsMode::Local {
-        app.add_plugins(SiderealGamePlugin);
-    } else {
-        app.add_plugins(SiderealGameCorePlugin);
-    }
-    app.add_plugins(ClientPlugins::default());
+    // Predicted mode must run full gameplay systems so rollback can resimulate real flight/mass.
+    // Local mode remains a debug path and also uses full gameplay systems.
+    app.add_plugins(SiderealGamePlugin);
+    app.add_plugins(ClientPlugins {
+        tick_duration: Duration::from_secs_f64(1.0 / 30.0),
+    });
+    app.add_plugins(LightyearAvianPlugin {
+        replication_mode: AvianReplicationMode::Position,
+        update_syncs_manually: false,
+        rollback_resources: false,
+        rollback_islands: false,
+    });
     register_lightyear_protocol(&mut app);
     configure_remote(&mut app, &remote_cfg);
+    // Lightyear/Bevy plugins can initialize Fixed time; set project-authoritative 30 Hz after plugin wiring.
+    app.insert_resource(Time::<Fixed>::from_hz(30.0));
     app.insert_resource(AssetRootPath(asset_root));
-    app.insert_resource(physics_mode);
+    app.insert_resource(LocalSimulationDebugMode::from_env());
     app.insert_resource(ClientSession::default());
     app.insert_resource(ClientNetworkTick::default());
     app.insert_resource(ClientInputAckTracker::default());
@@ -821,8 +800,10 @@ fn main() {
     app.insert_resource(StarfieldMotionState::default());
     app.insert_resource(CameraMotionState::default());
     app.insert_resource(BootstrapWatchdogState::default());
+    app.insert_resource(DeferredPredictedAdoptionState::default());
+    app.insert_resource(PredictionBootstrapTuning::from_env());
+    app.insert_resource(PredictionCorrectionTuning::from_env());
     app.insert_resource(RemoteEntityRegistry::default());
-    app.insert_resource(PendingControlledReconciliation::default());
     app.insert_resource(HeadlessTransportMode(headless_transport));
     if headless_transport {
         app.init_resource::<dialog_ui::DialogQueue>();
@@ -836,26 +817,24 @@ fn main() {
     if headless_transport {
         app.add_systems(Startup, configure_headless_session_from_env);
         app.add_systems(
-            FixedUpdate,
-            (
-                send_lightyear_input_messages,
-                apply_controlled_reconciliation_fixed_step,
-                refresh_predicted_input_history_state,
-            )
-                .chain(),
+            FixedPreUpdate,
+            send_lightyear_input_messages
+                .in_set(lightyear::prelude::client::input::InputSystems::WriteClientInputs),
         );
         app.add_systems(
             Update,
             (
                 apply_headless_account_switch_system,
+                configure_prediction_manager_tuning,
                 ensure_client_transport_channels,
                 send_lightyear_auth_messages,
                 send_lightyear_view_updates,
                 receive_lightyear_asset_stream_messages,
                 ensure_critical_assets_available_system
                     .after(receive_lightyear_asset_stream_messages),
-                receive_lightyear_replication_messages,
+                adopt_native_lightyear_replicated_entities,
                 update_focus_target_system,
+                log_prediction_runtime_state,
             ),
         );
         app.add_systems(Startup, || {
@@ -877,32 +856,31 @@ fn main() {
             Update,
             (
                 ensure_client_transport_channels,
+                configure_prediction_manager_tuning,
                 send_lightyear_auth_messages,
                 send_lightyear_view_updates,
                 receive_lightyear_asset_stream_messages,
                 ensure_critical_assets_available_system
                     .after(receive_lightyear_asset_stream_messages),
-                receive_lightyear_replication_messages,
+                adopt_native_lightyear_replicated_entities,
                 update_focus_target_system,
+                log_prediction_runtime_state,
             ),
         );
         app.add_systems(
             Update,
             (
-                interpolate_remote_entities.after(receive_lightyear_replication_messages),
                 ensure_fullscreen_layer_fallback_system
-                    .after(receive_lightyear_replication_messages),
+                    .after(adopt_native_lightyear_replicated_entities),
                 attach_streamed_model_visuals_system.after(receive_lightyear_asset_stream_messages),
                 sync_fullscreen_layer_renderables_system
-                    .after(receive_lightyear_replication_messages),
-                sync_backdrop_fullscreen_system
-                    .after(sync_fullscreen_layer_renderables_system),
+                    .after(adopt_native_lightyear_replicated_entities),
+                sync_backdrop_fullscreen_system.after(sync_fullscreen_layer_renderables_system),
                 gate_gameplay_camera_system,
                 update_loading_overlay_system,
                 update_runtime_stream_icon_system,
                 watch_in_world_bootstrap_failures,
-                interpolate_controlled_transform,
-                update_topdown_camera_system.after(interpolate_controlled_transform),
+                update_topdown_camera_system.after(adopt_native_lightyear_replicated_entities),
                 update_camera_motion_state.after(update_topdown_camera_system),
                 update_hud_system,
                 logout_to_auth_system,
@@ -912,14 +890,19 @@ fn main() {
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(
+            FixedPreUpdate,
+            send_lightyear_input_messages
+                .in_set(lightyear::prelude::client::input::InputSystems::WriteClientInputs)
+                .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
             FixedUpdate,
             (
-                send_lightyear_input_messages,
-                apply_controlled_reconciliation_fixed_step,
+                apply_predicted_input_to_action_queue,
                 enforce_controlled_planar_motion,
-                refresh_predicted_input_history_state,
             )
                 .chain()
+                .before(avian3d::prelude::PhysicsSystems::StepSimulation)
                 .run_if(in_state(ClientAppState::InWorld)),
         );
     }
@@ -1048,6 +1031,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 @group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
 @group(2) @binding(1) var<uniform> colors: vec4<f32>;
+@group(2) @binding(2) var<uniform> motion: vec4<f32>;
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(colors.r, colors.g, colors.b, 1.0);
@@ -1194,6 +1178,7 @@ fn start_lightyear_client_transport(mut commands: Commands<'_, '_>) {
             RawClient,
             UdpIo::default(),
             MessageManager::default(),
+            ReplicationReceiver::default(),
             LocalAddr(local_addr),
             PeerAddr(remote_addr),
         ))
@@ -1408,12 +1393,7 @@ fn spawn_world_scene(
             max_distance: 420.0,
             zoom_units_per_wheel: 16.0,
             zoom_smoothness: 8.0,
-            look_ahead_fraction: 0.12,
-            look_ahead_max_speed: 400.0,
-            look_ahead_smoothness: 1.2,
             look_ahead_offset: Vec2::ZERO,
-            filtered_velocity_xy: Vec2::ZERO,
-            focus_smoothness: 12.0,
             filtered_focus_xy: Vec2::ZERO,
             focus_initialized: false,
         },
@@ -1561,8 +1541,14 @@ fn update_topdown_camera_system(
     controlled_query: Query<
         '_,
         '_,
-        (&Transform, &DisplayVelocity),
+        &Transform,
         (With<ControlledEntity>, Without<Camera3d>),
+    >,
+    fallback_ship_query: Query<
+        '_,
+        '_,
+        (&Transform, &Name),
+        (Without<ControlledEntity>, Without<Camera3d>),
     >,
     mut camera_query: Query<
         '_,
@@ -1570,11 +1556,18 @@ fn update_topdown_camera_system(
         (&mut Transform, &mut TopDownCamera),
         (With<Camera3d>, Without<ControlledEntity>),
     >,
-    window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
 ) {
-    let Ok((controlled_transform, display_velocity)) = controlled_query.single() else {
-        return;
-    };
+    let controlled_transform =
+        if let Ok(controlled_transform) = controlled_query.single() {
+            controlled_transform
+        } else if let Some((transform, _)) = fallback_ship_query
+            .iter()
+            .find(|(_, name)| name.as_str().starts_with("ship:"))
+        {
+            transform
+        } else {
+            return;
+        };
     let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
         return;
     };
@@ -1592,66 +1585,13 @@ fn update_topdown_camera_system(
     let zoom_alpha = 1.0 - (-camera.zoom_smoothness * dt).exp();
     camera.distance = camera.distance.lerp(camera.target_distance, zoom_alpha);
 
-    let raw_vel_xy = display_velocity.0.truncate();
-    let mut velocity_alpha = 1.0 - (-(camera.look_ahead_smoothness * 0.6) * dt).exp();
-    if camera.filtered_velocity_xy.dot(raw_vel_xy) < 0.0 {
-        // Damp rapid sign flips so look-ahead doesn't snap to the opposite side.
-        velocity_alpha *= CAMERA_LOOK_AHEAD_REVERSAL_DAMPING;
-    }
-    camera.filtered_velocity_xy = camera.filtered_velocity_xy.lerp(raw_vel_xy, velocity_alpha);
-    let speed = camera.filtered_velocity_xy.length();
-    let speed_factor = if speed <= CAMERA_LOOK_AHEAD_DEADZONE_MPS {
-        0.0
-    } else {
-        ((speed - CAMERA_LOOK_AHEAD_DEADZONE_MPS)
-            / (camera.look_ahead_max_speed - CAMERA_LOOK_AHEAD_DEADZONE_MPS).max(1.0))
-        .clamp(0.0, 1.0)
-    };
-
-    let fov_y = std::f32::consts::FRAC_PI_4;
-    let half_height = camera.distance * (fov_y / 2.0).tan();
-    let aspect = if let Ok(window) = window_query.single() {
-        let w = window.resolution.physical_width() as f32;
-        let h = window.resolution.physical_height() as f32;
-        if h > 0.0 { w / h } else { 16.0 / 9.0 }
-    } else {
-        16.0 / 9.0
-    };
-    let half_width = half_height * aspect;
-
-    let desired_offset = if speed_factor > 0.0 {
-        let dir = camera.filtered_velocity_xy / speed;
-        Vec2::new(
-            dir.x * speed_factor * half_width * camera.look_ahead_fraction,
-            dir.y * speed_factor * half_height * camera.look_ahead_fraction,
-        )
-    } else {
-        Vec2::ZERO
-    };
-
-    let alpha = 1.0 - (-camera.look_ahead_smoothness * dt).exp();
-    camera.look_ahead_offset = smooth_look_ahead_offset(
-        camera.look_ahead_offset,
-        desired_offset,
-        alpha,
-        CAMERA_LOOK_AHEAD_MAX_OFFSET_DELTA_PER_S,
-        dt,
-    );
-
     let focus_xy = controlled_transform.translation.truncate();
-    if !camera.focus_initialized {
-        camera.filtered_focus_xy = focus_xy;
-        camera.focus_initialized = true;
-    } else {
-        if (focus_xy - camera.filtered_focus_xy).length() > camera.distance * 0.75 {
-            // Reconciliation/teleport catch-up: avoid losing the controlled ship off-screen.
-            camera.filtered_focus_xy = focus_xy;
-        }
-        let focus_alpha = 1.0 - (-camera.focus_smoothness * dt).exp();
-        camera.filtered_focus_xy = camera.filtered_focus_xy.lerp(focus_xy, focus_alpha);
-    }
-    camera_transform.translation.x = camera.filtered_focus_xy.x + camera.look_ahead_offset.x;
-    camera_transform.translation.y = camera.filtered_focus_xy.y + camera.look_ahead_offset.y;
+    camera.filtered_focus_xy = focus_xy;
+    camera.focus_initialized = true;
+    camera.look_ahead_offset = Vec2::ZERO;
+
+    camera_transform.translation.x = focus_xy.x;
+    camera_transform.translation.y = focus_xy.y;
     camera_transform.translation.z = camera.distance;
     camera_transform.rotation = Quat::IDENTITY;
 }
@@ -1668,13 +1608,27 @@ fn update_camera_motion_state(
     let dt = time.delta_secs();
     let current_xy = camera_transform.translation.truncate();
 
+    if !motion.initialized {
+        motion.world_position_xy = current_xy;
+        motion.smoothed_position_xy = current_xy;
+        motion.prev_position_xy = current_xy;
+        motion.initialized = true;
+        return;
+    }
+
+    motion.world_position_xy = current_xy;
+
+    // Smooth position for starfield parallax to avoid jitter from reconciliation snaps.
+    // Tight enough to track well, loose enough to filter fixed-tick stepping.
+    let pos_alpha = 1.0 - (-20.0 * dt).exp();
+    motion.smoothed_position_xy = motion.smoothed_position_xy.lerp(current_xy, pos_alpha);
+
     if dt > 0.0 {
-        motion.velocity_xy = (current_xy - motion.prev_position_xy) / dt;
+        let raw_velocity = (current_xy - motion.prev_position_xy) / dt;
+        let vel_alpha = 1.0 - (-4.0 * dt).exp();
+        motion.smoothed_velocity_xy = motion.smoothed_velocity_xy.lerp(raw_velocity, vel_alpha);
     }
     motion.prev_position_xy = current_xy;
-
-    let smooth_alpha = (8.0 * dt).min(1.0);
-    motion.smoothed_velocity_xy = motion.smoothed_velocity_xy.lerp(motion.velocity_xy, smooth_alpha);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1721,20 +1675,14 @@ fn update_focus_target_system(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn gate_gameplay_camera_system(
-    asset_manager: Res<'_, LocalAssetManager>,
     mut camera_query: Query<'_, '_, &mut Camera, With<GameplayCamera>>,
     mut hud_query: Query<'_, '_, &mut Visibility, With<GameplayHud>>,
 ) {
-    let ready = asset_manager.bootstrap_complete();
     for mut camera in &mut camera_query {
-        camera.is_active = ready;
+        camera.is_active = true;
     }
     for mut visibility in &mut hud_query {
-        *visibility = if ready {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+        *visibility = Visibility::Visible;
     }
 }
 
@@ -1987,29 +1935,11 @@ fn send_lightyear_input_messages(
         (
             Entity,
             &ControlledEntity,
-            Option<&Position>,
-            Option<&Rotation>,
-            &Transform,
-            &DisplayVelocity,
-            Option<&mut ActionQueue>,
-            &mut InputHistory,
+            Option<&mut ActionState<PlayerInput>>,
         ),
     >,
-    mut senders: Query<
-        '_,
-        '_,
-        &mut MessageSender<ClientInputMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    physics_mode: Res<'_, ClientPhysicsMode>,
 ) {
     tick.0 = tick.0.saturating_add(1);
-    if senders.is_empty() {
-        if tick.0.is_multiple_of(120) {
-            warn!("native client waiting for connected Lightyear transport");
-        }
-        return;
-    }
     if !watchdog.replication_state_seen && !headless_mode.0 {
         return;
     }
@@ -2019,90 +1949,44 @@ fn send_lightyear_input_messages(
         .is_some_and(|state| **state == ClientAppState::InWorld)
         || headless_mode.0;
 
-    let (player_entity_id, thrust, turn, brake) = if in_world_state {
+    let (player_entity_id, player_input) = if in_world_state {
         let Some(player_entity_id) = session.player_entity_id.clone() else {
             return;
         };
-        let brake = input
-            .as_ref()
-            .is_some_and(|keys| keys.pressed(KeyCode::Space));
-        let thrust = if brake {
-            0.0
-        } else if input
-            .as_ref()
-            .is_some_and(|keys| keys.pressed(KeyCode::KeyW))
-        {
-            1.0
-        } else if input
-            .as_ref()
-            .is_some_and(|keys| keys.pressed(KeyCode::KeyS))
-        {
-            -0.7
-        } else {
-            0.0
-        };
-        let turn = if input
-            .as_ref()
-            .is_some_and(|keys| keys.pressed(KeyCode::KeyA))
-        {
-            1.0
-        } else if input
-            .as_ref()
-            .is_some_and(|keys| keys.pressed(KeyCode::KeyD))
-        {
-            -1.0
-        } else {
-            0.0
-        };
-        (player_entity_id, thrust, turn, brake)
+        let (player_input, _axes) = player_input_from_keyboard(input.as_deref());
+        (player_entity_id, player_input)
     } else {
         return;
     };
 
-    let message =
-        ClientInputMessage::from_axis_inputs(player_entity_id.clone(), tick.0, thrust, turn, brake);
-    for mut sender in &mut senders {
-        sender.send::<InputChannel>(message.clone());
-    }
     ack_tracker.pending_ticks.push_back(tick.0);
     while ack_tracker.pending_ticks.len() > 512 {
         ack_tracker.pending_ticks.pop_front();
     }
-    for (entity, controlled, position, rotation, transform, display_velocity, maybe_actions, mut history) in
-        &mut controlled_input_history
-    {
+    let has_active_input = player_input
+        .actions
+        .iter()
+        .any(|a| !matches!(a, EntityAction::ThrustNeutral | EntityAction::YawNeutral));
+    if has_active_input {
+        info!(
+            actions = ?player_input.actions,
+            tick = tick.0,
+            "client sending active input"
+        );
+    }
+
+    for (entity, controlled, maybe_action_state) in &mut controlled_input_history {
         if controlled.player_entity_id != player_entity_id {
             continue;
         }
-        let apply_local = headless_mode.0 || *physics_mode == ClientPhysicsMode::Local;
-        if apply_local {
-            if let Some(mut queue) = maybe_actions {
-                for action in &message.actions {
-                    queue.push(*action);
-                }
-            } else {
-                commands.entity(entity).insert((
-                    ActionQueue {
-                        pending: message.actions.clone(),
-                    },
-                    default_flight_action_capabilities(),
-                ));
-            }
+        if let Some(mut state) = maybe_action_state {
+            state.0 = player_input.clone();
+        } else {
+            commands.entity(entity).insert((
+                InputMarker::<PlayerInput>::default(),
+                ActionState(player_input.clone()),
+            ));
         }
-        let current_pos = position.map_or(transform.translation, |p| p.0);
-        let current_rot = rotation.map_or(transform.rotation, |r| r.0);
-        let predicted_state = EntityKinematics {
-            position_m: current_pos.to_array(),
-            velocity_mps: display_velocity.0.to_array(),
-            heading_rad: current_rot.to_euler(EulerRot::ZYX).0,
-        };
-        history.push(InputHistoryEntry {
-            tick: tick.0,
-            thrust,
-            turn,
-            brake,
-            predicted_state,
-        });
     }
 }
 
@@ -2235,700 +2119,317 @@ fn log_native_client_connected(
     }
 }
 
-/// Receives and applies server state updates:
-/// - Controlled entity: reconciliation (smooth correction toward server position)
-/// - Remote entities: spawn new or update snapshot buffer for interpolation
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn receive_lightyear_replication_messages(
-    mut commands: Commands<'_, '_>,
-    mut receivers: Query<
-        '_,
-        '_,
-        &mut MessageReceiver<ReplicationStateMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    mut session: ResMut<'_, ClientSession>,
-    mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
-    controlled_query: Query<'_, '_, (Entity, &ControlledEntity)>,
-    mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
-    mut pending_reconciliation: ResMut<'_, PendingControlledReconciliation>,
-    mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
-    mut focus_state: ResMut<'_, CameraFocusState>,
-    mut remote_query: Query<'_, '_, &mut SnapshotBuffer, With<RemoteVisibleEntity>>,
-    component_registry: Res<'_, GeneratedComponentRegistry>,
-    app_type_registry: Res<'_, AppTypeRegistry>,
-    mut asset_manager: ResMut<'_, LocalAssetManager>,
-    mut watchdog: ResMut<'_, BootstrapWatchdogState>,
-    mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
-    physics_mode: Res<'_, ClientPhysicsMode>,
+fn configure_prediction_manager_tuning(
+    tuning: Res<'_, PredictionCorrectionTuning>,
+    mut managers: Query<'_, '_, &mut PredictionManager, (With<Client>, Added<PredictionManager>)>,
 ) {
-    let Some(local_player_entity_id) = session.player_entity_id.clone() else {
-        return;
-    };
-    let type_paths = component_type_path_map(&component_registry);
-    let mut despawned_entities = HashSet::<Entity>::new();
-
-    for mut receiver in &mut receivers {
-        for message in receiver.receive() {
-            if !watchdog.replication_state_seen {
-                info!(
-                    "client received first replication state tick={}",
-                    message.tick
-                );
+    for mut manager in &mut managers {
+        manager.rollback_policy.max_rollback_ticks = tuning.max_rollback_ticks;
+        manager.correction_policy = if tuning.instant_correction {
+            CorrectionPolicy::instant_correction()
+        } else {
+            CorrectionPolicy::default()
+        };
+        info!(
+            "configured prediction manager (max_rollback_ticks={}, correction_mode={})",
+            tuning.max_rollback_ticks,
+            if tuning.instant_correction {
+                "instant"
+            } else {
+                "smooth"
             }
-            watchdog.replication_state_seen = true;
-            if message.tick.saturating_add(STALE_REPLICATION_WINDOW_TICKS)
-                < ack_tracker.last_server_tick
-            {
-                debug!(
-                    "dropping stale replication tick={} last_seen_tick={}",
-                    message.tick, ack_tracker.last_server_tick
-                );
-                continue;
-            }
-            ack_tracker.last_server_tick = ack_tracker.last_server_tick.max(message.tick);
-            ack_tracker.last_acked_tick = ack_tracker.last_acked_tick.max(message.acked_input_tick);
-            while ack_tracker
-                .pending_ticks
-                .front()
-                .is_some_and(|tick| *tick <= ack_tracker.last_acked_tick)
-            {
-                ack_tracker.pending_ticks.pop_front();
-            }
-            let world = match message.decode_world() {
-                Ok(w) => w,
-                Err(err) => {
-                    let error_msg = format!(
-                        "Failed to decode replication state at tick {}.\n\n\
-                         Details: {err}\n\n\
-                         This usually means:\n\
-                         • Backend server needs to be restarted/recompiled\n\
-                         • Protocol version mismatch between client and server\n\
-                         • Corrupted network packet",
-                        message.tick
-                    );
-                    eprintln!(
-                        "native client failed decoding replication state tick={} from Lightyear: {err}",
-                        message.tick
-                    );
-                    dialog_queue.push_error("Replication Protocol Error", error_msg);
-                    continue;
-                }
-            };
-
-            for update in &world.updates {
-                if update.removed {
-                    if focus_state.focused_entity_id.as_deref() == Some(update.entity_id.as_str()) {
-                        focus_state.set(None);
-                    }
-                    if let Some(entity) =
-                        entity_registry.by_entity_id.get(&update.entity_id).copied()
-                    {
-                        queue_despawn_once(&mut commands, &mut despawned_entities, entity);
-                    }
-                    if let Some((entity, ..)) = controlled_query
-                        .iter()
-                        .find(|(_, controlled)| controlled.entity_id == update.entity_id)
-                    {
-                        queue_despawn_once(&mut commands, &mut despawned_entities, entity);
-                        pending_reconciliation
-                            .by_entity_id
-                            .remove(&update.entity_id);
-                    }
-                    if let Some(entity) = remote_registry.by_entity_id.remove(&update.entity_id) {
-                        queue_despawn_once(&mut commands, &mut despawned_entities, entity);
-                    }
-                    remove_runtime_entity(&mut entity_registry, &update.entity_id);
-                    continue;
-                }
-
-                let position = extract_vec3_from_world_delta(update, "position_m");
-                let velocity = extract_vec3_from_world_delta(update, "velocity_mps");
-                let has_spatial_state = position.is_some();
-                let heading = extract_f32_from_world_delta(update, "heading_rad").unwrap_or(0.0);
-                let server_pos = position.unwrap_or(Vec3::ZERO);
-                let server_vel = velocity.unwrap_or(Vec3::ZERO);
-                let server_rot = Quat::from_rotation_z(heading);
-                let update_player_entity_id = update
-                    .properties
-                    .get("player_entity_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let accepts_player_input = update
-                    .properties
-                    .get("accepts_player_input")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let is_controlled_entity =
-                    accepts_player_input && update_player_entity_id == local_player_entity_id;
-                if has_spatial_state {
-                    debug!(
-                        entity_id = %update.entity_id,
-                        local_player = %local_player_entity_id,
-                        update_player = %update_player_entity_id,
-                        accepts_input = accepts_player_input,
-                        is_controlled = is_controlled_entity,
-                        "client evaluating entity for controlled spawn"
-                    );
-                }
-                let update_flight_tuning = flight_tuning_from_component_deltas(&update.components);
-                let asset_id = update
-                    .properties
-                    .get("asset_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let existing_controlled = controlled_query
-                    .iter()
-                    .find(|(_, controlled)| controlled.entity_id == update.entity_id)
-                    .map(|(entity, _)| entity);
-
-                if !has_spatial_state {
-                    if let Some(entity) =
-                        entity_registry.by_entity_id.get(&update.entity_id).copied()
-                    {
-                        insert_registered_components_from_world_deltas(
-                            &mut commands,
-                            entity,
-                            &update.components,
-                            &type_paths,
-                            &app_type_registry,
-                        );
-                        update_parent_link_from_properties(
-                            &mut commands,
-                            &mut entity_registry,
-                            entity,
-                            &update.entity_id,
-                            &update.properties,
-                        );
-                        update_streamed_model_asset_tag(&mut commands, entity, asset_id.as_deref());
-                    } else {
-                        let entity = commands
-                            .spawn((
-                                Name::new(update.entity_id.clone()),
-                                Transform::default(),
-                                GlobalTransform::default(),
-                                Visibility::Visible,
-                                InheritedVisibility::default(),
-                                ViewVisibility::default(),
-                                WorldEntity,
-                                DespawnOnExit(ClientAppState::InWorld),
-                            ))
-                            .id();
-                        register_runtime_entity(
-                            &mut entity_registry,
-                            update.entity_id.clone(),
-                            entity,
-                        );
-                        insert_registered_components_from_world_deltas(
-                            &mut commands,
-                            entity,
-                            &update.components,
-                            &type_paths,
-                            &app_type_registry,
-                        );
-                        update_parent_link_from_properties(
-                            &mut commands,
-                            &mut entity_registry,
-                            entity,
-                            &update.entity_id,
-                            &update.properties,
-                        );
-                        update_streamed_model_asset_tag(&mut commands, entity, asset_id.as_deref());
-                    }
-                    continue;
-                }
-
-                if is_controlled_entity {
-                    // Ensure we treat this entity as controlled and not remote.
-                    if let Some(entity) = remote_registry.by_entity_id.remove(&update.entity_id) {
-                        queue_despawn_once(&mut commands, &mut despawned_entities, entity);
-                    }
-
-                    if existing_controlled.is_none() {
-                        info!(
-                            entity_id = %update.entity_id,
-                            player_entity_id = %update_player_entity_id,
-                            "client spawning controlled entity"
-                        );
-                        let owner_id = update_player_entity_id.to_string();
-                        let ft = update_flight_tuning.unwrap_or_else(default_flight_tuning);
-                        let controlled_entity = match *physics_mode {
-                            ClientPhysicsMode::Local => {
-                                let e = commands
-                                    .spawn((
-                                        Name::new(update.entity_id.clone()),
-                                        Transform::from_translation(server_pos)
-                                            .with_rotation(server_rot),
-                                        GlobalTransform::default(),
-                                        ControlledEntity {
-                                            entity_id: update.entity_id.clone(),
-                                            player_entity_id: owner_id.clone(),
-                                        },
-                                        Position(server_pos),
-                                        Rotation(server_rot),
-                                        LinearVelocity(server_vel),
-                                        AngularVelocity(Vec3::ZERO),
-                                        RigidBody::Dynamic,
-                                        ft,
-                                        InputHistory::default(),
-                                        ReconciliationState::default(),
-                                        WorldEntity,
-                                    ))
-                                    .id();
-                                commands.entity(e).insert((
-                                    Collider::cuboid(6.0, 3.0, 2.0),
-                                    LockedAxes::new()
-                                        .lock_translation_z()
-                                        .lock_rotation_x()
-                                        .lock_rotation_y(),
-                                    LinearDamping(0.0),
-                                    AngularDamping(0.0),
-                                    ActionQueue::default(),
-                                    DespawnOnExit(ClientAppState::InWorld),
-                                ));
-                                e
-                            }
-                            ClientPhysicsMode::ServerOnly => commands
-                                .spawn((
-                                    Name::new(update.entity_id.clone()),
-                                    Transform::from_translation(server_pos)
-                                        .with_rotation(server_rot),
-                                    GlobalTransform::default(),
-                                    ControlledEntity {
-                                        entity_id: update.entity_id.clone(),
-                                        player_entity_id: owner_id.clone(),
-                                    },
-                                    LinearVelocity(server_vel),
-                                    AngularVelocity(Vec3::ZERO),
-                                    ft,
-                                    InputHistory::default(),
-                                    ReconciliationState::default(),
-                                    WorldEntity,
-                                    DespawnOnExit(ClientAppState::InWorld),
-                                ))
-                                .id(),
-                            ClientPhysicsMode::Predicted => commands
-                                .spawn((
-                                    Name::new(update.entity_id.clone()),
-                                    Transform::from_translation(server_pos)
-                                        .with_rotation(server_rot),
-                                    GlobalTransform::default(),
-                                    ControlledEntity {
-                                        entity_id: update.entity_id.clone(),
-                                        player_entity_id: owner_id.clone(),
-                                    },
-                                    Position(server_pos),
-                                    Rotation(server_rot),
-                                    LinearVelocity(server_vel),
-                                    AngularVelocity(Vec3::ZERO),
-                                    ft,
-                                    InputHistory::default(),
-                                    ReconciliationState::default(),
-                                    WorldEntity,
-                                    DespawnOnExit(ClientAppState::InWorld),
-                                ))
-                                .id(),
-                        };
-                        commands.entity(controlled_entity).insert((
-                            Visibility::Visible,
-                            InheritedVisibility::default(),
-                            ViewVisibility::default(),
-                            DisplayVelocity(server_vel),
-                            InterpolationState {
-                                prev_position: server_pos,
-                                prev_rotation: server_rot,
-                                current_position: server_pos,
-                                current_rotation: server_rot,
-                            },
-                        ));
-                        pending_reconciliation.by_entity_id.insert(
-                            update.entity_id.clone(),
-                            PendingControlledState {
-                                message_tick: message.tick,
-                                acked_input_tick: message.acked_input_tick,
-                                position_m: server_pos,
-                                velocity_mps: server_vel,
-                                heading_rad: heading,
-                            },
-                        );
-                        register_runtime_entity(
-                            &mut entity_registry,
-                            update.entity_id.clone(),
-                            controlled_entity,
-                        );
-                        insert_registered_components_from_world_deltas(
-                            &mut commands,
-                            controlled_entity,
-                            &update.components,
-                            &type_paths,
-                            &app_type_registry,
-                        );
-                        update_parent_link_from_properties(
-                            &mut commands,
-                            &mut entity_registry,
-                            controlled_entity,
-                            &update.entity_id,
-                            &update.properties,
-                        );
-                        update_streamed_model_asset_tag(
-                            &mut commands,
-                            controlled_entity,
-                            asset_id.as_deref(),
-                        );
-                        if focus_state.focused_entity_id.is_none() {
-                            focus_state.set(Some(update.entity_id.clone()));
-                        }
-                        continue;
-                    }
-
-                    if let Some(entity) = existing_controlled {
-                        let entry = pending_reconciliation
-                            .by_entity_id
-                            .entry(update.entity_id.clone())
-                            .or_insert(PendingControlledState {
-                                message_tick: message.tick,
-                                acked_input_tick: message.acked_input_tick,
-                                position_m: server_pos,
-                                velocity_mps: server_vel,
-                                heading_rad: heading,
-                            });
-                        if message.tick >= entry.message_tick {
-                            *entry = PendingControlledState {
-                                message_tick: message.tick,
-                                acked_input_tick: message.acked_input_tick,
-                                position_m: server_pos,
-                                velocity_mps: server_vel,
-                                heading_rad: heading,
-                            };
-                        }
-                        insert_registered_components_from_world_deltas(
-                            &mut commands,
-                            entity,
-                            &update.components,
-                            &type_paths,
-                            &app_type_registry,
-                        );
-                        update_parent_link_from_properties(
-                            &mut commands,
-                            &mut entity_registry,
-                            entity,
-                            &update.entity_id,
-                            &update.properties,
-                        );
-                        update_streamed_model_asset_tag(&mut commands, entity, asset_id.as_deref());
-                    }
-                } else {
-                    // Remote entity: spawn or update
-                    let snapshot = EntitySnapshot {
-                        server_time: message.tick as f64 / REPLICATION_TICK_HZ_F64,
-                        position_m: [server_pos.x, server_pos.y, server_pos.z],
-                        rotation: [server_rot.x, server_rot.y, server_rot.z, server_rot.w],
-                    };
-
-                    if let Some(entity) = remote_registry.by_entity_id.get(&update.entity_id) {
-                        // Update existing remote entity snapshot buffer
-                        if let Ok(mut buffer) = remote_query.get_mut(*entity) {
-                            buffer.push(snapshot);
-                        }
-                        insert_registered_components_from_world_deltas(
-                            &mut commands,
-                            *entity,
-                            &update.components,
-                            &type_paths,
-                            &app_type_registry,
-                        );
-                        update_parent_link_from_properties(
-                            &mut commands,
-                            &mut entity_registry,
-                            *entity,
-                            &update.entity_id,
-                            &update.properties,
-                        );
-                        update_streamed_model_asset_tag(
-                            &mut commands,
-                            *entity,
-                            asset_id.as_deref(),
-                        );
-                    } else {
-                        // Spawn new remote entity
-                        let mut snapshot_buffer = SnapshotBuffer::default();
-                        snapshot_buffer.push(snapshot);
-                        let entity = commands
-                            .spawn((
-                                Name::new(format!("Remote:{}", update.entity_id)),
-                                Transform::from_translation(server_pos).with_rotation(server_rot),
-                                GlobalTransform::default(),
-                                Visibility::Visible,
-                                InheritedVisibility::default(),
-                                ViewVisibility::default(),
-                                RemoteVisibleEntity {
-                                    entity_id: update.entity_id.clone(),
-                                },
-                                RemoteEntity,
-                                snapshot_buffer,
-                                WorldEntity,
-                                DespawnOnExit(ClientAppState::InWorld),
-                            ))
-                            .id();
-                        register_runtime_entity(
-                            &mut entity_registry,
-                            update.entity_id.clone(),
-                            entity,
-                        );
-                        insert_registered_components_from_world_deltas(
-                            &mut commands,
-                            entity,
-                            &update.components,
-                            &type_paths,
-                            &app_type_registry,
-                        );
-                        update_parent_link_from_properties(
-                            &mut commands,
-                            &mut entity_registry,
-                            entity,
-                            &update.entity_id,
-                            &update.properties,
-                        );
-                        update_streamed_model_asset_tag(&mut commands, entity, asset_id.as_deref());
-                        remote_registry
-                            .by_entity_id
-                            .insert(update.entity_id.clone(), entity);
-                    }
-                }
-            }
-
-            session.status = format!(
-                "Replication stream active. tick={} ack={} pending_inputs={} updates={}",
-                message.tick,
-                ack_tracker.last_acked_tick,
-                ack_tracker.pending_ticks.len(),
-                world.updates.len()
-            );
-            if !asset_manager.bootstrap_phase_complete
-                && !asset_manager.bootstrap_manifest_seen
-                && asset_manager.pending_assets.is_empty()
-                && !world.updates.is_empty()
-            {
-                warn!(
-                    "client bootstrap manifest missing; unlocking gameplay camera on replication state fallback"
-                );
-                asset_manager.bootstrap_phase_complete = true;
-            }
-        }
+        );
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
-fn apply_controlled_reconciliation_fixed_step(
-    fixed_time: Res<'_, Time<Fixed>>,
-    mut pending_reconciliation: ResMut<'_, PendingControlledReconciliation>,
-    mut controlled_query: Query<
+fn adopt_native_lightyear_replicated_entities(
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    local_mode: Res<'_, LocalSimulationDebugMode>,
+    tuning: Res<'_, PredictionBootstrapTuning>,
+    time: Res<'_, Time>,
+    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
+    mut watchdog: ResMut<'_, BootstrapWatchdogState>,
+    mut focus_state: ResMut<'_, CameraFocusState>,
+    mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
+    mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
+    replicated_entities: Query<
         '_,
         '_,
         (
-            &ControlledEntity,
-            &mut Transform,
-            Option<&mut Position>,
-            Option<&mut Rotation>,
-            Option<&mut LinearVelocity>,
-            Option<&mut AngularVelocity>,
-            &mut InputHistory,
-            &mut ReconciliationState,
-            &mut DisplayVelocity,
-            &mut InterpolationState,
-            Option<&TotalMassKg>,
-            Option<&FlightTuning>,
+            Entity,
+            Option<&'_ EntityGuid>,
+            Option<&'_ OwnerId>,
+            Option<&'_ MountedOn>,
+            Option<&'_ Hardpoint>,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ LinearVelocity>,
+            Option<&'_ SizeM>,
+            Option<&'_ TotalMassKg>,
+        ),
+        (
+            With<lightyear::prelude::Replicated>,
+            Without<WorldEntity>,
+            Without<DespawnOnExit<ClientAppState>>,
         ),
     >,
-    physics_mode: Res<'_, ClientPhysicsMode>,
+    controlled_query: Query<'_, '_, Entity, With<ControlledEntity>>,
 ) {
-    if *physics_mode == ClientPhysicsMode::Local {
-        pending_reconciliation.by_entity_id.clear();
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
-    }
-
-    let dt = fixed_time.delta_secs();
+    };
     for (
-        controlled,
-        _transform,
-        mut position,
-        mut rotation,
-        velocity,
-        angular_velocity,
-        mut history,
-        mut reconciliation,
-        mut display_velocity,
-        mut interpolation,
-        total_mass,
-        flight_tuning,
-    ) in &mut controlled_query
+        entity,
+        guid,
+        owner_id,
+        mounted_on,
+        hardpoint,
+        position,
+        rotation,
+        linear_velocity,
+        size_m,
+        total_mass_kg,
+    ) in &replicated_entities
     {
-        if let Some(pending) = pending_reconciliation.by_entity_id.remove(&controlled.entity_id) {
-            reconciliation.last_server_tick = pending.message_tick;
-            reconciliation.last_acked_input_tick = pending.acked_input_tick;
-            reconciliation.last_authoritative_state = Some(EntityKinematics {
-                position_m: pending.position_m.to_array(),
-                velocity_mps: pending.velocity_mps.to_array(),
-                heading_rad: pending.heading_rad,
-            });
-            history.prune_before_tick(pending.acked_input_tick);
-        }
-
-        let Some(authoritative) = reconciliation.last_authoritative_state else {
+        let Some(guid) = guid else {
             continue;
         };
-
-        if *physics_mode == ClientPhysicsMode::ServerOnly {
-            let server_pos = Vec3::from_array(authoritative.position_m);
-            let server_rot = Quat::from_rotation_z(authoritative.heading_rad);
-            display_velocity.0 = Vec3::from_array(authoritative.velocity_mps);
-            if let Some(mut vel) = velocity {
-                vel.0 = Vec3::ZERO;
+        watchdog.replication_state_seen = true;
+        let runtime_entity_id = if mounted_on.is_some() {
+            format!("module:{}", guid.0)
+        } else if hardpoint.is_some() {
+            format!("hardpoint:{}", guid.0)
+        } else {
+            format!("ship:{}", guid.0)
+        };
+        let is_local_controlled = owner_id.is_some_and(|owner| owner.0 == *local_player_entity_id)
+            && mounted_on.is_none()
+            && hardpoint.is_none();
+        let predicted_mode = !local_mode.0;
+        if predicted_mode
+            && should_defer_controlled_predicted_adoption(
+                is_local_controlled,
+                position.is_some(),
+                rotation.is_some(),
+                linear_velocity.is_some(),
+            )
+        {
+            let now_s = time.elapsed_secs_f64();
+            let mut missing = Vec::new();
+            if position.is_none() {
+                missing.push("Position");
             }
-            if let Some(mut ang_vel) = angular_velocity {
-                ang_vel.0 = Vec3::ZERO;
+            if rotation.is_none() {
+                missing.push("Rotation");
             }
-            if let Some(mut pos) = position {
-                pos.0 = server_pos;
+            if linear_velocity.is_none() {
+                missing.push("LinearVelocity");
             }
-            if let Some(mut rot) = rotation {
-                rot.0 = server_rot;
+            let missing_summary = missing.join(", ");
+            if adoption_state.waiting_entity_id.as_deref() != Some(runtime_entity_id.as_str()) {
+                adoption_state.waiting_entity_id = Some(runtime_entity_id.clone());
+                adoption_state.wait_started_at_s = Some(now_s);
+                adoption_state.last_warn_at_s = 0.0;
+                adoption_state.dialog_shown = false;
             }
-            // Update interpolation state
-            interpolation.prev_position = interpolation.current_position;
-            interpolation.prev_rotation = interpolation.current_rotation;
-            interpolation.current_position = server_pos;
-            interpolation.current_rotation = server_rot;
-            reconciliation.correction_error_m = 0.0;
+            adoption_state.last_missing_components = missing_summary.clone();
+            if let Some(started_at_s) = adoption_state.wait_started_at_s {
+                let wait_s = (now_s - started_at_s).max(0.0);
+                if wait_s >= tuning.defer_warn_after_s
+                    && now_s - adoption_state.last_warn_at_s >= tuning.defer_warn_interval_s
+                {
+                    warn!(
+                        "deferring predicted controlled adoption for {} (wait {:.2}s, missing: {})",
+                        runtime_entity_id, wait_s, missing_summary
+                    );
+                    adoption_state.last_warn_at_s = now_s;
+                }
+            }
+            // Delay adoption until authoritative replicated Avian state is present.
             continue;
         }
-
-        let mass_kg = total_mass.map(|m| m.0.max(1.0)).unwrap_or(15_000.0);
-        let available_thrust = 15_000.0 * 60.0; // Approximation of typical engine budget for starter ship
-        let brake_available_thrust = 15_000.0 * 12.0;
-
-        let (replayed, _) = replay_predicted_state_from_authoritative(
-            authoritative,
-            &history,
-            reconciliation.last_acked_input_tick,
-            mass_kg,
-            flight_tuning,
-            available_thrust,
-            brake_available_thrust,
-        );
-        let replayed_position = Vec3::from_array(replayed.position_m);
-        let replayed_velocity = Vec3::from_array(replayed.velocity_mps);
-        let replayed_heading = replayed.heading_rad;
-        let replayed_rotation = Quat::from_rotation_z(replayed_heading);
-        let current_pos = position.as_ref().map_or(interpolation.current_position, |p| p.0);
-        let error = replayed_position.distance(current_pos);
-        reconciliation.correction_error_m = error;
-        reconciliation.correction_timer = 0.0;
-
-        display_velocity.0 = replayed_velocity;
-        if let Some(mut vel) = velocity {
-            vel.0 = Vec3::ZERO;
-        }
-        if let Some(mut ang_vel) = angular_velocity {
-            ang_vel.0 = Vec3::ZERO;
-        }
-
-        if error > HARD_SNAP_THRESHOLD_M {
-            if let Some(ref mut pos) = position {
-                pos.0 = replayed_position;
+        if adoption_state.waiting_entity_id.as_deref() == Some(runtime_entity_id.as_str()) {
+            if let Some(started_at_s) = adoption_state.wait_started_at_s {
+                let resolved_wait_s = (time.elapsed_secs_f64() - started_at_s).max(0.0);
+                adoption_state.resolved_samples = adoption_state.resolved_samples.saturating_add(1);
+                adoption_state.resolved_total_wait_s += resolved_wait_s;
+                adoption_state.resolved_max_wait_s =
+                    adoption_state.resolved_max_wait_s.max(resolved_wait_s);
+                info!(
+                    "predicted controlled adoption resolved for {} after {:.2}s (samples={}, max_wait_s={:.2})",
+                    runtime_entity_id,
+                    resolved_wait_s,
+                    adoption_state.resolved_samples,
+                    adoption_state.resolved_max_wait_s
+                );
             }
-            if let Some(ref mut rot) = rotation {
-                rot.0 = replayed_rotation;
+            adoption_state.waiting_entity_id = None;
+            adoption_state.wait_started_at_s = None;
+            adoption_state.last_warn_at_s = 0.0;
+            adoption_state.last_missing_components.clear();
+            adoption_state.dialog_shown = false;
+        }
+
+        register_runtime_entity(&mut entity_registry, runtime_entity_id.clone(), entity);
+        let mut entity_commands = commands.entity(entity);
+        entity_commands.insert((
+            Name::new(runtime_entity_id.clone()),
+            Transform::default(),
+            GlobalTransform::default(),
+            WorldEntity,
+            DespawnOnExit(ClientAppState::InWorld),
+            Visibility::Visible,
+            InheritedVisibility::default(),
+            ViewVisibility::default(),
+        ));
+
+        if mounted_on.is_none() && hardpoint.is_none() {
+            entity_commands.insert(StreamedModelAssetId(
+                default_corvette_asset_id().to_string(),
+            ));
+        }
+
+        if is_local_controlled {
+            entity_commands.insert(ControlledEntity {
+                entity_id: runtime_entity_id.clone(),
+                player_entity_id: local_player_entity_id.clone(),
+            });
+            let size = size_m.copied().unwrap_or_else(default_corvette_size);
+            let mass_kg = total_mass_kg
+                .map(|m| m.0)
+                .filter(|m| *m > 0.0)
+                .unwrap_or_else(default_corvette_mass_kg);
+            let position = position.map(|p| p.0).unwrap_or(Vec3::ZERO);
+            let rotation = rotation.map(|r| r.0).unwrap_or(Quat::IDENTITY);
+            let velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec3::ZERO);
+            entity_commands.insert((
+                RigidBody::Dynamic,
+                Collider::cuboid(size.width * 0.5, size.length * 0.5, size.height * 0.5),
+                Mass(mass_kg),
+                angular_inertia_from_size(mass_kg, &size),
+                Position(position),
+                Rotation(rotation),
+                LinearVelocity(velocity),
+                AngularVelocity::default(),
+                LockedAxes::new()
+                    .lock_translation_z()
+                    .lock_rotation_x()
+                    .lock_rotation_y(),
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+            ));
+            if predicted_mode {
+                entity_commands.insert(lightyear::prelude::Predicted);
+            }
+            if focus_state.focused_entity_id.is_none() {
+                focus_state.set(Some(runtime_entity_id));
             }
         } else {
-            let blend = (SMOOTH_CORRECTION_RATE * dt).min(1.0);
-            if let Some(ref mut pos) = position {
-                pos.0 = pos.0.lerp(replayed_position, blend);
+            entity_commands.insert((
+                RemoteEntity,
+                RemoteVisibleEntity {
+                    entity_id: runtime_entity_id.clone(),
+                },
+            ));
+            remote_registry
+                .by_entity_id
+                .insert(runtime_entity_id, entity);
+            if predicted_mode {
+                entity_commands.insert(lightyear::prelude::Interpolated);
             }
-            if let Some(ref mut rot) = rotation {
-                rot.0 = rot.0.slerp(replayed_rotation, blend);
-            }
         }
-        let final_pos = position.as_ref().map_or(replayed_position, |p| p.0);
-        let final_rot = rotation.as_ref().map_or(replayed_rotation, |r| r.0);
+    }
 
-        // Update interpolation state: copy current to prev, set new current
-        interpolation.prev_position = interpolation.current_position;
-        interpolation.prev_rotation = interpolation.current_rotation;
-        interpolation.current_position = final_pos;
-        interpolation.current_rotation = final_rot;
+    let now_s = time.elapsed_secs_f64();
+    if adoption_state.resolved_samples > 0
+        && now_s - adoption_state.last_summary_at_s >= tuning.defer_summary_interval_s
+    {
+        let avg_wait_s =
+            adoption_state.resolved_total_wait_s / adoption_state.resolved_samples as f64;
+        info!(
+            "predicted adoption delay summary samples={} avg_wait_s={:.2} max_wait_s={:.2}",
+            adoption_state.resolved_samples, avg_wait_s, adoption_state.resolved_max_wait_s
+        );
+        adoption_state.last_summary_at_s = now_s;
+    }
 
-        // Don't update Transform here - let the interpolation system in Update handle it
-        // This ensures smooth visuals between 30Hz physics steps
-
-        // Force Avian's Position and Rotation to match our manual integration
-        if let Some(mut pos) = position {
-            pos.0 = final_pos;
-        }
-        if let Some(mut rot) = rotation {
-            rot.0 = final_rot;
-        }
+    // Native replication can promote ownership after initial spawn; avoid duplicated controlled tags.
+    let controlled_count = controlled_query.iter().count();
+    if controlled_count > 1 {
+        warn!(
+            "multiple controlled entities detected under native replication; keeping latest focus target"
+        );
+    }
+    if controlled_count > 0 {
+        adoption_state.waiting_entity_id = None;
+        adoption_state.wait_started_at_s = None;
+        adoption_state.last_warn_at_s = 0.0;
+        adoption_state.last_missing_components.clear();
+        adoption_state.dialog_shown = false;
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn interpolate_controlled_transform(
-    fixed_time: Res<'_, Time<Fixed>>,
-    mut controlled_query: Query<'_, '_, (&InterpolationState, &mut Transform), With<ControlledEntity>>,
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+fn log_prediction_runtime_state(
+    time: Res<'_, Time>,
+    tuning: Res<'_, PredictionBootstrapTuning>,
+    local_mode: Res<'_, LocalSimulationDebugMode>,
+    watchdog: Res<'_, BootstrapWatchdogState>,
+    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
+    world_entities: Query<'_, '_, Entity, With<WorldEntity>>,
+    replicated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Replicated>>,
+    predicted_entities: Query<'_, '_, Entity, With<lightyear::prelude::Predicted>>,
+    interpolated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Interpolated>>,
+    controlled_entities: Query<'_, '_, Entity, With<ControlledEntity>>,
 ) {
-    let t = fixed_time.overstep_fraction();
-    for (interpolation, mut transform) in &mut controlled_query {
-        transform.translation = interpolation
-            .prev_position
-            .lerp(interpolation.current_position, t);
-        transform.rotation = interpolation
-            .prev_rotation
-            .slerp(interpolation.current_rotation, t);
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn refresh_predicted_input_history_state(
-    tick: Res<'_, ClientNetworkTick>,
-    session: Res<'_, ClientSession>,
-    mut controlled_query: Query<
-        '_,
-        '_,
-        (
-            &ControlledEntity,
-            Option<&Position>,
-            Option<&Rotation>,
-            &Transform,
-            &DisplayVelocity,
-            &mut InputHistory,
-        ),
-    >,
-) {
-    let Some(player_entity_id) = session.player_entity_id.as_deref() else {
+    let now_s = time.elapsed_secs_f64();
+    if now_s - adoption_state.last_runtime_summary_at_s < tuning.defer_summary_interval_s {
         return;
-    };
-    for (controlled, position, rotation, transform, display_velocity, mut history) in &mut controlled_query {
-        if controlled.player_entity_id != player_entity_id {
-            continue;
+    }
+    adoption_state.last_runtime_summary_at_s = now_s;
+    let world_count = world_entities.iter().count();
+    let replicated_count = replicated_entities.iter().count();
+    let predicted_count = predicted_entities.iter().count();
+    let interpolated_count = interpolated_entities.iter().count();
+    let controlled_count = controlled_entities.iter().count();
+    let mode = if local_mode.0 { "local" } else { "predicted" };
+    info!(
+        "prediction runtime summary mode={} world={} replicated={} predicted={} interpolated={} controlled={} deferred_waiting={}",
+        mode,
+        world_count,
+        replicated_count,
+        predicted_count,
+        interpolated_count,
+        controlled_count,
+        adoption_state
+            .waiting_entity_id
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    if !local_mode.0 && watchdog.replication_state_seen {
+        let in_world_age_s = watchdog
+            .in_world_entered_at_s
+            .map(|entered_at_s| (now_s - entered_at_s).max(0.0))
+            .unwrap_or_default();
+        if in_world_age_s > tuning.defer_dialog_after_s && controlled_count == 0 {
+            warn!(
+                "prediction runtime anomaly: no controlled entity after {:.2}s in predicted mode (replicated={} predicted={} interpolated={})",
+                in_world_age_s, replicated_count, predicted_count, interpolated_count
+            );
         }
-        let Some(entry) = history
-            .entries
-            .iter_mut()
-            .rev()
-            .find(|entry| entry.tick == tick.0)
-        else {
-            continue;
-        };
-        let current_pos = position.map_or(transform.translation, |p| p.0);
-        let current_rot = rotation.map_or(transform.rotation, |r| r.0);
-        entry.predicted_state = EntityKinematics {
-            position_m: current_pos.to_array(),
-            velocity_mps: display_velocity.0.to_array(),
-            heading_rad: current_rot.to_euler(EulerRot::ZYX).0,
-        };
+        if replicated_count > 0 && predicted_count == 0 {
+            warn!(
+                "prediction runtime anomaly: replicated entities present but zero Predicted markers (replicated={} interpolated={})",
+                replicated_count, interpolated_count
+            );
+        }
     }
 }
 
@@ -2939,33 +2440,6 @@ fn streamed_model_scene_path(asset_id: &str, asset_manager: &LocalAssetManager) 
         return None;
     }
     Some(format!("data/cache_stream/{relative}"))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn queue_despawn_once(
-    commands: &mut Commands<'_, '_>,
-    despawned_entities: &mut HashSet<Entity>,
-    entity: Entity,
-) {
-    if despawned_entities.insert(entity) {
-        commands.entity(entity).despawn();
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn update_streamed_model_asset_tag(
-    commands: &mut Commands<'_, '_>,
-    entity: Entity,
-    asset_id: Option<&str>,
-) {
-    let Ok(mut entity_commands) = commands.get_entity(entity) else {
-        return;
-    };
-    if let Some(asset_id) = asset_id {
-        entity_commands.try_insert(StreamedModelAssetId(asset_id.to_string()));
-    } else {
-        entity_commands.remove::<(StreamedModelAssetId, StreamedModelVisualAttached)>();
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3343,12 +2817,15 @@ fn asset_present_on_disk(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
 fn watch_in_world_bootstrap_failures(
     time: Res<'_, Time>,
+    tuning: Res<'_, PredictionBootstrapTuning>,
     auth_state: Res<'_, ClientAuthSyncState>,
     mut session: ResMut<'_, ClientSession>,
     mut asset_manager: ResMut<'_, LocalAssetManager>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
+    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
     mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -3434,6 +2911,43 @@ fn watch_in_world_bootstrap_failures(
         watchdog.no_world_state_dialog_shown = true;
     }
 
+    if !adoption_state.dialog_shown
+        && watchdog.replication_state_seen
+        && adoption_state.waiting_entity_id.is_some()
+        && adoption_state
+            .wait_started_at_s
+            .is_some_and(|started_at_s| now - started_at_s > tuning.defer_dialog_after_s)
+    {
+        let wait_s = adoption_state
+            .wait_started_at_s
+            .map(|started_at_s| (now - started_at_s).max(0.0))
+            .unwrap_or_default();
+        let waiting_entity = adoption_state
+            .waiting_entity_id
+            .as_deref()
+            .unwrap_or("<unknown>");
+        warn!(
+            "controlled predicted adoption stalled for {} (wait {:.2}s, missing: {})",
+            waiting_entity, wait_s, adoption_state.last_missing_components
+        );
+        session.status = "Controlled entity adoption delayed. Check warning dialog.".to_string();
+        session.ui_dirty = true;
+        dialog_queue.push_warning(
+            "Controlled Entity Adoption Delayed",
+            format!(
+                "Replication is active, but the controlled predicted entity is still waiting for required replicated Avian components.\n\n\
+                 Entity: {}\n\
+                 Wait time: {:.1}s\n\
+                 Missing: {}\n\n\
+                 This usually means component replication for the controlled entity is arriving out-of-order under load.",
+                waiting_entity,
+                wait_s,
+                adoption_state.last_missing_components
+            ),
+        );
+        adoption_state.dialog_shown = true;
+    }
+
     if asset_manager.bootstrap_complete() {
         return;
     }
@@ -3486,12 +3000,6 @@ fn ensure_client_transport_channels(
         if !transport.has_sender::<ControlChannel>() {
             transport.add_sender_from_registry::<ControlChannel>(&registry);
         }
-        if !transport.has_sender::<InputChannel>() {
-            transport.add_sender_from_registry::<InputChannel>(&registry);
-        }
-        if !transport.has_receiver::<StateChannel>() {
-            transport.add_receiver_from_registry::<StateChannel>(&registry);
-        }
         if !transport.has_receiver::<ControlChannel>() {
             transport.add_receiver_from_registry::<ControlChannel>(&registry);
         }
@@ -3499,25 +3007,57 @@ fn ensure_client_transport_channels(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::type_complexity)]
 fn update_hud_system(
     controlled_query: Query<
         '_,
         '_,
-        (&Transform, &DisplayVelocity, &HealthPool),
+        (&Transform, Option<&LinearVelocity>, &HealthPool),
         With<ControlledEntity>,
+    >,
+    fallback_ship_query: Query<
+        '_,
+        '_,
+        (
+            &Transform,
+            Option<&LinearVelocity>,
+            Option<&HealthPool>,
+            &Name,
+        ),
+        (Without<ControlledEntity>, Without<Camera3d>),
     >,
     mut hud_query: Query<'_, '_, &mut Text, With<HudText>>,
     focus_state: Res<'_, CameraFocusState>,
 ) {
-    let Ok((transform, display_velocity, health)) = controlled_query.single() else {
-        return;
-    };
+    let (transform, vel, health_current, health_max) =
+        if let Ok((transform, maybe_velocity, health)) = controlled_query.single() {
+            (
+                transform,
+                maybe_velocity.map_or(Vec3::ZERO, |velocity| velocity.0),
+                health.current,
+                health.maximum,
+            )
+        } else if let Some((transform, maybe_velocity, maybe_health, _)) = fallback_ship_query
+            .iter()
+            .find(|(_, _, _, name)| name.as_str().starts_with("ship:"))
+        {
+            let (current, maximum) = maybe_health
+                .map(|health| (health.current, health.maximum))
+                .unwrap_or((0.0, 0.0));
+            (
+                transform,
+                maybe_velocity.map_or(Vec3::ZERO, |velocity| velocity.0),
+                current,
+                maximum,
+            )
+        } else {
+            return;
+        };
     let Ok(mut text) = hud_query.single_mut() else {
         return;
     };
 
     let pos = transform.translation;
-    let vel = display_velocity.0;
     let heading_rad = transform.rotation.to_euler(EulerRot::ZYX).0;
     // Convert math convention (CCW from +Y) to compass convention (CW from north).
     let heading_deg = {
@@ -3533,11 +3073,45 @@ fn update_hud_system(
         vel.x,
         vel.y,
         heading_deg,
-        health.current,
-        health.maximum,
+        health_current,
+        health_max,
         focus_state.focused_entity_id.as_deref().unwrap_or("<none>")
     );
     content.clone_into(&mut **text);
+}
+
+/// Translates the Lightyear-managed `ActionState<PlayerInput>` into `ActionQueue`
+/// entries each `FixedUpdate` tick. This runs during normal simulation and during
+/// rollback resimulation so the flight systems always see the correct input.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::type_complexity)]
+fn apply_predicted_input_to_action_queue(
+    mut commands: Commands<'_, '_>,
+    mut query: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &ActionState<PlayerInput>,
+            Option<&mut ActionQueue>,
+        ),
+        With<ControlledEntity>,
+    >,
+) {
+    for (entity, action_state, maybe_queue) in &mut query {
+        if let Some(mut queue) = maybe_queue {
+            for action in &action_state.0.actions {
+                queue.push(*action);
+            }
+        } else {
+            commands.entity(entity).insert((
+                ActionQueue {
+                    pending: action_state.0.actions.clone(),
+                },
+                default_flight_action_capabilities(),
+            ));
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3550,22 +3124,49 @@ fn enforce_controlled_planar_motion(
             &mut Transform,
             Option<&mut Position>,
             Option<&mut Rotation>,
-            &mut LinearVelocity,
-            &mut AngularVelocity,
+            Option<&mut LinearVelocity>,
+            Option<&mut AngularVelocity>,
         ),
         With<ControlledEntity>,
     >,
 ) {
-    for (mut transform, position, rotation, mut velocity, mut angular_velocity) in
-        &mut controlled_query
-    {
+    for (mut transform, position, rotation, velocity, angular_velocity) in &mut controlled_query {
         if let Some(mut pos) = position {
+            if !pos.0.is_finite() {
+                pos.0 = Vec3::ZERO;
+            }
             pos.0.z = 0.0;
         }
-        velocity.0.z = 0.0;
-        angular_velocity.0.x = 0.0;
-        angular_velocity.0.y = 0.0;
-        let heading = transform.rotation.to_euler(EulerRot::ZYX).0;
+        if let Some(mut vel) = velocity {
+            if !vel.0.is_finite() {
+                vel.0 = Vec3::ZERO;
+            }
+            vel.0.z = 0.0;
+        }
+        if let Some(mut ang_vel) = angular_velocity {
+            if !ang_vel.0.is_finite() {
+                ang_vel.0 = Vec3::ZERO;
+            }
+            ang_vel.0.x = 0.0;
+            ang_vel.0.y = 0.0;
+        }
+        if !transform.translation.is_finite() {
+            transform.translation = Vec3::ZERO;
+        }
+        let mut heading = if let Some(rot) = rotation.as_ref() {
+            if rot.0.is_finite() {
+                rot.0.to_euler(EulerRot::ZYX).0
+            } else {
+                0.0
+            }
+        } else if transform.rotation.is_finite() {
+            transform.rotation.to_euler(EulerRot::ZYX).0
+        } else {
+            0.0
+        };
+        if !heading.is_finite() {
+            heading = 0.0;
+        }
         let planar_rot = Quat::from_rotation_z(heading);
         if let Some(mut rot) = rotation {
             rot.0 = planar_rot;
@@ -3587,7 +3188,6 @@ fn logout_to_auth_system(
     mut auth_state: ResMut<'_, ClientAuthSyncState>,
     mut focus_state: ResMut<'_, CameraFocusState>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
-    mut pending_reconciliation: ResMut<'_, PendingControlledReconciliation>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
 ) {
     if !input.just_pressed(KeyCode::Escape) {
@@ -3612,7 +3212,6 @@ fn logout_to_auth_system(
     auth_state.last_player_entity_id = None;
     focus_state.set(None);
     *watchdog = BootstrapWatchdogState::default();
-    pending_reconciliation.by_entity_id.clear();
     *ack_tracker = ClientInputAckTracker::default();
 }
 
@@ -3630,29 +3229,30 @@ fn update_starfield_material_system(
     };
     let dt = time.delta_secs();
     let velocity_xy = camera_motion.smoothed_velocity_xy;
-    let acceleration_xy = if dt > 0.0 {
-        (velocity_xy - motion.prev_velocity_xy) / dt
-    } else {
-        Vec2::ZERO
-    };
-    motion.prev_velocity_xy = velocity_xy;
-
-    motion.drift_xy += velocity_xy * (0.00014 * dt);
-    motion.drift_xy.x = motion.drift_xy.x.rem_euclid(1.0);
-    motion.drift_xy.y = motion.drift_xy.y.rem_euclid(1.0);
-
     let speed = velocity_xy.length();
-    let speed_warp_start = 70.0;
-    let speed_warp_full = 320.0;
-    let accel_warp_full = 120.0;
+
+    let accel_raw = if dt > 0.0 {
+        (speed - motion.prev_speed) / dt
+    } else {
+        0.0
+    };
+    motion.prev_speed = speed;
+
+    // Smoothed camera position scaled to UV-space parallax offset.
+    // Positive: as camera moves right, uv increases, star grid scrolls left on screen.
+    let drift_xy = camera_motion.smoothed_position_xy * 0.00042;
+
+    let speed_warp_start = 15.0;
+    let speed_warp_full = 180.0;
+    let accel_warp_full = 70.0;
     let speed_norm =
         ((speed - speed_warp_start) / (speed_warp_full - speed_warp_start)).clamp(0.0, 1.0);
-    let accel_norm = (acceleration_xy.length() / accel_warp_full).clamp(0.0, 1.0);
+    let accel_norm = (accel_raw.abs() / accel_warp_full).clamp(0.0, 1.0);
     let warp = (speed_norm * 0.8 + accel_norm * 0.2).clamp(0.0, 1.0);
     let intensity = 1.45 + warp * 1.05;
     let alpha = 1.0;
     let velocity_dir = if speed > 0.001 {
-        velocity_xy / speed
+        -velocity_xy / speed
     } else {
         Vec2::Y
     };
@@ -3665,8 +3265,7 @@ fn update_starfield_material_system(
                 time.elapsed_secs(),
                 warp,
             );
-            material.drift_intensity =
-                Vec4::new(motion.drift_xy.x, motion.drift_xy.y, intensity, alpha);
+            material.drift_intensity = Vec4::new(drift_xy.x, drift_xy.y, intensity, alpha);
             material.velocity_dir = Vec4::new(velocity_dir.x, velocity_dir.y, speed, accel_norm);
         }
     }
@@ -3675,6 +3274,7 @@ fn update_starfield_material_system(
 #[cfg(not(target_arch = "wasm32"))]
 fn update_space_background_material_system(
     time: Res<'_, Time>,
+    camera_motion: Res<'_, CameraMotionState>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
     bg_query: Query<
         '_,
@@ -3688,6 +3288,15 @@ fn update_space_background_material_system(
         return;
     };
 
+    let drift_xy = camera_motion.smoothed_position_xy * 0.00042;
+    let velocity_xy = camera_motion.smoothed_velocity_xy;
+    let speed = velocity_xy.length();
+    let velocity_dir = if speed > 0.001 {
+        -velocity_xy / speed
+    } else {
+        Vec2::Y
+    };
+
     for material_handle in &bg_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
             material.viewport_time = Vec4::new(
@@ -3696,6 +3305,7 @@ fn update_space_background_material_system(
                 time.elapsed_secs(),
                 0.0,
             );
+            material.motion = Vec4::new(drift_xy.x, drift_xy.y, velocity_dir.x, velocity_dir.y);
         }
     }
 }
@@ -3768,5 +3378,28 @@ mod tests {
         let next = smooth_look_ahead_offset(current, desired, 1.0, 120.0, dt);
         let max_step = 120.0 * dt;
         assert!((next.length() - max_step).abs() < 1e-4);
+    }
+
+    #[test]
+    fn predicted_controlled_adoption_defers_until_avian_motion_available() {
+        assert!(should_defer_controlled_predicted_adoption(
+            true, false, true, true
+        ));
+        assert!(should_defer_controlled_predicted_adoption(
+            true, true, false, true
+        ));
+        assert!(should_defer_controlled_predicted_adoption(
+            true, true, true, false
+        ));
+    }
+
+    #[test]
+    fn predicted_controlled_adoption_proceeds_when_requirements_met() {
+        assert!(!should_defer_controlled_predicted_adoption(
+            true, true, true, true
+        ));
+        assert!(!should_defer_controlled_predicted_adoption(
+            false, false, false, false
+        ));
     }
 }

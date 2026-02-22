@@ -6,9 +6,14 @@ use sidereal_gateway::auth::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tracing::{Level, info};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_target(true)
+        .try_init();
     let config = AuthConfig::from_env().context("invalid auth configuration")?;
     let database_url = std::env::var("GATEWAY_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
@@ -20,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to ensure schema")?;
     let bootstrap_mode =
-        std::env::var("GATEWAY_BOOTSTRAP_MODE").unwrap_or_else(|_| "direct".to_string());
+        std::env::var("GATEWAY_BOOTSTRAP_MODE").unwrap_or_else(|_| "udp".to_string());
     let bootstrap_dispatcher: Arc<dyn BootstrapDispatcher> =
         if bootstrap_mode.eq_ignore_ascii_case("udp") {
             Arc::new(
@@ -45,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(socket_addr)
         .await
         .with_context(|| format!("failed to bind gateway on {socket_addr}"))?;
-    println!("sidereal-gateway listening on {socket_addr}");
+    info!("sidereal-gateway listening on {}", socket_addr);
     axum::serve(listener, app_with_service(service))
         .await
         .context("gateway server failed")?;

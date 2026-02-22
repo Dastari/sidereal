@@ -10,5 +10,4 @@ avian3d.workspace = true
 bevy.workspace = true
 serde.workspace = true
 sidereal-core = { path = "../sidereal-core" }
-sidereal-sim-core = { path = "../sidereal-sim-core" }
 uuid.workspace = true

@@ -1,0 +1,179 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Core color palette */
+  --color-background: oklch(0.145 0.015 280);
+  --color-foreground: oklch(0.95 0.01 280);
+  --color-muted: oklch(0.25 0.015 280);
+  --color-muted-foreground: oklch(0.65 0.02 280);
+
+  /* Card/Panel colors */
+  --color-card: oklch(0.17 0.018 280);
+  --color-card-foreground: oklch(0.95 0.01 280);
+
+  /* Borders */
+  --color-border: oklch(0.28 0.025 280);
+  --color-border-subtle: oklch(0.22 0.02 280);
+
+  /* Interactive states */
+  --color-primary: oklch(0.7 0.15 220);
+  --color-primary-foreground: oklch(0.15 0.02 220);
+  --color-secondary: oklch(0.35 0.03 280);
+  --color-secondary-foreground: oklch(0.9 0.01 280);
+  --color-accent: oklch(0.65 0.18 180);
+  --color-accent-foreground: oklch(0.15 0.02 180);
+
+  /* Semantic colors */
+  --color-destructive: oklch(0.55 0.2 25);
+  --color-destructive-foreground: oklch(0.95 0.01 25);
+  --color-success: oklch(0.65 0.18 145);
+  --color-success-foreground: oklch(0.15 0.02 145);
+  --color-warning: oklch(0.75 0.15 85);
+  --color-warning-foreground: oklch(0.2 0.02 85);
+
+  /* Entity type colors */
+  --color-entity-ship: oklch(0.7 0.15 220);
+  --color-entity-station: oklch(0.65 0.12 280);
+  --color-entity-asteroid: oklch(0.55 0.08 60);
+  --color-entity-planet: oklch(0.6 0.15 145);
+  --color-entity-default: oklch(0.6 0.1 200);
+
+  /* Grid colors */
+  --color-grid-major: oklch(0.35 0.03 280);
+  --color-grid-minor: oklch(0.22 0.02 280);
+  --color-grid-micro: oklch(0.18 0.015 280);
+
+  /* Ring/glow */
+  --color-ring: oklch(0.6 0.15 220);
+  --color-ring-offset: var(--color-background);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 oklch(0 0 0 / 0.3);
+  --shadow-md:
+    0 4px 6px -1px oklch(0 0 0 / 0.4), 0 2px 4px -2px oklch(0 0 0 / 0.3);
+  --shadow-lg:
+    0 10px 15px -3px oklch(0 0 0 / 0.5), 0 4px 6px -4px oklch(0 0 0 / 0.4);
+  --shadow-glow: 0 0 20px oklch(0.6 0.15 220 / 0.3);
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  /* Fonts */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Animations */
+  --animate-fade-in: fade-in 0.2s ease-out;
+  --animate-slide-in: slide-in 0.2s ease-out;
+  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes pulse-glow {
+    0%,
+    100% {
+      box-shadow: 0 0 8px var(--color-ring);
+    }
+    50% {
+      box-shadow: 0 0 16px var(--color-ring);
+    }
+  }
+}
+
+/* Light theme overrides */
+.light {
+  --color-background: oklch(0.98 0.005 280);
+  --color-foreground: oklch(0.15 0.015 280);
+  --color-muted: oklch(0.92 0.01 280);
+  --color-muted-foreground: oklch(0.45 0.02 280);
+  --color-card: oklch(0.99 0.003 280);
+  --color-card-foreground: oklch(0.15 0.015 280);
+  --color-border: oklch(0.85 0.015 280);
+  --color-border-subtle: oklch(0.9 0.01 280);
+  --color-primary: oklch(0.5 0.18 220);
+  --color-primary-foreground: oklch(0.98 0.005 220);
+  --color-secondary: oklch(0.92 0.01 280);
+  --color-secondary-foreground: oklch(0.2 0.015 280);
+  --color-grid-major: oklch(0.75 0.02 280);
+  --color-grid-minor: oklch(0.85 0.015 280);
+  --color-grid-micro: oklch(0.92 0.01 280);
+}
+
+/* Base resets - Tailwind v4 preflight handles box-sizing and margins */
+
+html {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
+#app,
+body > div {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-foreground);
+}
+
+/* Selection */
+::selection {
+  background: oklch(0.5 0.15 220 / 0.3);
+  color: var(--color-foreground);
+}

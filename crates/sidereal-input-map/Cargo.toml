@@ -1,9 +1,0 @@
-[package]
-name = "sidereal-input-map"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-authors.workspace = true
-
-[dependencies]
-sidereal-sim-core = { path = "../sidereal-sim-core" }

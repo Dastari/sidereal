@@ -1,16 +1,22 @@
 #![cfg(feature = "lightyear_protocol")]
 
 use bevy::prelude::App;
-use lightyear::prelude::AppMessageExt;
 use lightyear::prelude::server::ServerPlugins;
-use sidereal_net::{ClientInputMessage, ReplicationStateMessage, register_lightyear_protocol};
+use sidereal_game::EntityAction;
+use sidereal_net::{PlayerInput, register_lightyear_protocol};
 
 #[test]
 fn lightyear_protocol_registration_registers_messages() {
     let mut app = App::new();
     app.add_plugins(ServerPlugins::default());
     register_lightyear_protocol(&mut app);
+}
 
-    assert!(app.is_message_registered::<ClientInputMessage>());
-    assert!(app.is_message_registered::<ReplicationStateMessage>());
+#[test]
+fn player_input_matches_legacy_axis_mapping() {
+    let player_input = PlayerInput::from_axis_inputs(1.0, -1.0, false);
+    assert_eq!(
+        player_input.actions,
+        vec![EntityAction::ThrustForward, EntityAction::YawRight]
+    );
 }

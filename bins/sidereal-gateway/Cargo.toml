@@ -23,6 +23,8 @@ tokio-postgres.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
 uuid.workspace = true
 sidereal-persistence = { path = "../../crates/sidereal-persistence" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
