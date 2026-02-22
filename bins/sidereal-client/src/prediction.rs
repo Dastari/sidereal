@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports, unused_variables, unused_mut)]
-
 /// Client-side prediction, reconciliation, and interpolation for networked entities.
 ///
 /// Architecture:
@@ -17,18 +15,11 @@
 /// - Shared deterministic math in sidereal-sim-core
 /// - Hard snap only for large divergence
 /// - Velocity-adaptive correction smoothing
-use avian3d::prelude::*;
 use bevy::prelude::*;
-use sidereal_sim_core::{ControlTuning, EntityKinematics, InputSnapshot};
+use sidereal_sim_core::EntityKinematics;
 use std::collections::VecDeque;
 
 // ===== Controlled Entity Prediction =====
-
-/// Component marking the locally-controlled entity
-#[derive(Component)]
-pub struct ControlledEntity {
-    pub control_tuning: ControlTuning,
-}
 
 /// Input history for reconciliation
 #[derive(Component)]
@@ -42,7 +33,9 @@ pub struct InputHistory {
 #[derive(Debug, Clone, Copy)]
 pub struct InputHistoryEntry {
     pub tick: u64,
-    pub input: InputSnapshot,
+    pub thrust: f32,
+    pub turn: f32,
+    pub brake: bool,
     pub predicted_state: EntityKinematics,
 }
 
@@ -65,158 +58,97 @@ impl InputHistory {
         }
     }
 
-    pub fn find_at_tick(&self, tick: u64) -> Option<&InputHistoryEntry> {
-        self.entries.iter().find(|e| e.tick == tick)
-    }
-
     pub fn prune_before_tick(&mut self, acked_tick: u64) {
-        self.entries.retain(|e| e.tick >= acked_tick);
+        self.entries.retain(|e| e.tick > acked_tick);
+    }
+}
+
+use sidereal_game::flight::compute_flight_forces;
+use sidereal_game::generated::components::FlightTuning;
+
+pub fn replay_predicted_state_from_authoritative(
+    authoritative: EntityKinematics,
+    history: &InputHistory,
+    acked_tick: u64,
+    mass_kg: f32,
+    flight_tuning: Option<&FlightTuning>,
+    available_thrust: f32,
+    brake_available_thrust: f32,
+) -> (EntityKinematics, f32) {
+    let mut current_state = authoritative;
+    let mut current_angular_velocity_z = 0.0;
+    const DT: f32 = 1.0 / 30.0;
+
+    for entry in &history.entries {
+        if entry.tick <= acked_tick {
+            continue;
+        }
+
+        let throttle = entry.thrust;
+        let yaw_input = entry.turn;
+        let brake_active = entry.brake;
+        let turn_rate_deg_s = 45.0; // Assume 45.0 for now, should ideally be read from FlightComputer
+
+        let velocity = Vec3::from_array(current_state.velocity_mps);
+        let angular_velocity = Vec3::new(0.0, 0.0, current_angular_velocity_z);
+        let rotation = Quat::from_rotation_z(current_state.heading_rad);
+
+        let (force, torque) = compute_flight_forces(
+            (throttle, yaw_input, turn_rate_deg_s, brake_active),
+            velocity,
+            angular_velocity,
+            rotation,
+            mass_kg,
+            flight_tuning,
+            available_thrust,
+            brake_available_thrust,
+            DT,
+        );
+
+        // Integrate exactly as Avian does (Semi-Implicit Euler)
+        // v_new = v_old + (f / m) * dt
+        let new_velocity = velocity + (force / mass_kg) * DT;
+        
+        // p_new = p_old + v_new * dt
+        let position = Vec3::from_array(current_state.position_m);
+        let new_position = position + new_velocity * DT;
+
+        // angular integration
+        // w_new = w_old + (torque / inertia) * dt
+        let inertia = mass_kg * 10.0; // Rough approximation of moment of inertia
+        let new_angular_velocity = angular_velocity + (torque / inertia) * DT;
+
+        // rotation integration (2D approximation)
+        let new_heading_rad = current_state.heading_rad + new_angular_velocity.z * DT;
+
+        current_state.position_m = new_position.to_array();
+        current_state.velocity_mps = new_velocity.to_array();
+        current_state.heading_rad = new_heading_rad;
+        current_angular_velocity_z = new_angular_velocity.z;
     }
 
-    pub fn get_unacked_since(&self, server_tick: u64) -> impl Iterator<Item = &InputHistoryEntry> {
-        self.entries.iter().filter(move |e| e.tick > server_tick)
-    }
+    (current_state, current_angular_velocity_z)
 }
 
 /// Reconciliation state
 #[derive(Component)]
 pub struct ReconciliationState {
     pub last_server_tick: u64,
+    pub last_acked_input_tick: u64,
+    pub last_authoritative_state: Option<EntityKinematics>,
     pub correction_error_m: f32,
     pub correction_timer: f32,
-    pub correction_duration: f32,
 }
 
 impl Default for ReconciliationState {
     fn default() -> Self {
         Self {
             last_server_tick: 0,
+            last_acked_input_tick: 0,
+            last_authoritative_state: None,
             correction_error_m: 0.0,
             correction_timer: 0.0,
-            correction_duration: 0.15, // 150ms blend
         }
-    }
-}
-
-/// Client local tick counter
-#[derive(Resource, Default)]
-pub struct ClientTick(pub u64);
-
-/// Apply client prediction for controlled entity
-pub fn predict_controlled_entity(
-    mut query: Query<
-        (&ControlledEntity, &mut InputHistory, &mut Transform),
-        With<ControlledEntity>,
-    >,
-    time: Res<Time>,
-    input: Res<ButtonInput<KeyCode>>,
-    mut client_tick: ResMut<ClientTick>,
-) {
-    let Ok((controlled, mut history, mut transform)) = query.single_mut() else {
-        return;
-    };
-
-    client_tick.0 += 1;
-    let current_tick = client_tick.0;
-
-    // Capture current input
-    let input_snap = InputSnapshot {
-        thrust_forward: input.pressed(KeyCode::KeyW),
-        thrust_reverse: input.pressed(KeyCode::KeyS),
-        yaw_left: input.pressed(KeyCode::KeyA),
-        yaw_right: input.pressed(KeyCode::KeyD),
-    };
-
-    // Get current state from transform
-    let current_state = EntityKinematics {
-        position_m: transform.translation.to_array(),
-        velocity_mps: [0.0, 0.0, 0.0], // TODO: track velocity component
-        heading_rad: -transform.rotation.to_euler(EulerRot::ZYX).0, // Z rotation
-    };
-
-    // Step forward
-    let dt = time.delta_secs();
-    // TODO: Reimplement with Avian physics
-    let next_state = current_state; // Placeholder: no stepping until Avian integrated
-    // let next_state = step_entity_kinematics(&current_state, input_snap, &controlled.control_tuning, dt);
-
-    // Store in history
-    history.push(InputHistoryEntry {
-        tick: current_tick,
-        input: input_snap,
-        predicted_state: next_state,
-    });
-
-    // Apply to transform
-    transform.translation = Vec3::from_array(next_state.position_m);
-    transform.rotation = Quat::from_rotation_z(-next_state.heading_rad);
-}
-
-/// Reconcile client prediction with authoritative server state
-pub fn reconcile_controlled_entity(
-    mut query: Query<
-        (
-            &ControlledEntity,
-            &mut InputHistory,
-            &mut Transform,
-            &mut ReconciliationState,
-        ),
-        With<ControlledEntity>,
-    >,
-    time: Res<Time>,
-) {
-    let Ok((controlled, mut history, mut transform, mut recon)) = query.single_mut() else {
-        return;
-    };
-
-    // TODO: This will be called when server state arrives via Lightyear messages
-    // For now, this is a placeholder showing the reconciliation flow
-
-    // Example reconciliation flow (triggered when server state message arrives):
-    // let server_state = /* from network message */;
-    // let server_tick = /* from network message */;
-    //
-    // 1. Find prediction at server tick
-    // if let Some(historical) = history.find_at_tick(server_tick) {
-    //     let error = calculate_error(&historical.predicted_state, &server_state);
-    //
-    //     // 2. Check divergence threshold
-    //     if error > HARD_SNAP_THRESHOLD {
-    //         // Hard snap for large errors
-    //         transform.translation = Vec3::from_array(server_state.position_m);
-    //         transform.rotation = Quat::from_rotation_z(-server_state.heading_rad);
-    //     } else if error > CORRECTION_THRESHOLD {
-    //         // Smooth correction
-    //         recon.correction_error_m = error;
-    //         recon.correction_timer = 0.0;
-    //
-    //         // 3. Rollback to server state
-    //         let mut replay_state = server_state;
-    //
-    //         // 4. Replay unacked inputs
-    //         for entry in history.get_unacked_since(server_tick) {
-    //             replay_state = step_entity_kinematics(
-    //                 &replay_state,
-    //                 entry.input,
-    //                 &controlled.control_tuning,
-    //                 TICK_DT,
-    //             );
-    //         }
-    //
-    //         // Apply replayed state with smooth blend
-    //         transform.translation = Vec3::from_array(replay_state.position_m);
-    //         transform.rotation = Quat::from_rotation_z(-replay_state.heading_rad);
-    //     }
-    //
-    //     // 5. Prune acknowledged inputs
-    //     history.prune_before_tick(server_tick);
-    //     recon.last_server_tick = server_tick;
-    // }
-
-    // Apply correction smoothing
-    if recon.correction_timer < recon.correction_duration {
-        recon.correction_timer += time.delta_secs();
-        // Blend factor calculation would go here
     }
 }
 
@@ -260,7 +192,15 @@ impl SnapshotBuffer {
     }
 
     pub fn interpolate_at(&self, render_time: f64) -> Option<EntitySnapshot> {
-        if self.snapshots.len() < 2 {
+        if self.snapshots.is_empty() {
+            return None;
+        }
+        if self.snapshots.len() == 1 {
+            let only = *self.snapshots.front()?;
+            const MAX_EXTRAPOLATION_S: f64 = 0.05; // 50ms cap
+            if render_time - only.server_time < MAX_EXTRAPOLATION_S {
+                return Some(only);
+            }
             return None;
         }
 
@@ -314,31 +254,19 @@ impl SnapshotBuffer {
 /// Interpolate remote entities from snapshot buffer
 pub fn interpolate_remote_entities(
     mut query: Query<(&SnapshotBuffer, &mut Transform), With<RemoteEntity>>,
-    time: Res<Time>,
+    _time: Res<Time>,
 ) {
-    let current_time = time.elapsed_secs_f64();
-
     for (buffer, mut transform) in &mut query {
-        let render_time = current_time - buffer.interpolation_delay_s as f64;
+        let Some(latest) = buffer.snapshots.back() else {
+            continue;
+        };
+        let render_time = latest.server_time - buffer.interpolation_delay_s as f64;
 
         if let Some(interpolated) = buffer.interpolate_at(render_time) {
             transform.translation = Vec3::from_array(interpolated.position_m);
             transform.rotation = Quat::from_array(interpolated.rotation);
         }
     }
-}
-
-// ===== Constants =====
-
-const HARD_SNAP_THRESHOLD: f32 = 5.0; // 5 meters
-const CORRECTION_THRESHOLD: f32 = 0.5; // 0.5 meters
-const TICK_DT: f32 = 0.016; // ~60 Hz
-
-fn calculate_error(predicted: &EntityKinematics, authoritative: &EntityKinematics) -> f32 {
-    let dx = predicted.position_m[0] - authoritative.position_m[0];
-    let dy = predicted.position_m[1] - authoritative.position_m[1];
-    let dz = predicted.position_m[2] - authoritative.position_m[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 #[cfg(test)]
@@ -352,7 +280,9 @@ mod tests {
         for tick in 0..150 {
             history.push(InputHistoryEntry {
                 tick,
-                input: InputSnapshot::default(),
+                thrust: 0.0,
+                turn: 0.0,
+                brake: false,
                 predicted_state: EntityKinematics::default(),
             });
         }
@@ -370,12 +300,54 @@ mod tests {
 
         history.push(InputHistoryEntry {
             tick: 100,
-            input: InputSnapshot::default(),
+            thrust: 0.0,
+            turn: 0.0,
+            brake: false,
             predicted_state: EntityKinematics::default(),
         });
 
-        assert!(history.find_at_tick(100).is_some());
-        assert!(history.find_at_tick(99).is_none());
+        assert!(history.entries.iter().any(|e| e.tick == 100));
+        assert!(!history.entries.iter().any(|e| e.tick == 99));
+    }
+
+    #[test]
+    fn replay_from_authoritative_replays_unacked_inputs_only() {
+        let mut history = InputHistory::default();
+        history.push(InputHistoryEntry {
+            tick: 10,
+            thrust: 0.0,
+            turn: 0.0,
+            brake: false,
+            predicted_state: EntityKinematics::default(),
+        });
+        history.push(InputHistoryEntry {
+            tick: 11,
+            thrust: 0.0,
+            turn: 1.0,
+            brake: false,
+            predicted_state: EntityKinematics {
+                heading_rad: 1.25,
+                ..Default::default()
+            },
+        });
+        let authoritative = EntityKinematics::default();
+        let tuning = sidereal_game::generated::components::FlightTuning {
+            max_linear_speed_mps: 600.0,
+            max_linear_accel_mps2: 60.0,
+            passive_brake_accel_mps2: 3.0,
+            active_brake_accel_mps2: 12.0,
+            drag_per_s: 0.1,
+        };
+        let (replayed, _) = replay_predicted_state_from_authoritative(
+            authoritative,
+            &history,
+            10,
+            15000.0,
+            Some(&tuning),
+            0.0,
+            0.0,
+        );
+        assert!(replayed.heading_rad.abs() > f32::EPSILON);
     }
 
     #[test]
