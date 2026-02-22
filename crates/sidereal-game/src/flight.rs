@@ -158,7 +158,9 @@ pub fn apply_engine_thrust(
             brake_active,
         );
         if let Some(mount) = mounted_on {
-            control_by_parent.entry(mount.parent_entity_id).or_insert(state);
+            control_by_parent
+                .entry(mount.parent_entity_id)
+                .or_insert(state);
         } else {
             hull_overrides.push((guid.0, state));
         }

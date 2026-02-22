@@ -126,7 +126,7 @@ pub fn register_dialog_ui(app: &mut App) {
 fn show_next_dialog(
     mut commands: Commands,
     mut dialog_queue: ResMut<DialogQueue>,
-    fonts: Res<crate::EmbeddedFonts>,
+    fonts: Res<super::EmbeddedFonts>,
     existing: Query<Entity, With<DialogRoot>>,
 ) {
     if !existing.is_empty() {

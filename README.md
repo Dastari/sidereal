@@ -31,11 +31,3 @@ make wasm-check
 make test
 make register-demo     # quick register call against gateway
 ```
-
-## Current Vertical Slice Status
-
-- Native client auth UI scaffold exists (register/login/forgot).
-- Gateway serves `/world/me` and streamed assets (`/assets/stream/{asset_id}`).
-- Replication receives shard deltas via Lightyear and re-broadcasts to connected sessions.
-- Starter ship bootstrap path is covered by integration tests.
-- Transport e2e test (`replication + shard + headless client`) is in place.

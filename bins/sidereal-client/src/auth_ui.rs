@@ -5,9 +5,10 @@ use bevy::log::info;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
-use crate::{
-    AssetRootPath, AuthAction, ClientAppState, ClientSession, FocusField, active_field_mut,
-    dialog_ui, is_printable_char, mask, submit_auth_request,
+use super::dialog_ui;
+use super::{
+    AssetRootPath, AuthAction, ClientAppState, ClientSession, EmbeddedFonts, FocusField,
+    active_field_mut, is_printable_char, mask, submit_auth_request,
 };
 
 #[derive(Component)]
@@ -89,7 +90,7 @@ pub fn register_auth_ui(app: &mut App) {
     );
 }
 
-fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, crate::EmbeddedFonts>) {
+fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFonts>) {
     info!("client auth UI setup: spawning auth screen");
     let font_bold = fonts.bold.clone();
     let font_regular = fonts.regular.clone();

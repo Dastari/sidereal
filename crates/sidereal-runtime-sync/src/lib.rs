@@ -35,7 +35,10 @@ pub fn decode_component_payload<'a>(
     let sanitized_key = expected_type_path.replace("::", "__");
     properties
         .as_object()
-        .and_then(|obj| obj.get(&sanitized_key).or_else(|| obj.get(expected_type_path)))
+        .and_then(|obj| {
+            obj.get(&sanitized_key)
+                .or_else(|| obj.get(expected_type_path))
+        })
         .or(Some(properties))
 }
 
