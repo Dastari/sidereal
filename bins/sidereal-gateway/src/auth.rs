@@ -7,7 +7,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, deco
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
+use sidereal_persistence::GraphPersistence;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -665,39 +665,12 @@ impl BootstrapDispatcher for DirectBootstrapDispatcher {
                 AuthError::Internal(format!("persistence ensure schema failed: {err}"))
             })?;
 
-            let ship_entity_id = format!("ship:{}", command.account_id);
-            let account_id_s = command.account_id.to_string();
-            let player_entity_id = command.player_entity_id.clone();
-            let records = vec![
-                GraphEntityRecord {
-                    entity_id: player_entity_id.clone(),
-                    labels: vec!["Entity".to_string(), "Player".to_string()],
-                    properties: serde_json::json!({
-                        "owner_account_id": account_id_s,
-                        "player_entity_id": player_entity_id,
-                    }),
-                    components: Vec::new(),
-                },
-                GraphEntityRecord {
-                    entity_id: ship_entity_id,
-                    labels: vec!["Entity".to_string(), "Ship".to_string()],
-                    properties: serde_json::json!({
-                        "owner_account_id": command.account_id.to_string(),
-                        "player_entity_id": command.player_entity_id,
-                        "name": "Corvette",
-                        "asset_id": "corvette_01",
-                        "starfield_shader_asset_id": "starfield_wgsl",
-                        "position_m": [0.0, 0.0, 0.0],
-                        "velocity_mps": [0.0, 0.0, 0.0],
-                        "heading_rad": 0.0,
-                        "engine_max_accel_mps2": 171_000.0,
-                        "engine_ramp_to_max_s": 5.0,
-                        "health": 100.0,
-                        "max_health": 100.0
-                    }),
-                    components: Vec::new(),
-                },
-            ];
+            let position = sidereal_game::corvette_random_spawn_position(command.account_id);
+            let records = sidereal_runtime_sync::entity_templates::corvette_starter_graph_records(
+                command.account_id,
+                &command.player_entity_id,
+                position,
+            );
             persistence
                 .persist_graph_records(&records, 0)
                 .map_err(|err| {

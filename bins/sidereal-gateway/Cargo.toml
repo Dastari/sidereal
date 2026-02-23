@@ -22,7 +22,9 @@ tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread"
 tokio-postgres.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
 uuid.workspace = true
+sidereal-game = { path = "../../crates/sidereal-game" }
 sidereal-persistence = { path = "../../crates/sidereal-persistence" }
+sidereal-runtime-sync = { path = "../../crates/sidereal-runtime-sync" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

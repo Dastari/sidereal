@@ -7,11 +7,9 @@ use sidereal_game::{
 };
 use sidereal_persistence::PlayerRuntimeViewState;
 
+use crate::replication::SimulatedControlledEntity;
 use crate::visibility::{self, ClientControlledEntityPositionMap};
-use crate::{
-    PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, SimulatedControlledEntity,
-    unix_epoch_now_i64,
-};
+use crate::{PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, unix_epoch_now_i64};
 
 pub fn update_client_controlled_entity_positions(
     entities: Query<'_, '_, (&'_ SimulatedControlledEntity, &'_ Position)>,

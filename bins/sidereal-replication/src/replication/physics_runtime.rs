@@ -1,7 +1,7 @@
 use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::prelude::*;
 
-use crate::SimulatedControlledEntity;
+use crate::replication::SimulatedControlledEntity;
 
 #[allow(clippy::type_complexity)]
 pub fn sync_simulated_ship_components(

@@ -22,11 +22,10 @@ pub fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
     }
 
     app.add_plugins(RemotePlugin::default());
-    app.add_plugins(
-        RemoteHttpPlugin::default()
-            .with_address(cfg.bind_addr)
-            .with_port(cfg.port),
-    );
+    let remote_http = RemoteHttpPlugin::default()
+        .with_address(cfg.bind_addr)
+        .with_port(cfg.port);
+    app.add_plugins(remote_http);
     app.insert_resource(BrpAuthToken(
         cfg.auth_token.clone().expect("validated token"),
     ));

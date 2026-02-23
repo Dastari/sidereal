@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 pub mod actions;
-pub mod corvette;
+pub mod entities;
 pub mod flight;
 pub mod generated;
 pub mod mass;
@@ -9,7 +9,7 @@ pub mod scanner;
 
 // Re-export commonly used items
 pub use actions::*;
-pub use corvette::*;
+pub use entities::*;
 pub use generated::components::*;
 pub use mass::recompute_total_mass;
 pub use scanner::{apply_range_buff, compute_scanner_contribution, total_scanner_range_for_parent};

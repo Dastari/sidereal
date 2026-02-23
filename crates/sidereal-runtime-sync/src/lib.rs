@@ -1,5 +1,7 @@
 use bevy::ecs::reflect::{AppTypeRegistry, ReflectCommandExt, ReflectComponent};
 use bevy::prelude::*;
+
+pub mod entity_templates;
 use bevy::reflect::serde::{TypedReflectDeserializer, TypedReflectSerializer};
 use serde::Serialize as _;
 use serde::de::DeserializeSeed;

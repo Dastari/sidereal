@@ -83,7 +83,13 @@ pub fn recompute_total_mass(
         >,
         Query<(&TotalMassKg, Option<&MassDirty>), Without<MountedOn>>,
     )>,
-    modules: Query<(Entity, &EntityGuid, &MountedOn, Option<&MassKg>, Option<&Inventory>)>,
+    modules: Query<(
+        Entity,
+        &EntityGuid,
+        &MountedOn,
+        Option<&MassKg>,
+        Option<&Inventory>,
+    )>,
     inventories: Query<(Entity, Option<&Inventory>)>,
 ) {
     let needs_recompute = roots

@@ -4,7 +4,7 @@ use sidereal_game::{ActionQueue, EntityAction, is_flight_control_action};
 use sidereal_net::PlayerInput;
 use std::collections::HashMap;
 
-use crate::SimulatedControlledEntity;
+use crate::replication::SimulatedControlledEntity;
 
 #[derive(Resource, Default)]
 pub struct ClientInputTickTracker {

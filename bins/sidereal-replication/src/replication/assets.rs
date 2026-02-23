@@ -1,6 +1,7 @@
 use bevy::log::{error, info, warn};
 use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
+use lightyear::prelude::server::RawServer;
 use lightyear::prelude::{
     MessageReceiver, NetworkTarget, RemoteId, Server, ServerMultiMessageSender,
 };
@@ -11,6 +12,10 @@ use sidereal_asset_runtime::{
     AssetCatalogEntry, asset_version_from_sha256_hex, default_streamable_asset_sources,
     expand_required_assets, gltf_dependency_relative_paths, sha256_hex,
 };
+use sidereal_game::{
+    default_corvette_asset_id, default_space_background_shader_asset_id,
+    default_starfield_shader_asset_id,
+};
 use sidereal_net::{
     AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
     ControlChannel,
@@ -18,9 +23,6 @@ use sidereal_net::{
 
 use crate::{
     AssetDependencyMap, AssetStreamServerState, AuthenticatedClientBindings, PendingAssetChunk,
-    RawServer,
-    default_corvette_asset_id, default_space_background_shader_asset_id,
-    default_starfield_shader_asset_id,
 };
 
 const ASSET_STREAM_CHUNK_BYTES: usize = 1024;

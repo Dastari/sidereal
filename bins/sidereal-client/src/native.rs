@@ -743,7 +743,10 @@ pub(crate) fn run() {
     } else {
         insert_embedded_fonts(&mut app);
         app.init_state::<ClientAppState>();
-        app.add_systems(OnEnter(ClientAppState::Auth), ensure_lightyear_client_system);
+        app.add_systems(
+            OnEnter(ClientAppState::Auth),
+            ensure_lightyear_client_system,
+        );
         auth_ui::register_auth_ui(&mut app);
         dialog_ui::register_dialog_ui(&mut app);
         app.add_systems(
@@ -3073,7 +3076,9 @@ fn draw_debug_overlay_system(
             gizmos.aabb_3d(aabb, transform, collision_color);
         }
 
-        if mounted_on.is_none() && let Some(vel) = linear_velocity {
+        if mounted_on.is_none()
+            && let Some(vel) = linear_velocity
+        {
             let len = vel.0.length();
             if len > 0.01 {
                 let end = pos + vel.0 * VELOCITY_ARROW_SCALE;

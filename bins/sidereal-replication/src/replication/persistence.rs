@@ -6,10 +6,8 @@ use sidereal_game::{EntityGuid, GeneratedComponentRegistry, MountedOn};
 use sidereal_persistence::GraphEntityRecord;
 use sidereal_runtime_sync::serialize_entity_components_to_graph_records;
 
-use crate::{
-    PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, ReplicationRuntime,
-    SimulatedControlledEntity,
-};
+use crate::replication::SimulatedControlledEntity;
+use crate::{PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, ReplicationRuntime};
 
 pub fn flush_player_runtime_view_state_persistence(
     runtime: Option<NonSendMut<'_, ReplicationRuntime>>,

@@ -5,7 +5,7 @@ use sidereal_game::{
     EntityGuid, FactionId, FactionVisibility, MountedOn, OwnerId, PublicVisibility, ScannerRangeM,
 };
 
-use crate::PlayerControlledEntityMap;
+use crate::replication::PlayerControlledEntityMap;
 use crate::visibility::{
     ClientControlledEntityPositionMap, ClientVisibilityRegistry, DEFAULT_VIEW_RANGE_M,
 };
@@ -19,6 +19,7 @@ struct PlayerVisibilityContext {
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn update_network_visibility(
     visibility_registry: Res<'_, ClientVisibilityRegistry>,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
