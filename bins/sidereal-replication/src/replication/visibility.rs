@@ -32,6 +32,7 @@ pub fn update_network_visibility(
             Option<&'_ FactionId>,
         ),
     >,
+    owner_positions: Query<'_, '_, (&'_ OwnerId, &'_ Position), Without<MountedOn>>,
     position_by_entity: Query<'_, '_, &'_ Position>,
     entity_guid_with_position: Query<'_, '_, (&'_ EntityGuid, &'_ Position)>,
     mut replicated_entities: Query<
@@ -61,6 +62,7 @@ pub fn update_network_visibility(
             &controlled_entity_map,
             &controlled_positions,
             &controlled_entities,
+            &owner_positions,
         );
         for (
             mut replication_state,
@@ -114,6 +116,7 @@ fn build_player_visibility_context(
             Option<&'_ FactionId>,
         ),
     >,
+    owner_positions: &Query<'_, '_, (&'_ OwnerId, &'_ Position), Without<MountedOn>>,
 ) -> PlayerVisibilityContext {
     if let Some(controlled_entity) = controlled_entity_map
         .by_player_entity_id
@@ -132,9 +135,18 @@ fn build_player_visibility_context(
         };
     }
 
+    let observer_position = controlled_positions
+        .get_position(player_entity_id)
+        .or_else(|| {
+            owner_positions
+                .iter()
+                .find(|(owner, _)| owner.0 == player_entity_id)
+                .map(|(_, position)| position.0)
+        });
+
     PlayerVisibilityContext {
         player_entity_id: player_entity_id.to_string(),
-        observer_position: controlled_positions.get_position(player_entity_id),
+        observer_position,
         scanner_range_m: DEFAULT_VIEW_RANGE_M,
         player_faction_id: None,
     }

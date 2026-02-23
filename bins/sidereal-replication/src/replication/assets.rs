@@ -17,12 +17,15 @@ use sidereal_net::{
 };
 
 use crate::{
-    AssetDependencyMap, AssetStreamServerState, AuthenticatedClientBindings, RawServer,
+    AssetDependencyMap, AssetStreamServerState, AuthenticatedClientBindings, PendingAssetChunk,
+    RawServer,
     default_corvette_asset_id, default_space_background_shader_asset_id,
     default_starfield_shader_asset_id,
 };
 
 const ASSET_STREAM_CHUNK_BYTES: usize = 1024;
+/// Max asset stream chunks sent per remote per frame to avoid UDP send buffer overflow (EAGAIN).
+const ASSET_STREAM_CHUNKS_PER_FRAME: usize = 10;
 
 fn always_required_stream_asset_ids() -> [&'static str; 3] {
     [
@@ -135,6 +138,13 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
         let Some(_bound_player_entity_id) = bindings.by_client_entity.get(&client_entity) else {
             continue;
         };
+        if stream_state
+            .pending_chunks_by_remote
+            .get(&remote_id.0)
+            .is_some_and(|q| !q.is_empty())
+        {
+            continue;
+        }
         let mut required_asset_ids = HashSet::<String>::new();
         required_asset_ids.extend(
             always_required_stream_asset_ids()
@@ -248,50 +258,87 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
             continue;
         }
 
-        let mut send_failed = false;
+        let queue = stream_state
+            .pending_chunks_by_remote
+            .entry(remote_id.0)
+            .or_default();
         for (entry, bytes) in payloads {
             for (chunk_index, chunk) in bytes.chunks(ASSET_STREAM_CHUNK_BYTES).enumerate() {
-                let message = AssetStreamChunkMessage {
+                queue.push_back(PendingAssetChunk {
                     asset_id: entry.asset_id.clone(),
                     relative_cache_path: entry.relative_cache_path.clone(),
                     chunk_index: chunk_index as u32,
                     chunk_count: entry.chunk_count,
                     bytes: chunk.to_vec(),
-                };
-                if let Err(err) = sender
-                    .send::<AssetStreamChunkMessage, ControlChannel>(&message, server, &target)
-                {
-                    error!("replication failed sending asset chunk: {}", err);
-                    send_failed = true;
-                    break;
-                }
-            }
-            if send_failed {
-                break;
+                });
             }
         }
-        if !send_failed {
-            let sent_snapshot = {
-                let sent_asset_ids = stream_state
-                    .sent_asset_ids_by_remote
-                    .entry(remote_id.0)
-                    .or_default();
-                for asset_id in streamed_asset_ids {
-                    sent_asset_ids.insert(asset_id);
-                }
-                sent_asset_ids.clone()
+        info!(
+            "replication enqueued bootstrap asset chunks for remote={:?} assets={}",
+            remote_id.0,
+            streamed_asset_ids.len()
+        );
+    }
+}
+
+/// Sends a limited number of queued asset chunks per remote per frame to avoid UDP EAGAIN.
+pub fn send_asset_stream_chunks_paced(
+    server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
+    mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
+    mut stream_state: ResMut<'_, AssetStreamServerState>,
+) {
+    use lightyear::prelude::PeerId;
+
+    let Ok(server) = server_query.single() else {
+        return;
+    };
+
+    let mut completed_assets: Vec<(PeerId, String)> = Vec::new();
+
+    for (remote_id, queue) in stream_state.pending_chunks_by_remote.iter_mut() {
+        let target = NetworkTarget::Single(*remote_id);
+        for _ in 0..ASSET_STREAM_CHUNKS_PER_FRAME {
+            let Some(pending) = queue.pop_front() else {
+                break;
             };
-            if let Some(pending_requests) = stream_state
-                .pending_requested_asset_ids_by_remote
-                .get_mut(&remote_id.0)
+            let message = AssetStreamChunkMessage {
+                asset_id: pending.asset_id.clone(),
+                relative_cache_path: pending.relative_cache_path.clone(),
+                chunk_index: pending.chunk_index,
+                chunk_count: pending.chunk_count,
+                bytes: pending.bytes,
+            };
+            if let Err(err) =
+                sender.send::<AssetStreamChunkMessage, ControlChannel>(&message, server, &target)
             {
-                pending_requests.retain(|asset_id| !sent_snapshot.contains(asset_id));
+                error!("replication failed sending asset chunk: {}", err);
+                queue.push_front(PendingAssetChunk {
+                    asset_id: pending.asset_id.clone(),
+                    relative_cache_path: pending.relative_cache_path.clone(),
+                    chunk_index: pending.chunk_index,
+                    chunk_count: pending.chunk_count,
+                    bytes: message.bytes,
+                });
+                break;
             }
-            info!(
-                "replication streamed bootstrap assets to remote={:?} assets_total_sent={}",
-                remote_id.0,
-                sent_snapshot.len()
-            );
+            let is_last_chunk = pending.chunk_index + 1 >= pending.chunk_count;
+            if is_last_chunk {
+                completed_assets.push((*remote_id, pending.asset_id));
+            }
+        }
+    }
+
+    for (remote_id, asset_id) in completed_assets {
+        stream_state
+            .sent_asset_ids_by_remote
+            .entry(remote_id)
+            .or_default()
+            .insert(asset_id.clone());
+        if let Some(pending_requests) = stream_state
+            .pending_requested_asset_ids_by_remote
+            .get_mut(&remote_id)
+        {
+            pending_requests.remove(&asset_id);
         }
     }
 }

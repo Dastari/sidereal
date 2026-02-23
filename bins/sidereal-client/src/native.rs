@@ -212,6 +212,12 @@ struct CriticalAssetRequestState {
 #[derive(Debug, Resource, Default)]
 struct DebugBlueOverlayEnabled(bool);
 
+/// When true, F3 debug overlay is active: collision AABB wireframes, ship AABB + velocity arrow, hardpoint markers.
+#[derive(Debug, Resource, Default)]
+struct DebugOverlayEnabled {
+    enabled: bool,
+}
+
 #[derive(Debug, Resource, Default)]
 struct StarfieldMotionState {
     prev_speed: f32,
@@ -571,6 +577,7 @@ struct TopDownCamera {
 }
 
 #[derive(Resource, Debug)]
+/// Caps client frame rate when set. Configure via `SIDEREAL_CLIENT_MAX_FPS` (default 60; 0 = disabled).
 struct FrameRateCap {
     frame_duration: Duration,
     last_frame_end: Instant,
@@ -641,7 +648,8 @@ pub(crate) fn run() {
         ensure_shader_placeholders(&asset_root);
         app.add_plugins(Material2dPlugin::<StarfieldMaterial>::default());
         app.add_plugins(Material2dPlugin::<SpaceBackgroundMaterial>::default());
-        if let Some(frame_cap) = FrameRateCap::from_env(120) {
+        // FPS cap: SIDEREAL_CLIENT_MAX_FPS (default 60). Set to 0 to disable (uncapped).
+        if let Some(frame_cap) = FrameRateCap::from_env(60) {
             app.insert_resource(frame_cap);
             app.add_systems(Last, enforce_frame_rate_cap_system);
         }
@@ -684,6 +692,7 @@ pub(crate) fn run() {
     let debug_blue_overlay = std::env::var("SIDEREAL_DEBUG_BLUE_FULLSCREEN")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     app.insert_resource(DebugBlueOverlayEnabled(debug_blue_overlay));
+    app.insert_resource(DebugOverlayEnabled { enabled: false });
     app.insert_resource(CameraFocusState::default());
     app.insert_resource(RuntimeEntityHierarchy::default());
     app.insert_resource(StarfieldMotionState::default());
@@ -698,7 +707,9 @@ pub(crate) fn run() {
         app.init_resource::<dialog_ui::DialogQueue>();
     }
     app.add_observer(log_native_client_connected);
-    app.add_systems(Startup, start_lightyear_client_transport);
+    if headless_transport {
+        app.add_systems(Startup, start_lightyear_client_transport);
+    }
     if !headless_transport {
         app.add_systems(Startup, spawn_ui_overlay_camera);
     }
@@ -732,6 +743,7 @@ pub(crate) fn run() {
     } else {
         insert_embedded_fonts(&mut app);
         app.init_state::<ClientAppState>();
+        app.add_systems(OnEnter(ClientAppState::Auth), ensure_lightyear_client_system);
         auth_ui::register_auth_ui(&mut app);
         dialog_ui::register_dialog_ui(&mut app);
         app.add_systems(
@@ -772,9 +784,10 @@ pub(crate) fn run() {
                 update_topdown_camera_system.after(adopt_native_lightyear_replicated_entities),
                 update_camera_motion_state.after(update_topdown_camera_system),
                 update_hud_system,
-                logout_to_auth_system,
                 update_starfield_material_system.after(update_camera_motion_state),
                 update_space_background_material_system.after(update_camera_motion_state),
+                toggle_debug_overlay_system,
+                draw_debug_overlay_system.after(toggle_debug_overlay_system),
             )
                 .run_if(in_state(ClientAppState::InWorld)),
         );
@@ -783,6 +796,10 @@ pub(crate) fn run() {
             send_lightyear_input_messages
                 .in_set(lightyear::prelude::client::input::InputSystems::WriteClientInputs)
                 .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            PreUpdate,
+            logout_to_auth_system.run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(
             FixedUpdate,
@@ -1011,7 +1028,22 @@ fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
     ));
 }
 
+/// Spawns the Lightyear client and triggers Connect if no client entity exists.
+/// Used on Enter Auth so we have a connection for sending auth after (re)login.
+fn ensure_lightyear_client_system(
+    mut commands: Commands<'_, '_>,
+    existing: Query<'_, '_, Entity, With<RawClient>>,
+) {
+    if existing.is_empty() {
+        start_lightyear_client_transport_inner(&mut commands);
+    }
+}
+
 fn start_lightyear_client_transport(mut commands: Commands<'_, '_>) {
+    start_lightyear_client_transport_inner(&mut commands);
+}
+
+fn start_lightyear_client_transport_inner(commands: &mut Commands<'_, '_>) {
     let local_addr = std::env::var("CLIENT_UDP_BIND")
         .unwrap_or_else(|_| "127.0.0.1:7003".to_string())
         .parse::<SocketAddr>();
@@ -2719,7 +2751,7 @@ fn watch_in_world_bootstrap_failures(
     if !watchdog.no_world_state_dialog_shown
         && asset_manager.bootstrap_complete()
         && !watchdog.replication_state_seen
-        && now - entered_at > 3.0
+        && now - entered_at > 10.0
     {
         warn!(
             "client bootstrap completed but no replication world state received (auth_bind_sent={} manifest_seen={})",
@@ -2890,7 +2922,7 @@ fn update_hud_system(
     };
     let speed = Vec2::new(vel.x, vel.y).length();
     let content = format!(
-        "SIDEREAL FLIGHT\nPos: ({:.0}, {:.0})\nSpeed: {:.1} m/s\nVel: ({:.1}, {:.1})\nHeading: {:.0}\u{00b0}\nHealth: {:.0}/{:.0}\nFocus: {}\nControls: W/S thrust, A/D turn, SPACE brake, F focus nearest, C focus controlled, ESC logout",
+        "SIDEREAL FLIGHT\nPos: ({:.0}, {:.0})\nSpeed: {:.1} m/s\nVel: ({:.1}, {:.1})\nHeading: {:.0}\u{00b0}\nHealth: {:.0}/{:.0}\nFocus: {}\nControls: W/S thrust, A/D turn, SPACE brake, F focus nearest, C focus controlled, F3 debug overlay, ESC logout",
         pos.x,
         pos.y,
         speed,
@@ -2994,9 +3026,72 @@ fn enforce_controlled_planar_motion(
     }
 }
 
+fn toggle_debug_overlay_system(
+    input: Res<'_, ButtonInput<KeyCode>>,
+    mut debug_overlay: ResMut<'_, DebugOverlayEnabled>,
+) {
+    if input.just_pressed(KeyCode::F3) {
+        debug_overlay.enabled = !debug_overlay.enabled;
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn draw_debug_overlay_system(
+    debug_overlay: Res<'_, DebugOverlayEnabled>,
+    mut gizmos: Gizmos,
+    entities: Query<
+        '_,
+        '_,
+        (
+            &'_ Position,
+            &'_ Rotation,
+            Option<&'_ SizeM>,
+            Option<&'_ LinearVelocity>,
+            Option<&'_ MountedOn>,
+            Option<&'_ Hardpoint>,
+        ),
+        With<WorldEntity>,
+    >,
+) {
+    if !debug_overlay.enabled {
+        return;
+    }
+    const VELOCITY_ARROW_SCALE: f32 = 0.5;
+    const HARDPOINT_CROSS_HALF_SIZE: f32 = 2.0;
+    let collision_color = Color::srgb(0.2, 0.8, 0.2);
+    let velocity_color = Color::srgb(0.2, 0.5, 1.0);
+    let hardpoint_color = Color::srgb(1.0, 0.8, 0.2);
+
+    for (position, rotation, size_m, linear_velocity, mounted_on, hardpoint) in &entities {
+        let pos = position.0;
+        let rot = rotation.0;
+
+        if let Some(size) = size_m {
+            let half_extents = Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5);
+            let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, half_extents);
+            let transform = Transform::from_translation(pos).with_rotation(rot);
+            gizmos.aabb_3d(aabb, transform, collision_color);
+        }
+
+        if mounted_on.is_none() && let Some(vel) = linear_velocity {
+            let len = vel.0.length();
+            if len > 0.01 {
+                let end = pos + vel.0 * VELOCITY_ARROW_SCALE;
+                gizmos.arrow(pos, end, velocity_color);
+            }
+        }
+
+        if hardpoint.is_some() {
+            let isometry = bevy::math::Isometry3d::new(pos, rot);
+            gizmos.cross(isometry, HARDPOINT_CROSS_HALF_SIZE, hardpoint_color);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn logout_to_auth_system(
     input: Res<'_, ButtonInput<KeyCode>>,
+    mut commands: Commands<'_, '_>,
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
     mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
@@ -3006,9 +3101,13 @@ fn logout_to_auth_system(
     mut focus_state: ResMut<'_, CameraFocusState>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
+    client_entities: Query<'_, '_, Entity, With<RawClient>>,
 ) {
     if !input.just_pressed(KeyCode::Escape) {
         return;
+    }
+    for entity in &client_entities {
+        commands.entity(entity).despawn();
     }
     next_state.set(ClientAppState::Auth);
     session.player_entity_id = None;

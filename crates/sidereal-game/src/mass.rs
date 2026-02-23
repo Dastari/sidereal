@@ -83,9 +83,8 @@ pub fn recompute_total_mass(
         >,
         Query<(&TotalMassKg, Option<&MassDirty>), Without<MountedOn>>,
     )>,
-    modules: Query<(&EntityGuid, &MountedOn, Option<&MassKg>, Option<&Inventory>)>,
+    modules: Query<(Entity, &EntityGuid, &MountedOn, Option<&MassKg>, Option<&Inventory>)>,
     inventories: Query<(Entity, Option<&Inventory>)>,
-    child_of: Query<(Entity, &ChildOf)>,
 ) {
     let needs_recompute = roots
         .p1()
@@ -99,17 +98,27 @@ pub fn recompute_total_mass(
         .iter()
         .map(|(entity, inventory)| (entity, inventory_mass_kg(inventory)))
         .collect::<HashMap<_, _>>();
+
+    // Build parent entity -> child entities from roots and MountedOn (avoids Bevy ChildOf so
+    // we don't rely on replicated hierarchy, which can cause client spawn-order panics).
+    let root_guid_to_entity: HashMap<Uuid, Entity> = roots
+        .p0()
+        .iter()
+        .map(|(entity, guid, ..)| (guid.0, entity))
+        .collect();
     let mut children_by_parent_entity = HashMap::<Entity, Vec<Entity>>::new();
-    for (entity, parent) in &child_of {
-        children_by_parent_entity
-            .entry(parent.parent())
-            .or_default()
-            .push(entity);
+    for (child_entity, _guid, mounted_on, ..) in &modules {
+        if let Some(&parent_entity) = root_guid_to_entity.get(&mounted_on.parent_entity_id) {
+            children_by_parent_entity
+                .entry(parent_entity)
+                .or_default()
+                .push(child_entity);
+        }
     }
 
     let mut module_mass_by_guid = HashMap::<Uuid, f32>::new();
     let mut module_children_by_parent_guid = HashMap::<Uuid, Vec<Uuid>>::new();
-    for (module_guid, mounted_on, module_mass, module_inventory) in &modules {
+    for (_entity, module_guid, mounted_on, module_mass, module_inventory) in &modules {
         let module_total =
             module_mass.map(|m| m.0).unwrap_or(0.0) + inventory_mass_kg(module_inventory);
         module_mass_by_guid.insert(module_guid.0, module_total);

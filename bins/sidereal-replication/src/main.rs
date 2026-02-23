@@ -4,7 +4,7 @@ mod visibility;
 
 use crate::replication::assets::{
     receive_client_asset_acks, receive_client_asset_requests,
-    stream_bootstrap_assets_to_authenticated_clients,
+    send_asset_stream_chunks_paced, stream_bootstrap_assets_to_authenticated_clients,
 };
 use crate::replication::auth::{cleanup_client_auth_bindings, receive_client_auth_messages};
 use crate::replication::hydration_parse::{
@@ -47,7 +47,9 @@ use bevy::scene::ScenePlugin;
 use bootstrap_runtime::BootstrapShipReceiver;
 use lightyear::prelude::server::RawServer;
 use lightyear::prelude::server::ServerPlugins;
-use lightyear::prelude::{NetworkTarget, Replicate};
+use lightyear::prelude::{
+    ControlledBy, Lifetime, NetworkTarget, Replicate, ReplicationBufferSystems,
+};
 use sidereal_asset_runtime::default_asset_dependencies;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
@@ -108,16 +110,35 @@ struct AuthenticatedClientBindings {
     by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
 }
 
+/// Chunk queued for paced sending to avoid UDP send-buffer overflow (EAGAIN).
+pub(crate) struct PendingAssetChunk {
+    pub(crate) asset_id: String,
+    pub(crate) relative_cache_path: String,
+    pub(crate) chunk_index: u32,
+    pub(crate) chunk_count: u32,
+    pub(crate) bytes: Vec<u8>,
+}
+
 #[derive(Resource, Default)]
 struct AssetStreamServerState {
     sent_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
     pending_requested_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
     acked_assets_by_remote: HashMap<lightyear::prelude::PeerId, HashMap<String, u64>>,
+    /// Chunks to send per remote; drained at a fixed rate per frame to avoid EAGAIN.
+    pub(crate) pending_chunks_by_remote:
+        HashMap<lightyear::prelude::PeerId, std::collections::VecDeque<PendingAssetChunk>>,
 }
 
 #[derive(Resource, Default)]
 struct AssetDependencyMap {
     dependencies_by_asset_id: HashMap<String, Vec<String>>,
+}
+
+/// Deferred (client_entity, ship_entity) bindings so ControlledBy is applied in PostUpdate,
+/// avoiding same-frame entity/hierarchy ordering issues during replication.
+#[derive(Resource, Default)]
+pub(crate) struct PendingControlledByBindings {
+    pub(crate) bindings: Vec<(Entity, Entity)>,
 }
 
 #[derive(Resource, Default)]
@@ -193,6 +214,7 @@ fn main() {
         dependencies_by_asset_id: default_asset_dependencies(),
     });
     app.insert_resource(SimulationPersistenceTimer::default());
+    app.insert_resource(PendingControlledByBindings::default());
     app.add_systems(
         Update,
         (
@@ -203,6 +225,7 @@ fn main() {
             receive_client_asset_requests,
             receive_client_asset_acks,
             stream_bootstrap_assets_to_authenticated_clients,
+            send_asset_stream_chunks_paced.after(stream_bootstrap_assets_to_authenticated_clients),
             report_input_drop_metrics,
             process_bootstrap_ship_commands,
         )
@@ -231,6 +254,10 @@ fn main() {
     app.add_systems(
         FixedUpdate,
         drain_native_player_inputs_to_action_queue.before(PhysicsSystems::Prepare),
+    );
+    app.add_systems(
+        PostUpdate,
+        apply_pending_controlled_by_bindings.after(ReplicationBufferSystems::AfterBuffer),
     );
     app.run();
 }
@@ -391,7 +418,6 @@ fn hydrate_simulation_entities(
     let type_paths = component_type_path_map(&component_registry);
     let mut ship_guid_by_entity_id = HashMap::<String, uuid::Uuid>::new();
     let mut spawned_entity_by_entity_id = HashMap::<String, Entity>::new();
-    let mut pending_parent_links = Vec::<(Entity, String)>::new();
     let mut ship_records = Vec::new();
     let mut hardpoint_records = Vec::new();
     let mut module_records = Vec::new();
@@ -612,14 +638,6 @@ fn hydrate_simulation_entities(
             &app_type_registry,
         );
         spawned_entity_by_entity_id.insert(record.entity_id.clone(), hardpoint_entity);
-        if let Some(parent_entity_id) = record
-            .properties
-            .get("parent_entity_id")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-        {
-            pending_parent_links.push((hardpoint_entity, parent_entity_id));
-        }
         hydrated_hardpoints = hydrated_hardpoints.saturating_add(1);
     }
 
@@ -686,22 +704,12 @@ fn hydrate_simulation_entities(
             &app_type_registry,
         );
         spawned_entity_by_entity_id.insert(record.entity_id.clone(), module_entity);
-        if let Some(parent_entity_id) = record
-            .properties
-            .get("parent_entity_id")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-        {
-            pending_parent_links.push((module_entity, parent_entity_id));
-        }
         hydrated_modules = hydrated_modules.saturating_add(1);
     }
 
-    for (child, parent_entity_id) in pending_parent_links {
-        if let Some(parent) = spawned_entity_by_entity_id.get(&parent_entity_id) {
-            commands.entity(child).set_parent_in_place(*parent);
-        }
-    }
+    // Do not use set_parent_in_place: Bevy Parent/ChildOf would be replicated by Lightyear's
+    // HierarchySendPlugin and can cause "Entity not yet spawned: PLACEHOLDER" on the client when
+    // a child is applied before its parent. Logical hierarchy is expressed via MountedOn only.
 
     println!(
         "replication simulation hydrated {hydrated_ships} entities, {hydrated_hardpoints} hardpoints and {hydrated_modules} modules"
@@ -711,6 +719,8 @@ fn hydrate_simulation_entities(
 fn process_bootstrap_ship_commands(
     mut commands: Commands<'_, '_>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
+    mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
+    bindings: Res<'_, AuthenticatedClientBindings>,
     receiver: Option<Res<'_, BootstrapShipReceiver>>,
 ) {
     let Some(receiver) = receiver else { return };
@@ -733,6 +743,32 @@ fn process_bootstrap_ship_commands(
             bootstrap_runtime::starter_spawn_position(cmd.account_id),
             Vec3::ZERO,
         );
+        // Defer ControlledBy to PostUpdate so replication send sees the ship before we add the binding.
+        if let Some(&ship_entity) = controlled_entity_map
+            .by_player_entity_id
+            .get(&cmd.player_entity_id)
+        {
+            let client_entity = bindings
+                .by_client_entity
+                .iter()
+                .find(|(_, player_id)| *player_id == &cmd.player_entity_id)
+                .map(|(entity, _)| *entity);
+            if let Some(client_entity) = client_entity {
+                pending_controlled_by.bindings.push((client_entity, ship_entity));
+            }
+        }
+    }
+}
+
+fn apply_pending_controlled_by_bindings(
+    mut commands: Commands<'_, '_>,
+    mut pending: ResMut<'_, PendingControlledByBindings>,
+) {
+    for (client_entity, ship_entity) in pending.bindings.drain(..) {
+        commands.entity(ship_entity).insert(ControlledBy {
+            owner: client_entity,
+            lifetime: Lifetime::SessionBased,
+        });
     }
 }
 

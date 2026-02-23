@@ -257,9 +257,9 @@ fn spawn_corvette_modules(
         EntityGuid(engine_left_guid),
         DisplayName("Engine Port".to_string()),
         Engine {
-            thrust: 1_200_000.0,
-            reverse_thrust: 600_000.0,
-            torque_thrust: 3_000_000.0,
+            thrust: 600_000.0,
+            reverse_thrust: 300_000.0,
+            torque_thrust: 1_500_000.0,
             burn_rate_kg_s: 0.8,
         },
         MountedOn {
@@ -292,9 +292,9 @@ fn spawn_corvette_modules(
         EntityGuid(engine_right_guid),
         DisplayName("Engine Starboard".to_string()),
         Engine {
-            thrust: 1_200_000.0,
-            reverse_thrust: 600_000.0,
-            torque_thrust: 3_000_000.0,
+            thrust: 600_000.0,
+            reverse_thrust: 300_000.0,
+            torque_thrust: 1_500_000.0,
             burn_rate_kg_s: 0.8,
         },
         MountedOn {

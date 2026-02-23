@@ -12,7 +12,8 @@ use sidereal_persistence::PlayerRuntimeViewState;
 use crate::replication::input::ClientInputTickTracker;
 use crate::{
     AssetStreamServerState, AuthenticatedClientBindings, ClientVisibilityRegistry,
-    PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, unix_epoch_now_i64,
+    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeViewDirtySet,
+    PlayerRuntimeViewRegistry, unix_epoch_now_i64,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -61,7 +62,9 @@ pub fn cleanup_client_auth_bindings(
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn receive_client_auth_messages(
+    mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
     mut auth_receivers: Query<
         '_,
         '_,
@@ -72,6 +75,7 @@ pub fn receive_client_auth_messages(
         ),
         With<ClientOf>,
     >,
+    controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut view_registry: ResMut<'_, PlayerRuntimeViewRegistry>,
@@ -167,6 +171,17 @@ pub fn receive_client_auth_messages(
             dirty_view_states
                 .player_entity_ids
                 .insert(claims.player_entity_id.clone());
+
+            // Defer ControlledBy to PostUpdate to avoid same-frame replication/hierarchy ordering issues.
+            if let Some(&ship_entity) = controlled_entity_map
+                .by_player_entity_id
+                .get(&claims.player_entity_id)
+            {
+                pending_controlled_by
+                    .bindings
+                    .push((client_entity, ship_entity));
+            }
+
             info!(
                 "replication client authenticated and bound: client={:?} remote={:?} player_entity_id={}",
                 client_entity, remote_id.0, claims.player_entity_id

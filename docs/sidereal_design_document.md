@@ -265,6 +265,40 @@ A client may be authorized for more than it currently receives on a given stream
   - included entities per frame,
   - query time budget per client.
 
+### 7.8 Scale and Control-Swap Readiness (Current vs Target)
+
+**Is the current network system robust enough for thousands of entities, multiple owners, and players swapping which ship they control?**
+
+**No.** The current implementation is suitable for small sessions (handful of players, tens of entities). The following gaps must be closed for the target scale and control model.
+
+**Visibility and scale**
+
+- **Current:** `update_network_visibility` does a full scan: for each client, it iterates every replicated entity and evaluates range/ownership/faction. Complexity is O(clients × entities) per fixed tick.
+- **Target (see 7.7):** Spatial indexing (e.g. grid or BVH) so visibility uses “nearby cells” and owned/scanner-derived coverage, not a full-world scan. Without this, thousands of entities and many clients will not be viable.
+
+**Observer and scanner aggregation**
+
+- **Current:** One observer position per client, from a single “controlled” entity (and an OwnerId-based fallback). Scanner range is taken from that entity only.
+- **Target (see 7.2):** Scanner authorization should aggregate over *all* owned entities (e.g. all ships the player owns), not only the currently controlled one. Observer/visibility logic should support multiple observer points or an aggregated range per client.
+
+**Control swap (player changes which ship they control)**
+
+- **Current:** The server stores `last_controlled_entity_id` from `ClientViewUpdateMessage` and persists it, but **input routing is not driven by it**. Input is routed only via Lightyear’s `ControlledBy`, which is bound once at auth/bootstrap to a single ship. `PlayerControlledEntityMap` holds one entity per `player_entity_id`. There is no path to “swap control” to another owned ship.
+- **Target:** When the client sends a view update with a new `controlled_entity_id` that is an entity owned by that player, the server must:
+  - Update which entity has `ControlledBy` for that client (remove from old ship, insert on new ship),
+  - Keep observer/visibility and `PlayerControlledEntityMap` (or equivalent) in sync with the current controlled entity,
+  - Persist the new “current controlled” choice so it survives reconnect/restart.
+
+**Multiple ships per player**
+
+- **Current:** A player can own multiple ships (same `OwnerId`), but only one is the “controlled” ship in `PlayerControlledEntityMap`, and only that one receives input. No support for switching which of the player’s ships is controlled.
+- **Target:** Support multiple owned entities per player and a clear “current controlled” entity that can change over time (control swap above), with visibility/input/observer all consistent with that choice.
+
+**Summary**
+
+- **Thousands of entities, multiple players:** Not robust until visibility uses spatial indexing and possibly replication culling/LOD as described in 7.5–7.7.
+- **Players swapping between ships they own:** Not implemented; requires server-side handling of `controlled_entity_id` to update `ControlledBy`, observer, and controlled-entity mapping.
+
 ## 8. Auth and Session Identity
 
 - Gateway owns auth lifecycle (`register/login/refresh/reset`).
