@@ -12,5 +12,6 @@ pub mod view;
 pub mod visibility;
 
 pub use simulation_entities::{
-    PendingControlledByBindings, PlayerControlledEntityMap, SimulatedControlledEntity,
+    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
+    SimulatedControlledEntity,
 };

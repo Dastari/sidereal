@@ -13,6 +13,7 @@ pub struct ClientAuthMessage {
 pub struct ClientViewUpdateMessage {
     pub player_entity_id: String,
     pub focused_entity_id: Option<String>,
+    pub selected_entity_id: Option<String>,
     pub controlled_entity_id: Option<String>,
     pub camera_position_m: [f32; 3],
 }

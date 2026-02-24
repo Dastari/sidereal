@@ -1,9 +1,7 @@
 use bevy::log::info;
 use bevy::prelude::{Commands, Resource};
 use sidereal_game::corvette_random_spawn_position;
-use sidereal_persistence::GraphPersistence;
 use sidereal_replication::bootstrap::{BootstrapProcessor, PostgresBootstrapStore};
-use sidereal_runtime_sync::entity_templates;
 use std::net::UdpSocket;
 use std::sync::{Mutex, mpsc};
 use std::thread;
@@ -52,7 +50,6 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
 
     info!("replication control UDP listening on {}", bind_addr);
     thread::spawn(move || {
-        let db_url = database_url;
         loop {
             let mut buf = vec![0_u8; 8192];
             let (size, from) = match socket.recv_from(&mut buf) {
@@ -70,23 +67,17 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
                         result.account_id, result.player_entity_id, result.applied
                     );
                     if result.applied {
-                        if let Err(err) = bootstrap_starter_ship(
-                            &db_url,
-                            result.account_id,
-                            &result.player_entity_id,
-                        ) {
-                            eprintln!(
-                                "replication bootstrap world-init failed for account {}: {err}",
-                                result.account_id
-                            );
-                        } else {
-                            let ship_entity_id = format!("ship:{}", result.account_id);
-                            let _ = tx.send(BootstrapShipCommand {
-                                account_id: result.account_id,
-                                player_entity_id: result.player_entity_id,
-                                ship_entity_id,
-                            });
-                        }
+                        let ship_entity_id = result
+                            .player_entity_id
+                            .split(':')
+                            .nth(1)
+                            .map(|id| format!("ship:{id}"))
+                            .unwrap_or_else(|| format!("ship:{}", result.account_id));
+                        let _ = tx.send(BootstrapShipCommand {
+                            account_id: result.account_id,
+                            player_entity_id: result.player_entity_id,
+                            ship_entity_id,
+                        });
                     }
                 }
                 Err(err) => {
@@ -108,24 +99,6 @@ pub fn drain_bootstrap_ship_commands(
         out.push(cmd);
     }
     out
-}
-
-fn bootstrap_starter_ship(
-    database_url: &str,
-    account_id: uuid::Uuid,
-    player_entity_id: &str,
-) -> sidereal_persistence::Result<()> {
-    let mut persistence = GraphPersistence::connect(database_url)?;
-    persistence.ensure_schema()?;
-
-    let position = corvette_random_spawn_position(account_id);
-    let records = entity_templates::corvette_starter_graph_records(
-        account_id,
-        player_entity_id,
-        position,
-    );
-    persistence.persist_graph_records(&records, 0)?;
-    Ok(())
 }
 
 pub fn starter_spawn_position(account_id: uuid::Uuid) -> bevy::prelude::Vec3 {

@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
 pub mod actions;
+pub mod component_meta;
+pub mod components;
 pub mod entities;
 pub mod flight;
 pub mod generated;
@@ -9,6 +11,8 @@ pub mod scanner;
 
 // Re-export commonly used items
 pub use actions::*;
+pub use component_meta::*;
+pub use components::*;
 pub use entities::*;
 pub use generated::components::*;
 pub use mass::recompute_total_mass;

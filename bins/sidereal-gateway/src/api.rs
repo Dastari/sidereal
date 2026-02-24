@@ -1,5 +1,6 @@
 use crate::auth::{
     AuthConfig, AuthError, AuthService, AuthTokens, InMemoryAuthStore, NoopBootstrapDispatcher,
+    NoopStarterWorldPersister,
 };
 use axum::extract::Path;
 use axum::extract::State;
@@ -19,10 +20,11 @@ use tracing::{error, info, warn};
 pub type SharedAuthService = Arc<AuthService>;
 
 pub fn app(config: AuthConfig) -> Router {
-    let service = Arc::new(AuthService::new(
+    let service = Arc::new(AuthService::new_with_persister(
         config,
         Arc::new(InMemoryAuthStore::default()),
         Arc::new(NoopBootstrapDispatcher),
+        Arc::new(NoopStarterWorldPersister),
     ));
     app_with_service(service)
 }
@@ -36,6 +38,8 @@ pub fn app_with_service(service: SharedAuthService) -> Router {
         .route("/auth/password-reset/request", post(password_reset_request))
         .route("/auth/password-reset/confirm", post(password_reset_confirm))
         .route("/auth/me", get(me))
+        .route("/auth/characters", get(characters))
+        .route("/world/enter", post(enter_world))
         .route("/world/me", get(world_me))
         .route("/assets/stream/{asset_id}", get(stream_asset))
         .with_state(service)
@@ -92,6 +96,26 @@ pub struct MeResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CharacterSummary {
+    pub player_entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CharactersResponse {
+    pub characters: Vec<CharacterSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EnterWorldRequest {
+    pub player_entity_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnterWorldResponse {
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamAssetDescriptor {
     pub asset_id: String,
     pub relative_cache_path: String,
@@ -110,7 +134,6 @@ pub struct WorldMeResponse {
     pub engine_max_accel_mps2: f32,
     pub engine_ramp_to_max_s: f32,
     pub model_asset_id: String,
-    pub starfield_shader_asset_id: String,
     pub assets: Vec<StreamAssetDescriptor>,
 }
 
@@ -179,6 +202,34 @@ async fn me(
     }))
 }
 
+async fn characters(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+) -> Result<Json<CharactersResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    let characters = service.list_characters(access_token).await?;
+    Ok(Json(CharactersResponse {
+        characters: characters
+            .into_iter()
+            .map(|character| CharacterSummary {
+                player_entity_id: character.player_entity_id,
+            })
+            .collect(),
+    }))
+}
+
+async fn enter_world(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+    Json(req): Json<EnterWorldRequest>,
+) -> Result<Json<EnterWorldResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    service
+        .enter_world(access_token, &req.player_entity_id)
+        .await?;
+    Ok(Json(EnterWorldResponse { accepted: true }))
+}
+
 async fn world_me(
     State(service): State<SharedAuthService>,
     headers: HeaderMap,
@@ -226,12 +277,6 @@ async fn world_me(
         .get("asset_id")
         .and_then(|v| v.as_str())
         .unwrap_or("corvette_01")
-        .to_string();
-    let starfield_shader_asset_id = ship
-        .properties
-        .get("starfield_shader_asset_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("starfield_wgsl")
         .to_string();
     let engine_max_accel_mps2 = ship
         .properties
@@ -296,7 +341,6 @@ async fn world_me(
         engine_max_accel_mps2,
         engine_ramp_to_max_s,
         model_asset_id,
-        starfield_shader_asset_id,
         assets,
     }))
 }

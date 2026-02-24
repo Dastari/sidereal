@@ -2,7 +2,7 @@ mod legacy_envelope;
 
 pub use legacy_envelope::{ChannelClass, NetEnvelope, decode_envelope_json, encode_envelope_json};
 
-use postgres::{Client, NoTls};
+use postgres::{Client, NoTls, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
@@ -19,15 +19,6 @@ pub enum PersistenceError {
 }
 
 pub type Result<T> = std::result::Result<T, PersistenceError>;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct PlayerRuntimeViewState {
-    pub player_entity_id: String,
-    pub last_controlled_entity_id: Option<String>,
-    pub last_focused_entity_id: Option<String>,
-    pub last_camera_position_m: Option<[f32; 3]>,
-    pub updated_at_epoch_s: i64,
-}
 
 /// Sanitize a Rust type path into a key safe for AGE/Cypher property names.
 /// AGE strips characters like `:` from property keys, so we replace `::` with `__`.
@@ -133,94 +124,6 @@ impl GraphPersistence {
             )
             .map_err(db_err("create snapshot marker table"))?;
 
-        self.client
-            .batch_execute(
-                "
-                CREATE TABLE IF NOT EXISTS replication_player_view_state (
-                    player_entity_id TEXT PRIMARY KEY,
-                    last_controlled_entity_id TEXT,
-                    last_focused_entity_id TEXT,
-                    last_camera_x DOUBLE PRECISION,
-                    last_camera_y DOUBLE PRECISION,
-                    last_camera_z DOUBLE PRECISION,
-                    updated_at_epoch_s BIGINT NOT NULL
-                );
-                ",
-            )
-            .map_err(db_err("create player view state table"))?;
-
-        Ok(())
-    }
-
-    pub fn load_player_view_states(&mut self) -> Result<Vec<PlayerRuntimeViewState>> {
-        let rows = self
-            .client
-            .query(
-                "
-                SELECT player_entity_id, last_controlled_entity_id, last_focused_entity_id,
-                       last_camera_x, last_camera_y, last_camera_z, updated_at_epoch_s
-                FROM replication_player_view_state
-                ",
-                &[],
-            )
-            .map_err(db_err("query player view states"))?;
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let x = row.get::<_, Option<f64>>(3);
-                let y = row.get::<_, Option<f64>>(4);
-                let z = row.get::<_, Option<f64>>(5);
-                let camera = match (x, y, z) {
-                    (Some(x), Some(y), Some(z)) => Some([x as f32, y as f32, z as f32]),
-                    _ => None,
-                };
-                PlayerRuntimeViewState {
-                    player_entity_id: row.get::<_, String>(0),
-                    last_controlled_entity_id: row.get::<_, Option<String>>(1),
-                    last_focused_entity_id: row.get::<_, Option<String>>(2),
-                    last_camera_position_m: camera,
-                    updated_at_epoch_s: row.get::<_, i64>(6),
-                }
-            })
-            .collect::<Vec<_>>())
-    }
-
-    pub fn upsert_player_view_state(&mut self, state: &PlayerRuntimeViewState) -> Result<()> {
-        let (x, y, z) = state
-            .last_camera_position_m
-            .map(|p| (Some(p[0] as f64), Some(p[1] as f64), Some(p[2] as f64)))
-            .unwrap_or((None, None, None));
-        self.client
-            .execute(
-                "
-                INSERT INTO replication_player_view_state (
-                    player_entity_id,
-                    last_controlled_entity_id,
-                    last_focused_entity_id,
-                    last_camera_x,
-                    last_camera_y,
-                    last_camera_z,
-                    updated_at_epoch_s
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7)
-                ON CONFLICT (player_entity_id) DO UPDATE SET
-                    last_controlled_entity_id = EXCLUDED.last_controlled_entity_id,
-                    last_focused_entity_id = EXCLUDED.last_focused_entity_id,
-                    last_camera_x = EXCLUDED.last_camera_x,
-                    last_camera_y = EXCLUDED.last_camera_y,
-                    last_camera_z = EXCLUDED.last_camera_z,
-                    updated_at_epoch_s = EXCLUDED.updated_at_epoch_s
-                ",
-                &[
-                    &state.player_entity_id,
-                    &state.last_controlled_entity_id,
-                    &state.last_focused_entity_id,
-                    &x,
-                    &y,
-                    &z,
-                    &state.updated_at_epoch_s,
-                ],
-            )
-            .map_err(db_err("upsert player view state"))?;
         Ok(())
     }
 
@@ -501,6 +404,207 @@ impl GraphPersistence {
         })?;
         Ok(())
     }
+}
+
+pub fn ensure_schema_in_transaction(tx: &mut Transaction<'_>, graph_name: &str) -> Result<()> {
+    tx.batch_execute("CREATE EXTENSION IF NOT EXISTS age;")
+        .map_err(db_err("create age extension"))?;
+    tx.batch_execute("LOAD 'age';")
+        .map_err(db_err("load age extension"))?;
+    tx.batch_execute("SET search_path = ag_catalog, \"$user\", public;")
+        .map_err(db_err("set age search_path"))?;
+
+    let graph_exists = tx
+        .query_opt(
+            "SELECT 1 FROM ag_catalog.ag_graph WHERE name = $1 LIMIT 1",
+            &[&graph_name],
+        )
+        .map_err(db_err("query graph existence"))?
+        .is_some();
+    if !graph_exists {
+        let query = format!(
+            "SELECT * FROM ag_catalog.create_graph('{}');",
+            escape_cypher_string(graph_name)
+        );
+        tx.batch_execute(&query).map_err(db_err("create graph"))?;
+    }
+
+    tx.batch_execute("SET search_path = public;")
+        .map_err(db_err("reset search_path"))?;
+
+    tx.batch_execute(
+        "
+        CREATE TABLE IF NOT EXISTS replication_snapshot_markers (
+            snapshot_id BIGSERIAL PRIMARY KEY,
+            snapshot_tick BIGINT NOT NULL,
+            entity_count BIGINT NOT NULL,
+            created_at_epoch_s BIGINT NOT NULL
+        );
+        ",
+    )
+    .map_err(db_err("create snapshot marker table"))?;
+
+    Ok(())
+}
+
+pub fn persist_graph_records_in_transaction(
+    tx: &mut Transaction<'_>,
+    graph_name: &str,
+    records: &[GraphEntityRecord],
+    tick: u64,
+) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    tx.batch_execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
+        .map_err(db_err("prep age for graph persist"))?;
+
+    for record in records {
+        let labels = sanitize_labels(&record.labels);
+        let mut set_parts = vec![format!("e.last_tick={tick}")];
+        set_parts.push(format!(
+            "e.sidereal_labels={}",
+            cypher_literal(&JsonValue::Array(
+                labels
+                    .iter()
+                    .cloned()
+                    .map(JsonValue::String)
+                    .collect::<Vec<_>>()
+            ))
+        ));
+        set_parts.extend(cypher_set_clauses("e", &record.properties));
+
+        run_cypher_in_transaction(
+            tx,
+            graph_name,
+            &format!(
+                "MERGE (e:Entity {{entity_id:'{}'}}) SET {}",
+                escape_cypher_string(&record.entity_id),
+                set_parts.join(", "),
+            ),
+        )?;
+
+        let incoming_component_ids = JsonValue::Array(
+            record
+                .components
+                .iter()
+                .map(|c| JsonValue::String(c.component_id.clone()))
+                .collect::<Vec<_>>(),
+        );
+        run_cypher_in_transaction(
+            tx,
+            graph_name,
+            &format!(
+                "MATCH (e:Entity {{entity_id:'{}'}}) \
+                 OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(c:Component) \
+                 WHERE c IS NOT NULL AND NOT c.component_id IN {} \
+                 DETACH DELETE c",
+                escape_cypher_string(&record.entity_id),
+                cypher_literal(&incoming_component_ids),
+            ),
+        )?;
+
+        for component in &record.components {
+            let mut comp_set = vec![
+                format!("c.last_tick={tick}"),
+                format!(
+                    "c.component_id={}",
+                    cypher_literal(&JsonValue::String(component.component_id.clone()))
+                ),
+                format!(
+                    "c.component_kind={}",
+                    cypher_literal(&JsonValue::String(component.component_kind.clone()))
+                ),
+            ];
+            comp_set.extend(cypher_set_clauses("c", &component.properties));
+            run_cypher_in_transaction(
+                tx,
+                graph_name,
+                &format!(
+                    "MERGE (c:Component {{component_id:'{}'}}) SET {}",
+                    escape_cypher_string(&component.component_id),
+                    comp_set.join(", ")
+                ),
+            )?;
+            run_cypher_in_transaction(
+                tx,
+                graph_name,
+                &format!(
+                    "MATCH (e:Entity {{entity_id:'{}'}}), (c:Component {{component_id:'{}'}}) MERGE (e)-[:HAS_COMPONENT]->(c)",
+                    escape_cypher_string(&record.entity_id),
+                    escape_cypher_string(&component.component_id),
+                ),
+            )?;
+        }
+
+        if let Some(parent_id) = record
+            .properties
+            .get("parent_entity_id")
+            .and_then(JsonValue::as_str)
+        {
+            run_cypher_in_transaction(
+                tx,
+                graph_name,
+                &format!(
+                    "MATCH (p:Entity {{entity_id:'{}'}}), (e:Entity {{entity_id:'{}'}}) MERGE (p)-[:HAS_CHILD]->(e)",
+                    escape_cypher_string(parent_id),
+                    escape_cypher_string(&record.entity_id),
+                ),
+            )?;
+        }
+
+        if record.labels.iter().any(|l| l == "Hardpoint")
+            && let Some(owner_id) = record
+                .properties
+                .get("owner_entity_id")
+                .and_then(JsonValue::as_str)
+        {
+            run_cypher_in_transaction(
+                tx,
+                graph_name,
+                &format!(
+                    "MATCH (s:Entity {{entity_id:'{}'}}), (h:Entity {{entity_id:'{}'}}) MERGE (s)-[:HAS_HARDPOINT]->(h)",
+                    escape_cypher_string(owner_id),
+                    escape_cypher_string(&record.entity_id),
+                ),
+            )?;
+        }
+
+        if let Some(mounted_on) = record
+            .properties
+            .get("mounted_on_entity_id")
+            .and_then(JsonValue::as_str)
+        {
+            run_cypher_in_transaction(
+                tx,
+                graph_name,
+                &format!(
+                    "MATCH (m:Entity {{entity_id:'{}'}}), (h:Entity {{entity_id:'{}'}}) MERGE (m)-[:MOUNTED_ON]->(h)",
+                    escape_cypher_string(&record.entity_id),
+                    escape_cypher_string(mounted_on),
+                ),
+            )?;
+        }
+    }
+
+    tx.batch_execute("SET search_path = public;")
+        .map_err(db_err("reset search_path after graph persist"))?;
+    Ok(())
+}
+
+fn run_cypher_in_transaction(
+    tx: &mut Transaction<'_>,
+    graph_name: &str,
+    cypher: &str,
+) -> Result<()> {
+    let sql = format!(
+        "SELECT * FROM ag_catalog.cypher('{}', $$ {cypher} $$) AS (v agtype);",
+        escape_cypher_string(graph_name)
+    );
+    tx.query(&sql, &[]).map_err(|err| {
+        PersistenceError::Database(format!("cypher execution failed: {err}; query={cypher}"))
+    })?;
+    Ok(())
 }
 
 fn sanitize_labels(labels: &[String]) -> Vec<String> {

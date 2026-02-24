@@ -364,13 +364,10 @@ app.add_plugins(CelestialRenderingPlugin);
 # Terminal 1: Replication
 cargo run --bin sidereal-replication
 
-# Terminal 2: Shard
-cargo run --bin sidereal-shard
-
-# Terminal 3: Gateway
+# Terminal 2: Gateway
 cargo run --bin sidereal-gateway
 
-# Terminal 4: Client
+# Terminal 3: Client
 cargo run --bin sidereal-client
 
 # Login and you should see your solar system!

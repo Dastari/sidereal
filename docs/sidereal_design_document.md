@@ -14,10 +14,11 @@ Sidereal is a server-authoritative multiplayer space RPG built around:
 
 Core player loop:
 
-1. Authenticate and enter the world.
-2. Control a modular ship (flight computer + engines + fuel + hardpoints).
-3. Observe and interact with nearby entities under server-enforced visibility.
-4. Persist state changes through replication-owned durability pipelines.
+1. Authenticate an account.
+2. Select a character (player entity) and explicitly request Enter World.
+3. Control a modular ship (flight computer + engines + fuel + hardpoints).
+4. Observe and interact with nearby entities under server-enforced visibility.
+5. Persist state changes through replication-owned durability pipelines.
 
 ## 2. Hard Rules
 
@@ -175,8 +176,14 @@ World-delta legacy persistence shapes are not used.
 - Avian transient internals are not persisted.
 - Durable gameplay state required after restart must be represented in persistable gameplay components.
 - New persistable gameplay components must support `Reflect` + serde and include roundtrip coverage.
+- Custom gameplay component definitions live in `crates/sidereal-game/src/components/` as individual component files and are registered through the shared game component registry.
+- Persisted/replicated component metadata is declared with `#[sidereal_component(kind = \"...\", persist = bool, replicate = bool, visibility = [...])]`; visibility defaults to owner-only when omitted.
+- Visibility policy metadata supports multiple scopes (`[OwnerOnly, Faction, Public]`) so the server can enforce field delivery by authorization policy rather than client-side assumptions.
+- Detailed authoring workflow and examples live in `docs/component_authoring_guide.md`.
 
 ## 7. Visibility and Data Permissions
+
+Implementation contract for contributors: `docs/features/visibility_replication_contract.md`.
 
 Server enforces three scopes:
 
@@ -278,33 +285,36 @@ A client may be authorized for more than it currently receives on a given stream
 
 **Observer and scanner aggregation**
 
-- **Current:** One observer position per client, from a single “controlled” entity (and an OwnerId-based fallback). Scanner range is taken from that entity only.
+- **Current:** One observer position per client from persisted player runtime camera state (`position_m`/`Transform.translation` on the player entity). Scanner range still uses the current controlled entity when present.
 - **Target (see 7.2):** Scanner authorization should aggregate over *all* owned entities (e.g. all ships the player owns), not only the currently controlled one. Observer/visibility logic should support multiple observer points or an aggregated range per client.
 
 **Control swap (player changes which ship they control)**
 
-- **Current:** The server stores `last_controlled_entity_id` from `ClientViewUpdateMessage` and persists it, but **input routing is not driven by it**. Input is routed only via Lightyear’s `ControlledBy`, which is bound once at auth/bootstrap to a single ship. `PlayerControlledEntityMap` holds one entity per `player_entity_id`. There is no path to “swap control” to another owned ship.
-- **Target:** When the client sends a view update with a new `controlled_entity_id` that is an entity owned by that player, the server must:
-  - Update which entity has `ControlledBy` for that client (remove from old ship, insert on new ship),
-  - Keep observer/visibility and `PlayerControlledEntityMap` (or equivalent) in sync with the current controlled entity,
-  - Persist the new “current controlled” choice so it survives reconnect/restart.
+- **Current:** Implemented via persisted player components. Client requests `controlled_entity_id`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`. Authoritative control can be `None` (free-camera/no-controlled mode). Control/selection/focus/camera runtime state persists on the player entity (`controlled_entity_guid`, `selected_entity_guid`, `focused_entity_guid`, plus player `Transform` persisted via `position_m`).
+- **Rule:** `controlled_entity_id` requests are advisory; server ownership validation is authoritative and invalid/missing targets are coerced to `None` without runtime failure.
 
 **Multiple ships per player**
 
-- **Current:** A player can own multiple ships (same `OwnerId`), but only one is the “controlled” ship in `PlayerControlledEntityMap`, and only that one receives input. No support for switching which of the player’s ships is controlled.
-- **Target:** Support multiple owned entities per player and a clear “current controlled” entity that can change over time (control swap above), with visibility/input/observer all consistent with that choice.
+- **Current:** A player can own multiple ships; only the server-authoritative controlled ship receives input. Player can switch control among owned ships; missing targets resolve to `None`.
+- **Target:** Keep this model while extending scanner/visibility to aggregate over all owned entities at scale.
 
 **Summary**
 
 - **Thousands of entities, multiple players:** Not robust until visibility uses spatial indexing and possibly replication culling/LOD as described in 7.5–7.7.
-- **Players swapping between ships they own:** Not implemented; requires server-side handling of `controlled_entity_id` to update `ControlledBy`, observer, and controlled-entity mapping.
+- **Players swapping between ships they own:** Implemented with server-side ownership validation and persisted player runtime state.
 
 ## 8. Auth and Session Identity
 
 - Gateway owns auth lifecycle (`register/login/refresh/reset`).
+- Registration must create and persist account + default character player entity + starter corvette graph records in durability storage.
+- Register/login are auth-only and must not implicitly bind a runtime world session.
+- Runtime bootstrap handoff from gateway to replication is explicit `Enter World` behavior and must be idempotent per `player_entity_id`.
+- Player-specific runtime/persistent data is player-entity scoped. Control/focus/selection/camera state, score, quest progression, and other character-local settings persist on the player entity in graph persistence.
+- Account identity is an auth container and external reference. An account may own multiple player entities (characters); `player_entity_id` selects which character/session identity is bound for runtime control.
 - Replication binds session transport identity to authenticated `player_entity_id`.
 - Input packets with mismatched identity claims are rejected.
 - Gameplay control selection remains ownership-authorized.
+- Runtime systems must fail closed on ownership/identity mismatches (reject and log) rather than silently creating replacement state.
 
 ## 9. Asset Streaming
 
@@ -347,5 +357,5 @@ cargo check -p sidereal-client --target x86_64-pc-windows-gnu
 
 ---
 
-For migration history and tuning backlog details, see `docs/migrate_to_lightyear_prediction.md`.  
+For prediction runtime tuning and validation backlog details, see `docs/features/prediction_runtime_tuning_and_validation.md`.  
 This document is the current-state architecture contract.

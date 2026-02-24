@@ -38,11 +38,17 @@ fn flight_computer_mapping_is_stable() {
         .iter()
         .find(|entry| entry.component_kind == "flight_computer")
         .expect("flight_computer mapping should exist");
-    assert!(
-        mapping
-            .type_path
-            .ends_with("generated::components::FlightComputer")
-    );
+    assert!(mapping.type_path.ends_with("FlightComputer"));
+}
+
+#[test]
+fn cost_mapping_exists() {
+    let registry = generated_component_registry();
+    let mapping = registry
+        .iter()
+        .find(|entry| entry.component_kind == "cost")
+        .expect("cost mapping should exist");
+    assert!(mapping.type_path.ends_with("Cost"));
 }
 
 #[test]

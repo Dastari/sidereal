@@ -217,11 +217,10 @@ pub fn serialize_entity_components_to_graph_records(
             continue;
         };
 
-        let wrapped = encode_reflect_component(entry.type_path, json_value);
         records.push(GraphComponentRecord {
             component_id: format_component_id(entity_id, entry.component_kind),
             component_kind: entry.component_kind.to_string(),
-            properties: wrapped,
+            properties: json_value,
         });
     }
 

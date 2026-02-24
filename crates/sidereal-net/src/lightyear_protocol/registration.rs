@@ -10,10 +10,10 @@ use lightyear::prelude::{
     ReliableSettings,
 };
 use sidereal_game::{
-    BaseMassKg, CargoMassKg, Engine, EntityGuid, FactionId, FactionVisibility, FlightComputer,
-    FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory, MassKg, MaxVelocityMps, ModuleMassKg,
-    MountedOn, OwnerId, PublicVisibility, ScannerComponent, ScannerRangeBuff, ScannerRangeM, SizeM,
-    TotalMassKg,
+    BaseMassKg, CargoMassKg, Cost, Engine, EntityGuid, FactionId, FactionVisibility,
+    FlightComputer, FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory, MassKg,
+    MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId, PublicVisibility, ScannerComponent,
+    ScannerRangeBuff, ScannerRangeM, SiderealComponentMetadata, SizeM, TotalMassKg,
 };
 
 use super::{
@@ -46,6 +46,21 @@ pub fn register_lightyear_protocol(app: &mut App) {
 }
 
 fn register_lightyear_replication_components(app: &mut App) {
+    macro_rules! register_game_component {
+        ($app:expr, $ty:ty) => {
+            if <$ty as SiderealComponentMetadata>::META.replicate {
+                $app.register_component::<$ty>();
+            }
+        };
+    }
+    macro_rules! register_game_component_with_prediction {
+        ($app:expr, $ty:ty) => {
+            if <$ty as SiderealComponentMetadata>::META.replicate {
+                $app.register_component::<$ty>().add_prediction();
+            }
+        };
+    }
+
     // Avian physics components — replicated so the client can run prediction/rollback.
     app.register_component::<Position>().add_prediction();
     app.register_component::<Rotation>().add_prediction();
@@ -55,31 +70,32 @@ fn register_lightyear_replication_components(app: &mut App) {
     app.register_component::<AngularDamping>().add_prediction();
 
     // Gameplay components needed by client-side rollback/resimulation.
-    app.register_component::<FlightComputer>().add_prediction();
-    app.register_component::<FlightTuning>().add_prediction();
-    app.register_component::<MaxVelocityMps>().add_prediction();
-    app.register_component::<SizeM>().add_prediction();
-    app.register_component::<TotalMassKg>().add_prediction();
+    register_game_component_with_prediction!(app, FlightComputer);
+    register_game_component_with_prediction!(app, FlightTuning);
+    register_game_component_with_prediction!(app, MaxVelocityMps);
+    register_game_component_with_prediction!(app, SizeM);
+    register_game_component_with_prediction!(app, TotalMassKg);
 
     // Entity identity/ownership and world composition.
-    app.register_component::<EntityGuid>();
-    app.register_component::<OwnerId>();
-    app.register_component::<MountedOn>();
-    app.register_component::<Hardpoint>();
+    register_game_component!(app, EntityGuid);
+    register_game_component!(app, OwnerId);
+    register_game_component!(app, MountedOn);
+    register_game_component!(app, Hardpoint);
 
     // Replicated gameplay state and visibility metadata.
-    app.register_component::<HealthPool>();
-    app.register_component::<MassKg>();
-    app.register_component::<BaseMassKg>();
-    app.register_component::<CargoMassKg>();
-    app.register_component::<ModuleMassKg>();
-    app.register_component::<Inventory>();
-    app.register_component::<Engine>();
-    app.register_component::<FuelTank>();
-    app.register_component::<ScannerRangeM>();
-    app.register_component::<ScannerComponent>();
-    app.register_component::<ScannerRangeBuff>();
-    app.register_component::<FactionId>();
-    app.register_component::<FactionVisibility>();
-    app.register_component::<PublicVisibility>();
+    register_game_component!(app, HealthPool);
+    register_game_component!(app, MassKg);
+    register_game_component!(app, BaseMassKg);
+    register_game_component!(app, CargoMassKg);
+    register_game_component!(app, ModuleMassKg);
+    register_game_component!(app, Inventory);
+    register_game_component!(app, Cost);
+    register_game_component!(app, Engine);
+    register_game_component!(app, FuelTank);
+    register_game_component!(app, ScannerRangeM);
+    register_game_component!(app, ScannerComponent);
+    register_game_component!(app, ScannerRangeBuff);
+    register_game_component!(app, FactionId);
+    register_game_component!(app, FactionVisibility);
+    register_game_component!(app, PublicVisibility);
 }

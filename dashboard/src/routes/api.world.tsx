@@ -20,13 +20,25 @@ type PgClient = {
 
 type PgPool = {
   connect: () => Promise<PgClient>
+  on: (event: 'error', listener: (error: Error) => void) => void
 }
 
-type GlobalWithPool = typeof globalThis & { __siderealPgPool?: PgPool }
+type GlobalWithPool = typeof globalThis & {
+  __siderealPgPool?: PgPool
+  __siderealPgPoolErrorHandlerInstalled?: boolean
+}
 const globalPoolRef = globalThis as GlobalWithPool
 
 async function getPool(): Promise<PgPool> {
-  if (globalPoolRef.__siderealPgPool) return globalPoolRef.__siderealPgPool
+  if (globalPoolRef.__siderealPgPool) {
+    if (!globalPoolRef.__siderealPgPoolErrorHandlerInstalled) {
+      globalPoolRef.__siderealPgPool.on('error', (error) => {
+        console.error('[dashboard] postgres pool idle client error:', error)
+      })
+      globalPoolRef.__siderealPgPoolErrorHandlerInstalled = true
+    }
+    return globalPoolRef.__siderealPgPool
+  }
   const { Pool } = await import('pg')
   const connectionString =
     process.env.REPLICATION_DATABASE_URL?.trim() ||
@@ -41,7 +53,11 @@ async function getPool(): Promise<PgPool> {
     password: process.env.PGPASSWORD || 'sidereal',
     max: 8,
   })
+  pool.on('error', (error) => {
+    console.error('[dashboard] postgres pool idle client error:', error)
+  })
   globalPoolRef.__siderealPgPool = pool
+  globalPoolRef.__siderealPgPoolErrorHandlerInstalled = true
   return pool
 }
 
@@ -98,10 +114,11 @@ export const Route = createFileRoute('/api/world')({
             `SELECT id::text AS id, name::text AS name, kind::text AS kind, parent_id::text AS parent_id, shard_id::text AS shard_id, pos_props::text AS pos_props, c::text AS component_count
              FROM ag_catalog.cypher('${graphName}', $$
                MATCH (e:Entity)
+               OPTIONAL MATCH (parent:Entity)-[:HAS_CHILD]->(e)
                OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(component:Component)
                OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(position:Component {component_kind:'position_m'})
                OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(mounted_on:Component {component_kind:'mounted_on'})
-               WITH e, mounted_on, position, count(component) AS component_count
+               WITH e, parent, mounted_on, position, count(component) AS component_count
                RETURN e.entity_id,
                       coalesce(e.name, e.entity_id),
                       CASE
@@ -109,7 +126,7 @@ export const Route = createFileRoute('/api/world')({
                         WHEN e.length_m IS NOT NULL AND e.width_m IS NOT NULL AND e.height_m IS NOT NULL THEN 'ship'
                         ELSE 'entity'
                       END,
-                      mounted_on.parent_entity_id,
+                      coalesce(parent.entity_id, e.parent_entity_id, mounted_on.parent_entity_id),
                       coalesce(e.shard_id, 1), properties(position), component_count
                ORDER BY coalesce(e.entity_type, 'entity'), coalesce(e.name, e.entity_id)
              $$) AS (id agtype, name agtype, kind agtype, parent_id agtype, shard_id agtype, pos_props agtype, c agtype);`,

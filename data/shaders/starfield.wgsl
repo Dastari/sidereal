@@ -178,8 +178,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = drift_intensity.w;
     
     let vel_dir_raw = velocity_dir.xy;
-    let vel_speed = velocity_dir.z;
-
     let aspect = viewport.x / max(viewport.y, 1.0);
     var uv = (in.uv - 0.5) * vec2<f32>(aspect, 1.0);
     let travel = drift;
@@ -193,7 +191,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         warp_dir = vec2<f32>(1.0, 0.0);
     }
     let warp_side = vec2<f32>(-warp_dir.y, warp_dir.x);
-    let warp_stretch = mix(1.0, 0.12, warp * warp);
+    // Keep deformation subtle to avoid high-speed spatial popping.
+    let warp_stretch = mix(1.0, 0.7, warp * warp);
 
     var col = vec3<f32>(0.0, 0.0, 0.0);
     let inv_layers = 1.0 / NUM_LAYERS;
@@ -205,6 +204,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         let depth = i;
         let is_background = depth < 0.25;
+        let foreground_depth = clamp((depth - 0.25) / 0.75, 0.0, 1.0);
         
         var scale: f32;
         var fade: f32;
@@ -217,7 +217,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             fade = mix(0.15, 0.35, (depth - 0.25) / 0.75);
         }
         
-        let layer_drift = travel * mix(0.15, 1.0, depth);
+        // Parallax speeds:
+        // - far/background layers move slower
+        // - a middle star layer tracks roughly ship speed
+        // - near layers move faster than ship speed
+        let layer_speed = select(
+            mix(0.22, 0.45, depth * 4.0),
+            mix(0.75, 1.85, foreground_depth),
+            !is_background
+        );
+        let layer_drift = travel * layer_speed;
         let layer_uv = uv * scale + vec2<f32>(i * 343.0, i * 127.0) + layer_drift;
         
         var warped_uv: vec2<f32>;

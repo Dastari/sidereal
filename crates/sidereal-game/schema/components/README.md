@@ -9,3 +9,7 @@ Planned flow:
 3. Use generated metadata (`component_kind`, type path) for replication and graph persistence mapping.
 
 Runtime-only non-persisted components (for example Avian internals) should not be declared as persistable schemas here.
+
+Component metadata can additionally be declared in Rust via
+`#[sidereal_component(kind = \"...\", persist = bool, replicate = bool, visibility = [...])]`.
+When omitted, `visibility` defaults to owner-only.

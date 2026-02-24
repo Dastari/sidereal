@@ -17,12 +17,12 @@
   - Components: `ShardAssignment`, `MassKg`, `TotalMassKg`, `SizeM`, `CollisionAabbM`, `HealthPool`, `DisplayName`
   - Labels: `Entity`, `Asteroid`
 
-**Server Layer** (`sidereal-shard`):
+**Server Layer** (`sidereal-replication`):
 - Hydrated from graph database on startup
 - Physical simulation via Avian3D (implied by collision AABBs)
 - No special rendering/mesh - just ECS components
 
-**Client Layer** (`sidereal-client-web`):
+**Client Layer** (`sidereal-client`):
 - `spawn_entity_visual()` creates placeholder sprites
 - Currently renders as **simple colored shapes** (circles/capsules)
 - Uses `body_half_extents_from_state()` for sizing
@@ -32,7 +32,7 @@
 ### Current Rendering Pipeline
 
 ```rust
-// bins/sidereal-client-web/src/main.rs:1797-1883
+// bins/sidereal-client/src/native.rs
 fn spawn_entity_visual() {
     // Creates placeholder sprites:
     // - Body rectangle
@@ -52,7 +52,7 @@ fn spawn_entity_visual() {
 
 ## Asset Delivery Plan Compatibility ✅
 
-Your `asset_delivery_streaming_plan.md` is **perfectly designed** for procedural asteroids!
+Your asset delivery contract is **well-aligned** for procedural asteroids.
 
 ### Key Alignment Points
 

@@ -478,7 +478,7 @@ fn compute_engine_thrust() {
 **Rust Side (`sidereal-scripting` crate):**
 
 ```rust
-// bins/sidereal-shard/src/scripting.rs
+// bins/sidereal-replication/src/scripting.rs
 
 use bevy::prelude::*;
 use mlua::prelude::*;
@@ -777,7 +777,7 @@ Without scripting, you'll:
 #### ✅ Fits Your Architecture
 
 Your design already separates:
-- Core simulation: `sidereal-shard` (30Hz Rust/ECS)
+- Core simulation: `sidereal-replication` (30Hz Rust/ECS)
 - Background sim: `sidereal-bg-sim` (eventual content)
 - Content: missions, AI, economy
 
@@ -797,7 +797,7 @@ Your networking is server-authoritative. Scripts must:
 - **Validate** all player actions
 - **Never trust** client-side script results
 
-This is achievable! Scripts run in `sidereal-shard`, clients receive results.
+This is achievable! Scripts run in `sidereal-replication`, clients receive results.
 
 #### ⚠️ Consideration: Persistence
 

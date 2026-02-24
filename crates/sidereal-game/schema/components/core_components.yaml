@@ -47,3 +47,21 @@ components:
   - component_kind: public_visibility
     rust_type: sidereal_game::generated::components::PublicVisibility
     persistable: true
+  - component_kind: player_tag
+    rust_type: sidereal_game::generated::components::PlayerTag
+    persistable: true
+  - component_kind: account_id
+    rust_type: sidereal_game::generated::components::AccountId
+    persistable: true
+  - component_kind: controlled_entity_guid
+    rust_type: sidereal_game::generated::components::ControlledEntityGuid
+    persistable: true
+  - component_kind: selected_entity_guid
+    rust_type: sidereal_game::generated::components::SelectedEntityGuid
+    persistable: true
+  - component_kind: focused_entity_guid
+    rust_type: sidereal_game::generated::components::FocusedEntityGuid
+    persistable: true
+  - component_kind: cost
+    rust_type: sidereal_game::generated::components::Cost
+    persistable: true

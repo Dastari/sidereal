@@ -12,6 +12,7 @@ REPLICATION_UDP_BIND ?= 0.0.0.0:7001
 REPLICATION_UDP_ADDR ?= 127.0.0.1:7001
 SHARD_UDP_BIND ?= 127.0.0.1:7002
 CLIENT_UDP_BIND ?= 127.0.0.1:7003
+CLIENT2_UDP_BIND ?= 127.0.0.1:7004
 
 REPLICATION_CONTROL_UDP_BIND ?= 127.0.0.1:9004
 REPLICATION_CONTROL_UDP_ADDR ?= 127.0.0.1:9004
@@ -21,8 +22,9 @@ REPLICATION_BRP_ENABLED ?= true
 REPLICATION_BRP_PORT ?= 15713
 CLIENT_BRP_ENABLED ?= true
 CLIENT_BRP_PORT ?= 15714
+CLIENT2_BRP_PORT ?= 15715
 
-.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client-headless dev-stack dev-stack-client register-demo
+.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client2 run-client-headless dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -52,6 +54,7 @@ help:
 	@echo "  make run-shard          Run shard server"
 	@echo "  make run-gateway        Run gateway API server"
 	@echo "  make run-client         Run native client"
+	@echo "  make run-client2        Run second native client on UDP 7004"
 	@echo "  make run-client-headless Run transport-only native client"
 	@echo "  make dev-stack          Run replication + shard + gateway in one shell"
 	@echo "  make dev-stack-client   Run replication + shard + gateway + native client"
@@ -166,6 +169,9 @@ run-client:
 	SIDEREAL_ASSET_ROOT=/home/toby/dev/sidereal_v3 \
 	WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=$(WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER) \
 	cargo run -p sidereal-client
+
+run-client2:
+	$(MAKE) run-client CLIENT_UDP_BIND=$(CLIENT2_UDP_BIND) CLIENT_BRP_PORT=$(CLIENT2_BRP_PORT)
 
 run-client-headless:
 	SIDEREAL_CLIENT_HEADLESS=1 \

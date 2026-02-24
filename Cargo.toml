@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/sidereal-component-macros",
   "crates/sidereal-core",
   "crates/sidereal-net",
   "crates/sidereal-game",
@@ -19,6 +20,7 @@ license = "MIT"
 authors = ["Sidereal Team"]
 
 [workspace.dependencies]
+inventory = "0.3"
 anyhow = "1.0"
 argon2 = "0.5"
 async-trait = "0.1"

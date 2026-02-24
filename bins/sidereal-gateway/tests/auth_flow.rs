@@ -1,22 +1,22 @@
-use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use serde_json::Value;
 use sidereal_gateway::api::app_with_service;
 use sidereal_gateway::auth::{
-    AuthConfig, AuthError, AuthService, BootstrapCommand, BootstrapDispatcher, InMemoryAuthStore,
+    AuthConfig, AuthService, InMemoryAuthStore, NoopBootstrapDispatcher, NoopStarterWorldPersister,
     RecordingBootstrapDispatcher,
 };
-use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
+use sidereal_persistence::GraphPersistence;
 use std::sync::Arc;
 use tower::ServiceExt;
 
 #[tokio::test]
 async fn register_login_refresh_me_happy_path() {
-    let service = Arc::new(AuthService::new(
+    let service = Arc::new(AuthService::new_with_persister(
         AuthConfig::for_tests(),
         Arc::new(InMemoryAuthStore::default()),
         Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
     ));
     let app = app_with_service(service.clone());
 
@@ -97,10 +97,11 @@ async fn register_login_refresh_me_happy_path() {
 #[tokio::test]
 async fn login_does_not_dispatch_bootstrap_command() {
     let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
-    let service = Arc::new(AuthService::new(
+    let service = Arc::new(AuthService::new_with_persister(
         AuthConfig::for_tests(),
         Arc::new(InMemoryAuthStore::default()),
         dispatcher.clone(),
+        Arc::new(NoopStarterWorldPersister),
     ));
     let app = app_with_service(service.clone());
 
@@ -131,12 +132,13 @@ async fn login_does_not_dispatch_bootstrap_command() {
 }
 
 #[tokio::test]
-async fn register_dispatches_bootstrap_once() {
+async fn register_conflict_does_not_dispatch_bootstrap() {
     let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
-    let service = Arc::new(AuthService::new(
+    let service = Arc::new(AuthService::new_with_persister(
         AuthConfig::for_tests(),
         Arc::new(InMemoryAuthStore::default()),
         dispatcher.clone(),
+        Arc::new(NoopStarterWorldPersister),
     ));
     let app = app_with_service(service.clone());
 
@@ -164,15 +166,16 @@ async fn register_dispatches_bootstrap_once() {
     assert_eq!(second.status(), StatusCode::CONFLICT);
 
     let dispatch_count = dispatcher.commands().await.len();
-    assert_eq!(dispatch_count, 1);
+    assert_eq!(dispatch_count, 0);
 }
 
 #[tokio::test]
 async fn password_reset_request_confirm_allows_new_login() {
-    let service = Arc::new(AuthService::new(
+    let service = Arc::new(AuthService::new_with_persister(
         AuthConfig::for_tests(),
         Arc::new(InMemoryAuthStore::default()),
         Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
     ));
     let app = app_with_service(service.clone());
 
@@ -256,13 +259,10 @@ async fn register_then_world_me_returns_starter_ship_and_assets() {
         return;
     }
 
-    let dispatcher = Arc::new(PersistingBootstrapDispatcher {
-        database_url: database_url.clone(),
-    });
     let service = Arc::new(AuthService::new(
         AuthConfig::for_tests(),
         Arc::new(InMemoryAuthStore::default()),
-        dispatcher,
+        Arc::new(NoopBootstrapDispatcher),
     ));
     let app = app_with_service(service);
 
@@ -296,7 +296,6 @@ async fn register_then_world_me_returns_starter_ship_and_assets() {
     let world_me_json = response_json(world_me_response).await;
 
     assert_eq!(world_me_json["model_asset_id"], "corvette_01");
-    assert_eq!(world_me_json["starfield_shader_asset_id"], "starfield_wgsl");
     assert!(
         world_me_json["ship_entity_id"]
             .as_str()
@@ -314,64 +313,6 @@ async fn register_then_world_me_returns_starter_ship_and_assets() {
             .iter()
             .any(|asset| asset["asset_id"] == "starfield_wgsl")
     );
-}
-
-#[derive(Debug, Clone)]
-struct PersistingBootstrapDispatcher {
-    database_url: String,
-}
-
-#[async_trait]
-impl BootstrapDispatcher for PersistingBootstrapDispatcher {
-    async fn dispatch(&self, command: &BootstrapCommand) -> Result<(), AuthError> {
-        let database_url = self.database_url.clone();
-        let command = command.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut persistence = GraphPersistence::connect(&database_url)
-                .map_err(|err| AuthError::Internal(format!("persistence connect failed: {err}")))?;
-            persistence.ensure_schema().map_err(|err| {
-                AuthError::Internal(format!("persistence ensure schema failed: {err}"))
-            })?;
-
-            let ship_entity_id = format!("ship:{}", command.account_id);
-            let account_id_s = command.account_id.to_string();
-            let records = vec![
-                GraphEntityRecord {
-                    entity_id: command.player_entity_id.clone(),
-                    labels: vec!["Entity".to_string(), "Player".to_string()],
-                    properties: serde_json::json!({
-                        "owner_account_id": account_id_s,
-                        "player_entity_id": command.player_entity_id,
-                    }),
-                    components: Vec::new(),
-                },
-                GraphEntityRecord {
-                    entity_id: ship_entity_id,
-                    labels: vec!["Entity".to_string(), "Ship".to_string()],
-                    properties: serde_json::json!({
-                        "owner_account_id": command.account_id.to_string(),
-                        "name": "Corvette",
-                        "asset_id": "corvette_01",
-                        "starfield_shader_asset_id": "starfield_wgsl",
-                        "position_m": [0.0, 0.0, 0.0],
-                        "velocity_mps": [0.0, 0.0, 0.0],
-                        "heading_rad": 0.0,
-                        "health": 100.0,
-                        "max_health": 100.0
-                    }),
-                    components: Vec::new(),
-                },
-            ];
-            persistence
-                .persist_graph_records(&records, 0)
-                .map_err(|err| {
-                    AuthError::Internal(format!("persist starter world failed: {err}"))
-                })?;
-            Ok::<_, AuthError>(())
-        })
-        .await
-        .map_err(|err| AuthError::Internal(format!("bootstrap dispatch task failed: {err}")))?
-    }
 }
 
 fn test_database_url() -> String {

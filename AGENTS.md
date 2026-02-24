@@ -11,6 +11,10 @@ Project operating contract for human and AI contributors working in this reposit
 ## 2. Source-of-Truth Documentation
 
 - Primary architecture/spec: `docs/sidereal_design_document.md`
+- Decision register: `docs/decision_register.md`
+- Component authoring workflow/macros: `docs/component_authoring_guide.md`
+- Visibility/replication implementation contract: `docs/features/visibility_replication_contract.md`
+- Asset delivery implementation contract: `docs/features/asset_delivery_contract.md`
 - UI design system and component patterns: `docs/ui_design_guide.md`
 - Workspace test area guidance: `tests/README.md`
 - Repo overview: `README.md`
@@ -22,12 +26,18 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Authority flow is one-way: `client input -> shard sim -> replication/distribution -> persistence`.
 - Clients never authoritatively set world transforms/state.
 - Keep identity crossing boundaries as UUID/entity IDs only (no raw Bevy `Entity` IDs over service boundaries).
+- Player runtime state (control target, selection target, focus target, camera position) must live on the persisted player ECS entity/components in graph persistence; do not add separate per-player SQL side tables for authoritative runtime state.
+- Player-specific persistent progression/state (for example score, quest progression, character-local settings, local player data) must live on persisted player ECS entity/components, not account rows or ad-hoc side stores.
+- Accounts are identity/auth containers and may own multiple player entities (characters). Runtime/session binding is account-authenticated but control/selection/progression state is player-entity scoped.
 - Keep shared simulation/prediction/gameplay logic in shared crates, not duplicated across client targets.
 - Persistable gameplay ECS components must support `Reflect` + serde (`Serialize`/`Deserialize`) and be mappable to graph persistence with hydration roundtrip coverage.
 - Gameplay component source-of-truth is core (`crates/sidereal-game`); new persistable component families must flow through the shared component registry/generation path rather than ad-hoc per-service definitions.
+- Custom gameplay components must be defined as individual files under `crates/sidereal-game/src/components/` (one primary component per file; tightly-coupled helper types may live alongside it) and re-exported via `components/mod.rs`.
+- New persistable/replicated custom components must use `#[sidereal_component(kind = \"...\", persist = ..., replicate = ..., visibility = [...])]`; when `visibility` is omitted, owner-only is the default policy.
 - Bevy hierarchy relationships (`Children`/parent-child) and modular mount relationships (for example hardpoints -> engines/shield generators/flight computers) must persist as graph relationships and hydrate back deterministically.
 - Visibility/range logic must be generic over entities (not ship-only). Use `ScannerRangeM`/related generic components for dynamic sensor range behavior; do not hardcode ship-specific visibility assumptions.
 - Visibility policy must preserve valid no-ship/no-engine states and support data-driven public/faction visibility (`PublicVisibility`, `FactionId`, `FactionVisibility`) without spawning fallback gameplay modules.
+- Changes touching visibility, replication delivery, or redaction must follow `docs/features/visibility_replication_contract.md` and update it when behavior/policy changes.
 - Replication input routing must be bound to authenticated session identity. Bind transport peer/session (`RemoteId`) to authenticated `player_entity_id` and reject mismatched claimed player IDs in subsequent input packets.
 - Hydration/persistence must preserve hierarchy semantics: persist parent-child and mount relationships, then rebuild Bevy hierarchy deterministically during hydration so child transform offsets remain correct.
 - Inventory-bearing entities must feed dynamic mass derivation (`CargoMassKg`/`ModuleMassKg`/`TotalMassKg`) and runtime physics mass updates so acceleration behavior reflects mounted modules and nested inventories.
@@ -102,6 +112,7 @@ Run targeted tests for touched crates; run broader integration tests when flow b
 When adding any new **critical or enforceable** behavior (security rule, protocol contract, transport rule, runtime default, operational requirement), you must:
 
 1. Update the relevant docs under `docs/`.
-2. Update this `AGENTS.md` if the new rule changes contributor/agent behavior or enforcement expectations.
+2. If this is an in-depth/project-wide decision, add or update a dedicated decision detail file under `docs/features/` using `dr-XXXX_<slug>.md`, and link it from `docs/decision_register.md`.
+3. Update this `AGENTS.md` if the new rule changes contributor/agent behavior or enforcement expectations.
 
 Do not defer this to a later PR.

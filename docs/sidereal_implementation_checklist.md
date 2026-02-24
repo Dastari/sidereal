@@ -104,7 +104,7 @@ Primary spec: `docs/sidereal_design_document.md`
 ## 7. Docs and Maintenance
 
 - [ ] Keep `docs/sidereal_design_document.md` aligned with implemented runtime behavior.
-- [ ] Keep `docs/migrate_to_lightyear_prediction.md` as migration/tuning history and remaining tuning tracker.
+- [ ] Keep `docs/features/prediction_runtime_tuning_and_validation.md` updated as the prediction tuning tracker.
 - [ ] Store future feature proposals under `docs/features/`.
 - [ ] Keep old audits historical only under `docs/archive/`.
 

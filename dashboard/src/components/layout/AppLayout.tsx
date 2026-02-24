@@ -9,6 +9,7 @@ interface AppLayoutProps {
   sidebarWidth?: number
   detailPanelWidth?: number
   onSidebarResize?: (width: number) => void
+  onDetailPanelResize?: (width: number) => void
 }
 
 export function AppLayout({
@@ -19,31 +20,44 @@ export function AppLayout({
   sidebarWidth = 280,
   detailPanelWidth = 320,
   onSidebarResize,
+  onDetailPanelResize,
 }: AppLayoutProps) {
-  const [isDragging, setIsDragging] = React.useState(false)
-  const [currentWidth, setCurrentWidth] = React.useState(sidebarWidth)
+  const [isSidebarDragging, setIsSidebarDragging] = React.useState(false)
+  const [isDetailDragging, setIsDetailDragging] = React.useState(false)
+  const [currentSidebarWidth, setCurrentSidebarWidth] = React.useState(sidebarWidth)
+  const [currentDetailWidth, setCurrentDetailWidth] =
+    React.useState(detailPanelWidth)
 
   React.useEffect(() => {
-    setCurrentWidth(sidebarWidth)
+    setCurrentSidebarWidth(sidebarWidth)
   }, [sidebarWidth])
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  React.useEffect(() => {
+    setCurrentDetailWidth(detailPanelWidth)
+  }, [detailPanelWidth])
+
+  const handleSidebarMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
-    setIsDragging(true)
+    setIsSidebarDragging(true)
+  }
+
+  const handleDetailMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsDetailDragging(true)
   }
 
   React.useEffect(() => {
-    if (!isDragging) return
+    if (!isSidebarDragging) return
 
     const handleMouseMove = (e: MouseEvent) => {
       const newWidth = Math.max(200, Math.min(600, e.clientX))
-      setCurrentWidth(newWidth)
+      setCurrentSidebarWidth(newWidth)
     }
 
     const handleMouseUp = () => {
-      setIsDragging(false)
+      setIsSidebarDragging(false)
       if (onSidebarResize) {
-        onSidebarResize(currentWidth)
+        onSidebarResize(currentSidebarWidth)
       }
     }
 
@@ -54,7 +68,32 @@ export function AppLayout({
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [isDragging, currentWidth, onSidebarResize])
+  }, [isSidebarDragging, currentSidebarWidth, onSidebarResize])
+
+  React.useEffect(() => {
+    if (!isDetailDragging) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const viewportWidth = window.innerWidth
+      const newWidth = Math.max(240, Math.min(700, viewportWidth - e.clientX))
+      setCurrentDetailWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      setIsDetailDragging(false)
+      if (onDetailPanelResize) {
+        onDetailPanelResize(currentDetailWidth)
+      }
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isDetailDragging, currentDetailWidth, onDetailPanelResize])
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -67,24 +106,31 @@ export function AppLayout({
         {sidebar && (
           <aside
             className="flex-none border-r border-border bg-card overflow-hidden relative"
-            style={{ width: currentWidth }}
+            style={{ width: currentSidebarWidth }}
           >
             {sidebar}
             <div
               className={cn(
                 'absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/20 transition-colors',
-                isDragging && 'bg-primary/40',
+                isSidebarDragging && 'bg-primary/40',
               )}
-              onMouseDown={handleMouseDown}
+              onMouseDown={handleSidebarMouseDown}
             />
           </aside>
         )}
         <main className="flex-1 overflow-hidden relative">{children}</main>
         {detailPanel && (
           <aside
-            className="flex-none border-l border-border bg-card overflow-hidden"
-            style={{ width: detailPanelWidth }}
+            className="flex-none border-l border-border bg-card overflow-hidden relative"
+            style={{ width: currentDetailWidth }}
           >
+            <div
+              className={cn(
+                'absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-primary/20 transition-colors',
+                isDetailDragging && 'bg-primary/40',
+              )}
+              onMouseDown={handleDetailMouseDown}
+            />
             {detailPanel}
           </aside>
         )}

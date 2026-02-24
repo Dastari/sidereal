@@ -351,15 +351,21 @@ function getParentEntityIdFromComponents(
   }
 
   // 2) Check for Bevy hierarchy components (fallback)
+  let hasHierarchyParent = false
   for (const [componentPath, value] of Object.entries(components)) {
     if (
       componentPath.endsWith('::Parent') ||
       componentPath.endsWith('::ChildOf') ||
       /hierarchy::(Parent|ChildOf)$/.test(componentPath)
     ) {
+      hasHierarchyParent = true
       const parsed = parseEntityRef(value)
       if (parsed) return parsed
     }
+  }
+  if (hasHierarchyParent) {
+    // Preserve "this is a child" semantics even when BRP payload shape is unknown.
+    return '__hierarchy_parent__'
   }
   return null
 }
@@ -371,6 +377,82 @@ function asNumber(value: unknown): number | null {
     if (Number.isFinite(parsed)) return parsed
   }
   return null
+}
+
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (value === 1) return true
+    if (value === 0) return false
+    return null
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'true' || normalized === '1') return true
+    if (normalized === 'false' || normalized === '0') return false
+  }
+  return null
+}
+
+function findMapVisibleBooleanDeep(value: unknown): boolean | null {
+  const direct = asBoolean(value)
+  if (direct !== null) return direct
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const resolved = findMapVisibleBooleanDeep(entry)
+      if (resolved !== null) return resolved
+    }
+    return null
+  }
+  if (!value || typeof value !== 'object') return null
+
+  const obj = value as Record<string, unknown>
+  for (const key of [
+    'mapVisible',
+    'map_visible',
+    'visible',
+    'isVisible',
+    'enabled',
+    'value',
+    '0',
+  ]) {
+    if (!(key in obj)) continue
+    const resolved = findMapVisibleBooleanDeep(obj[key])
+    if (resolved !== null) return resolved
+  }
+  return null
+}
+
+function getMapVisibleFromComponents(
+  components: Record<string, unknown>,
+): boolean | null {
+  let foundTrue = false
+
+  for (const [componentPath, value] of Object.entries(components)) {
+    const componentPathLower = componentPath.toLowerCase()
+    const looksLikeVisibilityComponent =
+      componentPathLower.endsWith('::mapvisible') ||
+      componentPathLower.endsWith('::map_visibility') ||
+      componentPathLower.includes('map_visible')
+
+    const candidate = findMapVisibleBooleanDeep(value)
+    if (candidate === null) continue
+
+    const containsMapVisibleField =
+      value &&
+      typeof value === 'object' &&
+      (Object.prototype.hasOwnProperty.call(value, 'mapVisible') ||
+        Object.prototype.hasOwnProperty.call(value, 'map_visible'))
+
+    if (!looksLikeVisibilityComponent && !containsMapVisibleField) {
+      continue
+    }
+
+    if (!candidate) return false
+    foundTrue = true
+  }
+
+  return foundTrue ? true : null
 }
 
 function parseXYZFromObject(
@@ -499,7 +581,11 @@ export async function getLiveWorldSnapshot(
     const y = xyz ? xyz[1] : fallbackY
     const z = xyz ? xyz[2] : 0
     const componentEntries = Object.entries(components)
-    const mapVisible = componentEntries.length > 0
+    const mapVisibleFromComponents = getMapVisibleFromComponents(components)
+    const mapVisible =
+      mapVisibleFromComponents === null
+        ? componentEntries.length > 0
+        : mapVisibleFromComponents
     const parentEntityId =
       getParentEntityIdFromComponents(components) ?? undefined
 

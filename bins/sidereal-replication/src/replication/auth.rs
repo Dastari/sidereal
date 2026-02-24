@@ -3,22 +3,21 @@ use bevy::prelude::*;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{MessageReceiver, RemoteId};
+use sidereal_game::{AccountId, PlayerTag};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sidereal_net::ClientAuthMessage;
-use sidereal_persistence::PlayerRuntimeViewState;
 
 use crate::replication::input::ClientInputTickTracker;
-use crate::replication::{PendingControlledByBindings, PlayerControlledEntityMap};
-use crate::{
-    AssetStreamServerState, AuthenticatedClientBindings, ClientVisibilityRegistry,
-    PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, unix_epoch_now_i64,
+use crate::replication::{
+    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
 };
+use crate::{AssetStreamServerState, AuthenticatedClientBindings, ClientVisibilityRegistry};
 
 #[derive(Debug, serde::Deserialize)]
 struct AccessTokenClaims {
-    player_entity_id: String,
+    sub: String,
 }
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
@@ -28,6 +27,7 @@ pub fn cleanup_client_auth_bindings(
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
+    mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
 ) {
     let live_clients = clients
         .iter()
@@ -60,10 +60,14 @@ pub fn cleanup_client_auth_bindings(
     stream_state
         .acked_assets_by_remote
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+    visibility_registry
+        .player_entity_id_by_client
+        .retain(|client_entity, _| live_clients.contains(client_entity));
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn receive_client_auth_messages(
+    mut commands: Commands<'_, '_>,
     mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
     mut auth_receivers: Query<
         '_,
@@ -76,10 +80,10 @@ pub fn receive_client_auth_messages(
         With<ClientOf>,
     >,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
+    player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
+    player_accounts: Query<'_, '_, &'_ AccountId, With<PlayerTag>>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
-    mut view_registry: ResMut<'_, PlayerRuntimeViewRegistry>,
-    mut dirty_view_states: ResMut<'_, PlayerRuntimeViewDirtySet>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
 ) {
     let jwt_secret = match std::env::var("GATEWAY_JWT_SECRET") {
@@ -109,34 +113,56 @@ pub fn receive_client_auth_messages(
                     continue;
                 }
             };
-            if claims.player_entity_id != message.player_entity_id {
+            let Some(player_entity) = player_entity_map
+                .by_player_entity_id
+                .get(&message.player_entity_id)
+            else {
                 warn!(
-                    "replication rejected client auth: token player mismatch for client {:?}",
-                    client_entity
+                    "replication rejected client auth: no hydrated player entity for {}",
+                    message.player_entity_id
+                );
+                continue;
+            };
+            let account_id_value = if let Ok(account_id_component) =
+                player_accounts.get(*player_entity)
+            {
+                account_id_component.0.clone()
+            } else {
+                // Hardening: if hydration missed AccountId for an existing player entity,
+                // recover from authenticated token subject and patch entity immediately.
+                warn!(
+                    "replication auth repair: player {} missing AccountId component; injecting from authenticated token subject",
+                    message.player_entity_id
+                );
+                commands
+                    .entity(*player_entity)
+                    .insert(AccountId(claims.sub.clone()));
+                claims.sub.clone()
+            };
+            if account_id_value != claims.sub {
+                warn!(
+                    "replication rejected client auth: account does not own player entity (account={} player={})",
+                    claims.sub, message.player_entity_id
                 );
                 continue;
             }
 
             if let Some(bound_player) = bindings.by_remote_id.get(&remote_id.0)
-                && bound_player != &claims.player_entity_id
+                && bound_player != &message.player_entity_id
             {
                 info!(
                     "replication rebinding remote {:?} from {} to {}",
-                    remote_id.0, bound_player, claims.player_entity_id
+                    remote_id.0, bound_player, message.player_entity_id
                 );
             }
 
-            if let Some(previous_player) = bindings
+            bindings
                 .by_client_entity
-                .insert(client_entity, claims.player_entity_id.clone())
-                && previous_player != claims.player_entity_id.as_str()
-            {
-                dirty_view_states.player_entity_ids.insert(previous_player);
-            }
+                .insert(client_entity, message.player_entity_id.clone());
             if let Some(previous_player) = bindings
                 .by_remote_id
-                .insert(remote_id.0, claims.player_entity_id.clone())
-                && previous_player != claims.player_entity_id.as_str()
+                .insert(remote_id.0, message.player_entity_id.clone())
+                && previous_player != message.player_entity_id.as_str()
             {
                 bindings
                     .by_client_entity
@@ -146,7 +172,7 @@ pub fn receive_client_auth_messages(
             let old_client_entity_for_new_player = bindings
                 .by_client_entity
                 .iter()
-                .find(|(k, v)| v == &&claims.player_entity_id && *k != &client_entity)
+                .find(|(k, v)| v == &&message.player_entity_id && *k != &client_entity)
                 .map(|(k, _)| *k);
             if let Some(old_entity) = old_client_entity_for_new_player {
                 bindings.by_client_entity.remove(&old_entity);
@@ -159,23 +185,22 @@ pub fn receive_client_auth_messages(
                 .remove(&remote_id.0);
             stream_state.acked_assets_by_remote.remove(&remote_id.0);
 
-            visibility_registry.register_client(client_entity, claims.player_entity_id.clone());
-            view_registry
+            visibility_registry.register_client(client_entity, message.player_entity_id.clone());
+
+            if !player_entity_map
                 .by_player_entity_id
-                .entry(claims.player_entity_id.clone())
-                .or_insert_with(|| PlayerRuntimeViewState {
-                    player_entity_id: claims.player_entity_id.clone(),
-                    updated_at_epoch_s: unix_epoch_now_i64(),
-                    ..Default::default()
-                });
-            dirty_view_states
-                .player_entity_ids
-                .insert(claims.player_entity_id.clone());
+                .contains_key(&message.player_entity_id)
+            {
+                warn!(
+                    "replication auth for player {} has no hydrated player entity; entering unbound control mode until entity appears",
+                    message.player_entity_id
+                );
+            }
 
             // Defer ControlledBy to PostUpdate to avoid same-frame replication/hierarchy ordering issues.
             if let Some(&ship_entity) = controlled_entity_map
                 .by_player_entity_id
-                .get(&claims.player_entity_id)
+                .get(&message.player_entity_id)
             {
                 pending_controlled_by
                     .bindings
@@ -184,7 +209,7 @@ pub fn receive_client_auth_messages(
 
             info!(
                 "replication client authenticated and bound: client={:?} remote={:?} player_entity_id={}",
-                client_entity, remote_id.0, claims.player_entity_id
+                client_entity, remote_id.0, message.player_entity_id
             );
         }
     }

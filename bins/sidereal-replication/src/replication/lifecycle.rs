@@ -8,13 +8,9 @@ use lightyear::prelude::server::{ClientOf, LinkOf, RawServer, ServerUdpIo, Start
 use lightyear::prelude::{ReplicationSender, SendUpdatesMode};
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_persistence::GraphPersistence;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use crate::{
-    BrpAuthToken, HydratedEntityCount, HydratedGraphEntity, PlayerRuntimeViewRegistry,
-    ReplicationRuntime,
-};
+use crate::{BrpAuthToken, HydratedEntityCount, HydratedGraphEntity, ReplicationRuntime};
 
 pub fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
     if !cfg.enabled {
@@ -42,11 +38,6 @@ pub fn hydrate_replication_world(mut commands: Commands<'_, '_>) {
             return;
         }
     };
-    if let Err(err) = persistence.ensure_schema() {
-        eprintln!("replication hydration skipped; schema ensure failed: {err}");
-        return;
-    }
-
     let records = match persistence.load_graph_records() {
         Ok(v) => v,
         Err(err) => {
@@ -84,20 +75,8 @@ pub fn init_replication_runtime(world: &mut World) {
         eprintln!("replication runtime init failed to ensure schema: {err}");
         return;
     }
-    let loaded_view_states = match persistence.load_player_view_states() {
-        Ok(states) => states,
-        Err(err) => {
-            eprintln!("replication runtime init failed loading player view state: {err}");
-            Vec::new()
-        }
-    };
 
     world.insert_non_send_resource(ReplicationRuntime { persistence });
-    let mut view_registry = world.resource_mut::<PlayerRuntimeViewRegistry>();
-    view_registry.by_player_entity_id = loaded_view_states
-        .into_iter()
-        .map(|state| (state.player_entity_id.clone(), state))
-        .collect::<HashMap<_, _>>();
 }
 
 pub fn start_lightyear_server(mut commands: Commands<'_, '_>) {

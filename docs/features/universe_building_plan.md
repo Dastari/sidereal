@@ -14,8 +14,7 @@ This document outlines the architecture and workflow for building the Sidereal u
 
 **Services**:
 - `sidereal-gateway`: Auth, account management
-- `sidereal-replication`: Read-model, persistence, client state distribution
-- `sidereal-shard`: Authoritative simulation (physics, entities)
+- `sidereal-replication`: Authoritative simulation, persistence, and client state distribution
 - `sidereal-orchestrator`: **Empty scaffold** - perfect for universe management!
 
 **Data Flow**:
@@ -23,8 +22,6 @@ This document outlines the architecture and workflow for building the Sidereal u
 Graph DB (PostgreSQL + AGE)
     ↓
 [Replication] - Hydrates world state on startup
-    ↓
-[Shard] - Simulates entities (ships, physics)
     ↓
 [Replication] - Filters visibility, distributes to clients
     ↓
@@ -62,7 +59,7 @@ Currently:
 4. Persist to graph database
 5. Provide universe editor/admin API
 
-### Tier 2: Runtime Simulation (Shard + Replication)
+### Tier 2: Runtime Simulation (Replication)
 
 **Purpose**: Simulate and distribute universe state  
 
@@ -499,13 +496,11 @@ Generate Seeds & Entity Definitions
 [Graph Database] - Persist all entities with components
 ```
 
-### Runtime (Shard/Replication)
+### Runtime (Replication)
 ```
 [Graph DB] - Load celestial entities
     ↓
 [Replication] - Hydrate celestial bodies as ECS entities
-    ↓
-[Shard] - Simulate orbital mechanics (update positions)
     ↓
 [Replication] - Filter visibility (only send nearby celestials)
     ↓
@@ -546,7 +541,7 @@ Render with LOD
 - [ ] Create hardcoded test system definition
 - [ ] Manually insert into graph database
 - [ ] Verify replication hydrates entities
-- [ ] Verify shard loads entities
+- [ ] Verify replication simulation loads entities
 - [ ] Test basic orbital position updates
 
 ### Phase 2: Client Rendering (Week 3)
@@ -700,7 +695,7 @@ curl -X POST http://localhost:9000/systems/sol-001/asteroids/generate \
 1. Define celestial body components in `sidereal-game`
 2. Create single hardcoded test solar system
 3. Insert into graph manually
-4. Verify it loads in shard/replication
+4. Verify it loads in replication runtime
 
 **Short Term (Next 2 Weeks)**:
 1. Implement client-side procedural spawning
@@ -720,6 +715,6 @@ curl -X POST http://localhost:9000/systems/sol-001/asteroids/generate \
 
 ---
 
-**This plan makes `sidereal-orchestrator` the universe authoring tool** while keeping the existing graph→replication→shard→client flow intact. The key insight is that **clients generate visuals procedurally from minimal metadata**, making the entire system scalable and deterministic.
+**This plan makes `sidereal-orchestrator` the universe authoring tool** while keeping the existing graph→replication→client flow intact. The key insight is that **clients generate visuals procedurally from minimal metadata**, making the entire system scalable and deterministic.
 
 Ready to start with Phase 0?

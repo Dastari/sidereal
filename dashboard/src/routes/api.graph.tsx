@@ -29,14 +29,24 @@ type PgClient = {
 
 type PgPool = {
   connect: () => Promise<PgClient>
+  on: (event: 'error', listener: (error: Error) => void) => void
 }
 
-type GlobalWithPool = typeof globalThis & { __siderealPgPool?: PgPool }
+type GlobalWithPool = typeof globalThis & {
+  __siderealPgPool?: PgPool
+  __siderealPgPoolErrorHandlerInstalled?: boolean
+}
 
 const globalPoolRef = globalThis as GlobalWithPool
 
 async function getPool(): Promise<PgPool> {
   if (globalPoolRef.__siderealPgPool) {
+    if (!globalPoolRef.__siderealPgPoolErrorHandlerInstalled) {
+      globalPoolRef.__siderealPgPool.on('error', (error) => {
+        console.error('[dashboard] postgres pool idle client error:', error)
+      })
+      globalPoolRef.__siderealPgPoolErrorHandlerInstalled = true
+    }
     return globalPoolRef.__siderealPgPool
   }
 
@@ -55,7 +65,11 @@ async function getPool(): Promise<PgPool> {
     max: 8,
   })
 
+  pool.on('error', (error) => {
+    console.error('[dashboard] postgres pool idle client error:', error)
+  })
   globalPoolRef.__siderealPgPool = pool
+  globalPoolRef.__siderealPgPoolErrorHandlerInstalled = true
   return pool
 }
 

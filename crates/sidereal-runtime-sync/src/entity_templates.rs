@@ -4,11 +4,11 @@
 use bevy::prelude::Vec3;
 use serde::Serialize;
 use sidereal_game::{
-    DisplayName, MountedOn, OwnerId,
-    default_corvette_asset_id, default_corvette_engine, default_corvette_flight_computer,
-    default_corvette_flight_tuning, default_corvette_fuel_tank, default_corvette_health_pool,
-    default_corvette_mass_kg, default_corvette_max_velocity_mps, default_corvette_size,
-    default_starfield_shader_asset_id,
+    AccountId, ControlledEntityGuid, DisplayName, FocusedEntityGuid, MountedOn, OwnerId, PlayerTag,
+    SelectedEntityGuid, default_corvette_asset_id, default_corvette_engine,
+    default_corvette_flight_computer, default_corvette_flight_tuning, default_corvette_fuel_tank,
+    default_corvette_health_pool, default_corvette_mass_kg, default_corvette_max_velocity_mps,
+    default_corvette_size,
 };
 use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
 use uuid::Uuid;
@@ -34,7 +34,12 @@ pub fn corvette_starter_graph_records(
     player_entity_id: &str,
     position: Vec3,
 ) -> Vec<GraphEntityRecord> {
-    let ship_entity_id = format!("ship:{account_id}");
+    let player_guid = player_entity_id
+        .split(':')
+        .nth(1)
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .unwrap_or(account_id);
+    let ship_entity_id = format!("ship:{player_guid}");
     let fc_entity_id = format!("module:{}", Uuid::new_v4());
     let engine_left_entity_id = format!("module:{}", Uuid::new_v4());
     let engine_right_entity_id = format!("module:{}", Uuid::new_v4());
@@ -59,12 +64,36 @@ pub fn corvette_starter_graph_records(
             properties: serde_json::json!({
                 "owner_account_id": account_id.to_string(),
                 "player_entity_id": player_entity_id,
+                "position_m": [position.x, position.y, position.z],
             }),
-            components: vec![component_record(
-                player_entity_id,
-                "display_name",
-                &DisplayName("Pilot".to_string()),
-            )],
+            components: vec![
+                component_record(
+                    player_entity_id,
+                    "display_name",
+                    &DisplayName("Pilot".to_string()),
+                ),
+                component_record(player_entity_id, "player_tag", &PlayerTag),
+                component_record(
+                    player_entity_id,
+                    "account_id",
+                    &AccountId(account_id.to_string()),
+                ),
+                component_record(
+                    player_entity_id,
+                    "controlled_entity_guid",
+                    &ControlledEntityGuid(Some(player_guid.to_string())),
+                ),
+                component_record(
+                    player_entity_id,
+                    "selected_entity_guid",
+                    &SelectedEntityGuid(None),
+                ),
+                component_record(
+                    player_entity_id,
+                    "focused_entity_guid",
+                    &FocusedEntityGuid(None),
+                ),
+            ],
         },
         // Ship hull entity
         GraphEntityRecord {
@@ -75,19 +104,26 @@ pub fn corvette_starter_graph_records(
                 "player_entity_id": player_entity_id,
                 "name": "Corvette",
                 "asset_id": default_corvette_asset_id(),
-                "starfield_shader_asset_id": default_starfield_shader_asset_id(),
                 "position_m": [position.x, position.y, position.z],
                 "velocity_mps": [0.0, 0.0, 0.0],
                 "heading_rad": 0.0,
             }),
             components: vec![
-                component_record(&ship_entity_id, "display_name", &DisplayName("Corvette".to_string())),
+                component_record(
+                    &ship_entity_id,
+                    "display_name",
+                    &DisplayName("Corvette".to_string()),
+                ),
                 component_record(&ship_entity_id, "flight_computer", &flight_computer),
                 component_record(&ship_entity_id, "flight_tuning", &flight_tuning),
                 component_record(&ship_entity_id, "max_velocity_mps", &max_velocity_mps),
                 component_record(&ship_entity_id, "health_pool", &health_pool),
                 component_record(&ship_entity_id, "owner_id", &owner_id),
-                component_record(&ship_entity_id, "mass_kg", &sidereal_game::MassKg(hull_mass)),
+                component_record(
+                    &ship_entity_id,
+                    "mass_kg",
+                    &sidereal_game::MassKg(hull_mass),
+                ),
                 component_record(&ship_entity_id, "size_m", &hull_size),
             ],
         },
@@ -104,7 +140,7 @@ pub fn corvette_starter_graph_records(
                     &fc_entity_id,
                     "mounted_on",
                     &MountedOn {
-                        parent_entity_id: account_id,
+                        parent_entity_id: player_guid,
                         hardpoint_id: "computer_core".to_string(),
                     },
                 ),
@@ -126,12 +162,16 @@ pub fn corvette_starter_graph_records(
                     &engine_left_entity_id,
                     "mounted_on",
                     &MountedOn {
-                        parent_entity_id: account_id,
+                        parent_entity_id: player_guid,
                         hardpoint_id: "engine_left_aft".to_string(),
                     },
                 ),
                 component_record(&engine_left_entity_id, "engine", &engine),
-                component_record(&engine_left_entity_id, "mass_kg", &sidereal_game::MassKg(500.0)),
+                component_record(
+                    &engine_left_entity_id,
+                    "mass_kg",
+                    &sidereal_game::MassKg(500.0),
+                ),
                 component_record(&engine_left_entity_id, "owner_id", &owner_id),
             ],
         },
@@ -145,7 +185,11 @@ pub fn corvette_starter_graph_records(
             }),
             components: vec![
                 component_record(&fuel_left_entity_id, "fuel_tank", &fuel_tank),
-                component_record(&fuel_left_entity_id, "mass_kg", &sidereal_game::MassKg(1100.0)),
+                component_record(
+                    &fuel_left_entity_id,
+                    "mass_kg",
+                    &sidereal_game::MassKg(1100.0),
+                ),
                 component_record(&fuel_left_entity_id, "owner_id", &owner_id),
             ],
         },
@@ -162,12 +206,16 @@ pub fn corvette_starter_graph_records(
                     &engine_right_entity_id,
                     "mounted_on",
                     &MountedOn {
-                        parent_entity_id: account_id,
+                        parent_entity_id: player_guid,
                         hardpoint_id: "engine_right_aft".to_string(),
                     },
                 ),
                 component_record(&engine_right_entity_id, "engine", &engine),
-                component_record(&engine_right_entity_id, "mass_kg", &sidereal_game::MassKg(500.0)),
+                component_record(
+                    &engine_right_entity_id,
+                    "mass_kg",
+                    &sidereal_game::MassKg(500.0),
+                ),
                 component_record(&engine_right_entity_id, "owner_id", &owner_id),
             ],
         },
@@ -181,7 +229,11 @@ pub fn corvette_starter_graph_records(
             }),
             components: vec![
                 component_record(&fuel_right_entity_id, "fuel_tank", &fuel_tank),
-                component_record(&fuel_right_entity_id, "mass_kg", &sidereal_game::MassKg(1100.0)),
+                component_record(
+                    &fuel_right_entity_id,
+                    "mass_kg",
+                    &sidereal_game::MassKg(1100.0),
+                ),
                 component_record(&fuel_right_entity_id, "owner_id", &owner_id),
             ],
         },

@@ -16,8 +16,7 @@ use crate::replication::lifecycle::{
     log_replication_client_connected, setup_client_replication_sender, start_lightyear_server,
 };
 use crate::replication::persistence::{
-    SimulationPersistenceTimer, flush_player_runtime_view_state_persistence,
-    flush_simulation_state_persistence,
+    SimulationPersistenceTimer, flush_simulation_state_persistence,
 };
 use crate::replication::physics_runtime::{
     enforce_planar_ship_motion, sync_simulated_ship_components,
@@ -26,8 +25,9 @@ use crate::replication::runtime_state::{
     compute_controlled_entity_scanner_ranges, update_client_controlled_entity_positions,
 };
 use crate::replication::simulation_entities::{
-    PendingControlledByBindings, PlayerControlledEntityMap, apply_pending_controlled_by_bindings,
-    hydrate_simulation_entities, process_bootstrap_entity_commands,
+    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
+    apply_pending_controlled_by_bindings, hydrate_simulation_entities,
+    process_bootstrap_entity_commands,
 };
 use crate::replication::transport::ensure_server_transport_channels;
 use crate::replication::view::receive_client_view_updates;
@@ -46,7 +46,6 @@ use sidereal_asset_runtime::default_asset_dependencies;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::SiderealGamePlugin;
 use sidereal_net::register_lightyear_protocol;
-use sidereal_persistence::PlayerRuntimeViewState;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use visibility::{ClientControlledEntityPositionMap, ClientVisibilityRegistry};
@@ -99,16 +98,6 @@ struct AssetStreamServerState {
 #[derive(Resource, Default)]
 struct AssetDependencyMap {
     dependencies_by_asset_id: HashMap<String, Vec<String>>,
-}
-
-#[derive(Resource, Default)]
-struct PlayerRuntimeViewRegistry {
-    by_player_entity_id: HashMap<String, PlayerRuntimeViewState>,
-}
-
-#[derive(Resource, Default)]
-struct PlayerRuntimeViewDirtySet {
-    player_entity_ids: HashSet<String>,
 }
 
 fn main() {
@@ -165,10 +154,9 @@ fn main() {
     app.insert_resource(ClientVisibilityRegistry::default());
     app.insert_resource(ClientControlledEntityPositionMap::default());
     app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(PlayerRuntimeEntityMap::default());
     app.insert_resource(AuthenticatedClientBindings::default());
     app.insert_resource(AssetStreamServerState::default());
-    app.insert_resource(PlayerRuntimeViewRegistry::default());
-    app.insert_resource(PlayerRuntimeViewDirtySet::default());
     app.insert_resource(ClientInputTickTracker::default());
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(ClientInputDropMetricsLogState::default());
@@ -200,14 +188,13 @@ fn main() {
             update_client_controlled_entity_positions,
             compute_controlled_entity_scanner_ranges,
             update_network_visibility,
-            flush_player_runtime_view_state_persistence,
         )
             .chain()
             .after(PhysicsSystems::Writeback),
     );
     app.add_systems(
         FixedUpdate,
-        flush_simulation_state_persistence.after(flush_player_runtime_view_state_persistence),
+        flush_simulation_state_persistence.after(update_network_visibility),
     );
     app.add_systems(
         FixedUpdate,
@@ -222,13 +209,6 @@ fn main() {
         apply_pending_controlled_by_bindings.after(ReplicationBufferSystems::AfterBuffer),
     );
     app.run();
-}
-
-pub(crate) fn unix_epoch_now_i64() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|v| v.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

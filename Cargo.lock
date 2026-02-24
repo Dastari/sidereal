@@ -7010,6 +7010,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sidereal-component-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "sidereal-core"
 version = "0.1.0"
 dependencies = [
@@ -7023,7 +7032,9 @@ version = "0.1.0"
 dependencies = [
  "avian3d",
  "bevy",
+ "inventory",
  "serde",
+ "sidereal-component-macros",
  "sidereal-core",
  "uuid",
 ]
@@ -7038,6 +7049,7 @@ dependencies = [
  "axum",
  "base64",
  "jsonwebtoken",
+ "postgres",
  "rand",
  "serde",
  "serde_json",

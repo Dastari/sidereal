@@ -1,37 +1,22 @@
-use avian3d::prelude::Position;
 use bevy::prelude::*;
 use lightyear::prelude::is_in_rollback;
 use sidereal_game::{
     EntityGuid, MountedOn, ScannerComponent, ScannerRangeBuff, ScannerRangeM,
     total_scanner_range_for_parent,
 };
-use sidereal_persistence::PlayerRuntimeViewState;
 
-use crate::replication::SimulatedControlledEntity;
+use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity};
 use crate::visibility::{self, ClientControlledEntityPositionMap};
-use crate::{PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, unix_epoch_now_i64};
 
 pub fn update_client_controlled_entity_positions(
-    entities: Query<'_, '_, (&'_ SimulatedControlledEntity, &'_ Position)>,
+    player_entities: Res<'_, PlayerRuntimeEntityMap>,
+    camera_transforms: Query<'_, '_, &'_ Transform>,
     mut position_map: ResMut<'_, ClientControlledEntityPositionMap>,
-    mut view_registry: ResMut<'_, PlayerRuntimeViewRegistry>,
-    mut dirty_view_states: ResMut<'_, PlayerRuntimeViewDirtySet>,
 ) {
-    for (entity, position) in &entities {
-        position_map.update_position(&entity.player_entity_id, position.0);
-        let entry = view_registry
-            .by_player_entity_id
-            .entry(entity.player_entity_id.clone())
-            .or_insert_with(|| PlayerRuntimeViewState {
-                player_entity_id: entity.player_entity_id.clone(),
-                ..Default::default()
-            });
-        entry.last_controlled_entity_id = Some(entity.entity_id.clone());
-        entry.last_camera_position_m = Some([position.0.x, position.0.y, position.0.z]);
-        entry.updated_at_epoch_s = unix_epoch_now_i64();
-        dirty_view_states
-            .player_entity_ids
-            .insert(entity.player_entity_id.clone());
+    for (player_entity_id, player_entity) in &player_entities.by_player_entity_id {
+        if let Ok(camera_transform) = camera_transforms.get(*player_entity) {
+            position_map.update_position(player_entity_id, camera_transform.translation);
+        }
     }
 }
 

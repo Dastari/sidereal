@@ -162,12 +162,7 @@ export function DetailPanel({
                   <PropertySection title="Graph Properties" icon={Box}>
                     {Object.entries(graphNode.properties).map(
                       ([key, value]) => (
-                        <PropertyRow
-                          key={key}
-                          label={key}
-                          value={formatValue(value)}
-                          mono
-                        />
+                        <PropertyRow key={key} label={key} value={value} mono />
                       ),
                     )}
                   </PropertySection>
@@ -179,12 +174,7 @@ export function DetailPanel({
                   <PropertySection title="Node Properties" icon={Box}>
                     {Object.entries(expandedNode.properties).map(
                       ([key, value]) => (
-                        <PropertyRow
-                          key={key}
-                          label={key}
-                          value={formatValue(value)}
-                          mono
-                        />
+                        <PropertyRow key={key} label={key} value={value} mono />
                       ),
                     )}
                   </PropertySection>
@@ -248,24 +238,22 @@ function PropertySection({
 
 interface PropertyRowProps {
   label: string
-  value: string
+  value: unknown
   unit?: string
   mono?: boolean
 }
 
 function PropertyRow({ label, value, unit, mono }: PropertyRowProps) {
+  const formattedValue = formatDisplayValue(value)
+
   return (
-    <div className="flex items-baseline justify-between gap-2 py-0.5">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          'text-sm text-foreground truncate max-w-[180px]',
-          mono && 'font-mono text-xs',
-        )}
-      >
-        {value}
-        {unit && <span className="text-muted-foreground ml-1">{unit}</span>}
-      </span>
+    <div className="flex items-start gap-2 py-0.5 min-w-0">
+      <span className="text-sm text-muted-foreground shrink-0">{label}</span>
+      <ValueField
+        value={formattedValue}
+        mono={mono}
+        unit={formattedValue.isStructured ? undefined : unit}
+      />
     </div>
   )
 }
@@ -414,14 +402,16 @@ function ComponentsList({
                 {Object.entries(node.properties).map(([key, value]) => (
                   <div
                     key={key}
-                    className="flex items-baseline justify-between gap-2 py-0.5"
+                    className="flex items-start gap-2 py-0.5 min-w-0"
                   >
-                    <span className="text-xs text-muted-foreground truncate">
+                    <span className="text-xs text-muted-foreground truncate shrink-0">
                       {key}
                     </span>
-                    <span className="text-xs font-mono text-foreground/90 truncate max-w-[200px]">
-                      {formatValue(value)}
-                    </span>
+                    <ValueField
+                      value={formatDisplayValue(value)}
+                      mono
+                      className="text-xs text-foreground/90"
+                    />
                   </div>
                 ))}
               </div>
@@ -467,10 +457,78 @@ function formatValueCompact(value: unknown): string {
   return String(value)
 }
 
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return 'null'
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
+type FormattedValue = {
+  text: string
+  isStructured: boolean
+}
+
+function formatDisplayValue(value: unknown): FormattedValue {
+  if (value === null || value === undefined) {
+    return { text: 'null', isStructured: false }
+  }
+
+  if (typeof value === 'object') {
+    return { text: JSON.stringify(value, null, 2), isStructured: true }
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown
+        if (parsed && typeof parsed === 'object') {
+          return { text: JSON.stringify(parsed, null, 2), isStructured: true }
+        }
+      } catch {
+        // Treat as plain string when JSON parsing fails.
+      }
+    }
+    return { text: value, isStructured: false }
+  }
+
+  return { text: String(value), isStructured: false }
+}
+
+function ValueField({
+  value,
+  mono,
+  unit,
+  className,
+}: {
+  value: FormattedValue
+  mono?: boolean
+  unit?: string
+  className?: string
+}) {
+  if (value.isStructured) {
+    return (
+      <pre
+        className={cn(
+          'min-w-0 flex-1 overflow-hidden whitespace-pre-wrap break-words text-left text-sm text-foreground',
+          mono && 'font-mono text-xs',
+          className,
+        )}
+      >
+        {value.text}
+      </pre>
+    )
+  }
+
+  return (
+    <span
+      className={cn(
+        'min-w-0 flex-1 truncate text-right text-sm text-foreground',
+        mono && 'font-mono text-xs',
+        className,
+      )}
+    >
+      {value.text}
+      {unit && <span className="text-muted-foreground ml-1">{unit}</span>}
+    </span>
+  )
 }
 
 interface ChildEntitiesSectionProps {

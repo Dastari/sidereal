@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   ExpandedNode,
   GraphEdge,
@@ -20,6 +20,7 @@ import { EntityTree } from '@/components/sidebar/EntityTree'
 import { DetailPanel } from '@/components/sidebar/DetailPanel'
 import { StatusBar } from '@/components/sidebar/StatusBar'
 import { Toolbar } from '@/components/sidebar/Toolbar'
+import { Switch } from '@/components/ui/switch'
 
 export const Route = createFileRoute('/')({ component: DashboardPage })
 
@@ -86,6 +87,8 @@ function DashboardPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(280)
+  const [detailPanelWidth, setDetailPanelWidth] = useState(320)
+  const [filterMapInvisible, setFilterMapInvisible] = useState(true)
 
   // Status
   const [graphStatus, setGraphStatus] = useState({
@@ -99,23 +102,13 @@ function DashboardPage() {
     entityCount: 0,
   })
 
-  // Build adjacency map for expansion
-  const adjacencyRef = useRef<Map<string, Array<string>>>(new Map())
-
-  // Compute adjacency when graph changes
-  useEffect(() => {
-    const adj = new Map<string, Array<string>>()
-    for (const [id] of graphNodes) {
-      adj.set(id, [])
-    }
-    for (const edge of graphEdges) {
-      if (!adj.has(edge.from)) adj.set(edge.from, [])
-      if (!adj.has(edge.to)) adj.set(edge.to, [])
-      adj.get(edge.from)!.push(edge.to)
-      adj.get(edge.to)!.push(edge.from)
-    }
-    adjacencyRef.current = adj
-  }, [graphNodes, graphEdges])
+  const filteredEntities = useMemo(
+    () =>
+      filterMapInvisible
+        ? entities.filter((entity) => entity.mapVisible !== false)
+        : entities,
+    [entities, filterMapInvisible],
+  )
 
   // Load data
   const loadData = useCallback(async () => {
@@ -128,10 +121,11 @@ function DashboardPage() {
           fetch('/api/world').then((r) => r.json() as Promise<ApiWorld>),
         ])
 
-        const hasGraphNodes =
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- API response validation
-          !graphRes.error && graphRes.nodes && graphRes.nodes.length > 0
-        if (hasGraphNodes) {
+        const graphOk =
+          !graphRes.error &&
+          Array.isArray(graphRes.nodes) &&
+          Array.isArray(graphRes.edges)
+        if (graphOk) {
           const nodeMap = new Map<string, GraphNode>()
           for (const n of graphRes.nodes) {
             nodeMap.set(n.id, {
@@ -156,21 +150,19 @@ function DashboardPage() {
             connected: true,
             nodeCount: graphRes.nodes.length,
             edgeCount: graphRes.edges.length,
-            graphName: graphRes.graph,
+            graphName: graphRes.graph || 'sidereal',
           })
         } else {
           setGraphStatus({
             connected: false,
             nodeCount: 0,
             edgeCount: 0,
-            graphName: '',
+            graphName: graphRes.error ? `DB error: ${graphRes.error}` : '',
           })
         }
 
-        const hasWorldEntities =
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- API response validation
-          !worldRes.error && worldRes.entities && worldRes.entities.length > 0
-        if (hasWorldEntities) {
+        const worldOk = !worldRes.error && Array.isArray(worldRes.entities)
+        if (worldOk) {
           setEntities(worldRes.entities)
           setWorldStatus({
             loaded: true,
@@ -264,6 +256,14 @@ function DashboardPage() {
     setSelectedId(null)
   }, [sourceMode])
 
+  useEffect(() => {
+    if (!selectedId) return
+    const selectedVisible = filteredEntities.some((e) => e.id === selectedId)
+    if (!selectedVisible) {
+      setSelectedId(null)
+    }
+  }, [filteredEntities, selectedId])
+
   // Initial load and polling
   useEffect(() => {
     void loadData()
@@ -280,64 +280,40 @@ function DashboardPage() {
         const next = new Map(prev)
 
         // Find the base entity or existing node position
-        const baseEntity = entities.find((e) => e.id === id)
+        const baseEntity = filteredEntities.find((e) => e.id === id)
         const existingNode = prev.get(id)
         const centerX = baseEntity?.x || existingNode?.x || 0
         const centerY = baseEntity?.y || existingNode?.y || 0
 
-        // For root entities, get HAS_COMPONENT edges
-        // For components, get their connected nodes
-        const neighbors = adjacencyRef.current.get(id) || []
-
-        // Filter to only show components (HAS_COMPONENT edges) or related nodes
-        // Skip world entities (those with parentEntityId)
-        const relevantNeighbors = neighbors.filter((neighborId) => {
-          const graphNode = graphNodes.get(neighborId)
-          const entity = entities.find((e) => e.id === neighborId)
-
-          // Skip if it's a world entity child (has parentEntityId)
-          if (entity?.parentEntityId) {
-            return false
-          }
-
-          // Check if this edge is HAS_COMPONENT
-          const isComponent = graphEdges.some(
-            (edge) =>
-              (edge.from === id &&
-                edge.to === neighborId &&
-                edge.label === 'HAS_COMPONENT') ||
-              (edge.to === id &&
-                edge.from === neighborId &&
-                edge.label === 'HAS_COMPONENT'),
-          )
-
-          // Include if it's a component or if it's already expanded
-          return (
-            isComponent ||
-            graphNode?.kind === 'Component' ||
-            next.has(neighborId)
-          )
-        })
-
-        const hiddenNeighbors = relevantNeighbors.filter((n) => !next.has(n))
+        // Only explode child entities in the map graph view.
+        const childEntities = filteredEntities.filter(
+          (entity) => entity.parentEntityId === id,
+        )
+        const hiddenChildren = childEntities.filter(
+          (child) => !next.has(child.id),
+        )
 
         // Position hidden neighbors in a circle around the center with animation-friendly layout
-        const radius = Math.max(100, 80 + hiddenNeighbors.length * 8)
-        hiddenNeighbors.forEach((neighborId, index) => {
+        const radius = Math.max(100, 80 + hiddenChildren.length * 8)
+        hiddenChildren.forEach((child, index) => {
           const angle =
-            (Math.PI * 2 * index) / Math.max(1, hiddenNeighbors.length)
-          const graphNode = graphNodes.get(neighborId)
+            (Math.PI * 2 * index) / Math.max(1, hiddenChildren.length)
 
-          next.set(neighborId, {
-            id: neighborId,
+          next.set(child.id, {
+            id: child.id,
             parentId: id,
             x: centerX + Math.cos(angle) * radius,
             y: centerY + Math.sin(angle) * radius,
-            label: graphNode?.label || neighborId,
-            kind: graphNode?.kind || 'component',
+            label: child.name,
+            kind: child.kind,
             isExpanded: false,
             depth: (existingNode?.depth || 0) + 1,
-            properties: graphNode?.properties || {},
+            properties: {
+              shardId: child.shardId,
+              z: child.z,
+              componentCount: child.componentCount,
+              parentEntityId: child.parentEntityId,
+            },
           })
         })
 
@@ -350,7 +326,7 @@ function DashboardPage() {
         return next
       })
     },
-    [entities, graphNodes, graphEdges],
+    [filteredEntities],
   )
 
   // Handle node collapse
@@ -461,13 +437,23 @@ function DashboardPage() {
           sidebar={
             <Panel>
               <PanelHeader className="py-2">
-                <h1 className="text-sm font-semibold text-foreground">
-                  Sidereal Explorer
-                </h1>
+                <div className="flex items-center justify-between gap-2">
+                  <h1 className="text-sm font-semibold text-foreground">
+                    Sidereal Explorer
+                  </h1>
+                  <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="whitespace-nowrap">Map Visible Only</span>
+                    <Switch
+                      checked={filterMapInvisible}
+                      onCheckedChange={setFilterMapInvisible}
+                      aria-label="Filter entities with mapVisible false"
+                    />
+                  </label>
+                </div>
               </PanelHeader>
               <PanelContent>
                 <EntityTree
-                  entities={entities}
+                  entities={filteredEntities}
                   selectedId={selectedId}
                   onSelect={handleSelectFromTree}
                   sourceMode={sourceMode}
@@ -485,11 +471,13 @@ function DashboardPage() {
           }
           sidebarWidth={sidebarWidth}
           onSidebarResize={setSidebarWidth}
+          detailPanelWidth={detailPanelWidth}
+          onDetailPanelResize={setDetailPanelWidth}
           detailPanel={
             <Panel>
               <DetailPanel
                 selectedId={selectedId}
-                entities={entities}
+                entities={filteredEntities}
                 expandedNodes={expandedNodes}
                 graphNodes={graphNodes}
                 graphEdges={graphEdges}
@@ -501,13 +489,14 @@ function DashboardPage() {
           }
         >
           <GridCanvas
-            entities={entities}
+            entities={filteredEntities}
             graphNodes={graphNodes}
             graphEdges={graphEdges}
             selectedId={selectedId}
             onSelect={setSelectedId}
             onExpand={handleExpand}
             expandedNodes={expandedNodes}
+            filterMapInvisible={filterMapInvisible}
           />
         </AppLayout>
       </TooltipProvider>

@@ -7,8 +7,8 @@ use sidereal_replication::state::{GraphDeltaBatch, ingest_graph_batch};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 
-use crate::replication::lifecycle::configure_remote;
 use crate::BrpAuthToken;
+use crate::replication::lifecycle::configure_remote;
 
 #[test]
 fn remote_endpoint_registers_when_enabled() {
@@ -22,9 +22,10 @@ fn remote_endpoint_registers_when_enabled() {
     app.add_plugins(MinimalPlugins);
     configure_remote(&mut app, &cfg);
 
-    assert!(app
-        .world()
-        .contains_resource::<bevy_remote::http::HostPort>());
+    assert!(
+        app.world()
+            .contains_resource::<bevy_remote::http::HostPort>()
+    );
     assert!(app.world().contains_resource::<BrpAuthToken>());
 }
 

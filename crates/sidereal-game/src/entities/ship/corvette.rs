@@ -191,7 +191,7 @@ pub fn spawn_corvette(
             total_mass: TotalMassKg(hull_mass),
             mass_dirty: MassDirty,
             inventory: Inventory::default(),
-            size: size.clone(),
+            size,
             collision: CollisionAabbM {
                 half_extents: Vec3::new(size.length * 0.5, size.width * 0.5, size.height * 0.5),
             },
@@ -375,12 +375,9 @@ mod tests {
         let mut world = World::new();
         let mut commands = world.commands();
 
-        let overrides = CorvetteOverrides::for_player(
-            Uuid::new_v4(),
-            "player:test-123".to_string(),
-            1,
-        )
-        .with_display_name("Test Ship");
+        let overrides =
+            CorvetteOverrides::for_player(Uuid::new_v4(), "player:test-123".to_string(), 1)
+                .with_display_name("Test Ship");
 
         let (ship_guid, module_guids) = spawn_corvette(&mut commands, overrides);
 

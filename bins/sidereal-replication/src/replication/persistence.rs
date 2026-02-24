@@ -2,47 +2,12 @@ use avian3d::prelude::{LinearVelocity, Position, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::math::EulerRot;
 use bevy::prelude::*;
-use sidereal_game::{EntityGuid, GeneratedComponentRegistry, MountedOn};
+use sidereal_game::{AccountId, EntityGuid, GeneratedComponentRegistry, MountedOn, PlayerTag};
 use sidereal_persistence::GraphEntityRecord;
 use sidereal_runtime_sync::serialize_entity_components_to_graph_records;
 
+use crate::ReplicationRuntime;
 use crate::replication::SimulatedControlledEntity;
-use crate::{PlayerRuntimeViewDirtySet, PlayerRuntimeViewRegistry, ReplicationRuntime};
-
-pub fn flush_player_runtime_view_state_persistence(
-    runtime: Option<NonSendMut<'_, ReplicationRuntime>>,
-    view_registry: Res<'_, PlayerRuntimeViewRegistry>,
-    mut dirty_view_states: ResMut<'_, PlayerRuntimeViewDirtySet>,
-) {
-    let Some(mut runtime) = runtime else {
-        return;
-    };
-    if dirty_view_states.player_entity_ids.is_empty() {
-        return;
-    }
-
-    let pending_player_ids = dirty_view_states
-        .player_entity_ids
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut persisted = Vec::<String>::new();
-    for player_entity_id in pending_player_ids {
-        let Some(view_state) = view_registry.by_player_entity_id.get(&player_entity_id) else {
-            persisted.push(player_entity_id);
-            continue;
-        };
-        match runtime.persistence.upsert_player_view_state(view_state) {
-            Ok(()) => persisted.push(player_entity_id),
-            Err(err) => eprintln!("replication failed persisting player view state: {err}"),
-        }
-    }
-    for player_entity_id in persisted {
-        dirty_view_states
-            .player_entity_ids
-            .remove(&player_entity_id);
-    }
-}
 
 /// Tick counter for throttling simulation state persistence.
 #[derive(Resource)]
@@ -86,6 +51,7 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
 
     // Collect ship data from queries (read-only world borrow).
     let mut ship_data: Vec<(Entity, String, String, Vec3, Vec3, f32)> = Vec::new();
+    let mut player_data: Vec<(Entity, String, String, Vec3)> = Vec::new();
     let mut ship_guids = std::collections::HashSet::<uuid::Uuid>::new();
 
     let mut ship_query = world.query::<(
@@ -128,6 +94,22 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
         ship_guids.insert(guid.0);
     }
 
+    let mut player_query = world.query::<(
+        Entity,
+        &EntityGuid,
+        Option<&AccountId>,
+        Option<&Transform>,
+        &PlayerTag,
+    )>();
+    for (entity, guid, account_id, transform, _) in player_query.iter(world) {
+        let player_entity_id = format!("player:{}", guid.0);
+        let account_id = account_id
+            .map(|value| value.0.clone())
+            .unwrap_or_else(|| guid.0.to_string());
+        let camera = transform.map(|t| t.translation).unwrap_or(Vec3::ZERO);
+        player_data.push((entity, player_entity_id, account_id, camera));
+    }
+
     let mut module_data: Vec<(Entity, uuid::Uuid, String, String)> = Vec::new();
     let mut module_query = world.query::<(Entity, &EntityGuid, &MountedOn)>();
     for (entity, guid, mounted_on) in module_query.iter(world) {
@@ -162,6 +144,26 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
                 "position_m": [pos.x, pos.y, 0.0],
                 "velocity_mps": [vel.x, vel.y, 0.0],
                 "heading_rad": heading_rad,
+            }),
+            components,
+        });
+    }
+
+    for (entity, player_entity_id, account_id, camera_pos) in &player_data {
+        let entity_ref = world.entity(*entity);
+        let components = serialize_entity_components_to_graph_records(
+            player_entity_id,
+            entity_ref,
+            &component_registry,
+            &app_type_registry,
+        );
+        records.push(GraphEntityRecord {
+            entity_id: player_entity_id.clone(),
+            labels: vec!["Entity".to_string(), "Player".to_string()],
+            properties: serde_json::json!({
+                "owner_account_id": account_id,
+                "player_entity_id": player_entity_id,
+                "position_m": [camera_pos.x, camera_pos.y, camera_pos.z],
             }),
             components,
         });

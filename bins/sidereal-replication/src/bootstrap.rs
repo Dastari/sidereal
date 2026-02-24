@@ -6,6 +6,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const BOOTSTRAP_KIND: &str = "bootstrap_player";
+const AUTH_CHARACTERS_TABLE: &str = "auth_characters";
 
 #[derive(Debug, Deserialize)]
 pub struct BootstrapWireMessage {
@@ -32,10 +33,11 @@ impl TryFrom<BootstrapWireMessage> for BootstrapCommand {
         }
         let account_id = Uuid::parse_str(&value.account_id)
             .map_err(|_| BootstrapError::Validation("invalid account_id uuid".to_string()))?;
-        let expected_player_entity_id = format!("player:{account_id}");
-        if value.player_entity_id != expected_player_entity_id {
+        if !value.player_entity_id.starts_with("player:")
+            || value.player_entity_id.trim().len() <= "player:".len()
+        {
             return Err(BootstrapError::Validation(
-                "player_entity_id must match player:<account_uuid>".to_string(),
+                "player_entity_id must be a non-empty player:<id> value".to_string(),
             ));
         }
 
@@ -105,10 +107,12 @@ impl BootstrapStore for PostgresBootstrapStore {
             .batch_execute(
                 "
                 CREATE TABLE IF NOT EXISTS replication_player_bootstrap (
-                    account_id UUID PRIMARY KEY,
-                    player_entity_id TEXT NOT NULL,
+                    player_entity_id TEXT PRIMARY KEY,
+                    account_id UUID NOT NULL,
                     applied_at_epoch_s BIGINT NOT NULL
                 );
+                CREATE UNIQUE INDEX IF NOT EXISTS replication_player_bootstrap_player_entity_idx
+                    ON replication_player_bootstrap (player_entity_id);
 
                 CREATE TABLE IF NOT EXISTS replication_bootstrap_events (
                     event_id BIGSERIAL PRIMARY KEY,
@@ -134,11 +138,37 @@ impl BootstrapStore for PostgresBootstrapStore {
 
         let inserted = tx
             .query_opt(
+                &format!(
+                    "
+                    SELECT 1 FROM {AUTH_CHARACTERS_TABLE}
+                    WHERE account_id = $1 AND player_entity_id = $2
+                    "
+                ),
+                &[&command.account_id, &command.player_entity_id],
+            )
+            .map_err(|err| {
+                BootstrapError::Storage(format!("bootstrap ownership lookup failed: {err}"))
+            })?
+            .is_some();
+
+        if !inserted {
+            tx.rollback().map_err(|err| {
+                BootstrapError::Storage(format!(
+                    "transaction rollback failed after ownership mismatch: {err}"
+                ))
+            })?;
+            return Err(BootstrapError::Validation(
+                "bootstrap rejected: account does not own requested player_entity_id".to_string(),
+            ));
+        }
+
+        let inserted = tx
+            .query_opt(
                 "
                 INSERT INTO replication_player_bootstrap (account_id, player_entity_id, applied_at_epoch_s)
                 VALUES ($1, $2, $3)
-                ON CONFLICT (account_id) DO NOTHING
-                RETURNING account_id
+                ON CONFLICT (player_entity_id) DO NOTHING
+                RETURNING player_entity_id
                 ",
                 &[&command.account_id, &command.player_entity_id, &now],
             )
@@ -162,7 +192,7 @@ impl BootstrapStore for PostgresBootstrapStore {
 
 #[derive(Default)]
 pub struct InMemoryBootstrapStore {
-    applied_accounts: HashSet<Uuid>,
+    applied_player_entities: HashSet<String>,
     events: Vec<BootstrapHandleResult>,
 }
 
@@ -181,7 +211,9 @@ impl BootstrapStore for InMemoryBootstrapStore {
         &mut self,
         command: &BootstrapCommand,
     ) -> Result<bool, BootstrapError> {
-        let applied = self.applied_accounts.insert(command.account_id);
+        let applied = self
+            .applied_player_entities
+            .insert(command.player_entity_id.clone());
         self.events.push(BootstrapHandleResult {
             account_id: command.account_id,
             player_entity_id: command.player_entity_id.clone(),
@@ -221,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_processor_is_idempotent_per_account() {
+    fn bootstrap_processor_is_idempotent_per_player_entity() {
         let store = InMemoryBootstrapStore::default();
         let mut processor = BootstrapProcessor::new(store).expect("processor");
         let account_id = Uuid::new_v4();
@@ -238,12 +270,12 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_processor_rejects_invalid_player_mapping() {
+    fn bootstrap_processor_rejects_invalid_player_entity_format() {
         let store = InMemoryBootstrapStore::default();
         let mut processor = BootstrapProcessor::new(store).expect("processor");
         let account_id = Uuid::new_v4();
         let bad = format!(
-            r#"{{"kind":"bootstrap_player","account_id":"{}","player_entity_id":"player:wrong"}}"#,
+            r#"{{"kind":"bootstrap_player","account_id":"{}","player_entity_id":"wrong"}}"#,
             account_id
         );
 

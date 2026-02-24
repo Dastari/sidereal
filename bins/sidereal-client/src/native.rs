@@ -41,8 +41,9 @@ use sidereal_asset_runtime::{
 };
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
-    ActionQueue, EntityAction, EntityGuid, FullscreenLayer, Hardpoint, HealthPool, MountedOn,
-    OwnerId, SiderealGamePlugin, SizeM, TotalMassKg, angular_inertia_from_size,
+    ActionQueue, ControlledEntityGuid, EntityAction, EntityGuid, FocusedEntityGuid,
+    FullscreenLayer, Hardpoint, HealthPool, MountedOn, OwnerId, PlayerTag, ScannerRangeM,
+    SelectedEntityGuid, SiderealGamePlugin, SizeM, TotalMassKg, angular_inertia_from_size,
     default_corvette_asset_id, default_corvette_mass_kg, default_corvette_size,
     default_flight_action_capabilities, default_space_background_shader_asset_id,
     default_starfield_shader_asset_id,
@@ -66,6 +67,7 @@ struct BrpAuthToken(String);
 enum ClientAppState {
     #[default]
     Auth,
+    CharacterSelect,
     InWorld,
 }
 
@@ -96,9 +98,16 @@ struct ClientSession {
     new_password: String,
     access_token: Option<String>,
     refresh_token: Option<String>,
+    account_id: Option<String>,
     player_entity_id: Option<String>,
     status: String,
     ui_dirty: bool,
+}
+
+#[derive(Debug, Resource, Default)]
+struct CharacterSelectionState {
+    characters: Vec<String>,
+    selected_player_entity_id: Option<String>,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -112,6 +121,7 @@ struct ClientInputAckTracker {
 #[derive(Debug, Resource, Default)]
 struct ClientAuthSyncState {
     sent_for_client_entities: std::collections::HashSet<Entity>,
+    last_sent_at_s_by_client_entity: HashMap<Entity, f64>,
     last_player_entity_id: Option<String>,
 }
 
@@ -127,6 +137,26 @@ impl CameraFocusState {
     fn set(&mut self, entity_id: Option<String>) {
         self.focused_entity_id = entity_id;
     }
+}
+
+#[derive(Debug, Resource, Default)]
+struct LocalPlayerViewState {
+    controlled_entity_id: Option<String>,
+    selected_entity_id: Option<String>,
+    focused_entity_id: Option<String>,
+    desired_controlled_entity_id: Option<String>,
+}
+
+#[derive(Debug, Resource, Default)]
+struct FreeCameraState {
+    position_xy: Vec2,
+    initialized: bool,
+}
+
+#[derive(Debug, Resource, Default)]
+struct OwnedShipsPanelState {
+    last_ship_ids: Vec<String>,
+    last_selected_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -221,6 +251,10 @@ struct DebugOverlayEnabled {
 #[derive(Debug, Resource, Default)]
 struct StarfieldMotionState {
     prev_speed: f32,
+    initialized: bool,
+    starfield_drift_uv: Vec2,
+    background_drift_uv: Vec2,
+    smoothed_warp: f32,
 }
 
 #[derive(Debug, Resource)]
@@ -228,6 +262,7 @@ struct CameraMotionState {
     world_position_xy: Vec2,
     smoothed_position_xy: Vec2,
     prev_position_xy: Vec2,
+    frame_delta_xy: Vec2,
     smoothed_velocity_xy: Vec2,
     initialized: bool,
 }
@@ -238,6 +273,7 @@ impl Default for CameraMotionState {
             world_position_xy: Vec2::ZERO,
             smoothed_position_xy: Vec2::ZERO,
             prev_position_xy: Vec2::ZERO,
+            frame_delta_xy: Vec2::ZERO,
             smoothed_velocity_xy: Vec2::ZERO,
             initialized: false,
         }
@@ -342,6 +378,7 @@ impl Default for ClientSession {
             new_password: "new-very-strong-password".to_string(),
             access_token: None,
             refresh_token: None,
+            account_id: None,
             player_entity_id: None,
             status: "Ready. F1 Login, F2 Register, F3 Forgot Request, F4 Forgot Confirm."
                 .to_string(),
@@ -399,6 +436,26 @@ struct AuthMeResponse {
     player_entity_id: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CharactersResponse {
+    characters: Vec<CharacterSummary>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CharacterSummary {
+    player_entity_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EnterWorldRequest {
+    player_entity_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EnterWorldResponse {
+    accepted: bool,
+}
+
 #[derive(Resource, Clone)]
 struct AssetRootPath(String);
 
@@ -426,6 +483,22 @@ struct GameplayCamera;
 struct GameplayHud;
 #[derive(Component)]
 struct UiOverlayCamera;
+#[derive(Component)]
+struct CharacterSelectRoot;
+#[derive(Component)]
+struct CharacterSelectStatusText;
+#[derive(Component)]
+struct CharacterSelectButton {
+    player_entity_id: String,
+}
+#[derive(Component)]
+struct CharacterSelectEnterButton;
+#[derive(Component)]
+struct OwnedShipsPanelRoot;
+#[derive(Component)]
+struct OwnedShipsPanelButton {
+    entity_id: Option<String>,
+}
 
 #[derive(Component)]
 struct ControlledEntity {
@@ -694,6 +767,10 @@ pub(crate) fn run() {
     app.insert_resource(DebugBlueOverlayEnabled(debug_blue_overlay));
     app.insert_resource(DebugOverlayEnabled { enabled: false });
     app.insert_resource(CameraFocusState::default());
+    app.insert_resource(LocalPlayerViewState::default());
+    app.insert_resource(CharacterSelectionState::default());
+    app.insert_resource(FreeCameraState::default());
+    app.insert_resource(OwnedShipsPanelState::default());
     app.insert_resource(RuntimeEntityHierarchy::default());
     app.insert_resource(StarfieldMotionState::default());
     app.insert_resource(CameraMotionState::default());
@@ -728,12 +805,17 @@ pub(crate) fn run() {
                 configure_prediction_manager_tuning,
                 ensure_client_transport_channels,
                 send_lightyear_auth_messages,
-                send_lightyear_view_updates,
                 receive_lightyear_asset_stream_messages,
                 ensure_critical_assets_available_system
                     .after(receive_lightyear_asset_stream_messages),
                 adopt_native_lightyear_replicated_entities,
+                sync_world_entity_transforms_from_physics
+                    .after(adopt_native_lightyear_replicated_entities),
+                sync_local_player_view_state_system
+                    .after(adopt_native_lightyear_replicated_entities),
+                sync_controlled_entity_tags_system.after(sync_local_player_view_state_system),
                 update_focus_target_system,
+                send_lightyear_view_updates.after(update_focus_target_system),
                 log_prediction_runtime_state,
             ),
         );
@@ -747,6 +829,10 @@ pub(crate) fn run() {
             OnEnter(ClientAppState::Auth),
             ensure_lightyear_client_system,
         );
+        app.add_systems(
+            OnEnter(ClientAppState::CharacterSelect),
+            setup_character_select_screen,
+        );
         auth_ui::register_auth_ui(&mut app);
         dialog_ui::register_dialog_ui(&mut app);
         app.add_systems(
@@ -759,15 +845,19 @@ pub(crate) fn run() {
         app.add_systems(
             Update,
             (
+                handle_character_select_buttons,
                 ensure_client_transport_channels,
                 configure_prediction_manager_tuning,
                 send_lightyear_auth_messages,
-                send_lightyear_view_updates,
                 receive_lightyear_asset_stream_messages,
                 ensure_critical_assets_available_system
                     .after(receive_lightyear_asset_stream_messages),
                 adopt_native_lightyear_replicated_entities,
+                sync_local_player_view_state_system
+                    .after(adopt_native_lightyear_replicated_entities),
+                sync_controlled_entity_tags_system.after(sync_local_player_view_state_system),
                 update_focus_target_system,
+                send_lightyear_view_updates.after(update_focus_target_system),
                 log_prediction_runtime_state,
             ),
         );
@@ -781,6 +871,8 @@ pub(crate) fn run() {
                     .after(adopt_native_lightyear_replicated_entities),
                 sync_backdrop_fullscreen_system.after(sync_fullscreen_layer_renderables_system),
                 gate_gameplay_camera_system,
+                update_owned_ships_panel_system,
+                handle_owned_ships_panel_buttons,
                 update_loading_overlay_system,
                 update_runtime_stream_icon_system,
                 watch_in_world_bootstrap_failures,
@@ -795,6 +887,10 @@ pub(crate) fn run() {
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(
+            Last,
+            lock_camera_to_controlled_entity_end_of_frame.run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
             FixedPreUpdate,
             send_lightyear_input_messages
                 .in_set(lightyear::prelude::client::input::InputSystems::WriteClientInputs)
@@ -803,6 +899,10 @@ pub(crate) fn run() {
         app.add_systems(
             PreUpdate,
             logout_to_auth_system.run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            PreUpdate,
+            logout_to_auth_system.run_if(in_state(ClientAppState::CharacterSelect)),
         );
         app.add_systems(
             FixedUpdate,
@@ -1107,6 +1207,7 @@ fn decode_api_json<T: serde::de::DeserializeOwned>(
 
 fn submit_auth_request(
     session: &mut ClientSession,
+    character_selection: &mut CharacterSelectionState,
     next_state: &mut NextState<ClientAppState>,
     dialog_queue: &mut dialog_ui::DialogQueue,
     _asset_root: &AssetRootPath,
@@ -1181,10 +1282,42 @@ fn submit_auth_request(
             session.refresh_token = Some(tokens.refresh_token);
             match fetch_auth_me(&client, &gateway_url, &tokens.access_token) {
                 Ok(me) => {
-                    session.player_entity_id = Some(me.player_entity_id);
-                    session.status =
-                        "Authenticated. Waiting for replication world bootstrap...".to_string();
-                    next_state.set(ClientAppState::InWorld);
+                    session.account_id = Some(me.account_id.clone());
+                    match fetch_auth_characters(&client, &gateway_url, &tokens.access_token) {
+                        Ok(characters) => {
+                            character_selection.characters = characters
+                                .characters
+                                .into_iter()
+                                .map(|c| c.player_entity_id)
+                                .collect();
+                            if character_selection.characters.is_empty() {
+                                session.status =
+                                    "Authenticated but no characters are available.".to_string();
+                                dialog_queue.push_error(
+                                    "No Characters",
+                                    "This account has no characters. Character creation UI is not implemented yet."
+                                        .to_string(),
+                                );
+                                return;
+                            }
+                            character_selection.selected_player_entity_id =
+                                character_selection.characters.first().cloned();
+                            session.player_entity_id = None;
+                            session.status =
+                                "Authenticated. Select a character and press Enter World."
+                                    .to_string();
+                            next_state.set(ClientAppState::CharacterSelect);
+                        }
+                        Err(err) => {
+                            session.status = format!("Auth OK but character lookup failed: {err}");
+                            dialog_queue.push_error(
+                                "Character Lookup Failed",
+                                format!(
+                                    "Authentication succeeded, but failed to fetch /auth/characters.\n\nDetails: {err}"
+                                ),
+                            );
+                        }
+                    }
                 }
                 Err(err) => {
                     session.status = format!("Auth OK but profile lookup failed: {err}");
@@ -1230,6 +1363,254 @@ fn fetch_auth_me(
         .map_err(|err| err.to_string())
 }
 
+fn fetch_auth_characters(
+    client: &reqwest::blocking::Client,
+    gateway_url: &str,
+    access_token: &str,
+) -> Result<CharactersResponse, String> {
+    client
+        .get(format!("{gateway_url}/auth/characters"))
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|err| err.to_string())?
+        .error_for_status()
+        .map_err(|err| err.to_string())?
+        .json::<CharactersResponse>()
+        .map_err(|err| err.to_string())
+}
+
+fn enter_world_request(
+    client: &reqwest::blocking::Client,
+    gateway_url: &str,
+    access_token: &str,
+    player_entity_id: &str,
+) -> Result<EnterWorldResponse, String> {
+    client
+        .post(format!("{gateway_url}/world/enter"))
+        .bearer_auth(access_token)
+        .json(&EnterWorldRequest {
+            player_entity_id: player_entity_id.to_string(),
+        })
+        .send()
+        .map_err(|err| err.to_string())?
+        .error_for_status()
+        .map_err(|err| err.to_string())?
+        .json::<EnterWorldResponse>()
+        .map_err(|err| err.to_string())
+}
+
+fn setup_character_select_screen(
+    mut commands: Commands<'_, '_>,
+    fonts: Res<'_, EmbeddedFonts>,
+    character_selection: Res<'_, CharacterSelectionState>,
+) {
+    commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            CharacterSelectRoot,
+            DespawnOnExit(ClientAppState::CharacterSelect),
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    width: Val::Px(560.0),
+                    padding: UiRect::all(Val::Px(24.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    border_radius: BorderRadius::all(Val::Px(12.0)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(12.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.95)),
+                BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("Character Select"),
+                    TextFont {
+                        font: fonts.bold.clone(),
+                        font_size: 34.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                ));
+                panel.spawn((
+                    Text::new("Choose a character, then Enter World."),
+                    TextFont {
+                        font: fonts.regular.clone(),
+                        font_size: 15.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgba(0.78, 0.84, 0.92, 0.95)),
+                ));
+
+                for player_entity_id in &character_selection.characters {
+                    panel
+                        .spawn((
+                            Button,
+                            CharacterSelectButton {
+                                player_entity_id: player_entity_id.clone(),
+                            },
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Px(38.0),
+                                justify_content: JustifyContent::FlexStart,
+                                align_items: AlignItems::Center,
+                                padding: UiRect::axes(Val::Px(10.0), Val::Px(0.0)),
+                                border_radius: BorderRadius::all(Val::Px(7.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.14, 0.18, 0.24, 0.9)),
+                        ))
+                        .with_children(|button| {
+                            button.spawn((
+                                Text::new(player_entity_id.clone()),
+                                TextFont {
+                                    font: fonts.regular.clone(),
+                                    font_size: 14.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.92, 0.95, 1.0)),
+                            ));
+                        });
+                }
+
+                panel
+                    .spawn((
+                        Button,
+                        CharacterSelectEnterButton,
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(44.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border_radius: BorderRadius::all(Val::Px(8.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.2, 0.46, 0.85)),
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new("Enter World"),
+                            TextFont {
+                                font: fonts.bold.clone(),
+                                font_size: 17.0,
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                        ));
+                    });
+
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font: fonts.regular.clone(),
+                        font_size: 13.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgba(0.75, 0.83, 0.9, 0.95)),
+                    CharacterSelectStatusText,
+                ));
+            });
+        });
+}
+
+#[allow(clippy::type_complexity)]
+fn handle_character_select_buttons(
+    app_state: Option<Res<'_, State<ClientAppState>>>,
+    mut interactions: Query<
+        '_,
+        '_,
+        (
+            &Interaction,
+            Option<&CharacterSelectButton>,
+            Option<&CharacterSelectEnterButton>,
+            &mut BackgroundColor,
+        ),
+        Changed<Interaction>,
+    >,
+    mut next_state: ResMut<'_, NextState<ClientAppState>>,
+    mut session: ResMut<'_, ClientSession>,
+    mut auth_state: ResMut<'_, ClientAuthSyncState>,
+    mut character_selection: ResMut<'_, CharacterSelectionState>,
+    mut status_texts: Query<'_, '_, &mut Text, With<CharacterSelectStatusText>>,
+) {
+    if !app_state
+        .as_ref()
+        .is_some_and(|state| **state == ClientAppState::CharacterSelect)
+    {
+        return;
+    }
+    let client = reqwest::blocking::Client::new();
+    let gateway_url = session.gateway_url.clone();
+    for (interaction, select_button, enter_button, mut bg) in &mut interactions {
+        match *interaction {
+            Interaction::Pressed => {
+                if let Some(select_button) = select_button {
+                    character_selection.selected_player_entity_id =
+                        Some(select_button.player_entity_id.clone());
+                    *bg = BackgroundColor(Color::srgba(0.22, 0.3, 0.42, 0.98));
+                } else if enter_button.is_some() {
+                    let Some(access_token) = session.access_token.as_ref() else {
+                        session.status = "No access token; please log in again.".to_string();
+                        continue;
+                    };
+                    let Some(selected_player_entity_id) =
+                        character_selection.selected_player_entity_id.clone()
+                    else {
+                        session.status = "No character selected.".to_string();
+                        continue;
+                    };
+                    match enter_world_request(
+                        &client,
+                        &gateway_url,
+                        access_token,
+                        &selected_player_entity_id,
+                    ) {
+                        Ok(response) if response.accepted => {
+                            session.player_entity_id = Some(selected_player_entity_id);
+                            auth_state.sent_for_client_entities.clear();
+                            auth_state.last_player_entity_id = None;
+                            session.status = "Entering world...".to_string();
+                            next_state.set(ClientAppState::InWorld);
+                        }
+                        Ok(_) => {
+                            session.status = "Enter World request rejected by gateway.".to_string();
+                        }
+                        Err(err) => {
+                            session.status = format!("Enter World failed: {err}");
+                        }
+                    }
+                    *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));
+                }
+            }
+            Interaction::Hovered => {
+                if enter_button.is_some() {
+                    *bg = BackgroundColor(Color::srgb(0.24, 0.5, 0.9));
+                } else {
+                    *bg = BackgroundColor(Color::srgba(0.18, 0.24, 0.33, 0.95));
+                }
+            }
+            Interaction::None => {
+                if enter_button.is_some() {
+                    *bg = BackgroundColor(Color::srgb(0.2, 0.46, 0.85));
+                } else {
+                    *bg = BackgroundColor(Color::srgba(0.14, 0.18, 0.24, 0.9));
+                }
+            }
+        }
+    }
+    for mut text in &mut status_texts {
+        text.0 = session.status.clone();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_world_scene(
     mut commands: Commands<'_, '_>,
@@ -1239,9 +1620,13 @@ fn spawn_world_scene(
     mut shaders: ResMut<'_, Assets<bevy::shader::Shader>>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
     mut color_materials: ResMut<'_, Assets<ColorMaterial>>,
+    mut starfield_motion: ResMut<'_, StarfieldMotionState>,
+    mut camera_motion: ResMut<'_, CameraMotionState>,
     asset_root: Res<'_, AssetRootPath>,
     debug_blue_overlay: Res<'_, DebugBlueOverlayEnabled>,
 ) {
+    *starfield_motion = StarfieldMotionState::default();
+    *camera_motion = CameraMotionState::default();
     reload_streamed_shaders(&asset_server, &mut shaders, &asset_root.0);
     commands.spawn((
         Camera2d,
@@ -1279,10 +1664,10 @@ fn spawn_world_scene(
         Transform::from_xyz(0.0, 0.0, 80.0).looking_at(Vec3::ZERO, Vec3::Y),
         GameplayCamera,
         TopDownCamera {
-            distance: 220.0,
-            target_distance: 220.0,
-            min_distance: 180.0,
-            max_distance: 420.0,
+            distance: 420.0,
+            target_distance: 420.0,
+            min_distance: 420.0,
+            max_distance: 1260.0,
             zoom_units_per_wheel: 16.0,
             zoom_smoothness: 8.0,
             look_ahead_offset: Vec2::ZERO,
@@ -1428,14 +1813,17 @@ fn spawn_world_scene(
 #[allow(clippy::type_complexity)]
 fn update_topdown_camera_system(
     time: Res<'_, Time>,
+    input: Option<Res<'_, ButtonInput<KeyCode>>>,
     mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
-    controlled_query: Query<'_, '_, &Transform, (With<ControlledEntity>, Without<Camera3d>)>,
-    fallback_ship_query: Query<
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    controlled_query: Query<
         '_,
         '_,
-        (&Transform, &Name),
-        (Without<ControlledEntity>, Without<Camera3d>),
+        (&Transform, Option<&Position>),
+        (Without<Camera3d>, Without<GameplayCamera>),
     >,
+    mut free_camera: ResMut<'_, FreeCameraState>,
     mut camera_query: Query<
         '_,
         '_,
@@ -1443,16 +1831,6 @@ fn update_topdown_camera_system(
         (With<Camera3d>, Without<ControlledEntity>),
     >,
 ) {
-    let controlled_transform = if let Ok(controlled_transform) = controlled_query.single() {
-        controlled_transform
-    } else if let Some((transform, _)) = fallback_ship_query
-        .iter()
-        .find(|(_, name)| name.as_str().starts_with("ship:"))
-    {
-        transform
-    } else {
-        return;
-    };
     let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
         return;
     };
@@ -1470,13 +1848,91 @@ fn update_topdown_camera_system(
     let zoom_alpha = 1.0 - (-camera.zoom_smoothness * dt).exp();
     camera.distance = camera.distance.lerp(camera.target_distance, zoom_alpha);
 
-    let focus_xy = controlled_transform.translation.truncate();
-    camera.filtered_focus_xy = focus_xy;
-    camera.focus_initialized = true;
+    let controlled_entity = player_view_state
+        .desired_controlled_entity_id
+        .as_ref()
+        .or(player_view_state.controlled_entity_id.as_ref())
+        .and_then(|id| entity_registry.by_entity_id.get(id).copied());
+
+    let (focus_xy, controlled_follow) = if let Some(controlled_entity) = controlled_entity {
+        if let Ok((controlled_transform, controlled_position)) =
+            controlled_query.get(controlled_entity)
+        {
+            let controlled_xy = controlled_position
+                .map(|p| p.0.truncate())
+                .unwrap_or_else(|| controlled_transform.translation.truncate());
+            free_camera.position_xy = controlled_xy;
+            free_camera.initialized = true;
+            (controlled_xy, true)
+        } else {
+            if !free_camera.initialized {
+                free_camera.position_xy = camera_transform.translation.truncate();
+                free_camera.initialized = true;
+            }
+            let mut axis = Vec2::ZERO;
+            if let Some(keys) = input.as_ref() {
+                if keys.pressed(KeyCode::KeyW) {
+                    axis.y += 1.0;
+                }
+                if keys.pressed(KeyCode::KeyS) {
+                    axis.y -= 1.0;
+                }
+                if keys.pressed(KeyCode::KeyA) {
+                    axis.x -= 1.0;
+                }
+                if keys.pressed(KeyCode::KeyD) {
+                    axis.x += 1.0;
+                }
+            }
+            let dt = time.delta_secs();
+            let speed = 220.0;
+            if axis != Vec2::ZERO {
+                free_camera.position_xy += axis.normalize() * speed * dt;
+            }
+            (free_camera.position_xy, false)
+        }
+    } else {
+        if !free_camera.initialized {
+            free_camera.position_xy = camera_transform.translation.truncate();
+            free_camera.initialized = true;
+        }
+        let mut axis = Vec2::ZERO;
+        if let Some(keys) = input.as_ref() {
+            if keys.pressed(KeyCode::KeyW) {
+                axis.y += 1.0;
+            }
+            if keys.pressed(KeyCode::KeyS) {
+                axis.y -= 1.0;
+            }
+            if keys.pressed(KeyCode::KeyA) {
+                axis.x -= 1.0;
+            }
+            if keys.pressed(KeyCode::KeyD) {
+                axis.x += 1.0;
+            }
+        }
+        let dt = time.delta_secs();
+        let speed = 220.0;
+        if axis != Vec2::ZERO {
+            free_camera.position_xy += axis.normalize() * speed * dt;
+        }
+        (free_camera.position_xy, false)
+    };
+    if !camera.focus_initialized {
+        camera.filtered_focus_xy = focus_xy;
+        camera.focus_initialized = true;
+    } else if controlled_follow {
+        camera.filtered_focus_xy = focus_xy;
+    } else {
+        let follow_smoothness = 60.0;
+        let alpha = 1.0 - (-follow_smoothness * dt).exp();
+        camera.filtered_focus_xy = camera.filtered_focus_xy.lerp(focus_xy, alpha);
+    }
     camera.look_ahead_offset = Vec2::ZERO;
 
-    camera_transform.translation.x = focus_xy.x;
-    camera_transform.translation.y = focus_xy.y;
+    let render_focus_xy = camera.filtered_focus_xy + camera.look_ahead_offset;
+    camera_transform.translation.x = render_focus_xy.x;
+    camera_transform.translation.y = render_focus_xy.y;
     camera_transform.translation.z = camera.distance;
     camera_transform.rotation = Quat::IDENTITY;
 }
@@ -1496,11 +1952,14 @@ fn update_camera_motion_state(
         motion.world_position_xy = current_xy;
         motion.smoothed_position_xy = current_xy;
         motion.prev_position_xy = current_xy;
+        motion.frame_delta_xy = Vec2::ZERO;
         motion.initialized = true;
         return;
     }
 
     motion.world_position_xy = current_xy;
+    let frame_delta_xy = current_xy - motion.prev_position_xy;
+    motion.frame_delta_xy = frame_delta_xy;
 
     // Smooth position for starfield parallax to avoid jitter from reconciliation snaps.
     // Tight enough to track well, loose enough to filter fixed-tick stepping.
@@ -1508,16 +1967,59 @@ fn update_camera_motion_state(
     motion.smoothed_position_xy = motion.smoothed_position_xy.lerp(current_xy, pos_alpha);
 
     if dt > 0.0 {
-        let raw_velocity = (current_xy - motion.prev_position_xy) / dt;
-        let vel_alpha = 1.0 - (-4.0 * dt).exp();
+        let raw_velocity = frame_delta_xy / dt;
+        let vel_alpha = 1.0 - (-12.0 * dt).exp();
         motion.smoothed_velocity_xy = motion.smoothed_velocity_xy.lerp(raw_velocity, vel_alpha);
     }
     motion.prev_position_xy = current_xy;
 }
 
+#[allow(clippy::type_complexity)]
+fn lock_camera_to_controlled_entity_end_of_frame(
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    controlled_query: Query<
+        '_,
+        '_,
+        (&Transform, Option<&Position>),
+        (Without<Camera3d>, Without<GameplayCamera>),
+    >,
+    mut camera_query: Query<
+        '_,
+        '_,
+        (&mut Transform, &mut TopDownCamera),
+        (With<GameplayCamera>, Without<ControlledEntity>),
+    >,
+) {
+    let Some(controlled_entity) = player_view_state
+        .desired_controlled_entity_id
+        .as_ref()
+        .or(player_view_state.controlled_entity_id.as_ref())
+        .and_then(|id| entity_registry.by_entity_id.get(id).copied())
+    else {
+        return;
+    };
+    let Ok((controlled_transform, controlled_position)) = controlled_query.get(controlled_entity)
+    else {
+        return;
+    };
+    let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
+        return;
+    };
+    let controlled_xy = controlled_position
+        .map(|p| p.0.truncate())
+        .unwrap_or_else(|| controlled_transform.translation.truncate());
+    camera.look_ahead_offset = Vec2::ZERO;
+    camera.filtered_focus_xy = controlled_xy;
+    camera.focus_initialized = true;
+    camera_transform.translation.x = controlled_xy.x;
+    camera_transform.translation.y = controlled_xy.y;
+}
+
 fn update_focus_target_system(
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
     mut focus_state: ResMut<'_, CameraFocusState>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
     controlled_query: Query<'_, '_, (&ControlledEntity, &Transform)>,
     remote_query: Query<'_, '_, (&RemoteVisibleEntity, &Transform)>,
@@ -1532,9 +2034,15 @@ fn update_focus_target_system(
         return;
     };
     if input.just_pressed(KeyCode::KeyC)
-        && let Some((controlled, _)) = controlled_query.iter().next()
+        && let Some(target_id) = focus_state.focused_entity_id.clone().or_else(|| {
+            controlled_query
+                .iter()
+                .next()
+                .map(|(c, _)| c.entity_id.clone())
+        })
     {
-        focus_state.set(Some(controlled.entity_id.clone()));
+        player_view_state.desired_controlled_entity_id = Some(target_id.clone());
+        focus_state.set(Some(target_id));
     }
     if input.just_pressed(KeyCode::KeyF)
         && let Some((_, controlled_transform)) = controlled_query.iter().next()
@@ -1551,7 +2059,8 @@ fn update_focus_target_system(
             })
             .map(|(entity_id, _)| entity_id);
         if nearest_remote.is_some() {
-            focus_state.set(nearest_remote);
+            focus_state.set(nearest_remote.clone());
+            player_view_state.selected_entity_id = nearest_remote;
         }
     }
 }
@@ -1794,12 +2303,32 @@ fn enforce_frame_rate_cap_system(mut frame_cap: ResMut<'_, FrameRateCap>) {
     frame_cap.last_frame_end = Instant::now();
 }
 
+#[allow(clippy::type_complexity)]
+fn sync_world_entity_transforms_from_physics(
+    mut entities: Query<
+        '_,
+        '_,
+        (&mut Transform, Option<&Position>, Option<&Rotation>),
+        (With<WorldEntity>, Without<Camera3d>, Without<Camera2d>),
+    >,
+) {
+    for (mut transform, position, rotation) in &mut entities {
+        if let Some(position) = position {
+            transform.translation = position.0;
+        }
+        if let Some(rotation) = rotation {
+            transform.rotation = rotation.0;
+        }
+        // Keep 2D gameplay entities constrained to planar render depth.
+        transform.translation.z = 0.0;
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn send_lightyear_input_messages(
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
     app_state: Option<Res<'_, State<ClientAppState>>>,
     headless_mode: Res<'_, HeadlessTransportMode>,
-    watchdog: Res<'_, BootstrapWatchdogState>,
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
     mut tick: ResMut<'_, ClientNetworkTick>,
@@ -1815,9 +2344,6 @@ fn send_lightyear_input_messages(
     >,
 ) {
     tick.0 = tick.0.saturating_add(1);
-    if !watchdog.replication_state_seen && !headless_mode.0 {
-        return;
-    }
 
     let in_world_state = app_state
         .as_ref()
@@ -1869,6 +2395,8 @@ fn send_lightyear_input_messages(
 fn send_lightyear_auth_messages(
     app_state: Option<Res<'_, State<ClientAppState>>>,
     headless_mode: Res<'_, HeadlessTransportMode>,
+    time: Res<'_, Time>,
+    watchdog: Res<'_, BootstrapWatchdogState>,
     session: Res<'_, ClientSession>,
     mut auth_state: ResMut<'_, ClientAuthSyncState>,
     mut senders: Query<
@@ -1893,11 +2421,21 @@ fn send_lightyear_auth_messages(
     };
     if auth_state.last_player_entity_id.as_deref() != Some(player_entity_id.as_str()) {
         auth_state.sent_for_client_entities.clear();
+        auth_state.last_sent_at_s_by_client_entity.clear();
         auth_state.last_player_entity_id = Some(player_entity_id.clone());
     }
+    let now_s = time.elapsed_secs_f64();
 
     for (client_entity, mut sender) in &mut senders {
-        if auth_state.sent_for_client_entities.contains(&client_entity) {
+        let sent_before = auth_state.sent_for_client_entities.contains(&client_entity);
+        let last_sent_at_s = auth_state
+            .last_sent_at_s_by_client_entity
+            .get(&client_entity)
+            .copied()
+            .unwrap_or(0.0);
+        let should_resend_while_unbound =
+            !watchdog.replication_state_seen && now_s - last_sent_at_s >= 0.5;
+        if sent_before && !should_resend_while_unbound {
             continue;
         }
         let auth_message = ClientAuthMessage {
@@ -1910,6 +2448,9 @@ fn send_lightyear_auth_messages(
             player_entity_id, client_entity
         );
         auth_state.sent_for_client_entities.insert(client_entity);
+        auth_state
+            .last_sent_at_s_by_client_entity
+            .insert(client_entity, now_s);
     }
 }
 
@@ -1926,8 +2467,10 @@ fn send_lightyear_view_updates(
         (With<Client>, With<Connected>),
     >,
     camera_query: Query<'_, '_, &Transform, With<Camera3d>>,
-    controlled_query: Query<'_, '_, (&ControlledEntity, &Transform)>,
+    controlled_query: Query<'_, '_, &Transform, With<ControlledEntity>>,
     focus_state: Res<'_, CameraFocusState>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
 ) {
     let in_world_state = app_state
         .as_ref()
@@ -1944,23 +2487,31 @@ fn send_lightyear_view_updates(
     }
 
     view_tick.0 = view_tick.0.saturating_add(1);
-    if !view_tick.0.is_multiple_of(10) {
+    let pending_control_handoff =
+        player_view_state.desired_controlled_entity_id != player_view_state.controlled_entity_id;
+    if !pending_control_handoff && !view_tick.0.is_multiple_of(10) {
         return;
     }
 
-    let controlled = controlled_query.iter().next();
     let camera_position = camera_query
         .single()
         .ok()
         .map(|t| t.translation)
-        .or_else(|| controlled.map(|(_, t)| t.translation))
+        .or_else(|| controlled_query.iter().next().map(|t| t.translation))
         .unwrap_or(Vec3::ZERO);
-    let controlled_entity_id = controlled.map(|(c, _)| c.entity_id.clone());
     let focused_entity_id = focus_state.focused_entity_id.clone();
+    // Preserve authoritative control by default until local desired control is initialized.
+    let desired_controlled_entity_id = player_view_state
+        .desired_controlled_entity_id
+        .as_ref()
+        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
+        .cloned()
+        .or_else(|| player_view_state.controlled_entity_id.clone());
     let message = ClientViewUpdateMessage {
         player_entity_id: player_entity_id.clone(),
         focused_entity_id,
-        controlled_entity_id,
+        selected_entity_id: player_view_state.selected_entity_id.clone(),
+        controlled_entity_id: desired_controlled_entity_id,
         camera_position_m: [camera_position.x, camera_position.y, camera_position.z],
     };
 
@@ -2024,6 +2575,7 @@ fn adopt_native_lightyear_replicated_entities(
     mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
     mut focus_state: ResMut<'_, CameraFocusState>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
     mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
     replicated_entities: Query<
@@ -2035,11 +2587,15 @@ fn adopt_native_lightyear_replicated_entities(
             Option<&'_ OwnerId>,
             Option<&'_ MountedOn>,
             Option<&'_ Hardpoint>,
+            Option<&'_ PlayerTag>,
             Option<&'_ Position>,
             Option<&'_ Rotation>,
             Option<&'_ LinearVelocity>,
             Option<&'_ SizeM>,
             Option<&'_ TotalMassKg>,
+            Option<&'_ ControlledEntityGuid>,
+            Option<&'_ SelectedEntityGuid>,
+            Option<&'_ FocusedEntityGuid>,
         ),
         (
             With<lightyear::prelude::Replicated>,
@@ -2052,37 +2608,113 @@ fn adopt_native_lightyear_replicated_entities(
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
+
+    // Resolve authoritative controlled/selected/focused IDs from the replicated local player entity
+    // before classifying predicted vs interpolated entities. This avoids order-dependent tagging.
+    // Prediction ownership must follow authoritative control, not local desired handoff state.
+    let mut authoritative_controlled_entity_id = player_view_state.controlled_entity_id.clone();
+    for (
+        _,
+        guid,
+        _,
+        mounted_on,
+        hardpoint,
+        player_tag,
+        _,
+        _,
+        _,
+        _,
+        _,
+        controlled_entity_guid,
+        selected_entity_guid,
+        focused_entity_guid,
+    ) in &replicated_entities
+    {
+        let Some(guid) = guid else {
+            continue;
+        };
+        if mounted_on.is_some() || hardpoint.is_some() || player_tag.is_none() {
+            continue;
+        }
+        let runtime_entity_id = format!("player:{}", guid.0);
+        if runtime_entity_id != *local_player_entity_id {
+            continue;
+        }
+        let controlled_id = controlled_entity_guid
+            .and_then(|c| c.0.as_ref())
+            .map(|guid| format!("ship:{guid}"));
+        player_view_state.controlled_entity_id = controlled_id.clone();
+        player_view_state.selected_entity_id = selected_entity_guid
+            .and_then(|v| v.0.as_ref())
+            .map(|guid| format!("ship:{guid}"));
+        player_view_state.focused_entity_id = focused_entity_guid
+            .and_then(|v| v.0.as_ref())
+            .map(|guid| format!("ship:{guid}"));
+        if player_view_state.desired_controlled_entity_id.is_none() {
+            player_view_state.desired_controlled_entity_id = controlled_id.clone();
+        }
+        authoritative_controlled_entity_id = controlled_id;
+        break;
+    }
+
+    let mut seen_runtime_entity_ids = HashSet::<String>::new();
+
     for (
         entity,
         guid,
-        owner_id,
+        _owner_id,
         mounted_on,
         hardpoint,
+        player_tag,
         position,
         rotation,
         linear_velocity,
         size_m,
         total_mass_kg,
+        controlled_entity_guid,
+        selected_entity_guid,
+        focused_entity_guid,
     ) in &replicated_entities
     {
         let Some(guid) = guid else {
             continue;
         };
         watchdog.replication_state_seen = true;
-        let runtime_entity_id = if mounted_on.is_some() {
+        let runtime_entity_id = if player_tag.is_some() {
+            format!("player:{}", guid.0)
+        } else if mounted_on.is_some() {
             format!("module:{}", guid.0)
         } else if hardpoint.is_some() {
             format!("hardpoint:{}", guid.0)
         } else {
             format!("ship:{}", guid.0)
         };
-        let is_local_controlled = owner_id.is_some_and(|owner| owner.0 == *local_player_entity_id)
-            && mounted_on.is_none()
-            && hardpoint.is_none();
+        if !seen_runtime_entity_ids.insert(runtime_entity_id.clone()) {
+            continue;
+        }
+        let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+        let is_local_controlled_entity = is_root_entity
+            && authoritative_controlled_entity_id.as_deref() == Some(runtime_entity_id.as_str());
+        let is_local_player_entity = runtime_entity_id == *local_player_entity_id;
+        if is_local_player_entity {
+            player_view_state.controlled_entity_id = controlled_entity_guid
+                .and_then(|c| c.0.as_ref())
+                .map(|guid| format!("ship:{guid}"));
+            player_view_state.selected_entity_id = selected_entity_guid
+                .and_then(|v| v.0.as_ref())
+                .map(|guid| format!("ship:{guid}"));
+            player_view_state.focused_entity_id = focused_entity_guid
+                .and_then(|v| v.0.as_ref())
+                .map(|guid| format!("ship:{guid}"));
+            if player_view_state.desired_controlled_entity_id.is_none() {
+                player_view_state.desired_controlled_entity_id =
+                    player_view_state.controlled_entity_id.clone();
+            }
+        }
         let predicted_mode = !local_mode.0;
         if predicted_mode
             && should_defer_controlled_predicted_adoption(
-                is_local_controlled,
+                is_local_controlled_entity,
                 position.is_some(),
                 rotation.is_some(),
                 linear_velocity.is_some(),
@@ -2157,17 +2789,13 @@ fn adopt_native_lightyear_replicated_entities(
             ViewVisibility::default(),
         ));
 
-        if mounted_on.is_none() && hardpoint.is_none() {
+        if mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none() {
             entity_commands.insert(StreamedModelAssetId(
                 default_corvette_asset_id().to_string(),
             ));
         }
 
-        if is_local_controlled {
-            entity_commands.insert(ControlledEntity {
-                entity_id: runtime_entity_id.clone(),
-                player_entity_id: local_player_entity_id.clone(),
-            });
+        if is_local_controlled_entity {
             let size = size_m.copied().unwrap_or_else(default_corvette_size);
             let mass_kg = total_mass_kg
                 .map(|m| m.0)
@@ -2193,12 +2821,15 @@ fn adopt_native_lightyear_replicated_entities(
                 AngularDamping(0.0),
             ));
             if predicted_mode {
-                entity_commands.insert(lightyear::prelude::Predicted);
+                entity_commands
+                    .insert(lightyear::prelude::Predicted)
+                    .remove::<lightyear::prelude::Interpolated>();
             }
-            if focus_state.focused_entity_id.is_none() {
-                focus_state.set(Some(runtime_entity_id));
-            }
-        } else {
+            entity_commands.remove::<RemoteEntity>();
+            entity_commands.insert(RemoteVisibleEntity {
+                entity_id: runtime_entity_id.clone(),
+            });
+        } else if is_root_entity {
             entity_commands.insert((
                 RemoteEntity,
                 RemoteVisibleEntity {
@@ -2209,8 +2840,22 @@ fn adopt_native_lightyear_replicated_entities(
                 .by_entity_id
                 .insert(runtime_entity_id, entity);
             if predicted_mode {
-                entity_commands.insert(lightyear::prelude::Interpolated);
+                entity_commands
+                    .insert(lightyear::prelude::Interpolated)
+                    .remove::<lightyear::prelude::Predicted>();
             }
+            entity_commands.remove::<(
+                RigidBody,
+                Collider,
+                Mass,
+                AngularInertia,
+                LockedAxes,
+                LinearDamping,
+                AngularDamping,
+            )>();
+        }
+        if is_local_player_entity && focus_state.focused_entity_id.is_none() {
+            focus_state.set(player_view_state.focused_entity_id.clone());
         }
     }
 
@@ -2240,6 +2885,179 @@ fn adopt_native_lightyear_replicated_entities(
         adoption_state.last_warn_at_s = 0.0;
         adoption_state.last_missing_components.clear();
         adoption_state.dialog_shown = false;
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn cleanup_duplicate_world_entities_system(
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
+    mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
+    world_entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ Name,
+            Option<&'_ OwnerId>,
+            Option<&'_ ControlledEntity>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<WorldEntity>,
+        ),
+        With<lightyear::prelude::Replicated>,
+    >,
+) {
+    let local_player_entity_id = session.player_entity_id.as_deref();
+    let mut keep_by_runtime_id = HashMap::<String, (Entity, i32)>::new();
+    let mut losers = Vec::<(String, Entity)>::new();
+
+    for (entity, name, owner, controlled, is_predicted, is_interpolated, is_world_entity) in &world_entities {
+        let runtime_id = name.as_str().to_string();
+        if !(runtime_id.starts_with("ship:")
+            || runtime_id.starts_with("module:")
+            || runtime_id.starts_with("hardpoint:")
+            || runtime_id.starts_with("player:"))
+        {
+            continue;
+        }
+        let is_local_controlled = controlled.is_some_and(|c| {
+            local_player_entity_id.is_some_and(|player_id| c.player_entity_id == player_id)
+        });
+        let score = if is_local_controlled {
+            if is_predicted { 500 } else { 400 }
+        } else if owner.is_some() {
+            if is_world_entity { 350 } else { 325 }
+        } else if is_predicted {
+            200
+        } else if is_interpolated {
+            100
+        } else {
+            50
+        };
+
+        if let Some((existing_entity, existing_score)) = keep_by_runtime_id.get(&runtime_id) {
+            if score > *existing_score {
+                losers.push((runtime_id.clone(), *existing_entity));
+                keep_by_runtime_id.insert(runtime_id, (entity, score));
+            } else {
+                losers.push((runtime_id, entity));
+            }
+        } else {
+            keep_by_runtime_id.insert(runtime_id, (entity, score));
+        }
+    }
+
+    for (runtime_id, loser) in losers {
+        if entity_registry.by_entity_id.get(runtime_id.as_str()) == Some(&loser) {
+            entity_registry.by_entity_id.remove(runtime_id.as_str());
+        }
+        if remote_registry.by_entity_id.get(runtime_id.as_str()) == Some(&loser) {
+            remote_registry.by_entity_id.remove(runtime_id.as_str());
+        }
+        commands.entity(loser).remove::<Name>();
+        if let Ok((_, _, _, _, _, _, true)) = world_entities.get(loser) {
+            commands.entity(loser).insert(Visibility::Hidden).remove::<(
+                WorldEntity,
+                RemoteEntity,
+                RemoteVisibleEntity,
+                ControlledEntity,
+                StreamedModelAssetId,
+                StreamedModelVisualAttached,
+            )>();
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn sync_local_player_view_state_system(
+    session: Res<'_, ClientSession>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    mut focus_state: ResMut<'_, CameraFocusState>,
+    player_query: Query<
+        '_,
+        '_,
+        (
+            &'_ Name,
+            Option<&'_ ControlledEntityGuid>,
+            Option<&'_ SelectedEntityGuid>,
+            Option<&'_ FocusedEntityGuid>,
+        ),
+        With<PlayerTag>,
+    >,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    for (name, controlled, selected, focused) in &player_query {
+        if name.as_str() != local_player_entity_id {
+            continue;
+        }
+        player_view_state.controlled_entity_id = controlled
+            .and_then(|c| c.0.as_ref())
+            .map(|guid| format!("ship:{guid}"));
+        player_view_state.selected_entity_id = selected
+            .and_then(|v| v.0.as_ref())
+            .map(|guid| format!("ship:{guid}"));
+        player_view_state.focused_entity_id = focused
+            .and_then(|v| v.0.as_ref())
+            .map(|guid| format!("ship:{guid}"));
+        if player_view_state.desired_controlled_entity_id.is_none() {
+            player_view_state.desired_controlled_entity_id =
+                player_view_state.controlled_entity_id.clone();
+        }
+        if focus_state.focused_entity_id.is_none() {
+            focus_state.focused_entity_id = player_view_state.focused_entity_id.clone();
+        }
+        break;
+    }
+}
+
+fn sync_controlled_entity_tags_system(
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    controlled_query: Query<'_, '_, (Entity, &'_ ControlledEntity)>,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+
+    let desired_is_valid = player_view_state
+        .desired_controlled_entity_id
+        .as_ref()
+        .is_some_and(|id| entity_registry.by_entity_id.contains_key(id.as_str()));
+    if !desired_is_valid {
+        player_view_state.desired_controlled_entity_id =
+            player_view_state.controlled_entity_id.clone();
+    }
+
+    let target_entity_id = player_view_state
+        .desired_controlled_entity_id
+        .as_ref()
+        .or(player_view_state.controlled_entity_id.as_ref());
+    let target_entity = target_entity_id
+        .as_ref()
+        .and_then(|id| entity_registry.by_entity_id.get(id.as_str()).copied());
+
+    for (entity, controlled) in &controlled_query {
+        if Some(entity) != target_entity {
+            commands.entity(entity).remove::<ControlledEntity>();
+        } else if controlled.player_entity_id != *local_player_entity_id {
+            commands.entity(entity).insert(ControlledEntity {
+                entity_id: controlled.entity_id.clone(),
+                player_entity_id: local_player_entity_id.clone(),
+            });
+        }
+    }
+
+    if let Some(entity) = target_entity {
+        commands.entity(entity).insert(ControlledEntity {
+            entity_id: target_entity_id.cloned().unwrap_or_default(),
+            player_entity_id: local_player_entity_id.clone(),
+        });
     }
 }
 
@@ -2688,6 +3506,7 @@ fn watch_in_world_bootstrap_failures(
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
     mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
     mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
+    replicated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Replicated>>,
 ) {
     let now = time.elapsed_secs_f64();
     if watchdog.in_world_entered_at_s.is_none() {
@@ -2701,6 +3520,9 @@ fn watch_in_world_bootstrap_failures(
     }
 
     let entered_at = watchdog.in_world_entered_at_s.unwrap_or(now);
+    if !watchdog.replication_state_seen && !replicated_entities.is_empty() {
+        watchdog.replication_state_seen = true;
+    }
     let auth_bind_sent = !auth_state.sent_for_client_entities.is_empty();
     if !watchdog.timeout_dialog_shown
         && now - entered_at > 3.0
@@ -2867,6 +3689,220 @@ fn ensure_client_transport_channels(
 }
 
 #[allow(clippy::type_complexity)]
+fn update_owned_ships_panel_system(
+    mut commands: Commands<'_, '_>,
+    fonts: Res<'_, EmbeddedFonts>,
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    mut panel_state: ResMut<'_, OwnedShipsPanelState>,
+    existing_panels: Query<'_, '_, Entity, With<OwnedShipsPanelRoot>>,
+    ships: Query<
+        '_,
+        '_,
+        (
+            &Name,
+            Option<&OwnerId>,
+            Option<&MountedOn>,
+            Option<&Hardpoint>,
+            Option<&PlayerTag>,
+        ),
+        With<lightyear::prelude::Replicated>,
+    >,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    let mut ship_ids = ships
+        .iter()
+        .filter_map(|(name, owner, mounted_on, hardpoint, player_tag)| {
+            if mounted_on.is_some() || hardpoint.is_some() || player_tag.is_some() {
+                return None;
+            }
+            if !name.as_str().starts_with("ship:") {
+                return None;
+            }
+            if !owner.is_some_and(|owner| owner.0 == *local_player_entity_id) {
+                return None;
+            }
+            Some(name.as_str().to_string())
+        })
+        .collect::<Vec<_>>();
+    ship_ids.sort();
+    ship_ids.dedup();
+    let selected_id = player_view_state
+        .desired_controlled_entity_id
+        .clone()
+        .or_else(|| player_view_state.controlled_entity_id.clone());
+
+    if panel_state.last_ship_ids == ship_ids
+        && panel_state.last_selected_id == selected_id
+        && !existing_panels.is_empty()
+    {
+        return;
+    }
+    panel_state.last_ship_ids = ship_ids.clone();
+    panel_state.last_selected_id = selected_id.clone();
+
+    for panel in &existing_panels {
+        commands.entity(panel).despawn();
+    }
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: px(12),
+                top: px(12),
+                width: px(280),
+                padding: UiRect::all(px(10)),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(8)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(8),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.04, 0.07, 0.11, 0.88)),
+            BorderColor::all(Color::srgba(0.22, 0.34, 0.48, 0.92)),
+            OwnedShipsPanelRoot,
+            GameplayHud,
+            WorldEntity,
+            DespawnOnExit(ClientAppState::InWorld),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("Owned Ships"),
+                TextFont {
+                    font: fonts.bold.clone(),
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.9, 0.95, 1.0)),
+            ));
+
+            let free_camera_selected = selected_id.is_none();
+            panel
+                .spawn((
+                    Button,
+                    OwnedShipsPanelButton { entity_id: None },
+                    Node {
+                        width: percent(100.0),
+                        height: px(34),
+                        justify_content: JustifyContent::FlexStart,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(px(10), px(0)),
+                        border_radius: BorderRadius::all(px(6)),
+                        ..default()
+                    },
+                    BackgroundColor(if free_camera_selected {
+                        Color::srgba(0.26, 0.4, 0.56, 0.96)
+                    } else {
+                        Color::srgba(0.15, 0.2, 0.28, 0.92)
+                    }),
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        Text::new("Free Camera"),
+                        TextFont {
+                            font: fonts.regular.clone(),
+                            font_size: 14.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.95, 0.97, 1.0)),
+                    ));
+                });
+
+            if ship_ids.is_empty() {
+                panel.spawn((
+                    Text::new("No owned ships visible"),
+                    TextFont {
+                        font: fonts.regular.clone(),
+                        font_size: 13.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgba(0.75, 0.82, 0.9, 0.9)),
+                ));
+            } else {
+                for ship_id in ship_ids {
+                    let is_selected = selected_id.as_deref() == Some(ship_id.as_str());
+                    panel
+                        .spawn((
+                            Button,
+                            OwnedShipsPanelButton {
+                                entity_id: Some(ship_id.clone()),
+                            },
+                            Node {
+                                width: percent(100.0),
+                                height: px(34),
+                                justify_content: JustifyContent::FlexStart,
+                                align_items: AlignItems::Center,
+                                padding: UiRect::axes(px(10), px(0)),
+                                border_radius: BorderRadius::all(px(6)),
+                                ..default()
+                            },
+                            BackgroundColor(if is_selected {
+                                Color::srgba(0.26, 0.4, 0.56, 0.96)
+                            } else {
+                                Color::srgba(0.15, 0.2, 0.28, 0.92)
+                            }),
+                        ))
+                        .with_children(|button| {
+                            button.spawn((
+                                Text::new(ship_id),
+                                TextFont {
+                                    font: fonts.regular.clone(),
+                                    font_size: 14.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.95, 0.97, 1.0)),
+                            ));
+                        });
+                }
+            }
+        });
+}
+
+#[allow(clippy::type_complexity)]
+fn handle_owned_ships_panel_buttons(
+    mut interactions: Query<
+        '_,
+        '_,
+        (&Interaction, &OwnedShipsPanelButton, &mut BackgroundColor),
+        Changed<Interaction>,
+    >,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    mut focus_state: ResMut<'_, CameraFocusState>,
+    mut panel_state: ResMut<'_, OwnedShipsPanelState>,
+) {
+    for (interaction, button, mut color) in &mut interactions {
+        match *interaction {
+            Interaction::Pressed => {
+                player_view_state.desired_controlled_entity_id = button.entity_id.clone();
+                if let Some(entity_id) = button.entity_id.clone() {
+                    player_view_state.selected_entity_id = Some(entity_id.clone());
+                    focus_state.set(Some(entity_id));
+                } else {
+                    focus_state.set(None);
+                }
+                panel_state.last_selected_id = None;
+                *color = BackgroundColor(Color::srgba(0.26, 0.4, 0.56, 0.96));
+            }
+            Interaction::Hovered => {
+                *color = BackgroundColor(Color::srgba(0.2, 0.29, 0.41, 0.96));
+            }
+            Interaction::None => {
+                let is_selected =
+                    player_view_state.desired_controlled_entity_id == button.entity_id;
+                *color = BackgroundColor(if is_selected {
+                    Color::srgba(0.26, 0.4, 0.56, 0.96)
+                } else {
+                    Color::srgba(0.15, 0.2, 0.28, 0.92)
+                });
+            }
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
 fn update_hud_system(
     controlled_query: Query<
         '_,
@@ -2874,50 +3910,33 @@ fn update_hud_system(
         (&Transform, Option<&LinearVelocity>, &HealthPool),
         With<ControlledEntity>,
     >,
-    fallback_ship_query: Query<
-        '_,
-        '_,
-        (
-            &Transform,
-            Option<&LinearVelocity>,
-            Option<&HealthPool>,
-            &Name,
-        ),
-        (Without<ControlledEntity>, Without<Camera3d>),
-    >,
+    camera_query: Query<'_, '_, &Transform, With<GameplayCamera>>,
     mut hud_query: Query<'_, '_, &mut Text, With<HudText>>,
     focus_state: Res<'_, CameraFocusState>,
 ) {
-    let (transform, vel, health_current, health_max) =
+    let (pos, vel, health_text) =
         if let Ok((transform, maybe_velocity, health)) = controlled_query.single() {
+            let vel = maybe_velocity.map_or(Vec3::ZERO, |velocity| velocity.0);
             (
-                transform,
-                maybe_velocity.map_or(Vec3::ZERO, |velocity| velocity.0),
-                health.current,
-                health.maximum,
-            )
-        } else if let Some((transform, maybe_velocity, maybe_health, _)) = fallback_ship_query
-            .iter()
-            .find(|(_, _, _, name)| name.as_str().starts_with("ship:"))
-        {
-            let (current, maximum) = maybe_health
-                .map(|health| (health.current, health.maximum))
-                .unwrap_or((0.0, 0.0));
-            (
-                transform,
-                maybe_velocity.map_or(Vec3::ZERO, |velocity| velocity.0),
-                current,
-                maximum,
+                transform.translation,
+                vel,
+                format!("{:.0}/{:.0}", health.current, health.maximum),
             )
         } else {
-            return;
+            let Ok(camera_transform) = camera_query.single() else {
+                return;
+            };
+            (
+                camera_transform.translation,
+                Vec3::ZERO,
+                "--/--".to_string(),
+            )
         };
     let Ok(mut text) = hud_query.single_mut() else {
         return;
     };
 
-    let pos = transform.translation;
-    let heading_rad = transform.rotation.to_euler(EulerRot::ZYX).0;
+    let heading_rad = vel.truncate().to_angle();
     // Convert math convention (CCW from +Y) to compass convention (CW from north).
     let heading_deg = {
         let raw = (-heading_rad.to_degrees()).rem_euclid(360.0);
@@ -2925,15 +3944,14 @@ fn update_hud_system(
     };
     let speed = Vec2::new(vel.x, vel.y).length();
     let content = format!(
-        "SIDEREAL FLIGHT\nPos: ({:.0}, {:.0})\nSpeed: {:.1} m/s\nVel: ({:.1}, {:.1})\nHeading: {:.0}\u{00b0}\nHealth: {:.0}/{:.0}\nFocus: {}\nControls: W/S thrust, A/D turn, SPACE brake, F focus nearest, C focus controlled, F3 debug overlay, ESC logout",
+        "SIDEREAL FLIGHT\nPos: ({:.0}, {:.0})\nSpeed: {:.1} m/s\nVel: ({:.1}, {:.1})\nHeading: {:.0}\u{00b0}\nHealth: {}\nFocus: {}\nControls: W/S thrust, A/D turn, SPACE brake, F focus nearest, C focus controlled, F3 debug overlay, ESC logout",
         pos.x,
         pos.y,
         speed,
         vel.x,
         vel.y,
         heading_deg,
-        health_current,
-        health_max,
+        health_text,
         focus_state.focused_entity_id.as_deref().unwrap_or("<none>")
     );
     content.clone_into(&mut **text);
@@ -3041,17 +4059,26 @@ fn toggle_debug_overlay_system(
 #[allow(clippy::type_complexity)]
 fn draw_debug_overlay_system(
     debug_overlay: Res<'_, DebugOverlayEnabled>,
+    session: Res<'_, ClientSession>,
     mut gizmos: Gizmos,
     entities: Query<
         '_,
         '_,
         (
-            &'_ Position,
-            &'_ Rotation,
+            Entity,
+            &'_ Transform,
             Option<&'_ SizeM>,
             Option<&'_ LinearVelocity>,
             Option<&'_ MountedOn>,
             Option<&'_ Hardpoint>,
+            Option<&'_ ControlledEntity>,
+            Option<&'_ ScannerRangeM>,
+            Option<&'_ EntityGuid>,
+            Option<&'_ lightyear::prelude::Confirmed<Position>>,
+            Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Replicated>,
+            Has<lightyear::prelude::Interpolated>,
         ),
         With<WorldEntity>,
     >,
@@ -3059,21 +4086,93 @@ fn draw_debug_overlay_system(
     if !debug_overlay.enabled {
         return;
     }
+    let local_player_entity_id = session.player_entity_id.as_deref();
     const VELOCITY_ARROW_SCALE: f32 = 0.5;
     const HARDPOINT_CROSS_HALF_SIZE: f32 = 2.0;
     let collision_color = Color::srgb(0.2, 0.8, 0.2);
     let velocity_color = Color::srgb(0.2, 0.5, 1.0);
     let hardpoint_color = Color::srgb(1.0, 0.8, 0.2);
+    let controlled_predicted_color = Color::srgb(0.2, 1.0, 1.0);
+    let controlled_confirmed_color = Color::srgb(1.0, 0.2, 1.0);
+    let prediction_error_color = Color::srgb(1.0, 0.2, 0.2);
+    let visibility_range_color = Color::srgb(0.9, 0.9, 0.15);
+    let mut predicted_by_guid: HashMap<String, (Vec3, Quat, Vec3)> = HashMap::new();
+    let mut authoritative_by_guid: HashMap<String, (Vec3, Quat, Vec3)> = HashMap::new();
+    let mut controlled_root_guids: Vec<String> = Vec::new();
+    let mut controlled_visibility_circle: Option<(Vec3, f32)> = None;
 
-    for (position, rotation, size_m, linear_velocity, mounted_on, hardpoint) in &entities {
-        let pos = position.0;
-        let rot = rotation.0;
+    for (
+        _entity,
+        transform,
+        size_m,
+        linear_velocity,
+        mounted_on,
+        hardpoint,
+        controlled_marker,
+        scanner_range,
+        entity_guid,
+        confirmed_position,
+        confirmed_rotation,
+        is_predicted,
+        is_replicated,
+        is_interpolated,
+    ) in &entities
+    {
+        let pos = transform.translation;
+        let rot = transform.rotation;
+        let half_extents =
+            size_m.map(|size| Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5));
 
-        if let Some(size) = size_m {
-            let half_extents = Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5);
+        let is_local_controlled = controlled_marker.is_some_and(|controlled| {
+            local_player_entity_id.is_some_and(|player_id| controlled.player_entity_id == player_id)
+        });
+
+        if let Some(half_extents) = half_extents {
             let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, half_extents);
             let transform = Transform::from_translation(pos).with_rotation(rot);
-            gizmos.aabb_3d(aabb, transform, collision_color);
+            let draw_color = if is_local_controlled && mounted_on.is_none() {
+                controlled_predicted_color
+            } else {
+                collision_color
+            };
+            gizmos.aabb_3d(aabb, transform, draw_color);
+
+            // Fallback ghost path: use confirmed snapshot on the same controlled entity.
+            if is_local_controlled
+                && mounted_on.is_none()
+                && let (Some(confirmed_position), Some(confirmed_rotation)) =
+                    (confirmed_position, confirmed_rotation)
+            {
+                let confirmed_pos = confirmed_position.0.0;
+                let confirmed_rot = confirmed_rotation.0.0;
+                let confirmed_transform =
+                    Transform::from_translation(confirmed_pos).with_rotation(confirmed_rot);
+                gizmos.aabb_3d(aabb, confirmed_transform, controlled_confirmed_color);
+                gizmos.line(pos, confirmed_pos, prediction_error_color);
+            }
+        }
+
+        if mounted_on.is_none()
+            && hardpoint.is_none()
+            && let (Some(guid), Some(half_extents)) = (entity_guid, half_extents)
+        {
+            let guid = guid.0.to_string();
+            if is_predicted {
+                predicted_by_guid.insert(guid.clone(), (pos, rot, half_extents));
+            }
+            if is_replicated && !is_predicted && !is_interpolated {
+                authoritative_by_guid.insert(guid.clone(), (pos, rot, half_extents));
+            }
+            if is_local_controlled {
+                controlled_root_guids.push(guid);
+                // Expected client visibility range circle.
+                // Fallback to 300m when scanner range component is unavailable.
+                let range_m = scanner_range
+                    .map(|r| r.0.max(0.0))
+                    .unwrap_or(300.0)
+                    .max(1.0);
+                controlled_visibility_circle = Some((pos, range_m));
+            }
         }
 
         if mounted_on.is_none()
@@ -3091,6 +4190,52 @@ fn draw_debug_overlay_system(
             gizmos.cross(isometry, HARDPOINT_CROSS_HALF_SIZE, hardpoint_color);
         }
     }
+
+    for guid in controlled_root_guids {
+        let Some((predicted_pos, _predicted_rot, predicted_half_extents)) =
+            predicted_by_guid.get(&guid)
+        else {
+            continue;
+        };
+        let Some((authoritative_pos, authoritative_rot, authoritative_half_extents)) =
+            authoritative_by_guid.get(&guid)
+        else {
+            continue;
+        };
+        let authoritative_aabb =
+            bevy::math::bounding::Aabb3d::new(Vec3::ZERO, *authoritative_half_extents);
+        let authoritative_transform =
+            Transform::from_translation(*authoritative_pos).with_rotation(*authoritative_rot);
+        gizmos.aabb_3d(
+            authoritative_aabb,
+            authoritative_transform,
+            controlled_confirmed_color,
+        );
+        gizmos.line(*predicted_pos, *authoritative_pos, prediction_error_color);
+
+        // Draw a second magenta box at predicted extents if dimensions mismatch.
+        if (*authoritative_half_extents - *predicted_half_extents).length_squared() > 0.0001 {
+            let predicted_aabb =
+                bevy::math::bounding::Aabb3d::new(Vec3::ZERO, *predicted_half_extents);
+            let predicted_transform = Transform::from_translation(*authoritative_pos);
+            gizmos.aabb_3d(
+                predicted_aabb,
+                predicted_transform,
+                controlled_confirmed_color,
+            );
+        }
+    }
+
+    if let Some((center, radius)) = controlled_visibility_circle {
+        const CIRCLE_SEGMENTS: usize = 96;
+        let mut prev = center + Vec3::new(radius, 0.0, 0.0);
+        for i in 1..=CIRCLE_SEGMENTS {
+            let t = (i as f32 / CIRCLE_SEGMENTS as f32) * std::f32::consts::TAU;
+            let next = center + Vec3::new(radius * t.cos(), radius * t.sin(), 0.0);
+            gizmos.line(prev, next, visibility_range_color);
+            prev = next;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3104,6 +4249,9 @@ fn logout_to_auth_system(
     mut asset_manager: ResMut<'_, LocalAssetManager>,
     mut auth_state: ResMut<'_, ClientAuthSyncState>,
     mut focus_state: ResMut<'_, CameraFocusState>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    mut character_selection: ResMut<'_, CharacterSelectionState>,
+    mut free_camera: ResMut<'_, FreeCameraState>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
     client_entities: Query<'_, '_, Entity, With<RawClient>>,
@@ -3115,6 +4263,7 @@ fn logout_to_auth_system(
         commands.entity(entity).despawn();
     }
     next_state.set(ClientAppState::Auth);
+    session.account_id = None;
     session.player_entity_id = None;
     session.access_token = None;
     session.refresh_token = None;
@@ -3130,8 +4279,12 @@ fn logout_to_auth_system(
     asset_manager.bootstrap_total_bytes = 0;
     asset_manager.bootstrap_ready_bytes = 0;
     auth_state.sent_for_client_entities.clear();
+    auth_state.last_sent_at_s_by_client_entity.clear();
     auth_state.last_player_entity_id = None;
     focus_state.set(None);
+    *player_view_state = LocalPlayerViewState::default();
+    *character_selection = CharacterSelectionState::default();
+    *free_camera = FreeCameraState::default();
     *watchdog = BootstrapWatchdogState::default();
     *ack_tracker = ClientInputAckTracker::default();
 }
@@ -3147,32 +4300,53 @@ fn update_starfield_material_system(
     let Ok(window) = window_query.single() else {
         return;
     };
-    let dt = time.delta_secs();
+    if !camera_motion.initialized {
+        return;
+    }
+    let dt = time.delta_secs().max(0.0);
     let velocity_xy = camera_motion.smoothed_velocity_xy;
     let speed = velocity_xy.length();
 
-    let accel_raw = if dt > 0.0 {
+    if !motion.initialized {
+        motion.initialized = true;
+        motion.prev_speed = speed;
+        motion.smoothed_warp = 0.0;
+    }
+
+    // Large same-frame camera jumps (scene/bootstrap/authority handoff) should not yank backdrop UVs.
+    if camera_motion.frame_delta_xy.length() > 250.0 {
+        motion.starfield_drift_uv = Vec2::ZERO;
+        motion.background_drift_uv = Vec2::ZERO;
+        motion.prev_speed = speed;
+        motion.smoothed_warp = 0.0;
+    }
+
+    let _accel_raw = if dt > 0.0 {
         (speed - motion.prev_speed) / dt
     } else {
         0.0
     };
     motion.prev_speed = speed;
 
-    // Smoothed camera position scaled to UV-space parallax offset.
-    // Positive: as camera moves right, uv increases, star grid scrolls left on screen.
-    let drift_xy = camera_motion.smoothed_position_xy * 0.00042;
+    // Integrate shared drift from velocity once; both starfield and space background consume this.
+    let frame_background_step = velocity_xy * dt * 0.00003;
+    let max_step = 0.03;
+    motion.background_drift_uv += frame_background_step.clamp_length_max(max_step);
+    motion.starfield_drift_uv = motion.background_drift_uv;
+    let drift_xy = motion.background_drift_uv;
 
-    let speed_warp_start = 15.0;
-    let speed_warp_full = 180.0;
-    let accel_warp_full = 70.0;
-    let speed_norm =
+    // Keep streaking disabled in normal flight; only ramp in at high speed.
+    let speed_warp_start = 500.0;
+    let speed_warp_full = 2_000.0;
+    let target_warp =
         ((speed - speed_warp_start) / (speed_warp_full - speed_warp_start)).clamp(0.0, 1.0);
-    let accel_norm = (accel_raw.abs() / accel_warp_full).clamp(0.0, 1.0);
-    let warp = (speed_norm * 0.8 + accel_norm * 0.2).clamp(0.0, 1.0);
-    let intensity = 1.45 + warp * 1.05;
+    let warp_alpha = 1.0 - (-6.0 * dt).exp();
+    motion.smoothed_warp = motion.smoothed_warp.lerp(target_warp, warp_alpha);
+    let warp = motion.smoothed_warp;
+    let intensity = 1.0;
     let alpha = 1.0;
     let velocity_dir = if speed > 0.001 {
-        -velocity_xy / speed
+        velocity_xy / speed
     } else {
         Vec2::Y
     };
@@ -3186,7 +4360,7 @@ fn update_starfield_material_system(
                 warp,
             );
             material.drift_intensity = Vec4::new(drift_xy.x, drift_xy.y, intensity, alpha);
-            material.velocity_dir = Vec4::new(velocity_dir.x, velocity_dir.y, speed, accel_norm);
+            material.velocity_dir = Vec4::new(velocity_dir.x, velocity_dir.y, speed, 0.0);
         }
     }
 }
@@ -3194,6 +4368,7 @@ fn update_starfield_material_system(
 fn update_space_background_material_system(
     time: Res<'_, Time>,
     camera_motion: Res<'_, CameraMotionState>,
+    starfield_motion: Res<'_, StarfieldMotionState>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
     bg_query: Query<
         '_,
@@ -3206,12 +4381,15 @@ fn update_space_background_material_system(
     let Ok(window) = window_query.single() else {
         return;
     };
+    if !camera_motion.initialized {
+        return;
+    }
 
-    let drift_xy = camera_motion.smoothed_position_xy * 0.00042;
+    let drift_xy = starfield_motion.background_drift_uv;
     let velocity_xy = camera_motion.smoothed_velocity_xy;
     let speed = velocity_xy.length();
     let velocity_dir = if speed > 0.001 {
-        -velocity_xy / speed
+        velocity_xy / speed
     } else {
         Vec2::Y
     };

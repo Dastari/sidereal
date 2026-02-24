@@ -17,6 +17,8 @@ use bevy::prelude::*;
 use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
 
+use crate::{ActionCapabilities, ActionQueue};
+
 /// High-level action that can be sent to any entity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
 #[reflect(Serialize, Deserialize)]
@@ -66,14 +68,6 @@ pub enum EntityAction {
     InitiateDocking,
 }
 
-/// Component that queues pending actions for an entity
-#[derive(Component, Default, Reflect)]
-#[reflect(Component)]
-pub struct ActionQueue {
-    /// Actions to process this tick
-    pub pending: Vec<EntityAction>,
-}
-
 const MAX_PENDING_ACTIONS: usize = 128;
 
 impl ActionQueue {
@@ -92,14 +86,6 @@ impl ActionQueue {
     pub fn drain(&mut self) -> std::vec::Drain<'_, EntityAction> {
         self.pending.drain(..)
     }
-}
-
-/// Component that declares which actions an entity can handle
-#[derive(Component, Clone, Reflect)]
-#[reflect(Component)]
-pub struct ActionCapabilities {
-    /// Set of actions this entity can process
-    pub supported: Vec<EntityAction>,
 }
 
 pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [

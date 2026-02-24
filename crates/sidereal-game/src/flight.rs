@@ -15,10 +15,9 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::actions::{ActionQueue, EntityAction};
-use crate::generated::components::{
-    Engine, EntityGuid, FlightComputer, FlightTuning, FuelTank, MaxVelocityMps, MountedOn, SizeM,
-    TotalMassKg,
+use crate::{
+    ActionQueue, Engine, EntityAction, EntityGuid, FlightComputer, FlightTuning, FuelTank,
+    MaxVelocityMps, MountedOn, SizeM, TotalMassKg,
 };
 
 const PASSIVE_ANGULAR_DAMP_RATE: f32 = 4.0;

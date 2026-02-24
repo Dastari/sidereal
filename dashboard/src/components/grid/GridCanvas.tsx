@@ -15,6 +15,7 @@ interface GridCanvasProps {
   onSelect: (id: string | null) => void
   onExpand: (id: string) => void
   expandedNodes: Map<string, ExpandedNode>
+  filterMapInvisible: boolean
 }
 
 // graphNodes is used indirectly via expandedNodes
@@ -27,6 +28,7 @@ export function GridCanvas({
   onSelect,
   onExpand,
   expandedNodes,
+  filterMapInvisible,
 }: GridCanvasProps) {
   void _graphNodes // Used indirectly via expandedNodes
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -46,14 +48,14 @@ export function GridCanvas({
 
   // Build combined node map for rendering
   // ONLY render root entities (no parentEntityId) on the map at their x/y positions
-  // Children and components are only shown when explicitly expanded
+  // Only child entities are shown when explicitly expanded
   const allNodes = React.useMemo(() => {
     const result = new Map<string, ExpandedNode>()
 
     // Add ONLY root world entities (no parentEntityId) at depth 0
     for (const entity of entities) {
       // Keep non-renderable entities in sidebar/detail only.
-      if (entity.mapVisible === false) {
+      if (filterMapInvisible && entity.mapVisible === false) {
         continue
       }
       // Skip child entities - they should not be rendered on the map
@@ -78,7 +80,7 @@ export function GridCanvas({
       })
     }
 
-    // Add expanded child nodes (components, sub-components)
+    // Add expanded child entity nodes
     for (const [id, node] of expandedNodes) {
       if (!result.has(id)) {
         result.set(id, node)
@@ -86,7 +88,7 @@ export function GridCanvas({
     }
 
     return result
-  }, [entities, expandedNodes])
+  }, [entities, expandedNodes, filterMapInvisible])
 
   // World-to-screen coordinate conversion
   const worldToScreen = useCallback((wx: number, wy: number) => {
