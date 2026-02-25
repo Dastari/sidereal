@@ -14,7 +14,6 @@ pub struct BootstrapShipReceiver(pub Mutex<mpsc::Receiver<BootstrapShipCommand>>
 pub struct BootstrapShipCommand {
     pub account_id: uuid::Uuid,
     pub player_entity_id: String,
-    pub ship_entity_id: String,
 }
 
 pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
@@ -66,14 +65,10 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
                         "replication bootstrap processed from {from}: account_id={}, player_entity_id={}, applied={}",
                         result.account_id, result.player_entity_id, result.applied
                     );
-                    if result.applied {
-                        let ship_entity_id = format!("ship:{}", uuid::Uuid::new_v4());
-                        let _ = tx.send(BootstrapShipCommand {
-                            account_id: result.account_id,
-                            player_entity_id: result.player_entity_id,
-                            ship_entity_id,
-                        });
-                    }
+                    let _ = tx.send(BootstrapShipCommand {
+                        account_id: result.account_id,
+                        player_entity_id: result.player_entity_id,
+                    });
                 }
                 Err(err) => {
                     eprintln!("replication control message rejected from {from}: {err}");

@@ -1,15 +1,23 @@
 use bevy::log::{info, warn};
 use bevy::prelude::*;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
-use lightyear::prelude::server::ClientOf;
-use lightyear::prelude::{MessageReceiver, RemoteId};
+use lightyear::prelude::server::{ClientOf, RawServer};
+use lightyear::prelude::{
+    MessageReceiver, NetworkTarget, RemoteId, Replicate, ReplicationState, Server,
+    ServerMultiMessageSender,
+};
 use sidereal_game::{AccountId, PlayerTag};
+use sidereal_game::{
+    ActionQueue, CharacterMovementController, ControlledEntityGuid, EntityGuid, SelectedEntityGuid,
+    default_character_movement_action_capabilities,
+};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use sidereal_net::ClientAuthMessage;
+use sidereal_net::{ClientAuthMessage, ControlChannel, ServerSessionReadyMessage};
 
 use crate::replication::input::ClientInputTickTracker;
+use crate::replication::view::ClientControlRequestOrder;
 use crate::replication::{
     PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
 };
@@ -29,6 +37,7 @@ pub fn cleanup_client_auth_bindings(
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
+    mut control_order: ResMut<'_, ClientControlRequestOrder>,
 ) {
     let live_clients = clients
         .iter()
@@ -52,6 +61,9 @@ pub fn cleanup_client_auth_bindings(
     input_tick_tracker
         .last_accepted_tick_by_player_entity_id
         .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+    control_order
+        .last_request_seq_by_player
+        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
     stream_state
         .sent_asset_ids_by_remote
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
@@ -73,6 +85,8 @@ pub fn cleanup_client_auth_bindings(
 pub fn receive_client_auth_messages(
     mut commands: Commands<'_, '_>,
     mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
+    server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
+    mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     mut auth_receivers: Query<
         '_,
         '_,
@@ -84,11 +98,13 @@ pub fn receive_client_auth_messages(
         With<ClientOf>,
     >,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
-    player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
+    mut player_entity_map: ResMut<'_, PlayerRuntimeEntityMap>,
     player_accounts: Query<'_, '_, &'_ AccountId, With<PlayerTag>>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
+    mut control_order: ResMut<'_, ClientControlRequestOrder>,
+    mut replication_states: Query<'_, '_, &'_ mut ReplicationState, With<Replicate>>,
 ) {
     let jwt_secret = match std::env::var("GATEWAY_JWT_SECRET") {
         Ok(secret) if secret.len() >= 32 => secret,
@@ -103,6 +119,10 @@ pub fn receive_client_auth_messages(
             }
             return;
         }
+    };
+
+    let Ok(server) = server_query.single() else {
+        return;
     };
 
     for (client_entity, remote_id, mut receiver) in &mut auth_receivers {
@@ -173,6 +193,9 @@ pub fn receive_client_auth_messages(
                 bindings
                     .by_client_entity
                     .retain(|_, v| v != &previous_player);
+                control_order
+                    .last_request_seq_by_player
+                    .remove(&previous_player);
             }
 
             let old_client_entity_for_new_player = bindings
@@ -192,14 +215,55 @@ pub fn receive_client_auth_messages(
             stream_state.acked_assets_by_remote.remove(&remote_id.0);
             stream_state.pending_chunks_by_remote.remove(&remote_id.0);
 
+            // New authenticated bind is a fresh control session for this player.
+            // Reset per-player request ordering so newly started clients (seq from 1)
+            // are not rejected as stale against a prior disconnected session.
+            control_order
+                .last_request_seq_by_player
+                .remove(&message.player_entity_id);
+
             visibility_registry.register_client(client_entity, message.player_entity_id.clone());
+            // Force a clean visibility handshake for this authenticated client.
+            // This guarantees reconnects receive fresh spawn baseline even if the
+            // underlying remote link entity was reused across quick logout/login.
+            for mut replication_state in &mut replication_states {
+                if replication_state.is_visible(client_entity) {
+                    replication_state.lose_visibility(client_entity);
+                }
+            }
 
             if !player_entity_map
                 .by_player_entity_id
                 .contains_key(&message.player_entity_id)
             {
+                // Fail-open for runtime presence (character only): if bootstrap/runtime timing
+                // is late, create the player runtime entity now so session-ready can complete.
+                // Ship creation remains bootstrap/hydration-owned and is never synthesized here.
+                let player_guid = message
+                    .player_entity_id
+                    .strip_prefix("player:")
+                    .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+                    .unwrap_or_else(uuid::Uuid::new_v4);
+                let mut entity_commands = commands.spawn((
+                    Name::new(message.player_entity_id.clone()),
+                    EntityGuid(player_guid),
+                    PlayerTag,
+                    AccountId(claims.sub.clone()),
+                    ActionQueue::default(),
+                    default_character_movement_action_capabilities(),
+                    CharacterMovementController { speed_mps: 40.0 },
+                    ControlledEntityGuid(Some(player_guid.to_string())),
+                    SelectedEntityGuid(None),
+                    Transform::default(),
+                    avian3d::prelude::Position(Vec3::ZERO),
+                ));
+                entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
+                let player_entity = entity_commands.id();
+                player_entity_map
+                    .by_player_entity_id
+                    .insert(message.player_entity_id.clone(), player_entity);
                 warn!(
-                    "replication auth for player {} has no hydrated player entity; entering unbound control mode until entity appears",
+                    "replication auth repaired missing runtime player entity for {} during bind",
                     message.player_entity_id
                 );
             }
@@ -225,6 +289,19 @@ pub fn receive_client_auth_messages(
                 "replication client authenticated and bound: client={:?} remote={:?} player_entity_id={}",
                 client_entity, remote_id.0, message.player_entity_id
             );
+
+            let target = NetworkTarget::Single(remote_id.0);
+            let ready = ServerSessionReadyMessage {
+                player_entity_id: message.player_entity_id.clone(),
+            };
+            if let Err(err) =
+                sender.send::<ServerSessionReadyMessage, ControlChannel>(&ready, server, &target)
+            {
+                warn!(
+                    "replication failed sending session-ready message to remote={:?} player={} err={}",
+                    remote_id.0, message.player_entity_id, err
+                );
+            }
         }
     }
 }

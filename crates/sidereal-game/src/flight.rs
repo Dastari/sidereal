@@ -112,20 +112,15 @@ pub fn apply_flight_action_to_computer(
 
 /// System that processes actions and updates FlightComputer state
 pub fn process_flight_actions(
-    mut query: Query<(&mut ActionQueue, &mut FlightComputer, Option<&MountedOn>)>,
+    mut query: Query<(&mut ActionQueue, &mut FlightComputer), Without<MountedOn>>,
 ) {
-    for (mut queue, mut computer, mounted_on) in &mut query {
+    for (mut queue, mut computer) in &mut query {
         if queue.pending.is_empty() {
             continue;
         }
 
         for action in queue.drain() {
-            if !apply_flight_action_to_computer(&mut computer, action) {
-                // Flight computer doesn't handle this action
-                if mounted_on.is_some() {
-                    debug!(action = ?action, "FlightComputer module ignoring non-flight action");
-                }
-            }
+            let _ = apply_flight_action_to_computer(&mut computer, action);
         }
     }
 }
@@ -134,8 +129,8 @@ pub fn process_flight_actions(
 /// Uses Avian's Forces query helper for proper force integration
 pub fn apply_engine_thrust(
     time: Res<Time>,
-    // Parent entities with flight computers (by GUID)
-    computers: Query<(&EntityGuid, &FlightComputer, Option<&MountedOn>)>,
+    // Root hull entities with flight computers (by GUID)
+    computers: Query<(&EntityGuid, &FlightComputer), Without<MountedOn>>,
     // Parent entities that can receive forces (Avian Forces query helper)
     mut body_queries: ParamSet<(BodyForceQuery<'_, '_>, BodyKinematicsQuery<'_, '_>)>,
     // Engine modules
@@ -143,29 +138,19 @@ pub fn apply_engine_thrust(
 ) {
     let dt = time.delta_secs();
 
-    // Build map of control state by parent entity GUID.
-    // Non-mounted FlightComputers (directly on the hull entity, receiving ActionQueue input)
-    // always override mounted FC modules so the actual player input takes effect.
+    // Build control state by root parent GUID from hull flight-computer only.
     let mut control_by_parent = HashMap::<Uuid, (f32, f32, f32, bool)>::new();
-    let mut hull_overrides = Vec::new();
-    for (guid, computer, mounted_on) in &computers {
+    for (guid, computer) in &computers {
         let brake_active = is_brake_active(computer);
-        let state = (
-            computer.throttle,
-            computer.yaw_input,
-            computer.turn_rate_deg_s,
-            brake_active,
+        control_by_parent.insert(
+            guid.0,
+            (
+                computer.throttle,
+                computer.yaw_input,
+                computer.turn_rate_deg_s,
+                brake_active,
+            ),
         );
-        if let Some(mount) = mounted_on {
-            control_by_parent
-                .entry(mount.parent_entity_id)
-                .or_insert(state);
-        } else {
-            hull_overrides.push((guid.0, state));
-        }
-    }
-    for (guid, state) in hull_overrides {
-        control_by_parent.insert(guid, state);
     }
 
     // Aggregate engine thrust/torque budgets by parent GUID.

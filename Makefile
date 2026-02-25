@@ -3,10 +3,14 @@ SHELL := /bin/bash
 PG_URL ?= postgres://sidereal:sidereal@127.0.0.1:5432/sidereal
 SIDEREAL_PG_PORT ?= 5432
 GATEWAY_BIND ?= 0.0.0.0:8080
+GATEWAY_CLIENT_URL ?= http://127.0.0.1:8080
 GATEWAY_BOOTSTRAP_MODE ?= udp
 GATEWAY_JWT_SECRET ?= 0123456789abcdef0123456789abcdef
 ASSET_ROOT ?= ./data
 WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER ?= 1
+SIDEREAL_DEBUG_INPUT_LOGS ?= 1
+SIDEREAL_DEBUG_CONTROL_LOGS ?= 1
+SIDEREAL_CLIENT_MOTION_AUDIT ?= 1
 
 REPLICATION_UDP_BIND ?= 0.0.0.0:7001
 REPLICATION_UDP_ADDR ?= 127.0.0.1:7001
@@ -23,8 +27,12 @@ REPLICATION_BRP_PORT ?= 15713
 CLIENT_BRP_ENABLED ?= true
 CLIENT_BRP_PORT ?= 15714
 CLIENT2_BRP_PORT ?= 15715
+REPLICATION_BRP_URL ?= http://127.0.0.1:$(REPLICATION_BRP_PORT)/
+CLIENT_BRP_URL ?= http://127.0.0.1:$(CLIENT_BRP_PORT)/
+CLIENT2_BRP_URL ?= http://127.0.0.1:$(CLIENT2_BRP_PORT)/
+BRP_DUMP_DIR ?= ./data/debug/brp_dumps
 
-.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client2 run-client-headless dev-stack dev-stack-client register-demo
+.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client2 run-client-headless brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -56,6 +64,10 @@ help:
 	@echo "  make run-client         Run native client"
 	@echo "  make run-client2        Run second native client on UDP 7004"
 	@echo "  make run-client-headless Run transport-only native client"
+	@echo "  make brp-dump-replication Dump replication BRP world.query JSON"
+	@echo "  make brp-dump-client    Dump client BRP world.query JSON"
+	@echo "  make brp-dump-client2   Dump client2 BRP world.query JSON"
+	@echo "  make brp-dump-all       Dump replication + both clients BRP snapshots"
 	@echo "  make dev-stack          Run replication + shard + gateway in one shell"
 	@echo "  make dev-stack-client   Run replication + shard + gateway + native client"
 	@echo "  make register-demo      Register demo account via gateway"
@@ -141,6 +153,8 @@ run-replication:
 	SIDEREAL_REPLICATION_BRP_ENABLED=$(REPLICATION_BRP_ENABLED) \
 	SIDEREAL_REPLICATION_BRP_PORT=$(REPLICATION_BRP_PORT) \
 	SIDEREAL_REPLICATION_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
+	SIDEREAL_DEBUG_INPUT_LOGS=$(SIDEREAL_DEBUG_INPUT_LOGS) \
+	SIDEREAL_DEBUG_CONTROL_LOGS=$(SIDEREAL_DEBUG_CONTROL_LOGS) \
 	GATEWAY_JWT_SECRET=$(GATEWAY_JWT_SECRET) \
 	cargo run -p sidereal-replication
 
@@ -162,10 +176,13 @@ run-gateway:
 run-client:
 	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) \
 	CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) \
-	GATEWAY_URL=http://$(GATEWAY_BIND) \
+	GATEWAY_URL=$(GATEWAY_CLIENT_URL) \
 	SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) \
 	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
 	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
+	SIDEREAL_DEBUG_INPUT_LOGS=$(SIDEREAL_DEBUG_INPUT_LOGS) \
+	SIDEREAL_DEBUG_CONTROL_LOGS=$(SIDEREAL_DEBUG_CONTROL_LOGS) \
+	SIDEREAL_CLIENT_MOTION_AUDIT=$(SIDEREAL_CLIENT_MOTION_AUDIT) \
 	SIDEREAL_ASSET_ROOT=/home/toby/dev/sidereal_v3 \
 	WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=$(WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER) \
 	cargo run -p sidereal-client
@@ -182,6 +199,48 @@ run-client-headless:
 	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
 	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
 	cargo run -p sidereal-client
+
+brp-dump-replication:
+	@set -euo pipefail; \
+	mkdir -p "$(BRP_DUMP_DIR)"; \
+	ts=$$(date +%Y%m%d_%H%M%S); \
+	out="$(BRP_DUMP_DIR)/replication_$${ts}.json"; \
+	curl -sS -X POST "$(REPLICATION_BRP_URL)" \
+		-H "content-type: application/json" \
+		-H "authorization: Bearer $(BRP_AUTH_TOKEN)" \
+		-d '{"jsonrpc":"2.0","id":"sidereal-brp-dump","method":"world.query","params":{"data":{"components":[],"option":"all","has":[]},"filter":{"with":[],"without":[]},"strict":false}}' \
+		> "$$out"; \
+	echo "$$out"
+
+brp-dump-client:
+	@set -euo pipefail; \
+	mkdir -p "$(BRP_DUMP_DIR)"; \
+	ts=$$(date +%Y%m%d_%H%M%S); \
+	out="$(BRP_DUMP_DIR)/client1_$${ts}.json"; \
+	curl -sS -X POST "$(CLIENT_BRP_URL)" \
+		-H "content-type: application/json" \
+		-H "authorization: Bearer $(BRP_AUTH_TOKEN)" \
+		-d '{"jsonrpc":"2.0","id":"sidereal-brp-dump","method":"world.query","params":{"data":{"components":[],"option":"all","has":[]},"filter":{"with":[],"without":[]},"strict":false}}' \
+		> "$$out"; \
+	echo "$$out"
+
+brp-dump-client2:
+	@set -euo pipefail; \
+	mkdir -p "$(BRP_DUMP_DIR)"; \
+	ts=$$(date +%Y%m%d_%H%M%S); \
+	out="$(BRP_DUMP_DIR)/client2_$${ts}.json"; \
+	curl -sS -X POST "$(CLIENT2_BRP_URL)" \
+		-H "content-type: application/json" \
+		-H "authorization: Bearer $(BRP_AUTH_TOKEN)" \
+		-d '{"jsonrpc":"2.0","id":"sidereal-brp-dump","method":"world.query","params":{"data":{"components":[],"option":"all","has":[]},"filter":{"with":[],"without":[]},"strict":false}}' \
+		> "$$out"; \
+	echo "$$out"
+
+brp-dump-all:
+	@set -euo pipefail; \
+	$(MAKE) brp-dump-replication; \
+	$(MAKE) brp-dump-client; \
+	$(MAKE) brp-dump-client2
 
 dev-stack:
 	@set -euo pipefail; \

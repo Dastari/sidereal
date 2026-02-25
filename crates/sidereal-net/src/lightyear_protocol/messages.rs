@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sidereal_asset_runtime::AssetCatalogEntry;
+use sidereal_game::EntityAction;
 
 /// Client authenticates replication session and binds transport identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -8,14 +9,44 @@ pub struct ClientAuthMessage {
     pub access_token: String,
 }
 
-/// Client updates camera/focus runtime state for server-side persistence.
+/// Server acknowledges that replication auth/session binding is ready for the selected player.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ClientViewUpdateMessage {
+pub struct ServerSessionReadyMessage {
     pub player_entity_id: String,
-    pub focused_entity_id: Option<String>,
-    pub selected_entity_id: Option<String>,
+}
+
+/// Client requests an authoritative control-target change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientControlRequestMessage {
+    pub player_entity_id: String,
     pub controlled_entity_id: Option<String>,
-    pub camera_position_m: [f32; 3],
+    pub request_seq: u64,
+}
+
+/// Server acknowledges an authoritative control-target change request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerControlAckMessage {
+    pub player_entity_id: String,
+    pub request_seq: u64,
+    pub controlled_entity_id: Option<String>,
+}
+
+/// Server rejects an authoritative control-target change request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerControlRejectMessage {
+    pub player_entity_id: String,
+    pub request_seq: u64,
+    pub reason: String,
+    pub authoritative_controlled_entity_id: Option<String>,
+}
+
+/// Latest-wins realtime control intent from client to authoritative server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientRealtimeInputMessage {
+    pub player_entity_id: String,
+    pub controlled_entity_id: String,
+    pub actions: Vec<EntityAction>,
+    pub tick: u64,
 }
 
 /// Client requests one or more assets by known version/checksum.

@@ -7,20 +7,19 @@ use bevy::prelude::*;
 use lightyear::prelude::{ControlledBy, Lifetime, NetworkTarget, Replicate};
 use sidereal_game::{
     AccountId, ActionQueue, BaseMassKg, CargoMassKg, CharacterMovementController,
-    ControlledEntityGuid, Engine, EntityGuid, FactionVisibility, FocusedEntityGuid, FuelTank,
+    ControlledEntityGuid, Engine, EntityGuid, FactionVisibility, FuelTank,
     GeneratedComponentRegistry, Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn, OwnerId,
-    PlayerTag, PublicVisibility, ScannerRangeM, SelectedEntityGuid, TotalMassKg,
-    angular_inertia_from_size, default_character_movement_action_capabilities,
-    default_corvette_flight_computer, default_corvette_flight_tuning, default_corvette_health_pool,
-    default_corvette_mass_kg, default_corvette_max_velocity_mps, default_corvette_size,
-    default_flight_action_capabilities,
+    PlayerTag, PublicVisibility, ScannerRangeM, TotalMassKg, angular_inertia_from_size,
+    default_character_movement_action_capabilities, default_corvette_flight_computer,
+    default_corvette_flight_tuning, default_corvette_health_pool, default_corvette_mass_kg,
+    default_corvette_max_velocity_mps, default_corvette_size, default_flight_action_capabilities,
 };
-use sidereal_persistence::GraphPersistence;
+use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::{
     component_record, component_type_path_map, decode_graph_component_payload,
     insert_registered_components_from_graph_records, parse_guid_from_entity_id, parse_vec3_value,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::hydration_parse::{
     base_mass_from_record, cargo_mass_from_record, engine_from_record, faction_id_from_record,
@@ -57,6 +56,29 @@ pub struct PlayerRuntimeEntityMap {
     pub by_player_entity_id: HashMap<String, Entity>,
 }
 
+fn find_runtime_guid_collisions(records: &[GraphEntityRecord]) -> Vec<(String, Vec<String>)> {
+    let mut entity_ids_by_guid = HashMap::<String, Vec<String>>::new();
+    for record in records {
+        let Some(guid) = parse_guid_from_entity_id(&record.entity_id) else {
+            continue;
+        };
+        entity_ids_by_guid
+            .entry(guid.to_string())
+            .or_default()
+            .push(record.entity_id.clone());
+    }
+    let mut collisions = entity_ids_by_guid
+        .into_iter()
+        .filter_map(|(guid, mut entity_ids)| {
+            entity_ids.sort();
+            entity_ids.dedup();
+            (entity_ids.len() > 1).then_some((guid, entity_ids))
+        })
+        .collect::<Vec<_>>();
+    collisions.sort_by(|a, b| a.0.cmp(&b.0));
+    collisions
+}
+
 fn ensure_player_runtime_entity(
     commands: &mut Commands<'_, '_>,
     player_entity_map: &mut PlayerRuntimeEntityMap,
@@ -79,8 +101,6 @@ fn ensure_player_runtime_entity(
         ControlledEntityGuid(
             parse_guid_from_entity_id(player_entity_id).map(|guid| guid.to_string()),
         ),
-        SelectedEntityGuid(None),
-        FocusedEntityGuid(None),
         Transform::from_translation(position),
         Position(position),
     ));
@@ -90,6 +110,60 @@ fn ensure_player_runtime_entity(
         .by_player_entity_id
         .insert(player_entity_id.to_string(), player_entity);
     player_entity
+}
+
+fn load_persisted_controlled_entity_seed(player_entity_id: &str) -> Option<(String, Vec3, Vec3)> {
+    let database_url = std::env::var("REPLICATION_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
+    let mut persistence = match GraphPersistence::connect(&database_url) {
+        Ok(v) => v,
+        Err(err) => {
+            bevy::log::warn!(
+                "bootstrap persistence check skipped; connect failed for {}: {}",
+                player_entity_id,
+                err
+            );
+            return None;
+        }
+    };
+    let records = match persistence.load_graph_records() {
+        Ok(v) => v,
+        Err(err) => {
+            bevy::log::warn!(
+                "bootstrap persistence check skipped; graph load failed for {}: {}",
+                player_entity_id,
+                err
+            );
+            return None;
+        }
+    };
+
+    let mut matches = records
+        .into_iter()
+        .filter(|record| {
+            record
+                .properties
+                .get("player_entity_id")
+                .and_then(|value| value.as_str())
+                == Some(player_entity_id)
+                && record.entity_id.starts_with("ship:")
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|a, b| a.entity_id.cmp(&b.entity_id));
+    let record = matches.into_iter().next()?;
+    let mut pos = record
+        .properties
+        .get("position_m")
+        .and_then(parse_vec3_value)
+        .unwrap_or(Vec3::ZERO);
+    let mut vel = record
+        .properties
+        .get("velocity_mps")
+        .and_then(parse_vec3_value)
+        .unwrap_or(Vec3::ZERO);
+    pos.z = 0.0;
+    vel.z = 0.0;
+    Some((record.entity_id, pos, vel))
 }
 
 pub fn spawn_simulation_entity(
@@ -241,6 +315,18 @@ pub fn hydrate_simulation_entities(
             return;
         }
     };
+    let collisions = find_runtime_guid_collisions(&records);
+    if !collisions.is_empty() {
+        let formatted = collisions
+            .iter()
+            .map(|(guid, entity_ids)| format!("guid {} reused by {:?}", guid, entity_ids))
+            .collect::<Vec<_>>()
+            .join("; ");
+        eprintln!(
+            "replication simulation hydration aborted: runtime GUID collisions detected: {formatted}"
+        );
+        return;
+    }
 
     let type_paths = component_type_path_map(&component_registry);
     let mut spawned_entity_by_entity_id = HashMap::<String, Entity>::new();
@@ -677,10 +763,21 @@ pub fn process_bootstrap_entity_commands(
     mut player_entity_map: ResMut<'_, PlayerRuntimeEntityMap>,
     mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
     bindings: Res<'_, AuthenticatedClientBindings>,
+    controlled_entity_guids: Query<'_, '_, &'_ EntityGuid, With<SimulatedControlledEntity>>,
+    simulated_entities: Query<
+        '_,
+        '_,
+        (Entity, &'_ Name, &'_ EntityGuid, &'_ OwnerId),
+        With<SimulatedControlledEntity>,
+    >,
     receiver: Option<Res<'_, BootstrapShipReceiver>>,
 ) {
     let Some(receiver) = receiver else { return };
+    let mut processed_players = HashSet::new();
     for cmd in bootstrap_runtime::drain_bootstrap_ship_commands(receiver.as_ref()) {
+        if !processed_players.insert(cmd.player_entity_id.clone()) {
+            continue;
+        }
         let spawn_position = bootstrap_runtime::starter_spawn_position(cmd.account_id);
         let player_entity = ensure_player_runtime_entity(
             &mut commands,
@@ -690,32 +787,70 @@ pub fn process_bootstrap_entity_commands(
             spawn_position,
         );
 
-        if !controlled_entity_map
+        let has_live_controlled_entity = controlled_entity_map
             .by_player_entity_id
-            .contains_key(&cmd.player_entity_id)
-        {
-            println!(
-                "spawning bootstrapped controlled entity {} for {}",
-                cmd.ship_entity_id, cmd.player_entity_id
-            );
-            spawn_simulation_entity(
-                &mut commands,
-                &mut controlled_entity_map,
-                &cmd.ship_entity_id,
-                &cmd.player_entity_id,
-                spawn_position,
-                Vec3::ZERO,
-            );
+            .get(&cmd.player_entity_id)
+            .is_some_and(|entity| controlled_entity_guids.get(*entity).is_ok());
+
+        if !has_live_controlled_entity {
+            if let Some((persisted_entity_id, persisted_pos, persisted_vel)) =
+                load_persisted_controlled_entity_seed(&cmd.player_entity_id)
+            {
+                let persisted_control_guid =
+                    parse_guid_from_entity_id(&persisted_entity_id).map(|guid| guid.to_string());
+                let mut existing_matches = simulated_entities
+                    .iter()
+                    .filter(|(_, name, _, owner)| {
+                        name.as_str() == persisted_entity_id && owner.0 == cmd.player_entity_id
+                    })
+                    .collect::<Vec<_>>();
+                if let Some((existing_entity, _, existing_guid, _)) = existing_matches.pop() {
+                    if !existing_matches.is_empty() {
+                        bevy::log::warn!(
+                            "bootstrap found duplicate runtime entities for {} (player={}); using latest match",
+                            persisted_entity_id,
+                            cmd.player_entity_id
+                        );
+                    }
+                    controlled_entity_map
+                        .by_player_entity_id
+                        .insert(cmd.player_entity_id.clone(), existing_entity);
+                    commands
+                        .entity(player_entity)
+                        .insert(ControlledEntityGuid(Some(existing_guid.0.to_string())));
+                } else {
+                    println!(
+                        "hydrating controlled entity {} for {} from persistence",
+                        persisted_entity_id, cmd.player_entity_id
+                    );
+                    spawn_simulation_entity(
+                        &mut commands,
+                        &mut controlled_entity_map,
+                        &persisted_entity_id,
+                        &cmd.player_entity_id,
+                        persisted_pos,
+                        persisted_vel,
+                    );
+                    commands
+                        .entity(player_entity)
+                        .insert(ControlledEntityGuid(persisted_control_guid));
+                }
+            } else {
+                bevy::log::warn!(
+                    "bootstrap skipped controlled-entity spawn for {}: no persisted ship record found",
+                    cmd.player_entity_id
+                );
+            }
         }
 
         if let Some(&controlled_entity) = controlled_entity_map
             .by_player_entity_id
             .get(&cmd.player_entity_id)
         {
-            if let Some(control_guid) = parse_guid_from_entity_id(&cmd.ship_entity_id) {
+            if let Ok(control_guid) = controlled_entity_guids.get(controlled_entity) {
                 commands
                     .entity(player_entity)
-                    .insert(ControlledEntityGuid(Some(control_guid.to_string())));
+                    .insert(ControlledEntityGuid(Some(control_guid.0.to_string())));
             }
             let client_entity = bindings
                 .by_client_entity

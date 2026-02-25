@@ -8,7 +8,8 @@ use bevy::state::state_scoped::DespawnOnExit;
 use super::dialog_ui;
 use super::{
     AssetRootPath, AuthAction, CharacterSelectionState, ClientAppState, ClientSession,
-    EmbeddedFonts, FocusField, active_field_mut, is_printable_char, mask, submit_auth_request,
+    EmbeddedFonts, FocusField, SessionReadyState, active_field_mut, is_printable_char, mask,
+    submit_auth_request,
 };
 
 #[derive(Component)]
@@ -361,12 +362,14 @@ fn tick_cursor_blink(time: Res<'_, Time>, mut blink: ResMut<'_, CursorBlink>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_auth_keyboard_input(
     mut keyboard_input_reader: MessageReader<'_, '_, KeyboardInput>,
     keys: Res<'_, ButtonInput<KeyCode>>,
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
     mut character_selection: ResMut<'_, CharacterSelectionState>,
+    mut session_ready: ResMut<'_, SessionReadyState>,
     mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
     asset_root: Res<'_, AssetRootPath>,
 ) {
@@ -427,6 +430,7 @@ fn handle_auth_keyboard_input(
         submit_auth_request(
             &mut session,
             &mut character_selection,
+            &mut session_ready,
             &mut next_state,
             &mut dialog_queue,
             &asset_root,
@@ -449,6 +453,7 @@ fn handle_auth_button_interactions(
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
     mut character_selection: ResMut<'_, CharacterSelectionState>,
+    mut session_ready: ResMut<'_, SessionReadyState>,
     mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
     asset_root: Res<'_, AssetRootPath>,
 ) {
@@ -468,6 +473,7 @@ fn handle_auth_button_interactions(
                         submit_auth_request(
                             &mut session,
                             &mut character_selection,
+                            &mut session_ready,
                             &mut next_state,
                             &mut dialog_queue,
                             &asset_root,

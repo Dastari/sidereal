@@ -26,6 +26,7 @@ Core player loop:
 2. Clients send intent only; clients never authoritatively set world transforms/state.
 3. Cross-boundary identity is UUID/entity-id only; runtime Bevy `Entity` ids never cross service boundaries.
 4. Runtime entity GUIDs must be globally unique across entity families (player/ship/module/hardpoint). Do not reuse the same GUID for different entity categories.
+5. Persistence/hydration must fail closed on runtime GUID collisions. Persistence batches with duplicate runtime GUIDs are rejected, and hydration aborts when collisions are detected in stored graph records.
 4. Runtime simulation state is authoritative in memory; persistence is durability/hydration.
 5. Visibility and redaction are server-side concerns before serialization.
 6. Behavior is capability-driven; labels like "Ship" are descriptive, not branching logic.
@@ -331,8 +332,12 @@ Implementation note:
 
 **Control swap (player changes which ship they control)**
 
-- **Current:** Implemented via persisted player components. Client requests `controlled_entity_id`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`. Free-roam is self-control (`controlled_entity_guid = player guid`), not null control. Control/selection/focus/camera runtime state persists on the player entity (`controlled_entity_guid`, `selected_entity_guid`, `focused_entity_guid`, plus player `Transform` persisted via `position_m`).
-- **Rule:** `controlled_entity_id` requests are advisory; server ownership validation is authoritative and invalid/missing targets are coerced to player self-control without runtime failure.
+- **Current:** Implemented via persisted `controlled_entity_guid` on the player entity. Client sends `ClientControlRequestMessage { player_entity_id, controlled_entity_id, request_seq }`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`.
+- **Rule:** Control handoff is explicit request/response:
+  - success: `ServerControlAckMessage { player_entity_id, request_seq, controlled_entity_id }`,
+  - failure: `ServerControlRejectMessage { player_entity_id, request_seq, reason, authoritative_controlled_entity_id }`.
+  Client clears pending control only on matching ack/reject. Free-roam is self-control (`controlled_entity_guid = player guid`), not null control.
+- **Camera/anchor contract:** camera always follows the player entity. When controlled target is not self, server continuously anchors player transform to the controlled entity.
 
 **Multiple ships per player**
 
@@ -350,9 +355,11 @@ Implementation note:
 - Registration must create and persist account + default character player entity + starter corvette graph records in durability storage.
 - Register/login are auth-only and must not implicitly bind a runtime world session.
 - Runtime bootstrap handoff from gateway to replication is explicit `Enter World` behavior and must be idempotent per `player_entity_id`.
-- Player-specific runtime/persistent data is player-entity scoped. Control/focus/selection/camera state, score, quest progression, and other character-local settings persist on the player entity in graph persistence.
+- `Enter World` requests must ensure runtime presence/bind for the selected character on every reconnect attempt; idempotency must not prevent reconnect rebind when runtime entities are missing.
+- Player-specific runtime/persistent data is player-entity scoped. Authoritative control state persists via `controlled_entity_guid` on the player entity; score, quest progression, and other character-local settings persist on the player entity in graph persistence.
 - Account identity is an auth container and external reference. An account may own multiple player entities (characters); `player_entity_id` selects which character/session identity is bound for runtime control.
 - Replication binds session transport identity to authenticated `player_entity_id`.
+- Client world entry state transition is `Auth -> CharacterSelect -> WorldLoading -> InWorld`; transition to `InWorld` occurs only after replication session-ready bind acknowledgment for the selected `player_entity_id` plus replicated player-entity presence on client.
 - Input packets with mismatched identity claims are rejected.
 - Gameplay control selection remains ownership-authorized.
 - Runtime systems must fail closed on ownership/identity mismatches (reject and log) rather than silently creating replacement state.

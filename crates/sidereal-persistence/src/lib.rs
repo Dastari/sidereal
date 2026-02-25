@@ -5,7 +5,7 @@ pub use legacy_envelope::{ChannelClass, NetEnvelope, decode_envelope_json, encod
 use postgres::{Client, NoTls, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 const DEFAULT_GRAPH_NAME: &str = "sidereal";
@@ -16,6 +16,8 @@ pub enum PersistenceError {
     Database(String),
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("validation error: {0}")]
+    Validation(String),
 }
 
 pub type Result<T> = std::result::Result<T, PersistenceError>;
@@ -135,6 +137,7 @@ impl GraphPersistence {
         if records.is_empty() {
             return Ok(());
         }
+        validate_runtime_guid_uniqueness(records)?;
         self.client
             .batch_execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
             .map_err(db_err("prep age for graph persist"))?;
@@ -456,6 +459,7 @@ pub fn persist_graph_records_in_transaction(
     if records.is_empty() {
         return Ok(());
     }
+    validate_runtime_guid_uniqueness(records)?;
     tx.batch_execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
         .map_err(db_err("prep age for graph persist"))?;
 
@@ -704,6 +708,59 @@ fn escape_cypher_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
+fn parse_runtime_guid_suffix(entity_id: &str) -> Option<&str> {
+    let (_, suffix) = entity_id.split_once(':')?;
+    is_uuid_like(suffix).then_some(suffix)
+}
+
+fn is_uuid_like(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (idx, ch) in bytes.iter().enumerate() {
+        let is_dash = matches!(idx, 8 | 13 | 18 | 23);
+        if is_dash {
+            if *ch != b'-' {
+                return false;
+            }
+        } else if !ch.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_runtime_guid_uniqueness(records: &[GraphEntityRecord]) -> Result<()> {
+    let mut entity_ids_by_guid = HashMap::<String, HashSet<String>>::new();
+    for record in records {
+        let Some(guid) = parse_runtime_guid_suffix(&record.entity_id) else {
+            continue;
+        };
+        entity_ids_by_guid
+            .entry(guid.to_string())
+            .or_default()
+            .insert(record.entity_id.clone());
+    }
+    let collisions = entity_ids_by_guid
+        .into_iter()
+        .filter_map(|(guid, entity_ids)| {
+            (entity_ids.len() > 1).then(|| {
+                let mut ids = entity_ids.into_iter().collect::<Vec<_>>();
+                ids.sort();
+                format!("guid {guid} reused by {:?}", ids)
+            })
+        })
+        .collect::<Vec<_>>();
+    if collisions.is_empty() {
+        return Ok(());
+    }
+    Err(PersistenceError::Validation(format!(
+        "runtime GUID collision detected: {}",
+        collisions.join("; ")
+    )))
+}
+
 fn now_epoch_s() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -734,6 +791,46 @@ mod tests {
         assert_eq!(s, "player:1");
         let json = parse_agtype_json("{\"x\":1}::agtype".to_string()).expect("json");
         assert_eq!(json["x"], 1);
+    }
+
+    #[test]
+    fn validate_runtime_guid_uniqueness_rejects_collisions() {
+        let guid = "316c04e7-a139-4b36-afdb-8a607b565fec";
+        let records = vec![
+            GraphEntityRecord {
+                entity_id: format!("player:{guid}"),
+                labels: vec!["Entity".to_string()],
+                properties: serde_json::json!({}),
+                components: Vec::new(),
+            },
+            GraphEntityRecord {
+                entity_id: format!("ship:{guid}"),
+                labels: vec!["Entity".to_string()],
+                properties: serde_json::json!({}),
+                components: Vec::new(),
+            },
+        ];
+        let err = validate_runtime_guid_uniqueness(&records).expect_err("should reject collision");
+        assert!(format!("{err}").contains("runtime GUID collision"));
+    }
+
+    #[test]
+    fn validate_runtime_guid_uniqueness_accepts_distinct_guids() {
+        let records = vec![
+            GraphEntityRecord {
+                entity_id: "player:316c04e7-a139-4b36-afdb-8a607b565fec".to_string(),
+                labels: vec!["Entity".to_string()],
+                properties: serde_json::json!({}),
+                components: Vec::new(),
+            },
+            GraphEntityRecord {
+                entity_id: "ship:199d6542-2603-4576-a510-7fa7eaddbe3d".to_string(),
+                labels: vec!["Entity".to_string()],
+                properties: serde_json::json!({}),
+                components: Vec::new(),
+            },
+        ];
+        validate_runtime_guid_uniqueness(&records).expect("distinct GUIDs should pass");
     }
 
     #[test]

@@ -1,11 +1,14 @@
 use bevy::prelude::*;
 use lightyear::prelude::input::native::ActionState;
-use sidereal_game::{ActionQueue, EntityAction, EntityGuid, PlayerTag};
-use sidereal_net::PlayerInput;
+use lightyear::prelude::server::ClientOf;
+use lightyear::prelude::{MessageReceiver, RemoteId};
+use sidereal_game::{ActionQueue, ControlledEntityGuid, EntityAction, EntityGuid, PlayerTag};
+use sidereal_net::{ClientRealtimeInputMessage, PlayerInput};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use crate::replication::SimulatedControlledEntity;
+use crate::AuthenticatedClientBindings;
+use crate::replication::{PlayerControlledEntityMap, SimulatedControlledEntity};
 
 #[derive(Resource, Default)]
 pub struct ClientInputTickTracker {
@@ -33,6 +36,19 @@ pub struct ClientInputDropMetricsLogState {
 #[derive(Resource, Debug, Default)]
 pub struct InputActivityLogState {
     pub last_logged_at_s_by_player_entity_id: HashMap<String, f64>,
+    pub last_logged_actions_by_player_entity_id: HashMap<String, Vec<EntityAction>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LatestRealtimeInput {
+    pub tick: u64,
+    pub controlled_entity_id: String,
+    pub actions: Vec<EntityAction>,
+}
+
+#[derive(Resource, Default)]
+pub struct LatestRealtimeInputsByPlayer {
+    pub by_player_entity_id: HashMap<String, LatestRealtimeInput>,
 }
 
 impl ClientInputDropMetrics {
@@ -59,65 +75,163 @@ fn input_debug_logging_enabled() -> bool {
     })
 }
 
+fn summary_logging_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SIDEREAL_REPLICATION_SUMMARY_LOGS")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
+}
+
+#[allow(clippy::type_complexity)]
+pub fn receive_latest_realtime_input_messages(
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    mut latest: ResMut<'_, LatestRealtimeInputsByPlayer>,
+    mut receivers: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ RemoteId,
+            &'_ mut MessageReceiver<ClientRealtimeInputMessage>,
+        ),
+        With<ClientOf>,
+    >,
+) {
+    for (client_entity, remote_id, mut receiver) in &mut receivers {
+        let Some(bound_player_entity_id) = bindings.by_client_entity.get(&client_entity) else {
+            continue;
+        };
+        for message in receiver.receive() {
+            if message.player_entity_id != *bound_player_entity_id {
+                warn!(
+                    "dropping realtime input with spoofed player id: remote={:?} claimed={} bound={}",
+                    remote_id.0, message.player_entity_id, bound_player_entity_id
+                );
+                continue;
+            }
+            let entry = latest
+                .by_player_entity_id
+                .entry(message.player_entity_id.clone())
+                .or_insert(LatestRealtimeInput {
+                    tick: 0,
+                    controlled_entity_id: String::new(),
+                    actions: Vec::new(),
+                });
+            if message.tick < entry.tick {
+                continue;
+            }
+            entry.tick = message.tick;
+            entry.controlled_entity_id = message.controlled_entity_id;
+            entry.actions = message.actions;
+        }
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub fn drain_native_player_inputs_to_action_queue(
     entities: Query<
         '_,
         '_,
         (
+            Entity,
             &'_ EntityGuid,
             Option<&'_ SimulatedControlledEntity>,
             Option<&'_ PlayerTag>,
+            Option<&'_ ControlledEntityGuid>,
             &'_ ActionState<PlayerInput>,
             &'_ mut ActionQueue,
         ),
+        Without<lightyear::prelude::Confirmed<ActionState<PlayerInput>>>,
     >,
     time: Res<'_, Time>,
+    controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
+    latest_realtime_inputs: Res<'_, LatestRealtimeInputsByPlayer>,
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
     mut input_log_state: ResMut<'_, InputActivityLogState>,
 ) {
-    const ACTIVE_INPUT_LOG_INTERVAL_S: f64 = 0.5;
-    for (guid, simulated, player_tag, state, mut queue) in entities {
+    const ACTIVE_INPUT_LOG_INTERVAL_S: f64 = 0.15;
+    for (entity, guid, simulated, player_tag, controlled_entity_guid, state, mut queue) in entities
+    {
         if state.0.actions.is_empty() {
             continue;
+        }
+        if simulated.is_none() && player_tag.is_some() {
+            let own_guid = guid.0.to_string();
+            let controls_other_entity = controlled_entity_guid
+                .and_then(|value| value.0.as_ref())
+                .is_some_and(|target_guid| target_guid != &own_guid);
+            if controls_other_entity {
+                // Player anchors that currently control another entity should not consume
+                // network input into their own ActionQueue; that queue is for local observer movement only.
+                continue;
+            }
         }
         let player_entity_id = simulated
             .map(|controlled| controlled.player_entity_id.clone())
             .or_else(|| player_tag.map(|_| format!("player:{}", guid.0)))
             .unwrap_or_else(|| format!("entity:{}", guid.0));
-        let has_active = state.0.actions.iter().any(|a| {
-            !matches!(
-                a,
-                EntityAction::ThrustNeutral
-                    | EntityAction::YawNeutral
-                    | EntityAction::LongitudinalNeutral
-                    | EntityAction::LateralNeutral
-            )
-        });
-        if has_active && input_debug_logging_enabled() {
-            let now = time.elapsed_secs_f64();
-            let last_logged = input_log_state
-                .last_logged_at_s_by_player_entity_id
-                .entry(player_entity_id.clone())
-                .or_insert(f64::NEG_INFINITY);
-            if now - *last_logged >= ACTIVE_INPUT_LOG_INTERVAL_S {
-                info!(
-                    player = %player_entity_id,
-                    actions = ?state.0.actions,
-                    "server received active input"
-                );
-                *last_logged = now;
+        if simulated.is_some() {
+            let is_authoritative_target = controlled_entity_map
+                .by_player_entity_id
+                .get(player_entity_id.as_str())
+                .is_some_and(|mapped| *mapped == entity);
+            if !is_authoritative_target {
+                continue;
             }
         }
-        for action in state.0.actions.iter().copied() {
+        let controlled_entity_id = simulated
+            .map(|controlled| controlled.entity_id.clone())
+            .unwrap_or_else(|| player_entity_id.clone());
+        let latest_realtime_actions = latest_realtime_inputs
+            .by_player_entity_id
+            .get(player_entity_id.as_str())
+            .filter(|latest| latest.controlled_entity_id == controlled_entity_id)
+            .map(|latest| latest.actions.as_slice());
+        let actions = latest_realtime_actions.unwrap_or(state.0.actions.as_slice());
+        if actions.is_empty() {
+            continue;
+        }
+        // Server input should reflect the latest client intent snapshot for this tick.
+        // Replacing (instead of appending) prevents stale-intent backlog under jitter/redundancy.
+        queue.clear();
+        for action in actions.iter().copied() {
             queue.push(action);
         }
         let last_tick = input_tick_tracker
             .last_accepted_tick_by_player_entity_id
-            .entry(player_entity_id)
+            .entry(player_entity_id.clone())
             .or_insert(0);
         *last_tick = last_tick.saturating_add(1);
+        if input_debug_logging_enabled() {
+            let now = time.elapsed_secs_f64();
+            let last_logged_at_s = *input_log_state
+                .last_logged_at_s_by_player_entity_id
+                .get(player_entity_id.as_str())
+                .unwrap_or(&f64::NEG_INFINITY);
+            let time_due = now - last_logged_at_s >= ACTIVE_INPUT_LOG_INTERVAL_S;
+            let actions_changed = input_log_state
+                .last_logged_actions_by_player_entity_id
+                .get(player_entity_id.as_str())
+                .is_none_or(|last| last.as_slice() != actions);
+            let should_log = time_due || actions_changed;
+            if should_log {
+                info!(
+                    actions = ?actions,
+                    accepted_seq = *last_tick,
+                    player = %player_entity_id,
+                    controlled = %controlled_entity_id,
+                    "server received input route"
+                );
+                input_log_state
+                    .last_logged_at_s_by_player_entity_id
+                    .insert(player_entity_id.clone(), now);
+                input_log_state
+                    .last_logged_actions_by_player_entity_id
+                    .insert(player_entity_id.clone(), actions.to_vec());
+            }
+        }
         input_drop_metrics.record_accepted();
     }
 }
@@ -127,6 +241,9 @@ pub fn report_input_drop_metrics(
     metrics: Res<'_, ClientInputDropMetrics>,
     mut state: ResMut<'_, ClientInputDropMetricsLogState>,
 ) {
+    if !summary_logging_enabled() {
+        return;
+    }
     const LOG_INTERVAL_S: f64 = 5.0;
     let now = time.elapsed_secs_f64();
     let interval_s = now - state.last_logged_at_s;

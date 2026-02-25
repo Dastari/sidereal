@@ -27,6 +27,10 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
    - bootstrap dispatch occurs.
 5. Runtime bind:
    - replication validates identity/ownership and binds session to selected character.
+6. World loading gate:
+   - client remains in `WorldLoading` after `/world/enter` acceptance,
+   - transition to `InWorld` only after replication emits session-ready bind acknowledgment for selected `player_entity_id`,
+   - and client has replicated the selected player entity.
 
 ## Enforcement Rules
 
@@ -34,6 +38,13 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 - Runtime world bootstrap is Enter-World-only.
 - Ownership mismatches must fail closed (reject + log), not auto-heal.
 - Bootstrap idempotency is per `player_entity_id`.
+- Enter-World reconnects must still ensure runtime presence/bind for selected character even when bootstrap persistence marker already exists.
+- Enter/reconnect bootstrap may hydrate missing runtime entities from persisted graph records for the selected character, but must not synthesize a brand-new ship identity at runtime.
+- Minimum runtime control protocol is:
+  - `ClientControlRequestMessage { player_entity_id, controlled_entity_id, request_seq }`
+  - `ServerControlAckMessage { player_entity_id, request_seq, controlled_entity_id }`
+  - `ServerControlRejectMessage { player_entity_id, request_seq, reason, authoritative_controlled_entity_id }`
+- Control routing is server-authoritative and validated by ownership; client clears pending control only on explicit ack/reject for matching `request_seq`.
 
 ## Failure Behavior
 

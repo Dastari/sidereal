@@ -10,7 +10,9 @@ use crate::replication::assets::{
 use crate::replication::auth::{cleanup_client_auth_bindings, receive_client_auth_messages};
 use crate::replication::input::{
     ClientInputDropMetrics, ClientInputDropMetricsLogState, ClientInputTickTracker,
-    InputActivityLogState, drain_native_player_inputs_to_action_queue, report_input_drop_metrics,
+    InputActivityLogState, LatestRealtimeInputsByPlayer,
+    drain_native_player_inputs_to_action_queue, receive_latest_realtime_input_messages,
+    report_input_drop_metrics,
 };
 use crate::replication::lifecycle::{
     configure_remote, hydrate_replication_world, log_replication_client_connected,
@@ -27,7 +29,9 @@ use crate::replication::physics_runtime::{
     enforce_planar_ship_motion, sync_simulated_ship_components,
 };
 use crate::replication::runtime_state::{
-    compute_controlled_entity_scanner_ranges, update_client_observer_anchor_positions,
+    PlayerControlDebugState, compute_controlled_entity_scanner_ranges,
+    log_player_control_state_changes, sync_player_anchor_to_controlled_entity,
+    update_client_observer_anchor_positions,
 };
 use crate::replication::simulation_entities::{
     PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
@@ -35,7 +39,8 @@ use crate::replication::simulation_entities::{
     process_bootstrap_entity_commands,
 };
 use crate::replication::transport::ensure_server_transport_channels;
-use crate::replication::view::receive_client_view_updates;
+use crate::replication::view::ClientControlRequestOrder;
+use crate::replication::view::receive_client_control_requests;
 use crate::replication::visibility::{VisibilityScratch, update_network_visibility};
 use avian3d::prelude::{
     Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems, PhysicsTransformPlugin,
@@ -165,6 +170,7 @@ fn main() {
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(ClientInputDropMetricsLogState::default());
     app.insert_resource(InputActivityLogState::default());
+    app.insert_resource(LatestRealtimeInputsByPlayer::default());
     app.insert_resource(AssetDependencyMap {
         dependencies_by_asset_id: default_asset_dependencies(),
     });
@@ -172,18 +178,22 @@ fn main() {
     app.insert_resource(PersistenceDirtyState::default());
     app.insert_resource(SimulationPersistenceTimer::default());
     app.insert_resource(PendingControlledByBindings::default());
+    app.insert_resource(ClientControlRequestOrder::default());
+    app.insert_resource(PlayerControlDebugState::default());
     app.add_systems(
         Update,
         (
             ensure_server_transport_channels,
             cleanup_client_auth_bindings,
             receive_client_auth_messages,
-            receive_client_view_updates,
+            receive_latest_realtime_input_messages,
+            receive_client_control_requests,
             receive_client_asset_requests,
             receive_client_asset_acks,
             report_input_drop_metrics,
             report_persistence_worker_metrics,
             process_bootstrap_entity_commands,
+            log_player_control_state_changes.after(process_bootstrap_entity_commands),
         )
             .chain(),
     );
@@ -198,6 +208,7 @@ fn main() {
         FixedUpdate,
         (
             sync_simulated_ship_components,
+            sync_player_anchor_to_controlled_entity,
             update_client_observer_anchor_positions,
             compute_controlled_entity_scanner_ranges,
             update_network_visibility,

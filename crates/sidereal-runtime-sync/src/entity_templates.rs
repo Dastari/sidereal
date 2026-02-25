@@ -4,11 +4,10 @@
 use bevy::prelude::Vec3;
 use serde::Serialize;
 use sidereal_game::{
-    AccountId, ControlledEntityGuid, DisplayName, FocusedEntityGuid, MountedOn, OwnerId, PlayerTag,
-    SelectedEntityGuid, default_corvette_asset_id, default_corvette_engine,
-    default_corvette_flight_computer, default_corvette_flight_tuning, default_corvette_fuel_tank,
-    default_corvette_health_pool, default_corvette_mass_kg, default_corvette_max_velocity_mps,
-    default_corvette_size,
+    AccountId, ControlledEntityGuid, DisplayName, MountedOn, OwnerId, PlayerTag,
+    default_corvette_asset_id, default_corvette_engine, default_corvette_flight_computer,
+    default_corvette_flight_tuning, default_corvette_fuel_tank, default_corvette_health_pool,
+    default_corvette_mass_kg, default_corvette_max_velocity_mps, default_corvette_size,
 };
 use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
 use uuid::Uuid;
@@ -78,16 +77,6 @@ pub fn corvette_starter_graph_records(
                     player_entity_id,
                     "controlled_entity_guid",
                     &ControlledEntityGuid(Some(ship_guid.to_string())),
-                ),
-                component_record(
-                    player_entity_id,
-                    "selected_entity_guid",
-                    &SelectedEntityGuid(None),
-                ),
-                component_record(
-                    player_entity_id,
-                    "focused_entity_guid",
-                    &FocusedEntityGuid(None),
                 ),
             ],
         },

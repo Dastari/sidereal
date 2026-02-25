@@ -3,13 +3,14 @@ use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::math::EulerRot;
 use bevy::prelude::*;
 use sidereal_game::{
-    AccountId, ControlledEntityGuid, Engine, EntityGuid, FlightComputer, FocusedEntityGuid,
-    FuelTank, GeneratedComponentRegistry, Hardpoint, HealthPool, Inventory, MassKg, MountedOn,
-    OwnerId, PlayerTag, SelectedEntityGuid, TotalMassKg,
+    AccountId, ControlledEntityGuid, Engine, EntityGuid, FlightComputer, FuelTank,
+    GeneratedComponentRegistry, Hardpoint, HealthPool, Inventory, MassKg, MountedOn, OwnerId,
+    PlayerTag, TotalMassKg,
 };
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::serialize_entity_components_to_graph_records;
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::Duration;
@@ -96,6 +97,9 @@ pub fn report_persistence_worker_metrics(
     time: Res<'_, Time>,
     mut state: ResMut<'_, PersistenceWorkerState>,
 ) {
+    if !persistence_summary_logging_enabled() {
+        return;
+    }
     const LOG_INTERVAL_S: f64 = 5.0;
     let now = time.elapsed_secs_f64();
     if now - state.last_logged_at_s < LOG_INTERVAL_S {
@@ -119,6 +123,14 @@ pub fn report_persistence_worker_metrics(
         state.disconnected_events,
         state.latest_pending_batch.is_some(),
     );
+}
+
+fn persistence_summary_logging_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SIDEREAL_REPLICATION_SUMMARY_LOGS")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
 }
 
 fn mark_dirty_runtime_entity_id(
@@ -182,8 +194,6 @@ pub fn mark_dirty_persistable_entities_runtime_state(
             Changed<OwnerId>,
             Changed<AccountId>,
             Changed<ControlledEntityGuid>,
-            Changed<SelectedEntityGuid>,
-            Changed<FocusedEntityGuid>,
             Added<Hardpoint>,
         )>,
     >,
@@ -551,10 +561,12 @@ fn persistence_worker_loop(receiver: Receiver<PersistenceWriteBatch>, database_u
                 .expect("pending persistence batch should be present");
             match persistence.persist_graph_records(&batch.records, batch.tick) {
                 Ok(()) => {
-                    info!(
-                        "persisted simulation state for {} entities (tick={})",
-                        record_count, batch.tick
-                    );
+                    if persistence_summary_logging_enabled() {
+                        info!(
+                            "persisted simulation state for {} entities (tick={})",
+                            record_count, batch.tick
+                        );
+                    }
                     break;
                 }
                 Err(err) => {

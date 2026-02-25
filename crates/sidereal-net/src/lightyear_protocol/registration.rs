@@ -10,21 +10,31 @@ use lightyear::prelude::{
     ReliableSettings,
 };
 use sidereal_game::{
-    BaseMassKg, CargoMassKg, CharacterMovementController, Cost, Engine, EntityGuid, FactionId,
-    FactionVisibility, FlightComputer, FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory,
-    MassKg, MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId, PublicVisibility, ScannerComponent,
-    ScannerRangeBuff, ScannerRangeM, SiderealComponentMetadata, SizeM, TotalMassKg,
+    BaseMassKg, CargoMassKg, CharacterMovementController, ControlledEntityGuid, Cost, Engine,
+    EntityGuid, FactionId, FactionVisibility, FlightComputer, FlightTuning, FuelTank, Hardpoint,
+    HealthPool, Inventory, MassKg, MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId,
+    PublicVisibility, ScannerComponent, ScannerRangeBuff, ScannerRangeM, SiderealComponentMetadata,
+    SizeM, TotalMassKg,
 };
 
 use super::{
     AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
-    ClientAuthMessage, ClientViewUpdateMessage, ControlChannel, PlayerInput,
+    ClientAuthMessage, ClientControlRequestMessage, ClientRealtimeInputMessage, ControlChannel,
+    PlayerInput, ServerControlAckMessage, ServerControlRejectMessage, ServerSessionReadyMessage,
 };
 
 pub fn register_lightyear_protocol(app: &mut App) {
     app.register_message::<ClientAuthMessage>()
         .add_direction(NetworkDirection::Bidirectional);
-    app.register_message::<ClientViewUpdateMessage>()
+    app.register_message::<ClientControlRequestMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ClientRealtimeInputMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerSessionReadyMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerControlAckMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerControlRejectMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<AssetRequestMessage>()
         .add_direction(NetworkDirection::Bidirectional);
@@ -78,6 +88,7 @@ fn register_lightyear_replication_components(app: &mut App) {
 
     // Entity identity/ownership and world composition.
     register_game_component!(app, EntityGuid);
+    register_game_component!(app, ControlledEntityGuid);
     register_game_component!(app, OwnerId);
     register_game_component!(app, MountedOn);
     register_game_component!(app, Hardpoint);

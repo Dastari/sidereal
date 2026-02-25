@@ -3,7 +3,8 @@ use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{Replicate, ReplicationState};
 use sidereal_game::{
-    EntityGuid, FactionId, FactionVisibility, MountedOn, OwnerId, PublicVisibility, ScannerRangeM,
+    EntityGuid, FactionId, FactionVisibility, MountedOn, OwnerId, PlayerTag, PublicVisibility,
+    ScannerRangeM,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -84,6 +85,8 @@ pub fn update_network_visibility(
         (
             Entity,
             &'_ mut ReplicationState,
+            Option<&'_ EntityGuid>,
+            Option<&'_ PlayerTag>,
             Option<&'_ OwnerId>,
             Option<&'_ PublicVisibility>,
             Option<&'_ FactionVisibility>,
@@ -178,6 +181,8 @@ pub fn update_network_visibility(
     for (
         entity,
         mut replication_state,
+        entity_guid,
+        player_tag,
         owner_id,
         public_visibility,
         faction_visibility,
@@ -221,6 +226,14 @@ pub fn update_network_visibility(
                 .get(&root_entity)
                 .map(String::as_str)
         });
+        // Ensure players always receive replication for their own observer/player entity
+        // even in valid no-ship states.
+        let owner_player_id_owned = if owner_player_id.is_none() && player_tag.is_some() {
+            entity_guid.map(|guid| format!("player:{}", guid.0))
+        } else {
+            None
+        };
+        let owner_player_id = owner_player_id.or(owner_player_id_owned.as_deref());
         let entity_faction_id = faction_id.map(|faction| faction.0.as_str()).or_else(|| {
             scratch
                 .root_faction_by_entity
