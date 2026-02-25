@@ -124,6 +124,9 @@ struct ClientInputAckTracker {
 #[derive(Debug, Resource, Default)]
 struct ClientInputLogState {
     last_logged_at_s: f64,
+    last_logged_actions: Vec<EntityAction>,
+    last_logged_controlled_entity_id: Option<String>,
+    last_logged_desired_controlled_entity_id: Option<String>,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -571,16 +574,18 @@ fn runtime_entity_id_from_guid(
     local_player_entity_id: &str,
     guid: &str,
 ) -> Option<String> {
-    if parse_guid_from_entity_id(local_player_entity_id)
-        .is_some_and(|player_guid| player_guid.to_string() == guid)
-    {
-        return Some(local_player_entity_id.to_string());
-    }
+    // Prefer concrete runtime entities first (ship/module/hardpoint/player).
+    // Legacy worlds may have GUID collisions across entity families.
     for prefix in ["ship", "player", "module", "hardpoint"] {
         let candidate = format!("{prefix}:{guid}");
         if entity_registry.by_entity_id.contains_key(&candidate) {
             return Some(candidate);
         }
+    }
+    if parse_guid_from_entity_id(local_player_entity_id)
+        .is_some_and(|player_guid| player_guid.to_string() == guid)
+    {
+        return Some(local_player_entity_id.to_string());
     }
     None
 }
@@ -2432,12 +2437,26 @@ fn send_lightyear_input_messages(
     });
     if has_active_input && client_input_debug_logging_enabled() {
         let now = time.elapsed_secs_f64();
-        if now - input_log_state.last_logged_at_s >= 0.5 {
+        if now - input_log_state.last_logged_at_s >= 0.15
+            || input_log_state.last_logged_actions != player_input.actions
+            || input_log_state.last_logged_controlled_entity_id
+                != player_view_state.controlled_entity_id
+            || input_log_state.last_logged_desired_controlled_entity_id
+                != player_view_state.desired_controlled_entity_id
+        {
             input_log_state.last_logged_at_s = now;
+            input_log_state.last_logged_actions = player_input.actions.clone();
+            input_log_state.last_logged_controlled_entity_id =
+                player_view_state.controlled_entity_id.clone();
+            input_log_state.last_logged_desired_controlled_entity_id =
+                player_view_state.desired_controlled_entity_id.clone();
             info!(
                 actions = ?player_input.actions,
                 tick = tick.0,
-                "client sending active input"
+                controlled = ?player_view_state.controlled_entity_id,
+                desired = ?player_view_state.desired_controlled_entity_id,
+                detached = player_view_state.detached_free_camera,
+                "client sending input route"
             );
         }
     }
@@ -2727,7 +2746,9 @@ fn adopt_native_lightyear_replicated_entities(
             .and_then(|guid| {
                 runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
             });
-        player_view_state.controlled_entity_id = controlled_id.clone();
+        player_view_state.controlled_entity_id = controlled_id
+            .clone()
+            .or_else(|| Some(local_player_entity_id.clone()));
         player_view_state.selected_entity_id = selected_entity_guid
             .and_then(|v| v.0.as_ref())
             .and_then(|guid| {
@@ -2739,9 +2760,12 @@ fn adopt_native_lightyear_replicated_entities(
                 runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
             });
         if player_view_state.desired_controlled_entity_id.is_none() {
-            player_view_state.desired_controlled_entity_id = controlled_id.clone();
+            player_view_state.desired_controlled_entity_id = player_view_state
+                .controlled_entity_id
+                .clone()
+                .or_else(|| Some(local_player_entity_id.clone()));
         }
-        authoritative_controlled_entity_id = controlled_id;
+        authoritative_controlled_entity_id = player_view_state.controlled_entity_id.clone();
         break;
     }
 
@@ -2789,7 +2813,8 @@ fn adopt_native_lightyear_replicated_entities(
                 .and_then(|c| c.0.as_ref())
                 .and_then(|guid| {
                     runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
-                });
+                })
+                .or_else(|| Some(local_player_entity_id.clone()));
             player_view_state.selected_entity_id = selected_entity_guid
                 .and_then(|v| v.0.as_ref())
                 .and_then(|guid| {
@@ -2801,8 +2826,10 @@ fn adopt_native_lightyear_replicated_entities(
                     runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
                 });
             if player_view_state.desired_controlled_entity_id.is_none() {
-                player_view_state.desired_controlled_entity_id =
-                    player_view_state.controlled_entity_id.clone();
+                player_view_state.desired_controlled_entity_id = player_view_state
+                    .controlled_entity_id
+                    .clone()
+                    .or_else(|| Some(local_player_entity_id.clone()));
             }
         }
         let predicted_mode = !local_mode.0;
@@ -3076,10 +3103,12 @@ fn sync_local_player_view_state_system(
         if name.as_str() != local_player_entity_id {
             continue;
         }
-        player_view_state.controlled_entity_id =
-            controlled.and_then(|c| c.0.as_ref()).and_then(|guid| {
+        player_view_state.controlled_entity_id = controlled
+            .and_then(|c| c.0.as_ref())
+            .and_then(|guid| {
                 runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
-            });
+            })
+            .or_else(|| Some(local_player_entity_id.clone()));
         player_view_state.selected_entity_id =
             selected.and_then(|v| v.0.as_ref()).and_then(|guid| {
                 runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
@@ -3088,8 +3117,10 @@ fn sync_local_player_view_state_system(
             runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
         });
         if player_view_state.desired_controlled_entity_id.is_none() {
-            player_view_state.desired_controlled_entity_id =
-                player_view_state.controlled_entity_id.clone();
+            player_view_state.desired_controlled_entity_id = player_view_state
+                .controlled_entity_id
+                .clone()
+                .or_else(|| Some(local_player_entity_id.clone()));
         }
         if focus_state.focused_entity_id.is_none() {
             focus_state.focused_entity_id = player_view_state.focused_entity_id.clone();
@@ -3971,6 +4002,7 @@ fn handle_owned_ships_panel_buttons(
                     OwnedShipsPanelAction::FreeRoam => {
                         player_view_state.desired_controlled_entity_id =
                             session.player_entity_id.clone();
+                        player_view_state.controlled_entity_id = session.player_entity_id.clone();
                         player_view_state.detached_free_camera = false;
                         player_view_state.selected_entity_id = None;
                         focus_state.set(None);

@@ -34,12 +34,8 @@ pub fn corvette_starter_graph_records(
     player_entity_id: &str,
     position: Vec3,
 ) -> Vec<GraphEntityRecord> {
-    let player_guid = player_entity_id
-        .split(':')
-        .nth(1)
-        .and_then(|raw| Uuid::parse_str(raw).ok())
-        .unwrap_or(account_id);
-    let ship_entity_id = format!("ship:{player_guid}");
+    let ship_guid = Uuid::new_v4();
+    let ship_entity_id = format!("ship:{ship_guid}");
     let fc_entity_id = format!("module:{}", Uuid::new_v4());
     let engine_left_entity_id = format!("module:{}", Uuid::new_v4());
     let engine_right_entity_id = format!("module:{}", Uuid::new_v4());
@@ -81,7 +77,7 @@ pub fn corvette_starter_graph_records(
                 component_record(
                     player_entity_id,
                     "controlled_entity_guid",
-                    &ControlledEntityGuid(Some(player_guid.to_string())),
+                    &ControlledEntityGuid(Some(ship_guid.to_string())),
                 ),
                 component_record(
                     player_entity_id,
@@ -140,7 +136,7 @@ pub fn corvette_starter_graph_records(
                     &fc_entity_id,
                     "mounted_on",
                     &MountedOn {
-                        parent_entity_id: player_guid,
+                        parent_entity_id: ship_guid,
                         hardpoint_id: "computer_core".to_string(),
                     },
                 ),
@@ -162,7 +158,7 @@ pub fn corvette_starter_graph_records(
                     &engine_left_entity_id,
                     "mounted_on",
                     &MountedOn {
-                        parent_entity_id: player_guid,
+                        parent_entity_id: ship_guid,
                         hardpoint_id: "engine_left_aft".to_string(),
                     },
                 ),
@@ -206,7 +202,7 @@ pub fn corvette_starter_graph_records(
                     &engine_right_entity_id,
                     "mounted_on",
                     &MountedOn {
-                        parent_entity_id: player_guid,
+                        parent_entity_id: ship_guid,
                         hardpoint_id: "engine_right_aft".to_string(),
                     },
                 ),

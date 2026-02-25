@@ -138,6 +138,9 @@ pub fn receive_client_view_updates(
                 .as_deref()
                 .and_then(guid_from_entity_id_like);
             let requested_control_raw = message.controlled_entity_id.clone();
+            let requested_explicitly_player = requested_control_raw
+                .as_deref()
+                .is_some_and(|raw| raw.starts_with("player:"));
 
             commands.entity(player_entity).insert((
                 FocusedEntityGuid(focused_guid),
@@ -147,7 +150,9 @@ pub fn receive_client_view_updates(
             let (resolved_control_guid, resolved_target_entity) = if let Some(control_guid) =
                 requested_control_guid.clone()
             {
-                if control_guid == player_guid {
+                // Disambiguate by raw identifier intent first.
+                // Some legacy worlds reuse GUIDs across player+ship IDs; GUID-only comparison is ambiguous.
+                if requested_explicitly_player && control_guid == player_guid {
                     (Some(player_guid.clone()), player_entity)
                 } else {
                     let target = controllable_entities.iter().find(|(_, guid, owner)| {

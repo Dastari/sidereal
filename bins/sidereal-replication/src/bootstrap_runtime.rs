@@ -67,12 +67,7 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
                         result.account_id, result.player_entity_id, result.applied
                     );
                     if result.applied {
-                        let ship_entity_id = result
-                            .player_entity_id
-                            .split(':')
-                            .nth(1)
-                            .map(|id| format!("ship:{id}"))
-                            .unwrap_or_else(|| format!("ship:{}", result.account_id));
+                        let ship_entity_id = format!("ship:{}", uuid::Uuid::new_v4());
                         let _ = tx.send(BootstrapShipCommand {
                             account_id: result.account_id,
                             player_entity_id: result.player_entity_id,

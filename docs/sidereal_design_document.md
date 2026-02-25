@@ -25,6 +25,7 @@ Core player loop:
 1. Authority is one-way: `client input -> replication simulation -> persistence`.
 2. Clients send intent only; clients never authoritatively set world transforms/state.
 3. Cross-boundary identity is UUID/entity-id only; runtime Bevy `Entity` ids never cross service boundaries.
+4. Runtime entity GUIDs must be globally unique across entity families (player/ship/module/hardpoint). Do not reuse the same GUID for different entity categories.
 4. Runtime simulation state is authoritative in memory; persistence is durability/hydration.
 5. Visibility and redaction are server-side concerns before serialization.
 6. Behavior is capability-driven; labels like "Ship" are descriptive, not branching logic.
@@ -330,12 +331,12 @@ Implementation note:
 
 **Control swap (player changes which ship they control)**
 
-- **Current:** Implemented via persisted player components. Client requests `controlled_entity_id`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`. Authoritative control can be `None` (no-controlled/player-free-roam mode). Control/selection/focus/camera runtime state persists on the player entity (`controlled_entity_guid`, `selected_entity_guid`, `focused_entity_guid`, plus player `Transform` persisted via `position_m`).
-- **Rule:** `controlled_entity_id` requests are advisory; server ownership validation is authoritative and invalid/missing targets are coerced to `None` without runtime failure.
+- **Current:** Implemented via persisted player components. Client requests `controlled_entity_id`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`. Free-roam is self-control (`controlled_entity_guid = player guid`), not null control. Control/selection/focus/camera runtime state persists on the player entity (`controlled_entity_guid`, `selected_entity_guid`, `focused_entity_guid`, plus player `Transform` persisted via `position_m`).
+- **Rule:** `controlled_entity_id` requests are advisory; server ownership validation is authoritative and invalid/missing targets are coerced to player self-control without runtime failure.
 
 **Multiple ships per player**
 
-- **Current:** A player can own multiple ships; only the server-authoritative controlled ship receives input. Player can switch control among owned ships; missing targets resolve to `None`.
+- **Current:** A player can own multiple ships; only the server-authoritative controlled ship receives input. Player can switch control among owned ships; missing targets resolve to player self-control.
 - **Target:** Keep this model while extending scanner/visibility to aggregate over all owned entities at scale.
 
 **Summary**
