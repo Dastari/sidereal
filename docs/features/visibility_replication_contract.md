@@ -29,6 +29,11 @@ All visibility-sensitive changes must preserve this order:
 
 Delivery must never widen authorization.
 
+Performance note:
+- Systems may build an early candidate set (for example spatial nearby-cell opt-in query) before full authorization.
+- That candidate step is an optimization input, not authorization.
+- Final outbound entity/component decisions must still be evaluated against full server policy and remain a strict narrowing of authorization.
+
 ## 3. Current Runtime Baseline
 
 Implemented now:
@@ -36,9 +41,27 @@ Implemented now:
 - owner/public/faction visibility allowances,
 - scanner range fallback with default floor,
 - mounted/child positional fallback for visibility checks.
+- observer anchor from player runtime camera state (`Transform` on player entity), with scanner-source union over owned entities.
+- control semantics align to `camera <- player <- controlled(optional)`; observer/player anchor is the delivery-center source-of-truth.
 
 Known gap:
 - `#[sidereal_component(..., visibility = [...])]` metadata is recorded but not yet used as a strict per-component outbound redaction gate.
+
+## 3.1 Observer and Control Semantics (Normative)
+
+1. Observer anchor for delivery narrowing is player entity transform/state.
+2. Controlled entity state may influence player position (player follows controlled when control active), but does not replace player as observer anchor identity.
+3. Free-roam control is represented as `ControlledEntityGuid = player guid` (self-control); player movement remains authoritative for observer anchor updates in that mode.
+4. Camera behavior is a client presentation concern; delivery authorization remains server-authoritative and player-entity scoped.
+
+## 3.2 Snapshot vs Stream Disclosure (Normative)
+
+1. Entity authorization and delivery do not automatically imply full component disclosure.
+2. Component/field disclosure must support:
+- continuous stream entitlement (ongoing updates while grant/policy active),
+- one-time snapshot entitlement (single disclosure event without future update rights).
+3. Snapshot entitlement must not silently upgrade to stream entitlement.
+4. Expiry/revocation must immediately restore redaction policy.
 
 ## 4. Required Direction
 
@@ -70,8 +93,10 @@ For any PR touching visibility, replication delivery, or data redaction:
 2. Confirm scanner/range behavior remains server-enforced.
 3. Confirm unauthorized fields/components are never serialized.
 4. Confirm camera/delivery culling only narrows, never widens, authorization.
-5. Add/update tests for changed behavior (unit + integration when cross-service).
-6. Update:
+5. Confirm player observer-anchor semantics remain consistent (`camera <- player <- controlled(optional)`).
+6. Confirm snapshot-vs-stream disclosure behavior is explicit for changed components/fields.
+7. Add/update tests for changed behavior (unit + integration when cross-service).
+8. Update:
 - `docs/sidereal_design_document.md` if contract changed,
 - this file (`docs/features/visibility_replication_contract.md`) if implementation policy changed,
 - `AGENTS.md` if contributor enforcement rules changed.

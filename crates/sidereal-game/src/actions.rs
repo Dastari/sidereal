@@ -23,11 +23,28 @@ use crate::{ActionCapabilities, ActionQueue};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
 #[reflect(Serialize, Deserialize)]
 pub enum EntityAction {
+    // === Generic movement verbs (canonical) ===
+    /// Move/drive forward intent.
+    Forward,
+    /// Move/drive backward intent.
+    Backward,
+    /// Stop forward/backward intent.
+    LongitudinalNeutral,
+    /// Turn/strafe left intent.
+    Left,
+    /// Turn/strafe right intent.
+    Right,
+    /// Stop left/right intent.
+    LateralNeutral,
+
     // === Flight control ===
+    /// Legacy alias for `Forward`.
     /// Thrust forward (throttle positive)
     ThrustForward,
+    /// Legacy alias for `Backward`.
     /// Thrust reverse (throttle negative)
     ThrustReverse,
+    /// Legacy alias for `LongitudinalNeutral`.
     /// Stop all thrust (throttle zero)
     ThrustNeutral,
     /// Active flight-computer braking to drive linear velocity toward zero
@@ -89,6 +106,16 @@ impl ActionQueue {
 }
 
 pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
+    EntityAction::Forward,
+    EntityAction::Backward,
+    EntityAction::LongitudinalNeutral,
+    EntityAction::Left,
+    EntityAction::Right,
+    EntityAction::LateralNeutral,
+    EntityAction::Brake,
+];
+
+pub const LEGACY_FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
     EntityAction::ThrustForward,
     EntityAction::ThrustReverse,
     EntityAction::ThrustNeutral,
@@ -99,10 +126,16 @@ pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
 ];
 
 pub fn is_flight_control_action(action: EntityAction) -> bool {
-    FLIGHT_CONTROL_ACTIONS.contains(&action)
+    FLIGHT_CONTROL_ACTIONS.contains(&action) || LEGACY_FLIGHT_CONTROL_ACTIONS.contains(&action)
 }
 
 pub fn default_flight_action_capabilities() -> ActionCapabilities {
+    let mut supported = FLIGHT_CONTROL_ACTIONS.to_vec();
+    supported.extend(LEGACY_FLIGHT_CONTROL_ACTIONS);
+    ActionCapabilities { supported }
+}
+
+pub fn default_character_movement_action_capabilities() -> ActionCapabilities {
     ActionCapabilities {
         supported: FLIGHT_CONTROL_ACTIONS.to_vec(),
     }
@@ -166,7 +199,12 @@ mod tests {
     #[test]
     fn default_flight_capabilities_match_allowlist() {
         let caps = default_flight_action_capabilities();
-        assert_eq!(caps.supported, FLIGHT_CONTROL_ACTIONS.to_vec());
+        for action in FLIGHT_CONTROL_ACTIONS {
+            assert!(caps.can_handle(action));
+        }
+        for action in LEGACY_FLIGHT_CONTROL_ACTIONS {
+            assert!(caps.can_handle(action));
+        }
         assert!(caps.can_handle(EntityAction::Brake));
         assert!(!caps.can_handle(EntityAction::FirePrimary));
     }

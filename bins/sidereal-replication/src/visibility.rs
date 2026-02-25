@@ -19,13 +19,13 @@ impl ClientVisibilityRegistry {
     }
 }
 
-/// Tracks position of each player's currently controlled entity for spatial queries.
+/// Tracks position of each player's observer anchor entity for spatial queries.
 #[derive(Resource, Default)]
-pub struct ClientControlledEntityPositionMap {
+pub struct ClientObserverAnchorPositionMap {
     pub position_by_player_entity_id: HashMap<String, Vec3>,
 }
 
-impl ClientControlledEntityPositionMap {
+impl ClientObserverAnchorPositionMap {
     pub fn update_position(&mut self, player_entity_id: &str, position: Vec3) {
         self.position_by_player_entity_id
             .insert(player_entity_id.to_string(), position);

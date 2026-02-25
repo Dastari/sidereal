@@ -134,6 +134,33 @@ pub struct PlayerInput {
 
 Server input routing is bound to authenticated session identity and controlled entity mapping.
 
+### 5.2.1 Control and Camera Chain (Normative)
+
+Authoritative runtime chain:
+
+1. `camera <- player entity <- controlled entity (optional)`
+
+Rules:
+
+1. `ControlledEntityGuid = Some(target)`:
+- action routing target is controlled entity by default,
+- player entity follows controlled entity position/state,
+- camera follows player entity.
+2. `ControlledEntityGuid = Some(self player guid)`:
+- action routing target is player entity,
+- player movement acceptor handles free-roam actions (WASD),
+- camera follows player entity.
+3. Detached free-camera is an explicit camera mode:
+- enabled/disabled by explicit client mode switch,
+- gameplay movement intent emission is suppressed while detached (camera-only pan),
+- detached mode does not redefine server-authoritative control routing semantics.
+
+Single-writer motion principle:
+
+1. Controlled mode: controlled entity simulation writes controlled motion; player-follow system writes player anchor.
+2. Uncontrolled mode: player movement system writes player motion.
+3. Camera systems never write authoritative simulation motion state.
+
 ### 5.3 Prediction and Interpolation
 
 Controlled entity:
@@ -206,10 +233,23 @@ Rules:
 
 A client may be authorized for more than it currently receives on a given stream.
 
+Pipeline contract:
+
+1. Authorization decides entitlement (security gate).
+2. Delivery narrows authorized data for efficiency (interest management gate).
+3. Payload redaction enforces component/field disclosure policy (serialization gate).
+
+Implementation note:
+- A performance-oriented candidate preselection step (for example spatial nearby-cell query) may run before full authorization evaluation.
+- Such preselection is an optimization input only and must be fail-closed safe:
+  - it must never be treated as authorization by itself,
+  - it must not exclude entities that policy requires to be considered (ownership/public/faction/scan-grant exceptions),
+  - final outbound delivery remains a strict narrowing of authorization.
+
 ### 7.2 Authorization and Fog-of-War Contract
 
 - Scanner range is server-enforced fog-of-war for non-owned entities.
-- Default scanner authorization floor is `300m` around the player's controlled-entity observer position.
+- Default scanner authorization floor is `300m` around the player's character observer position (player entity/camera context).
 - Scanner authorization aggregates over all owned entities (not only the currently controlled entity), including valid ownership/attachment chains.
 - Non-public entities outside active scanner authorization must not be delivered.
 - Visibility exceptions are explicit and server-enforced:
@@ -285,12 +325,12 @@ A client may be authorized for more than it currently receives on a given stream
 
 **Observer and scanner aggregation**
 
-- **Current:** One observer position per client from persisted player runtime camera state (`position_m`/`Transform.translation` on the player entity). Scanner range still uses the current controlled entity when present.
-- **Target (see 7.2):** Scanner authorization should aggregate over *all* owned entities (e.g. all ships the player owns), not only the currently controlled one. Observer/visibility logic should support multiple observer points or an aggregated range per client.
+- **Current:** One observer position per client from persisted player runtime camera state (`position_m`/`Transform.translation` on the player entity), with scanner-source union over owned entities.
+- **Target (see 7.2):** Keep scanner authorization aggregated over *all* owned entities (e.g. all ships the player owns), with observer/visibility logic supporting multiple observer points or equivalent aggregated coverage per client.
 
 **Control swap (player changes which ship they control)**
 
-- **Current:** Implemented via persisted player components. Client requests `controlled_entity_id`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`. Authoritative control can be `None` (free-camera/no-controlled mode). Control/selection/focus/camera runtime state persists on the player entity (`controlled_entity_guid`, `selected_entity_guid`, `focused_entity_guid`, plus player `Transform` persisted via `position_m`).
+- **Current:** Implemented via persisted player components. Client requests `controlled_entity_id`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`. Authoritative control can be `None` (no-controlled/player-free-roam mode). Control/selection/focus/camera runtime state persists on the player entity (`controlled_entity_guid`, `selected_entity_guid`, `focused_entity_guid`, plus player `Transform` persisted via `position_m`).
 - **Rule:** `controlled_entity_id` requests are advisory; server ownership validation is authoritative and invalid/missing targets are coerced to `None` without runtime failure.
 
 **Multiple ships per player**

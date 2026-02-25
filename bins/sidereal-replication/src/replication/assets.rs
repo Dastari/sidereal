@@ -7,6 +7,7 @@ use lightyear::prelude::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use sidereal_asset_runtime::{
     AssetCatalogEntry, asset_version_from_sha256_hex, default_streamable_asset_sources,
@@ -29,6 +30,18 @@ const ASSET_STREAM_CHUNK_BYTES: usize = 1024;
 /// Max asset stream chunks sent per remote per frame to avoid UDP send buffer overflow (EAGAIN).
 const ASSET_STREAM_CHUNKS_PER_FRAME: usize = 10;
 
+#[derive(Debug, Clone)]
+struct CachedStreamAsset {
+    entry: AssetCatalogEntry,
+    bytes: Vec<u8>,
+}
+
+#[derive(Resource, Default)]
+pub struct StreamableAssetCache {
+    assets_by_id: HashMap<String, CachedStreamAsset>,
+    always_required_asset_ids: HashSet<String>,
+}
+
 fn always_required_stream_asset_ids() -> [&'static str; 3] {
     [
         default_corvette_asset_id(),
@@ -49,6 +62,97 @@ fn load_asset_bytes(relative_cache_path: &str) -> Option<Vec<u8>> {
     }
     let cache_path = asset_root.join("cache_stream").join(relative_cache_path);
     std::fs::read(cache_path).ok()
+}
+
+fn asset_stream_debug_logs_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SIDEREAL_DEBUG_ASSET_STREAM_LOGS")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
+}
+
+pub fn initialize_asset_stream_cache(
+    mut cache: ResMut<'_, StreamableAssetCache>,
+    mut dependency_map: ResMut<'_, AssetDependencyMap>,
+) {
+    cache.assets_by_id.clear();
+    cache.always_required_asset_ids = always_required_stream_asset_ids()
+        .iter()
+        .map(|asset_id| (*asset_id).to_string())
+        .collect::<HashSet<_>>();
+
+    let streamable_sources = default_streamable_asset_sources();
+    let asset_id_by_relative_path = streamable_sources
+        .iter()
+        .map(|source| {
+            (
+                source.relative_cache_path.to_string(),
+                source.asset_id.to_string(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let mut discovered_dependency_ids = HashMap::<String, HashSet<String>>::new();
+    for source in streamable_sources {
+        let Some(bytes) = load_asset_bytes(source.relative_cache_path) else {
+            warn!(
+                "replication asset cache init skipping missing asset {} ({})",
+                source.asset_id, source.relative_cache_path
+            );
+            continue;
+        };
+        let chunk_count = bytes.len().div_ceil(ASSET_STREAM_CHUNK_BYTES) as u32;
+        let sha256 = sha256_hex(&bytes);
+        let asset_version = asset_version_from_sha256_hex(&sha256);
+        let discovered_dep_paths = if source.relative_cache_path.ends_with(".gltf") {
+            gltf_dependency_relative_paths(source.relative_cache_path, &bytes)
+        } else {
+            HashSet::new()
+        };
+        cache.assets_by_id.insert(
+            source.asset_id.to_string(),
+            CachedStreamAsset {
+                entry: AssetCatalogEntry {
+                    asset_id: source.asset_id.to_string(),
+                    relative_cache_path: source.relative_cache_path.to_string(),
+                    content_type: source.content_type.to_string(),
+                    byte_len: bytes.len() as u64,
+                    chunk_count,
+                    asset_version,
+                    sha256_hex: sha256,
+                },
+                bytes,
+            },
+        );
+
+        for dep_path in discovered_dep_paths {
+            if let Some(dep_asset_id) = asset_id_by_relative_path.get(dep_path.as_str()) {
+                discovered_dependency_ids
+                    .entry(source.asset_id.to_string())
+                    .or_default()
+                    .insert(dep_asset_id.clone());
+            }
+        }
+    }
+
+    for (asset_id, dep_ids) in discovered_dependency_ids {
+        let deps = dependency_map
+            .dependencies_by_asset_id
+            .entry(asset_id)
+            .or_default();
+        for dep_id in dep_ids {
+            if !deps.iter().any(|existing| existing == &dep_id) {
+                deps.push(dep_id);
+            }
+        }
+    }
+
+    info!(
+        "replication cached streamable assets: loaded={} always_required={}",
+        cache.assets_by_id.len(),
+        cache.always_required_asset_ids.len()
+    );
 }
 
 pub fn receive_client_asset_requests(
@@ -79,10 +183,12 @@ pub fn receive_client_asset_requests(
                 pending.insert(request.asset_id.clone());
                 accepted += 1;
             }
-            info!(
-                "replication received asset requests remote={:?} player={} count={}",
-                remote_id.0, bound_player, accepted
-            );
+            if asset_stream_debug_logs_enabled() {
+                info!(
+                    "replication received asset requests remote={:?} player={} count={}",
+                    remote_id.0, bound_player, accepted
+                );
+            }
         }
     }
 }
@@ -111,14 +217,16 @@ pub fn receive_client_asset_acks(
                 .entry(remote_id.0)
                 .or_default()
                 .insert(message.asset_id.clone(), message.asset_version);
-            info!(
-                "replication received asset ack remote={:?} player={} asset_id={} version={} sha256={}",
-                remote_id.0,
-                bound_player,
-                message.asset_id,
-                message.asset_version,
-                message.sha256_hex
-            );
+            if asset_stream_debug_logs_enabled() {
+                info!(
+                    "replication received asset ack remote={:?} player={} asset_id={} version={} sha256={}",
+                    remote_id.0,
+                    bound_player,
+                    message.asset_id,
+                    message.asset_version,
+                    message.sha256_hex
+                );
+            }
         }
     }
 }
@@ -130,6 +238,7 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
     clients: Query<'_, '_, (Entity, &'_ RemoteId), With<ClientOf>>,
     bindings: Res<'_, AuthenticatedClientBindings>,
     dependency_map: Res<'_, AssetDependencyMap>,
+    cache: Res<'_, StreamableAssetCache>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
 ) {
     let Ok(server) = server_query.single() else {
@@ -147,39 +256,7 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
         {
             continue;
         }
-        let mut required_asset_ids = HashSet::<String>::new();
-        required_asset_ids.extend(
-            always_required_stream_asset_ids()
-                .iter()
-                .map(|asset_id| (*asset_id).to_string()),
-        );
-        let source_by_asset_id = default_streamable_asset_sources()
-            .iter()
-            .map(|source| (source.asset_id, source))
-            .collect::<HashMap<_, _>>();
-        let asset_id_by_relative_path = default_streamable_asset_sources()
-            .iter()
-            .map(|source| (source.relative_cache_path, source.asset_id))
-            .collect::<HashMap<_, _>>();
-        let mut discovered_dependency_asset_ids = HashSet::<String>::new();
-        for asset_id in &required_asset_ids {
-            let Some(source) = source_by_asset_id.get(asset_id.as_str()) else {
-                continue;
-            };
-            if !source.relative_cache_path.ends_with(".gltf") {
-                continue;
-            }
-            let Some(gltf_bytes) = load_asset_bytes(source.relative_cache_path) else {
-                continue;
-            };
-            for dep_path in gltf_dependency_relative_paths(source.relative_cache_path, &gltf_bytes)
-            {
-                if let Some(dep_asset_id) = asset_id_by_relative_path.get(dep_path.as_str()) {
-                    discovered_dependency_asset_ids.insert((*dep_asset_id).to_string());
-                }
-            }
-        }
-        required_asset_ids.extend(discovered_dependency_asset_ids);
+        let required_asset_ids = cache.always_required_asset_ids.clone();
         let required_asset_ids = expand_required_assets(
             &required_asset_ids,
             &dependency_map.dependencies_by_asset_id,
@@ -212,33 +289,16 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
             continue;
         }
 
-        let mut payloads = Vec::<(AssetCatalogEntry, Vec<u8>)>::new();
-        for asset in default_streamable_asset_sources()
-            .iter()
-            .filter(|asset| pending_asset_ids.contains(asset.asset_id))
-        {
-            let Some(bytes) = load_asset_bytes(asset.relative_cache_path) else {
+        let mut payloads = Vec::<CachedStreamAsset>::new();
+        for asset_id in pending_asset_ids {
+            let Some(asset) = cache.assets_by_id.get(asset_id.as_str()) else {
                 warn!(
-                    "replication asset stream skipping missing asset {} ({})",
-                    asset.asset_id, asset.relative_cache_path
+                    "replication asset stream skipping uncached asset {}",
+                    asset_id
                 );
                 continue;
             };
-            let chunk_count = bytes.len().div_ceil(ASSET_STREAM_CHUNK_BYTES) as u32;
-            let sha256 = sha256_hex(&bytes);
-            let asset_version = asset_version_from_sha256_hex(&sha256);
-            payloads.push((
-                AssetCatalogEntry {
-                    asset_id: asset.asset_id.to_string(),
-                    relative_cache_path: asset.relative_cache_path.to_string(),
-                    content_type: asset.content_type.to_string(),
-                    byte_len: bytes.len() as u64,
-                    chunk_count,
-                    asset_version,
-                    sha256_hex: sha256,
-                },
-                bytes,
-            ));
+            payloads.push(asset.clone());
         }
 
         if payloads.is_empty() {
@@ -246,11 +306,11 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
         }
 
         let manifest = AssetStreamManifestMessage {
-            assets: payloads.iter().map(|(entry, _)| entry.clone()).collect(),
+            assets: payloads.iter().map(|cached| cached.entry.clone()).collect(),
         };
         let streamed_asset_ids = payloads
             .iter()
-            .map(|(entry, _)| entry.asset_id.clone())
+            .map(|cached| cached.entry.asset_id.clone())
             .collect::<Vec<_>>();
         let target = NetworkTarget::Single(remote_id.0);
         if let Err(err) =
@@ -264,13 +324,13 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
             .pending_chunks_by_remote
             .entry(remote_id.0)
             .or_default();
-        for (entry, bytes) in payloads {
-            for (chunk_index, chunk) in bytes.chunks(ASSET_STREAM_CHUNK_BYTES).enumerate() {
+        for cached in payloads {
+            for (chunk_index, chunk) in cached.bytes.chunks(ASSET_STREAM_CHUNK_BYTES).enumerate() {
                 queue.push_back(PendingAssetChunk {
-                    asset_id: entry.asset_id.clone(),
-                    relative_cache_path: entry.relative_cache_path.clone(),
+                    asset_id: cached.entry.asset_id.clone(),
+                    relative_cache_path: cached.entry.relative_cache_path.clone(),
                     chunk_index: chunk_index as u32,
-                    chunk_count: entry.chunk_count,
+                    chunk_count: cached.entry.chunk_count,
                     bytes: chunk.to_vec(),
                 });
             }
@@ -288,6 +348,7 @@ pub fn send_asset_stream_chunks_paced(
     server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
+    bindings: Res<'_, AuthenticatedClientBindings>,
 ) {
     use lightyear::prelude::PeerId;
 
@@ -296,6 +357,10 @@ pub fn send_asset_stream_chunks_paced(
     };
 
     let mut completed_assets: Vec<(PeerId, String)> = Vec::new();
+
+    stream_state
+        .pending_chunks_by_remote
+        .retain(|remote_id, _| bindings.by_remote_id.contains_key(remote_id));
 
     for (remote_id, queue) in stream_state.pending_chunks_by_remote.iter_mut() {
         let target = NetworkTarget::Single(*remote_id);

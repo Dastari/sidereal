@@ -1,13 +1,26 @@
-use avian3d::prelude::{LinearVelocity, Position, Rotation};
+use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::math::EulerRot;
 use bevy::prelude::*;
-use sidereal_game::{AccountId, EntityGuid, GeneratedComponentRegistry, MountedOn, PlayerTag};
-use sidereal_persistence::GraphEntityRecord;
+use sidereal_game::{
+    AccountId, ControlledEntityGuid, Engine, EntityGuid, FlightComputer, FocusedEntityGuid,
+    FuelTank, GeneratedComponentRegistry, Hardpoint, HealthPool, Inventory, MassKg, MountedOn,
+    OwnerId, PlayerTag, SelectedEntityGuid, TotalMassKg,
+};
+use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::serialize_entity_components_to_graph_records;
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::thread;
+use std::time::Duration;
 
-use crate::ReplicationRuntime;
 use crate::replication::SimulatedControlledEntity;
+
+#[derive(Debug)]
+struct PersistenceWriteBatch {
+    records: Vec<GraphEntityRecord>,
+    tick: u64,
+}
 
 /// Tick counter for throttling simulation state persistence.
 #[derive(Resource)]
@@ -29,14 +42,213 @@ impl Default for SimulationPersistenceTimer {
     }
 }
 
-/// Exclusive system: collects current simulation state for all controlled entities
-/// and their modules, then persists to the graph database on a throttled interval.
+#[derive(Resource)]
+pub struct PersistenceDirtyState {
+    pub initial_full_snapshot_pending: bool,
+    pub dirty_entity_ids: HashSet<String>,
+}
+
+impl Default for PersistenceDirtyState {
+    fn default() -> Self {
+        Self {
+            initial_full_snapshot_pending: true,
+            dirty_entity_ids: HashSet::default(),
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct PersistenceWorkerState {
+    sender: Option<SyncSender<PersistenceWriteBatch>>,
+    latest_pending_batch: Option<PersistenceWriteBatch>,
+    next_batch_tick: u64,
+    enqueued_batches: u64,
+    queue_full_events: u64,
+    coalesced_replacements: u64,
+    disconnected_events: u64,
+    last_logged_at_s: f64,
+}
+
+pub fn start_persistence_worker(world: &mut World) {
+    let queue_capacity = std::env::var("SIDEREAL_PERSIST_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4)
+        .max(1);
+    let database_url = std::env::var("REPLICATION_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
+
+    let (sender, receiver) = sync_channel::<PersistenceWriteBatch>(queue_capacity);
+    thread::Builder::new()
+        .name("replication-persistence-writer".to_string())
+        .spawn(move || persistence_worker_loop(receiver, database_url))
+        .expect("failed to start replication persistence worker thread");
+
+    let mut state = world.resource_mut::<PersistenceWorkerState>();
+    state.sender = Some(sender);
+    info!(
+        "replication persistence worker started with queue_capacity={}",
+        queue_capacity
+    );
+}
+
+pub fn report_persistence_worker_metrics(
+    time: Res<'_, Time>,
+    mut state: ResMut<'_, PersistenceWorkerState>,
+) {
+    const LOG_INTERVAL_S: f64 = 5.0;
+    let now = time.elapsed_secs_f64();
+    if now - state.last_logged_at_s < LOG_INTERVAL_S {
+        return;
+    }
+    state.last_logged_at_s = now;
+
+    if state.enqueued_batches == 0
+        && state.queue_full_events == 0
+        && state.coalesced_replacements == 0
+        && state.disconnected_events == 0
+    {
+        return;
+    }
+
+    info!(
+        "replication persistence queue summary enqueued={} queue_full={} coalesced_replacements={} disconnected={} pending_latest={}",
+        state.enqueued_batches,
+        state.queue_full_events,
+        state.coalesced_replacements,
+        state.disconnected_events,
+        state.latest_pending_batch.is_some(),
+    );
+}
+
+fn mark_dirty_runtime_entity_id(
+    dirty: &mut PersistenceDirtyState,
+    identity: (
+        &'_ EntityGuid,
+        Option<&'_ SimulatedControlledEntity>,
+        Option<&'_ PlayerTag>,
+        Option<&'_ MountedOn>,
+    ),
+) {
+    let (guid, simulated, player_tag, mounted_on) = identity;
+    dirty.dirty_entity_ids.insert(runtime_entity_id_for(
+        guid, simulated, player_tag, mounted_on,
+    ));
+}
+
+#[allow(clippy::type_complexity)]
+pub fn mark_dirty_persistable_entities_spatial(
+    mut dirty: ResMut<'_, PersistenceDirtyState>,
+    changed: Query<
+        '_,
+        '_,
+        (
+            &'_ EntityGuid,
+            Option<&'_ SimulatedControlledEntity>,
+            Option<&'_ PlayerTag>,
+            Option<&'_ MountedOn>,
+        ),
+        Or<(
+            Added<EntityGuid>,
+            Added<SimulatedControlledEntity>,
+            Added<PlayerTag>,
+            Added<MountedOn>,
+            Changed<Transform>,
+            Changed<Position>,
+            Changed<Rotation>,
+            Changed<LinearVelocity>,
+            Changed<AngularVelocity>,
+        )>,
+    >,
+) {
+    for identity in &changed {
+        mark_dirty_runtime_entity_id(&mut dirty, identity);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn mark_dirty_persistable_entities_runtime_state(
+    mut dirty: ResMut<'_, PersistenceDirtyState>,
+    changed: Query<
+        '_,
+        '_,
+        (
+            &'_ EntityGuid,
+            Option<&'_ SimulatedControlledEntity>,
+            Option<&'_ PlayerTag>,
+            Option<&'_ MountedOn>,
+        ),
+        Or<(
+            Changed<OwnerId>,
+            Changed<AccountId>,
+            Changed<ControlledEntityGuid>,
+            Changed<SelectedEntityGuid>,
+            Changed<FocusedEntityGuid>,
+            Added<Hardpoint>,
+        )>,
+    >,
+) {
+    for identity in &changed {
+        mark_dirty_runtime_entity_id(&mut dirty, identity);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn mark_dirty_persistable_entities_modules(
+    mut dirty: ResMut<'_, PersistenceDirtyState>,
+    changed: Query<
+        '_,
+        '_,
+        (
+            &'_ EntityGuid,
+            Option<&'_ SimulatedControlledEntity>,
+            Option<&'_ PlayerTag>,
+            Option<&'_ MountedOn>,
+        ),
+        Or<(
+            Changed<MountedOn>,
+            Changed<Engine>,
+            Changed<FuelTank>,
+            Changed<Inventory>,
+            Changed<MassKg>,
+        )>,
+    >,
+) {
+    for identity in &changed {
+        mark_dirty_runtime_entity_id(&mut dirty, identity);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn mark_dirty_persistable_entities_gameplay(
+    mut dirty: ResMut<'_, PersistenceDirtyState>,
+    changed: Query<
+        '_,
+        '_,
+        (
+            &'_ EntityGuid,
+            Option<&'_ SimulatedControlledEntity>,
+            Option<&'_ PlayerTag>,
+            Option<&'_ MountedOn>,
+        ),
+        Or<(
+            Changed<FlightComputer>,
+            Changed<HealthPool>,
+            Changed<TotalMassKg>,
+        )>,
+    >,
+) {
+    for identity in &changed {
+        mark_dirty_runtime_entity_id(&mut dirty, identity);
+    }
+}
+
+/// Exclusive system: collects current simulation state for dirty persistable entities,
+/// then enqueues writes to a dedicated worker thread.
 ///
-/// Must be exclusive because `serialize_entity_components_to_graph_records` requires
-/// `EntityRef` (immutable world access) while we also need mutable resource access
-/// for the timer and persistence runtime.
+/// This is entity-agnostic: any entity with EntityGuid is eligible. Current labels/properties
+/// preserve compatibility for existing player/controlled/module/hardpoint hydration paths.
 pub fn flush_simulation_state_persistence(world: &mut World) {
-    // Tick guard — bump counter and early-out if not yet time to persist.
     {
         let mut timer = world.resource_mut::<SimulationPersistenceTimer>();
         timer.current_tick += 1;
@@ -49,143 +261,177 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
     let component_registry = world.resource::<GeneratedComponentRegistry>().clone();
     let app_type_registry = world.resource::<AppTypeRegistry>().clone();
 
-    // Collect ship data from queries (read-only world borrow).
-    let mut ship_data: Vec<(Entity, String, String, Vec3, Vec3, f32)> = Vec::new();
-    let mut player_data: Vec<(Entity, String, String, Vec3)> = Vec::new();
-    let mut ship_guids = std::collections::HashSet::<uuid::Uuid>::new();
+    let (persist_all, dirty_entity_ids) = {
+        let mut dirty = world.resource_mut::<PersistenceDirtyState>();
+        let persist_all = dirty.initial_full_snapshot_pending;
+        let dirty_entity_ids = std::mem::take(&mut dirty.dirty_entity_ids);
+        (persist_all, dirty_entity_ids)
+    };
 
-    let mut ship_query = world.query::<(
-        Entity,
-        &SimulatedControlledEntity,
-        &Position,
-        &Rotation,
-        &LinearVelocity,
-        &EntityGuid,
-    )>();
-
-    for (entity, sim, position, rotation, velocity, guid) in ship_query.iter(world) {
-        let mut pos = position.0;
-        if !pos.is_finite() {
-            pos = Vec3::ZERO;
-        }
-        pos.z = 0.0;
-
-        let mut vel = velocity.0;
-        if !vel.is_finite() {
-            vel = Vec3::ZERO;
-        }
-        vel.z = 0.0;
-
-        let heading_rad = if rotation.0.is_finite() {
-            let h = rotation.0.to_euler(EulerRot::ZYX).0;
-            if h.is_finite() { h } else { 0.0 }
-        } else {
-            0.0
-        };
-
-        ship_data.push((
-            entity,
-            sim.entity_id.clone(),
-            sim.player_entity_id.clone(),
-            pos,
-            vel,
-            heading_rad,
-        ));
-        ship_guids.insert(guid.0);
+    if !persist_all && dirty_entity_ids.is_empty() {
+        return;
     }
 
-    let mut player_query = world.query::<(
-        Entity,
-        &EntityGuid,
-        Option<&AccountId>,
-        Option<&Transform>,
-        &PlayerTag,
-    )>();
-    for (entity, guid, account_id, transform, _) in player_query.iter(world) {
-        let player_entity_id = format!("player:{}", guid.0);
-        let account_id = account_id
-            .map(|value| value.0.clone())
-            .unwrap_or_else(|| guid.0.to_string());
-        let camera = transform.map(|t| t.translation).unwrap_or(Vec3::ZERO);
-        player_data.push((entity, player_entity_id, account_id, camera));
+    let mut entity_id_by_guid = HashMap::<uuid::Uuid, String>::new();
+    {
+        let mut id_query = world.query::<(
+            &'_ EntityGuid,
+            Option<&'_ SimulatedControlledEntity>,
+            Option<&'_ PlayerTag>,
+            Option<&'_ MountedOn>,
+        )>();
+        for (guid, simulated, player_tag, mounted_on) in id_query.iter(world) {
+            entity_id_by_guid.insert(
+                guid.0,
+                runtime_entity_id_for(guid, simulated, player_tag, mounted_on),
+            );
+        }
     }
 
-    let mut module_data: Vec<(Entity, uuid::Uuid, String, String)> = Vec::new();
-    let mut module_query = world.query::<(Entity, &EntityGuid, &MountedOn)>();
-    for (entity, guid, mounted_on) in module_query.iter(world) {
-        if !ship_guids.contains(&mounted_on.parent_entity_id) {
+    let mut records = Vec::<GraphEntityRecord>::new();
+    let mut entity_query = world.query::<(
+        Entity,
+        &'_ EntityGuid,
+        Option<&'_ SimulatedControlledEntity>,
+        Option<&'_ PlayerTag>,
+        Option<&'_ MountedOn>,
+        Option<&'_ Hardpoint>,
+        Option<&'_ AccountId>,
+        Option<&'_ OwnerId>,
+        Option<&'_ Transform>,
+        Option<&'_ Position>,
+        Option<&'_ Rotation>,
+        Option<&'_ LinearVelocity>,
+    )>();
+
+    for (
+        entity,
+        guid,
+        simulated,
+        player_tag,
+        mounted_on,
+        hardpoint,
+        account_id,
+        owner_id,
+        transform,
+        position,
+        rotation,
+        velocity,
+    ) in entity_query.iter(world)
+    {
+        let entity_id = runtime_entity_id_for(guid, simulated, player_tag, mounted_on);
+        if !persist_all && !dirty_entity_ids.contains(&entity_id) {
             continue;
         }
-        module_data.push((
-            entity,
-            guid.0,
-            format!("ship:{}", mounted_on.parent_entity_id),
-            mounted_on.hardpoint_id.clone(),
-        ));
-    }
 
-    // Now serialize components using EntityRef (requires immutable world access only).
-    let mut records = Vec::new();
+        let labels = runtime_labels_for(simulated, player_tag, mounted_on, hardpoint);
+        let mut properties = serde_json::Map::<String, serde_json::Value>::new();
 
-    for (entity, entity_id, player_entity_id, pos, vel, heading_rad) in &ship_data {
-        let entity_ref = world.entity(*entity);
+        if let Some(simulated) = simulated {
+            properties.insert(
+                "player_entity_id".to_string(),
+                serde_json::Value::String(simulated.player_entity_id.clone()),
+            );
+            let mut pos = position.map(|p| p.0).unwrap_or_else(|| Vec3::ZERO);
+            if !pos.is_finite() {
+                pos = Vec3::ZERO;
+            }
+            pos.z = 0.0;
+            properties.insert(
+                "position_m".to_string(),
+                serde_json::json!([pos.x, pos.y, 0.0]),
+            );
+
+            let mut vel = velocity.map(|v| v.0).unwrap_or_else(|| Vec3::ZERO);
+            if !vel.is_finite() {
+                vel = Vec3::ZERO;
+            }
+            vel.z = 0.0;
+            properties.insert(
+                "velocity_mps".to_string(),
+                serde_json::json!([vel.x, vel.y, 0.0]),
+            );
+
+            let heading_rad = if let Some(rotation) = rotation {
+                if rotation.0.is_finite() {
+                    let h = rotation.0.to_euler(EulerRot::ZYX).0;
+                    if h.is_finite() { h } else { 0.0 }
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            properties.insert("heading_rad".to_string(), serde_json::json!(heading_rad));
+        }
+
+        if player_tag.is_some() {
+            if let Some(account_id) = account_id {
+                properties.insert(
+                    "owner_account_id".to_string(),
+                    serde_json::Value::String(account_id.0.clone()),
+                );
+            }
+            properties.insert(
+                "player_entity_id".to_string(),
+                serde_json::Value::String(entity_id.clone()),
+            );
+            let camera = transform.map(|t| t.translation).unwrap_or(Vec3::ZERO);
+            properties.insert(
+                "position_m".to_string(),
+                serde_json::json!([camera.x, camera.y, camera.z]),
+            );
+        }
+
+        if let Some(owner_id) = owner_id {
+            properties.insert(
+                "owner_id".to_string(),
+                serde_json::Value::String(owner_id.0.clone()),
+            );
+        }
+
+        if let Some(mounted_on) = mounted_on {
+            let parent_entity_id = entity_id_by_guid
+                .get(&mounted_on.parent_entity_id)
+                .cloned()
+                .unwrap_or_else(|| format!("entity:{}", mounted_on.parent_entity_id));
+            properties.insert(
+                "parent_entity_id".to_string(),
+                serde_json::Value::String(parent_entity_id),
+            );
+            properties.insert(
+                "hardpoint_id".to_string(),
+                serde_json::Value::String(mounted_on.hardpoint_id.clone()),
+            );
+        }
+
+        if let Some(hardpoint) = hardpoint {
+            properties.insert(
+                "hardpoint_id".to_string(),
+                serde_json::Value::String(hardpoint.hardpoint_id.clone()),
+            );
+            properties.insert(
+                "hardpoint_offset_m".to_string(),
+                serde_json::json!([
+                    hardpoint.offset_m.x,
+                    hardpoint.offset_m.y,
+                    hardpoint.offset_m.z
+                ]),
+            );
+        }
+
+        let entity_ref = world.entity(entity);
         let components = serialize_entity_components_to_graph_records(
+            &entity_id,
+            entity_ref,
+            &component_registry,
+            &app_type_registry,
+        );
+
+        records.push(GraphEntityRecord {
             entity_id,
-            entity_ref,
-            &component_registry,
-            &app_type_registry,
-        );
-
-        records.push(GraphEntityRecord {
-            entity_id: entity_id.clone(),
-            labels: vec!["Entity".to_string(), "Ship".to_string()],
-            properties: serde_json::json!({
-                "player_entity_id": player_entity_id,
-                "position_m": [pos.x, pos.y, 0.0],
-                "velocity_mps": [vel.x, vel.y, 0.0],
-                "heading_rad": heading_rad,
-            }),
-            components,
-        });
-    }
-
-    for (entity, player_entity_id, account_id, camera_pos) in &player_data {
-        let entity_ref = world.entity(*entity);
-        let components = serialize_entity_components_to_graph_records(
-            player_entity_id,
-            entity_ref,
-            &component_registry,
-            &app_type_registry,
-        );
-        records.push(GraphEntityRecord {
-            entity_id: player_entity_id.clone(),
-            labels: vec!["Entity".to_string(), "Player".to_string()],
-            properties: serde_json::json!({
-                "owner_account_id": account_id,
-                "player_entity_id": player_entity_id,
-                "position_m": [camera_pos.x, camera_pos.y, camera_pos.z],
-            }),
-            components,
-        });
-    }
-
-    for (entity, guid, ship_entity_id, hardpoint_id) in &module_data {
-        let module_entity_id = format!("module:{}", guid);
-        let entity_ref = world.entity(*entity);
-        let components = serialize_entity_components_to_graph_records(
-            &module_entity_id,
-            entity_ref,
-            &component_registry,
-            &app_type_registry,
-        );
-
-        records.push(GraphEntityRecord {
-            entity_id: module_entity_id,
-            labels: vec!["Entity".to_string(), "Module".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": ship_entity_id,
-                "hardpoint_id": hardpoint_id,
-            }),
+            labels,
+            properties: serde_json::Value::Object(properties),
             components,
         });
     }
@@ -194,17 +440,149 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
         return;
     }
 
-    // Mutable access to persistence runtime for the DB write.
-    let Some(mut runtime) = world.get_non_send_resource_mut::<ReplicationRuntime>() else {
+    let mut worker_state = world.resource_mut::<PersistenceWorkerState>();
+    let tick = worker_state.next_batch_tick;
+    worker_state.next_batch_tick = worker_state.next_batch_tick.saturating_add(1);
+    let batch = PersistenceWriteBatch { records, tick };
+    enqueue_batch(&mut worker_state, batch);
+
+    if persist_all {
+        world
+            .resource_mut::<PersistenceDirtyState>()
+            .initial_full_snapshot_pending = false;
+    }
+}
+
+fn runtime_entity_id_for(
+    guid: &EntityGuid,
+    simulated: Option<&SimulatedControlledEntity>,
+    player_tag: Option<&PlayerTag>,
+    mounted_on: Option<&MountedOn>,
+) -> String {
+    if let Some(simulated) = simulated {
+        return simulated.entity_id.clone();
+    }
+    if player_tag.is_some() {
+        return format!("player:{}", guid.0);
+    }
+    if mounted_on.is_some() {
+        return format!("module:{}", guid.0);
+    }
+    format!("entity:{}", guid.0)
+}
+
+fn runtime_labels_for(
+    simulated: Option<&SimulatedControlledEntity>,
+    player_tag: Option<&PlayerTag>,
+    mounted_on: Option<&MountedOn>,
+    hardpoint: Option<&Hardpoint>,
+) -> Vec<String> {
+    let mut labels = vec!["Entity".to_string()];
+    if player_tag.is_some() {
+        labels.push("Player".to_string());
+    }
+    if simulated.is_some() {
+        // Compatibility label for existing controlled-entity hydration flow.
+        labels.push("Ship".to_string());
+    }
+    if mounted_on.is_some() {
+        labels.push("Module".to_string());
+    }
+    if hardpoint.is_some() {
+        labels.push("Hardpoint".to_string());
+    }
+    labels
+}
+
+fn enqueue_batch(state: &mut PersistenceWorkerState, batch: PersistenceWriteBatch) {
+    let Some(sender) = state.sender.as_ref() else {
+        state.disconnected_events = state.disconnected_events.saturating_add(1);
         return;
     };
-    let record_count = records.len();
-    match runtime.persistence.persist_graph_records(&records, 0) {
+
+    if let Some(pending) = state.latest_pending_batch.take() {
+        match sender.try_send(pending) {
+            Ok(()) => {
+                state.enqueued_batches = state.enqueued_batches.saturating_add(1);
+            }
+            Err(TrySendError::Full(pending)) => {
+                state.latest_pending_batch = Some(pending);
+            }
+            Err(TrySendError::Disconnected(pending)) => {
+                state.latest_pending_batch = Some(pending);
+                state.sender = None;
+                state.disconnected_events = state.disconnected_events.saturating_add(1);
+                return;
+            }
+        }
+    }
+
+    match sender.try_send(batch) {
         Ok(()) => {
-            info!("persisted simulation state for {} entities", record_count);
+            state.enqueued_batches = state.enqueued_batches.saturating_add(1);
         }
-        Err(err) => {
-            eprintln!("failed to persist simulation state: {err}");
+        Err(TrySendError::Full(batch)) => {
+            state.queue_full_events = state.queue_full_events.saturating_add(1);
+            if state.latest_pending_batch.replace(batch).is_some() {
+                state.coalesced_replacements = state.coalesced_replacements.saturating_add(1);
+            }
         }
+        Err(TrySendError::Disconnected(batch)) => {
+            state.latest_pending_batch = Some(batch);
+            state.sender = None;
+            state.disconnected_events = state.disconnected_events.saturating_add(1);
+        }
+    }
+}
+
+fn persistence_worker_loop(receiver: Receiver<PersistenceWriteBatch>, database_url: String) {
+    let mut persistence = connect_persistence_with_retry(&database_url);
+
+    while let Ok(batch) = receiver.recv() {
+        if batch.records.is_empty() {
+            continue;
+        }
+
+        let record_count = batch.records.len();
+        let mut pending = Some(batch);
+        loop {
+            let batch = pending
+                .take()
+                .expect("pending persistence batch should be present");
+            match persistence.persist_graph_records(&batch.records, batch.tick) {
+                Ok(()) => {
+                    info!(
+                        "persisted simulation state for {} entities (tick={})",
+                        record_count, batch.tick
+                    );
+                    break;
+                }
+                Err(err) => {
+                    eprintln!("persistence worker write failed: {err}; reconnecting");
+                    pending = Some(batch);
+                    thread::sleep(Duration::from_millis(250));
+                    persistence = connect_persistence_with_retry(&database_url);
+                }
+            }
+        }
+    }
+
+    info!("replication persistence worker exiting: sender disconnected");
+}
+
+fn connect_persistence_with_retry(database_url: &str) -> GraphPersistence {
+    loop {
+        match GraphPersistence::connect(database_url) {
+            Ok(mut persistence) => match persistence.ensure_schema() {
+                Ok(()) => return persistence,
+                Err(err) => {
+                    eprintln!("persistence worker schema initialization failed: {err}; retrying");
+                }
+            },
+            Err(err) => {
+                eprintln!("persistence worker connect failed: {err}; retrying");
+            }
+        }
+        thread::sleep(Duration::from_secs(1));
     }
 }

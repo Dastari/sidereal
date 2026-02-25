@@ -383,3 +383,77 @@ For each decision:
   - `docs/features/dr-0002_explicit_world_entry_flow.md`
   - `bins/sidereal-client/src/native.rs`
   - `bins/sidereal-replication/tests/transport_lightyear_e2e.rs`
+
+## DR-0012: Visibility Pipeline Contract Uses Authorization-First Semantics with Safe Candidate Preselection
+- Status: Accepted
+- Date: 2026-02-24
+- Owners: Replication + gameplay security team
+- Context:
+  - Visibility implementation discussions used both "authorization-first" and "opt-in candidate-first" wording.
+  - Ambiguity risks security regressions and inconsistent implementation across replication, scan intel, and redaction.
+- Decision:
+  - Canonical visibility pipeline is:
+    1. Authorization scope (security entitlement),
+    2. Delivery/interest narrowing (performance),
+    3. Payload redaction (component/field disclosure gate).
+  - Spatial candidate preselection may run before full authorization as an optimization input only.
+  - Candidate preselection must not be treated as authorization and must not exclude policy-required exceptions (ownership/public/faction/grants).
+- Alternatives considered:
+  - Delivery-first contract as primary semantics: rejected (security ambiguity and easier misuse).
+  - Full-world scan only with no preselection: rejected (does not scale).
+- Consequences:
+  - Positive:
+    - Clear security/performance separation.
+    - Supports opt-in spatial performance techniques without weakening policy guarantees.
+  - Negative:
+    - Requires ongoing discipline to keep preselection logic fail-closed and exception-aware.
+- Follow-up:
+  - Keep visibility contracts and feature plans aligned to the same pipeline language.
+  - Add tests ensuring preselection cannot bypass authorization exceptions.
+- Decision doc:
+  - `docs/features/visibility_replication_contract.md`
+- References:
+  - `docs/sidereal_design_document.md`
+  - `docs/features/visibility_replication_contract.md`
+  - `docs/features/scan_intel_minimap_spatial_plan.md`
+
+## DR-0013: Component-Driven Action Acceptors and Control-Context Routing
+- Status: Proposed
+- Date: 2026-02-24
+- Owners: Gameplay runtime + replication + client input
+- Context:
+  - Input/action flow needs to support entity-generic gameplay (ships, characters, scanners, combat systems, and future entity families) without ship-only routing assumptions.
+  - Current runtime has intent actions and action queues, but server ingress remains flight-centric and control routing is not yet fully generalized.
+- Decision:
+  - Adopt a component-driven action acceptor model:
+    - entities receive high-level actions,
+    - components on that entity accept/handle specific actions,
+    - multiple components may accept the same action.
+  - Route actions by authoritative control context:
+    - movement/actions always route to `ControlledEntityGuid` target,
+    - free-roam uses self-control (`ControlledEntityGuid = player guid`).
+  - Add a configurable keybind/input-binding layer on client between physical input and actions.
+  - Keep server authority and authenticated routing invariants unchanged.
+- Alternatives considered:
+  - Keep flight-only routing and add ad-hoc side paths per feature: rejected (does not scale to multi-entity gameplay).
+  - Move action interpretation to client for flexibility: rejected (authority/security conflict).
+- Consequences:
+  - Positive:
+    - Generic action architecture across entity families.
+    - Cleaner separation of input intent vs component execution logic.
+    - Better extensibility for combat/scanner/utility systems.
+  - Negative:
+    - Requires multi-crate refactor (gameplay core, protocol, replication, client input/UI, tests).
+    - Prediction policy becomes more explicit/complex across action families.
+- Follow-up:
+  - Implement phased migration plan for contracts, routing, movement acceptor, keybinds, and prediction policy.
+  - Add control handoff and multi-acceptor determinism tests.
+  - Maintain native/WASM parity through each phase.
+- Decision doc:
+  - `docs/features/dr-0013_action_acceptor_control_routing.md`
+- References:
+  - `docs/features/dr-0013_action_acceptor_control_routing.md`
+  - `crates/sidereal-game/src/actions.rs`
+  - `crates/sidereal-game/src/flight.rs`
+  - `bins/sidereal-replication/src/replication/input.rs`
+  - `bins/sidereal-client/src/native.rs`

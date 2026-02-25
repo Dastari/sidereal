@@ -79,15 +79,15 @@ pub fn apply_flight_action_to_computer(
     action: EntityAction,
 ) -> bool {
     match action {
-        EntityAction::ThrustForward => {
+        EntityAction::Forward | EntityAction::ThrustForward => {
             computer.throttle = 1.0;
             computer.brake_active = false;
         }
-        EntityAction::ThrustReverse => {
+        EntityAction::Backward | EntityAction::ThrustReverse => {
             computer.throttle = -0.7;
             computer.brake_active = false;
         }
-        EntityAction::ThrustNeutral => {
+        EntityAction::LongitudinalNeutral | EntityAction::ThrustNeutral => {
             computer.throttle = 0.0;
             computer.brake_active = false;
         }
@@ -96,15 +96,15 @@ pub fn apply_flight_action_to_computer(
             computer.brake_active = true;
             computer.yaw_input = 0.0;
         }
-        EntityAction::YawLeft => {
+        EntityAction::Left | EntityAction::YawLeft => {
             computer.yaw_input = 1.0;
             computer.brake_active = false;
         }
-        EntityAction::YawRight => {
+        EntityAction::Right | EntityAction::YawRight => {
             computer.yaw_input = -1.0;
             computer.brake_active = false;
         }
-        EntityAction::YawNeutral => computer.yaw_input = 0.0,
+        EntityAction::LateralNeutral | EntityAction::YawNeutral => computer.yaw_input = 0.0,
         _ => return false,
     }
     true

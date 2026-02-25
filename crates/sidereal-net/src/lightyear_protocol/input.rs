@@ -17,19 +17,19 @@ pub fn actions_from_axis_inputs(thrust: f32, turn: f32, brake: bool) -> Vec<Enti
     if brake {
         actions.push(EntityAction::Brake);
     } else if thrust > 0.0 {
-        actions.push(EntityAction::ThrustForward);
+        actions.push(EntityAction::Forward);
     } else if thrust < 0.0 {
-        actions.push(EntityAction::ThrustReverse);
+        actions.push(EntityAction::Backward);
     } else {
-        actions.push(EntityAction::ThrustNeutral);
+        actions.push(EntityAction::LongitudinalNeutral);
     }
 
     if turn > 0.0 {
-        actions.push(EntityAction::YawLeft);
+        actions.push(EntityAction::Left);
     } else if turn < 0.0 {
-        actions.push(EntityAction::YawRight);
+        actions.push(EntityAction::Right);
     } else {
-        actions.push(EntityAction::YawNeutral);
+        actions.push(EntityAction::LateralNeutral);
     }
 
     actions

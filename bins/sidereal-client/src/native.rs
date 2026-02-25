@@ -21,7 +21,7 @@ use bevy::sprite_render::{
 use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::{PresentMode, Window, WindowPlugin};
 
-use crate::client::input::player_input_from_keyboard;
+use crate::client::input::{neutral_player_input, player_input_from_keyboard};
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
 use lightyear::avian3d::plugin::AvianReplicationMode;
@@ -53,9 +53,12 @@ use sidereal_net::{
     ClientAuthMessage, ClientViewUpdateMessage, ControlChannel, PlayerInput, RequestedAsset,
     register_lightyear_protocol,
 };
-use sidereal_runtime_sync::{RuntimeEntityHierarchy, register_runtime_entity};
-use std::collections::{HashMap, VecDeque};
+use sidereal_runtime_sync::{
+    RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
+};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Resource, Clone)]
@@ -119,6 +122,11 @@ struct ClientInputAckTracker {
 }
 
 #[derive(Debug, Resource, Default)]
+struct ClientInputLogState {
+    last_logged_at_s: f64,
+}
+
+#[derive(Debug, Resource, Default)]
 struct ClientAuthSyncState {
     sent_for_client_entities: std::collections::HashSet<Entity>,
     last_sent_at_s_by_client_entity: HashMap<Entity, f64>,
@@ -145,6 +153,7 @@ struct LocalPlayerViewState {
     selected_entity_id: Option<String>,
     focused_entity_id: Option<String>,
     desired_controlled_entity_id: Option<String>,
+    detached_free_camera: bool,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -157,6 +166,7 @@ struct FreeCameraState {
 struct OwnedShipsPanelState {
     last_ship_ids: Vec<String>,
     last_selected_id: Option<String>,
+    last_detached_mode: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -497,7 +507,13 @@ struct CharacterSelectEnterButton;
 struct OwnedShipsPanelRoot;
 #[derive(Component)]
 struct OwnedShipsPanelButton {
-    entity_id: Option<String>,
+    action: OwnedShipsPanelAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnedShipsPanelAction {
+    FreeRoam,
+    ControlEntity(String),
 }
 
 #[derive(Component)]
@@ -534,6 +550,63 @@ fn should_defer_controlled_predicted_adoption(
     has_linear_velocity: bool,
 ) -> bool {
     is_local_controlled && (!has_position || !has_rotation || !has_linear_velocity)
+}
+
+fn candidate_runtime_entity_score(
+    is_root_entity: bool,
+    is_local_controlled_entity: bool,
+    predicted_mode: bool,
+) -> i32 {
+    if is_local_controlled_entity {
+        if predicted_mode { 500 } else { 400 }
+    } else if is_root_entity {
+        if predicted_mode { 200 } else { 100 }
+    } else {
+        50
+    }
+}
+
+fn runtime_entity_id_from_guid(
+    entity_registry: &RuntimeEntityHierarchy,
+    local_player_entity_id: &str,
+    guid: &str,
+) -> Option<String> {
+    if parse_guid_from_entity_id(local_player_entity_id)
+        .is_some_and(|player_guid| player_guid.to_string() == guid)
+    {
+        return Some(local_player_entity_id.to_string());
+    }
+    for prefix in ["ship", "player", "module", "hardpoint"] {
+        let candidate = format!("{prefix}:{guid}");
+        if entity_registry.by_entity_id.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn existing_runtime_entity_score(
+    is_world_entity: bool,
+    is_controlled: bool,
+    is_predicted: bool,
+    is_interpolated: bool,
+    is_remote: bool,
+) -> i32 {
+    if is_controlled {
+        if is_predicted { 500 } else { 400 }
+    } else if is_remote {
+        if is_predicted {
+            200
+        } else if is_interpolated {
+            100
+        } else {
+            90
+        }
+    } else if is_world_entity {
+        80
+    } else {
+        0
+    }
 }
 
 #[derive(Debug, Clone, Copy, Resource, Default)]
@@ -711,10 +784,7 @@ pub(crate) fn run() {
                     ..Default::default()
                 })
                 .set(RenderPlugin {
-                    render_creation: RenderCreation::Automatic(WgpuSettings {
-                        backends: Some(preferred_backends()),
-                        ..Default::default()
-                    }),
+                    render_creation: RenderCreation::Automatic(configured_wgpu_settings()),
                     ..Default::default()
                 }),
         );
@@ -757,6 +827,7 @@ pub(crate) fn run() {
     app.insert_resource(ClientSession::default());
     app.insert_resource(ClientNetworkTick::default());
     app.insert_resource(ClientInputAckTracker::default());
+    app.insert_resource(ClientInputLogState::default());
     app.insert_resource(ClientAuthSyncState::default());
     app.insert_resource(ClientViewUpdateTick::default());
     app.insert_resource(LocalAssetManager::default());
@@ -826,10 +897,6 @@ pub(crate) fn run() {
         insert_embedded_fonts(&mut app);
         app.init_state::<ClientAppState>();
         app.add_systems(
-            OnEnter(ClientAppState::Auth),
-            ensure_lightyear_client_system,
-        );
-        app.add_systems(
             OnEnter(ClientAppState::CharacterSelect),
             setup_character_select_screen,
         );
@@ -838,9 +905,11 @@ pub(crate) fn run() {
         app.add_systems(
             OnEnter(ClientAppState::InWorld),
             (
+                ensure_lightyear_client_system,
                 spawn_world_scene,
                 reset_bootstrap_watchdog_on_enter_in_world,
-            ),
+            )
+                .chain(),
         );
         app.add_systems(
             Update,
@@ -1810,14 +1879,16 @@ fn spawn_world_scene(
     session.status = "Scene ready. Waiting for replicated entities...".to_string();
 }
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn update_topdown_camera_system(
     time: Res<'_, Time>,
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
     mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
+    session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    controlled_query: Query<
+    anchor_query: Query<
         '_,
         '_,
         (&Transform, Option<&Position>),
@@ -1848,66 +1919,34 @@ fn update_topdown_camera_system(
     let zoom_alpha = 1.0 - (-camera.zoom_smoothness * dt).exp();
     camera.distance = camera.distance.lerp(camera.target_distance, zoom_alpha);
 
-    let controlled_entity = player_view_state
-        .desired_controlled_entity_id
+    let player_anchor = session
+        .player_entity_id
         .as_ref()
-        .or(player_view_state.controlled_entity_id.as_ref())
-        .and_then(|id| entity_registry.by_entity_id.get(id).copied());
-
-    let (focus_xy, controlled_follow) = if let Some(controlled_entity) = controlled_entity {
-        if let Ok((controlled_transform, controlled_position)) =
-            controlled_query.get(controlled_entity)
-        {
-            let controlled_xy = controlled_position
+        .and_then(|id| entity_registry.by_entity_id.get(id).copied())
+        .and_then(|entity| anchor_query.get(entity).ok())
+        .map(|(anchor_transform, anchor_position)| {
+            anchor_position
                 .map(|p| p.0.truncate())
-                .unwrap_or_else(|| controlled_transform.translation.truncate());
-            free_camera.position_xy = controlled_xy;
-            free_camera.initialized = true;
-            (controlled_xy, true)
-        } else {
-            if !free_camera.initialized {
-                free_camera.position_xy = camera_transform.translation.truncate();
-                free_camera.initialized = true;
-            }
-            let mut axis = Vec2::ZERO;
-            if let Some(keys) = input.as_ref() {
-                if keys.pressed(KeyCode::KeyW) {
-                    axis.y += 1.0;
-                }
-                if keys.pressed(KeyCode::KeyS) {
-                    axis.y -= 1.0;
-                }
-                if keys.pressed(KeyCode::KeyA) {
-                    axis.x -= 1.0;
-                }
-                if keys.pressed(KeyCode::KeyD) {
-                    axis.x += 1.0;
-                }
-            }
-            let dt = time.delta_secs();
-            let speed = 220.0;
-            if axis != Vec2::ZERO {
-                free_camera.position_xy += axis.normalize() * speed * dt;
-            }
-            (free_camera.position_xy, false)
-        }
-    } else {
+                .unwrap_or_else(|| anchor_transform.translation.truncate())
+        });
+
+    let (focus_xy, snapped_follow) = if player_view_state.detached_free_camera {
         if !free_camera.initialized {
             free_camera.position_xy = camera_transform.translation.truncate();
             free_camera.initialized = true;
         }
         let mut axis = Vec2::ZERO;
         if let Some(keys) = input.as_ref() {
-            if keys.pressed(KeyCode::KeyW) {
+            if keys.pressed(KeyCode::ArrowUp) {
                 axis.y += 1.0;
             }
-            if keys.pressed(KeyCode::KeyS) {
+            if keys.pressed(KeyCode::ArrowDown) {
                 axis.y -= 1.0;
             }
-            if keys.pressed(KeyCode::KeyA) {
+            if keys.pressed(KeyCode::ArrowLeft) {
                 axis.x -= 1.0;
             }
-            if keys.pressed(KeyCode::KeyD) {
+            if keys.pressed(KeyCode::ArrowRight) {
                 axis.x += 1.0;
             }
         }
@@ -1917,11 +1956,20 @@ fn update_topdown_camera_system(
             free_camera.position_xy += axis.normalize() * speed * dt;
         }
         (free_camera.position_xy, false)
+    } else if let Some(player_xy) = player_anchor {
+        free_camera.position_xy = player_xy;
+        free_camera.initialized = true;
+        (player_xy, true)
+    } else {
+        let fallback_xy = camera_transform.translation.truncate();
+        free_camera.position_xy = fallback_xy;
+        free_camera.initialized = true;
+        (fallback_xy, true)
     };
     if !camera.focus_initialized {
         camera.filtered_focus_xy = focus_xy;
         camera.focus_initialized = true;
-    } else if controlled_follow {
+    } else if snapped_follow {
         camera.filtered_focus_xy = focus_xy;
     } else {
         let follow_smoothness = 60.0;
@@ -1976,9 +2024,10 @@ fn update_camera_motion_state(
 
 #[allow(clippy::type_complexity)]
 fn lock_camera_to_controlled_entity_end_of_frame(
+    session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    controlled_query: Query<
+    anchor_query: Query<
         '_,
         '_,
         (&Transform, Option<&Position>),
@@ -1991,24 +2040,25 @@ fn lock_camera_to_controlled_entity_end_of_frame(
         (With<GameplayCamera>, Without<ControlledEntity>),
     >,
 ) {
-    let Some(controlled_entity) = player_view_state
-        .desired_controlled_entity_id
+    if player_view_state.detached_free_camera {
+        return;
+    }
+    let Some(player_entity) = session
+        .player_entity_id
         .as_ref()
-        .or(player_view_state.controlled_entity_id.as_ref())
         .and_then(|id| entity_registry.by_entity_id.get(id).copied())
     else {
         return;
     };
-    let Ok((controlled_transform, controlled_position)) = controlled_query.get(controlled_entity)
-    else {
+    let Ok((anchor_transform, anchor_position)) = anchor_query.get(player_entity) else {
         return;
     };
     let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
         return;
     };
-    let controlled_xy = controlled_position
+    let controlled_xy = anchor_position
         .map(|p| p.0.truncate())
-        .unwrap_or_else(|| controlled_transform.translation.truncate());
+        .unwrap_or_else(|| anchor_transform.translation.truncate());
     camera.look_ahead_offset = Vec2::ZERO;
     camera.filtered_focus_xy = controlled_xy;
     camera.focus_initialized = true;
@@ -2329,10 +2379,13 @@ fn send_lightyear_input_messages(
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
     app_state: Option<Res<'_, State<ClientAppState>>>,
     headless_mode: Res<'_, HeadlessTransportMode>,
+    time: Res<'_, Time>,
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
     mut tick: ResMut<'_, ClientNetworkTick>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
+    mut input_log_state: ResMut<'_, ClientInputLogState>,
     mut controlled_input_history: Query<
         '_,
         '_,
@@ -2354,7 +2407,11 @@ fn send_lightyear_input_messages(
         let Some(player_entity_id) = session.player_entity_id.clone() else {
             return;
         };
-        let (player_input, _axes) = player_input_from_keyboard(input.as_deref());
+        let (player_input, _axes) = if player_view_state.detached_free_camera {
+            neutral_player_input()
+        } else {
+            player_input_from_keyboard(input.as_deref())
+        };
         (player_entity_id, player_input)
     } else {
         return;
@@ -2364,16 +2421,25 @@ fn send_lightyear_input_messages(
     while ack_tracker.pending_ticks.len() > 512 {
         ack_tracker.pending_ticks.pop_front();
     }
-    let has_active_input = player_input
-        .actions
-        .iter()
-        .any(|a| !matches!(a, EntityAction::ThrustNeutral | EntityAction::YawNeutral));
-    if has_active_input {
-        info!(
-            actions = ?player_input.actions,
-            tick = tick.0,
-            "client sending active input"
-        );
+    let has_active_input = player_input.actions.iter().any(|a| {
+        !matches!(
+            a,
+            EntityAction::ThrustNeutral
+                | EntityAction::YawNeutral
+                | EntityAction::LongitudinalNeutral
+                | EntityAction::LateralNeutral
+        )
+    });
+    if has_active_input && client_input_debug_logging_enabled() {
+        let now = time.elapsed_secs_f64();
+        if now - input_log_state.last_logged_at_s >= 0.5 {
+            input_log_state.last_logged_at_s = now;
+            info!(
+                actions = ?player_input.actions,
+                tick = tick.0,
+                "client sending active input"
+            );
+        }
     }
 
     for (entity, controlled, maybe_action_state) in &mut controlled_input_history {
@@ -2389,6 +2455,14 @@ fn send_lightyear_input_messages(
             ));
         }
     }
+}
+
+fn client_input_debug_logging_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SIDEREAL_DEBUG_INPUT_LOGS")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
 }
 
 #[allow(clippy::type_complexity)]
@@ -2470,7 +2544,6 @@ fn send_lightyear_view_updates(
     controlled_query: Query<'_, '_, &Transform, With<ControlledEntity>>,
     focus_state: Res<'_, CameraFocusState>,
     player_view_state: Res<'_, LocalPlayerViewState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
 ) {
     let in_world_state = app_state
         .as_ref()
@@ -2503,9 +2576,7 @@ fn send_lightyear_view_updates(
     // Preserve authoritative control by default until local desired control is initialized.
     let desired_controlled_entity_id = player_view_state
         .desired_controlled_entity_id
-        .as_ref()
-        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
-        .cloned()
+        .clone()
         .or_else(|| player_view_state.controlled_entity_id.clone());
     let message = ClientViewUpdateMessage {
         player_entity_id: player_entity_id.clone(),
@@ -2604,6 +2675,17 @@ fn adopt_native_lightyear_replicated_entities(
         ),
     >,
     controlled_query: Query<'_, '_, Entity, With<ControlledEntity>>,
+    adopted_entity_state: Query<
+        '_,
+        '_,
+        (
+            Has<WorldEntity>,
+            Has<ControlledEntity>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<RemoteEntity>,
+        ),
+    >,
 ) {
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
@@ -2642,14 +2724,20 @@ fn adopt_native_lightyear_replicated_entities(
         }
         let controlled_id = controlled_entity_guid
             .and_then(|c| c.0.as_ref())
-            .map(|guid| format!("ship:{guid}"));
+            .and_then(|guid| {
+                runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+            });
         player_view_state.controlled_entity_id = controlled_id.clone();
         player_view_state.selected_entity_id = selected_entity_guid
             .and_then(|v| v.0.as_ref())
-            .map(|guid| format!("ship:{guid}"));
+            .and_then(|guid| {
+                runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+            });
         player_view_state.focused_entity_id = focused_entity_guid
             .and_then(|v| v.0.as_ref())
-            .map(|guid| format!("ship:{guid}"));
+            .and_then(|guid| {
+                runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+            });
         if player_view_state.desired_controlled_entity_id.is_none() {
             player_view_state.desired_controlled_entity_id = controlled_id.clone();
         }
@@ -2699,19 +2787,30 @@ fn adopt_native_lightyear_replicated_entities(
         if is_local_player_entity {
             player_view_state.controlled_entity_id = controlled_entity_guid
                 .and_then(|c| c.0.as_ref())
-                .map(|guid| format!("ship:{guid}"));
+                .and_then(|guid| {
+                    runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+                });
             player_view_state.selected_entity_id = selected_entity_guid
                 .and_then(|v| v.0.as_ref())
-                .map(|guid| format!("ship:{guid}"));
+                .and_then(|guid| {
+                    runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+                });
             player_view_state.focused_entity_id = focused_entity_guid
                 .and_then(|v| v.0.as_ref())
-                .map(|guid| format!("ship:{guid}"));
+                .and_then(|guid| {
+                    runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+                });
             if player_view_state.desired_controlled_entity_id.is_none() {
                 player_view_state.desired_controlled_entity_id =
                     player_view_state.controlled_entity_id.clone();
             }
         }
         let predicted_mode = !local_mode.0;
+        let candidate_score = candidate_runtime_entity_score(
+            is_root_entity,
+            is_local_controlled_entity,
+            predicted_mode,
+        );
         if predicted_mode
             && should_defer_controlled_predicted_adoption(
                 is_local_controlled_entity,
@@ -2754,6 +2853,70 @@ fn adopt_native_lightyear_replicated_entities(
             // Delay adoption until authoritative replicated Avian state is present.
             continue;
         }
+
+        // Canonical identity reconciliation:
+        // exactly one adopted client entity per logical runtime ID.
+        if let Some(&existing_entity) = entity_registry.by_entity_id.get(runtime_entity_id.as_str())
+            && existing_entity != entity
+        {
+            if let Ok((is_world, is_controlled, is_predicted, is_interpolated, is_remote)) =
+                adopted_entity_state.get(existing_entity)
+            {
+                let existing_score = existing_runtime_entity_score(
+                    is_world,
+                    is_controlled,
+                    is_predicted,
+                    is_interpolated,
+                    is_remote,
+                );
+                if candidate_score <= existing_score {
+                    continue;
+                }
+
+                // Candidate is a better representative for this runtime ID; demote the old one.
+                commands.entity(existing_entity).remove::<Name>();
+                if is_world {
+                    commands
+                        .entity(existing_entity)
+                        .insert(Visibility::Hidden)
+                        .remove::<(
+                            WorldEntity,
+                            RemoteEntity,
+                            RemoteVisibleEntity,
+                            ControlledEntity,
+                            StreamedModelAssetId,
+                            StreamedModelVisualAttached,
+                        )>();
+                }
+                if entity_registry.by_entity_id.get(runtime_entity_id.as_str())
+                    == Some(&existing_entity)
+                {
+                    entity_registry
+                        .by_entity_id
+                        .remove(runtime_entity_id.as_str());
+                }
+                if remote_registry.by_entity_id.get(runtime_entity_id.as_str())
+                    == Some(&existing_entity)
+                {
+                    remote_registry
+                        .by_entity_id
+                        .remove(runtime_entity_id.as_str());
+                }
+            } else {
+                // Stale registry entry pointing at a despawned entity.
+                entity_registry
+                    .by_entity_id
+                    .remove(runtime_entity_id.as_str());
+                if remote_registry.by_entity_id.get(runtime_entity_id.as_str())
+                    == Some(&existing_entity)
+                {
+                    remote_registry
+                        .by_entity_id
+                        .remove(runtime_entity_id.as_str());
+                }
+            }
+        }
+
         if adoption_state.waiting_entity_id.as_deref() == Some(runtime_entity_id.as_str()) {
             if let Some(started_at_s) = adoption_state.wait_started_at_s {
                 let resolved_wait_s = (time.elapsed_secs_f64() - started_at_s).max(0.0);
@@ -2889,92 +3052,11 @@ fn adopt_native_lightyear_replicated_entities(
 }
 
 #[allow(clippy::type_complexity)]
-fn cleanup_duplicate_world_entities_system(
-    mut commands: Commands<'_, '_>,
-    session: Res<'_, ClientSession>,
-    mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
-    mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
-    world_entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ Name,
-            Option<&'_ OwnerId>,
-            Option<&'_ ControlledEntity>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-            Has<WorldEntity>,
-        ),
-        With<lightyear::prelude::Replicated>,
-    >,
-) {
-    let local_player_entity_id = session.player_entity_id.as_deref();
-    let mut keep_by_runtime_id = HashMap::<String, (Entity, i32)>::new();
-    let mut losers = Vec::<(String, Entity)>::new();
-
-    for (entity, name, owner, controlled, is_predicted, is_interpolated, is_world_entity) in &world_entities {
-        let runtime_id = name.as_str().to_string();
-        if !(runtime_id.starts_with("ship:")
-            || runtime_id.starts_with("module:")
-            || runtime_id.starts_with("hardpoint:")
-            || runtime_id.starts_with("player:"))
-        {
-            continue;
-        }
-        let is_local_controlled = controlled.is_some_and(|c| {
-            local_player_entity_id.is_some_and(|player_id| c.player_entity_id == player_id)
-        });
-        let score = if is_local_controlled {
-            if is_predicted { 500 } else { 400 }
-        } else if owner.is_some() {
-            if is_world_entity { 350 } else { 325 }
-        } else if is_predicted {
-            200
-        } else if is_interpolated {
-            100
-        } else {
-            50
-        };
-
-        if let Some((existing_entity, existing_score)) = keep_by_runtime_id.get(&runtime_id) {
-            if score > *existing_score {
-                losers.push((runtime_id.clone(), *existing_entity));
-                keep_by_runtime_id.insert(runtime_id, (entity, score));
-            } else {
-                losers.push((runtime_id, entity));
-            }
-        } else {
-            keep_by_runtime_id.insert(runtime_id, (entity, score));
-        }
-    }
-
-    for (runtime_id, loser) in losers {
-        if entity_registry.by_entity_id.get(runtime_id.as_str()) == Some(&loser) {
-            entity_registry.by_entity_id.remove(runtime_id.as_str());
-        }
-        if remote_registry.by_entity_id.get(runtime_id.as_str()) == Some(&loser) {
-            remote_registry.by_entity_id.remove(runtime_id.as_str());
-        }
-        commands.entity(loser).remove::<Name>();
-        if let Ok((_, _, _, _, _, _, true)) = world_entities.get(loser) {
-            commands.entity(loser).insert(Visibility::Hidden).remove::<(
-                WorldEntity,
-                RemoteEntity,
-                RemoteVisibleEntity,
-                ControlledEntity,
-                StreamedModelAssetId,
-                StreamedModelVisualAttached,
-            )>();
-        }
-    }
-}
-
-#[allow(clippy::type_complexity)]
 fn sync_local_player_view_state_system(
     session: Res<'_, ClientSession>,
     mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     mut focus_state: ResMut<'_, CameraFocusState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
     player_query: Query<
         '_,
         '_,
@@ -2994,15 +3076,17 @@ fn sync_local_player_view_state_system(
         if name.as_str() != local_player_entity_id {
             continue;
         }
-        player_view_state.controlled_entity_id = controlled
-            .and_then(|c| c.0.as_ref())
-            .map(|guid| format!("ship:{guid}"));
-        player_view_state.selected_entity_id = selected
-            .and_then(|v| v.0.as_ref())
-            .map(|guid| format!("ship:{guid}"));
-        player_view_state.focused_entity_id = focused
-            .and_then(|v| v.0.as_ref())
-            .map(|guid| format!("ship:{guid}"));
+        player_view_state.controlled_entity_id =
+            controlled.and_then(|c| c.0.as_ref()).and_then(|guid| {
+                runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+            });
+        player_view_state.selected_entity_id =
+            selected.and_then(|v| v.0.as_ref()).and_then(|guid| {
+                runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+            });
+        player_view_state.focused_entity_id = focused.and_then(|v| v.0.as_ref()).and_then(|guid| {
+            runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, guid)
+        });
         if player_view_state.desired_controlled_entity_id.is_none() {
             player_view_state.desired_controlled_entity_id =
                 player_view_state.controlled_entity_id.clone();
@@ -3017,7 +3101,7 @@ fn sync_local_player_view_state_system(
 fn sync_controlled_entity_tags_system(
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
-    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    player_view_state: ResMut<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
     controlled_query: Query<'_, '_, (Entity, &'_ ControlledEntity)>,
 ) {
@@ -3025,19 +3109,20 @@ fn sync_controlled_entity_tags_system(
         return;
     };
 
-    let desired_is_valid = player_view_state
-        .desired_controlled_entity_id
-        .as_ref()
-        .is_some_and(|id| entity_registry.by_entity_id.contains_key(id.as_str()));
-    if !desired_is_valid {
-        player_view_state.desired_controlled_entity_id =
-            player_view_state.controlled_entity_id.clone();
-    }
-
+    // Route local input to authoritative control first. During handoff, keep writing
+    // to the currently-authoritative entity until server confirms the new target.
+    // This prevents "dead input" windows where desired target is not yet bound.
     let target_entity_id = player_view_state
-        .desired_controlled_entity_id
+        .controlled_entity_id
         .as_ref()
-        .or(player_view_state.controlled_entity_id.as_ref());
+        .and_then(|id| entity_registry.by_entity_id.contains_key(id).then_some(id))
+        .or_else(|| {
+            player_view_state
+                .desired_controlled_entity_id
+                .as_ref()
+                .and_then(|id| entity_registry.by_entity_id.contains_key(id).then_some(id))
+        })
+        .or(Some(local_player_entity_id));
     let target_entity = target_entity_id
         .as_ref()
         .and_then(|id| entity_registry.by_entity_id.get(id.as_str()).copied());
@@ -3721,7 +3806,7 @@ fn update_owned_ships_panel_system(
             if !name.as_str().starts_with("ship:") {
                 return None;
             }
-            if !owner.is_some_and(|owner| owner.0 == *local_player_entity_id) {
+            if owner.is_none_or(|owner| owner.0 != *local_player_entity_id) {
                 return None;
             }
             Some(name.as_str().to_string())
@@ -3736,12 +3821,14 @@ fn update_owned_ships_panel_system(
 
     if panel_state.last_ship_ids == ship_ids
         && panel_state.last_selected_id == selected_id
+        && panel_state.last_detached_mode == player_view_state.detached_free_camera
         && !existing_panels.is_empty()
     {
         return;
     }
     panel_state.last_ship_ids = ship_ids.clone();
     panel_state.last_selected_id = selected_id.clone();
+    panel_state.last_detached_mode = player_view_state.detached_free_camera;
 
     for panel in &existing_panels {
         commands.entity(panel).despawn();
@@ -3779,11 +3866,15 @@ fn update_owned_ships_panel_system(
                 TextColor(Color::srgb(0.9, 0.95, 1.0)),
             ));
 
-            let free_camera_selected = selected_id.is_none();
+            let free_roam_selected = selected_id.as_deref()
+                == Some(local_player_entity_id.as_str())
+                && !player_view_state.detached_free_camera;
             panel
                 .spawn((
                     Button,
-                    OwnedShipsPanelButton { entity_id: None },
+                    OwnedShipsPanelButton {
+                        action: OwnedShipsPanelAction::FreeRoam,
+                    },
                     Node {
                         width: percent(100.0),
                         height: px(34),
@@ -3793,7 +3884,7 @@ fn update_owned_ships_panel_system(
                         border_radius: BorderRadius::all(px(6)),
                         ..default()
                     },
-                    BackgroundColor(if free_camera_selected {
+                    BackgroundColor(if free_roam_selected {
                         Color::srgba(0.26, 0.4, 0.56, 0.96)
                     } else {
                         Color::srgba(0.15, 0.2, 0.28, 0.92)
@@ -3801,7 +3892,7 @@ fn update_owned_ships_panel_system(
                 ))
                 .with_children(|button| {
                     button.spawn((
-                        Text::new("Free Camera"),
+                        Text::new("Free Roam"),
                         TextFont {
                             font: fonts.regular.clone(),
                             font_size: 14.0,
@@ -3810,7 +3901,6 @@ fn update_owned_ships_panel_system(
                         TextColor(Color::srgb(0.95, 0.97, 1.0)),
                     ));
                 });
-
             if ship_ids.is_empty() {
                 panel.spawn((
                     Text::new("No owned ships visible"),
@@ -3828,7 +3918,7 @@ fn update_owned_ships_panel_system(
                         .spawn((
                             Button,
                             OwnedShipsPanelButton {
-                                entity_id: Some(ship_id.clone()),
+                                action: OwnedShipsPanelAction::ControlEntity(ship_id.clone()),
                             },
                             Node {
                                 width: percent(100.0),
@@ -3869,6 +3959,7 @@ fn handle_owned_ships_panel_buttons(
         (&Interaction, &OwnedShipsPanelButton, &mut BackgroundColor),
         Changed<Interaction>,
     >,
+    session: Res<'_, ClientSession>,
     mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     mut focus_state: ResMut<'_, CameraFocusState>,
     mut panel_state: ResMut<'_, OwnedShipsPanelState>,
@@ -3876,12 +3967,20 @@ fn handle_owned_ships_panel_buttons(
     for (interaction, button, mut color) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
-                player_view_state.desired_controlled_entity_id = button.entity_id.clone();
-                if let Some(entity_id) = button.entity_id.clone() {
-                    player_view_state.selected_entity_id = Some(entity_id.clone());
-                    focus_state.set(Some(entity_id));
-                } else {
-                    focus_state.set(None);
+                match &button.action {
+                    OwnedShipsPanelAction::FreeRoam => {
+                        player_view_state.desired_controlled_entity_id =
+                            session.player_entity_id.clone();
+                        player_view_state.detached_free_camera = false;
+                        player_view_state.selected_entity_id = None;
+                        focus_state.set(None);
+                    }
+                    OwnedShipsPanelAction::ControlEntity(entity_id) => {
+                        player_view_state.desired_controlled_entity_id = Some(entity_id.clone());
+                        player_view_state.detached_free_camera = false;
+                        player_view_state.selected_entity_id = Some(entity_id.clone());
+                        focus_state.set(Some(entity_id.clone()));
+                    }
                 }
                 panel_state.last_selected_id = None;
                 *color = BackgroundColor(Color::srgba(0.26, 0.4, 0.56, 0.96));
@@ -3890,8 +3989,16 @@ fn handle_owned_ships_panel_buttons(
                 *color = BackgroundColor(Color::srgba(0.2, 0.29, 0.41, 0.96));
             }
             Interaction::None => {
-                let is_selected =
-                    player_view_state.desired_controlled_entity_id == button.entity_id;
+                let is_selected = match &button.action {
+                    OwnedShipsPanelAction::FreeRoam => {
+                        player_view_state.desired_controlled_entity_id.as_ref()
+                            == session.player_entity_id.as_ref()
+                            && !player_view_state.detached_free_camera
+                    }
+                    OwnedShipsPanelAction::ControlEntity(entity_id) => {
+                        player_view_state.desired_controlled_entity_id.as_ref() == Some(entity_id)
+                    }
+                };
                 *color = BackgroundColor(if is_selected {
                     Color::srgba(0.26, 0.4, 0.56, 0.96)
                 } else {
@@ -4431,7 +4538,22 @@ fn is_printable_char(chr: char) -> bool {
 }
 
 fn preferred_backends() -> Backends {
-    Backends::VULKAN | Backends::GL
+    Backends::from_env().unwrap_or(Backends::VULKAN | Backends::GL)
+}
+
+fn configured_wgpu_settings() -> WgpuSettings {
+    let force_fallback_adapter = std::env::var("SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER")
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let backends = preferred_backends();
+    info!(
+        "client render config backends={:?} force_fallback_adapter={}",
+        backends, force_fallback_adapter
+    );
+    WgpuSettings {
+        backends: Some(backends),
+        force_fallback_adapter,
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

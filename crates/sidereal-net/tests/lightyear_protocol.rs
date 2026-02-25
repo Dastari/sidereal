@@ -17,6 +17,6 @@ fn player_input_matches_legacy_axis_mapping() {
     let player_input = PlayerInput::from_axis_inputs(1.0, -1.0, false);
     assert_eq!(
         player_input.actions,
-        vec![EntityAction::ThrustForward, EntityAction::YawRight]
+        vec![EntityAction::Forward, EntityAction::Right]
     );
 }

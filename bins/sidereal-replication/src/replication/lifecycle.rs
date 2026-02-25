@@ -10,7 +10,7 @@ use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_persistence::GraphPersistence;
 use std::net::SocketAddr;
 
-use crate::{BrpAuthToken, HydratedEntityCount, HydratedGraphEntity, ReplicationRuntime};
+use crate::{BrpAuthToken, HydratedEntityCount, HydratedGraphEntity};
 
 pub fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
     if !cfg.enabled {
@@ -38,6 +38,10 @@ pub fn hydrate_replication_world(mut commands: Commands<'_, '_>) {
             return;
         }
     };
+    if let Err(err) = persistence.ensure_schema() {
+        eprintln!("replication hydration skipped; schema init failed: {err}");
+        return;
+    }
     let records = match persistence.load_graph_records() {
         Ok(v) => v,
         Err(err) => {
@@ -58,25 +62,6 @@ pub fn hydrate_replication_world(mut commands: Commands<'_, '_>) {
         "replication hydrated {} graph entities into Bevy world",
         records.len()
     );
-}
-
-pub fn init_replication_runtime(world: &mut World) {
-    let database_url = std::env::var("REPLICATION_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
-
-    let mut persistence = match GraphPersistence::connect(&database_url) {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("replication runtime init failed to connect persistence: {err}");
-            return;
-        }
-    };
-    if let Err(err) = persistence.ensure_schema() {
-        eprintln!("replication runtime init failed to ensure schema: {err}");
-        return;
-    }
-
-    world.insert_non_send_resource(ReplicationRuntime { persistence });
 }
 
 pub fn start_lightyear_server(mut commands: Commands<'_, '_>) {

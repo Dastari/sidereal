@@ -6,12 +6,12 @@ use sidereal_game::{
 };
 
 use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity};
-use crate::visibility::{self, ClientControlledEntityPositionMap};
+use crate::visibility::{self, ClientObserverAnchorPositionMap};
 
-pub fn update_client_controlled_entity_positions(
+pub fn update_client_observer_anchor_positions(
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
     camera_transforms: Query<'_, '_, &'_ Transform>,
-    mut position_map: ResMut<'_, ClientControlledEntityPositionMap>,
+    mut position_map: ResMut<'_, ClientObserverAnchorPositionMap>,
 ) {
     for (player_entity_id, player_entity) in &player_entities.by_player_entity_id {
         if let Ok(camera_transform) = camera_transforms.get(*player_entity) {

@@ -3,26 +3,31 @@ mod replication;
 mod visibility;
 
 use crate::replication::assets::{
-    receive_client_asset_acks, receive_client_asset_requests, send_asset_stream_chunks_paced,
+    StreamableAssetCache, initialize_asset_stream_cache, receive_client_asset_acks,
+    receive_client_asset_requests, send_asset_stream_chunks_paced,
     stream_bootstrap_assets_to_authenticated_clients,
 };
 use crate::replication::auth::{cleanup_client_auth_bindings, receive_client_auth_messages};
 use crate::replication::input::{
     ClientInputDropMetrics, ClientInputDropMetricsLogState, ClientInputTickTracker,
-    drain_native_player_inputs_to_action_queue, report_input_drop_metrics,
+    InputActivityLogState, drain_native_player_inputs_to_action_queue, report_input_drop_metrics,
 };
 use crate::replication::lifecycle::{
-    configure_remote, hydrate_replication_world, init_replication_runtime,
-    log_replication_client_connected, setup_client_replication_sender, start_lightyear_server,
+    configure_remote, hydrate_replication_world, log_replication_client_connected,
+    setup_client_replication_sender, start_lightyear_server,
 };
 use crate::replication::persistence::{
-    SimulationPersistenceTimer, flush_simulation_state_persistence,
+    PersistenceDirtyState, PersistenceWorkerState, SimulationPersistenceTimer,
+    flush_simulation_state_persistence, mark_dirty_persistable_entities_gameplay,
+    mark_dirty_persistable_entities_modules, mark_dirty_persistable_entities_runtime_state,
+    mark_dirty_persistable_entities_spatial, report_persistence_worker_metrics,
+    start_persistence_worker,
 };
 use crate::replication::physics_runtime::{
     enforce_planar_ship_motion, sync_simulated_ship_components,
 };
 use crate::replication::runtime_state::{
-    compute_controlled_entity_scanner_ranges, update_client_controlled_entity_positions,
+    compute_controlled_entity_scanner_ranges, update_client_observer_anchor_positions,
 };
 use crate::replication::simulation_entities::{
     PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
@@ -31,7 +36,7 @@ use crate::replication::simulation_entities::{
 };
 use crate::replication::transport::ensure_server_transport_channels;
 use crate::replication::view::receive_client_view_updates;
-use crate::replication::visibility::update_network_visibility;
+use crate::replication::visibility::{VisibilityScratch, update_network_visibility};
 use avian3d::prelude::{
     Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems, PhysicsTransformPlugin,
 };
@@ -48,7 +53,7 @@ use sidereal_game::SiderealGamePlugin;
 use sidereal_net::register_lightyear_protocol;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use visibility::{ClientControlledEntityPositionMap, ClientVisibilityRegistry};
+use visibility::{ClientObserverAnchorPositionMap, ClientVisibilityRegistry};
 
 #[derive(Debug, Resource, Clone)]
 #[allow(dead_code)]
@@ -64,10 +69,6 @@ struct HydratedGraphEntity {
     entity_id: String,
     labels: Vec<String>,
     component_count: usize,
-}
-
-struct ReplicationRuntime {
-    persistence: sidereal_persistence::GraphPersistence,
 }
 
 #[derive(Resource, Default)]
@@ -138,7 +139,7 @@ fn main() {
     app.add_systems(
         Startup,
         (
-            init_replication_runtime,
+            start_persistence_worker,
             hydrate_replication_world,
             hydrate_simulation_entities,
             start_lightyear_server,
@@ -149,20 +150,26 @@ fn main() {
         Startup,
         bootstrap_runtime::start_replication_control_listener,
     );
+    app.add_systems(Startup, initialize_asset_stream_cache);
     app.add_observer(log_replication_client_connected);
     app.add_observer(setup_client_replication_sender);
     app.insert_resource(ClientVisibilityRegistry::default());
-    app.insert_resource(ClientControlledEntityPositionMap::default());
+    app.insert_resource(VisibilityScratch::default());
+    app.insert_resource(ClientObserverAnchorPositionMap::default());
     app.insert_resource(PlayerControlledEntityMap::default());
     app.insert_resource(PlayerRuntimeEntityMap::default());
     app.insert_resource(AuthenticatedClientBindings::default());
     app.insert_resource(AssetStreamServerState::default());
+    app.insert_resource(StreamableAssetCache::default());
     app.insert_resource(ClientInputTickTracker::default());
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(ClientInputDropMetricsLogState::default());
+    app.insert_resource(InputActivityLogState::default());
     app.insert_resource(AssetDependencyMap {
         dependencies_by_asset_id: default_asset_dependencies(),
     });
+    app.insert_resource(PersistenceWorkerState::default());
+    app.insert_resource(PersistenceDirtyState::default());
     app.insert_resource(SimulationPersistenceTimer::default());
     app.insert_resource(PendingControlledByBindings::default());
     app.add_systems(
@@ -174,9 +181,8 @@ fn main() {
             receive_client_view_updates,
             receive_client_asset_requests,
             receive_client_asset_acks,
-            stream_bootstrap_assets_to_authenticated_clients,
-            send_asset_stream_chunks_paced.after(stream_bootstrap_assets_to_authenticated_clients),
             report_input_drop_metrics,
+            report_persistence_worker_metrics,
             process_bootstrap_entity_commands,
         )
             .chain(),
@@ -184,12 +190,29 @@ fn main() {
     app.add_systems(
         FixedUpdate,
         (
+            stream_bootstrap_assets_to_authenticated_clients,
+            send_asset_stream_chunks_paced.after(stream_bootstrap_assets_to_authenticated_clients),
+        ),
+    );
+    app.add_systems(
+        FixedUpdate,
+        (
             sync_simulated_ship_components,
-            update_client_controlled_entity_positions,
+            update_client_observer_anchor_positions,
             compute_controlled_entity_scanner_ranges,
             update_network_visibility,
         )
             .chain()
+            .after(PhysicsSystems::Writeback),
+    );
+    app.add_systems(
+        FixedUpdate,
+        (
+            mark_dirty_persistable_entities_spatial,
+            mark_dirty_persistable_entities_runtime_state,
+            mark_dirty_persistable_entities_modules,
+            mark_dirty_persistable_entities_gameplay,
+        )
             .after(PhysicsSystems::Writeback),
     );
     app.add_systems(

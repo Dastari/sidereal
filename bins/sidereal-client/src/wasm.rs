@@ -19,5 +19,5 @@ pub(crate) fn run() {
 }
 
 fn preferred_backends() -> Backends {
-    Backends::BROWSER_WEBGPU | Backends::GL
+    Backends::from_env().unwrap_or(Backends::BROWSER_WEBGPU | Backends::GL)
 }

@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 
 pub mod actions;
+pub mod character_movement;
 pub mod component_meta;
 pub mod components;
 pub mod entities;
@@ -11,6 +12,9 @@ pub mod scanner;
 
 // Re-export commonly used items
 pub use actions::*;
+pub use character_movement::{
+    process_character_movement_actions, sync_player_to_controlled_entity,
+};
 pub use component_meta::*;
 pub use components::*;
 pub use entities::*;
@@ -51,6 +55,8 @@ impl Plugin for SiderealGamePlugin {
             FixedUpdate,
             (
                 validate_action_capabilities,
+                sync_player_to_controlled_entity,
+                process_character_movement_actions,
                 process_flight_actions,
                 recompute_total_mass,
                 apply_engine_thrust,

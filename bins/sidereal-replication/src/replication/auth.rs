@@ -18,6 +18,7 @@ use crate::{AssetStreamServerState, AuthenticatedClientBindings, ClientVisibilit
 #[derive(Debug, serde::Deserialize)]
 struct AccessTokenClaims {
     sub: String,
+    player_entity_id: String,
 }
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
@@ -59,6 +60,9 @@ pub fn cleanup_client_auth_bindings(
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
     stream_state
         .acked_assets_by_remote
+        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+    stream_state
+        .pending_chunks_by_remote
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
     visibility_registry
         .player_entity_id_by_client
@@ -113,38 +117,40 @@ pub fn receive_client_auth_messages(
                     continue;
                 }
             };
-            let Some(player_entity) = player_entity_map
+            if claims.player_entity_id != message.player_entity_id {
+                warn!(
+                    "replication rejected client auth: token player mismatch token_player={} message_player={}",
+                    claims.player_entity_id, message.player_entity_id
+                );
+                continue;
+            }
+            if let Some(player_entity) = player_entity_map
                 .by_player_entity_id
                 .get(&message.player_entity_id)
-            else {
-                warn!(
-                    "replication rejected client auth: no hydrated player entity for {}",
-                    message.player_entity_id
-                );
-                continue;
-            };
-            let account_id_value = if let Ok(account_id_component) =
-                player_accounts.get(*player_entity)
             {
-                account_id_component.0.clone()
-            } else {
-                // Hardening: if hydration missed AccountId for an existing player entity,
-                // recover from authenticated token subject and patch entity immediately.
-                warn!(
-                    "replication auth repair: player {} missing AccountId component; injecting from authenticated token subject",
-                    message.player_entity_id
-                );
-                commands
-                    .entity(*player_entity)
-                    .insert(AccountId(claims.sub.clone()));
-                claims.sub.clone()
-            };
-            if account_id_value != claims.sub {
-                warn!(
-                    "replication rejected client auth: account does not own player entity (account={} player={})",
-                    claims.sub, message.player_entity_id
-                );
-                continue;
+                let account_id_value = if let Ok(account_id_component) =
+                    player_accounts.get(*player_entity)
+                {
+                    account_id_component.0.clone()
+                } else {
+                    // Hardening: if hydration missed AccountId for an existing player entity,
+                    // recover from authenticated token subject and patch entity immediately.
+                    warn!(
+                        "replication auth repair: player {} missing AccountId component; injecting from authenticated token subject",
+                        message.player_entity_id
+                    );
+                    commands
+                        .entity(*player_entity)
+                        .insert(AccountId(claims.sub.clone()));
+                    claims.sub.clone()
+                };
+                if account_id_value != claims.sub {
+                    warn!(
+                        "replication rejected client auth: account does not own player entity (account={} player={})",
+                        claims.sub, message.player_entity_id
+                    );
+                    continue;
+                }
             }
 
             if let Some(bound_player) = bindings.by_remote_id.get(&remote_id.0)
@@ -184,6 +190,7 @@ pub fn receive_client_auth_messages(
                 .pending_requested_asset_ids_by_remote
                 .remove(&remote_id.0);
             stream_state.acked_assets_by_remote.remove(&remote_id.0);
+            stream_state.pending_chunks_by_remote.remove(&remote_id.0);
 
             visibility_registry.register_client(client_entity, message.player_entity_id.clone());
 
@@ -205,6 +212,13 @@ pub fn receive_client_auth_messages(
                 pending_controlled_by
                     .bindings
                     .push((client_entity, ship_entity));
+            } else if let Some(&player_entity) = player_entity_map
+                .by_player_entity_id
+                .get(&message.player_entity_id)
+            {
+                pending_controlled_by
+                    .bindings
+                    .push((client_entity, player_entity));
             }
 
             info!(
@@ -218,11 +232,15 @@ pub fn receive_client_auth_messages(
 fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AccessTokenClaims> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
-    decode::<AccessTokenClaims>(
+    match decode::<AccessTokenClaims>(
         token,
         &DecodingKey::from_secret(jwt_secret.as_bytes()),
         &validation,
-    )
-    .ok()
-    .map(|decoded| decoded.claims)
+    ) {
+        Ok(decoded) => Some(decoded.claims),
+        Err(err) => {
+            warn!("replication rejected client auth token decode: {}", err);
+            None
+        }
+    }
 }

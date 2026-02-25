@@ -10,9 +10,9 @@ use lightyear::prelude::{
     ReliableSettings,
 };
 use sidereal_game::{
-    BaseMassKg, CargoMassKg, Cost, Engine, EntityGuid, FactionId, FactionVisibility,
-    FlightComputer, FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory, MassKg,
-    MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId, PublicVisibility, ScannerComponent,
+    BaseMassKg, CargoMassKg, CharacterMovementController, Cost, Engine, EntityGuid, FactionId,
+    FactionVisibility, FlightComputer, FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory,
+    MassKg, MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId, PublicVisibility, ScannerComponent,
     ScannerRangeBuff, ScannerRangeM, SiderealComponentMetadata, SizeM, TotalMassKg,
 };
 
@@ -98,4 +98,5 @@ fn register_lightyear_replication_components(app: &mut App) {
     register_game_component!(app, FactionId);
     register_game_component!(app, FactionVisibility);
     register_game_component!(app, PublicVisibility);
+    register_game_component!(app, CharacterMovementController);
 }
