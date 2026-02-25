@@ -1,4 +1,4 @@
-use bevy::log::info;
+use bevy::log::{error, info, warn};
 use bevy::prelude::*;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
@@ -10,6 +10,7 @@ use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_persistence::GraphPersistence;
 use std::net::SocketAddr;
 
+use crate::replication::persistence::PersistenceSchemaInitState;
 use crate::{BrpAuthToken, HydratedEntityCount, HydratedGraphEntity};
 
 pub fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
@@ -27,25 +28,29 @@ pub fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
     ));
 }
 
-pub fn hydrate_replication_world(mut commands: Commands<'_, '_>) {
+pub fn hydrate_replication_world(
+    mut commands: Commands<'_, '_>,
+    mut schema_init_state: ResMut<'_, PersistenceSchemaInitState>,
+) {
     let database_url = std::env::var("REPLICATION_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
 
     let mut persistence = match GraphPersistence::connect(&database_url) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("replication hydration skipped; connect failed: {err}");
+            warn!("replication hydration skipped; connect failed: {err}");
             return;
         }
     };
     if let Err(err) = persistence.ensure_schema() {
-        eprintln!("replication hydration skipped; schema init failed: {err}");
+        warn!("replication hydration skipped; schema init failed: {err}");
         return;
     }
+    schema_init_state.0 = true;
     let records = match persistence.load_graph_records() {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("replication hydration skipped; graph load failed: {err}");
+            warn!("replication hydration skipped; graph load failed: {err}");
             return;
         }
     };
@@ -58,7 +63,7 @@ pub fn hydrate_replication_world(mut commands: Commands<'_, '_>) {
         });
     }
     commands.insert_resource(HydratedEntityCount(records.len()));
-    println!(
+    info!(
         "replication hydrated {} graph entities into Bevy world",
         records.len()
     );
@@ -71,7 +76,7 @@ pub fn start_lightyear_server(mut commands: Commands<'_, '_>) {
     let bind_addr = match bind_addr {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("invalid REPLICATION_UDP_BIND: {err}");
+            error!("invalid REPLICATION_UDP_BIND: {err}");
             return;
         }
     };

@@ -19,11 +19,11 @@ use crate::replication::lifecycle::{
     setup_client_replication_sender, start_lightyear_server,
 };
 use crate::replication::persistence::{
-    PersistenceDirtyState, PersistenceWorkerState, SimulationPersistenceTimer,
-    flush_simulation_state_persistence, mark_dirty_persistable_entities_gameplay,
-    mark_dirty_persistable_entities_modules, mark_dirty_persistable_entities_runtime_state,
-    mark_dirty_persistable_entities_spatial, report_persistence_worker_metrics,
-    start_persistence_worker,
+    PersistenceDirtyState, PersistenceSchemaInitState, PersistenceWorkerState,
+    SimulationPersistenceTimer, flush_simulation_state_persistence,
+    mark_dirty_persistable_entities_gameplay, mark_dirty_persistable_entities_modules,
+    mark_dirty_persistable_entities_runtime_state, mark_dirty_persistable_entities_spatial,
+    report_persistence_worker_metrics, start_persistence_worker,
 };
 use crate::replication::physics_runtime::{
     enforce_planar_ship_motion, sync_simulated_ship_components,
@@ -144,10 +144,10 @@ fn main() {
     app.add_systems(
         Startup,
         (
-            start_persistence_worker,
             hydrate_replication_world,
             hydrate_simulation_entities,
             start_lightyear_server,
+            start_persistence_worker,
         )
             .chain(),
     );
@@ -176,6 +176,7 @@ fn main() {
     });
     app.insert_resource(PersistenceWorkerState::default());
     app.insert_resource(PersistenceDirtyState::default());
+    app.insert_resource(PersistenceSchemaInitState::default());
     app.insert_resource(SimulationPersistenceTimer::default());
     app.insert_resource(PendingControlledByBindings::default());
     app.insert_resource(ClientControlRequestOrder::default());

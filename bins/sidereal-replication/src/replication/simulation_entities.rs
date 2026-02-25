@@ -752,7 +752,7 @@ pub fn hydrate_simulation_entities(
         );
     }
 
-    println!(
+    bevy::log::info!(
         "replication simulation hydrated {hydrated_root_entities} entities, {hydrated_hardpoints} hardpoints and {hydrated_modules} modules"
     );
 }
@@ -819,9 +819,10 @@ pub fn process_bootstrap_entity_commands(
                         .entity(player_entity)
                         .insert(ControlledEntityGuid(Some(existing_guid.0.to_string())));
                 } else {
-                    println!(
+                    bevy::log::info!(
                         "hydrating controlled entity {} for {} from persistence",
-                        persisted_entity_id, cmd.player_entity_id
+                        persisted_entity_id,
+                        cmd.player_entity_id
                     );
                     spawn_simulation_entity(
                         &mut commands,

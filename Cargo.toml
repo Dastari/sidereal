@@ -42,3 +42,9 @@ postgres = { version = "0.19", features = ["with-uuid-1"] }
 uuid = { version = "1.8", features = ["serde", "v4"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+debug = 0

@@ -43,6 +43,9 @@ impl Default for SimulationPersistenceTimer {
     }
 }
 
+#[derive(Resource, Default)]
+pub struct PersistenceSchemaInitState(pub bool);
+
 #[derive(Resource)]
 pub struct PersistenceDirtyState {
     pub initial_full_snapshot_pending: bool,
@@ -80,9 +83,12 @@ pub fn start_persistence_worker(world: &mut World) {
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
 
     let (sender, receiver) = sync_channel::<PersistenceWriteBatch>(queue_capacity);
+    let schema_initialized = world
+        .get_resource::<PersistenceSchemaInitState>()
+        .is_some_and(|state| state.0);
     thread::Builder::new()
         .name("replication-persistence-writer".to_string())
-        .spawn(move || persistence_worker_loop(receiver, database_url))
+        .spawn(move || persistence_worker_loop(receiver, database_url, schema_initialized))
         .expect("failed to start replication persistence worker thread");
 
     let mut state = world.resource_mut::<PersistenceWorkerState>();
@@ -545,8 +551,12 @@ fn enqueue_batch(state: &mut PersistenceWorkerState, batch: PersistenceWriteBatc
     }
 }
 
-fn persistence_worker_loop(receiver: Receiver<PersistenceWriteBatch>, database_url: String) {
-    let mut persistence = connect_persistence_with_retry(&database_url);
+fn persistence_worker_loop(
+    receiver: Receiver<PersistenceWriteBatch>,
+    database_url: String,
+    mut schema_initialized: bool,
+) {
+    let mut persistence = connect_persistence_with_retry(&database_url, &mut schema_initialized);
 
     while let Ok(batch) = receiver.recv() {
         if batch.records.is_empty() {
@@ -573,7 +583,8 @@ fn persistence_worker_loop(receiver: Receiver<PersistenceWriteBatch>, database_u
                     eprintln!("persistence worker write failed: {err}; reconnecting");
                     pending = Some(batch);
                     thread::sleep(Duration::from_millis(250));
-                    persistence = connect_persistence_with_retry(&database_url);
+                    persistence =
+                        connect_persistence_with_retry(&database_url, &mut schema_initialized);
                 }
             }
         }
@@ -582,15 +593,29 @@ fn persistence_worker_loop(receiver: Receiver<PersistenceWriteBatch>, database_u
     info!("replication persistence worker exiting: sender disconnected");
 }
 
-fn connect_persistence_with_retry(database_url: &str) -> GraphPersistence {
+fn connect_persistence_with_retry(
+    database_url: &str,
+    schema_initialized: &mut bool,
+) -> GraphPersistence {
     loop {
         match GraphPersistence::connect(database_url) {
-            Ok(mut persistence) => match persistence.ensure_schema() {
-                Ok(()) => return persistence,
-                Err(err) => {
-                    eprintln!("persistence worker schema initialization failed: {err}; retrying");
+            Ok(mut persistence) => {
+                if !*schema_initialized {
+                    match persistence.ensure_schema() {
+                        Ok(()) => {
+                            *schema_initialized = true;
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "persistence worker schema initialization failed: {err}; retrying"
+                            );
+                            thread::sleep(Duration::from_secs(1));
+                            continue;
+                        }
+                    }
                 }
-            },
+                return persistence;
+            }
             Err(err) => {
                 eprintln!("persistence worker connect failed: {err}; retrying");
             }
