@@ -15,6 +15,13 @@ pub struct ServerSessionReadyMessage {
     pub player_entity_id: String,
 }
 
+/// Client notifies server that it is disconnecting (logout or window close).
+/// Server should Unlink the client immediately so it stops sending.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientDisconnectNotifyMessage {
+    pub player_entity_id: String,
+}
+
 /// Client requests an authoritative control-target change.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClientControlRequestMessage {

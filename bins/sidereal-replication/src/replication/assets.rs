@@ -125,6 +125,8 @@ pub fn initialize_asset_stream_cache(
 }
 
 pub fn receive_client_asset_requests(
+    time: Res<'_, Time<Real>>,
+    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
     mut receivers: Query<
         '_,
         '_,
@@ -138,8 +140,10 @@ pub fn receive_client_asset_requests(
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
 ) {
+    let now_s = time.elapsed_secs_f64();
     for (client_entity, remote_id, mut receiver) in &mut receivers {
         for message in receiver.receive() {
+            last_activity.0.insert(client_entity, now_s);
             let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
                 continue;
             };
@@ -163,6 +167,8 @@ pub fn receive_client_asset_requests(
 }
 
 pub fn receive_client_asset_acks(
+    time: Res<'_, Time<Real>>,
+    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
     mut receivers: Query<
         '_,
         '_,
@@ -176,8 +182,10 @@ pub fn receive_client_asset_acks(
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
 ) {
+    let now_s = time.elapsed_secs_f64();
     for (client_entity, remote_id, mut receiver) in &mut receivers {
         for message in receiver.receive() {
+            last_activity.0.insert(client_entity, now_s);
             let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
                 continue;
             };
@@ -347,11 +355,10 @@ pub fn send_asset_stream_chunks_paced(
         if let Some(backoff_frames) = stream_state
             .chunk_send_backoff_frames_by_remote
             .get_mut(&remote_id)
+            && *backoff_frames > 0
         {
-            if *backoff_frames > 0 {
-                *backoff_frames -= 1;
-                continue;
-            }
+            *backoff_frames -= 1;
+            continue;
         }
         let target = NetworkTarget::Single(remote_id);
         for _ in 0..ASSET_STREAM_CHUNKS_PER_FRAME {
@@ -417,7 +424,9 @@ pub fn send_asset_stream_chunks_paced(
                 }
                 break;
             }
-            stream_state.chunk_send_failures_by_remote.remove(&remote_id);
+            stream_state
+                .chunk_send_failures_by_remote
+                .remove(&remote_id);
             stream_state
                 .chunk_send_backoff_frames_by_remote
                 .remove(&remote_id);
@@ -447,7 +456,9 @@ pub fn send_asset_stream_chunks_paced(
         stream_state
             .pending_requested_asset_ids_by_remote
             .remove(&remote_id);
-        stream_state.chunk_send_failures_by_remote.remove(&remote_id);
+        stream_state
+            .chunk_send_failures_by_remote
+            .remove(&remote_id);
         stream_state
             .chunk_send_backoff_frames_by_remote
             .remove(&remote_id);

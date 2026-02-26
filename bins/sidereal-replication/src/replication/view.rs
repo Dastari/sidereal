@@ -85,6 +85,8 @@ pub fn receive_client_control_requests(
     mut commands: Commands<'_, '_>,
     server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
+    time: Res<'_, Time<Real>>,
+    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
     mut receivers: Query<
         '_,
         '_,
@@ -119,8 +121,10 @@ pub fn receive_client_control_requests(
     let Ok(server) = server_query.single() else {
         return;
     };
+    let now_s = time.elapsed_secs_f64();
     for (client_entity, remote_id, mut receiver) in &mut receivers {
         for message in receiver.receive() {
+            last_activity.0.insert(client_entity, now_s);
             let target = NetworkTarget::Single(remote_id.0);
             let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
                 continue;

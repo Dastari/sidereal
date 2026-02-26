@@ -19,8 +19,9 @@ use sidereal_game::{
 
 use super::{
     AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
-    ClientAuthMessage, ClientControlRequestMessage, ClientRealtimeInputMessage, ControlChannel,
-    PlayerInput, ServerControlAckMessage, ServerControlRejectMessage, ServerSessionReadyMessage,
+    ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
+    ClientRealtimeInputMessage, ControlChannel, PlayerInput, ServerControlAckMessage,
+    ServerControlRejectMessage, ServerSessionReadyMessage,
 };
 
 pub fn register_lightyear_protocol(app: &mut App) {
@@ -31,6 +32,8 @@ pub fn register_lightyear_protocol(app: &mut App) {
     app.register_message::<ClientRealtimeInputMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerSessionReadyMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ClientDisconnectNotifyMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerControlAckMessage>()
         .add_direction(NetworkDirection::Bidirectional);

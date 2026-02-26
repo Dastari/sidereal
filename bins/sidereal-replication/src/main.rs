@@ -7,7 +7,10 @@ use crate::replication::assets::{
     receive_client_asset_requests, send_asset_stream_chunks_paced,
     stream_bootstrap_assets_to_authenticated_clients,
 };
-use crate::replication::auth::{cleanup_client_auth_bindings, receive_client_auth_messages};
+use crate::replication::auth::{
+    cleanup_client_auth_bindings, receive_client_auth_messages,
+    receive_client_disconnect_notify,
+};
 use crate::replication::input::{
     ClientInputDropMetrics, ClientInputDropMetricsLogState, ClientInputTickTracker,
     InputActivityLogState, InputRateLimitState, LatestRealtimeInputsByPlayer,
@@ -50,8 +53,10 @@ use bevy::log::LogPlugin;
 use bevy::log::info;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
+use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::ReplicationBufferSystems;
 use lightyear::prelude::server::ServerPlugins;
+use lightyear::prelude::Unlink;
 use sidereal_asset_runtime::default_asset_dependencies;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::SiderealGamePlugin;
@@ -81,6 +86,11 @@ struct AuthenticatedClientBindings {
     by_client_entity: HashMap<Entity, String>,
     by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
 }
+
+/// Tracks last time we received any message from each client (by client entity).
+/// Used to disconnect idle clients so the server stops sending to dead sockets.
+#[derive(Resource, Default)]
+pub(crate) struct ClientLastActivity(pub(crate) HashMap<Entity, f64>);
 
 /// Chunk queued for paced sending to avoid UDP send-buffer overflow (EAGAIN).
 pub(crate) struct PendingAssetChunk {
@@ -186,11 +196,14 @@ fn main() {
     app.insert_resource(PendingControlledByBindings::default());
     app.insert_resource(ClientControlRequestOrder::default());
     app.insert_resource(PlayerControlDebugState::default());
+    app.insert_resource(ClientLastActivity::default());
     app.add_systems(
         Update,
         (
             ensure_server_transport_channels,
             cleanup_client_auth_bindings,
+            receive_client_disconnect_notify,
+            disconnect_idle_clients,
             receive_client_auth_messages,
             receive_latest_realtime_input_messages,
             receive_client_control_requests,
@@ -249,6 +262,38 @@ fn main() {
         apply_pending_controlled_by_bindings.after(ReplicationBufferSystems::AfterBuffer),
     );
     app.run();
+}
+
+/// Default idle time (seconds) after which we disconnect a client we have not heard from.
+/// With raw UDP, the server never learns the client closed; it keeps sending. We disconnect
+/// so we stop sending to a dead socket and free resources.
+const DEFAULT_IDLE_DISCONNECT_SECONDS: f64 = 15.0;
+
+fn disconnect_idle_clients(
+    time: Res<Time<Real>>,
+    mut last_activity: ResMut<ClientLastActivity>,
+    clients: Query<'_, '_, Entity, With<ClientOf>>,
+    mut commands: Commands<'_, '_>,
+) {
+    let now_s = time.elapsed_secs_f64();
+    let timeout_s = std::env::var("REPLICATION_IDLE_DISCONNECT_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(DEFAULT_IDLE_DISCONNECT_SECONDS);
+    for client_entity in &clients {
+        let last = *last_activity.0.entry(client_entity).or_insert(now_s);
+        if now_s - last > timeout_s {
+            info!(
+                "replication disconnecting idle client entity={:?} (no activity for {:.0}s)",
+                client_entity,
+                now_s - last
+            );
+            commands.trigger(Unlink {
+                entity: client_entity,
+                reason: "idle_timeout".to_string(),
+            });
+        }
+    }
 }
 
 #[cfg(test)]

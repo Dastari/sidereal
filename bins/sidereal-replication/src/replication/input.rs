@@ -145,6 +145,7 @@ fn summary_logging_enabled() -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn receive_latest_realtime_input_messages(
     time: Res<'_, Time>,
+    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
@@ -171,6 +172,7 @@ pub fn receive_latest_realtime_input_messages(
             continue;
         };
         for message in receiver.receive() {
+            last_activity.0.insert(client_entity, now_s);
             if message.player_entity_id != *bound_player_entity_id {
                 input_drop_metrics.spoofed_player_id =
                     input_drop_metrics.spoofed_player_id.saturating_add(1);

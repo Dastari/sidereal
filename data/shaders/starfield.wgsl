@@ -1,11 +1,10 @@
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 const NUM_LAYERS: f32 = 5.0;
-const PI: f32 = 3.14159265359;
 
 @group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
-@group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;
-@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;
+@group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;   // .xy = per-frame UV drift from ship velocity
+@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;      // .xy = normalized dir, .z = raw ship speed
 
 fn hash21(p_in: vec2<f32>) -> f32 {
     var p = fract(p_in * vec2<f32>(123.23, 456.34));
@@ -19,234 +18,100 @@ fn hash22(p_in: vec2<f32>) -> vec2<f32> {
     return fract(vec2<f32>(p.x * p.y, p.y * p.x * 1.5));
 }
 
-fn star(uv_in: vec2<f32>, radius: f32, drift_dir: vec2<f32>, warp: f32) -> f32 {
-    let drift_side = vec2<f32>(-drift_dir.y, drift_dir.x);
-    let along = dot(uv_in, drift_dir);
-    let across = dot(uv_in, drift_side);
-
-    let streak_len = mix(radius, radius * 18.0, warp * warp);
-    let streak_width = mix(radius, radius * 0.15, warp);
+fn star(local: vec2<f32>, radius: f32, dir: vec2<f32>, elongation: f32) -> f32 {
+    if (elongation < 0.08) {
+        let d = length(local);
+        return smoothstep(radius, radius * 0.35, d);
+    }
+    
+    let side = vec2<f32>(-dir.y, dir.x);
+    let along = dot(local, dir);
+    let across = dot(local, side);
+    
+    let streak_len = radius * mix(1.0, 8.0, elongation);
+    let streak_width = radius * mix(1.0, 0.25, elongation);
+    
     let d = length(vec2<f32>(along / max(streak_len, 0.0001), across / max(streak_width, 0.0001)));
-    return smoothstep(1.0, 0.2, d);
+    return smoothstep(1.0, 0.20, d);
 }
 
-fn background_star(uv_in: vec2<f32>, radius: f32, star_type: f32) -> f32 {
-    let d = length(uv_in);
-    
-    if star_type < 0.3 {
-        return smoothstep(radius, radius * 0.1, d);
-    } else if star_type < 0.6 {
-        let core = smoothstep(radius, radius * 0.2, d);
-        let glow = smoothstep(radius * 2.5, radius * 0.3, d) * 0.4;
-        return core + glow;
-    } else {
-        let core = smoothstep(radius * 0.8, radius * 0.1, d);
-        let halo = smoothstep(radius * 3.0, radius * 0.5, d) * 0.25;
-        return core + halo;
-    }
-}
-
-fn twinkle(id: vec2<f32>, time: f32, seed: f32) -> f32 {
-    let phase = fract(seed * 7.31) * PI * 2.0;
-    let speed = 0.8 + fract(seed * 3.17) * 1.5;
-    let base = 0.6 + 0.4 * sin(time * speed + phase);
-    let flicker = 0.15 * sin(time * speed * 3.7 + phase * 2.3);
-    return clamp(base + flicker, 0.3, 1.0);
-}
-
-fn star_color(seed: f32) -> vec3<f32> {
-    let temp = fract(seed * 2434.0);
-    
-    if temp < 0.15 {
-        return vec3<f32>(0.9, 0.95, 1.0);
-    } else if temp < 0.35 {
-        return vec3<f32>(1.0, 0.98, 0.92);
-    } else if temp < 0.5 {
-        return vec3<f32>(1.0, 0.92, 0.85);
-    } else if temp < 0.6 {
-        return vec3<f32>(0.85, 0.9, 1.0);
-    } else {
-        return vec3<f32>(0.95, 0.95, 0.98);
-    }
-}
-
-fn star_layer(uv: vec2<f32>, drift_dir: vec2<f32>, warp: f32, time: f32, is_background: bool) -> vec3<f32> {
-    var col = vec3<f32>(0.0, 0.0, 0.0);
-
+fn star_layer(uv: vec2<f32>, depth: f32, vel_dir: vec2<f32>, warp: f32) -> vec3<f32> {
+    var col = vec3<f32>(0.0);
     let gv = fract(uv) - 0.5;
     let id = floor(uv);
+
+    let density = mix(0.48, 0.21, depth);
 
     for (var y: i32 = -1; y <= 1; y = y + 1) {
         for (var x: i32 = -1; x <= 1; x = x + 1) {
             let offset = vec2<f32>(f32(x), f32(y));
             let cell_id = id + offset;
-            let n = hash21(cell_id);
             
-            var density_threshold = 0.25;
-            if is_background {
-                density_threshold = 0.18;
-            }
-            
-            let density_gate = fract(n * 911.0);
-            if density_gate > density_threshold {
+            if (hash21(cell_id * 1.73) > density) {
                 continue;
             }
-            
-            let pos_hash = hash22(cell_id * 1.7);
-            let local = gv - offset - vec2<f32>(pos_hash.x - 0.5, pos_hash.y - 0.5);
-            let size = fract(n * 534.0);
-            
-            var s: f32;
-            var colors: vec3<f32>;
-            var brightness: f32;
-            
-            if is_background {
-                let star_type = fract(n * 789.0);
-                let radius = mix(0.04, 0.12, size * size);
-                s = background_star(local, radius, star_type);
-                colors = star_color(n);
-                let twinkle_val = twinkle(cell_id, time, n);
-                brightness = mix(0.4, 1.0, size) * twinkle_val;
-            } else {
-                let radius = mix(0.03, 0.08, size * size);
-                s = star(local, radius, drift_dir, warp);
-                let tint = 0.5 + 0.5 * sin(vec3<f32>(0.35, 0.52, 0.73) * fract(n * 2434.0) * 5.0);
-                colors = mix(vec3<f32>(0.74, 0.78, 0.86), vec3<f32>(0.96, 0.97, 1.0), tint);
-                let warp_boost = mix(1.0, 2.2, warp * warp);
-                brightness = mix(0.3, 0.85, size) * warp_boost;
-            }
-            
-            col += s * brightness * colors;
+
+            let pos_hash = hash22(cell_id * 2.13);
+            let local = gv - offset - (pos_hash - 0.5);
+
+            let radius = mix(0.015, 0.039, depth * depth);
+            let elongation = warp * mix(0.45, 1.45, depth);
+
+            let s = star(local, radius, vel_dir, elongation);
+            let brightness = mix(0.92, 1.78, depth * depth) * (1.0 + warp * depth * 0.55);
+
+            col += s * brightness;
         }
     }
-
-    return col;
-}
-
-fn warp_trail(uv: vec2<f32>, drift_dir: vec2<f32>, warp: f32, time: f32) -> vec3<f32> {
-    if warp < 0.1 {
-        return vec3<f32>(0.0);
-    }
-    
-    var col = vec3<f32>(0.0);
-    let drift_side = vec2<f32>(-drift_dir.y, drift_dir.x);
-    
-    for (var i: i32 = 0; i < 3; i = i + 1) {
-        let fi = f32(i);
-        let scale = 80.0 + fi * 40.0;
-        let trail_uv = uv * scale + vec2<f32>(fi * 173.0, fi * 91.0);
-        let gv = fract(trail_uv) - 0.5;
-        let id = floor(trail_uv);
-        
-        for (var y: i32 = -1; y <= 1; y = y + 1) {
-            for (var x: i32 = -1; x <= 1; x = x + 1) {
-                let offset = vec2<f32>(f32(x), f32(y));
-                let cell_id = id + offset;
-                let n = hash21(cell_id);
-                
-                if fract(n * 567.0) > 0.03 {
-                    continue;
-                }
-                
-                let pos_hash = hash22(cell_id * 2.3);
-                let local = gv - offset - vec2<f32>(pos_hash.x - 0.5, pos_hash.y - 0.5);
-                
-                let along = dot(local, drift_dir);
-                let across = dot(local, drift_side);
-                
-                let streak_len = 0.4 * warp;
-                let streak_width = 0.003;
-                let d = length(vec2<f32>(along / streak_len, across / streak_width));
-                let s = smoothstep(1.0, 0.0, d) * warp * 0.6;
-                
-                let trail_color = vec3<f32>(0.7, 0.85, 1.0);
-                col += s * trail_color * (1.0 - fi * 0.25);
-            }
-        }
-    }
-    
     return col;
 }
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let viewport = viewport_time.xy;
-    let time = viewport_time.z;
     let warp = viewport_time.w;
-    let drift = drift_intensity.xy;
     let intensity = drift_intensity.z;
-    let alpha = drift_intensity.w;
+    let user_alpha = drift_intensity.w;
     
-    let vel_dir_raw = velocity_dir.xy;
+    // === SHIP-VELOCITY PARALLAX (this is the fix) ===
+    let travel = drift_intensity.xy;          // pre-scaled per-frame UV drift from controlled ship
+    let vel_raw = velocity_dir.xy;
+    let vel_len = length(vel_raw);
+    var vel_dir = vec2<f32>(1.0, 0.0);
+    if (vel_len > 0.01) {
+        vel_dir = vel_raw / vel_len;
+    }
+
     let aspect = viewport.x / max(viewport.y, 1.0);
     var uv = (in.uv - 0.5) * vec2<f32>(aspect, 1.0);
-    let travel = drift;
-    uv += travel;
-    
-    let vel_len = length(vel_dir_raw);
-    var warp_dir: vec2<f32>;
-    if vel_len > 0.01 {
-        warp_dir = vel_dir_raw / vel_len;
-    } else {
-        warp_dir = vec2<f32>(1.0, 0.0);
-    }
-    let warp_side = vec2<f32>(-warp_dir.y, warp_dir.x);
-    // Keep deformation subtle to avoid high-speed spatial popping.
-    let warp_stretch = mix(1.0, 0.7, warp * warp);
 
-    var col = vec3<f32>(0.0, 0.0, 0.0);
+    var col = vec3<f32>(0.0);
     let inv_layers = 1.0 / NUM_LAYERS;
     var i = 0.0;
     
     loop {
-        if i >= 1.0 {
-            break;
-        }
+        if (i >= 1.0) { break; }
         let depth = i;
-        let is_background = depth < 0.25;
-        let foreground_depth = clamp((depth - 0.25) / 0.75, 0.0, 1.0);
         
-        var scale: f32;
-        var fade: f32;
+        let scale = mix(72.0, 14.0, pow(depth, 0.72));
+        let parallax_mult = mix(0.18, 6.8, depth * depth);   // stronger near-layer whip for velocity feel
         
-        if is_background {
-            scale = mix(50.0, 35.0, depth * 4.0);
-            fade = mix(0.12, 0.18, depth * 4.0);
-        } else {
-            scale = mix(30.0, 12.0, (depth - 0.25) / 0.75);
-            fade = mix(0.15, 0.35, (depth - 0.25) / 0.75);
-        }
-        
-        // Parallax speeds:
-        // - far/background layers move slower
-        // - a middle star layer tracks roughly ship speed
-        // - near layers move faster than ship speed
-        let layer_speed = select(
-            mix(0.22, 0.45, depth * 4.0),
-            mix(0.75, 1.85, foreground_depth),
-            !is_background
-        );
-        let layer_drift = travel * layer_speed;
-        let layer_uv = uv * scale + vec2<f32>(i * 343.0, i * 127.0) + layer_drift;
-        
-        var warped_uv: vec2<f32>;
-        if is_background {
-            warped_uv = layer_uv;
-        } else {
-            let along = dot(layer_uv, warp_dir);
-            let across = dot(layer_uv, warp_side);
-            warped_uv = warp_dir * (along * warp_stretch) + warp_side * across;
-        }
-        
-        col += star_layer(warped_uv, warp_dir, warp, time, is_background) * fade;
+        let layer_drift = travel * parallax_mult;
+        let layer_uv = uv * scale + vec2<f32>(i * 271.0, i * 389.0) + layer_drift;
+
+        col += star_layer(layer_uv, depth, vel_dir, warp) * mix(0.96, 1.48, depth);
+
         i += inv_layers;
     }
 
-    col += warp_trail(uv, warp_dir, warp, time);
+    col = min(col, vec3<f32>(1.9));
 
-    let vignette = 1.0 - length(in.uv - 0.5) * 0.3;
-    col *= vignette;
-    col *= intensity;
-    
-    return vec4<f32>(col, alpha);
+    let vignette = 1.0 - length(in.uv - 0.5) * 0.29;
+    col *= vignette * intensity;
+
+    // Transparent background
+    let luma = dot(col, vec3<f32>(0.299, 0.587, 0.114));
+    let star_alpha = clamp(luma * 2.85, 0.0, 1.0);
+
+    return vec4<f32>(col, star_alpha * user_alpha);
 }

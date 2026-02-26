@@ -1,7 +1,29 @@
-#[path = "auth_ui.rs"]
+#[path = "../auth_ui.rs"]
 mod auth_ui;
-#[path = "dialog_ui.rs"]
+#[path = "../dialog_ui.rs"]
 mod dialog_ui;
+
+mod auth_net;
+mod backdrop;
+mod bootstrap;
+mod components;
+mod control;
+mod input;
+mod logout;
+mod platform;
+mod remote;
+mod resources;
+mod shaders;
+mod state;
+mod transport;
+
+pub(crate) use auth_net::submit_auth_request;
+pub(crate) use backdrop::{SpaceBackgroundMaterial, StarfieldMaterial, StreamedSpriteShaderMaterial};
+pub(crate) use components::*;
+pub(crate) use platform::*;
+pub(crate) use remote::*;
+pub(crate) use resources::*;
+pub(crate) use state::*;
 
 use avian2d::prelude::*;
 use bevy::asset::{AssetApp, AssetPlugin};
@@ -9,39 +31,27 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
-use bevy::reflect::TypePath;
 use bevy::render::RenderPlugin;
-use bevy::render::render_resource::AsBindGroup;
-use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
+use bevy::render::settings::RenderCreation;
 use bevy::scene::ScenePlugin;
-use bevy::shader::ShaderRef;
-use bevy::sprite_render::{
-    AlphaMode2d, ColorMaterial, Material2d, Material2dPlugin, MeshMaterial2d,
-};
+use bevy::sprite_render::{ColorMaterial, Material2dPlugin, MeshMaterial2d};
 use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::{PresentMode, Window, WindowPlugin, WindowResizeConstraints};
 
-use crate::client::input::{neutral_player_input, player_input_from_keyboard};
-use bevy_remote::RemotePlugin;
-use bevy_remote::http::RemoteHttpPlugin;
 use lightyear::avian2d::plugin::AvianReplicationMode;
 use lightyear::avian2d::prelude::LightyearAvianPlugin;
 use lightyear::prediction::correction::CorrectionPolicy;
 use lightyear::prediction::prelude::PredictionManager;
 use lightyear::prelude::client::ClientPlugins;
-use lightyear::prelude::client::{Client, Connect, Connected, Disconnect, RawClient};
-use lightyear::prelude::input::native::{ActionState, InputMarker};
-use lightyear::prelude::{
-    ChannelRegistry, LocalAddr, MessageManager, MessageReceiver, MessageSender, PeerAddr,
-    ReplicationReceiver, Transport, UdpIo,
-};
+use lightyear::prelude::client::{Client, Connected};
+use lightyear::prelude::input::native::ActionState;
+use lightyear::prelude::{MessageReceiver, MessageSender};
 use sidereal_asset_runtime::{
-    AssetCacheIndex, AssetCacheIndexRecord, cache_index_path, load_cache_index, save_cache_index,
-    sha256_hex,
+    AssetCacheIndexRecord, cache_index_path, load_cache_index, save_cache_index, sha256_hex,
 };
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
-    ActionQueue, ControlledEntityGuid, EntityAction, EntityGuid, FlightComputer, FullscreenLayer,
+    ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, FullscreenLayer,
     Hardpoint, HealthPool, MountedOn, OwnerId, PlayerTag, ScannerRangeM, SiderealGameCorePlugin,
     SizeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId, angular_inertia_from_size,
     apply_engine_thrust, clamp_angular_velocity, default_corvette_asset_id,
@@ -52,550 +62,13 @@ use sidereal_game::{
 };
 use sidereal_net::{
     AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
-    ClientAuthMessage, ClientControlRequestMessage, ClientRealtimeInputMessage, ControlChannel,
-    PlayerInput, RequestedAsset, ServerControlAckMessage, ServerControlRejectMessage,
-    ServerSessionReadyMessage, register_lightyear_protocol,
+    ControlChannel, PlayerInput, RequestedAsset, register_lightyear_protocol,
 };
 use sidereal_runtime_sync::{
     RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::SocketAddr;
-use std::net::TcpListener;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
-
-#[derive(Debug, Resource, Clone)]
-#[allow(dead_code)]
-struct BrpAuthToken(String);
-
-#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[states(scoped_entities)]
-enum ClientAppState {
-    #[default]
-    Auth,
-    CharacterSelect,
-    WorldLoading,
-    InWorld,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuthAction {
-    Login,
-    Register,
-    ForgotRequest,
-    ForgotConfirm,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusField {
-    Email,
-    Password,
-    ResetToken,
-    NewPassword,
-}
-
-#[derive(Debug, Resource)]
-struct ClientSession {
-    gateway_url: String,
-    selected_action: AuthAction,
-    focus: FocusField,
-    email: String,
-    password: String,
-    reset_token: String,
-    new_password: String,
-    access_token: Option<String>,
-    refresh_token: Option<String>,
-    account_id: Option<String>,
-    player_entity_id: Option<String>,
-    status: String,
-    ui_dirty: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-struct CharacterSelectionState {
-    characters: Vec<String>,
-    selected_player_entity_id: Option<String>,
-}
-
-#[derive(Debug, Resource, Default)]
-struct ClientNetworkTick(u64);
-
-#[derive(Debug, Resource, Default)]
-struct ClientInputAckTracker {
-    pending_ticks: VecDeque<u64>,
-}
-
-#[derive(Debug, Resource, Default)]
-struct ClientInputLogState {
-    last_logged_at_s: f64,
-    last_logged_actions: Vec<EntityAction>,
-    last_logged_controlled_entity_id: Option<String>,
-    last_logged_pending_controlled_entity_id: Option<String>,
-}
-
-#[derive(Debug, Resource, Default)]
-struct ClientAuthSyncState {
-    sent_for_client_entities: std::collections::HashSet<Entity>,
-    last_sent_at_s_by_client_entity: HashMap<Entity, f64>,
-    last_player_entity_id: Option<String>,
-}
-
-#[derive(Debug, Resource, Default)]
-struct ClientControlRequestState {
-    next_request_seq: u64,
-    pending_controlled_entity_id: Option<String>,
-    pending_request_seq: Option<u64>,
-    last_sent_request_seq: Option<u64>,
-    last_sent_at_s: f64,
-}
-
-#[derive(Debug, Resource, Default)]
-struct ClientControlDebugState {
-    last_controlled_entity_id: Option<String>,
-    last_pending_controlled_entity_id: Option<String>,
-    last_detached_free_camera: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-struct SessionReadyState {
-    ready_player_entity_id: Option<String>,
-}
-
-#[derive(Debug, Resource, Default)]
-struct LocalPlayerViewState {
-    controlled_entity_id: Option<String>,
-    desired_controlled_entity_id: Option<String>,
-    selected_entity_id: Option<String>,
-    detached_free_camera: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-struct FreeCameraState {
-    position_xy: Vec2,
-    initialized: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-struct OwnedShipsPanelState {
-    last_ship_ids: Vec<String>,
-    last_selected_id: Option<String>,
-    last_detached_mode: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-struct PendingAssetChunks {
-    relative_cache_path: String,
-    byte_len: u64,
-    chunk_count: u32,
-    chunks: Vec<Option<Vec<u8>>>,
-    counts_toward_bootstrap: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-struct LocalAssetRecord {
-    relative_cache_path: String,
-    _content_type: String,
-    _byte_len: u64,
-    _chunk_count: u32,
-    asset_version: u64,
-    sha256_hex: String,
-    ready: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-struct LocalAssetManager {
-    records_by_asset_id: HashMap<String, LocalAssetRecord>,
-    pending_assets: HashMap<String, PendingAssetChunks>,
-    requested_asset_ids: std::collections::HashSet<String>,
-    cache_index: AssetCacheIndex,
-    cache_index_loaded: bool,
-    bootstrap_manifest_seen: bool,
-    bootstrap_phase_complete: bool,
-    bootstrap_total_bytes: u64,
-    bootstrap_ready_bytes: u64,
-}
-
-impl LocalAssetManager {
-    fn bootstrap_complete(&self) -> bool {
-        self.bootstrap_phase_complete
-    }
-
-    fn bootstrap_progress(&self) -> f32 {
-        if self.bootstrap_total_bytes == 0 {
-            return if self.bootstrap_manifest_seen {
-                1.0
-            } else {
-                0.0
-            };
-        }
-        (self.bootstrap_ready_bytes as f32 / self.bootstrap_total_bytes as f32).clamp(0.0, 1.0)
-    }
-
-    fn cached_relative_path(&self, asset_id: &str) -> Option<&str> {
-        self.records_by_asset_id
-            .get(asset_id)
-            .filter(|record| record.ready)
-            .map(|record| record.relative_cache_path.as_str())
-    }
-
-    fn should_show_runtime_stream_indicator(&self) -> bool {
-        self.bootstrap_complete() && !self.pending_assets.is_empty()
-    }
-
-    fn is_cache_fresh(&self, asset_id: &str, asset_version: u64, sha256_hex: &str) -> bool {
-        self.cache_index
-            .by_asset_id
-            .get(asset_id)
-            .is_some_and(|entry| {
-                entry.asset_version == asset_version && entry.sha256_hex == sha256_hex
-            })
-    }
-}
-
-#[derive(Debug, Resource, Default)]
-struct RuntimeAssetStreamIndicatorState {
-    blinking_phase_s: f32,
-}
-
-#[derive(Debug, Resource, Default)]
-struct CriticalAssetRequestState {
-    last_request_at_s: f64,
-}
-
-#[derive(Debug, Resource, Default)]
-struct DebugBlueOverlayEnabled(bool);
-
-/// When true, F3 debug overlay is active: collision AABB wireframes, ship AABB + velocity arrow, hardpoint markers.
-#[derive(Debug, Resource, Default)]
-struct DebugOverlayEnabled {
-    enabled: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-struct StarfieldMotionState {
-    prev_speed: f32,
-    initialized: bool,
-    starfield_drift_uv: Vec2,
-    background_drift_uv: Vec2,
-    smoothed_warp: f32,
-}
-
-#[derive(Debug, Resource)]
-struct CameraMotionState {
-    world_position_xy: Vec2,
-    smoothed_position_xy: Vec2,
-    prev_position_xy: Vec2,
-    frame_delta_xy: Vec2,
-    smoothed_velocity_xy: Vec2,
-    initialized: bool,
-}
-
-impl Default for CameraMotionState {
-    fn default() -> Self {
-        Self {
-            world_position_xy: Vec2::ZERO,
-            smoothed_position_xy: Vec2::ZERO,
-            prev_position_xy: Vec2::ZERO,
-            frame_delta_xy: Vec2::ZERO,
-            smoothed_velocity_xy: Vec2::ZERO,
-            initialized: false,
-        }
-    }
-}
-
-#[derive(Debug, Resource, Default)]
-struct BootstrapWatchdogState {
-    in_world_entered_at_s: Option<f64>,
-    replication_state_seen: bool,
-    asset_manifest_seen: bool,
-    last_bootstrap_ready_bytes: u64,
-    last_bootstrap_progress_at_s: f64,
-    timeout_dialog_shown: bool,
-    stream_stall_dialog_shown: bool,
-    no_world_state_dialog_shown: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-struct DeferredPredictedAdoptionState {
-    waiting_entity_id: Option<String>,
-    wait_started_at_s: Option<f64>,
-    last_warn_at_s: f64,
-    last_missing_components: String,
-    dialog_shown: bool,
-    resolved_samples: u64,
-    resolved_total_wait_s: f64,
-    resolved_max_wait_s: f64,
-    last_summary_at_s: f64,
-    last_runtime_summary_at_s: f64,
-}
-
-#[derive(Debug, Resource, Clone, Copy)]
-struct PredictionBootstrapTuning {
-    defer_warn_after_s: f64,
-    defer_warn_interval_s: f64,
-    defer_dialog_after_s: f64,
-    defer_summary_interval_s: f64,
-}
-
-impl PredictionBootstrapTuning {
-    fn from_env() -> Self {
-        let parse = |key: &str, default: f64| {
-            std::env::var(key)
-                .ok()
-                .and_then(|v| v.parse::<f64>().ok())
-                .filter(|v| v.is_finite() && *v >= 0.0)
-                .unwrap_or(default)
-        };
-        Self {
-            defer_warn_after_s: parse("SIDEREAL_CLIENT_DEFER_WARN_AFTER_S", 1.0),
-            defer_warn_interval_s: parse("SIDEREAL_CLIENT_DEFER_WARN_INTERVAL_S", 1.0),
-            defer_dialog_after_s: parse("SIDEREAL_CLIENT_DEFER_DIALOG_AFTER_S", 4.0),
-            defer_summary_interval_s: parse("SIDEREAL_CLIENT_DEFER_SUMMARY_INTERVAL_S", 30.0),
-        }
-    }
-}
-
-#[derive(Debug, Resource, Clone, Copy)]
-struct PredictionCorrectionTuning {
-    max_rollback_ticks: u16,
-    instant_correction: bool,
-}
-
-impl PredictionCorrectionTuning {
-    fn from_env() -> Self {
-        let max_rollback_ticks = std::env::var("SIDEREAL_CLIENT_MAX_ROLLBACK_TICKS")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(100);
-        let instant_correction = std::env::var("SIDEREAL_CLIENT_INSTANT_CORRECTION")
-            .ok()
-            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        Self {
-            max_rollback_ticks,
-            instant_correction,
-        }
-    }
-}
-
-#[derive(Debug, Resource, Clone, Copy)]
-struct NearbyCollisionProxyTuning {
-    radius_m: f32,
-    max_proxies: usize,
-}
-
-impl NearbyCollisionProxyTuning {
-    fn from_env() -> Self {
-        let radius_m = std::env::var("SIDEREAL_CLIENT_NEARBY_COLLISION_PROXY_RADIUS_M")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .filter(|v| v.is_finite() && *v > 0.0)
-            .unwrap_or(200.0);
-        let max_proxies = std::env::var("SIDEREAL_CLIENT_NEARBY_COLLISION_PROXY_MAX")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(24);
-        Self {
-            radius_m,
-            max_proxies,
-        }
-    }
-}
-
-#[derive(Resource, Debug, Clone, Copy)]
-struct HeadlessTransportMode(bool);
-
-#[derive(Resource, Debug)]
-struct HeadlessAccountSwitchPlan {
-    switch_after_s: f64,
-    switched: bool,
-    next_player_entity_id: String,
-    next_access_token: String,
-}
-
-impl Default for ClientSession {
-    fn default() -> Self {
-        Self {
-            gateway_url: std::env::var("GATEWAY_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string()),
-            selected_action: AuthAction::Login,
-            focus: FocusField::Email,
-            email: "pilot@example.com".to_string(),
-            password: "very-strong-password".to_string(),
-            reset_token: String::new(),
-            new_password: "new-very-strong-password".to_string(),
-            access_token: None,
-            refresh_token: None,
-            account_id: None,
-            player_entity_id: None,
-            status: "Ready. F1 Login, F2 Register, F3 Forgot Request, F4 Forgot Confirm."
-                .to_string(),
-            ui_dirty: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RegisterRequest {
-    email: String,
-    password: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct LoginRequest {
-    email: String,
-    password: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ForgotRequest {
-    email: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ForgotConfirmRequest {
-    reset_token: String,
-    new_password: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AuthTokens {
-    access_token: String,
-    refresh_token: String,
-    token_type: String,
-    expires_in_s: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ForgotResponse {
-    accepted: bool,
-    reset_token: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ForgotConfirmResponse {
-    accepted: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AuthMeResponse {
-    account_id: String,
-    email: String,
-    player_entity_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct CharactersResponse {
-    characters: Vec<CharacterSummary>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct CharacterSummary {
-    player_entity_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct EnterWorldRequest {
-    player_entity_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct EnterWorldResponse {
-    accepted: bool,
-}
-
-#[derive(Resource, Clone)]
-struct AssetRootPath(String);
-
-#[derive(Resource, Clone)]
-struct EmbeddedFonts {
-    bold: Handle<Font>,
-    regular: Handle<Font>,
-}
-
-#[derive(Component)]
-struct WorldEntity;
-#[derive(Component)]
-struct HudText;
-#[derive(Component)]
-struct LoadingOverlayText;
-#[derive(Component)]
-struct LoadingProgressBarFill;
-#[derive(Component)]
-struct LoadingOverlayRoot;
-#[derive(Component)]
-struct RuntimeStreamingIconText;
-#[derive(Component)]
-struct GameplayCamera;
-#[derive(Component)]
-struct GameplayHud;
-#[derive(Component)]
-struct UiOverlayCamera;
-#[derive(Component)]
-struct CharacterSelectRoot;
-#[derive(Component)]
-struct CharacterSelectStatusText;
-#[derive(Component)]
-struct CharacterSelectButton {
-    player_entity_id: String,
-}
-#[derive(Component)]
-struct CharacterSelectEnterButton;
-#[derive(Component)]
-struct OwnedShipsPanelRoot;
-#[derive(Component)]
-struct OwnedShipsPanelButton {
-    action: OwnedShipsPanelAction,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum OwnedShipsPanelAction {
-    FreeRoam,
-    ControlEntity(String),
-}
-
-#[derive(Component)]
-struct ControlledEntity {
-    entity_id: String,
-    #[allow(dead_code)]
-    player_entity_id: String,
-}
-
-#[derive(Component)]
-struct RemoteVisibleEntity {
-    #[allow(dead_code)]
-    entity_id: String,
-}
-
-#[derive(Component)]
-struct RemoteEntity;
-
-#[derive(Component)]
-struct NearbyCollisionProxy;
-
-#[derive(Component, Clone)]
-struct StreamedVisualAssetId(String);
-
-#[derive(Component)]
-struct StreamedVisualAttached;
-
-#[derive(Component)]
-struct StreamedVisualChild;
-
-#[derive(Component, Clone)]
-struct StreamedSpriteShaderAssetId(String);
-
-#[derive(Component)]
-struct SuppressedPredictedDuplicateVisual;
-
-#[derive(Component)]
-struct ReplicatedAdoptionHandled;
-
-#[derive(Resource, Default)]
-struct RemoteEntityRegistry {
-    by_entity_id: HashMap<String, Entity>,
-}
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 fn should_defer_controlled_predicted_adoption(
     is_local_controlled: bool,
@@ -703,189 +176,14 @@ fn existing_runtime_entity_score(
     }
 }
 
-#[derive(Debug, Clone, Copy, Resource, Default)]
-struct LocalSimulationDebugMode(bool);
-
-impl LocalSimulationDebugMode {
-    fn from_env() -> Self {
-        let enabled = std::env::var("SIDEREAL_CLIENT_PHYSICS_MODE")
-            .ok()
-            .is_some_and(|v| v.eq_ignore_ascii_case("local"));
-        if enabled {
-            eprintln!(
-                "[sidereal-client] LOCAL DEBUG SIMULATION: enabled (full local simulation, no reconciliation)"
-            );
-        }
-        Self(enabled)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Resource, Default)]
-struct MotionOwnershipAuditEnabled(bool);
-
-impl MotionOwnershipAuditEnabled {
-    fn from_env() -> Self {
-        let enabled = std::env::var("SIDEREAL_CLIENT_MOTION_AUDIT")
-            .ok()
-            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        Self(enabled)
-    }
-}
-
-#[derive(Debug, Resource, Default)]
-struct MotionOwnershipAuditState {
-    last_logged_at_s: f64,
-}
-
-const BACKDROP_RENDER_LAYER: usize = 1;
-const ORTHO_SCALE_PER_DISTANCE: f32 = 0.02;
-const MIN_WINDOW_WIDTH: f32 = 960.0;
-const MIN_WINDOW_HEIGHT: f32 = 540.0;
-const STREAMED_SPRITE_PIXEL_SHADER_PATH: &str =
-    "data/cache_stream/shaders/sprite_pixel_effect.wgsl";
-
-#[derive(Component)]
-struct StarfieldBackdrop;
-
-#[derive(Component)]
-struct SpaceBackgroundBackdrop;
-
-#[derive(Component)]
-struct DebugBlueBackdrop;
-
-#[derive(Component)]
-struct SpaceBackdropFallback;
-
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct StarfieldMaterial {
-    #[uniform(0)]
-    viewport_time: Vec4,
-    #[uniform(1)]
-    drift_intensity: Vec4,
-    #[uniform(2)]
-    velocity_dir: Vec4,
-}
-
-impl Default for StarfieldMaterial {
-    fn default() -> Self {
-        Self {
-            viewport_time: Vec4::new(1920.0, 1080.0, 0.0, 0.0),
-            drift_intensity: Vec4::new(0.0, 0.0, 1.0, 1.0),
-            velocity_dir: Vec4::new(0.0, 1.0, 0.0, 0.0),
-        }
-    }
-}
-
-impl Material2d for StarfieldMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "data/cache_stream/shaders/starfield.wgsl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode2d {
-        AlphaMode2d::Blend
-    }
-}
-
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct SpaceBackgroundMaterial {
-    #[uniform(0)]
-    viewport_time: Vec4,
-    #[uniform(1)]
-    colors: Vec4,
-    #[uniform(2)]
-    motion: Vec4,
-}
-
-#[derive(Component)]
-struct FullscreenLayerRenderable {
-    layer_kind: String,
-    layer_order: i32,
-}
-
-#[derive(Component)]
-struct FallbackFullscreenLayer;
-
-impl Default for SpaceBackgroundMaterial {
-    fn default() -> Self {
-        Self {
-            viewport_time: Vec4::new(1920.0, 1080.0, 0.0, 1.0),
-            colors: Vec4::new(0.05, 0.08, 0.15, 1.0),
-            motion: Vec4::ZERO,
-        }
-    }
-}
-
-impl Material2d for SpaceBackgroundMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "data/cache_stream/shaders/simple_space_background.wgsl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode2d {
-        AlphaMode2d::Opaque
-    }
-}
-
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct StreamedSpriteShaderMaterial {
-    #[texture(0)]
-    #[sampler(1)]
-    image: Handle<Image>,
-}
-
-impl Material2d for StreamedSpriteShaderMaterial {
-    fn fragment_shader() -> ShaderRef {
-        STREAMED_SPRITE_PIXEL_SHADER_PATH.into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode2d {
-        AlphaMode2d::Blend
-    }
-}
-
-#[derive(Component)]
-struct TopDownCamera {
-    distance: f32,
-    target_distance: f32,
-    min_distance: f32,
-    max_distance: f32,
-    zoom_units_per_wheel: f32,
-    zoom_smoothness: f32,
-    look_ahead_offset: Vec2,
-    filtered_focus_xy: Vec2,
-    focus_initialized: bool,
-}
-
-#[derive(Resource, Debug)]
-/// Caps client frame rate when set. Configure via `SIDEREAL_CLIENT_MAX_FPS` (default 60; 0 = disabled).
-struct FrameRateCap {
-    frame_duration: Duration,
-    last_frame_end: Instant,
-}
-
-impl FrameRateCap {
-    fn from_env(default_fps: u32) -> Option<Self> {
-        let fps = std::env::var("SIDEREAL_CLIENT_MAX_FPS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(default_fps);
-        if fps == 0 {
-            return None;
-        }
-        Some(Self {
-            frame_duration: Duration::from_secs_f64(1.0 / fps as f64),
-            last_frame_end: Instant::now(),
-        })
-    }
-}
-
 pub(crate) fn run() {
     let headless_transport = std::env::var("SIDEREAL_CLIENT_HEADLESS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let _multi_instance_guard = (!headless_transport)
-        .then(acquire_multi_instance_guard)
+        .then(platform::acquire_multi_instance_guard)
         .flatten();
-    let is_secondary_instance = !headless_transport && _multi_instance_guard.is_none();
+    let _is_secondary_instance = !headless_transport && _multi_instance_guard.is_none();
     let remote_cfg = match RemoteInspectConfig::from_env("CLIENT", 15714) {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -927,20 +225,18 @@ pub(crate) fn run() {
                     ..Default::default()
                 })
                 .set(RenderPlugin {
-                    render_creation: RenderCreation::Automatic(configured_wgpu_settings(
-                        is_secondary_instance,
-                    )),
+                    render_creation: RenderCreation::Automatic(platform::configured_wgpu_settings()),
                     ..Default::default()
                 }),
         );
-        ensure_shader_placeholders(&asset_root);
+        shaders::ensure_shader_placeholders(&asset_root);
         app.add_plugins(Material2dPlugin::<StarfieldMaterial>::default());
         app.add_plugins(Material2dPlugin::<SpaceBackgroundMaterial>::default());
         app.add_plugins(Material2dPlugin::<StreamedSpriteShaderMaterial>::default());
         // FPS cap: SIDEREAL_CLIENT_MAX_FPS (default 60). Set to 0 to disable (uncapped).
         if let Some(frame_cap) = FrameRateCap::from_env(60) {
             app.insert_resource(frame_cap);
-            app.add_systems(Last, enforce_frame_rate_cap_system);
+            app.add_systems(Last, platform::enforce_frame_rate_cap_system);
         }
     }
 
@@ -976,6 +272,7 @@ pub(crate) fn run() {
     app.insert_resource(ClientNetworkTick::default());
     app.insert_resource(ClientInputAckTracker::default());
     app.insert_resource(ClientInputLogState::default());
+    app.insert_resource(ClientInputSendState::default());
     app.insert_resource(ClientAuthSyncState::default());
     app.insert_resource(ClientControlRequestState::default());
     app.insert_resource(ClientControlDebugState::default());
@@ -1029,19 +326,19 @@ pub(crate) fn run() {
     }
     app.add_observer(log_native_client_connected);
     if headless_transport {
-        app.add_systems(Startup, start_lightyear_client_transport);
+        app.add_systems(Startup, transport::start_lightyear_client_transport);
     }
     if !headless_transport {
         app.add_systems(Startup, spawn_ui_overlay_camera);
     }
 
     if headless_transport {
-        app.add_systems(Startup, configure_headless_session_from_env);
+        app.add_systems(Startup, auth_net::configure_headless_session_from_env);
         app.add_systems(
             FixedPreUpdate,
             (
-                enforce_single_input_marker_owner.before(send_lightyear_input_messages),
-                send_lightyear_input_messages,
+                input::enforce_single_input_marker_owner.before(input::send_lightyear_input_messages),
+                input::send_lightyear_input_messages,
                 bevy::ecs::schedule::ApplyDeferred,
             )
                 .chain()
@@ -1050,10 +347,10 @@ pub(crate) fn run() {
         app.add_systems(
             Update,
             (
-                apply_headless_account_switch_system,
+                auth_net::apply_headless_account_switch_system,
                 configure_prediction_manager_tuning,
-                ensure_client_transport_channels,
-                send_lightyear_auth_messages,
+                transport::ensure_client_transport_channels,
+                auth_net::send_lightyear_auth_messages,
                 receive_lightyear_asset_stream_messages,
                 ensure_critical_assets_available_system
                     .after(receive_lightyear_asset_stream_messages),
@@ -1063,9 +360,9 @@ pub(crate) fn run() {
                 sync_local_player_view_state_system
                     .after(adopt_native_lightyear_replicated_entities),
                 sync_controlled_entity_tags_system.after(sync_local_player_view_state_system),
-                send_lightyear_control_requests.after(sync_controlled_entity_tags_system),
-                receive_lightyear_control_results.after(send_lightyear_control_requests),
-                log_client_control_state_changes.after(receive_lightyear_control_results),
+                control::send_lightyear_control_requests.after(sync_controlled_entity_tags_system),
+                control::receive_lightyear_control_results.after(control::send_lightyear_control_requests),
+                control::log_client_control_state_changes.after(control::receive_lightyear_control_results),
                 log_prediction_runtime_state,
             ),
         );
@@ -1082,8 +379,8 @@ pub(crate) fn run() {
         app.add_systems(
             OnEnter(ClientAppState::WorldLoading),
             (
-                ensure_lightyear_client_system,
-                reset_bootstrap_watchdog_on_enter_in_world,
+                transport::ensure_lightyear_client_system,
+                bootstrap::reset_bootstrap_watchdog_on_enter_in_world,
             )
                 .chain(),
         );
@@ -1092,9 +389,9 @@ pub(crate) fn run() {
         app.add_systems(
             OnEnter(ClientAppState::InWorld),
             (
-                ensure_lightyear_client_system,
+                transport::ensure_lightyear_client_system,
                 spawn_world_scene,
-                reset_bootstrap_watchdog_on_enter_in_world,
+                bootstrap::reset_bootstrap_watchdog_on_enter_in_world,
             )
                 .chain(),
         );
@@ -1102,10 +399,10 @@ pub(crate) fn run() {
             Update,
             (
                 handle_character_select_buttons,
-                ensure_client_transport_channels,
+                transport::ensure_client_transport_channels,
                 configure_prediction_manager_tuning,
-                send_lightyear_auth_messages,
-                receive_lightyear_session_ready_messages,
+                auth_net::send_lightyear_auth_messages,
+                auth_net::receive_lightyear_session_ready_messages,
                 receive_lightyear_asset_stream_messages,
                 ensure_critical_assets_available_system
                     .after(receive_lightyear_asset_stream_messages),
@@ -1117,9 +414,9 @@ pub(crate) fn run() {
                 sync_local_player_view_state_system
                     .after(adopt_native_lightyear_replicated_entities),
                 sync_controlled_entity_tags_system.after(sync_local_player_view_state_system),
-                send_lightyear_control_requests.after(sync_controlled_entity_tags_system),
-                receive_lightyear_control_results.after(send_lightyear_control_requests),
-                log_client_control_state_changes.after(receive_lightyear_control_results),
+                control::send_lightyear_control_requests.after(sync_controlled_entity_tags_system),
+                control::receive_lightyear_control_results.after(control::send_lightyear_control_requests),
+                control::log_client_control_state_changes.after(control::receive_lightyear_control_results),
                 log_prediction_runtime_state,
             ),
         );
@@ -1130,6 +427,8 @@ pub(crate) fn run() {
                     .after(adopt_native_lightyear_replicated_entities),
                 suppress_duplicate_predicted_interpolated_visuals_system
                     .after(adopt_native_lightyear_replicated_entities),
+                cleanup_streamed_visual_children_system
+                    .after(suppress_duplicate_predicted_interpolated_visuals_system),
                 attach_streamed_visual_assets_system.after(receive_lightyear_asset_stream_messages),
                 sync_fullscreen_layer_renderables_system
                     .after(adopt_native_lightyear_replicated_entities),
@@ -1140,27 +439,50 @@ pub(crate) fn run() {
                 update_loading_overlay_system,
                 update_runtime_stream_icon_system,
                 watch_in_world_bootstrap_failures,
-                update_topdown_camera_system.after(adopt_native_lightyear_replicated_entities),
+                update_topdown_camera_system
+                    .after(lock_player_entity_to_controlled_entity_end_of_frame),
                 sync_ui_overlay_camera_to_gameplay_camera_system
                     .after(update_topdown_camera_system),
                 update_camera_motion_state.after(update_topdown_camera_system),
                 update_hud_system,
-                update_starfield_material_system.after(update_camera_motion_state),
-                update_space_background_material_system.after(update_camera_motion_state),
+                backdrop::update_starfield_material_system.after(update_camera_motion_state),
+                backdrop::update_space_background_material_system.after(update_camera_motion_state),
                 toggle_debug_overlay_system,
                 draw_debug_overlay_system.after(toggle_debug_overlay_system),
             )
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(
+            Update,
+            (
+                refresh_interpolated_visual_targets_system
+                    .after(sync_world_entity_transforms_from_physics),
+                apply_interpolated_visual_smoothing_system
+                    .after(refresh_interpolated_visual_targets_system),
+                lock_player_entity_to_controlled_entity_end_of_frame
+                    .after(apply_interpolated_visual_smoothing_system),
+            )
+                .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            audit_active_world_cameras_system.run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
             Last,
-            lock_camera_to_controlled_entity_end_of_frame.run_if(in_state(ClientAppState::InWorld)),
+            (
+                lock_player_entity_to_controlled_entity_end_of_frame,
+                lock_camera_to_player_entity_end_of_frame
+                    .after(lock_player_entity_to_controlled_entity_end_of_frame),
+            )
+                .chain()
+                .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(
             FixedPreUpdate,
             (
-                enforce_single_input_marker_owner.before(send_lightyear_input_messages),
-                send_lightyear_input_messages,
+                input::enforce_single_input_marker_owner.before(input::send_lightyear_input_messages),
+                input::send_lightyear_input_messages,
                 bevy::ecs::schedule::ApplyDeferred,
             )
                 .chain()
@@ -1169,15 +491,11 @@ pub(crate) fn run() {
         );
         app.add_systems(
             PreUpdate,
-            logout_to_auth_system.run_if(in_state(ClientAppState::InWorld)),
-        );
-        app.add_systems(
-            PreUpdate,
-            logout_to_auth_system.run_if(in_state(ClientAppState::WorldLoading)),
-        );
-        app.add_systems(
-            PreUpdate,
-            logout_to_auth_system.run_if(in_state(ClientAppState::CharacterSelect)),
+            (
+                logout::logout_to_auth_system.run_if(in_state(ClientAppState::InWorld)),
+                logout::logout_to_auth_system.run_if(in_state(ClientAppState::WorldLoading)),
+                logout::logout_to_auth_system.run_if(in_state(ClientAppState::CharacterSelect)),
+            ),
         );
         app.add_systems(
             FixedUpdate,
@@ -1193,53 +511,6 @@ pub(crate) fn run() {
     app.run();
 }
 
-fn configure_headless_session_from_env(
-    mut commands: Commands<'_, '_>,
-    mut session: ResMut<'_, ClientSession>,
-) {
-    if let Ok(player_entity_id) = std::env::var("SIDEREAL_CLIENT_HEADLESS_PLAYER_ENTITY_ID") {
-        session.player_entity_id = Some(player_entity_id);
-    }
-    if let Ok(access_token) = std::env::var("SIDEREAL_CLIENT_HEADLESS_ACCESS_TOKEN") {
-        session.access_token = Some(access_token);
-    }
-    let next_player = std::env::var("SIDEREAL_CLIENT_HEADLESS_SWITCH_PLAYER_ENTITY_ID").ok();
-    let next_token = std::env::var("SIDEREAL_CLIENT_HEADLESS_SWITCH_ACCESS_TOKEN").ok();
-    if let (Some(next_player_entity_id), Some(next_access_token)) = (next_player, next_token) {
-        let switch_after_s = std::env::var("SIDEREAL_CLIENT_HEADLESS_SWITCH_AFTER_S")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(1.0)
-            .max(0.0);
-        commands.insert_resource(HeadlessAccountSwitchPlan {
-            switch_after_s,
-            switched: false,
-            next_player_entity_id,
-            next_access_token,
-        });
-    }
-}
-
-fn apply_headless_account_switch_system(
-    time: Res<'_, Time>,
-    mut session: ResMut<'_, ClientSession>,
-    plan: Option<ResMut<'_, HeadlessAccountSwitchPlan>>,
-) {
-    let Some(mut plan) = plan else {
-        return;
-    };
-    if plan.switched || time.elapsed_secs_f64() < plan.switch_after_s {
-        return;
-    }
-    session.player_entity_id = Some(plan.next_player_entity_id.clone());
-    session.access_token = Some(plan.next_access_token.clone());
-    plan.switched = true;
-    info!(
-        "headless account switch applied player_entity_id={}",
-        plan.next_player_entity_id
-    );
-}
-
 fn spawn_ui_overlay_camera(mut commands: Commands<'_, '_>) {
     commands.spawn((
         Camera2d,
@@ -1249,13 +520,15 @@ fn spawn_ui_overlay_camera(mut commands: Commands<'_, '_>) {
             clear_color: ClearColorConfig::None,
             ..default()
         },
+        // Prevent world sprites/meshes from being rendered twice by the UI overlay camera.
+        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
         UiOverlayCamera,
     ));
 }
 
 fn insert_embedded_fonts(app: &mut App) {
-    static BOLD: &[u8] = include_bytes!("../../../data/fonts/FiraSans-Bold.ttf");
-    static REGULAR: &[u8] = include_bytes!("../../../data/fonts/FiraSans-Regular.ttf");
+    static BOLD: &[u8] = include_bytes!("../../../../data/fonts/FiraSans-Bold.ttf");
+    static REGULAR: &[u8] = include_bytes!("../../../../data/fonts/FiraSans-Regular.ttf");
 
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
     let bold = fonts
@@ -1264,452 +537,6 @@ fn insert_embedded_fonts(app: &mut App) {
         Font::try_from_bytes(REGULAR.to_vec()).expect("embedded FiraSans-Regular.ttf is valid"),
     );
     app.insert_resource(EmbeddedFonts { bold, regular });
-}
-
-const STREAMED_SHADER_PATHS: &[&str] = &[
-    "data/cache_stream/shaders/starfield.wgsl",
-    "data/cache_stream/shaders/simple_space_background.wgsl",
-    STREAMED_SPRITE_PIXEL_SHADER_PATH,
-];
-
-const LOCAL_SHADER_FALLBACK_PATHS: &[&str] = &[
-    "data/shaders/starfield.wgsl",
-    "data/shaders/simple_space_background.wgsl",
-    "data/shaders/sprite_pixel_effect.wgsl",
-];
-
-fn ensure_shader_placeholders(asset_root: &str) {
-    const STARFIELD_PLACEHOLDER: &str = "\
-#import bevy_sprite::mesh2d_vertex_output::VertexOutput
-@group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
-@group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;
-@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;
-@fragment
-fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
-}
-";
-
-    const BACKGROUND_PLACEHOLDER: &str = "\
-#import bevy_sprite::mesh2d_vertex_output::VertexOutput
-@group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
-@group(2) @binding(1) var<uniform> colors: vec4<f32>;
-@group(2) @binding(2) var<uniform> motion: vec4<f32>;
-@fragment
-fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(colors.r, colors.g, colors.b, 1.0);
-}
-";
-
-    const SPRITE_PIXEL_PLACEHOLDER: &str = "\
-#import bevy_sprite::mesh2d_vertex_output::VertexOutput
-@group(2) @binding(0) var image: texture_2d<f32>;
-@group(2) @binding(1) var image_sampler: sampler;
-@fragment
-fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(image, image_sampler, mesh.uv);
-}
-";
-
-    let placeholders: &[(&str, &str, &str)] = &[
-        (
-            STREAMED_SHADER_PATHS[0],
-            LOCAL_SHADER_FALLBACK_PATHS[0],
-            STARFIELD_PLACEHOLDER,
-        ),
-        (
-            STREAMED_SHADER_PATHS[1],
-            LOCAL_SHADER_FALLBACK_PATHS[1],
-            BACKGROUND_PLACEHOLDER,
-        ),
-        (
-            STREAMED_SHADER_PATHS[2],
-            LOCAL_SHADER_FALLBACK_PATHS[2],
-            SPRITE_PIXEL_PLACEHOLDER,
-        ),
-    ];
-
-    for &(cache_rel_path, source_rel_path, placeholder_content) in placeholders {
-        let cache_path = std::path::PathBuf::from(asset_root).join(cache_rel_path);
-        if cache_path.exists() {
-            continue;
-        }
-        if let Some(parent) = cache_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let source_path = std::path::PathBuf::from(asset_root).join(source_rel_path);
-        let content = std::fs::read_to_string(&source_path)
-            .ok()
-            .unwrap_or_else(|| placeholder_content.to_string());
-        std::fs::write(&cache_path, content).ok();
-    }
-}
-
-fn reload_streamed_shaders(
-    asset_server: &AssetServer,
-    shaders: &mut Assets<bevy::shader::Shader>,
-    asset_root: &str,
-) {
-    for (idx, &path) in STREAMED_SHADER_PATHS.iter().enumerate() {
-        let cache_path = std::path::PathBuf::from(asset_root).join(path);
-        let local_fallback_path = std::path::PathBuf::from(asset_root).join(
-            LOCAL_SHADER_FALLBACK_PATHS
-                .get(idx)
-                .copied()
-                .unwrap_or(path),
-        );
-
-        let selected_path = match (
-            std::fs::metadata(&cache_path).and_then(|m| m.modified()),
-            std::fs::metadata(&local_fallback_path).and_then(|m| m.modified()),
-        ) {
-            (Ok(cache_modified), Ok(local_modified)) if local_modified > cache_modified => {
-                local_fallback_path
-            }
-            _ => cache_path,
-        };
-
-        if let Ok(content) = std::fs::read_to_string(&selected_path) {
-            let handle: Handle<bevy::shader::Shader> = asset_server.load(path);
-            let _ = shaders.insert(handle.id(), bevy::shader::Shader::from_wgsl(content, path));
-        }
-    }
-}
-
-fn streamed_shader_path_for_asset_id(shader_asset_id: &str) -> Option<&'static str> {
-    match shader_asset_id {
-        "starfield_wgsl" => Some(STREAMED_SHADER_PATHS[0]),
-        "space_background_wgsl" => Some(STREAMED_SHADER_PATHS[1]),
-        _ => None,
-    }
-}
-
-fn fullscreen_layer_shader_ready(
-    asset_root: &str,
-    asset_manager: &LocalAssetManager,
-    shader_asset_id: &str,
-) -> bool {
-    if let Some(relative_cache_path) = asset_manager.cached_relative_path(shader_asset_id) {
-        let rooted_stream_path = std::path::PathBuf::from(asset_root)
-            .join("data/cache_stream")
-            .join(relative_cache_path);
-        let rooted_direct_path = std::path::PathBuf::from(asset_root).join(relative_cache_path);
-        if rooted_stream_path.exists() || rooted_direct_path.exists() {
-            return true;
-        }
-    }
-
-    let Some(streamed_shader_rel_path) = streamed_shader_path_for_asset_id(shader_asset_id) else {
-        return false;
-    };
-    std::path::PathBuf::from(asset_root)
-        .join(streamed_shader_rel_path)
-        .exists()
-}
-
-fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
-    if !cfg.enabled {
-        return;
-    }
-
-    app.add_plugins(RemotePlugin::default());
-    app.add_plugins(
-        RemoteHttpPlugin::default()
-            .with_address(cfg.bind_addr)
-            .with_port(cfg.port),
-    );
-    app.insert_resource(BrpAuthToken(
-        cfg.auth_token.clone().expect("validated token"),
-    ));
-}
-
-/// Spawns the Lightyear client and triggers Connect if no client entity exists.
-/// Used on Enter Auth so we have a connection for sending auth after (re)login.
-fn ensure_lightyear_client_system(
-    mut commands: Commands<'_, '_>,
-    existing: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Has<Connected>,
-            Has<lightyear::prelude::client::Connecting>,
-        ),
-        With<RawClient>,
-    >,
-) {
-    if existing.is_empty() {
-        start_lightyear_client_transport_inner(&mut commands);
-        return;
-    }
-    for (entity, connected, connecting) in &existing {
-        if !connected && !connecting {
-            commands.trigger(Connect { entity });
-            info!(
-                "native client lightyear UDP reconnecting existing client entity={:?}",
-                entity
-            );
-        }
-    }
-}
-
-fn start_lightyear_client_transport(mut commands: Commands<'_, '_>) {
-    start_lightyear_client_transport_inner(&mut commands);
-}
-
-fn start_lightyear_client_transport_inner(commands: &mut Commands<'_, '_>) {
-    let local_addr = std::env::var("CLIENT_UDP_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:7003".to_string())
-        .parse::<SocketAddr>();
-    let local_addr = match local_addr {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("invalid CLIENT_UDP_BIND: {err}");
-            return;
-        }
-    };
-    let remote_addr = std::env::var("REPLICATION_UDP_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:7001".to_string())
-        .parse::<SocketAddr>();
-    let remote_addr = match remote_addr {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("invalid REPLICATION_UDP_ADDR: {err}");
-            return;
-        }
-    };
-
-    let client = commands
-        .spawn((
-            Name::new("native-client-lightyear"),
-            RawClient,
-            UdpIo::default(),
-            MessageManager::default(),
-            ReplicationReceiver::default(),
-            LocalAddr(local_addr),
-            PeerAddr(remote_addr),
-        ))
-        .id();
-    commands.trigger(Connect { entity: client });
-    info!(
-        "native client lightyear UDP connecting {} -> {}",
-        local_addr, remote_addr
-    );
-}
-
-fn decode_api_json<T: serde::de::DeserializeOwned>(
-    response: reqwest::blocking::Response,
-) -> Result<T, String> {
-    let status = response.status();
-    let body = response.text().map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body)
-            && let Some(message) = error_json.get("error").and_then(|v| v.as_str())
-        {
-            return Err(format!("{status}: {message}"));
-        }
-        if body.trim().is_empty() {
-            return Err(status.to_string());
-        }
-        return Err(format!("{status}: {body}"));
-    }
-    serde_json::from_str::<T>(&body).map_err(|err| err.to_string())
-}
-
-fn submit_auth_request(
-    session: &mut ClientSession,
-    character_selection: &mut CharacterSelectionState,
-    session_ready: &mut SessionReadyState,
-    next_state: &mut NextState<ClientAppState>,
-    dialog_queue: &mut dialog_ui::DialogQueue,
-    _asset_root: &AssetRootPath,
-) {
-    let client = reqwest::blocking::Client::new();
-    let gateway_url = session.gateway_url.clone();
-    let result = match session.selected_action {
-        AuthAction::Login => (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-            let response = client
-                .post(format!("{gateway_url}/auth/login"))
-                .json(&LoginRequest {
-                    email: session.email.clone(),
-                    password: session.password.clone(),
-                })
-                .send()
-                .map_err(|err| err.to_string())?;
-            let tokens = decode_api_json::<AuthTokens>(response)?;
-            session.status = "Login succeeded. Fetching world snapshot...".to_string();
-            Ok((Some(tokens), None::<String>))
-        })(),
-        AuthAction::Register => (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-            let response = client
-                .post(format!("{gateway_url}/auth/register"))
-                .json(&RegisterRequest {
-                    email: session.email.clone(),
-                    password: session.password.clone(),
-                })
-                .send()
-                .map_err(|err| err.to_string())?;
-            let tokens = decode_api_json::<AuthTokens>(response)?;
-            session.status = "Registration succeeded. Fetching world snapshot...".to_string();
-            Ok((Some(tokens), None::<String>))
-        })(),
-        AuthAction::ForgotRequest => {
-            (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-                let response = client
-                    .post(format!("{gateway_url}/auth/password-reset/request"))
-                    .json(&ForgotRequest {
-                        email: session.email.clone(),
-                    })
-                    .send()
-                    .map_err(|err| err.to_string())?;
-                let resp = decode_api_json::<ForgotResponse>(response)?;
-                if let Some(token) = resp.reset_token {
-                    session.reset_token = token;
-                }
-                session.status =
-                    "Password reset token requested. Use F4 to confirm reset.".to_string();
-                Ok((None, None::<String>))
-            })()
-        }
-        AuthAction::ForgotConfirm => {
-            (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-                let response = client
-                    .post(format!("{gateway_url}/auth/password-reset/confirm"))
-                    .json(&ForgotConfirmRequest {
-                        reset_token: session.reset_token.clone(),
-                        new_password: session.new_password.clone(),
-                    })
-                    .send()
-                    .map_err(|err| err.to_string())?;
-                let _ = decode_api_json::<ForgotConfirmResponse>(response)?;
-                session.status = "Password reset confirmed. Switch to Login (F1).".to_string();
-                Ok((None, None::<String>))
-            })()
-        }
-    };
-
-    match result {
-        Ok((Some(tokens), _)) => {
-            session.access_token = Some(tokens.access_token.clone());
-            session.refresh_token = Some(tokens.refresh_token);
-            match fetch_auth_me(&client, &gateway_url, &tokens.access_token) {
-                Ok(me) => {
-                    session.account_id = Some(me.account_id.clone());
-                    match fetch_auth_characters(&client, &gateway_url, &tokens.access_token) {
-                        Ok(characters) => {
-                            character_selection.characters = characters
-                                .characters
-                                .into_iter()
-                                .map(|c| c.player_entity_id)
-                                .collect();
-                            if character_selection.characters.is_empty() {
-                                session.status =
-                                    "Authenticated but no characters are available.".to_string();
-                                dialog_queue.push_error(
-                                    "No Characters",
-                                    "This account has no characters. Character creation UI is not implemented yet."
-                                        .to_string(),
-                                );
-                                return;
-                            }
-                            character_selection.selected_player_entity_id =
-                                character_selection.characters.first().cloned();
-                            session.player_entity_id = None;
-                            session_ready.ready_player_entity_id = None;
-                            session.status =
-                                "Authenticated. Select a character and press Enter World."
-                                    .to_string();
-                            next_state.set(ClientAppState::CharacterSelect);
-                        }
-                        Err(err) => {
-                            session.status = format!("Auth OK but character lookup failed: {err}");
-                            dialog_queue.push_error(
-                                "Character Lookup Failed",
-                                format!(
-                                    "Authentication succeeded, but failed to fetch /auth/characters.\n\nDetails: {err}"
-                                ),
-                            );
-                        }
-                    }
-                }
-                Err(err) => {
-                    session.status = format!("Auth OK but profile lookup failed: {err}");
-                    dialog_queue.push_error(
-                        "Profile Lookup Failed",
-                        format!(
-                            "Authentication succeeded, but failed to fetch /auth/me.\n\n\
-                             Details: {err}\n\n\
-                             This usually means:\n\
-                             • Backend server needs to be restarted/recompiled\n\
-                             • Protocol version mismatch between client and server\n\
-                             • Network connectivity issue"
-                        ),
-                    );
-                }
-            }
-        }
-        Ok((None, _)) => {}
-        Err(err) => {
-            session.status = format!("Request failed: {err}");
-            dialog_queue.push_error(
-                "Authentication Failed",
-                format!("Failed to connect or authenticate.\n\nDetails: {err}"),
-            );
-        }
-    }
-    session.ui_dirty = true;
-}
-
-fn fetch_auth_me(
-    client: &reqwest::blocking::Client,
-    gateway_url: &str,
-    access_token: &str,
-) -> Result<AuthMeResponse, String> {
-    client
-        .get(format!("{gateway_url}/auth/me"))
-        .bearer_auth(access_token)
-        .send()
-        .map_err(|err| err.to_string())?
-        .error_for_status()
-        .map_err(|err| err.to_string())?
-        .json::<AuthMeResponse>()
-        .map_err(|err| err.to_string())
-}
-
-fn fetch_auth_characters(
-    client: &reqwest::blocking::Client,
-    gateway_url: &str,
-    access_token: &str,
-) -> Result<CharactersResponse, String> {
-    client
-        .get(format!("{gateway_url}/auth/characters"))
-        .bearer_auth(access_token)
-        .send()
-        .map_err(|err| err.to_string())?
-        .error_for_status()
-        .map_err(|err| err.to_string())?
-        .json::<CharactersResponse>()
-        .map_err(|err| err.to_string())
-}
-
-fn enter_world_request(
-    client: &reqwest::blocking::Client,
-    gateway_url: &str,
-    access_token: &str,
-    player_entity_id: &str,
-) -> Result<EnterWorldResponse, String> {
-    client
-        .post(format!("{gateway_url}/world/enter"))
-        .bearer_auth(access_token)
-        .json(&EnterWorldRequest {
-            player_entity_id: player_entity_id.to_string(),
-        })
-        .send()
-        .map_err(|err| err.to_string())?
-        .error_for_status()
-        .map_err(|err| err.to_string())?
-        .json::<EnterWorldResponse>()
-        .map_err(|err| err.to_string())
 }
 
 fn setup_character_select_screen(
@@ -1881,7 +708,7 @@ fn handle_character_select_buttons(
                         session.status = "No character selected.".to_string();
                         continue;
                     };
-                    match enter_world_request(
+                    match auth_net::enter_world_request(
                         &client,
                         &gateway_url,
                         access_token,
@@ -1943,7 +770,7 @@ fn spawn_world_scene(
 ) {
     *starfield_motion = StarfieldMotionState::default();
     *camera_motion = CameraMotionState::default();
-    reload_streamed_shaders(&asset_server, &mut shaders, &asset_root.0);
+    shaders::reload_streamed_shaders(&asset_server, &mut shaders, &asset_root.0);
     commands.spawn((
         Camera2d,
         Camera {
@@ -2183,7 +1010,7 @@ fn update_topdown_camera_system(
                     .unwrap_or_else(|| anchor_transform.translation.truncate())
             });
 
-    let (focus_xy, snapped_follow) = if player_view_state.detached_free_camera {
+    let (focus_xy, snap_focus) = if player_view_state.detached_free_camera {
         if !free_camera.initialized {
             free_camera.position_xy = camera_transform.translation.truncate();
             free_camera.initialized = true;
@@ -2208,10 +1035,12 @@ fn update_topdown_camera_system(
         if axis != Vec2::ZERO {
             free_camera.position_xy += axis.normalize() * speed * dt;
         }
+        // Detached free-camera can be smoothed for ergonomics.
         (free_camera.position_xy, false)
     } else if let Some(anchor_xy) = follow_anchor {
         free_camera.position_xy = anchor_xy;
         free_camera.initialized = true;
+        // Controlled mode must hard lock to anchor every frame.
         (anchor_xy, true)
     } else {
         let fallback_xy = camera_transform.translation.truncate();
@@ -2222,7 +1051,7 @@ fn update_topdown_camera_system(
     if !camera.focus_initialized {
         camera.filtered_focus_xy = focus_xy;
         camera.focus_initialized = true;
-    } else if snapped_follow {
+    } else if snap_focus {
         camera.filtered_focus_xy = focus_xy;
     } else {
         let follow_smoothness = 60.0;
@@ -2306,45 +1135,162 @@ fn update_camera_motion_state(
 }
 
 #[allow(clippy::type_complexity)]
-fn lock_camera_to_controlled_entity_end_of_frame(
+fn lock_player_entity_to_controlled_entity_end_of_frame(
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    mut queries: ParamSet<
+        '_,
+        '_,
+        (
+            Query<
+                '_,
+                '_,
+                (
+                    &'_ Transform,
+                    Option<&'_ Position>,
+                    Option<&'_ Rotation>,
+                    Option<&'_ LinearVelocity>,
+                    Option<&'_ AngularVelocity>,
+                ),
+                Without<Camera>,
+            >,
+            Query<
+                '_,
+                '_,
+                (
+                    &'_ mut Transform,
+                    Option<&'_ mut Position>,
+                    Option<&'_ mut Rotation>,
+                    Option<&'_ mut LinearVelocity>,
+                    Option<&'_ mut AngularVelocity>,
+                ),
+                (With<PlayerTag>, Without<Camera>),
+            >,
+        ),
+    >,
+) {
+    let Some(player_runtime_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    let Some(&player_entity) = entity_registry.by_entity_id.get(player_runtime_id.as_str()) else {
+        return;
+    };
+    let controlled_runtime_id = player_view_state
+        .controlled_entity_id
+        .as_deref()
+        .unwrap_or(player_runtime_id.as_str());
+    let Some(&controlled_entity) = entity_registry.by_entity_id.get(controlled_runtime_id) else {
+        return;
+    };
+    if player_entity == controlled_entity {
+        // Self-control is valid; nothing to mirror.
+        return;
+    }
+    let (
+        source_xy,
+        source_z,
+        source_transform_rotation,
+        source_rotation,
+        source_linear_velocity,
+        source_angular_velocity,
+    ) = {
+        let source_query = queries.p0();
+        let Ok((
+            source_transform,
+            source_position,
+            source_rotation,
+            source_linear_velocity,
+            source_angular_velocity,
+        )) = source_query.get(controlled_entity)
+        else {
+            return;
+        };
+        (
+            source_position
+                .map(|position| position.0)
+                .unwrap_or_else(|| source_transform.translation.truncate()),
+            source_transform.translation.z,
+            source_transform.rotation,
+            source_rotation.copied(),
+            source_linear_velocity.map(|v| v.0),
+            source_angular_velocity.map(|v| v.0),
+        )
+    };
+
+    let mut player_query = queries.p1();
+    let Ok((
+        mut player_transform,
+        player_position,
+        player_rotation,
+        player_linear_velocity,
+        player_angular_velocity,
+    )) = player_query.get_mut(player_entity)
+    else {
+        return;
+    };
+
+    player_transform.translation.x = source_xy.x;
+    player_transform.translation.y = source_xy.y;
+    player_transform.translation.z = source_z;
+    player_transform.rotation = source_transform_rotation;
+
+    if let Some(mut player_position) = player_position {
+        player_position.0 = source_xy;
+    }
+    if let (Some(mut player_rotation), Some(source_rotation)) = (player_rotation, source_rotation) {
+        *player_rotation = source_rotation;
+    }
+    if let (Some(mut player_linear_velocity), Some(source_linear_velocity)) =
+        (player_linear_velocity, source_linear_velocity)
+    {
+        player_linear_velocity.0 = source_linear_velocity;
+    }
+    if let (Some(mut player_angular_velocity), Some(source_angular_velocity)) =
+        (player_angular_velocity, source_angular_velocity)
+    {
+        player_angular_velocity.0 = source_angular_velocity;
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn lock_camera_to_player_entity_end_of_frame(
+    session: Res<'_, ClientSession>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
     anchor_query: Query<
         '_,
         '_,
-        (&Transform, Option<&Position>),
+        (&'_ Transform, Option<&'_ Position>),
         (Without<Camera>, Without<GameplayCamera>),
     >,
     mut camera_query: Query<
         '_,
         '_,
-        (&mut Transform, &mut TopDownCamera),
+        (&'_ mut Transform, &'_ mut TopDownCamera),
         (With<GameplayCamera>, Without<ControlledEntity>),
     >,
 ) {
-    if player_view_state.detached_free_camera {
-        return;
-    }
-    let Some(anchor_entity) =
-        resolve_camera_anchor_entity(&session, &player_view_state, &entity_registry)
-    else {
+    let Some(player_runtime_id) = session.player_entity_id.as_ref() else {
         return;
     };
-    let Ok((anchor_transform, anchor_position)) = anchor_query.get(anchor_entity) else {
+    let Some(&player_entity) = entity_registry.by_entity_id.get(player_runtime_id.as_str()) else {
+        return;
+    };
+    let Ok((anchor_transform, anchor_position)) = anchor_query.get(player_entity) else {
         return;
     };
     let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
         return;
     };
-    let controlled_xy = anchor_position
+    let anchor_xy = anchor_position
         .map(|p| p.0)
         .unwrap_or_else(|| anchor_transform.translation.truncate());
     camera.look_ahead_offset = Vec2::ZERO;
-    camera.filtered_focus_xy = controlled_xy;
+    camera.filtered_focus_xy = anchor_xy;
     camera.focus_initialized = true;
-    camera_transform.translation.x = controlled_xy.x;
-    camera_transform.translation.y = controlled_xy.y;
+    camera_transform.translation.x = anchor_xy.x;
+    camera_transform.translation.y = anchor_xy.y;
+    camera_transform.translation.z = 80.0;
 }
 
 fn gate_gameplay_camera_system(
@@ -2356,6 +1302,45 @@ fn gate_gameplay_camera_system(
     }
     for mut visibility in &mut hud_query {
         *visibility = Visibility::Visible;
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn audit_active_world_cameras_system(
+    time: Res<'_, Time>,
+    mut last_log_at_s: Local<'_, f64>,
+    cameras: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ Camera,
+            Option<&'_ RenderLayers>,
+            Has<GameplayCamera>,
+            Has<UiOverlayCamera>,
+        ),
+    >,
+) {
+    let now_s = time.elapsed_secs_f64();
+    if now_s - *last_log_at_s < 5.0 {
+        return;
+    }
+    *last_log_at_s = now_s;
+    let world_cameras = cameras
+        .iter()
+        .filter(|(_, camera, layers, _, _)| camera.is_active && layers.is_none())
+        .collect::<Vec<_>>();
+    if world_cameras.len() > 1 {
+        warn!(
+            "multiple active default-layer cameras detected: {:?}",
+            world_cameras
+                .iter()
+                .map(|(entity, camera, _, is_gameplay, is_ui)| format!(
+                    "entity={entity:?} order={} gameplay={} ui={}",
+                    camera.order, is_gameplay, is_ui
+                ))
+                .collect::<Vec<_>>()
+        );
     }
 }
 
@@ -2414,6 +1399,7 @@ fn update_runtime_stream_icon_system(
     color.0 = Color::srgba(0.3 + pulse * 0.7, 0.85, 1.0, 0.5 + pulse * 0.5);
 }
 
+#[allow(clippy::type_complexity)]
 fn ensure_fullscreen_layer_fallback_system(
     mut commands: Commands<'_, '_>,
     layers: Query<
@@ -2488,7 +1474,7 @@ fn sync_fullscreen_layer_renderables_system(
             continue;
         };
         let has_streamed_shader =
-            fullscreen_layer_shader_ready(&asset_root.0, &asset_manager, &layer.shader_asset_id);
+            shaders::fullscreen_layer_shader_ready(&asset_root.0, &asset_manager, &layer.shader_asset_id);
         let is_supported_kind =
             layer.layer_kind == "starfield" || layer.layer_kind == "space_background";
         let needs_rebuild = rendered.is_none_or(|existing| {
@@ -2573,7 +1559,7 @@ fn sync_backdrop_fullscreen_system(
     let Ok(window) = window_query.single() else {
         return;
     };
-    let Some(viewport_size) = safe_viewport_size(window) else {
+    let Some(viewport_size) = platform::safe_viewport_size(window) else {
         return;
     };
     let width = viewport_size.x;
@@ -2586,14 +1572,6 @@ fn sync_backdrop_fullscreen_system(
     }
 }
 
-fn enforce_frame_rate_cap_system(mut frame_cap: ResMut<'_, FrameRateCap>) {
-    let elapsed = frame_cap.last_frame_end.elapsed();
-    if elapsed < frame_cap.frame_duration {
-        std::thread::sleep(frame_cap.frame_duration - elapsed);
-    }
-    frame_cap.last_frame_end = Instant::now();
-}
-
 #[allow(clippy::type_complexity)]
 fn sync_world_entity_transforms_from_physics(
     mut entities: Query<
@@ -2604,6 +1582,7 @@ fn sync_world_entity_transforms_from_physics(
             With<WorldEntity>,
             Or<(With<Position>, With<Rotation>)>,
             Without<Camera>,
+            Without<lightyear::prelude::Interpolated>,
         ),
     >,
 ) {
@@ -2620,264 +1599,91 @@ fn sync_world_entity_transforms_from_physics(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn send_lightyear_input_messages(
-    input: Option<Res<'_, ButtonInput<KeyCode>>>,
-    app_state: Option<Res<'_, State<ClientAppState>>>,
-    headless_mode: Res<'_, HeadlessTransportMode>,
+#[allow(clippy::type_complexity)]
+fn refresh_interpolated_visual_targets_system(
     time: Res<'_, Time>,
     mut commands: Commands<'_, '_>,
-    mut realtime_input_senders: Query<
+    mut entities: Query<
         '_,
         '_,
-        &'_ mut MessageSender<ClientRealtimeInputMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    mut tick: ResMut<'_, ClientNetworkTick>,
-    mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
-    mut input_log_state: ResMut<'_, ClientInputLogState>,
-    request_state: Res<'_, ClientControlRequestState>,
-) {
-    tick.0 = tick.0.saturating_add(1);
-
-    let in_world_state = app_state
-        .as_ref()
-        .is_some_and(|state| **state == ClientAppState::InWorld)
-        || headless_mode.0;
-
-    let (player_entity_id, player_input) = if in_world_state {
-        let Some(player_entity_id) = session.player_entity_id.clone() else {
-            return;
-        };
-        let (player_input, _axes) = if player_view_state.detached_free_camera {
-            neutral_player_input()
-        } else {
-            player_input_from_keyboard(input.as_deref())
-        };
-        (player_entity_id, player_input)
-    } else {
-        return;
-    };
-
-    ack_tracker.pending_ticks.push_back(tick.0);
-    while ack_tracker.pending_ticks.len() > 512 {
-        ack_tracker.pending_ticks.pop_front();
-    }
-    let has_active_input = player_input.actions.iter().any(|a| {
-        !matches!(
-            a,
-            EntityAction::ThrustNeutral
-                | EntityAction::YawNeutral
-                | EntityAction::LongitudinalNeutral
-                | EntityAction::LateralNeutral
-        )
-    });
-    let target_entity_id = player_view_state
-        .controlled_entity_id
-        .as_ref()
-        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
-        .cloned()
-        .unwrap_or_else(|| player_entity_id.clone());
-    let target_entity = entity_registry
-        .by_entity_id
-        .get(target_entity_id.as_str())
-        .copied();
-    if client_input_debug_logging_enabled() {
-        let now = time.elapsed_secs_f64();
-        let actions_changed = input_log_state.last_logged_actions != player_input.actions;
-        let control_changed = input_log_state.last_logged_controlled_entity_id
-            != player_view_state.controlled_entity_id
-            || input_log_state.last_logged_pending_controlled_entity_id
-                != request_state.pending_controlled_entity_id;
-        let periodic_active_log_due =
-            has_active_input && now - input_log_state.last_logged_at_s >= 0.15;
-        if periodic_active_log_due || actions_changed || control_changed {
-            input_log_state.last_logged_at_s = now;
-            input_log_state.last_logged_actions = player_input.actions.clone();
-            input_log_state.last_logged_controlled_entity_id =
-                player_view_state.controlled_entity_id.clone();
-            input_log_state.last_logged_pending_controlled_entity_id =
-                request_state.pending_controlled_entity_id.clone();
-            info!(
-                player = %player_entity_id,
-                actions = ?player_input.actions,
-                tick = tick.0,
-                controlled = ?player_view_state.controlled_entity_id,
-                routed_target = %target_entity_id,
-                pending = ?request_state.pending_controlled_entity_id,
-                detached = player_view_state.detached_free_camera,
-                "client sending input route"
-            );
-        }
-    }
-    // Deterministic input ownership: upsert marker/state directly on the resolved target entity.
-    // This avoids stale routing when ControlledEntity tags lag replication ordering.
-    if let Some(target_entity) = target_entity {
-        commands.entity(target_entity).insert((
-            ControlledEntity {
-                entity_id: target_entity_id.clone(),
-                player_entity_id: player_entity_id.clone(),
-            },
-            InputMarker::<PlayerInput>::default(),
-            ActionState(player_input.clone()),
-        ));
-    }
-
-    let realtime_message = ClientRealtimeInputMessage {
-        player_entity_id,
-        controlled_entity_id: target_entity_id,
-        actions: player_input.actions,
-        tick: tick.0,
-    };
-    for mut sender in &mut realtime_input_senders {
-        sender.send::<ControlChannel>(realtime_message.clone());
-    }
-}
-
-#[allow(clippy::type_complexity)]
-fn enforce_single_input_marker_owner(
-    mut commands: Commands<'_, '_>,
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    input_marked_entities: Query<
-        '_,
-        '_,
-        (Entity, Option<&'_ ControlledEntity>),
-        With<InputMarker<PlayerInput>>,
+        (
+            Entity,
+            &Position,
+            Option<&Rotation>,
+            &mut Transform,
+            Option<&mut InterpolatedVisualSmoothing>,
+        ),
+        (
+            With<WorldEntity>,
+            With<lightyear::prelude::Interpolated>,
+            Without<SuppressedPredictedDuplicateVisual>,
+            Or<(Changed<Position>, Changed<Rotation>)>,
+        ),
     >,
 ) {
-    let Some(player_entity_id) = session.player_entity_id.as_ref() else {
-        return;
-    };
-    let target_entity_id = player_view_state
-        .controlled_entity_id
-        .as_ref()
-        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
-        .cloned()
-        .unwrap_or_else(|| player_entity_id.clone());
-    let target_entity = entity_registry
-        .by_entity_id
-        .get(target_entity_id.as_str())
-        .copied();
-
-    for (entity, controlled) in &input_marked_entities {
-        let keep = Some(entity) == target_entity
-            && controlled
-                .is_some_and(|controlled| controlled.player_entity_id == *player_entity_id);
-        if keep {
-            continue;
-        }
-        commands
-            .entity(entity)
-            .remove::<(InputMarker<PlayerInput>, ActionState<PlayerInput>)>();
-    }
-}
-
-fn client_input_debug_logging_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("SIDEREAL_DEBUG_INPUT_LOGS")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
-}
-
-fn client_control_debug_logging_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("SIDEREAL_DEBUG_CONTROL_LOGS")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
-}
-
-#[allow(clippy::type_complexity)]
-fn send_lightyear_auth_messages(
-    app_state: Option<Res<'_, State<ClientAppState>>>,
-    headless_mode: Res<'_, HeadlessTransportMode>,
-    time: Res<'_, Time>,
-    watchdog: Res<'_, BootstrapWatchdogState>,
-    session: Res<'_, ClientSession>,
-    mut auth_state: ResMut<'_, ClientAuthSyncState>,
-    mut senders: Query<
-        '_,
-        '_,
-        (Entity, &mut MessageSender<ClientAuthMessage>),
-        (With<Client>, With<Connected>),
-    >,
-) {
-    let active_world_state = app_state.as_ref().is_some_and(|state| {
-        matches!(
-            state.get(),
-            ClientAppState::InWorld | ClientAppState::WorldLoading
-        )
-    }) || headless_mode.0;
-    if !active_world_state {
-        return;
-    }
-    let Some(access_token) = session.access_token.as_ref() else {
-        return;
-    };
-    let Some(player_entity_id) = session.player_entity_id.as_ref() else {
-        return;
-    };
-    if auth_state.last_player_entity_id.as_deref() != Some(player_entity_id.as_str()) {
-        auth_state.sent_for_client_entities.clear();
-        auth_state.last_sent_at_s_by_client_entity.clear();
-        auth_state.last_player_entity_id = Some(player_entity_id.clone());
-    }
     let now_s = time.elapsed_secs_f64();
-
-    for (client_entity, mut sender) in &mut senders {
-        let sent_before = auth_state.sent_for_client_entities.contains(&client_entity);
-        let last_sent_at_s = auth_state
-            .last_sent_at_s_by_client_entity
-            .get(&client_entity)
+    for (entity, position, rotation, mut transform, smoothing) in &mut entities {
+        let target_pos = position.0;
+        let target_rot: Quat = rotation
             .copied()
-            .unwrap_or(0.0);
-        let should_resend_while_unbound =
-            !watchdog.replication_state_seen && now_s - last_sent_at_s >= 0.5;
-        if sent_before && !should_resend_while_unbound {
-            continue;
+            .map(Quat::from)
+            .unwrap_or(transform.rotation);
+
+        if let Some(mut smoothing) = smoothing {
+            let interval_s = (now_s - smoothing.last_snapshot_at_s) as f32;
+            let duration_s = interval_s.clamp(1.0 / 120.0, 0.25);
+            smoothing.from_pos = transform.translation.truncate();
+            smoothing.to_pos = target_pos;
+            smoothing.from_rot = transform.rotation;
+            smoothing.to_rot = target_rot;
+            smoothing.elapsed_s = 0.0;
+            smoothing.duration_s = duration_s;
+            smoothing.last_snapshot_at_s = now_s;
+        } else {
+            transform.translation.x = target_pos.x;
+            transform.translation.y = target_pos.y;
+            transform.translation.z = 0.0;
+            transform.rotation = target_rot;
+            commands.entity(entity).insert(InterpolatedVisualSmoothing {
+                from_pos: target_pos,
+                to_pos: target_pos,
+                from_rot: target_rot,
+                to_rot: target_rot,
+                elapsed_s: 1.0 / 30.0,
+                duration_s: 1.0 / 30.0,
+                last_snapshot_at_s: now_s,
+            });
         }
-        let auth_message = ClientAuthMessage {
-            player_entity_id: player_entity_id.clone(),
-            access_token: access_token.clone(),
-        };
-        sender.send::<ControlChannel>(auth_message);
-        info!(
-            "client auth bind message sent for player_entity_id={} client_entity={:?}",
-            player_entity_id, client_entity
-        );
-        auth_state.sent_for_client_entities.insert(client_entity);
-        auth_state
-            .last_sent_at_s_by_client_entity
-            .insert(client_entity, now_s);
     }
 }
 
-fn receive_lightyear_session_ready_messages(
-    mut receivers: Query<
+#[allow(clippy::type_complexity)]
+fn apply_interpolated_visual_smoothing_system(
+    time: Res<'_, Time>,
+    mut entities: Query<
         '_,
         '_,
-        &mut MessageReceiver<ServerSessionReadyMessage>,
-        (With<Client>, With<Connected>),
+        (&mut Transform, &mut InterpolatedVisualSmoothing),
+        (
+            With<WorldEntity>,
+            With<lightyear::prelude::Interpolated>,
+            Without<SuppressedPredictedDuplicateVisual>,
+        ),
     >,
-    session: Res<'_, ClientSession>,
-    mut session_ready: ResMut<'_, SessionReadyState>,
 ) {
-    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
-        return;
-    };
-    for mut receiver in &mut receivers {
-        for message in receiver.receive() {
-            if message.player_entity_id != *local_player_entity_id {
-                continue;
-            }
-            session_ready.ready_player_entity_id = Some(message.player_entity_id);
-        }
+    let dt = time.delta_secs().max(0.0);
+    for (mut transform, mut smoothing) in &mut entities {
+        smoothing.elapsed_s = (smoothing.elapsed_s + dt).max(0.0);
+        let alpha = if smoothing.duration_s <= 0.0 {
+            1.0
+        } else {
+            (smoothing.elapsed_s / smoothing.duration_s).clamp(0.0, 1.0)
+        };
+        let pos = smoothing.from_pos.lerp(smoothing.to_pos, alpha);
+        transform.translation.x = pos.x;
+        transform.translation.y = pos.y;
+        transform.translation.z = 0.0;
+        transform.rotation = smoothing.from_rot.slerp(smoothing.to_rot, alpha);
     }
 }
 
@@ -2907,188 +1713,6 @@ fn transition_world_loading_to_in_world(
         return;
     }
     next_state.set(ClientAppState::InWorld);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn send_lightyear_control_requests(
-    app_state: Option<Res<'_, State<ClientAppState>>>,
-    headless_mode: Res<'_, HeadlessTransportMode>,
-    time: Res<'_, Time>,
-    session: Res<'_, ClientSession>,
-    mut request_state: ResMut<'_, ClientControlRequestState>,
-    mut senders: Query<
-        '_,
-        '_,
-        &mut MessageSender<ClientControlRequestMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-) {
-    let active_world_state = app_state.as_ref().is_some_and(|state| {
-        matches!(
-            state.get(),
-            ClientAppState::InWorld | ClientAppState::WorldLoading
-        )
-    }) || headless_mode.0;
-    if !active_world_state {
-        return;
-    }
-    let Some(player_entity_id) = session.player_entity_id.as_ref() else {
-        return;
-    };
-    if senders.is_empty() {
-        return;
-    }
-
-    if request_state.pending_request_seq.is_none() {
-        let desired = player_view_state
-            .desired_controlled_entity_id
-            .clone()
-            .or_else(|| player_view_state.controlled_entity_id.clone())
-            .or_else(|| session.player_entity_id.clone());
-        if desired != player_view_state.controlled_entity_id {
-            request_state.next_request_seq = request_state.next_request_seq.saturating_add(1);
-            request_state.pending_controlled_entity_id = desired;
-            request_state.pending_request_seq = Some(request_state.next_request_seq);
-            request_state.last_sent_request_seq = None;
-            request_state.last_sent_at_s = 0.0;
-        }
-    }
-
-    let Some(request_seq) = request_state.pending_request_seq else {
-        return;
-    };
-    let now_s = time.elapsed_secs_f64();
-    let resend_interval_s = 0.5;
-    if request_state.last_sent_request_seq == Some(request_seq)
-        && now_s - request_state.last_sent_at_s < resend_interval_s
-    {
-        return;
-    }
-    let requested_controlled_entity_id = request_state.pending_controlled_entity_id.clone();
-    let message = ClientControlRequestMessage {
-        player_entity_id: player_entity_id.clone(),
-        controlled_entity_id: requested_controlled_entity_id,
-        request_seq,
-    };
-
-    for mut sender in &mut senders {
-        sender.send::<ControlChannel>(message.clone());
-    }
-    request_state.last_sent_request_seq = Some(request_seq);
-    request_state.last_sent_at_s = now_s;
-}
-
-fn receive_lightyear_control_results(
-    session: Res<'_, ClientSession>,
-    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
-    mut request_state: ResMut<'_, ClientControlRequestState>,
-    mut ack_receivers: Query<
-        '_,
-        '_,
-        &mut MessageReceiver<ServerControlAckMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    mut reject_receivers: Query<
-        '_,
-        '_,
-        &mut MessageReceiver<ServerControlRejectMessage>,
-        (With<Client>, With<Connected>),
-    >,
-) {
-    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
-        return;
-    };
-
-    for mut receiver in &mut ack_receivers {
-        for message in receiver.receive() {
-            if message.player_entity_id != *local_player_entity_id {
-                continue;
-            }
-            if request_state.pending_request_seq == Some(message.request_seq) {
-                request_state.pending_controlled_entity_id = None;
-                request_state.pending_request_seq = None;
-                request_state.last_sent_request_seq = None;
-            }
-            if let Some(controlled_entity_id) = message.controlled_entity_id {
-                player_view_state.controlled_entity_id = Some(controlled_entity_id);
-            } else {
-                player_view_state.controlled_entity_id = session.player_entity_id.clone();
-            }
-            player_view_state.desired_controlled_entity_id =
-                player_view_state.controlled_entity_id.clone();
-        }
-    }
-
-    for mut receiver in &mut reject_receivers {
-        for message in receiver.receive() {
-            if message.player_entity_id != *local_player_entity_id {
-                continue;
-            }
-            if request_state.pending_request_seq == Some(message.request_seq) {
-                request_state.pending_controlled_entity_id = None;
-                request_state.pending_request_seq = None;
-                request_state.last_sent_request_seq = None;
-            }
-            if let Some(authoritative) = message.authoritative_controlled_entity_id {
-                player_view_state.controlled_entity_id = Some(authoritative);
-            } else if player_view_state.controlled_entity_id.is_none() {
-                player_view_state.controlled_entity_id = session.player_entity_id.clone();
-            }
-            player_view_state.desired_controlled_entity_id =
-                player_view_state.controlled_entity_id.clone();
-            warn!(
-                "client control request rejected player={} seq={} reason={}",
-                message.player_entity_id, message.request_seq, message.reason
-            );
-        }
-    }
-}
-
-fn log_client_control_state_changes(
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    request_state: Res<'_, ClientControlRequestState>,
-    mut debug_state: ResMut<'_, ClientControlDebugState>,
-) {
-    if !client_control_debug_logging_enabled() {
-        return;
-    }
-    let Some(player_entity_id) = session.player_entity_id.as_ref() else {
-        return;
-    };
-    let controlled_changed =
-        debug_state.last_controlled_entity_id != player_view_state.controlled_entity_id;
-    let pending_changed =
-        debug_state.last_pending_controlled_entity_id != request_state.pending_controlled_entity_id;
-    let detached_changed =
-        debug_state.last_detached_free_camera != player_view_state.detached_free_camera;
-    if controlled_changed || pending_changed || detached_changed {
-        info!(
-            "client control state player={} controlled={:?} pending={:?} pending_seq={:?} detached={}",
-            player_entity_id,
-            player_view_state.controlled_entity_id,
-            request_state.pending_controlled_entity_id,
-            request_state.pending_request_seq,
-            player_view_state.detached_free_camera
-        );
-        debug_state.last_controlled_entity_id = player_view_state.controlled_entity_id.clone();
-        debug_state.last_pending_controlled_entity_id =
-            request_state.pending_controlled_entity_id.clone();
-        debug_state.last_detached_free_camera = player_view_state.detached_free_camera;
-    }
-}
-
-fn reset_bootstrap_watchdog_on_enter_in_world(
-    time: Res<'_, Time>,
-    mut watchdog: ResMut<'_, BootstrapWatchdogState>,
-) {
-    info!("client entered in-world state; bootstrap watchdog armed");
-    *watchdog = BootstrapWatchdogState {
-        in_world_entered_at_s: Some(time.elapsed_secs_f64()),
-        last_bootstrap_progress_at_s: time.elapsed_secs_f64(),
-        ..Default::default()
-    };
 }
 
 fn log_native_client_connected(
@@ -3839,6 +2463,55 @@ fn suppress_duplicate_predicted_interpolated_visuals_system(
 }
 
 #[allow(clippy::type_complexity)]
+fn cleanup_streamed_visual_children_system(
+    mut commands: Commands<'_, '_>,
+    parents: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ Children,
+            Option<&'_ StreamedVisualAssetId>,
+            Has<StreamedVisualAttached>,
+            Has<SuppressedPredictedDuplicateVisual>,
+            Option<&'_ PlayerTag>,
+        ),
+        With<WorldEntity>,
+    >,
+    visual_children: Query<'_, '_, (), With<StreamedVisualChild>>,
+) {
+    for (
+        parent_entity,
+        children,
+        visual_asset_id,
+        has_visual_attached,
+        is_suppressed,
+        player_tag,
+    ) in &parents
+    {
+        let should_clear_visual =
+            visual_asset_id.is_none() || is_suppressed || player_tag.is_some();
+        if !should_clear_visual {
+            continue;
+        }
+        let mut removed_any_child = false;
+        for child in children.iter() {
+            if visual_children.get(child).is_ok() {
+                if let Ok(mut entity_commands) = commands.get_entity(child) {
+                    entity_commands.despawn();
+                }
+                removed_any_child = true;
+            }
+        }
+        if (has_visual_attached || removed_any_child)
+            && let Ok(mut parent_commands) = commands.get_entity(parent_entity)
+        {
+            parent_commands.remove::<StreamedVisualAttached>();
+        }
+    }
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn attach_streamed_visual_assets_system(
     mut commands: Commands<'_, '_>,
     asset_server: Res<'_, AssetServer>,
@@ -3955,6 +2628,8 @@ fn receive_lightyear_asset_stream_messages(
     mut session: ResMut<'_, ClientSession>,
     asset_root: Res<'_, AssetRootPath>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
+    asset_server: Res<'_, AssetServer>,
+    mut shaders: ResMut<'_, Assets<bevy::shader::Shader>>,
 ) {
     for mut receiver in &mut manifest_receivers {
         for manifest in receiver.receive() {
@@ -4130,6 +2805,13 @@ fn receive_lightyear_asset_stream_messages(
                         .saturating_add(pending.byte_len);
                 }
                 asset_manager.requested_asset_ids.remove(&chunk.asset_id);
+                if matches!(
+                    chunk.asset_id.as_str(),
+                    id if id == default_starfield_shader_asset_id()
+                        || id == default_space_background_shader_asset_id()
+                ) {
+                    shaders::reload_streamed_shaders(&asset_server, &mut shaders, &asset_root.0);
+                }
             }
         }
     }
@@ -4404,20 +3086,6 @@ fn watch_in_world_bootstrap_failures(
     }
 }
 
-fn ensure_client_transport_channels(
-    mut transports: Query<'_, '_, &mut Transport, With<Client>>,
-    registry: Res<'_, ChannelRegistry>,
-) {
-    for mut transport in &mut transports {
-        if !transport.has_sender::<ControlChannel>() {
-            transport.add_sender_from_registry::<ControlChannel>(&registry);
-        }
-        if !transport.has_receiver::<ControlChannel>() {
-            transport.add_receiver_from_registry::<ControlChannel>(&registry);
-        }
-    }
-}
-
 #[allow(clippy::type_complexity)]
 fn update_owned_ships_panel_system(
     mut commands: Commands<'_, '_>,
@@ -4676,35 +3344,49 @@ fn update_hud_system(
     controlled_query: Query<
         '_,
         '_,
-        (&Transform, Option<&LinearVelocity>, &HealthPool),
+        (
+            &Transform,
+            Option<&Rotation>,
+            Option<&LinearVelocity>,
+            &HealthPool,
+        ),
         With<ControlledEntity>,
     >,
     camera_query: Query<'_, '_, &Transform, With<GameplayCamera>>,
     mut hud_query: Query<'_, '_, &mut Text, With<HudText>>,
 ) {
-    let (pos, vel, health_text) =
-        if let Ok((transform, maybe_velocity, health)) = controlled_query.single() {
-            let vel = maybe_velocity.map_or(Vec2::ZERO, |velocity| velocity.0);
-            (
-                transform.translation,
-                vel,
-                format!("{:.0}/{:.0}", health.current, health.maximum),
-            )
-        } else {
-            let Ok(camera_transform) = camera_query.single() else {
-                return;
-            };
-            (
-                camera_transform.translation,
-                Vec2::ZERO,
-                "--/--".to_string(),
-            )
+    let (pos, heading_rad, vel, health_text) = if let Ok((
+        transform,
+        maybe_rotation,
+        maybe_velocity,
+        health,
+    )) = controlled_query.single()
+    {
+        let vel = maybe_velocity.map_or(Vec2::ZERO, |velocity| velocity.0);
+        let heading_rad = maybe_rotation
+            .map(|rotation| rotation.as_radians())
+            .unwrap_or_else(|| vel.to_angle());
+        (
+            transform.translation,
+            heading_rad,
+            vel,
+            format!("{:.0}/{:.0}", health.current, health.maximum),
+        )
+    } else {
+        let Ok(camera_transform) = camera_query.single() else {
+            return;
         };
+        (
+            camera_transform.translation,
+            0.0,
+            Vec2::ZERO,
+            "--/--".to_string(),
+        )
+    };
     let Ok(mut text) = hud_query.single_mut() else {
         return;
     };
 
-    let heading_rad = vel.to_angle();
     // Convert math convention (CCW from +Y) to compass convention (CW from north).
     let heading_deg = {
         let raw = (-heading_rad.to_degrees()).rem_euclid(360.0);
@@ -4771,10 +3453,11 @@ fn enforce_motion_ownership_for_world_entities(
             Option<&'_ LinearVelocity>,
             Option<&'_ SizeM>,
             Option<&'_ TotalMassKg>,
+            Has<ControlledEntityGuid>,
             Has<RigidBody>,
             Has<SuppressedPredictedDuplicateVisual>,
         ),
-        With<WorldEntity>,
+        (With<WorldEntity>, Without<Camera>),
     >,
 ) {
     let target_entity_id = match player_view_state.controlled_entity_id.as_ref() {
@@ -4794,10 +3477,29 @@ fn enforce_motion_ownership_for_world_entities(
         return;
     };
     let mut target_guid: Option<uuid::Uuid> = None;
-    for (entity, _, mounted_on, hardpoint, player_tag, guid, _, _, _, _, _, _, _, _) in
-        &root_world_entities
+    for (
+        entity,
+        _,
+        mounted_on,
+        hardpoint,
+        player_tag,
+        guid,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        has_controlled_entity_guid,
+        _,
+        _,
+    ) in &root_world_entities
     {
-        let is_root_ship = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+        let is_root_ship = mounted_on.is_none()
+            && hardpoint.is_none()
+            && player_tag.is_none()
+            && guid.is_some()
+            && !has_controlled_entity_guid;
         if entity == target_entity && is_root_ship {
             target_guid = guid.map(|guid| guid.0);
             break;
@@ -4805,7 +3507,23 @@ fn enforce_motion_ownership_for_world_entities(
     }
 
     let target_position = root_world_entities.iter().find_map(
-        |(entity, _, mounted_on, hardpoint, player_tag, _, position, transform, _, _, _, _, _, _)| {
+        |(
+            entity,
+            _,
+            mounted_on,
+            hardpoint,
+            player_tag,
+            _,
+            position,
+            transform,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+        )| {
             if entity != target_entity
                 || mounted_on.is_some()
                 || hardpoint.is_some()
@@ -4835,10 +3553,15 @@ fn enforce_motion_ownership_for_world_entities(
             _,
             _,
             _,
+            has_controlled_entity_guid,
             is_suppressed,
         ) in &root_world_entities
         {
-            let is_root_ship = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+            let is_root_ship = mounted_on.is_none()
+                && hardpoint.is_none()
+                && player_tag.is_none()
+                && guid.is_some()
+                && !has_controlled_entity_guid;
             if !is_root_ship || controlled.is_some() || entity == target_entity || is_suppressed {
                 continue;
             }
@@ -4879,11 +3602,16 @@ fn enforce_motion_ownership_for_world_entities(
         linear_velocity,
         size_m,
         total_mass_kg,
+        has_controlled_entity_guid,
         has_rigidbody,
         is_suppressed,
     ) in &root_world_entities
     {
-        let is_root_ship = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+        let is_root_ship = mounted_on.is_none()
+            && hardpoint.is_none()
+            && player_tag.is_none()
+            && _guid.is_some()
+            && !has_controlled_entity_guid;
         if !is_root_ship {
             continue;
         }
@@ -5212,8 +3940,7 @@ fn reconcile_controlled_prediction_with_confirmed(
             position.0 += pos_error * SMOOTH_FACTOR;
         }
 
-        if let Some(velocity) = linear_velocity
-            .as_mut()
+        if let Some(velocity) = linear_velocity.as_mut()
             && let Some(confirmed_vel) = confirmed_linear_velocity
         {
             let confirmed = confirmed_vel.0.0;
@@ -5405,254 +4132,6 @@ fn draw_debug_overlay_system(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn logout_to_auth_system(
-    input: Res<'_, ButtonInput<KeyCode>>,
-    mut commands: Commands<'_, '_>,
-    mut next_state: ResMut<'_, NextState<ClientAppState>>,
-    mut session: ResMut<'_, ClientSession>,
-    mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
-    mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
-    mut asset_manager: ResMut<'_, LocalAssetManager>,
-    mut auth_state: ResMut<'_, ClientAuthSyncState>,
-    mut control_request_state: ResMut<'_, ClientControlRequestState>,
-    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
-    mut character_selection: ResMut<'_, CharacterSelectionState>,
-    mut session_ready: ResMut<'_, SessionReadyState>,
-    mut free_camera: ResMut<'_, FreeCameraState>,
-    mut watchdog: ResMut<'_, BootstrapWatchdogState>,
-    mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
-    client_entities: Query<'_, '_, Entity, With<RawClient>>,
-) {
-    if !input.just_pressed(KeyCode::Escape) {
-        return;
-    }
-    for entity in &client_entities {
-        commands.trigger(Disconnect { entity });
-    }
-    next_state.set(ClientAppState::Auth);
-    session.account_id = None;
-    session.player_entity_id = None;
-    session.access_token = None;
-    session.refresh_token = None;
-    session.status = "Logged out. Back on auth screen.".to_string();
-    session.ui_dirty = true;
-    remote_registry.by_entity_id.clear();
-    entity_registry.by_entity_id.clear();
-    entity_registry.pending_children_by_parent_id.clear();
-    asset_manager.pending_assets.clear();
-    asset_manager.requested_asset_ids.clear();
-    asset_manager.bootstrap_manifest_seen = false;
-    asset_manager.bootstrap_phase_complete = false;
-    asset_manager.bootstrap_total_bytes = 0;
-    asset_manager.bootstrap_ready_bytes = 0;
-    auth_state.sent_for_client_entities.clear();
-    auth_state.last_sent_at_s_by_client_entity.clear();
-    auth_state.last_player_entity_id = None;
-    *control_request_state = ClientControlRequestState::default();
-    *player_view_state = LocalPlayerViewState::default();
-    *character_selection = CharacterSelectionState::default();
-    *session_ready = SessionReadyState::default();
-    *free_camera = FreeCameraState::default();
-    *watchdog = BootstrapWatchdogState::default();
-    *ack_tracker = ClientInputAckTracker::default();
-}
-
-fn update_starfield_material_system(
-    time: Res<'_, Time>,
-    camera_motion: Res<'_, CameraMotionState>,
-    window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
-    mut motion: ResMut<'_, StarfieldMotionState>,
-    starfield_query: Query<'_, '_, &MeshMaterial2d<StarfieldMaterial>, With<StarfieldBackdrop>>,
-    mut materials: ResMut<'_, Assets<StarfieldMaterial>>,
-) {
-    let Ok(window) = window_query.single() else {
-        return;
-    };
-    let Some(viewport_size) = safe_viewport_size(window) else {
-        return;
-    };
-    if !camera_motion.initialized {
-        return;
-    }
-    let dt = time.delta_secs().max(0.0);
-    let velocity_xy = camera_motion.smoothed_velocity_xy;
-    let speed = velocity_xy.length();
-
-    if !motion.initialized {
-        motion.initialized = true;
-        motion.prev_speed = speed;
-        motion.smoothed_warp = 0.0;
-    }
-
-    // Large same-frame camera jumps (scene/bootstrap/authority handoff) should not yank backdrop UVs.
-    if camera_motion.frame_delta_xy.length() > 250.0 {
-        motion.starfield_drift_uv = Vec2::ZERO;
-        motion.background_drift_uv = Vec2::ZERO;
-        motion.prev_speed = speed;
-        motion.smoothed_warp = 0.0;
-    }
-
-    let _accel_raw = if dt > 0.0 {
-        (speed - motion.prev_speed) / dt
-    } else {
-        0.0
-    };
-    motion.prev_speed = speed;
-
-    // Integrate shared drift from velocity once; both starfield and space background consume this.
-    let frame_background_step = velocity_xy * dt * 0.00003;
-    let max_step = 0.03;
-    motion.background_drift_uv += frame_background_step.clamp_length_max(max_step);
-    motion.starfield_drift_uv = motion.background_drift_uv;
-    let drift_xy = motion.background_drift_uv;
-
-    // Keep streaking disabled in normal flight; only ramp in at high speed.
-    let speed_warp_start = 500.0;
-    let speed_warp_full = 2_000.0;
-    let target_warp =
-        ((speed - speed_warp_start) / (speed_warp_full - speed_warp_start)).clamp(0.0, 1.0);
-    let warp_alpha = 1.0 - (-6.0 * dt).exp();
-    motion.smoothed_warp = motion.smoothed_warp.lerp(target_warp, warp_alpha);
-    let warp = motion.smoothed_warp;
-    let intensity = 1.0;
-    let alpha = 1.0;
-    let velocity_dir = if speed > 0.001 {
-        velocity_xy / speed
-    } else {
-        Vec2::Y
-    };
-
-    for material_handle in &starfield_query {
-        if let Some(material) = materials.get_mut(&material_handle.0) {
-            material.viewport_time =
-                Vec4::new(viewport_size.x, viewport_size.y, time.elapsed_secs(), warp);
-            material.drift_intensity = Vec4::new(drift_xy.x, drift_xy.y, intensity, alpha);
-            material.velocity_dir = Vec4::new(velocity_dir.x, velocity_dir.y, speed, 0.0);
-        }
-    }
-}
-
-fn update_space_background_material_system(
-    time: Res<'_, Time>,
-    camera_motion: Res<'_, CameraMotionState>,
-    starfield_motion: Res<'_, StarfieldMotionState>,
-    window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
-    bg_query: Query<
-        '_,
-        '_,
-        &MeshMaterial2d<SpaceBackgroundMaterial>,
-        With<SpaceBackgroundBackdrop>,
-    >,
-    mut materials: ResMut<'_, Assets<SpaceBackgroundMaterial>>,
-) {
-    let Ok(window) = window_query.single() else {
-        return;
-    };
-    let Some(viewport_size) = safe_viewport_size(window) else {
-        return;
-    };
-    if !camera_motion.initialized {
-        return;
-    }
-
-    let drift_xy = starfield_motion.background_drift_uv;
-    let velocity_xy = camera_motion.smoothed_velocity_xy;
-    let speed = velocity_xy.length();
-    let velocity_dir = if speed > 0.001 {
-        velocity_xy / speed
-    } else {
-        Vec2::Y
-    };
-
-    for material_handle in &bg_query {
-        if let Some(material) = materials.get_mut(&material_handle.0) {
-            material.viewport_time =
-                Vec4::new(viewport_size.x, viewport_size.y, time.elapsed_secs(), 0.0);
-            material.motion = Vec4::new(drift_xy.x, drift_xy.y, velocity_dir.x, velocity_dir.y);
-        }
-    }
-}
-
-fn safe_viewport_size(window: &Window) -> Option<Vec2> {
-    let width = window.resolution.width();
-    let height = window.resolution.height();
-    if width <= 0.0 || height <= 0.0 {
-        return None;
-    }
-    Some(Vec2::new(width, height))
-}
-
-fn active_field_mut(session: &mut ClientSession) -> &mut String {
-    match session.focus {
-        FocusField::Email => &mut session.email,
-        FocusField::Password => &mut session.password,
-        FocusField::ResetToken => &mut session.reset_token,
-        FocusField::NewPassword => &mut session.new_password,
-    }
-}
-
-fn mask(value: &str) -> String {
-    if value.is_empty() {
-        return "".to_string();
-    }
-    "*".repeat(value.chars().count())
-}
-
-fn is_printable_char(chr: char) -> bool {
-    let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
-        || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
-        || ('\u{100000}'..='\u{10fffd}').contains(&chr);
-    !is_in_private_use_area && !chr.is_ascii_control()
-}
-
-fn preferred_backends() -> Backends {
-    if let Ok(raw_value) = std::env::var("SIDEREAL_CLIENT_WGPU_BACKENDS") {
-        let parsed = Backends::from_comma_list(&raw_value);
-        if parsed.is_empty() {
-            warn!(
-                "SIDEREAL_CLIENT_WGPU_BACKENDS='{}' did not contain any valid backend values; falling back to WGPU_BACKEND/default backend set",
-                raw_value
-            );
-        } else {
-            return parsed;
-        }
-    }
-    Backends::from_env().unwrap_or(Backends::PRIMARY)
-}
-
-fn configured_wgpu_settings(force_fallback_adapter_for_multi_instance: bool) -> WgpuSettings {
-    let force_fallback_adapter = match std::env::var("SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER") {
-        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => true,
-        Ok(_) => false,
-        Err(_) => force_fallback_adapter_for_multi_instance,
-    };
-    let backends = preferred_backends();
-    info!(
-        "client render config backends={:?} force_fallback_adapter={}",
-        backends, force_fallback_adapter
-    );
-    WgpuSettings {
-        backends: Some(backends),
-        force_fallback_adapter,
-        ..Default::default()
-    }
-}
-
-fn acquire_multi_instance_guard() -> Option<TcpListener> {
-    const MULTI_INSTANCE_GUARD_ADDR: &str = "127.0.0.1:62173";
-    match TcpListener::bind(MULTI_INSTANCE_GUARD_ADDR) {
-        Ok(listener) => Some(listener),
-        Err(err) => {
-            warn!(
-                "sidereal-client multi-instance guard lock unavailable at {} ({}). Assuming secondary instance and forcing software adapter.",
-                MULTI_INSTANCE_GUARD_ADDR, err
-            );
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5701,6 +4180,24 @@ mod tests {
     }
 
     #[test]
+    fn realtime_input_send_policy_sends_on_input_or_target_change() {
+        assert!(input::should_send_realtime_input_message(10.0, 9.95, true, false));
+        assert!(input::should_send_realtime_input_message(10.0, 9.95, false, true));
+    }
+
+    #[test]
+    fn realtime_input_send_policy_sends_heartbeat_when_idle() {
+        assert!(input::should_send_realtime_input_message(10.0, 9.89, false, false));
+    }
+
+    #[test]
+    fn realtime_input_send_policy_skips_when_idle_within_heartbeat_window() {
+        assert!(!input::should_send_realtime_input_message(
+            10.0, 9.95, false, false
+        ));
+    }
+
+    #[test]
     fn camera_anchor_prefers_local_player_entity() {
         let mut registry = RuntimeEntityHierarchy::default();
         let player_entity = Entity::from_bits(1);
@@ -5745,10 +4242,41 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_streamed_visual_children_removes_stale_player_visuals() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, cleanup_streamed_visual_children_system);
+
+        let parent = app
+            .world_mut()
+            .spawn((WorldEntity, PlayerTag, StreamedVisualAttached))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((
+                StreamedVisualChild,
+                Transform::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.world_mut().entity_mut(parent).add_child(child);
+
+        app.update();
+
+        assert!(app.world().get_entity(child).is_err());
+        let parent_ref = app.world().entity(parent);
+        assert!(!parent_ref.contains::<StreamedVisualAttached>());
+    }
+
+    #[test]
     fn motion_ownership_enforcement_strips_remote_root_writers() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(LocalSimulationDebugMode(false));
+        app.insert_resource(NearbyCollisionProxyTuning {
+            radius_m: 200.0,
+            max_proxies: 4,
+        });
         app.insert_resource(ClientSession {
             player_entity_id: Some("player:test".to_string()),
             ..Default::default()
@@ -5799,6 +4327,10 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(LocalSimulationDebugMode(false));
+        app.insert_resource(NearbyCollisionProxyTuning {
+            radius_m: 200.0,
+            max_proxies: 4,
+        });
         app.insert_resource(ClientSession {
             player_entity_id: Some("player:test".to_string()),
             ..Default::default()
@@ -5867,10 +4399,86 @@ mod tests {
     }
 
     #[test]
+    fn transform_sync_skips_interpolated_entities() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, sync_world_entity_transforms_from_physics);
+
+        let expected_position = Vec2::new(42.0, -17.5);
+        let expected_rotation = Rotation::radians(0.7);
+        let entity = app.world_mut().spawn((
+            WorldEntity,
+            lightyear::prelude::Interpolated,
+            Transform::default(),
+            Position(expected_position),
+            expected_rotation,
+        ));
+        let entity_id = entity.id();
+
+        app.update();
+
+        let transform = app.world().entity(entity_id).get::<Transform>().unwrap();
+        assert_eq!(transform.translation, Vec3::ZERO);
+        assert_eq!(transform.rotation, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn interpolated_visual_smoothing_moves_between_snapshots() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(
+            Update,
+            (
+                refresh_interpolated_visual_targets_system,
+                apply_interpolated_visual_smoothing_system
+                    .after(refresh_interpolated_visual_targets_system),
+            ),
+        );
+
+        let entity_id = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                lightyear::prelude::Interpolated,
+                Transform::default(),
+                Position(Vec2::ZERO),
+                Rotation::IDENTITY,
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(16));
+        app.update();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(16));
+        app.update();
+
+        {
+            let mut entity = app.world_mut().entity_mut(entity_id);
+            entity.insert(Position(Vec2::new(10.0, 0.0)));
+        }
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(16));
+        app.update();
+
+        let transform = app.world().entity(entity_id).get::<Transform>().unwrap();
+        assert!(transform.translation.x > 0.0);
+        assert!(transform.translation.x < 10.0);
+    }
+
+    #[test]
     fn motion_ownership_enforcement_defers_when_control_target_unresolved() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.insert_resource(LocalSimulationDebugMode(false));
+        app.insert_resource(NearbyCollisionProxyTuning {
+            radius_m: 200.0,
+            max_proxies: 4,
+        });
         app.insert_resource(ClientSession {
             player_entity_id: Some("player:test".to_string()),
             ..Default::default()

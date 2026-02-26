@@ -4,7 +4,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use lightyear::prelude::server::{ClientOf, RawServer};
 use lightyear::prelude::{
     MessageReceiver, NetworkTarget, RemoteId, Replicate, ReplicationState, Server,
-    ServerMultiMessageSender,
+    ServerMultiMessageSender, Unlink,
 };
 use sidereal_game::{AccountId, PlayerTag};
 use sidereal_game::{
@@ -14,7 +14,9 @@ use sidereal_game::{
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use sidereal_net::{ClientAuthMessage, ControlChannel, ServerSessionReadyMessage};
+use sidereal_net::{
+    ClientAuthMessage, ClientDisconnectNotifyMessage, ControlChannel, ServerSessionReadyMessage,
+};
 
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
@@ -44,7 +46,7 @@ pub fn cleanup_client_auth_bindings(
     mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
-    mut replication_states: Query<'_, '_, &'_ mut ReplicationState>,
+    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
 ) {
     let live_clients = clients
         .iter()
@@ -54,21 +56,8 @@ pub fn cleanup_client_auth_bindings(
         .iter()
         .map(|(_, remote_id)| remote_id.0)
         .collect::<HashSet<_>>();
-    let mut stale_clients = removed_clients.read().collect::<HashSet<_>>();
-    stale_clients.extend(
-        bindings
-            .by_client_entity
-            .keys()
-            .filter(|client_entity| !live_clients.contains(*client_entity))
-            .copied(),
-    );
-    stale_clients.extend(
-        visibility_registry
-            .player_entity_id_by_client
-            .keys()
-            .filter(|client_entity| !live_clients.contains(*client_entity))
-            .copied(),
-    );
+    // Drain RemovedComponents<ClientOf> so we don't accumulate stale removals.
+    let _: HashSet<_> = removed_clients.read().collect();
     bindings
         .by_client_entity
         .retain(|client_entity, _| live_clients.contains(client_entity));
@@ -116,14 +105,40 @@ pub fn cleanup_client_auth_bindings(
     visibility_registry
         .player_entity_id_by_client
         .retain(|client_entity, _| live_clients.contains(client_entity));
+    last_activity
+        .0
+        .retain(|client_entity, _| live_clients.contains(client_entity));
 
-    if !stale_clients.is_empty() {
-        for mut replication_state in &mut replication_states {
-            for stale_client in &stale_clients {
-                if replication_state.is_visible(*stale_client) {
-                    replication_state.lose_visibility(*stale_client);
-                }
-            }
+    // Do not call lose_visibility(stale_client) for each replicated entity here.
+    // Doing so causes Lightyear to enqueue a despawn/visibility-revoke per entity for the
+    // disconnected client, producing a huge burst of outbound traffic (tens of MiB/s) when
+    // the client has already left. The client is already gone (ClientOf removed); we leave
+    // ReplicationState visibility bits as-is for the stale client. They are harmless:
+    // update_network_visibility only iterates live_clients, and the replication sender
+    // for that client is gone, so no traffic is sent for them.
+}
+
+/// When the client sends a disconnect notify (logout or window close), Unlink immediately
+/// so the server stops sending to that peer without waiting for idle timeout.
+pub fn receive_client_disconnect_notify(
+    mut commands: Commands<'_, '_>,
+    mut receivers: Query<
+        '_,
+        '_,
+        (Entity, &'_ mut MessageReceiver<ClientDisconnectNotifyMessage>),
+        With<ClientOf>,
+    >,
+) {
+    for (client_entity, mut receiver) in &mut receivers {
+        for msg in receiver.receive() {
+            info!(
+                "replication received client disconnect notify from client_entity={:?} player={}",
+                client_entity, msg.player_entity_id
+            );
+            commands.trigger(Unlink {
+                entity: client_entity,
+                reason: "client_notify".to_string(),
+            });
         }
     }
 }
@@ -134,6 +149,8 @@ pub fn receive_client_auth_messages(
     mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
     server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
+    time: Res<'_, Time<Real>>,
+    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
     mut auth_receivers: Query<
         '_,
         '_,
@@ -153,6 +170,7 @@ pub fn receive_client_auth_messages(
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
     mut replication_states: Query<'_, '_, &'_ mut ReplicationState, With<Replicate>>,
 ) {
+    let now_s = time.elapsed_secs_f64();
     let jwt_secret = match std::env::var("GATEWAY_JWT_SECRET") {
         Ok(secret) if secret.len() >= 32 => secret,
         _ => {
@@ -174,6 +192,7 @@ pub fn receive_client_auth_messages(
 
     for (client_entity, remote_id, mut receiver) in &mut auth_receivers {
         for message in receiver.receive() {
+            last_activity.0.insert(client_entity, now_s);
             let claims = match decode_access_token(&message.access_token, &jwt_secret) {
                 Some(claims) => claims,
                 None => {
@@ -261,7 +280,9 @@ pub fn receive_client_auth_messages(
                 .remove(&remote_id.0);
             stream_state.acked_assets_by_remote.remove(&remote_id.0);
             stream_state.pending_chunks_by_remote.remove(&remote_id.0);
-            stream_state.chunk_send_failures_by_remote.remove(&remote_id.0);
+            stream_state
+                .chunk_send_failures_by_remote
+                .remove(&remote_id.0);
             stream_state
                 .chunk_send_backoff_frames_by_remote
                 .remove(&remote_id.0);
