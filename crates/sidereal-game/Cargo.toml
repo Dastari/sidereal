@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-avian3d.workspace = true
+avian2d.workspace = true
 bevy.workspace = true
 inventory.workspace = true
 serde.workspace = true

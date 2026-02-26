@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sidereal_net::{ClientAuthMessage, ControlChannel, ServerSessionReadyMessage};
 
-use crate::replication::input::ClientInputTickTracker;
+use crate::replication::input::{
+    ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
+};
 use crate::replication::view::ClientControlRequestOrder;
 use crate::replication::{
     PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
@@ -31,13 +33,18 @@ struct AccessTokenClaims {
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
 
+#[allow(clippy::too_many_arguments)]
 pub fn cleanup_client_auth_bindings(
     clients: Query<'_, '_, (Entity, &'_ RemoteId), With<ClientOf>>,
+    mut removed_clients: RemovedComponents<'_, '_, ClientOf>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
+    mut input_rate_limit_state: ResMut<'_, InputRateLimitState>,
+    mut latest_realtime_inputs: ResMut<'_, LatestRealtimeInputsByPlayer>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
+    mut replication_states: Query<'_, '_, &'_ mut ReplicationState>,
 ) {
     let live_clients = clients
         .iter()
@@ -47,6 +54,21 @@ pub fn cleanup_client_auth_bindings(
         .iter()
         .map(|(_, remote_id)| remote_id.0)
         .collect::<HashSet<_>>();
+    let mut stale_clients = removed_clients.read().collect::<HashSet<_>>();
+    stale_clients.extend(
+        bindings
+            .by_client_entity
+            .keys()
+            .filter(|client_entity| !live_clients.contains(*client_entity))
+            .copied(),
+    );
+    stale_clients.extend(
+        visibility_registry
+            .player_entity_id_by_client
+            .keys()
+            .filter(|client_entity| !live_clients.contains(*client_entity))
+            .copied(),
+    );
     bindings
         .by_client_entity
         .retain(|client_entity, _| live_clients.contains(client_entity));
@@ -60,6 +82,15 @@ pub fn cleanup_client_auth_bindings(
         .collect::<HashSet<_>>();
     input_tick_tracker
         .last_accepted_tick_by_player_entity_id
+        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+    input_rate_limit_state
+        .current_window_index_by_player_entity_id
+        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+    input_rate_limit_state
+        .message_count_in_window_by_player_entity_id
+        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+    latest_realtime_inputs
+        .by_player_entity_id
         .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
     control_order
         .last_request_seq_by_player
@@ -76,9 +107,25 @@ pub fn cleanup_client_auth_bindings(
     stream_state
         .pending_chunks_by_remote
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+    stream_state
+        .chunk_send_failures_by_remote
+        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
+    stream_state
+        .chunk_send_backoff_frames_by_remote
+        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
     visibility_registry
         .player_entity_id_by_client
         .retain(|client_entity, _| live_clients.contains(client_entity));
+
+    if !stale_clients.is_empty() {
+        for mut replication_state in &mut replication_states {
+            for stale_client in &stale_clients {
+                if replication_state.is_visible(*stale_client) {
+                    replication_state.lose_visibility(*stale_client);
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -214,6 +261,10 @@ pub fn receive_client_auth_messages(
                 .remove(&remote_id.0);
             stream_state.acked_assets_by_remote.remove(&remote_id.0);
             stream_state.pending_chunks_by_remote.remove(&remote_id.0);
+            stream_state.chunk_send_failures_by_remote.remove(&remote_id.0);
+            stream_state
+                .chunk_send_backoff_frames_by_remote
+                .remove(&remote_id.0);
 
             // New authenticated bind is a fresh control session for this player.
             // Reset per-player request ordering so newly started clients (seq from 1)
@@ -255,7 +306,7 @@ pub fn receive_client_auth_messages(
                     ControlledEntityGuid(Some(player_guid.to_string())),
                     SelectedEntityGuid(None),
                     Transform::default(),
-                    avian3d::prelude::Position(Vec3::ZERO),
+                    avian2d::prelude::Position(Vec2::ZERO),
                 ));
                 entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
                 let player_entity = entity_commands.id();
@@ -319,5 +370,71 @@ fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AccessTokenClaim
             warn!("replication rejected client auth token decode: {}", err);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lightyear::prelude::PeerId;
+
+    #[test]
+    fn cleanup_drops_visibility_for_disconnected_client() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<AuthenticatedClientBindings>();
+        app.init_resource::<ClientInputTickTracker>();
+        app.init_resource::<InputRateLimitState>();
+        app.init_resource::<LatestRealtimeInputsByPlayer>();
+        app.init_resource::<AssetStreamServerState>();
+        app.init_resource::<ClientVisibilityRegistry>();
+        app.init_resource::<ClientControlRequestOrder>();
+        app.add_systems(Update, cleanup_client_auth_bindings);
+
+        let client = app
+            .world_mut()
+            .spawn((ClientOf, RemoteId(PeerId::Netcode(42))))
+            .id();
+        let replicated = app.world_mut().spawn(ReplicationState::default()).id();
+
+        {
+            let mut bindings = app
+                .world_mut()
+                .resource_mut::<AuthenticatedClientBindings>();
+            bindings
+                .by_client_entity
+                .insert(client, "player:test".to_string());
+            bindings
+                .by_remote_id
+                .insert(PeerId::Netcode(42), "player:test".to_string());
+        }
+        app.world_mut()
+            .resource_mut::<ClientVisibilityRegistry>()
+            .register_client(client, "player:test".to_string());
+        app.world_mut()
+            .get_mut::<ReplicationState>(replicated)
+            .expect("replication state exists")
+            .gain_visibility(client);
+
+        app.world_mut().entity_mut(client).despawn();
+        app.update();
+
+        let state = app
+            .world()
+            .get::<ReplicationState>(replicated)
+            .expect("replication state exists");
+        assert!(!state.is_visible(client));
+        assert!(
+            !app.world()
+                .resource::<AuthenticatedClientBindings>()
+                .by_client_entity
+                .contains_key(&client)
+        );
+        assert!(
+            !app.world()
+                .resource::<ClientVisibilityRegistry>()
+                .player_entity_id_by_client
+                .contains_key(&client)
+        );
     }
 }

@@ -1,4 +1,4 @@
-use avian3d::prelude::Position;
+use avian2d::prelude::Position;
 use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{Replicate, ReplicationState};
@@ -125,7 +125,9 @@ pub fn update_network_visibility(
     for (entity, position, _, owner_id, scanner_range, public_visibility, faction_id) in
         &root_entities
     {
-        scratch.root_position_by_entity.insert(entity, position.0);
+        scratch
+            .root_position_by_entity
+            .insert(entity, position.0.extend(0.0));
         scratch
             .root_public_by_entity
             .insert(entity, public_visibility.is_some());
@@ -143,7 +145,7 @@ pub fn update_network_visibility(
                 .scanner_sources_by_owner
                 .entry(owner.0.clone())
                 .or_default()
-                .push((position.0, range));
+                .push((position.0.extend(0.0), range));
             if let Some(faction) = faction_id {
                 scratch
                     .player_faction_by_owner
@@ -160,9 +162,10 @@ pub fn update_network_visibility(
             .get(player_entity_id.as_str())
             .cloned()
             .unwrap_or_default();
-        let observer_anchor_position = observer_anchor_positions
-            .get_position(player_entity_id.as_str())
-            .or_else(|| scanner_sources.first().map(|(pos, _)| *pos));
+        // Delivery scope center is always the player observer anchor.
+        // Scanner sources participate in authorization only.
+        let observer_anchor_position =
+            observer_anchor_positions.get_position(player_entity_id.as_str());
         let player_faction_id = scratch
             .player_faction_by_owner
             .get(player_entity_id.as_str())
@@ -208,11 +211,11 @@ pub fn update_network_visibility(
             .root_position_by_entity
             .get(&root_entity)
             .copied()
-            .or_else(|| own_position.map(|position| position.0))
+            .or_else(|| own_position.map(|position| position.0.extend(0.0)))
             .or_else(|| {
                 child_of
                     .and_then(|parent| position_by_entity.get(parent.parent()).ok())
-                    .map(|position| position.0)
+                    .map(|position| position.0.extend(0.0))
             });
         let is_public = public_visibility.is_some()
             || scratch
@@ -480,6 +483,58 @@ mod tests {
             Some(VisibilityAuthorization::Scanner)
         );
         assert!(!is_entity_visible_to_player(
+            "player-a",
+            None,
+            false,
+            false,
+            None,
+            Some(target_position),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn scanner_authorization_with_missing_observer_anchor_is_culled() {
+        let ctx = visibility_context(
+            "player-a",
+            None,
+            None,
+            vec![(Vec3::new(1000.0, 0.0, 0.0), 200.0)],
+        );
+        let target_position = Vec3::new(1050.0, 0.0, 0.0);
+        assert_eq!(
+            authorize_visibility(
+                "player-a",
+                None,
+                false,
+                false,
+                None,
+                Some(target_position),
+                &ctx
+            ),
+            Some(VisibilityAuthorization::Scanner)
+        );
+        assert!(!is_entity_visible_to_player(
+            "player-a",
+            None,
+            false,
+            false,
+            None,
+            Some(target_position),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn scanner_authorization_with_player_anchor_in_range_is_visible() {
+        let ctx = visibility_context(
+            "player-a",
+            Some(Vec3::new(1000.0, 0.0, 0.0)),
+            None,
+            vec![(Vec3::new(1000.0, 0.0, 0.0), 200.0)],
+        );
+        let target_position = Vec3::new(1050.0, 0.0, 0.0);
+        assert!(is_entity_visible_to_player(
             "player-a",
             None,
             false,

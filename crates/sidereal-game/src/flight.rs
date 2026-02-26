@@ -10,7 +10,7 @@
 //! 4. If fuel available: compute force vector, apply via Avian's Forces query helper, drain fuel
 //! 5. Avian's physics integrator handles the rest
 
-use avian3d::prelude::*;
+use avian2d::prelude::*;
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -199,7 +199,7 @@ pub fn apply_engine_thrust(
         }
     }
 
-    let mut kinematics_by_guid = HashMap::<Uuid, (Vec3, Vec3)>::new();
+    let mut kinematics_by_guid = HashMap::<Uuid, (Vec2, f32)>::new();
     for (guid, linear_velocity, angular_velocity) in &body_queries.p1() {
         kinematics_by_guid.insert(guid.0, (linear_velocity.0, angular_velocity.0));
     }
@@ -216,7 +216,7 @@ pub fn apply_engine_thrust(
             let (velocity, angular_velocity) = kinematics_by_guid
                 .get(&guid.0)
                 .copied()
-                .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+                .unwrap_or((Vec2::ZERO, 0.0));
 
             let forward_available_thrust = forward_thrust_budget_by_parent
                 .get(&guid.0)
@@ -275,8 +275,8 @@ pub fn apply_engine_thrust(
 #[allow(clippy::too_many_arguments)]
 pub fn compute_flight_forces(
     control: (f32, f32, f32, bool), // throttle, yaw_input, turn_rate_deg_s, brake_active
-    velocity: Vec3,
-    angular_velocity: Vec3,
+    velocity: Vec2,
+    angular_velocity: f32,
     rotation: Quat,
     mass_kg: f32,
     planar_moi_kg_m2: f32,
@@ -286,7 +286,7 @@ pub fn compute_flight_forces(
     reverse_available_thrust: f32,
     available_torque_thrust: f32,
     dt: f32,
-) -> (Vec3, Vec3) {
+) -> (Vec2, f32) {
     if !velocity.is_finite()
         || !angular_velocity.is_finite()
         || !rotation.is_finite()
@@ -294,7 +294,7 @@ pub fn compute_flight_forces(
         || !planar_moi_kg_m2.is_finite()
         || !dt.is_finite()
     {
-        return (Vec3::ZERO, Vec3::ZERO);
+        return (Vec2::ZERO, 0.0);
     }
     let (throttle, yaw_input, turn_rate_deg_s, brake_active) = control;
     let max_linear_accel_mps2 = flight_tuning.max_linear_accel_mps2.max(0.1);
@@ -303,21 +303,21 @@ pub fn compute_flight_forces(
         .active_brake_accel_mps2
         .max(passive_brake_accel_mps2);
 
-    let planar_velocity = Vec3::new(velocity.x, velocity.y, 0.0);
+    let planar_velocity = velocity;
     let speed = planar_velocity.length();
     let forward_axis_world = {
         let axis = rotation * Vec3::Y;
-        let axis = Vec3::new(axis.x, axis.y, 0.0);
+        let axis = Vec2::new(axis.x, axis.y);
         let len_sq = axis.length_squared();
         if len_sq > 1e-6 {
             axis / len_sq.sqrt()
         } else {
-            Vec3::Y
+            Vec2::Y
         }
     };
 
-    let mut applied_force = Vec3::ZERO;
-    let mut applied_torque = Vec3::ZERO;
+    let mut applied_force = Vec2::ZERO;
+    let mut applied_torque = 0.0_f32;
 
     if !brake_active && throttle != 0.0 {
         let directional_thrust = if throttle > 0.0 {
@@ -375,16 +375,15 @@ pub fn compute_flight_forces(
 
     if yaw_input != 0.0 {
         let target_angular_velocity_z = yaw_input * turn_rate_deg_s.to_radians();
-        let current_angular_velocity_z = angular_velocity.z;
+        let current_angular_velocity_z = angular_velocity;
         let required_angular_accel_z =
             (target_angular_velocity_z - current_angular_velocity_z) / dt.max(1e-6);
         let commanded_torque_z = required_angular_accel_z * planar_moi_kg_m2;
         let capped_torque_z =
             commanded_torque_z.clamp(-available_torque_thrust, available_torque_thrust);
-        let torque = Vec3::new(0.0, 0.0, capped_torque_z);
-        applied_torque += torque;
+        applied_torque += capped_torque_z;
     } else {
-        let angular_z = angular_velocity.z;
+        let angular_z = angular_velocity;
         if angular_z.abs() > 0.001 {
             let rate = if brake_active {
                 ACTIVE_ANGULAR_DAMP_RATE
@@ -392,13 +391,13 @@ pub fn compute_flight_forces(
                 PASSIVE_ANGULAR_DAMP_RATE
             };
             let damp_torque = -angular_z * rate * planar_moi_kg_m2;
-            applied_torque += Vec3::new(0.0, 0.0, damp_torque);
+            applied_torque += damp_torque;
         }
     }
 
     (
-        sanitize_finite_vec3(applied_force),
-        sanitize_finite_vec3(applied_torque),
+        sanitize_finite_vec2(applied_force),
+        sanitize_finite_scalar(applied_torque),
     )
 }
 
@@ -411,23 +410,21 @@ fn planar_moment_of_inertia_z_kg_m2(mass_kg: f32, size_m: Option<SizeM>) -> f32 
     ((mass_kg * (length * length + width * width)) / 12.0).max(1.0)
 }
 
-/// Computes Avian-compatible 3D angular inertia from gameplay SizeM and mass.
-/// Uses the same formula as `planar_moment_of_inertia_z_kg_m2` for the Z-axis
-/// and analogous formulas for X and Y axes, ensuring Avian's physics integration
-/// produces results consistent with our flight force calculations.
+/// Computes Avian-compatible 2D angular inertia from gameplay SizeM and mass.
 pub fn angular_inertia_from_size(mass_kg: f32, size: &SizeM) -> AngularInertia {
     let m = mass_kg.max(1.0);
     let l = size.length.max(0.1);
     let w = size.width.max(0.1);
-    let h = size.height.max(0.1);
-    let ix = (m * (w * w + h * h)) / 12.0;
-    let iy = (m * (l * l + h * h)) / 12.0;
     let iz = (m * (l * l + w * w)) / 12.0;
-    AngularInertia::new(Vec3::new(ix.max(1.0), iy.max(1.0), iz.max(1.0)))
+    AngularInertia(iz.max(1.0))
 }
 
-fn sanitize_finite_vec3(value: Vec3) -> Vec3 {
-    if value.is_finite() { value } else { Vec3::ZERO }
+fn sanitize_finite_vec2(value: Vec2) -> Vec2 {
+    if value.is_finite() { value } else { Vec2::ZERO }
+}
+
+fn sanitize_finite_scalar(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
 }
 
 /// Clamp angular velocity around Z to prevent excessive blur-spin.
@@ -443,14 +440,8 @@ pub fn clamp_angular_velocity(
     }
 }
 
-pub fn sanitize_planar_angular_velocity(angular_velocity: Vec3, max_abs_z_rad_s: f32) -> Vec3 {
-    Vec3::new(
-        0.0,
-        0.0,
-        angular_velocity
-            .z
-            .clamp(-max_abs_z_rad_s.abs(), max_abs_z_rad_s.abs()),
-    )
+pub fn sanitize_planar_angular_velocity(angular_velocity: f32, max_abs_z_rad_s: f32) -> f32 {
+    angular_velocity.clamp(-max_abs_z_rad_s.abs(), max_abs_z_rad_s.abs())
 }
 
 /// Clamp tiny residual drift/spin while controls are neutral.
@@ -476,8 +467,8 @@ pub fn stabilize_idle_motion(
                 linear_velocity.0.x = 0.0;
                 linear_velocity.0.y = 0.0;
             }
-            if angular_velocity.0.z.abs() <= IDLE_ANGULAR_SPEED_EPSILON_RAD_S {
-                angular_velocity.0.z = 0.0;
+            if angular_velocity.0.abs() <= IDLE_ANGULAR_SPEED_EPSILON_RAD_S {
+                angular_velocity.0 = 0.0;
             }
             continue;
         }
@@ -490,8 +481,8 @@ pub fn stabilize_idle_motion(
             linear_velocity.0.y = 0.0;
         }
 
-        if angular_velocity.0.z.abs() <= IDLE_ANGULAR_SPEED_EPSILON_RAD_S {
-            angular_velocity.0.z = 0.0;
+        if angular_velocity.0.abs() <= IDLE_ANGULAR_SPEED_EPSILON_RAD_S {
+            angular_velocity.0 = 0.0;
         }
     }
 }
@@ -599,8 +590,8 @@ mod tests {
                     brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
-                LinearVelocity(Vec3::new(0.02, -0.03, 0.0)),
-                AngularVelocity(Vec3::new(0.0, 0.0, 0.01)),
+                LinearVelocity(Vec2::new(0.02, -0.03)),
+                AngularVelocity(0.01),
             ))
             .id();
         app.update();
@@ -609,7 +600,7 @@ mod tests {
         let angular_velocity = app.world().entity(entity).get::<AngularVelocity>().unwrap();
         assert_eq!(linear_velocity.0.x, 0.0);
         assert_eq!(linear_velocity.0.y, 0.0);
-        assert_eq!(angular_velocity.0.z, 0.0);
+        assert_eq!(angular_velocity.0, 0.0);
     }
 
     #[test]
@@ -626,8 +617,8 @@ mod tests {
                     brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
-                LinearVelocity(Vec3::new(0.02, -0.03, 0.0)),
-                AngularVelocity(Vec3::new(0.0, 0.0, 0.01)),
+                LinearVelocity(Vec2::new(0.02, -0.03)),
+                AngularVelocity(0.01),
             ))
             .id();
         app.update();
@@ -636,7 +627,7 @@ mod tests {
         let angular_velocity = app.world().entity(entity).get::<AngularVelocity>().unwrap();
         assert!((linear_velocity.0.x - 0.02).abs() < 1e-6);
         assert!((linear_velocity.0.y + 0.03).abs() < 1e-6);
-        assert!((angular_velocity.0.z - 0.01).abs() < 1e-6);
+        assert!((angular_velocity.0 - 0.01).abs() < 1e-6);
     }
 
     #[test]
@@ -653,8 +644,8 @@ mod tests {
                     brake_active: true,
                     turn_rate_deg_s: 45.0,
                 },
-                LinearVelocity(Vec3::new(3.0, -1.0, 0.0)),
-                AngularVelocity(Vec3::new(0.0, 0.0, 0.01)),
+                LinearVelocity(Vec2::new(3.0, -1.0)),
+                AngularVelocity(0.01),
             ))
             .id();
         app.update();
@@ -663,7 +654,7 @@ mod tests {
         let angular_velocity = app.world().entity(entity).get::<AngularVelocity>().unwrap();
         assert_eq!(linear_velocity.0.x, 0.0);
         assert_eq!(linear_velocity.0.y, 0.0);
-        assert_eq!(angular_velocity.0.z, 0.0);
+        assert_eq!(angular_velocity.0, 0.0);
     }
 
     #[test]
@@ -690,10 +681,8 @@ mod tests {
 
     #[test]
     fn sanitize_planar_angular_velocity_clamps_and_zeros_non_planar_axes() {
-        let sanitized = sanitize_planar_angular_velocity(Vec3::new(1.2, -2.8, 7.5), 2.0);
-        assert_eq!(sanitized.x, 0.0);
-        assert_eq!(sanitized.y, 0.0);
-        assert_eq!(sanitized.z, 2.0);
+        let sanitized = sanitize_planar_angular_velocity(7.5, 2.0);
+        assert_eq!(sanitized, 2.0);
     }
 
     #[test]
@@ -712,7 +701,7 @@ mod tests {
                     brake_active: false,
                     turn_rate_deg_s: 45.0,
                 },
-                AngularVelocity(Vec3::new(0.3, -0.4, 6.0)),
+                AngularVelocity(6.0),
             ))
             .id();
         let module = app
@@ -729,20 +718,16 @@ mod tests {
                     parent_entity_id: parent,
                     hardpoint_id: "test".to_string(),
                 },
-                AngularVelocity(Vec3::new(0.7, 0.8, 9.0)),
+                AngularVelocity(9.0),
             ))
             .id();
 
         app.update();
 
         let hull_angular = app.world().entity(hull).get::<AngularVelocity>().unwrap();
-        assert_eq!(hull_angular.0.x, 0.0);
-        assert_eq!(hull_angular.0.y, 0.0);
-        assert_eq!(hull_angular.0.z, 2.0);
+        assert_eq!(hull_angular.0, 2.0);
 
         let module_angular = app.world().entity(module).get::<AngularVelocity>().unwrap();
-        assert!((module_angular.0.x - 0.7).abs() < 1e-6);
-        assert!((module_angular.0.y - 0.8).abs() < 1e-6);
-        assert!((module_angular.0.z - 9.0).abs() < 1e-6);
+        assert!((module_angular.0 - 9.0).abs() < 1e-6);
     }
 }

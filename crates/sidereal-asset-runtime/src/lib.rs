@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -37,22 +37,7 @@ pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
     &[
         StreamableAssetSource {
             asset_id: "corvette_01",
-            relative_cache_path: "models/corvette_01/corvette_01.gltf",
-            content_type: "model/gltf+json",
-        },
-        StreamableAssetSource {
-            asset_id: "corvette_01_gltf",
-            relative_cache_path: "models/corvette_01/corvette_01.gltf",
-            content_type: "model/gltf+json",
-        },
-        StreamableAssetSource {
-            asset_id: "corvette_01_bin",
-            relative_cache_path: "models/corvette_01/corvette_01.bin",
-            content_type: "application/octet-stream",
-        },
-        StreamableAssetSource {
-            asset_id: "corvette_01_png",
-            relative_cache_path: "models/corvette_01/corvette_01.png",
+            relative_cache_path: "sprites/ships/corvette.png",
             content_type: "image/png",
         },
         StreamableAssetSource {
@@ -65,77 +50,22 @@ pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
             relative_cache_path: "shaders/simple_space_background.wgsl",
             content_type: "text/plain; charset=utf-8",
         },
+        StreamableAssetSource {
+            asset_id: "sprite_pixel_effect_wgsl",
+            relative_cache_path: "shaders/sprite_pixel_effect.wgsl",
+            content_type: "text/plain; charset=utf-8",
+        },
     ]
 }
 
 pub fn default_asset_dependencies() -> HashMap<String, Vec<String>> {
-    HashMap::from([(
-        "corvette_01".to_string(),
-        vec![
-            "corvette_01_gltf".to_string(),
-            "corvette_01_bin".to_string(),
-            "corvette_01_png".to_string(),
-        ],
-    )])
-}
-
-fn normalize_joined_relative_path(base_relative_path: &str, uri: &str) -> Option<String> {
-    if uri.starts_with("data:") || uri.contains("://") || uri.starts_with('/') {
-        return None;
-    }
-    let base_dir = Path::new(base_relative_path)
-        .parent()
-        .unwrap_or_else(|| Path::new(""));
-    let joined = base_dir.join(uri);
-    let mut normalized = PathBuf::new();
-    for component in joined.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::Normal(part) => normalized.push(part),
-            std::path::Component::ParentDir => {
-                if !normalized.pop() {
-                    return None;
-                }
-            }
-            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
-        }
-    }
-    let as_string = normalized.to_string_lossy().replace('\\', "/");
-    if as_string.is_empty() {
-        None
-    } else {
-        Some(as_string)
-    }
-}
-
-pub fn gltf_dependency_relative_paths(
-    gltf_relative_path: &str,
-    gltf_bytes: &[u8],
-) -> HashSet<String> {
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(gltf_bytes) else {
-        return HashSet::new();
-    };
-    let mut deps = HashSet::new();
-    for section_name in ["buffers", "images"] {
-        let Some(section) = json.get(section_name).and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for entry in section {
-            let Some(uri) = entry.get("uri").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if let Some(path) = normalize_joined_relative_path(gltf_relative_path, uri) {
-                deps.insert(path);
-            }
-        }
-    }
-    deps
+    HashMap::new()
 }
 
 pub fn expand_required_assets(
-    required_asset_ids: &HashSet<String>,
+    required_asset_ids: &std::collections::HashSet<String>,
     dependencies_by_asset_id: &HashMap<String, Vec<String>>,
-) -> HashSet<String> {
+) -> std::collections::HashSet<String> {
     let mut expanded = required_asset_ids.clone();
     for asset_id in required_asset_ids {
         if let Some(dependencies) = dependencies_by_asset_id.get(asset_id) {
@@ -178,22 +108,4 @@ pub fn save_cache_index(path: &Path, index: &AssetCacheIndex) -> io::Result<()> 
     }
     let bytes = serde_json::to_vec_pretty(index).map_err(io::Error::other)?;
     std::fs::write(path, bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gltf_dependency_paths_extracts_buffers_and_images() {
-        let gltf = br#"{
-            "buffers":[{"uri":"corvette_01.bin"},{"uri":"../shared/mesh.bin"}],
-            "images":[{"uri":"textures/corvette_01.png"},{"uri":"data:image/png;base64,AAAA"}]
-        }"#;
-        let deps = gltf_dependency_relative_paths("models/corvette_01/corvette_01.gltf", gltf);
-        assert!(deps.contains("models/corvette_01/corvette_01.bin"));
-        assert!(deps.contains("models/shared/mesh.bin"));
-        assert!(deps.contains("models/corvette_01/textures/corvette_01.png"));
-        assert_eq!(deps.len(), 3);
-    }
 }

@@ -457,3 +457,41 @@ For each decision:
   - `crates/sidereal-game/src/flight.rs`
   - `bins/sidereal-replication/src/replication/input.rs`
   - `bins/sidereal-client/src/native.rs`
+
+## DR-0014: Project-Wide Migration to Server-Authoritative 2D Runtime (Avian2D + Sprites)
+- Status: Proposed
+- Date: 2026-02-25
+- Owners: Gameplay runtime + replication + client runtime + asset pipeline
+- Context:
+  - Current runtime assumptions are 3D-centric (Avian3D, 3D camera flow, GLTF runtime visuals).
+  - Project direction is top-down 2D gameplay with sprite-based rendering.
+  - Migration must preserve existing authority, identity, persistence, and native/WASM parity contracts.
+- Decision:
+  - Adopt a phased whole-project migration to a 2D runtime:
+    - Avian2D authoritative simulation/prediction,
+    - top-down orthographic gameplay camera,
+    - sprite-based visual pipeline with GLTF removed from runtime paths.
+  - Use `docs/features/2d_migration_plan.md` as the execution plan and acceptance framework.
+- Alternatives considered:
+  - Keep Avian3D and only render sprites in pseudo-2D: rejected (retains unnecessary 3D runtime complexity).
+  - Big-bang rewrite in one change: rejected (high regression risk and poor rollback safety).
+  - Maintain long-term dual 2D/3D runtime support: rejected (duplication and contract drift).
+- Consequences:
+  - Positive:
+    - Runtime architecture aligns with intended top-down 2D gameplay model.
+    - Visual/content runtime complexity reduced by removing GLTF runtime dependencies.
+  - Negative:
+    - Migration touches multiple crates/contracts and requires staged rollout discipline.
+    - Persistence/protocol compatibility must be managed carefully through transition.
+- Follow-up:
+  - Execute phases and quality gates in `docs/features/2d_migration_plan.md`.
+  - Update impacted source-of-truth docs/contracts in the same changes that alter behavior.
+  - Remove Avian3D/GLTF runtime paths only after replacement coverage is validated.
+- Decision doc:
+  - `docs/features/dr-0014_2d_runtime_migration.md`
+- References:
+  - `docs/features/dr-0014_2d_runtime_migration.md`
+  - `docs/features/2d_migration_plan.md`
+  - `docs/sidereal_design_document.md`
+  - `docs/features/asset_delivery_contract.md`
+  - `docs/features/visibility_replication_contract.md`

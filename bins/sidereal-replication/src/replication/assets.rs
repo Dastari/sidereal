@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use sidereal_asset_runtime::{
     AssetCatalogEntry, asset_version_from_sha256_hex, default_streamable_asset_sources,
-    expand_required_assets, gltf_dependency_relative_paths, sha256_hex,
+    expand_required_assets, sha256_hex,
 };
 use sidereal_game::{
     default_corvette_asset_id, default_space_background_shader_asset_id,
@@ -29,6 +29,12 @@ use crate::{
 const ASSET_STREAM_CHUNK_BYTES: usize = 1024;
 /// Max asset stream chunks sent per remote per frame to avoid UDP send buffer overflow (EAGAIN).
 const ASSET_STREAM_CHUNKS_PER_FRAME: usize = 10;
+/// Drop queued chunks for a remote after repeated send failures to avoid infinite resend storms.
+const MAX_CONSECUTIVE_CHUNK_SEND_FAILURES: u32 = 8;
+/// Initial FixedUpdate frames to wait before retrying chunk send after one failure.
+const CHUNK_SEND_BACKOFF_INITIAL_FRAMES: u16 = 15;
+/// Max FixedUpdate frames to wait between retries for a failing remote.
+const CHUNK_SEND_BACKOFF_MAX_FRAMES: u16 = 300;
 
 #[derive(Debug, Clone)]
 struct CachedStreamAsset {
@@ -74,7 +80,7 @@ fn asset_stream_debug_logs_enabled() -> bool {
 
 pub fn initialize_asset_stream_cache(
     mut cache: ResMut<'_, StreamableAssetCache>,
-    mut dependency_map: ResMut<'_, AssetDependencyMap>,
+    _dependency_map: ResMut<'_, AssetDependencyMap>,
 ) {
     cache.assets_by_id.clear();
     cache.always_required_asset_ids = always_required_stream_asset_ids()
@@ -83,17 +89,6 @@ pub fn initialize_asset_stream_cache(
         .collect::<HashSet<_>>();
 
     let streamable_sources = default_streamable_asset_sources();
-    let asset_id_by_relative_path = streamable_sources
-        .iter()
-        .map(|source| {
-            (
-                source.relative_cache_path.to_string(),
-                source.asset_id.to_string(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-
-    let mut discovered_dependency_ids = HashMap::<String, HashSet<String>>::new();
     for source in streamable_sources {
         let Some(bytes) = load_asset_bytes(source.relative_cache_path) else {
             warn!(
@@ -105,11 +100,6 @@ pub fn initialize_asset_stream_cache(
         let chunk_count = bytes.len().div_ceil(ASSET_STREAM_CHUNK_BYTES) as u32;
         let sha256 = sha256_hex(&bytes);
         let asset_version = asset_version_from_sha256_hex(&sha256);
-        let discovered_dep_paths = if source.relative_cache_path.ends_with(".gltf") {
-            gltf_dependency_relative_paths(source.relative_cache_path, &bytes)
-        } else {
-            HashSet::new()
-        };
         cache.assets_by_id.insert(
             source.asset_id.to_string(),
             CachedStreamAsset {
@@ -125,27 +115,6 @@ pub fn initialize_asset_stream_cache(
                 bytes,
             },
         );
-
-        for dep_path in discovered_dep_paths {
-            if let Some(dep_asset_id) = asset_id_by_relative_path.get(dep_path.as_str()) {
-                discovered_dependency_ids
-                    .entry(source.asset_id.to_string())
-                    .or_default()
-                    .insert(dep_asset_id.clone());
-            }
-        }
-    }
-
-    for (asset_id, dep_ids) in discovered_dependency_ids {
-        let deps = dependency_map
-            .dependencies_by_asset_id
-            .entry(asset_id)
-            .or_default();
-        for dep_id in dep_ids {
-            if !deps.iter().any(|existing| existing == &dep_id) {
-                deps.push(dep_id);
-            }
-        }
     }
 
     info!(
@@ -357,15 +326,40 @@ pub fn send_asset_stream_chunks_paced(
     };
 
     let mut completed_assets: Vec<(PeerId, String)> = Vec::new();
+    let mut remotes_to_drop: Vec<PeerId> = Vec::new();
 
     stream_state
         .pending_chunks_by_remote
         .retain(|remote_id, _| bindings.by_remote_id.contains_key(remote_id));
+    stream_state
+        .chunk_send_failures_by_remote
+        .retain(|remote_id, _| bindings.by_remote_id.contains_key(remote_id));
+    stream_state
+        .chunk_send_backoff_frames_by_remote
+        .retain(|remote_id, _| bindings.by_remote_id.contains_key(remote_id));
 
-    for (remote_id, queue) in stream_state.pending_chunks_by_remote.iter_mut() {
-        let target = NetworkTarget::Single(*remote_id);
+    let remote_ids = stream_state
+        .pending_chunks_by_remote
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    for remote_id in remote_ids {
+        if let Some(backoff_frames) = stream_state
+            .chunk_send_backoff_frames_by_remote
+            .get_mut(&remote_id)
+        {
+            if *backoff_frames > 0 {
+                *backoff_frames -= 1;
+                continue;
+            }
+        }
+        let target = NetworkTarget::Single(remote_id);
         for _ in 0..ASSET_STREAM_CHUNKS_PER_FRAME {
-            let Some(pending) = queue.pop_front() else {
+            let Some(pending) = stream_state
+                .pending_chunks_by_remote
+                .get_mut(&remote_id)
+                .and_then(|queue| queue.pop_front())
+            else {
                 break;
             };
             let message = AssetStreamChunkMessage {
@@ -378,19 +372,58 @@ pub fn send_asset_stream_chunks_paced(
             if let Err(err) =
                 sender.send::<AssetStreamChunkMessage, ControlChannel>(&message, server, &target)
             {
-                error!("replication failed sending asset chunk: {}", err);
-                queue.push_front(PendingAssetChunk {
-                    asset_id: pending.asset_id.clone(),
-                    relative_cache_path: pending.relative_cache_path.clone(),
-                    chunk_index: pending.chunk_index,
-                    chunk_count: pending.chunk_count,
-                    bytes: message.bytes,
-                });
+                let failures = {
+                    let entry = stream_state
+                        .chunk_send_failures_by_remote
+                        .entry(remote_id)
+                        .or_default();
+                    *entry = entry.saturating_add(1);
+                    *entry
+                };
+                let next_backoff = stream_state
+                    .chunk_send_backoff_frames_by_remote
+                    .get(&remote_id)
+                    .copied()
+                    .unwrap_or(CHUNK_SEND_BACKOFF_INITIAL_FRAMES);
+                let doubled = next_backoff.saturating_mul(2);
+                stream_state.chunk_send_backoff_frames_by_remote.insert(
+                    remote_id,
+                    doubled.clamp(
+                        CHUNK_SEND_BACKOFF_INITIAL_FRAMES,
+                        CHUNK_SEND_BACKOFF_MAX_FRAMES,
+                    ),
+                );
+                if failures == 1 || (failures % 4 == 0) {
+                    warn!(
+                        "replication failed sending asset chunk remote={:?} failures={} err={}",
+                        remote_id, failures, err
+                    );
+                }
+                if let Some(queue) = stream_state.pending_chunks_by_remote.get_mut(&remote_id) {
+                    queue.push_front(PendingAssetChunk {
+                        asset_id: pending.asset_id.clone(),
+                        relative_cache_path: pending.relative_cache_path.clone(),
+                        chunk_index: pending.chunk_index,
+                        chunk_count: pending.chunk_count,
+                        bytes: message.bytes,
+                    });
+                }
+                if failures >= MAX_CONSECUTIVE_CHUNK_SEND_FAILURES {
+                    warn!(
+                        "replication dropping queued asset chunks for remote={:?} after {} consecutive send failures",
+                        remote_id, failures
+                    );
+                    remotes_to_drop.push(remote_id);
+                }
                 break;
             }
+            stream_state.chunk_send_failures_by_remote.remove(&remote_id);
+            stream_state
+                .chunk_send_backoff_frames_by_remote
+                .remove(&remote_id);
             let is_last_chunk = pending.chunk_index + 1 >= pending.chunk_count;
             if is_last_chunk {
-                completed_assets.push((*remote_id, pending.asset_id));
+                completed_assets.push((remote_id, pending.asset_id));
             }
         }
     }
@@ -407,5 +440,16 @@ pub fn send_asset_stream_chunks_paced(
         {
             pending_requests.remove(&asset_id);
         }
+    }
+
+    for remote_id in remotes_to_drop {
+        stream_state.pending_chunks_by_remote.remove(&remote_id);
+        stream_state
+            .pending_requested_asset_ids_by_remote
+            .remove(&remote_id);
+        stream_state.chunk_send_failures_by_remote.remove(&remote_id);
+        stream_state
+            .chunk_send_backoff_frames_by_remote
+            .remove(&remote_id);
     }
 }

@@ -291,16 +291,8 @@ async fn world_me(
 
     let assets = vec![
         StreamAssetDescriptor {
-            asset_id: "corvette_01_gltf".to_string(),
-            relative_cache_path: "models/corvette_01/corvette_01.gltf".to_string(),
-        },
-        StreamAssetDescriptor {
-            asset_id: "corvette_01_bin".to_string(),
-            relative_cache_path: "models/corvette_01/corvette_01.bin".to_string(),
-        },
-        StreamAssetDescriptor {
-            asset_id: "corvette_01_png".to_string(),
-            relative_cache_path: "models/corvette_01/corvette_01.png".to_string(),
+            asset_id: "corvette_01".to_string(),
+            relative_cache_path: "sprites/ships/corvette.png".to_string(),
         },
         StreamAssetDescriptor {
             asset_id: "starfield_wgsl".to_string(),
@@ -309,6 +301,10 @@ async fn world_me(
         StreamAssetDescriptor {
             asset_id: "space_background_wgsl".to_string(),
             relative_cache_path: "shaders/simple_space_background.wgsl".to_string(),
+        },
+        StreamAssetDescriptor {
+            asset_id: "sprite_pixel_effect_wgsl".to_string(),
+            relative_cache_path: "shaders/sprite_pixel_effect.wgsl".to_string(),
         },
     ];
 
@@ -469,24 +465,17 @@ fn asset_root_dir() -> PathBuf {
 
 fn resolve_asset_stream_path(asset_id: &str) -> Option<(&'static FsPath, &'static str)> {
     match asset_id {
-        "corvette_01_gltf" => Some((
-            FsPath::new("models/corvette_01/corvette_01.gltf"),
-            "model/gltf+json",
-        )),
-        "corvette_01_bin" => Some((
-            FsPath::new("models/corvette_01/corvette_01.bin"),
-            "application/octet-stream",
-        )),
-        "corvette_01_png" => Some((
-            FsPath::new("models/corvette_01/corvette_01.png"),
-            "image/png",
-        )),
+        "corvette_01" => Some((FsPath::new("sprites/ships/corvette.png"), "image/png")),
         "starfield_wgsl" => Some((
             FsPath::new("shaders/starfield.wgsl"),
             "text/plain; charset=utf-8",
         )),
         "space_background_wgsl" => Some((
             FsPath::new("shaders/simple_space_background.wgsl"),
+            "text/plain; charset=utf-8",
+        )),
+        "sprite_pixel_effect_wgsl" => Some((
+            FsPath::new("shaders/sprite_pixel_effect.wgsl"),
             "text/plain; charset=utf-8",
         )),
         _ => None,
@@ -499,11 +488,10 @@ mod tests {
 
     #[test]
     fn resolve_asset_stream_path_knows_corvette_and_starfield() {
-        assert!(resolve_asset_stream_path("corvette_01_gltf").is_some());
-        assert!(resolve_asset_stream_path("corvette_01_bin").is_some());
-        assert!(resolve_asset_stream_path("corvette_01_png").is_some());
+        assert!(resolve_asset_stream_path("corvette_01").is_some());
         assert!(resolve_asset_stream_path("starfield_wgsl").is_some());
         assert!(resolve_asset_stream_path("space_background_wgsl").is_some());
+        assert!(resolve_asset_stream_path("sprite_pixel_effect_wgsl").is_some());
         assert!(resolve_asset_stream_path("unknown").is_none());
     }
 

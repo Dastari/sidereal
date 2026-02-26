@@ -19,7 +19,7 @@ Your vision of a "single-player campaign that others can join with a large vibra
 Based on your documentation, Sidereal is:
 
 ### Core Gameplay Loop
-- **Server-authoritative physics** (30Hz Avian3D simulation)
+- **Server-authoritative physics** (30Hz Avian2D simulation)
 - **MMO-scale architecture** (sharded, meshed, replicated)
 - **Component-driven gameplay** (engines, fuel, flight computers, hardpoints)
 - **Persistent universe** (economy, factions, ownership)

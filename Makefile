@@ -24,15 +24,19 @@ GATEWAY_REPLICATION_CONTROL_UDP_BIND ?= 0.0.0.0:0
 BRP_AUTH_TOKEN ?= 0123456789abcdef
 REPLICATION_BRP_ENABLED ?= true
 REPLICATION_BRP_PORT ?= 15713
+REPLICATION_BRP_BIND_ADDR ?= 127.0.0.1
 CLIENT_BRP_ENABLED ?= true
 CLIENT_BRP_PORT ?= 15714
+CLIENT_BRP_BIND_ADDR ?= 127.0.0.1
 CLIENT2_BRP_PORT ?= 15715
+CLIENT2_BRP_BIND_ADDR ?= 127.0.0.1
 REPLICATION_BRP_URL ?= http://127.0.0.1:$(REPLICATION_BRP_PORT)/
 CLIENT_BRP_URL ?= http://127.0.0.1:$(CLIENT_BRP_PORT)/
 CLIENT2_BRP_URL ?= http://127.0.0.1:$(CLIENT2_BRP_PORT)/
 BRP_DUMP_DIR ?= ./data/debug/brp_dumps
+DASHBOARD_DIR ?= ./dashboard
 
-.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client2 run-client-headless brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
+.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -64,6 +68,7 @@ help:
 	@echo "  make run-client         Run native client"
 	@echo "  make run-client2        Run second native client on UDP 7004"
 	@echo "  make run-client-headless Run transport-only native client"
+	@echo "  make run-dashboard      Run dashboard with BRP env configured"
 	@echo "  make brp-dump-replication Dump replication BRP world.query JSON"
 	@echo "  make brp-dump-client    Dump client BRP world.query JSON"
 	@echo "  make brp-dump-client2   Dump client2 BRP world.query JSON"
@@ -151,12 +156,11 @@ run-replication:
 	REPLICATION_UDP_BIND=$(REPLICATION_UDP_BIND) \
 	REPLICATION_CONTROL_UDP_BIND=$(REPLICATION_CONTROL_UDP_BIND) \
 	SIDEREAL_REPLICATION_BRP_ENABLED=$(REPLICATION_BRP_ENABLED) \
+	SIDEREAL_REPLICATION_BRP_BIND_ADDR=$(REPLICATION_BRP_BIND_ADDR) \
 	SIDEREAL_REPLICATION_BRP_PORT=$(REPLICATION_BRP_PORT) \
 	SIDEREAL_REPLICATION_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
-#	SIDEREAL_DEBUG_INPUT_LOGS=$(SIDEREAL_DEBUG_INPUT_LOGS) \
-#	SIDEREAL_DEBUG_CONTROL_LOGS=$(SIDEREAL_DEBUG_CONTROL_LOGS) \
 	GATEWAY_JWT_SECRET=$(GATEWAY_JWT_SECRET) \
-	cargo run -p sidereal-replication --release
+	cargo run -p sidereal-replication
 
 run-shard:
 	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) \
@@ -171,21 +175,19 @@ run-gateway:
 	GATEWAY_REPLICATION_CONTROL_UDP_BIND=$(GATEWAY_REPLICATION_CONTROL_UDP_BIND) \
 	REPLICATION_CONTROL_UDP_ADDR=$(REPLICATION_CONTROL_UDP_ADDR) \
 	ASSET_ROOT=$(ASSET_ROOT) \
-	cargo run -p sidereal-gateway --release
+	cargo run -p sidereal-gateway 
 
 run-client:
 	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) \
 	CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) \
 	GATEWAY_URL=$(GATEWAY_CLIENT_URL) \
 	SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) \
+	SIDEREAL_CLIENT_BRP_BIND_ADDR=$(CLIENT_BRP_BIND_ADDR) \
 	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
 	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
-#	SIDEREAL_DEBUG_INPUT_LOGS=$(SIDEREAL_DEBUG_INPUT_LOGS) \
-#	SIDEREAL_DEBUG_CONTROL_LOGS=$(SIDEREAL_DEBUG_CONTROL_LOGS) \
-#	SIDEREAL_CLIENT_MOTION_AUDIT=$(SIDEREAL_CLIENT_MOTION_AUDIT) \
 	SIDEREAL_ASSET_ROOT=/home/toby/dev/sidereal_v3 \
 	WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=$(WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER) \
-	cargo run -p sidereal-client --release
+	cargo run -p sidereal-client
 
 run-client2:
 	$(MAKE) run-client CLIENT_UDP_BIND=$(CLIENT2_UDP_BIND) CLIENT_BRP_PORT=$(CLIENT2_BRP_PORT)
@@ -196,9 +198,18 @@ run-client-headless:
 	CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) \
 	GATEWAY_URL=http://$(GATEWAY_BIND) \
 	SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) \
+	SIDEREAL_CLIENT_BRP_BIND_ADDR=$(CLIENT_BRP_BIND_ADDR) \
 	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
 	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
 	cargo run -p sidereal-client
+
+run-dashboard:
+	REPLICATION_BRP_URL=$(REPLICATION_BRP_URL) \
+	CLIENT_BRP_URL=$(CLIENT_BRP_URL) \
+	SIDEREAL_REPLICATION_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
+	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
+	REPLICATION_DATABASE_URL=$(PG_URL) \
+	pnpm --dir $(DASHBOARD_DIR) dev
 
 brp-dump-replication:
 	@set -euo pipefail; \

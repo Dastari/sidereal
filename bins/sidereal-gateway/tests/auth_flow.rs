@@ -306,7 +306,7 @@ async fn register_then_world_me_returns_starter_ship_and_assets() {
     assert!(
         assets
             .iter()
-            .any(|asset| asset["asset_id"] == "corvette_01_gltf")
+            .any(|asset| asset["asset_id"] == "corvette_01")
     );
     assert!(
         assets

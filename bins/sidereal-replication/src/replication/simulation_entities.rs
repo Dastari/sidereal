@@ -1,7 +1,7 @@
 //! Simulation entity spawn, hydration, and controlled-entity binding.
 //! Keeps generic entity terminology; domain-specific labels (e.g. graph "Ship") stay at persistence boundary.
 
-use avian3d::prelude::*;
+use avian2d::prelude::*;
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
 use lightyear::prelude::{ControlledBy, Lifetime, NetworkTarget, Replicate};
@@ -9,10 +9,11 @@ use sidereal_game::{
     AccountId, ActionQueue, BaseMassKg, CargoMassKg, CharacterMovementController,
     ControlledEntityGuid, Engine, EntityGuid, FactionVisibility, FuelTank,
     GeneratedComponentRegistry, Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn, OwnerId,
-    PlayerTag, PublicVisibility, ScannerRangeM, TotalMassKg, angular_inertia_from_size,
-    default_character_movement_action_capabilities, default_corvette_flight_computer,
-    default_corvette_flight_tuning, default_corvette_health_pool, default_corvette_mass_kg,
-    default_corvette_max_velocity_mps, default_corvette_size, default_flight_action_capabilities,
+    PlayerTag, PublicVisibility, ScannerRangeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId,
+    angular_inertia_from_size, default_character_movement_action_capabilities,
+    default_corvette_asset_id, default_corvette_flight_computer, default_corvette_flight_tuning,
+    default_corvette_health_pool, default_corvette_mass_kg, default_corvette_max_velocity_mps,
+    default_corvette_size, default_flight_action_capabilities,
 };
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::{
@@ -28,7 +29,7 @@ use super::hydration_parse::{
     inventory_from_record, mass_kg_from_record, max_velocity_from_record, module_mass_from_record,
     mounted_on_from_record, owner_id_from_record, scanner_component_from_record,
     scanner_range_buff_from_record, scanner_range_from_record, size_m_from_record,
-    total_mass_from_record,
+    sprite_shader_asset_id_from_record, total_mass_from_record, visual_asset_id_from_record,
 };
 use crate::AuthenticatedClientBindings;
 use crate::bootstrap_runtime::{self, BootstrapShipReceiver};
@@ -102,7 +103,7 @@ fn ensure_player_runtime_entity(
             parse_guid_from_entity_id(player_entity_id).map(|guid| guid.to_string()),
         ),
         Transform::from_translation(position),
-        Position(position),
+        Position(position.truncate()),
     ));
     entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
     let player_entity = entity_commands.id();
@@ -194,6 +195,8 @@ pub fn spawn_simulation_entity(
         default_corvette_flight_tuning(),
         default_corvette_max_velocity_mps(),
         default_corvette_health_pool(),
+        VisualAssetId(default_corvette_asset_id().to_string()),
+        SpriteShaderAssetId(None),
         hull_size,
         Transform::from_translation(pos),
     ));
@@ -210,21 +213,13 @@ pub fn spawn_simulation_entity(
         ))
         .insert((
             RigidBody::Dynamic,
-            Collider::cuboid(
-                hull_size.width * 0.5,
-                hull_size.length * 0.5,
-                hull_size.height * 0.5,
-            ),
+            Collider::rectangle(hull_size.width, hull_size.length),
             Mass(hull_mass),
             angular_inertia_from_size(hull_mass, &hull_size),
-            Position(pos),
+            Position(pos.truncate()),
             Rotation::default(),
-            LinearVelocity(vel),
+            LinearVelocity(vel.truncate()),
             AngularVelocity::default(),
-            LockedAxes::new()
-                .lock_translation_z()
-                .lock_rotation_x()
-                .lock_rotation_y(),
             LinearDamping(0.0),
             AngularDamping(0.0),
         ))
@@ -410,7 +405,7 @@ pub fn hydrate_simulation_entities(
                 parse_guid_from_entity_id(&player_entity_id).map(|guid| guid.to_string()),
             ),
             player_transform,
-            Position(camera_position),
+            Position(camera_position.truncate()),
         ));
         entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
         let entity = entity_commands.id();
@@ -499,13 +494,11 @@ pub fn hydrate_simulation_entities(
 
         let body_size =
             size_m_from_record(record, &type_paths).unwrap_or_else(default_corvette_size);
+        let visual_asset_id = visual_asset_id_from_record(record, &type_paths)
+            .unwrap_or_else(|| VisualAssetId(default_corvette_asset_id().to_string()));
+        let sprite_shader_asset_id =
+            sprite_shader_asset_id_from_record(record, &type_paths).unwrap_or_default();
         let body_mass_for_physics = total_mass.0.max(1.0);
-        let collider_half_extents = Vec3::new(
-            body_size.width * 0.5,
-            body_size.length * 0.5,
-            body_size.height * 0.5,
-        )
-        .max(Vec3::splat(0.1));
         let mut entity_commands = commands.spawn((
             Name::new(record.entity_id.clone()),
             SimulatedControlledEntity {
@@ -520,6 +513,8 @@ pub fn hydrate_simulation_entities(
             flight_tuning,
             max_velocity_mps,
             health_pool,
+            visual_asset_id,
+            sprite_shader_asset_id,
             scanner_range,
             Transform::from_translation(pos).with_rotation(Quat::from_rotation_z(heading_rad)),
         ));
@@ -552,21 +547,13 @@ pub fn hydrate_simulation_entities(
         let entity = entity_commands
             .insert((
                 RigidBody::Dynamic,
-                Collider::cuboid(
-                    collider_half_extents.x,
-                    collider_half_extents.y,
-                    collider_half_extents.z,
-                ),
+                Collider::rectangle(body_size.width.max(0.1), body_size.length.max(0.1)),
                 Mass(body_mass_for_physics),
                 angular_inertia_from_size(body_mass_for_physics, &body_size),
-                Position(pos),
-                Rotation(Quat::from_rotation_z(heading_rad)),
-                LinearVelocity(vel),
+                Position(pos.truncate()),
+                Rotation::radians(heading_rad),
+                LinearVelocity(vel.truncate()),
                 AngularVelocity::default(),
-                LockedAxes::new()
-                    .lock_translation_z()
-                    .lock_rotation_x()
-                    .lock_rotation_y(),
                 LinearDamping(0.0),
                 AngularDamping(0.0),
             ))
@@ -757,6 +744,7 @@ pub fn hydrate_simulation_entities(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_bootstrap_entity_commands(
     mut commands: Commands<'_, '_>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,

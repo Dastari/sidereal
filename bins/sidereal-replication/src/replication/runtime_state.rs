@@ -27,14 +27,14 @@ pub fn sync_player_anchor_to_controlled_entity(
             &EntityGuid,
             &ControlledEntityGuid,
             &mut Transform,
-            Option<&mut avian3d::prelude::Position>,
+            Option<&mut avian2d::prelude::Position>,
         ),
         With<PlayerTag>,
     >,
     controlled_entities: Query<
         '_,
         '_,
-        (&EntityGuid, &Transform, Option<&avian3d::prelude::Position>),
+        (&EntityGuid, &Transform, Option<&avian2d::prelude::Position>),
         (With<SimulatedControlledEntity>, Without<PlayerTag>),
     >,
     rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
@@ -43,11 +43,11 @@ pub fn sync_player_anchor_to_controlled_entity(
         return;
     }
 
-    let mut controlled_world_by_guid = std::collections::HashMap::<uuid::Uuid, Vec3>::new();
+    let mut controlled_world_by_guid = std::collections::HashMap::<uuid::Uuid, Vec2>::new();
     for (guid, transform, position) in &controlled_entities {
         let world = position
             .map(|position| position.0)
-            .unwrap_or(transform.translation);
+            .unwrap_or(transform.translation.truncate());
         controlled_world_by_guid.insert(guid.0, world);
     }
 
@@ -64,7 +64,9 @@ pub fn sync_player_anchor_to_controlled_entity(
         let Some(target_world) = controlled_world_by_guid.get(&control_guid).copied() else {
             continue;
         };
-        player_transform.translation = target_world;
+        player_transform.translation.x = target_world.x;
+        player_transform.translation.y = target_world.y;
+        player_transform.translation.z = 0.0;
         if let Some(mut player_position) = player_position {
             player_position.0 = target_world;
         }

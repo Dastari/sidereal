@@ -15,7 +15,9 @@ export interface WorldEntity {
   shardId: number
   x: number
   y: number
-  z: number
+  vx: number
+  vy: number
+  sampledAtMs: number
   componentCount: number
 }
 

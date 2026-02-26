@@ -107,7 +107,7 @@ Selection policy should exist in spawn pipeline only; resolved `VariantId` is pe
 
 ## 5.1 Visual overrides
 
-- model asset ID
+- visual/sprite asset ID
 - material/skin asset ID
 - shader asset IDs
 - VFX/SFX profile IDs

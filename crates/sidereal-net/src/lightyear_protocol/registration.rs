@@ -1,4 +1,4 @@
-use avian3d::prelude::{
+use avian2d::prelude::{
     AngularDamping, AngularVelocity, LinearDamping, LinearVelocity, Position, Rotation,
 };
 use bevy::prelude::App;
@@ -14,7 +14,7 @@ use sidereal_game::{
     EntityGuid, FactionId, FactionVisibility, FlightComputer, FlightTuning, FuelTank, Hardpoint,
     HealthPool, Inventory, MassKg, MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId,
     PublicVisibility, ScannerComponent, ScannerRangeBuff, ScannerRangeM, SiderealComponentMetadata,
-    SizeM, TotalMassKg,
+    SizeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId,
 };
 
 use super::{
@@ -110,4 +110,6 @@ fn register_lightyear_replication_components(app: &mut App) {
     register_game_component!(app, FactionVisibility);
     register_game_component!(app, PublicVisibility);
     register_game_component!(app, CharacterMovementController);
+    register_game_component!(app, VisualAssetId);
+    register_game_component!(app, SpriteShaderAssetId);
 }

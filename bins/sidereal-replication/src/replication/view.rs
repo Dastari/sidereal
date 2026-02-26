@@ -107,7 +107,7 @@ pub fn receive_client_control_requests(
         With<SimulatedControlledEntity>,
     >,
     controlled_entities: Query<'_, '_, (Entity, Option<&'_ ControlledBy>), With<ActionQueue>>,
-    anchor_positions: Query<'_, '_, (&'_ Transform, Option<&'_ avian3d::prelude::Position>)>,
+    anchor_positions: Query<'_, '_, (&'_ Transform, Option<&'_ avian2d::prelude::Position>)>,
     player_guids: Query<'_, '_, &'_ EntityGuid, With<PlayerTag>>,
     player_controlled: Query<'_, '_, &'_ ControlledEntityGuid, With<PlayerTag>>,
     bindings: Res<'_, AuthenticatedClientBindings>,
@@ -294,10 +294,10 @@ pub fn receive_client_control_requests(
                 {
                     let anchor_world = anchor_position
                         .map(|position| position.0)
-                        .unwrap_or(anchor_transform.translation);
+                        .unwrap_or(anchor_transform.translation.truncate());
                     commands.entity(player_entity).insert((
-                        Transform::from_translation(anchor_world),
-                        avian3d::prelude::Position(anchor_world),
+                        Transform::from_translation(anchor_world.extend(0.0)),
+                        avian2d::prelude::Position(anchor_world),
                     ));
                 }
             }

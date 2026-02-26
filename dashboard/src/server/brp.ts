@@ -35,7 +35,9 @@ export type LiveWorldEntity = {
   shardId: number
   x: number
   y: number
-  z: number
+  vx: number
+  vy: number
+  sampledAtMs: number
   componentCount: number
 }
 
@@ -455,21 +457,20 @@ function getMapVisibleFromComponents(
   return foundTrue ? true : null
 }
 
-function parseXYZFromObject(
+function parseXYFromObject(
   value: Record<string, unknown>,
-): [number, number, number] | null {
+): [number, number] | null {
   const keys = [
-    ['x', 'y', 'z'],
-    ['pos_x', 'pos_y', 'pos_z'],
-    ['x_m', 'y_m', 'z_m'],
-    ['position_x', 'position_y', 'position_z'],
+    ['x', 'y'],
+    ['pos_x', 'pos_y'],
+    ['x_m', 'y_m'],
+    ['position_x', 'position_y'],
   ] as const
 
-  for (const [xk, yk, zk] of keys) {
+  for (const [xk, yk] of keys) {
     const x = asNumber(value[xk])
     const y = asNumber(value[yk])
-    const z = asNumber(value[zk] ?? 0)
-    if (x !== null && y !== null) return [x, y, z ?? 0]
+    if (x !== null && y !== null) return [x, y]
   }
 
   return null
@@ -477,21 +478,20 @@ function parseXYZFromObject(
 
 function getPositionFromComponents(
   components: Record<string, unknown>,
-): [number, number, number] | null {
+): [number, number] | null {
   // Prefer authoritative Avian position if present.
   for (const [componentPath, value] of Object.entries(components)) {
     if (!componentPath.endsWith('::Position')) continue
     if (!componentPath.includes('physics_transform::transform::Position'))
       continue
-    if (Array.isArray(value) && value.length >= 3) {
+    if (Array.isArray(value) && value.length >= 2) {
       const x = asNumber(value[0])
       const y = asNumber(value[1])
-      const z = asNumber(value[2])
-      if (x !== null && y !== null) return [x, y, z ?? 0]
+      if (x !== null && y !== null) return [x, y]
     }
     if (value && typeof value === 'object') {
-      const xyz = parseXYZFromObject(value as Record<string, unknown>)
-      if (xyz) return xyz
+      const xy = parseXYFromObject(value as Record<string, unknown>)
+      if (xy) return xy
     }
   }
 
@@ -499,11 +499,10 @@ function getPositionFromComponents(
     if (!value || typeof value !== 'object') continue
 
     if (Array.isArray(value)) {
-      if (value.length >= 12) {
+      if (value.length >= 11) {
         const x = asNumber(value[9])
         const y = asNumber(value[10])
-        const z = asNumber(value[11])
-        if (x !== null && y !== null) return [x, y, z ?? 0]
+        if (x !== null && y !== null) return [x, y]
       }
       continue
     }
@@ -511,18 +510,37 @@ function getPositionFromComponents(
     const obj = value as Record<string, unknown>
     if (obj.translation && typeof obj.translation === 'object') {
       const translation = obj.translation as Record<string, unknown>
-      if (Array.isArray(obj.translation) && obj.translation.length >= 3) {
+      if (Array.isArray(obj.translation) && obj.translation.length >= 2) {
         const x = asNumber(obj.translation[0])
         const y = asNumber(obj.translation[1])
-        const z = asNumber(obj.translation[2])
-        if (x !== null && y !== null) return [x, y, z ?? 0]
+        if (x !== null && y !== null) return [x, y]
       }
-      const xyz = parseXYZFromObject(translation)
-      if (xyz) return xyz
+      const xy = parseXYFromObject(translation)
+      if (xy) return xy
     }
 
-    const xyz = parseXYZFromObject(obj)
-    if (xyz) return xyz
+    const xy = parseXYFromObject(obj)
+    if (xy) return xy
+  }
+
+  return null
+}
+
+function getVelocityFromComponents(
+  components: Record<string, unknown>,
+): [number, number] | null {
+  for (const [componentPath, value] of Object.entries(components)) {
+    if (!componentPath.endsWith('::LinearVelocity')) continue
+    if (!componentPath.includes('dynamics::rigid_body::')) continue
+    if (Array.isArray(value) && value.length >= 2) {
+      const x = asNumber(value[0])
+      const y = asNumber(value[1])
+      if (x !== null && y !== null) return [x, y]
+    }
+    if (value && typeof value === 'object') {
+      const xy = parseXYFromObject(value as Record<string, unknown>)
+      if (xy) return xy
+    }
   }
 
   return null
@@ -563,6 +581,7 @@ export async function getLiveWorldSnapshot(
   const nodes: Array<LiveGraphNode> = []
   const edges: Array<LiveGraphEdge> = []
 
+  const sampledAtMs = Date.now()
   rows.forEach((row, index) => {
     const entityId = String(row.entity)
     const components = row.components ?? {}
@@ -572,14 +591,16 @@ export async function getLiveWorldSnapshot(
         ? extractedName
         : `Entity ${entityId}`
     const kind = getKindFromComponents(components)
-    const xyz = getPositionFromComponents(components)
+    const xy = getPositionFromComponents(components)
+    const velocity = getVelocityFromComponents(components)
     const fallbackX =
       Math.cos((index / Math.max(1, rows.length)) * Math.PI * 2) * 200
     const fallbackY =
       Math.sin((index / Math.max(1, rows.length)) * Math.PI * 2) * 200
-    const x = xyz ? xyz[0] : fallbackX
-    const y = xyz ? xyz[1] : fallbackY
-    const z = xyz ? xyz[2] : 0
+    const x = xy ? xy[0] : fallbackX
+    const y = xy ? xy[1] : fallbackY
+    const vx = velocity ? velocity[0] : 0
+    const vy = velocity ? velocity[1] : 0
     const componentEntries = Object.entries(components)
     const mapVisibleFromComponents = getMapVisibleFromComponents(components)
     const mapVisible =
@@ -597,7 +618,9 @@ export async function getLiveWorldSnapshot(
       shardId: 1,
       x,
       y,
-      z,
+      vx,
+      vy,
+      sampledAtMs,
       mapVisible,
       componentCount: componentEntries.length,
     })

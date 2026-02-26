@@ -1,7 +1,8 @@
 use sidereal_game::{
     BaseMassKg, CargoMassKg, Engine, FactionId, FlightComputer, FlightTuning, FuelTank, Hardpoint,
     HealthPool, Inventory, MassKg, MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId,
-    ScannerComponent, ScannerRangeBuff, ScannerRangeM, SizeM, TotalMassKg,
+    ScannerComponent, ScannerRangeBuff, ScannerRangeM, SizeM, SpriteShaderAssetId, TotalMassKg,
+    VisualAssetId,
 };
 use sidereal_runtime_sync::{component_record, decode_graph_component_payload};
 use std::collections::HashMap;
@@ -202,4 +203,22 @@ pub fn size_m_from_record(
     let component = component_record(&record.components, "size_m")?;
     let payload = decode_graph_component_payload(component, type_paths)?;
     serde_json::from_value::<SizeM>(payload.clone()).ok()
+}
+
+pub fn visual_asset_id_from_record(
+    record: &sidereal_persistence::GraphEntityRecord,
+    type_paths: &HashMap<String, String>,
+) -> Option<VisualAssetId> {
+    let component = component_record(&record.components, "visual_asset_id")?;
+    let payload = decode_graph_component_payload(component, type_paths)?;
+    serde_json::from_value::<VisualAssetId>(payload.clone()).ok()
+}
+
+pub fn sprite_shader_asset_id_from_record(
+    record: &sidereal_persistence::GraphEntityRecord,
+    type_paths: &HashMap<String, String>,
+) -> Option<SpriteShaderAssetId> {
+    let component = component_record(&record.components, "sprite_shader_asset_id")?;
+    let payload = decode_graph_component_payload(component, type_paths)?;
+    serde_json::from_value::<SpriteShaderAssetId>(payload.clone()).ok()
 }

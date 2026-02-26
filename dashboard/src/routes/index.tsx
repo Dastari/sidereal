@@ -310,7 +310,9 @@ function DashboardPage() {
             depth: (existingNode?.depth || 0) + 1,
             properties: {
               shardId: child.shardId,
-              z: child.z,
+              vx: child.vx,
+              vy: child.vy,
+              sampledAtMs: child.sampledAtMs,
               componentCount: child.componentCount,
               parentEntityId: child.parentEntityId,
             },

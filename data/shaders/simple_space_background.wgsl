@@ -191,7 +191,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let time = viewport_time.z;
     let mi = max(colors.a, 0.0001);
     let drift = motion.xy;
-    let velocity_dir = normalize(motion.zw + vec2<f32>(0.0001, 0.0));
+    let velocity_xy = motion.zw;
+    let velocity_speed = length(velocity_xy);
+    let velocity_dir = select(
+        vec2<f32>(0.0, 1.0),
+        velocity_xy / velocity_speed,
+        velocity_speed > 0.0001
+    );
 
     let uv_n = in.uv * 2.0 - 1.0;
     let aspect = res.x / res.y;

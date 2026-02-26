@@ -10,7 +10,7 @@ use crate::replication::assets::{
 use crate::replication::auth::{cleanup_client_auth_bindings, receive_client_auth_messages};
 use crate::replication::input::{
     ClientInputDropMetrics, ClientInputDropMetricsLogState, ClientInputTickTracker,
-    InputActivityLogState, LatestRealtimeInputsByPlayer,
+    InputActivityLogState, InputRateLimitState, LatestRealtimeInputsByPlayer,
     drain_native_player_inputs_to_action_queue, receive_latest_realtime_input_messages,
     report_input_drop_metrics,
 };
@@ -42,7 +42,7 @@ use crate::replication::transport::ensure_server_transport_channels;
 use crate::replication::view::ClientControlRequestOrder;
 use crate::replication::view::receive_client_control_requests;
 use crate::replication::visibility::{VisibilityScratch, update_network_visibility};
-use avian3d::prelude::{
+use avian2d::prelude::{
     Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems, PhysicsTransformPlugin,
 };
 use bevy::asset::{AssetApp, AssetPlugin};
@@ -99,6 +99,10 @@ struct AssetStreamServerState {
     /// Chunks to send per remote; drained at a fixed rate per frame to avoid EAGAIN.
     pub(crate) pending_chunks_by_remote:
         HashMap<lightyear::prelude::PeerId, std::collections::VecDeque<PendingAssetChunk>>,
+    /// Consecutive chunk send failures per remote for backoff/drop behavior.
+    pub(crate) chunk_send_failures_by_remote: HashMap<lightyear::prelude::PeerId, u32>,
+    /// Remaining FixedUpdate ticks to skip chunk sends per remote after a send error.
+    pub(crate) chunk_send_backoff_frames_by_remote: HashMap<lightyear::prelude::PeerId, u16>,
 }
 
 #[derive(Resource, Default)]
@@ -131,7 +135,7 @@ fn main() {
     );
     app.add_message::<bevy::asset::AssetEvent<Mesh>>();
     app.init_asset::<Mesh>();
-    app.insert_resource(Gravity(Vec3::ZERO));
+    app.insert_resource(Gravity(Vec2::ZERO));
     app.add_plugins(ServerPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / 30.0),
     });
@@ -170,6 +174,7 @@ fn main() {
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(ClientInputDropMetricsLogState::default());
     app.insert_resource(InputActivityLogState::default());
+    app.insert_resource(InputRateLimitState::default());
     app.insert_resource(LatestRealtimeInputsByPlayer::default());
     app.insert_resource(AssetDependencyMap {
         dependencies_by_asset_id: default_asset_dependencies(),

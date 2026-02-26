@@ -25,11 +25,11 @@ anyhow = "1.0"
 argon2 = "0.5"
 async-trait = "0.1"
 axum = "0.8"
-avian3d = { version = "0.5.0", features = ["serialize"] }
+avian2d = { version = "0.5.0", features = ["serialize"] }
 base64 = "0.22"
 bevy = { version = "0.18.0" }
 bevy_remote = "0.18.0"
-lightyear = { version = "0.26.4", features = ["udp", "raw_connection", "input_native", "prediction", "interpolation", "frame_interpolation", "avian3d"] }
+lightyear = { version = "0.26.4", features = ["udp", "raw_connection", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
 jsonwebtoken = "9.3"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
@@ -42,6 +42,10 @@ postgres = { version = "0.19", features = ["with-uuid-1"] }
 uuid = { version = "1.8", features = ["serde", "v4"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[patch.crates-io]
+parry2d = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", package = "parry2d" }
+parry2d-f64 = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", package = "parry2d-f64" }
 
 [profile.release]
 strip = "symbols"

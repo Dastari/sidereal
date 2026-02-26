@@ -8,7 +8,7 @@ authors.workspace = true
 [features]
 default = []
 lightyear_protocol = [
-    "dep:avian3d",
+    "dep:avian2d",
     "dep:bevy",
     "dep:lightyear",
     "dep:serde",
@@ -18,7 +18,7 @@ lightyear_protocol = [
 ]
 
 [dependencies]
-avian3d = { workspace = true, optional = true }
+avian2d = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
 lightyear = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

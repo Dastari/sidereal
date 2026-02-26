@@ -1,4 +1,4 @@
-# Dynamic Procedural Asteroid Meshes - Planning & Analysis
+# Dynamic Procedural Asteroid Visuals - Planning & Analysis
 
 **Date:** 2026-02-18  
 **Status:** 📋 Planning Phase
@@ -19,7 +19,7 @@
 
 **Server Layer** (`sidereal-replication`):
 - Hydrated from graph database on startup
-- Physical simulation via Avian3D (implied by collision AABBs)
+- Physical simulation via Avian2D (implied by collision AABBs)
 - No special rendering/mesh - just ECS components
 
 **Client Layer** (`sidereal-client`):
@@ -33,20 +33,10 @@
 
 ```rust
 // bins/sidereal-client/src/native.rs
-fn spawn_entity_visual() {
-    // Creates placeholder sprites:
-    // - Body rectangle
-    // - Nose circle (top)
-    // - Tail circle (bottom)
-    // - White indicator dot
-    
-    // Optionally loads glTF scene if asset_id present:
-    if let Some(scene_path) = resolve_model_scene_path(...) {
-        parent.spawn((
-            SceneRoot(asset_server.load(scene_path)),
-            Transform::from_xyz(0.0, 0.0, 2.0),
-        ));
-    }
+fn attach_streamed_visual_assets_system() {
+    // Creates placeholder sprite/quad first.
+    // Resolves streamed sprite assets by VisualAssetId and swaps in when ready.
+    // Optional SpriteShaderAssetId adds a pixel shader material path.
 }
 ```
 

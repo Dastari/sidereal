@@ -1,4 +1,4 @@
-use avian3d::prelude::Position;
+use avian2d::prelude::Position;
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -82,16 +82,17 @@ pub fn process_character_movement_actions(
             let _ = apply_character_action(&mut longitudinal, &mut lateral, action);
         }
 
-        let mut delta = Vec3::new(lateral, longitudinal, 0.0);
+        let mut delta = Vec2::new(lateral, longitudinal);
         if delta.length_squared() > 1.0 {
             delta = delta.normalize();
         }
         delta *= controller.speed_mps.max(0.0) * dt_s;
-        transform.translation += delta;
+        transform.translation.x += delta.x;
+        transform.translation.y += delta.y;
         transform.translation.z = 0.0;
 
         if let Some(mut position) = maybe_position {
-            position.0 = transform.translation;
+            position.0 = transform.translation.truncate();
         }
     }
 }
@@ -100,7 +101,7 @@ pub fn process_character_movement_actions(
 /// This enforces the runtime chain: camera <- player <- controlled entity.
 #[allow(clippy::type_complexity)]
 pub fn sync_player_to_controlled_entity(
-    mut target_position_by_guid: Local<'_, HashMap<Uuid, Vec3>>,
+    mut target_position_by_guid: Local<'_, HashMap<Uuid, Vec2>>,
     mut params: ParamSet<
         '_,
         '_,
@@ -128,7 +129,7 @@ pub fn sync_player_to_controlled_entity(
     for (guid, transform, maybe_position) in &params.p0() {
         let world_position = maybe_position
             .map(|position| position.0)
-            .unwrap_or(transform.translation);
+            .unwrap_or(transform.translation.truncate());
         target_position_by_guid.insert(guid.0, world_position);
     }
 
@@ -143,7 +144,9 @@ pub fn sync_player_to_controlled_entity(
             continue;
         };
 
-        player_transform.translation = *target_position;
+        player_transform.translation.x = target_position.x;
+        player_transform.translation.y = target_position.y;
+        player_transform.translation.z = 0.0;
         if let Some(mut player_position) = maybe_player_position {
             player_position.0 = *target_position;
         }
@@ -171,7 +174,7 @@ mod tests {
                 EntityGuid(own_guid),
                 CharacterMovementController { speed_mps: 30.0 },
                 Transform::default(),
-                Position(Vec3::ZERO),
+                Position(Vec2::ZERO),
                 ControlledEntityGuid(Some(own_guid.to_string())),
             ))
             .id();
@@ -201,7 +204,7 @@ mod tests {
                 EntityGuid(Uuid::new_v4()),
                 CharacterMovementController { speed_mps: 30.0 },
                 Transform::default(),
-                Position(Vec3::ZERO),
+                Position(Vec2::ZERO),
                 ControlledEntityGuid(Some(controlled_guid)),
             ))
             .id();

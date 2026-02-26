@@ -1,4 +1,4 @@
-use avian3d::prelude::{AngularInertia, Mass};
+use avian2d::prelude::{AngularInertia, Mass};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;

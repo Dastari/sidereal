@@ -45,6 +45,26 @@ export function GridCanvas({
   const rafRef = useRef<number>(0)
 
   const { init, resize, render } = useGridRenderer(canvasRef, isDark)
+  const renderNodesRef = useRef<Map<string, ExpandedNode>>(new Map())
+
+  const extrapolate2d = useCallback(
+    (
+      x: number,
+      y: number,
+      vx: number,
+      vy: number,
+      sampledAtMs: number,
+      nowMs: number,
+    ): { x: number; y: number } => {
+      if (!Number.isFinite(sampledAtMs)) return { x, y }
+      const dtSeconds = Math.max(0, Math.min(10, (nowMs - sampledAtMs) / 1000))
+      return {
+        x: x + vx * dtSeconds,
+        y: y + vy * dtSeconds,
+      }
+    },
+    [],
+  )
 
   // Build combined node map for rendering
   // ONLY render root entities (no parentEntityId) on the map at their x/y positions
@@ -74,7 +94,9 @@ export function GridCanvas({
         depth: 0,
         properties: {
           shardId: entity.shardId,
-          z: entity.z,
+          vx: entity.vx,
+          vy: entity.vy,
+          sampledAtMs: entity.sampledAtMs,
           componentCount: entity.componentCount,
         },
       })
@@ -89,6 +111,26 @@ export function GridCanvas({
 
     return result
   }, [entities, expandedNodes, filterMapInvisible])
+
+  const getRenderNodes = useCallback(
+    (nowMs: number): Map<string, ExpandedNode> => {
+      const projected = new Map<string, ExpandedNode>()
+      for (const [id, node] of allNodes) {
+        const vx =
+          typeof node.properties.vx === 'number' ? node.properties.vx : 0
+        const vy =
+          typeof node.properties.vy === 'number' ? node.properties.vy : 0
+        const sampledAtMs =
+          typeof node.properties.sampledAtMs === 'number'
+            ? node.properties.sampledAtMs
+            : nowMs
+        const pos = extrapolate2d(node.x, node.y, vx, vy, sampledAtMs, nowMs)
+        projected.set(id, { ...node, x: pos.x, y: pos.y })
+      }
+      return projected
+    },
+    [allNodes, extrapolate2d],
+  )
 
   // World-to-screen coordinate conversion
   const worldToScreen = useCallback((wx: number, wy: number) => {
@@ -115,7 +157,7 @@ export function GridCanvas({
       let closest: string | null = null
       let closestDist = 25 * dpr // Hit radius
 
-      for (const [id, node] of allNodes) {
+      for (const [id, node] of renderNodesRef.current) {
         const screenPos = worldToScreen(node.x, node.y)
         const dist = Math.hypot(screenPos.x - sx, screenPos.y - sy)
         if (dist < closestDist) {
@@ -126,7 +168,7 @@ export function GridCanvas({
 
       return closest
     },
-    [allNodes, worldToScreen],
+    [worldToScreen],
   )
 
   // Draw labels on 2D canvas
@@ -152,7 +194,7 @@ export function GridCanvas({
 
     const cam = cameraRef.current
 
-    for (const [id, node] of allNodes) {
+    for (const [id, node] of renderNodesRef.current) {
       const screenPos = worldToScreen(node.x, node.y)
 
       // Skip if off-screen
@@ -177,14 +219,16 @@ export function GridCanvas({
         screenPos.y - offset * dpr,
       )
     }
-  }, [allNodes, worldToScreen, selectedId, hoveredId, isDark])
+  }, [worldToScreen, selectedId, hoveredId, isDark])
 
   // Main render loop
   const frame = useCallback(() => {
-    render(cameraRef.current, allNodes, graphEdges, selectedId, hoveredId)
+    const renderNodes = getRenderNodes(Date.now())
+    renderNodesRef.current = renderNodes
+    render(cameraRef.current, renderNodes, graphEdges, selectedId, hoveredId)
     drawLabels()
     rafRef.current = requestAnimationFrame(frame)
-  }, [render, allNodes, graphEdges, selectedId, hoveredId, drawLabels])
+  }, [render, getRenderNodes, graphEdges, selectedId, hoveredId, drawLabels])
 
   // Initialize and start render loop
   useEffect(() => {

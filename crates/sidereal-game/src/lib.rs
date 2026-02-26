@@ -62,13 +62,13 @@ impl Plugin for SiderealGamePlugin {
                 apply_engine_thrust,
             )
                 .chain()
-                .before(avian3d::prelude::PhysicsSystems::StepSimulation),
+                .before(avian2d::prelude::PhysicsSystems::StepSimulation),
         );
         app.add_systems(
             FixedUpdate,
             (stabilize_idle_motion, clamp_angular_velocity)
                 .chain()
-                .after(avian3d::prelude::PhysicsSystems::StepSimulation),
+                .after(avian2d::prelude::PhysicsSystems::StepSimulation),
         );
     }
 }

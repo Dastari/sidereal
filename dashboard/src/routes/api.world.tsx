@@ -9,7 +9,9 @@ type WorldEntity = {
   shardId: number
   x: number
   y: number
-  z: number
+  vx: number
+  vy: number
+  sampledAtMs: number
   componentCount: number
 }
 
@@ -75,7 +77,7 @@ function parseAgtype(raw: unknown): any {
 
 function extractPositionFromComponentProps(
   rawProps: unknown,
-): [number, number, number] | null {
+): [number, number] | null {
   if (!rawProps || typeof rawProps !== 'object') return null
   const props = rawProps as Record<string, unknown>
   const candidates = Object.values(props)
@@ -83,9 +85,8 @@ function extractPositionFromComponentProps(
     if (!Array.isArray(candidate) || candidate.length < 2) continue
     const x = Number(candidate[0])
     const y = Number(candidate[1])
-    const z = Number(candidate[2] ?? 0)
-    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-      return [x, y, z]
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      return [x, y]
     }
   }
   return null
@@ -117,8 +118,9 @@ export const Route = createFileRoute('/api/world')({
                OPTIONAL MATCH (parent:Entity)-[:HAS_CHILD]->(e)
                OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(component:Component)
                OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(position:Component {component_kind:'position_m'})
+               OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(velocity:Component {component_kind:'velocity_mps'})
                OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(mounted_on:Component {component_kind:'mounted_on'})
-               WITH e, parent, mounted_on, position, count(component) AS component_count
+               WITH e, parent, mounted_on, position, velocity, count(component) AS component_count
                RETURN e.entity_id,
                       coalesce(e.name, e.entity_id),
                       CASE
@@ -127,14 +129,18 @@ export const Route = createFileRoute('/api/world')({
                         ELSE 'entity'
                       END,
                       coalesce(parent.entity_id, e.parent_entity_id, mounted_on.parent_entity_id),
-                      coalesce(e.shard_id, 1), properties(position), component_count
+                      coalesce(e.shard_id, 1), properties(position), properties(velocity), component_count
                ORDER BY coalesce(e.entity_type, 'entity'), coalesce(e.name, e.entity_id)
-             $$) AS (id agtype, name agtype, kind agtype, parent_id agtype, shard_id agtype, pos_props agtype, c agtype);`,
+             $$) AS (id agtype, name agtype, kind agtype, parent_id agtype, shard_id agtype, pos_props agtype, vel_props agtype, c agtype);`,
           )
 
+          const sampledAtMs = Date.now()
           const entities: Array<WorldEntity> = rows.rows.map((row) => {
             const pos = extractPositionFromComponentProps(
               parseAgtype(row.pos_props),
+            )
+            const vel = extractPositionFromComponentProps(
+              parseAgtype(row.vel_props),
             )
             return {
               id: String(parseAgtype(row.id) ?? ''),
@@ -147,7 +153,9 @@ export const Route = createFileRoute('/api/world')({
               shardId: Number(parseAgtype(row.shard_id) ?? 1),
               x: pos?.[0] ?? 0,
               y: pos?.[1] ?? 0,
-              z: pos?.[2] ?? 0,
+              vx: vel?.[0] ?? 0,
+              vy: vel?.[1] ?? 0,
+              sampledAtMs,
               componentCount: Number(parseAgtype(row.component_count) ?? 0),
             }
           })

@@ -1,6 +1,5 @@
-use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
-use bevy::math::EulerRot;
 use bevy::prelude::*;
 use sidereal_game::{
     AccountId, ControlledEntityGuid, Engine, EntityGuid, FlightComputer, FuelTank,
@@ -348,29 +347,27 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
                 "player_entity_id".to_string(),
                 serde_json::Value::String(simulated.player_entity_id.clone()),
             );
-            let mut pos = position.map(|p| p.0).unwrap_or_else(|| Vec3::ZERO);
+            let mut pos = position.map(|p| p.0).unwrap_or_else(|| Vec2::ZERO);
             if !pos.is_finite() {
-                pos = Vec3::ZERO;
+                pos = Vec2::ZERO;
             }
-            pos.z = 0.0;
             properties.insert(
                 "position_m".to_string(),
                 serde_json::json!([pos.x, pos.y, 0.0]),
             );
 
-            let mut vel = velocity.map(|v| v.0).unwrap_or_else(|| Vec3::ZERO);
+            let mut vel = velocity.map(|v| v.0).unwrap_or_else(|| Vec2::ZERO);
             if !vel.is_finite() {
-                vel = Vec3::ZERO;
+                vel = Vec2::ZERO;
             }
-            vel.z = 0.0;
             properties.insert(
                 "velocity_mps".to_string(),
                 serde_json::json!([vel.x, vel.y, 0.0]),
             );
 
             let heading_rad = if let Some(rotation) = rotation {
-                if rotation.0.is_finite() {
-                    let h = rotation.0.to_euler(EulerRot::ZYX).0;
+                if rotation.is_finite() {
+                    let h = rotation.as_radians();
                     if h.is_finite() { h } else { 0.0 }
                 } else {
                     0.0

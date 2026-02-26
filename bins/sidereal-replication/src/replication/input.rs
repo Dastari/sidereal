@@ -51,6 +51,24 @@ pub struct LatestRealtimeInputsByPlayer {
     pub by_player_entity_id: HashMap<String, LatestRealtimeInput>,
 }
 
+#[derive(Resource, Debug, Default)]
+pub struct InputRateLimitState {
+    pub current_window_index_by_player_entity_id: HashMap<String, u64>,
+    pub message_count_in_window_by_player_entity_id: HashMap<String, u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputValidationFailure {
+    FutureTick,
+    DuplicateOrOutOfOrder,
+    RateLimited,
+    OversizedPacket,
+}
+
+const MAX_ACTIONS_PER_PACKET: usize = 32;
+const MAX_TICKS_AHEAD: u64 = 6;
+const MAX_MESSAGES_PER_SECOND: u32 = 120;
+
 impl ClientInputDropMetrics {
     fn record_accepted(&mut self) {
         self.accepted_inputs = self.accepted_inputs.saturating_add(1);
@@ -65,6 +83,46 @@ impl ClientInputDropMetrics {
             .saturating_add(self.unbound_client)
             .saturating_add(self.spoofed_player_id)
     }
+}
+
+fn validate_input_message(
+    message: &ClientRealtimeInputMessage,
+    last_accepted_tick: Option<u64>,
+    now_s: f64,
+    rate_limit_state: &mut InputRateLimitState,
+) -> Result<(), InputValidationFailure> {
+    if message.actions.len() > MAX_ACTIONS_PER_PACKET {
+        return Err(InputValidationFailure::OversizedPacket);
+    }
+    if let Some(last_tick) = last_accepted_tick {
+        if message.tick <= last_tick {
+            return Err(InputValidationFailure::DuplicateOrOutOfOrder);
+        }
+        if message.tick > last_tick.saturating_add(MAX_TICKS_AHEAD) {
+            return Err(InputValidationFailure::FutureTick);
+        }
+    }
+    let window_index = now_s.max(0.0).floor() as u64;
+    let player_entity_id = message.player_entity_id.as_str();
+    let stored_window = rate_limit_state
+        .current_window_index_by_player_entity_id
+        .entry(player_entity_id.to_string())
+        .or_insert(window_index);
+    if *stored_window != window_index {
+        *stored_window = window_index;
+        rate_limit_state
+            .message_count_in_window_by_player_entity_id
+            .insert(player_entity_id.to_string(), 0);
+    }
+    let counter = rate_limit_state
+        .message_count_in_window_by_player_entity_id
+        .entry(player_entity_id.to_string())
+        .or_insert(0);
+    if *counter >= MAX_MESSAGES_PER_SECOND {
+        return Err(InputValidationFailure::RateLimited);
+    }
+    *counter = counter.saturating_add(1);
+    Ok(())
 }
 
 fn input_debug_logging_enabled() -> bool {
@@ -84,8 +142,13 @@ fn summary_logging_enabled() -> bool {
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn receive_latest_realtime_input_messages(
+    time: Res<'_, Time>,
     bindings: Res<'_, AuthenticatedClientBindings>,
+    mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
+    mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
+    mut rate_limit_state: ResMut<'_, InputRateLimitState>,
     mut latest: ResMut<'_, LatestRealtimeInputsByPlayer>,
     mut receivers: Query<
         '_,
@@ -98,17 +161,53 @@ pub fn receive_latest_realtime_input_messages(
         With<ClientOf>,
     >,
 ) {
+    let now_s = time.elapsed_secs_f64();
     for (client_entity, remote_id, mut receiver) in &mut receivers {
         let Some(bound_player_entity_id) = bindings.by_client_entity.get(&client_entity) else {
+            for _ in receiver.receive() {
+                input_drop_metrics.unbound_client =
+                    input_drop_metrics.unbound_client.saturating_add(1);
+            }
             continue;
         };
         for message in receiver.receive() {
             if message.player_entity_id != *bound_player_entity_id {
+                input_drop_metrics.spoofed_player_id =
+                    input_drop_metrics.spoofed_player_id.saturating_add(1);
                 warn!(
                     "dropping realtime input with spoofed player id: remote={:?} claimed={} bound={}",
                     remote_id.0, message.player_entity_id, bound_player_entity_id
                 );
                 continue;
+            }
+            let last_accepted_tick = input_tick_tracker
+                .last_accepted_tick_by_player_entity_id
+                .get(message.player_entity_id.as_str())
+                .copied();
+            match validate_input_message(&message, last_accepted_tick, now_s, &mut rate_limit_state)
+            {
+                Ok(()) => {}
+                Err(InputValidationFailure::FutureTick) => {
+                    input_drop_metrics.future_tick =
+                        input_drop_metrics.future_tick.saturating_add(1);
+                    continue;
+                }
+                Err(InputValidationFailure::DuplicateOrOutOfOrder) => {
+                    input_drop_metrics.duplicate_or_out_of_order_tick = input_drop_metrics
+                        .duplicate_or_out_of_order_tick
+                        .saturating_add(1);
+                    continue;
+                }
+                Err(InputValidationFailure::RateLimited) => {
+                    input_drop_metrics.rate_limited =
+                        input_drop_metrics.rate_limited.saturating_add(1);
+                    continue;
+                }
+                Err(InputValidationFailure::OversizedPacket) => {
+                    input_drop_metrics.oversized_packet =
+                        input_drop_metrics.oversized_packet.saturating_add(1);
+                    continue;
+                }
             }
             let entry = latest
                 .by_player_entity_id
@@ -121,6 +220,9 @@ pub fn receive_latest_realtime_input_messages(
             if message.tick < entry.tick {
                 continue;
             }
+            input_tick_tracker
+                .last_accepted_tick_by_player_entity_id
+                .insert(message.player_entity_id.clone(), message.tick);
             entry.tick = message.tick;
             entry.controlled_entity_id = message.controlled_entity_id;
             entry.actions = message.actions;
@@ -147,7 +249,6 @@ pub fn drain_native_player_inputs_to_action_queue(
     time: Res<'_, Time>,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     latest_realtime_inputs: Res<'_, LatestRealtimeInputsByPlayer>,
-    mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
     mut input_log_state: ResMut<'_, InputActivityLogState>,
 ) {
@@ -199,11 +300,11 @@ pub fn drain_native_player_inputs_to_action_queue(
         for action in actions.iter().copied() {
             queue.push(action);
         }
-        let last_tick = input_tick_tracker
-            .last_accepted_tick_by_player_entity_id
-            .entry(player_entity_id.clone())
-            .or_insert(0);
-        *last_tick = last_tick.saturating_add(1);
+        let accepted_tick = latest_realtime_inputs
+            .by_player_entity_id
+            .get(player_entity_id.as_str())
+            .map(|latest| latest.tick)
+            .unwrap_or(0);
         if input_debug_logging_enabled() {
             let now = time.elapsed_secs_f64();
             let last_logged_at_s = *input_log_state
@@ -219,7 +320,7 @@ pub fn drain_native_player_inputs_to_action_queue(
             if should_log {
                 info!(
                     actions = ?actions,
-                    accepted_seq = *last_tick,
+                    accepted_tick = accepted_tick,
                     player = %player_entity_id,
                     controlled = %controlled_entity_id,
                     "server received input route"
@@ -233,6 +334,57 @@ pub fn drain_native_player_inputs_to_action_queue(
             }
         }
         input_drop_metrics.record_accepted();
+    }
+}
+
+#[allow(clippy::items_after_test_module)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sidereal_game::EntityAction;
+
+    fn message_with(tick: u64, actions: usize) -> ClientRealtimeInputMessage {
+        ClientRealtimeInputMessage {
+            player_entity_id: "player:test".to_string(),
+            controlled_entity_id: "ship:test".to_string(),
+            actions: vec![EntityAction::ThrustNeutral; actions],
+            tick,
+        }
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_and_future_ticks() {
+        let mut rate_limit = InputRateLimitState::default();
+        let duplicate = message_with(10, 1);
+        let future = message_with(20, 1);
+        assert_eq!(
+            validate_input_message(&duplicate, Some(10), 1.0, &mut rate_limit),
+            Err(InputValidationFailure::DuplicateOrOutOfOrder)
+        );
+        assert_eq!(
+            validate_input_message(&future, Some(10), 1.0, &mut rate_limit),
+            Err(InputValidationFailure::FutureTick)
+        );
+    }
+
+    #[test]
+    fn validation_rejects_oversized_and_rate_limited() {
+        let mut rate_limit = InputRateLimitState::default();
+        let oversized = message_with(11, MAX_ACTIONS_PER_PACKET + 1);
+        assert_eq!(
+            validate_input_message(&oversized, Some(10), 1.0, &mut rate_limit),
+            Err(InputValidationFailure::OversizedPacket)
+        );
+
+        let normal = message_with(11, 1);
+        for _ in 0..MAX_MESSAGES_PER_SECOND {
+            let result = validate_input_message(&normal, Some(10), 2.0, &mut rate_limit);
+            assert_eq!(result, Ok(()));
+        }
+        assert_eq!(
+            validate_input_message(&normal, Some(10), 2.0, &mut rate_limit),
+            Err(InputValidationFailure::RateLimited)
+        );
     }
 }
 

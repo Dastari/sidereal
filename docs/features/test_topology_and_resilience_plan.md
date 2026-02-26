@@ -92,8 +92,8 @@ Move from:
 - `crates/sidereal-asset-runtime/src/lib.rs` (`mod tests`)
 
 To:
-- `crates/sidereal-asset-runtime/tests/gltf_dependencies.rs`
-  - glTF buffer/image dependency extraction test(s)
+- `crates/sidereal-asset-runtime/tests/asset_dependency_expansion.rs`
+  - required-asset expansion from declarative dependency maps
 
 ### 4.5 `crates/sidereal-game`
 

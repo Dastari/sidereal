@@ -119,12 +119,11 @@ Policy:
 
 Registration should be implemented as a build pipeline (for example `xtask` or dedicated packer crate):
 
-1. Scan source tree (models/textures/audio/shaders/etc.).
+1. Scan source tree (sprites/textures/audio/shaders/etc.).
 2. Assign/validate logical `asset_id`.
 3. Compute content hash and derived `asset_version`.
 4. Discover dependencies:
-   - auto for glTF buffers/images/material refs,
-   - explicit for audio/material/shader links through sidecar metadata.
+   - explicit/declarative for sprite/audio/material/shader links through sidecar metadata or catalog dependency maps.
 5. Write `asset_catalog.json` + pack/chunk artifacts.
 6. Emit validation report (missing deps, cycles, duplicate IDs).
 
@@ -443,7 +442,7 @@ When event fires:
 
 For unresolved assets, client must render fallback visuals:
 
-- Entities with missing model: simple proxy mesh/material (box/silhouette) plus transform.
+- Entities with missing sprite: simple proxy sprite/quad plus transform.
 - Missing shader-driven fullscreen layer: known-safe fallback material path.
 - Missing texture: neutral fallback texture.
 - Missing audio (future): silent fallback or benign placeholder event path.
@@ -464,13 +463,11 @@ fn attach_or_swap_visual(
     commands: &mut Commands,
     asset_server: &AssetServer,
 ) {
-    if let Some(scene_path) = assets.ready_scene_path(asset_id) {
-        // Remove placeholder marker/components, attach streamed scene.
+    if let Some(sprite_path) = assets.ready_sprite_path(asset_id) {
+        // Remove placeholder marker/components, attach streamed sprite.
         commands.entity(entity).remove::<PlaceholderVisual>();
         commands.entity(entity).with_children(|c| {
-            c.spawn(SceneRoot(
-                asset_server.load(GltfAssetLabel::Scene(0).from_asset(scene_path)),
-            ));
+            c.spawn(Sprite::from_image(asset_server.load(sprite_path)));
         });
     } else {
         // Keep or create fallback proxy.

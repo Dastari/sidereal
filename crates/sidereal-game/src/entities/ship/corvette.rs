@@ -10,7 +10,8 @@ use uuid::Uuid;
 use crate::{
     BaseMassKg, CargoMassKg, CollisionAabbM, DisplayName, Engine, EntityGuid, FlightComputer,
     FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory, MassDirty, MassKg, MaxVelocityMps,
-    ModuleMassKg, MountedOn, OwnerId, ShardAssignment, ShipTag, SizeM, TotalMassKg,
+    ModuleMassKg, MountedOn, OwnerId, ShardAssignment, ShipTag, SizeM, SpriteShaderAssetId,
+    TotalMassKg, VisualAssetId,
 };
 
 // -----------------------------------------------------------------------------
@@ -96,6 +97,8 @@ pub fn default_corvette_fuel_tank() -> FuelTank {
 pub struct CorvetteBundle {
     pub entity_guid: EntityGuid,
     pub ship_tag: ShipTag,
+    pub visual_asset_id: VisualAssetId,
+    pub sprite_shader_asset_id: SpriteShaderAssetId,
     pub display_name: DisplayName,
     pub mass: MassKg,
     pub base_mass: BaseMassKg,
@@ -183,6 +186,8 @@ pub fn spawn_corvette(
         .spawn(CorvetteBundle {
             entity_guid: EntityGuid(ship_guid),
             ship_tag: ShipTag,
+            visual_asset_id: VisualAssetId(default_corvette_asset_id().to_string()),
+            sprite_shader_asset_id: SpriteShaderAssetId(None),
             display_name: DisplayName(display_name),
             mass: MassKg(hull_mass),
             base_mass: BaseMassKg(hull_mass),

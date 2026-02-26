@@ -50,6 +50,7 @@ Known gap:
 ## 3.1 Observer and Control Semantics (Normative)
 
 1. Observer anchor for delivery narrowing is player entity transform/state.
+1.1 Delivery narrowing must use player observer anchor only; scanner source positions must not be used as delivery-center fallback.
 2. Controlled entity state may influence player position (player follows controlled when control active), but does not replace player as observer anchor identity.
 3. Free-roam control is represented as `ControlledEntityGuid = player guid` (self-control); player movement remains authoritative for observer anchor updates in that mode.
 4. Camera behavior is a client presentation concern; delivery authorization remains server-authoritative and player-entity scoped.

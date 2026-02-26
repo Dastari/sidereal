@@ -37,7 +37,9 @@ pub mod selected_entity_guid;
 pub mod shard_assignment;
 pub mod ship_tag;
 pub mod size_m;
+pub mod sprite_shader_asset_id;
 pub mod total_mass_kg;
+pub mod visual_asset_id;
 
 pub use account_id::AccountId;
 pub use action_capabilities::ActionCapabilities;
@@ -78,4 +80,6 @@ pub use selected_entity_guid::SelectedEntityGuid;
 pub use shard_assignment::ShardAssignment;
 pub use ship_tag::ShipTag;
 pub use size_m::SizeM;
+pub use sprite_shader_asset_id::SpriteShaderAssetId;
 pub use total_mass_kg::TotalMassKg;
+pub use visual_asset_id::VisualAssetId;

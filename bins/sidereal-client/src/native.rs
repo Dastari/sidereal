@@ -3,10 +3,10 @@ mod auth_ui;
 #[path = "dialog_ui.rs"]
 mod dialog_ui;
 
-use avian3d::prelude::*;
+use avian2d::prelude::*;
 use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::camera::visibility::RenderLayers;
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
@@ -19,13 +19,13 @@ use bevy::sprite_render::{
     AlphaMode2d, ColorMaterial, Material2d, Material2dPlugin, MeshMaterial2d,
 };
 use bevy::state::state_scoped::DespawnOnExit;
-use bevy::window::{PresentMode, Window, WindowPlugin};
+use bevy::window::{PresentMode, Window, WindowPlugin, WindowResizeConstraints};
 
 use crate::client::input::{neutral_player_input, player_input_from_keyboard};
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
-use lightyear::avian3d::plugin::AvianReplicationMode;
-use lightyear::avian3d::prelude::LightyearAvianPlugin;
+use lightyear::avian2d::plugin::AvianReplicationMode;
+use lightyear::avian2d::prelude::LightyearAvianPlugin;
 use lightyear::prediction::correction::CorrectionPolicy;
 use lightyear::prediction::prelude::PredictionManager;
 use lightyear::prelude::client::ClientPlugins;
@@ -43,11 +43,12 @@ use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
     ActionQueue, ControlledEntityGuid, EntityAction, EntityGuid, FlightComputer, FullscreenLayer,
     Hardpoint, HealthPool, MountedOn, OwnerId, PlayerTag, ScannerRangeM, SiderealGameCorePlugin,
-    SizeM, TotalMassKg, angular_inertia_from_size, apply_engine_thrust, clamp_angular_velocity,
-    default_corvette_asset_id, default_corvette_mass_kg, default_corvette_size,
-    default_flight_action_capabilities, default_space_background_shader_asset_id,
-    default_starfield_shader_asset_id, process_flight_actions, recompute_total_mass,
-    stabilize_idle_motion, validate_action_capabilities,
+    SizeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId, angular_inertia_from_size,
+    apply_engine_thrust, clamp_angular_velocity, default_corvette_asset_id,
+    default_corvette_mass_kg, default_corvette_size, default_flight_action_capabilities,
+    default_space_background_shader_asset_id, default_starfield_shader_asset_id,
+    process_flight_actions, recompute_total_mass, stabilize_idle_motion,
+    validate_action_capabilities,
 };
 use sidereal_net::{
     AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
@@ -60,6 +61,7 @@ use sidereal_runtime_sync::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
+use std::net::TcpListener;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -163,6 +165,7 @@ struct SessionReadyState {
 #[derive(Debug, Resource, Default)]
 struct LocalPlayerViewState {
     controlled_entity_id: Option<String>,
+    desired_controlled_entity_id: Option<String>,
     selected_entity_id: Option<String>,
     detached_free_camera: bool,
 }
@@ -375,6 +378,31 @@ impl PredictionCorrectionTuning {
     }
 }
 
+#[derive(Debug, Resource, Clone, Copy)]
+struct NearbyCollisionProxyTuning {
+    radius_m: f32,
+    max_proxies: usize,
+}
+
+impl NearbyCollisionProxyTuning {
+    fn from_env() -> Self {
+        let radius_m = std::env::var("SIDEREAL_CLIENT_NEARBY_COLLISION_PROXY_RADIUS_M")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(200.0);
+        let max_proxies = std::env::var("SIDEREAL_CLIENT_NEARBY_COLLISION_PROXY_MAX")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(24);
+        Self {
+            radius_m,
+            max_proxies,
+        }
+    }
+}
+
 #[derive(Resource, Debug, Clone, Copy)]
 struct HeadlessTransportMode(bool);
 
@@ -543,11 +571,26 @@ struct RemoteVisibleEntity {
 #[derive(Component)]
 struct RemoteEntity;
 
+#[derive(Component)]
+struct NearbyCollisionProxy;
+
 #[derive(Component, Clone)]
-struct StreamedModelAssetId(String);
+struct StreamedVisualAssetId(String);
 
 #[derive(Component)]
-struct StreamedModelVisualAttached;
+struct StreamedVisualAttached;
+
+#[derive(Component)]
+struct StreamedVisualChild;
+
+#[derive(Component, Clone)]
+struct StreamedSpriteShaderAssetId(String);
+
+#[derive(Component)]
+struct SuppressedPredictedDuplicateVisual;
+
+#[derive(Component)]
+struct ReplicatedAdoptionHandled;
 
 #[derive(Resource, Default)]
 struct RemoteEntityRegistry {
@@ -695,6 +738,11 @@ struct MotionOwnershipAuditState {
 }
 
 const BACKDROP_RENDER_LAYER: usize = 1;
+const ORTHO_SCALE_PER_DISTANCE: f32 = 0.02;
+const MIN_WINDOW_WIDTH: f32 = 960.0;
+const MIN_WINDOW_HEIGHT: f32 = 540.0;
+const STREAMED_SPRITE_PIXEL_SHADER_PATH: &str =
+    "data/cache_stream/shaders/sprite_pixel_effect.wgsl";
 
 #[derive(Component)]
 struct StarfieldBackdrop;
@@ -777,6 +825,23 @@ impl Material2d for SpaceBackgroundMaterial {
     }
 }
 
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct StreamedSpriteShaderMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    image: Handle<Image>,
+}
+
+impl Material2d for StreamedSpriteShaderMaterial {
+    fn fragment_shader() -> ShaderRef {
+        STREAMED_SPRITE_PIXEL_SHADER_PATH.into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
 #[derive(Component)]
 struct TopDownCamera {
     distance: f32,
@@ -817,6 +882,10 @@ pub(crate) fn run() {
     let headless_transport = std::env::var("SIDEREAL_CLIENT_HEADLESS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let _multi_instance_guard = (!headless_transport)
+        .then(acquire_multi_instance_guard)
+        .flatten();
+    let is_secondary_instance = !headless_transport && _multi_instance_guard.is_none();
     let remote_cfg = match RemoteInspectConfig::from_env("CLIENT", 15714) {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -843,6 +912,12 @@ pub(crate) fn run() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         present_mode: PresentMode::AutoVsync,
+                        resizable: true,
+                        resize_constraints: WindowResizeConstraints {
+                            min_width: MIN_WINDOW_WIDTH,
+                            min_height: MIN_WINDOW_HEIGHT,
+                            ..default()
+                        },
                         ..default()
                     }),
                     ..default()
@@ -852,13 +927,16 @@ pub(crate) fn run() {
                     ..Default::default()
                 })
                 .set(RenderPlugin {
-                    render_creation: RenderCreation::Automatic(configured_wgpu_settings()),
+                    render_creation: RenderCreation::Automatic(configured_wgpu_settings(
+                        is_secondary_instance,
+                    )),
                     ..Default::default()
                 }),
         );
         ensure_shader_placeholders(&asset_root);
         app.add_plugins(Material2dPlugin::<StarfieldMaterial>::default());
         app.add_plugins(Material2dPlugin::<SpaceBackgroundMaterial>::default());
+        app.add_plugins(Material2dPlugin::<StreamedSpriteShaderMaterial>::default());
         // FPS cap: SIDEREAL_CLIENT_MAX_FPS (default 60). Set to 0 to disable (uncapped).
         if let Some(frame_cap) = FrameRateCap::from_env(60) {
             app.insert_resource(frame_cap);
@@ -873,7 +951,7 @@ pub(crate) fn run() {
             .disable::<PhysicsTransformPlugin>()
             .disable::<PhysicsInterpolationPlugin>(),
     );
-    app.insert_resource(Gravity(Vec3::ZERO));
+    app.insert_resource(Gravity(Vec2::ZERO));
     // Client prediction needs shared flight/mass gameplay systems, but not player observer
     // anchoring/movement writers from full server plugin.
     app.add_plugins(SiderealGameCorePlugin);
@@ -920,6 +998,7 @@ pub(crate) fn run() {
     app.insert_resource(DeferredPredictedAdoptionState::default());
     app.insert_resource(PredictionBootstrapTuning::from_env());
     app.insert_resource(PredictionCorrectionTuning::from_env());
+    app.insert_resource(NearbyCollisionProxyTuning::from_env());
     app.insert_resource(RemoteEntityRegistry::default());
     app.insert_resource(HeadlessTransportMode(headless_transport));
     app.add_systems(
@@ -933,7 +1012,7 @@ pub(crate) fn run() {
             apply_engine_thrust,
         )
             .chain()
-            .before(avian3d::prelude::PhysicsSystems::StepSimulation),
+            .before(avian2d::prelude::PhysicsSystems::StepSimulation),
     );
     app.add_systems(
         FixedUpdate,
@@ -943,7 +1022,7 @@ pub(crate) fn run() {
             clamp_angular_velocity,
         )
             .chain()
-            .after(avian3d::prelude::PhysicsSystems::StepSimulation),
+            .after(avian2d::prelude::PhysicsSystems::StepSimulation),
     );
     if headless_transport {
         app.init_resource::<dialog_ui::DialogQueue>();
@@ -1049,7 +1128,9 @@ pub(crate) fn run() {
             (
                 ensure_fullscreen_layer_fallback_system
                     .after(adopt_native_lightyear_replicated_entities),
-                attach_streamed_model_visuals_system.after(receive_lightyear_asset_stream_messages),
+                suppress_duplicate_predicted_interpolated_visuals_system
+                    .after(adopt_native_lightyear_replicated_entities),
+                attach_streamed_visual_assets_system.after(receive_lightyear_asset_stream_messages),
                 sync_fullscreen_layer_renderables_system
                     .after(adopt_native_lightyear_replicated_entities),
                 sync_backdrop_fullscreen_system.after(sync_fullscreen_layer_renderables_system),
@@ -1060,6 +1141,8 @@ pub(crate) fn run() {
                 update_runtime_stream_icon_system,
                 watch_in_world_bootstrap_failures,
                 update_topdown_camera_system.after(adopt_native_lightyear_replicated_entities),
+                sync_ui_overlay_camera_to_gameplay_camera_system
+                    .after(update_topdown_camera_system),
                 update_camera_motion_state.after(update_topdown_camera_system),
                 update_hud_system,
                 update_starfield_material_system.after(update_camera_motion_state),
@@ -1103,7 +1186,7 @@ pub(crate) fn run() {
                 enforce_controlled_planar_motion,
             )
                 .chain()
-                .before(avian3d::prelude::PhysicsSystems::StepSimulation)
+                .before(avian2d::prelude::PhysicsSystems::StepSimulation)
                 .run_if(in_state(ClientAppState::InWorld)),
         );
     }
@@ -1186,11 +1269,13 @@ fn insert_embedded_fonts(app: &mut App) {
 const STREAMED_SHADER_PATHS: &[&str] = &[
     "data/cache_stream/shaders/starfield.wgsl",
     "data/cache_stream/shaders/simple_space_background.wgsl",
+    STREAMED_SPRITE_PIXEL_SHADER_PATH,
 ];
 
 const LOCAL_SHADER_FALLBACK_PATHS: &[&str] = &[
     "data/shaders/starfield.wgsl",
     "data/shaders/simple_space_background.wgsl",
+    "data/shaders/sprite_pixel_effect.wgsl",
 ];
 
 fn ensure_shader_placeholders(asset_root: &str) {
@@ -1216,6 +1301,16 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 }
 ";
 
+    const SPRITE_PIXEL_PLACEHOLDER: &str = "\
+#import bevy_sprite::mesh2d_vertex_output::VertexOutput
+@group(2) @binding(0) var image: texture_2d<f32>;
+@group(2) @binding(1) var image_sampler: sampler;
+@fragment
+fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(image, image_sampler, mesh.uv);
+}
+";
+
     let placeholders: &[(&str, &str, &str)] = &[
         (
             STREAMED_SHADER_PATHS[0],
@@ -1226,6 +1321,11 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
             STREAMED_SHADER_PATHS[1],
             LOCAL_SHADER_FALLBACK_PATHS[1],
             BACKGROUND_PLACEHOLDER,
+        ),
+        (
+            STREAMED_SHADER_PATHS[2],
+            LOCAL_SHADER_FALLBACK_PATHS[2],
+            SPRITE_PIXEL_PLACEHOLDER,
         ),
     ];
 
@@ -1870,21 +1970,21 @@ fn spawn_world_scene(
     ));
 
     commands.spawn((
-        Camera3d::default(),
+        Camera2d,
         Camera {
             order: 0,
             is_active: false,
             clear_color: ClearColorConfig::None,
             ..default()
         },
-        Transform::from_xyz(0.0, 0.0, 80.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 0.0, 80.0),
         GameplayCamera,
         TopDownCamera {
-            distance: 420.0,
-            target_distance: 420.0,
-            min_distance: 420.0,
-            max_distance: 1260.0,
-            zoom_units_per_wheel: 16.0,
+            distance: 50.0,
+            target_distance: 50.0,
+            min_distance: 1.0,
+            max_distance: 100.0,
+            zoom_units_per_wheel: 2.0,
             zoom_smoothness: 8.0,
             look_ahead_offset: Vec2::ZERO,
             filtered_focus_xy: Vec2::ZERO,
@@ -2039,23 +2139,27 @@ fn update_topdown_camera_system(
         '_,
         '_,
         (&Transform, Option<&Position>),
-        (Without<Camera3d>, Without<GameplayCamera>),
+        (Without<Camera>, Without<GameplayCamera>),
     >,
     mut free_camera: ResMut<'_, FreeCameraState>,
     mut camera_query: Query<
         '_,
         '_,
-        (&mut Transform, &mut TopDownCamera),
-        (With<Camera3d>, Without<ControlledEntity>),
+        (&mut Transform, &mut Projection, &mut TopDownCamera),
+        (With<GameplayCamera>, Without<ControlledEntity>),
     >,
 ) {
-    let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
+    let Ok((mut camera_transform, mut projection, mut camera)) = camera_query.single_mut() else {
         return;
     };
 
     let mut wheel_delta_y = 0.0f32;
     for event in mouse_wheel_events.read() {
-        wheel_delta_y += event.y;
+        let normalized = match event.unit {
+            MouseScrollUnit::Line => event.y,
+            MouseScrollUnit::Pixel => event.y / 32.0,
+        };
+        wheel_delta_y += normalized.clamp(-4.0, 4.0);
     }
     if wheel_delta_y != 0.0 {
         camera.target_distance = (camera.target_distance
@@ -2065,13 +2169,17 @@ fn update_topdown_camera_system(
     let dt = time.delta_secs();
     let zoom_alpha = 1.0 - (-camera.zoom_smoothness * dt).exp();
     camera.distance = camera.distance.lerp(camera.target_distance, zoom_alpha);
+    // Camera2d zoom is controlled by orthographic projection scale, not transform.z.
+    if let Projection::Orthographic(ortho) = &mut *projection {
+        ortho.scale = (camera.distance * ORTHO_SCALE_PER_DISTANCE).max(0.01);
+    }
 
     let follow_anchor =
         resolve_camera_anchor_entity(&session, &player_view_state, &entity_registry)
             .and_then(|entity| anchor_query.get(entity).ok())
             .map(|(anchor_transform, anchor_position)| {
                 anchor_position
-                    .map(|p| p.0.truncate())
+                    .map(|p| p.0)
                     .unwrap_or_else(|| anchor_transform.translation.truncate())
             });
 
@@ -2126,8 +2234,38 @@ fn update_topdown_camera_system(
     let render_focus_xy = camera.filtered_focus_xy + camera.look_ahead_offset;
     camera_transform.translation.x = render_focus_xy.x;
     camera_transform.translation.y = render_focus_xy.y;
-    camera_transform.translation.z = camera.distance;
+    camera_transform.translation.z = 80.0;
     camera_transform.rotation = Quat::IDENTITY;
+}
+
+#[allow(clippy::type_complexity)]
+fn sync_ui_overlay_camera_to_gameplay_camera_system(
+    gameplay_camera: Query<
+        '_,
+        '_,
+        (&Transform, &Projection),
+        (With<GameplayCamera>, Without<UiOverlayCamera>),
+    >,
+    mut ui_camera: Query<
+        '_,
+        '_,
+        (&mut Transform, &mut Projection),
+        (With<UiOverlayCamera>, Without<GameplayCamera>),
+    >,
+) {
+    let Ok((gameplay_transform, gameplay_projection)) = gameplay_camera.single() else {
+        return;
+    };
+    for (mut ui_transform, mut ui_projection) in &mut ui_camera {
+        ui_transform.translation.x = gameplay_transform.translation.x;
+        ui_transform.translation.y = gameplay_transform.translation.y;
+        ui_transform.translation.z = gameplay_transform.translation.z;
+        if let (Projection::Orthographic(ui_ortho), Projection::Orthographic(game_ortho)) =
+            (&mut *ui_projection, gameplay_projection)
+        {
+            ui_ortho.scale = game_ortho.scale;
+        }
+    }
 }
 
 fn update_camera_motion_state(
@@ -2176,7 +2314,7 @@ fn lock_camera_to_controlled_entity_end_of_frame(
         '_,
         '_,
         (&Transform, Option<&Position>),
-        (Without<Camera3d>, Without<GameplayCamera>),
+        (Without<Camera>, Without<GameplayCamera>),
     >,
     mut camera_query: Query<
         '_,
@@ -2200,7 +2338,7 @@ fn lock_camera_to_controlled_entity_end_of_frame(
         return;
     };
     let controlled_xy = anchor_position
-        .map(|p| p.0.truncate())
+        .map(|p| p.0)
         .unwrap_or_else(|| anchor_transform.translation.truncate());
     camera.look_ahead_offset = Vec2::ZERO;
     camera.filtered_focus_xy = controlled_xy;
@@ -2278,20 +2416,29 @@ fn update_runtime_stream_icon_system(
 
 fn ensure_fullscreen_layer_fallback_system(
     mut commands: Commands<'_, '_>,
-    layers: Query<'_, '_, (Entity, Option<&FallbackFullscreenLayer>), With<FullscreenLayer>>,
+    layers: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&FallbackFullscreenLayer>,
+            Option<&FullscreenLayerRenderable>,
+        ),
+        With<FullscreenLayer>,
+    >,
     asset_manager: Res<'_, LocalAssetManager>,
     watchdog: Res<'_, BootstrapWatchdogState>,
 ) {
     let mut fallback_entities = Vec::new();
-    let mut has_authoritative_layer = false;
-    for (entity, fallback_marker) in &layers {
+    let mut has_authoritative_renderable_layer = false;
+    for (entity, fallback_marker, renderable) in &layers {
         if fallback_marker.is_some() {
             fallback_entities.push(entity);
-        } else {
-            has_authoritative_layer = true;
+        } else if renderable.is_some() {
+            has_authoritative_renderable_layer = true;
         }
     }
-    if has_authoritative_layer {
+    if has_authoritative_renderable_layer {
         for entity in fallback_entities {
             if let Ok(mut entity_commands) = commands.get_entity(entity) {
                 entity_commands.despawn();
@@ -2426,11 +2573,11 @@ fn sync_backdrop_fullscreen_system(
     let Ok(window) = window_query.single() else {
         return;
     };
-    let width = window.resolution.width();
-    let height = window.resolution.height();
-    if width <= 0.0 || height <= 0.0 {
+    let Some(viewport_size) = safe_viewport_size(window) else {
         return;
-    }
+    };
+    let width = viewport_size.x;
+    let height = viewport_size.y;
     for mut transform in &mut backdrop_query {
         transform.translation.x = 0.0;
         transform.translation.y = 0.0;
@@ -2456,17 +2603,17 @@ fn sync_world_entity_transforms_from_physics(
         (
             With<WorldEntity>,
             Or<(With<Position>, With<Rotation>)>,
-            Without<Camera3d>,
-            Without<Camera2d>,
+            Without<Camera>,
         ),
     >,
 ) {
     for (mut transform, position, rotation) in &mut entities {
         if let Some(position) = position {
-            transform.translation = position.0;
+            transform.translation.x = position.0.x;
+            transform.translation.y = position.0.y;
         }
         if let Some(rotation) = rotation {
-            transform.rotation = rotation.0;
+            transform.rotation = (*rotation).into();
         }
         // Keep 2D gameplay entities constrained to planar render depth.
         transform.translation.z = 0.0;
@@ -2793,6 +2940,21 @@ fn send_lightyear_control_requests(
         return;
     }
 
+    if request_state.pending_request_seq.is_none() {
+        let desired = player_view_state
+            .desired_controlled_entity_id
+            .clone()
+            .or_else(|| player_view_state.controlled_entity_id.clone())
+            .or_else(|| session.player_entity_id.clone());
+        if desired != player_view_state.controlled_entity_id {
+            request_state.next_request_seq = request_state.next_request_seq.saturating_add(1);
+            request_state.pending_controlled_entity_id = desired;
+            request_state.pending_request_seq = Some(request_state.next_request_seq);
+            request_state.last_sent_request_seq = None;
+            request_state.last_sent_at_s = 0.0;
+        }
+    }
+
     let Some(request_seq) = request_state.pending_request_seq else {
         return;
     };
@@ -2803,10 +2965,7 @@ fn send_lightyear_control_requests(
     {
         return;
     }
-    let requested_controlled_entity_id = request_state
-        .pending_controlled_entity_id
-        .clone()
-        .or_else(|| player_view_state.controlled_entity_id.clone());
+    let requested_controlled_entity_id = request_state.pending_controlled_entity_id.clone();
     let message = ClientControlRequestMessage {
         player_entity_id: player_entity_id.clone(),
         controlled_entity_id: requested_controlled_entity_id,
@@ -2856,6 +3015,8 @@ fn receive_lightyear_control_results(
             } else {
                 player_view_state.controlled_entity_id = session.player_entity_id.clone();
             }
+            player_view_state.desired_controlled_entity_id =
+                player_view_state.controlled_entity_id.clone();
         }
     }
 
@@ -2874,6 +3035,8 @@ fn receive_lightyear_control_results(
             } else if player_view_state.controlled_entity_id.is_none() {
                 player_view_state.controlled_entity_id = session.player_entity_id.clone();
             }
+            player_view_state.desired_controlled_entity_id =
+                player_view_state.controlled_entity_id.clone();
             warn!(
                 "client control request rejected player={} seq={} reason={}",
                 message.player_entity_id, message.request_seq, message.reason
@@ -2989,9 +3152,12 @@ fn adopt_native_lightyear_replicated_entities(
             Option<&'_ SizeM>,
             Option<&'_ TotalMassKg>,
             Option<&'_ ControlledEntityGuid>,
+            Option<&'_ VisualAssetId>,
+            Option<&'_ SpriteShaderAssetId>,
         ),
         (
             With<lightyear::prelude::Replicated>,
+            Without<ReplicatedAdoptionHandled>,
             Without<WorldEntity>,
             Without<DespawnOnExit<ClientAppState>>,
         ),
@@ -3013,7 +3179,9 @@ fn adopt_native_lightyear_replicated_entities(
         return;
     };
     let mut runtime_entity_id_by_guid = HashMap::<String, String>::new();
-    for (_, guid, _, mounted_on, hardpoint, player_tag, _, _, _, _, _, _) in &replicated_entities {
+    for (_, guid, _, mounted_on, hardpoint, player_tag, _, _, _, _, _, _, _, _) in
+        &replicated_entities
+    {
         let Some(guid) = guid else {
             continue;
         };
@@ -3043,8 +3211,22 @@ fn adopt_native_lightyear_replicated_entities(
     // before classifying predicted vs interpolated entities. This avoids order-dependent tagging.
     // Prediction ownership must follow authoritative control, not local desired handoff state.
     let mut authoritative_controlled_entity_id = player_view_state.controlled_entity_id.clone();
-    for (_, guid, _, mounted_on, hardpoint, player_tag, _, _, _, _, _, controlled_entity_guid) in
-        &replicated_entities
+    for (
+        _,
+        guid,
+        _,
+        mounted_on,
+        hardpoint,
+        player_tag,
+        _,
+        _,
+        _,
+        _,
+        _,
+        controlled_entity_guid,
+        _,
+        _,
+    ) in &replicated_entities
     {
         let Some(guid) = guid else {
             continue;
@@ -3084,6 +3266,8 @@ fn adopt_native_lightyear_replicated_entities(
         size_m,
         total_mass_kg,
         controlled_entity_guid,
+        visual_asset_id,
+        sprite_shader_asset_id,
     ) in &replicated_entities
     {
         let Some(guid) = guid else {
@@ -3100,6 +3284,9 @@ fn adopt_native_lightyear_replicated_entities(
             format!("ship:{}", guid.0)
         };
         if !seen_runtime_entity_ids.insert(runtime_entity_id.clone()) {
+            commands
+                .entity(entity)
+                .insert((ReplicatedAdoptionHandled, Visibility::Hidden));
             continue;
         }
         let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
@@ -3181,6 +3368,15 @@ fn adopt_native_lightyear_replicated_entities(
                     is_remote,
                 );
                 if candidate_score <= existing_score {
+                    commands
+                        .entity(entity)
+                        .insert((ReplicatedAdoptionHandled, Visibility::Hidden))
+                        .remove::<(
+                            ControlledEntity,
+                            StreamedVisualAssetId,
+                            StreamedVisualAttached,
+                            StreamedSpriteShaderAssetId,
+                        )>();
                     continue;
                 }
 
@@ -3195,8 +3391,9 @@ fn adopt_native_lightyear_replicated_entities(
                             RemoteEntity,
                             RemoteVisibleEntity,
                             ControlledEntity,
-                            StreamedModelAssetId,
-                            StreamedModelVisualAttached,
+                            StreamedVisualAssetId,
+                            StreamedVisualAttached,
+                            StreamedSpriteShaderAssetId,
                         )>();
                 }
                 if entity_registry.by_entity_id.get(runtime_entity_id.as_str())
@@ -3254,6 +3451,7 @@ fn adopt_native_lightyear_replicated_entities(
         let mut entity_commands = commands.entity(entity);
         entity_commands.insert((
             Name::new(runtime_entity_id.clone()),
+            ReplicatedAdoptionHandled,
             Transform::default(),
             GlobalTransform::default(),
             WorldEntity,
@@ -3263,10 +3461,27 @@ fn adopt_native_lightyear_replicated_entities(
             ViewVisibility::default(),
         ));
 
-        if mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none() {
-            entity_commands.insert(StreamedModelAssetId(
-                default_corvette_asset_id().to_string(),
-            ));
+        if player_tag.is_none() {
+            if let Some(visual_asset_id) = visual_asset_id {
+                entity_commands.insert(StreamedVisualAssetId(visual_asset_id.0.clone()));
+            } else {
+                entity_commands.remove::<(StreamedVisualAssetId, StreamedVisualAttached)>();
+            }
+        } else {
+            // Observer/player entities are camera anchors and must never render ship visuals.
+            entity_commands.remove::<(
+                StreamedVisualAssetId,
+                StreamedVisualAttached,
+                StreamedSpriteShaderAssetId,
+            )>();
+        }
+        if player_tag.is_none()
+            && let Some(sprite_shader_asset_id) = sprite_shader_asset_id
+            && let Some(shader_asset_id) = sprite_shader_asset_id.0.as_ref()
+        {
+            entity_commands.insert(StreamedSpriteShaderAssetId(shader_asset_id.clone()));
+        } else {
+            entity_commands.remove::<StreamedSpriteShaderAssetId>();
         }
 
         if is_local_controlled_entity {
@@ -3275,22 +3490,18 @@ fn adopt_native_lightyear_replicated_entities(
                 .map(|m| m.0)
                 .filter(|m| *m > 0.0)
                 .unwrap_or_else(default_corvette_mass_kg);
-            let position = position.map(|p| p.0).unwrap_or(Vec3::ZERO);
-            let rotation = rotation.map(|r| r.0).unwrap_or(Quat::IDENTITY);
-            let velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec3::ZERO);
+            let position = position.map(|p| p.0).unwrap_or(Vec2::ZERO);
+            let rotation = rotation.copied().unwrap_or(Rotation::IDENTITY);
+            let velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
             entity_commands.insert((
                 RigidBody::Dynamic,
-                Collider::cuboid(size.width * 0.5, size.length * 0.5, size.height * 0.5),
+                Collider::rectangle(size.width, size.length),
                 Mass(mass_kg),
                 angular_inertia_from_size(mass_kg, &size),
                 Position(position),
-                Rotation(rotation),
+                rotation,
                 LinearVelocity(velocity),
                 AngularVelocity::default(),
-                LockedAxes::new()
-                    .lock_translation_z()
-                    .lock_rotation_x()
-                    .lock_rotation_y(),
                 LinearDamping(0.0),
                 AngularDamping(0.0),
             ));
@@ -3390,6 +3601,10 @@ fn sync_local_player_view_state_system(
         controlled,
     ) {
         player_view_state.controlled_entity_id = Some(authoritative_controlled_id);
+        if player_view_state.desired_controlled_entity_id.is_none() {
+            player_view_state.desired_controlled_entity_id =
+                player_view_state.controlled_entity_id.clone();
+        }
     }
 }
 
@@ -3437,19 +3652,13 @@ fn sync_controlled_entity_tags_system(
 
 fn resolve_camera_anchor_entity(
     session: &ClientSession,
-    player_view_state: &LocalPlayerViewState,
+    _player_view_state: &LocalPlayerViewState,
     entity_registry: &RuntimeEntityHierarchy,
 ) -> Option<Entity> {
-    let preferred_runtime_id = player_view_state
-        .controlled_entity_id
+    let preferred_runtime_id = session
+        .player_entity_id
         .as_ref()
-        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
-        .or_else(|| {
-            session
-                .player_entity_id
-                .as_ref()
-                .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
-        })?;
+        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))?;
     entity_registry
         .by_entity_id
         .get(preferred_runtime_id.as_str())
@@ -3514,79 +3723,206 @@ fn log_prediction_runtime_state(
     }
 }
 
-fn streamed_model_scene_path(asset_id: &str, asset_manager: &LocalAssetManager) -> Option<String> {
+fn streamed_visual_asset_path(asset_id: &str, asset_manager: &LocalAssetManager) -> Option<String> {
     let relative = asset_manager.cached_relative_path(asset_id)?;
-    if !(relative.ends_with(".gltf") || relative.ends_with(".glb")) {
+    if !(relative.ends_with(".png")
+        || relative.ends_with(".jpg")
+        || relative.ends_with(".jpeg")
+        || relative.ends_with(".webp"))
+    {
         return None;
     }
     Some(format!("data/cache_stream/{relative}"))
 }
 
+fn streamed_sprite_shader_path(
+    asset_id: &str,
+    asset_manager: &LocalAssetManager,
+) -> Option<String> {
+    let relative = asset_manager.cached_relative_path(asset_id)?;
+    if !relative.ends_with(".wgsl") {
+        return None;
+    }
+    Some(format!("data/cache_stream/{relative}"))
+}
+
+fn resolved_world_sprite_size(
+    texture_size_px: Option<UVec2>,
+    size_m: Option<&SizeM>,
+) -> Option<Vec2> {
+    let bounds = size_m.map(|size| Vec2::new(size.width.max(0.1), size.length.max(0.1)));
+    match (texture_size_px, bounds) {
+        (Some(px), Some(bounds)) if px.x > 0 && px.y > 0 => {
+            // Preserve texture aspect while fitting inside physical ship bounds.
+            let px_size = Vec2::new(px.x as f32, px.y as f32);
+            let scale = (bounds.x / px_size.x).min(bounds.y / px_size.y);
+            Some(px_size * scale)
+        }
+        (None, Some(bounds)) => Some(bounds),
+        _ => None,
+    }
+}
+
+fn read_png_dimensions(path: &std::path::Path) -> Option<UVec2> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 24 {
+        return None;
+    }
+    const PNG_SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if bytes[0..8] != PNG_SIG {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(UVec2::new(width, height))
+}
+
 #[allow(clippy::type_complexity)]
-fn attach_streamed_model_visuals_system(
+fn suppress_duplicate_predicted_interpolated_visuals_system(
     mut commands: Commands<'_, '_>,
-    asset_server: Res<'_, AssetServer>,
-    asset_root: Res<'_, AssetRootPath>,
-    asset_manager: Res<'_, LocalAssetManager>,
-    candidates: Query<
+    world_entities: Query<
         '_,
         '_,
-        (Entity, &StreamedModelAssetId),
-        (With<WorldEntity>, Without<StreamedModelVisualAttached>),
+        (
+            Entity,
+            Option<&EntityGuid>,
+            Has<ControlledEntity>,
+            Has<lightyear::prelude::Predicted>,
+            Has<SuppressedPredictedDuplicateVisual>,
+        ),
+        With<WorldEntity>,
     >,
 ) {
-    for (entity, asset_id) in &candidates {
-        if let Some(path) = streamed_model_scene_path(&asset_id.0, &asset_manager)
-            && gltf_scene_dependencies_ready(&asset_root.0, &path)
-        {
-            let Ok(mut entity_commands) = commands.get_entity(entity) else {
-                continue;
-            };
-            let scene_handle =
-                asset_server.load(bevy::gltf::GltfAssetLabel::Scene(0).from_asset(path));
-            entity_commands.with_children(|child| {
-                child.spawn((
-                    SceneRoot(scene_handle),
-                    Transform::from_scale(Vec3::splat(2.5)),
-                ));
-            });
-            entity_commands.try_insert(StreamedModelVisualAttached);
+    let mut best_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32)>::new();
+    for (entity, guid, is_controlled, is_predicted, _is_suppressed) in &world_entities {
+        let Some(guid) = guid else { continue };
+        let score = if is_controlled {
+            3
+        } else if is_predicted {
+            2
+        } else {
+            1
+        };
+        match best_entity_by_guid.get_mut(&guid.0) {
+            Some((winner, winner_score)) => {
+                if score > *winner_score {
+                    *winner = entity;
+                    *winner_score = score;
+                }
+            }
+            None => {
+                best_entity_by_guid.insert(guid.0, (entity, score));
+            }
+        }
+    }
+
+    for (entity, guid, _is_controlled, _is_predicted, is_suppressed) in &world_entities {
+        let should_suppress = guid
+            .and_then(|guid| best_entity_by_guid.get(&guid.0).copied())
+            .is_some_and(|(winner, _)| winner != entity);
+        if should_suppress {
+            if let Ok(mut entity_commands) = commands.get_entity(entity) {
+                if !is_suppressed {
+                    entity_commands.insert(SuppressedPredictedDuplicateVisual);
+                }
+                entity_commands.insert(Visibility::Hidden);
+            }
+        } else if is_suppressed && let Ok(mut entity_commands) = commands.get_entity(entity) {
+            entity_commands
+                .remove::<SuppressedPredictedDuplicateVisual>()
+                .insert(Visibility::Visible);
         }
     }
 }
 
-fn gltf_scene_dependencies_ready(asset_root: &str, scene_path: &str) -> bool {
-    if !scene_path.ends_with(".gltf") {
-        return true;
-    }
-    let full_path = std::path::PathBuf::from(asset_root).join(scene_path);
-    let Ok(text) = std::fs::read_to_string(&full_path) else {
-        return false;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
-    };
-    let base_dir = full_path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from(asset_root));
-    for section in ["buffers", "images"] {
-        let Some(entries) = json.get(section).and_then(|v| v.as_array()) else {
+#[allow(clippy::type_complexity)]
+fn attach_streamed_visual_assets_system(
+    mut commands: Commands<'_, '_>,
+    asset_server: Res<'_, AssetServer>,
+    images: Res<'_, Assets<Image>>,
+    asset_root: Res<'_, AssetRootPath>,
+    asset_manager: Res<'_, LocalAssetManager>,
+    mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut sprite_shader_materials: ResMut<'_, Assets<StreamedSpriteShaderMaterial>>,
+    candidates: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &StreamedVisualAssetId,
+            Option<&SizeM>,
+            Option<&StreamedSpriteShaderAssetId>,
+        ),
+        (
+            With<WorldEntity>,
+            Without<StreamedVisualAttached>,
+            Without<SuppressedPredictedDuplicateVisual>,
+        ),
+    >,
+) {
+    for (entity, asset_id, size_m, sprite_shader) in &candidates {
+        let Some(path) = streamed_visual_asset_path(&asset_id.0, &asset_manager) else {
             continue;
         };
-        for entry in entries {
-            let Some(uri) = entry.get("uri").and_then(|v| v.as_str()) else {
+        let Ok(mut entity_commands) = commands.get_entity(entity) else {
+            continue;
+        };
+        let image_handle = asset_server.load(path.clone());
+        let rooted_path = std::path::PathBuf::from(&asset_root.0).join(&path);
+        let texture_size_px = images
+            .get(&image_handle)
+            .map(|image| image.size())
+            .or_else(|| read_png_dimensions(&rooted_path));
+        let custom_size = resolved_world_sprite_size(texture_size_px, size_m);
+        if let Some(sprite_shader) = sprite_shader
+            && let Some(shader_path) = streamed_sprite_shader_path(&sprite_shader.0, &asset_manager)
+        {
+            if shader_path != STREAMED_SPRITE_PIXEL_SHADER_PATH {
+                warn!(
+                    "unsupported streamed sprite shader path={} (expected {}); falling back to plain sprite",
+                    shader_path, STREAMED_SPRITE_PIXEL_SHADER_PATH
+                );
+            } else if std::path::PathBuf::from(&asset_root.0)
+                .join(STREAMED_SPRITE_PIXEL_SHADER_PATH)
+                .is_file()
+            {
+                let quad_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+                let material = sprite_shader_materials.add(StreamedSpriteShaderMaterial {
+                    image: image_handle.clone(),
+                });
+                let sprite_size = custom_size.unwrap_or(Vec2::splat(16.0));
+                entity_commands.with_children(|child| {
+                    child.spawn((
+                        StreamedVisualChild,
+                        Mesh2d(quad_mesh),
+                        MeshMaterial2d(material),
+                        Transform::from_xyz(0.0, 0.0, 0.2).with_scale(Vec3::new(
+                            sprite_size.x,
+                            sprite_size.y,
+                            1.0,
+                        )),
+                    ));
+                });
+                entity_commands.try_insert(StreamedVisualAttached);
                 continue;
-            };
-            if uri.starts_with("data:") {
-                continue;
-            }
-            if !base_dir.join(uri).is_file() {
-                return false;
             }
         }
+        entity_commands.with_children(|child| {
+            child.spawn((
+                StreamedVisualChild,
+                Sprite {
+                    image: image_handle,
+                    custom_size,
+                    ..Default::default()
+                },
+                Transform::from_xyz(0.0, 0.0, 0.2),
+            ));
+        });
+        entity_commands.try_insert(StreamedVisualAttached);
     }
-    true
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -3870,7 +4206,6 @@ fn asset_present_on_disk(
         .get(asset_id)
         .map(|record| record.relative_cache_path.as_str())
         .or_else(|| match asset_id {
-            id if id == default_corvette_asset_id() => Some("models/corvette_01/corvette_01.gltf"),
             id if id == default_starfield_shader_asset_id() => Some("shaders/starfield.wgsl"),
             id if id == default_space_background_shader_asset_id() => {
                 Some("shaders/simple_space_background.wgsl")
@@ -4101,7 +4436,7 @@ fn update_owned_ships_panel_system(
             Option<&Hardpoint>,
             Option<&PlayerTag>,
         ),
-        With<lightyear::prelude::Replicated>,
+        With<WorldEntity>,
     >,
 ) {
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
@@ -4124,7 +4459,10 @@ fn update_owned_ships_panel_system(
         .collect::<Vec<_>>();
     ship_ids.sort();
     ship_ids.dedup();
-    let selected_id = player_view_state.controlled_entity_id.clone();
+    let selected_id = player_view_state
+        .desired_controlled_entity_id
+        .clone()
+        .or_else(|| player_view_state.controlled_entity_id.clone());
 
     if panel_state.last_ship_ids == ship_ids
         && panel_state.last_selected_id == selected_id
@@ -4277,6 +4615,7 @@ fn handle_owned_ships_panel_buttons(
                 match &button.action {
                     OwnedShipsPanelAction::FreeRoam => {
                         let target = session.player_entity_id.clone();
+                        player_view_state.desired_controlled_entity_id = target.clone();
                         control_request_state.next_request_seq =
                             control_request_state.next_request_seq.saturating_add(1);
                         control_request_state.pending_controlled_entity_id = target;
@@ -4290,6 +4629,7 @@ fn handle_owned_ships_panel_buttons(
                         player_view_state.selected_entity_id = None;
                     }
                     OwnedShipsPanelAction::ControlEntity(entity_id) => {
+                        player_view_state.desired_controlled_entity_id = Some(entity_id.clone());
                         control_request_state.next_request_seq =
                             control_request_state.next_request_seq.saturating_add(1);
                         control_request_state.pending_controlled_entity_id =
@@ -4313,12 +4653,12 @@ fn handle_owned_ships_panel_buttons(
             Interaction::None => {
                 let is_selected = match &button.action {
                     OwnedShipsPanelAction::FreeRoam => {
-                        player_view_state.controlled_entity_id.as_ref()
+                        player_view_state.desired_controlled_entity_id.as_ref()
                             == session.player_entity_id.as_ref()
                             && !player_view_state.detached_free_camera
                     }
                     OwnedShipsPanelAction::ControlEntity(entity_id) => {
-                        player_view_state.controlled_entity_id.as_ref() == Some(entity_id)
+                        player_view_state.desired_controlled_entity_id.as_ref() == Some(entity_id)
                     }
                 };
                 *color = BackgroundColor(if is_selected {
@@ -4344,7 +4684,7 @@ fn update_hud_system(
 ) {
     let (pos, vel, health_text) =
         if let Ok((transform, maybe_velocity, health)) = controlled_query.single() {
-            let vel = maybe_velocity.map_or(Vec3::ZERO, |velocity| velocity.0);
+            let vel = maybe_velocity.map_or(Vec2::ZERO, |velocity| velocity.0);
             (
                 transform.translation,
                 vel,
@@ -4356,7 +4696,7 @@ fn update_hud_system(
             };
             (
                 camera_transform.translation,
-                Vec3::ZERO,
+                Vec2::ZERO,
                 "--/--".to_string(),
             )
         };
@@ -4364,13 +4704,13 @@ fn update_hud_system(
         return;
     };
 
-    let heading_rad = vel.truncate().to_angle();
+    let heading_rad = vel.to_angle();
     // Convert math convention (CCW from +Y) to compass convention (CW from north).
     let heading_deg = {
         let raw = (-heading_rad.to_degrees()).rem_euclid(360.0);
         if raw == 0.0 { 0.0_f32 } else { raw }
     };
-    let speed = Vec2::new(vel.x, vel.y).length();
+    let speed = vel.length();
     let content = format!(
         "SIDEREAL FLIGHT\nPos: ({:.0}, {:.0})\nSpeed: {:.1} m/s\nVel: ({:.1}, {:.1})\nHeading: {:.0}\u{00b0}\nHealth: {}\nControls: W/S thrust, A/D turn, SPACE brake, F3 debug overlay, ESC logout",
         pos.x, pos.y, speed, vel.x, vel.y, heading_deg, health_text
@@ -4407,10 +4747,11 @@ fn apply_predicted_input_to_action_queue(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn enforce_motion_ownership_for_world_entities(
     mut commands: Commands<'_, '_>,
     local_mode: Res<'_, LocalSimulationDebugMode>,
+    proxy_tuning: Res<'_, NearbyCollisionProxyTuning>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
@@ -4423,15 +4764,15 @@ fn enforce_motion_ownership_for_world_entities(
             Option<&'_ MountedOn>,
             Option<&'_ Hardpoint>,
             Option<&'_ PlayerTag>,
+            Option<&'_ EntityGuid>,
             Option<&'_ Position>,
+            Option<&'_ Transform>,
             Option<&'_ Rotation>,
             Option<&'_ LinearVelocity>,
             Option<&'_ SizeM>,
             Option<&'_ TotalMassKg>,
             Has<RigidBody>,
-            Has<Position>,
-            Has<Rotation>,
-            Has<LinearVelocity>,
+            Has<SuppressedPredictedDuplicateVisual>,
         ),
         With<WorldEntity>,
     >,
@@ -4452,6 +4793,78 @@ fn enforce_motion_ownership_for_world_entities(
         // Control target not resolved yet (bootstrap/handoff). Avoid destructive stripping.
         return;
     };
+    let mut target_guid: Option<uuid::Uuid> = None;
+    for (entity, _, mounted_on, hardpoint, player_tag, guid, _, _, _, _, _, _, _, _) in
+        &root_world_entities
+    {
+        let is_root_ship = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+        if entity == target_entity && is_root_ship {
+            target_guid = guid.map(|guid| guid.0);
+            break;
+        }
+    }
+
+    let target_position = root_world_entities.iter().find_map(
+        |(entity, _, mounted_on, hardpoint, player_tag, _, position, transform, _, _, _, _, _, _)| {
+            if entity != target_entity
+                || mounted_on.is_some()
+                || hardpoint.is_some()
+                || player_tag.is_some()
+            {
+                return None;
+            }
+            position
+                .map(|p| p.0)
+                .or_else(|| transform.map(|t| t.translation.truncate()))
+        },
+    );
+    let mut nearby_remote_candidates = Vec::<(Entity, f32)>::new();
+    if let Some(target_position) = target_position {
+        let max_dist_sq = proxy_tuning.radius_m * proxy_tuning.radius_m;
+        for (
+            entity,
+            controlled,
+            mounted_on,
+            hardpoint,
+            player_tag,
+            guid,
+            position,
+            transform,
+            _,
+            _,
+            _,
+            _,
+            _,
+            is_suppressed,
+        ) in &root_world_entities
+        {
+            let is_root_ship = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+            if !is_root_ship || controlled.is_some() || entity == target_entity || is_suppressed {
+                continue;
+            }
+            if guid.is_some_and(|guid| Some(guid.0) == target_guid) {
+                // Never keep a nearby proxy for logical duplicates of the locally controlled entity.
+                // Duplicate local copies can collide and create client-only velocity drift.
+                continue;
+            }
+            let Some(remote_pos) = position
+                .map(|p| p.0)
+                .or_else(|| transform.map(|t| t.translation.truncate()))
+            else {
+                continue;
+            };
+            let dist_sq = (remote_pos - target_position).length_squared();
+            if dist_sq <= max_dist_sq {
+                nearby_remote_candidates.push((entity, dist_sq));
+            }
+        }
+    }
+    nearby_remote_candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let nearby_proxy_entities = nearby_remote_candidates
+        .into_iter()
+        .take(proxy_tuning.max_proxies)
+        .map(|(entity, _)| entity)
+        .collect::<HashSet<_>>();
 
     for (
         entity,
@@ -4459,19 +4872,40 @@ fn enforce_motion_ownership_for_world_entities(
         mounted_on,
         hardpoint,
         player_tag,
+        _guid,
         position,
+        _transform,
         rotation,
         linear_velocity,
         size_m,
         total_mass_kg,
         has_rigidbody,
-        has_position,
-        has_rotation,
-        has_linear_velocity,
+        is_suppressed,
     ) in &root_world_entities
     {
         let is_root_ship = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
         if !is_root_ship {
+            continue;
+        }
+        if is_suppressed {
+            commands.entity(entity).remove::<NearbyCollisionProxy>();
+            commands.entity(entity).remove::<(
+                ActionQueue,
+                FlightComputer,
+                RigidBody,
+                Collider,
+                Mass,
+                AngularInertia,
+                LockedAxes,
+                LinearDamping,
+                AngularDamping,
+            )>();
+            if !local_mode.0 {
+                commands
+                    .entity(entity)
+                    .insert(lightyear::prelude::Interpolated)
+                    .remove::<lightyear::prelude::Predicted>();
+            }
             continue;
         }
 
@@ -4482,34 +4916,26 @@ fn enforce_motion_ownership_for_world_entities(
                     .map(|m| m.0)
                     .filter(|m| *m > 0.0)
                     .unwrap_or_else(default_corvette_mass_kg);
-                let position = position.map(|p| p.0).unwrap_or(Vec3::ZERO);
-                let rotation = rotation.map(|r| r.0).unwrap_or(Quat::IDENTITY);
-                let linear_velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec3::ZERO);
+                let position = position.map(|p| p.0).unwrap_or(Vec2::ZERO);
+                let rotation = rotation.copied().unwrap_or(Rotation::IDENTITY);
+                let linear_velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
                 let mut entity_commands = commands.entity(entity);
 
                 if !has_rigidbody {
                     entity_commands.insert((
                         RigidBody::Dynamic,
-                        Collider::cuboid(size.width * 0.5, size.length * 0.5, size.height * 0.5),
+                        Collider::rectangle(size.width, size.length),
                         Mass(mass_kg),
                         angular_inertia_from_size(mass_kg, &size),
-                        LockedAxes::new()
-                            .lock_translation_z()
-                            .lock_rotation_x()
-                            .lock_rotation_y(),
                         LinearDamping(0.0),
                         AngularDamping(0.0),
                     ));
                 }
-                if !has_position {
-                    entity_commands.insert(Position(position));
-                }
-                if !has_rotation {
-                    entity_commands.insert(Rotation(rotation));
-                }
-                if !has_linear_velocity {
-                    entity_commands.insert(LinearVelocity(linear_velocity));
-                }
+                entity_commands.insert((
+                    Position(position),
+                    rotation,
+                    LinearVelocity(linear_velocity),
+                ));
             }
             if !local_mode.0 {
                 commands
@@ -4520,20 +4946,34 @@ fn enforce_motion_ownership_for_world_entities(
             continue;
         }
 
-        // Remote/non-controlled ships must remain receive-only on client every tick.
-        // Replication may re-add these components after initial adoption.
+        let keep_nearby_proxy = nearby_proxy_entities.contains(&entity);
+        if keep_nearby_proxy {
+            let size = size_m.copied().unwrap_or_else(default_corvette_size);
+            let mut entity_commands = commands.entity(entity);
+            if !has_rigidbody {
+                entity_commands.insert(RigidBody::Kinematic);
+            }
+            entity_commands.insert(Collider::rectangle(size.width, size.length));
+            entity_commands.insert(NearbyCollisionProxy);
+            // Kinematic collision proxy should not carry local dynamic mass/inertia writers.
+            entity_commands.remove::<(Mass, AngularInertia)>();
+        } else {
+            // Remote/non-controlled ships must remain receive-only on client every tick.
+            // Replication may re-add these components after initial adoption.
+            commands.entity(entity).remove::<NearbyCollisionProxy>();
+            commands.entity(entity).remove::<(
+                RigidBody,
+                Collider,
+                Mass,
+                AngularInertia,
+                LockedAxes,
+                LinearDamping,
+                AngularDamping,
+            )>();
+        }
         commands
             .entity(entity)
             .remove::<(ActionQueue, FlightComputer)>();
-        commands.entity(entity).remove::<(
-            RigidBody,
-            Collider,
-            Mass,
-            AngularInertia,
-            LockedAxes,
-            LinearDamping,
-            AngularDamping,
-        )>();
         if !local_mode.0 {
             commands
                 .entity(entity)
@@ -4543,7 +4983,7 @@ fn enforce_motion_ownership_for_world_entities(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn audit_motion_ownership_system(
     time: Res<'_, Time>,
     enabled: Res<'_, MotionOwnershipAuditEnabled>,
@@ -4566,6 +5006,7 @@ fn audit_motion_ownership_system(
             Has<ActionQueue>,
             Has<FlightComputer>,
             Has<RigidBody>,
+            Has<NearbyCollisionProxy>,
             Has<Position>,
             Has<Rotation>,
             Has<LinearVelocity>,
@@ -4608,6 +5049,7 @@ fn audit_motion_ownership_system(
         has_action_queue,
         has_flight_computer,
         has_rigidbody,
+        has_nearby_proxy,
         has_position,
         has_rotation,
         has_linear_velocity,
@@ -4638,10 +5080,19 @@ fn audit_motion_ownership_system(
             continue;
         }
 
-        if is_predicted || has_action_queue || has_flight_computer || has_rigidbody {
+        if is_predicted
+            || has_action_queue
+            || has_flight_computer
+            || (has_rigidbody && !has_nearby_proxy)
+        {
             anomalies.push(format!(
-                "{} remote writers present predicted={} action_queue={} flight_computer={} rb={}",
-                entity_name, is_predicted, has_action_queue, has_flight_computer, has_rigidbody
+                "{} remote writers present predicted={} action_queue={} flight_computer={} rb={} nearby_proxy={}",
+                entity_name,
+                is_predicted,
+                has_action_queue,
+                has_flight_computer,
+                has_rigidbody,
+                has_nearby_proxy
             ));
         }
     }
@@ -4671,36 +5122,32 @@ fn enforce_controlled_planar_motion(
     >,
 ) {
     for (mut transform, position, rotation, velocity, angular_velocity) in &mut controlled_query {
-        if let Some(mut pos) = position {
-            if !pos.0.is_finite() {
-                pos.0 = Vec3::ZERO;
-            }
-            pos.0.z = 0.0;
+        if let Some(mut pos) = position
+            && !pos.0.is_finite()
+        {
+            pos.0 = Vec2::ZERO;
         }
-        if let Some(mut vel) = velocity {
-            if !vel.0.is_finite() {
-                vel.0 = Vec3::ZERO;
-            }
-            vel.0.z = 0.0;
+        if let Some(mut vel) = velocity
+            && !vel.0.is_finite()
+        {
+            vel.0 = Vec2::ZERO;
         }
-        if let Some(mut ang_vel) = angular_velocity {
-            if !ang_vel.0.is_finite() {
-                ang_vel.0 = Vec3::ZERO;
-            }
-            ang_vel.0.x = 0.0;
-            ang_vel.0.y = 0.0;
+        if let Some(mut ang_vel) = angular_velocity
+            && !ang_vel.0.is_finite()
+        {
+            ang_vel.0 = 0.0;
         }
         if !transform.translation.is_finite() {
             transform.translation = Vec3::ZERO;
         }
         let mut heading = if let Some(rot) = rotation.as_ref() {
-            if rot.0.is_finite() {
-                rot.0.to_euler(EulerRot::ZYX).0
+            if rot.is_finite() {
+                rot.as_radians()
             } else {
                 0.0
             }
         } else if transform.rotation.is_finite() {
-            transform.rotation.to_euler(EulerRot::ZYX).0
+            transform.rotation.to_euler(EulerRot::ZYX).2
         } else {
             0.0
         };
@@ -4709,7 +5156,7 @@ fn enforce_controlled_planar_motion(
         }
         let planar_rot = Quat::from_rotation_z(heading);
         if let Some(mut rot) = rotation {
-            rot.0 = planar_rot;
+            *rot = Rotation::radians(heading);
         }
         transform.translation.z = 0.0;
         transform.rotation = planar_rot;
@@ -4742,7 +5189,7 @@ fn reconcile_controlled_prediction_with_confirmed(
     for (
         mut position,
         mut rotation,
-        linear_velocity,
+        mut linear_velocity,
         transform,
         confirmed_position,
         confirmed_rotation,
@@ -4758,35 +5205,43 @@ fn reconcile_controlled_prediction_with_confirmed(
         let pos_error_len = pos_error.length();
         if pos_error_len >= SNAP_POS_ERROR_M {
             position.0 = confirmed_pos;
-            if let Some(mut velocity) = linear_velocity {
-                if let Some(confirmed_vel) = confirmed_linear_velocity {
-                    velocity.0 = confirmed_vel.0.0;
-                } else {
-                    velocity.0 = Vec3::ZERO;
-                }
+            if let Some(velocity) = linear_velocity.as_mut() {
+                velocity.0 = confirmed_linear_velocity.map_or(Vec2::ZERO, |v| v.0.0);
             }
         } else if pos_error_len >= SMOOTH_POS_ERROR_M {
             position.0 += pos_error * SMOOTH_FACTOR;
-            if let Some(mut velocity) = linear_velocity
-                && let Some(confirmed_vel) = confirmed_linear_velocity
-            {
-                velocity.0 = velocity.0.lerp(confirmed_vel.0.0, SMOOTH_FACTOR);
+        }
+
+        if let Some(velocity) = linear_velocity
+            .as_mut()
+            && let Some(confirmed_vel) = confirmed_linear_velocity
+        {
+            let confirmed = confirmed_vel.0.0;
+            let vel_error = (confirmed - velocity.0).length();
+            if pos_error_len >= SNAP_POS_ERROR_M || vel_error >= 2.0 {
+                velocity.0 = confirmed;
+            } else {
+                velocity.0 = velocity.0.lerp(confirmed, 0.35);
+            }
+            if confirmed.length_squared() <= 1.0e-6 && velocity.0.length_squared() <= 1.0e-4 {
+                velocity.0 = Vec2::ZERO;
             }
         }
 
         if let Some(confirmed_rotation) = confirmed_rotation {
-            let confirmed_rot = confirmed_rotation.0.0;
-            let rot_error = rotation.0.angle_between(confirmed_rot);
+            let confirmed_rot = confirmed_rotation.0;
+            let rot_error = rotation.angle_between(confirmed_rot);
             if rot_error >= SNAP_ROT_ERROR_RAD {
-                rotation.0 = confirmed_rot;
+                *rotation = confirmed_rot;
             } else if rot_error >= SMOOTH_ROT_ERROR_RAD {
-                rotation.0 = rotation.0.slerp(confirmed_rot, SMOOTH_FACTOR);
+                *rotation = rotation.slerp(confirmed_rot, SMOOTH_FACTOR);
             }
         }
 
         if let Some(mut transform) = transform {
-            transform.translation = position.0;
-            transform.rotation = rotation.0;
+            transform.translation.x = position.0.x;
+            transform.translation.y = position.0.y;
+            transform.rotation = (*rotation).into();
             transform.translation.z = 0.0;
         }
     }
@@ -4903,8 +5358,8 @@ fn draw_debug_overlay_system(
                 && let (Some(confirmed_position), Some(confirmed_rotation)) =
                     (confirmed_position, confirmed_rotation)
             {
-                let confirmed_pos = confirmed_position.0.0;
-                let confirmed_rot = confirmed_rotation.0.0;
+                let confirmed_rot: Quat = confirmed_rotation.0.into();
+                let confirmed_pos = confirmed_position.0.0.extend(0.0);
                 let confirmed_transform =
                     Transform::from_translation(confirmed_pos).with_rotation(confirmed_rot);
                 gizmos.aabb_3d(aabb, confirmed_transform, controlled_confirmed_color);
@@ -4927,7 +5382,7 @@ fn draw_debug_overlay_system(
         {
             let len = vel.0.length();
             if len > 0.01 {
-                let end = pos + vel.0 * VELOCITY_ARROW_SCALE;
+                let end = pos + vel.0.extend(0.0) * VELOCITY_ARROW_SCALE;
                 gizmos.arrow(pos, end, velocity_color);
             }
         }
@@ -5014,6 +5469,9 @@ fn update_starfield_material_system(
     let Ok(window) = window_query.single() else {
         return;
     };
+    let Some(viewport_size) = safe_viewport_size(window) else {
+        return;
+    };
     if !camera_motion.initialized {
         return;
     }
@@ -5067,12 +5525,8 @@ fn update_starfield_material_system(
 
     for material_handle in &starfield_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
-            material.viewport_time = Vec4::new(
-                window.resolution.width(),
-                window.resolution.height(),
-                time.elapsed_secs(),
-                warp,
-            );
+            material.viewport_time =
+                Vec4::new(viewport_size.x, viewport_size.y, time.elapsed_secs(), warp);
             material.drift_intensity = Vec4::new(drift_xy.x, drift_xy.y, intensity, alpha);
             material.velocity_dir = Vec4::new(velocity_dir.x, velocity_dir.y, speed, 0.0);
         }
@@ -5095,6 +5549,9 @@ fn update_space_background_material_system(
     let Ok(window) = window_query.single() else {
         return;
     };
+    let Some(viewport_size) = safe_viewport_size(window) else {
+        return;
+    };
     if !camera_motion.initialized {
         return;
     }
@@ -5110,15 +5567,20 @@ fn update_space_background_material_system(
 
     for material_handle in &bg_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
-            material.viewport_time = Vec4::new(
-                window.resolution.width(),
-                window.resolution.height(),
-                time.elapsed_secs(),
-                0.0,
-            );
+            material.viewport_time =
+                Vec4::new(viewport_size.x, viewport_size.y, time.elapsed_secs(), 0.0);
             material.motion = Vec4::new(drift_xy.x, drift_xy.y, velocity_dir.x, velocity_dir.y);
         }
     }
+}
+
+fn safe_viewport_size(window: &Window) -> Option<Vec2> {
+    let width = window.resolution.width();
+    let height = window.resolution.height();
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some(Vec2::new(width, height))
 }
 
 fn active_field_mut(session: &mut ClientSession) -> &mut String {
@@ -5145,12 +5607,26 @@ fn is_printable_char(chr: char) -> bool {
 }
 
 fn preferred_backends() -> Backends {
-    Backends::from_env().unwrap_or(Backends::VULKAN | Backends::GL)
+    if let Ok(raw_value) = std::env::var("SIDEREAL_CLIENT_WGPU_BACKENDS") {
+        let parsed = Backends::from_comma_list(&raw_value);
+        if parsed.is_empty() {
+            warn!(
+                "SIDEREAL_CLIENT_WGPU_BACKENDS='{}' did not contain any valid backend values; falling back to WGPU_BACKEND/default backend set",
+                raw_value
+            );
+        } else {
+            return parsed;
+        }
+    }
+    Backends::from_env().unwrap_or(Backends::PRIMARY)
 }
 
-fn configured_wgpu_settings() -> WgpuSettings {
-    let force_fallback_adapter = std::env::var("SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+fn configured_wgpu_settings(force_fallback_adapter_for_multi_instance: bool) -> WgpuSettings {
+    let force_fallback_adapter = match std::env::var("SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER") {
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => true,
+        Ok(_) => false,
+        Err(_) => force_fallback_adapter_for_multi_instance,
+    };
     let backends = preferred_backends();
     info!(
         "client render config backends={:?} force_fallback_adapter={}",
@@ -5160,6 +5636,20 @@ fn configured_wgpu_settings() -> WgpuSettings {
         backends: Some(backends),
         force_fallback_adapter,
         ..Default::default()
+    }
+}
+
+fn acquire_multi_instance_guard() -> Option<TcpListener> {
+    const MULTI_INSTANCE_GUARD_ADDR: &str = "127.0.0.1:62173";
+    match TcpListener::bind(MULTI_INSTANCE_GUARD_ADDR) {
+        Ok(listener) => Some(listener),
+        Err(err) => {
+            warn!(
+                "sidereal-client multi-instance guard lock unavailable at {} ({}). Assuming secondary instance and forcing software adapter.",
+                MULTI_INSTANCE_GUARD_ADDR, err
+            );
+            None
+        }
     }
 }
 
@@ -5208,6 +5698,50 @@ mod tests {
         assert!(!should_defer_controlled_predicted_adoption(
             false, false, false, false
         ));
+    }
+
+    #[test]
+    fn camera_anchor_prefers_local_player_entity() {
+        let mut registry = RuntimeEntityHierarchy::default();
+        let player_entity = Entity::from_bits(1);
+        let controlled_entity = Entity::from_bits(2);
+        registry
+            .by_entity_id
+            .insert("player:test".to_string(), player_entity);
+        registry
+            .by_entity_id
+            .insert("ship:test".to_string(), controlled_entity);
+
+        let session = ClientSession {
+            player_entity_id: Some("player:test".to_string()),
+            ..Default::default()
+        };
+        let player_view_state = LocalPlayerViewState {
+            controlled_entity_id: Some("ship:test".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_camera_anchor_entity(&session, &player_view_state, &registry);
+        assert_eq!(resolved, Some(player_entity));
+    }
+
+    #[test]
+    fn camera_anchor_missing_player_entity_returns_none() {
+        let mut registry = RuntimeEntityHierarchy::default();
+        registry
+            .by_entity_id
+            .insert("ship:test".to_string(), Entity::from_bits(2));
+        let session = ClientSession {
+            player_entity_id: Some("player:test".to_string()),
+            ..Default::default()
+        };
+        let player_view_state = LocalPlayerViewState {
+            controlled_entity_id: Some("ship:test".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolve_camera_anchor_entity(&session, &player_view_state, &registry);
+        assert!(resolved.is_none());
     }
 
     #[test]
@@ -5313,13 +5847,13 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_systems(Update, sync_world_entity_transforms_from_physics);
 
-        let expected_position = Vec3::new(42.0, -17.5, 99.0);
-        let expected_rotation = Quat::from_rotation_z(0.7);
+        let expected_position = Vec2::new(42.0, -17.5);
+        let expected_rotation = Rotation::radians(0.7);
         let entity = app.world_mut().spawn((
             WorldEntity,
             Transform::default(),
             Position(expected_position),
-            Rotation(expected_rotation),
+            expected_rotation,
         ));
         let entity_id = entity.id();
 
@@ -5329,7 +5863,7 @@ mod tests {
         assert_eq!(transform.translation.x, expected_position.x);
         assert_eq!(transform.translation.y, expected_position.y);
         assert_eq!(transform.translation.z, 0.0);
-        assert_eq!(transform.rotation, expected_rotation);
+        assert_eq!(transform.rotation, Quat::from(expected_rotation));
     }
 
     #[test]
@@ -5372,5 +5906,63 @@ mod tests {
         assert!(remote_ref.contains::<FlightComputer>());
         assert!(remote_ref.contains::<RigidBody>());
         assert!(remote_ref.contains::<Mass>());
+    }
+
+    #[test]
+    fn motion_ownership_enforcement_keeps_nearby_remote_collision_proxy() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(LocalSimulationDebugMode(false));
+        app.insert_resource(NearbyCollisionProxyTuning {
+            radius_m: 200.0,
+            max_proxies: 4,
+        });
+        app.insert_resource(ClientSession {
+            player_entity_id: Some("player:test".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some("ship:local".to_string()),
+            ..Default::default()
+        });
+        let mut registry = RuntimeEntityHierarchy::default();
+        app.add_systems(Update, enforce_motion_ownership_for_world_entities);
+
+        let local = app.world_mut().spawn((
+            WorldEntity,
+            Position(Vec2::ZERO),
+            Rotation::IDENTITY,
+            LinearVelocity(Vec2::ZERO),
+        ));
+        let local_id = local.id();
+        registry
+            .by_entity_id
+            .insert("ship:local".to_string(), local_id);
+        app.insert_resource(registry);
+
+        let remote = app.world_mut().spawn((
+            WorldEntity,
+            Position(Vec2::new(50.0, 0.0)),
+            Rotation::IDENTITY,
+            LinearVelocity(Vec2::ZERO),
+            ActionQueue::default(),
+            FlightComputer {
+                profile: "test".to_string(),
+                throttle: 0.0,
+                yaw_input: 0.0,
+                brake_active: false,
+                turn_rate_deg_s: 0.0,
+            },
+        ));
+        let remote_id = remote.id();
+
+        app.update();
+
+        let remote_ref = app.world().entity(remote_id);
+        assert!(remote_ref.contains::<NearbyCollisionProxy>());
+        assert!(remote_ref.contains::<RigidBody>());
+        assert!(remote_ref.contains::<Collider>());
+        assert!(!remote_ref.contains::<ActionQueue>());
+        assert!(!remote_ref.contains::<FlightComputer>());
     }
 }

@@ -132,11 +132,8 @@ export function DetailPanel({
                     value={worldEntity.y.toFixed(2)}
                     unit="m"
                   />
-                  <PropertyRow
-                    label="Z"
-                    value={worldEntity.z.toFixed(2)}
-                    unit="m"
-                  />
+                  <PropertyRow label="VX" value={worldEntity.vx.toFixed(2)} unit="m/s" />
+                  <PropertyRow label="VY" value={worldEntity.vy.toFixed(2)} unit="m/s" />
                 </PropertySection>
               )}
 
@@ -332,13 +329,12 @@ function ComponentsList({
       return formatValueCompact(entries[0][1])
     }
 
-    // For objects with x,y,z show compact position
+    // For objects with x,y show compact position
     if (entries.some(([k]) => k === 'x' || k === 'pos_x')) {
       const x = entries.find(([k]) => k === 'x' || k === 'pos_x')?.[1]
       const y = entries.find(([k]) => k === 'y' || k === 'pos_y')?.[1]
-      const z = entries.find(([k]) => k === 'z' || k === 'pos_z')?.[1]
       if (x !== undefined && y !== undefined) {
-        return `{x: ${formatNumber(x)}, y: ${formatNumber(y)}, z: ${formatNumber(z ?? 0)}}`
+        return `{x: ${formatNumber(x)}, y: ${formatNumber(y)}}`
       }
     }
 

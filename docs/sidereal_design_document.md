@@ -100,6 +100,11 @@ Visibility/scanning:
 - `ScannerComponent`
 - `ScannerRangeBuff`
 
+Visual identity (2D migration path):
+
+- `VisualAssetId` (entity-generic sprite asset identity)
+- `SpriteShaderAssetId` (optional sprite pixel-shader asset identity)
+
 ### 4.3 Capability Rules
 
 Any entity with:
@@ -368,6 +373,8 @@ Implementation note:
 
 - Asset delivery is stream-based through backend/client runtime channels.
 - Client uses local cache (`assets.pak` + index metadata) with checksum/version invalidation.
+- Starter corvette runtime visual default is defined via gameplay component `VisualAssetId("corvette_01")`; default stream source maps that asset ID to `sprites/ships/corvette.png` (served from `ASSET_ROOT`, typically `data/sprites/ships/corvette.png` in local development).
+- Optional per-entity sprite shader is driven by `SpriteShaderAssetId`; baseline streamed shader asset ID is `sprite_pixel_effect_wgsl` (`shaders/sprite_pixel_effect.wgsl`) and binds to client runtime shader path `data/cache_stream/shaders/sprite_pixel_effect.wgsl`.
 - Missing assets must fail soft (no gameplay crash).
 - No standalone HTTP asset-file serving for gameplay runtime paths.
 
@@ -378,6 +385,10 @@ Implementation note:
   - WASM `[lib]` target.
 - Platform branching is `cfg(target_arch = "wasm32")` only.
 - Native and WASM gameplay behavior stay in lockstep; transport adapters are platform-specific boundary code.
+- Native renderer backend selection uses `SIDEREAL_CLIENT_WGPU_BACKENDS` first, then `WGPU_BACKEND`, then defaults to `PRIMARY` backends (`VULKAN | METAL | DX12 | BROWSER_WEBGPU`) when unset.
+- Native multi-instance safety: non-headless clients use a local process guard; if another client instance is already active, the new instance forces `WgpuSettings.force_fallback_adapter = true` to reduce multi-instance GPU-driver crash risk on low-end/older adapters.
+- `SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER` explicitly overrides multi-instance fallback behavior (`1`/`true` forces software adapter; `0`/`false` disables software fallback and uses hardware adapter selection).
+- Native primary window is user-resizable with enforced minimum logical size `960x540`; resize/minimize transitions treat non-positive viewport dimensions as non-renderable for fullscreen backdrop/material uniform updates.
 
 ## 11. Engineering Boundaries
 
