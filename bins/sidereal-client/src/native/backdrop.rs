@@ -89,6 +89,7 @@ impl Material2d for StreamedSpriteShaderMaterial {
     }
 }
 
+/// Updates starfield material from the controlled entity's velocity: vector → magnitude + heading, accumulated scroll (distance-over-time), and warp. Runs in Last.
 #[allow(clippy::too_many_arguments)]
 pub fn update_starfield_material_system(
     time: Res<'_, Time>,
@@ -107,7 +108,7 @@ pub fn update_starfield_material_system(
         return;
     };
 
-    let ship_velocity = if let Some(controlled_id) = &player_view_state.controlled_entity_id {
+    let velocity_vector = if let Some(controlled_id) = &player_view_state.controlled_entity_id {
         if let Some(&entity) = entity_registry.by_entity_id.get(controlled_id.as_str()) {
             controlled_vel_query
                 .get(entity)
@@ -121,36 +122,52 @@ pub fn update_starfield_material_system(
         Vec2::ZERO
     };
 
-    let speed = ship_velocity.length();
+    let magnitude = velocity_vector.length();
+    let heading = if magnitude > 0.01 {
+        velocity_vector / magnitude
+    } else {
+        Vec2::Y
+    };
+
     let dt = time.delta_secs().max(0.0);
 
     if !motion.initialized {
         motion.initialized = true;
-        motion.prev_speed = speed;
+        motion.prev_speed = magnitude;
         motion.smoothed_warp = 0.0;
     }
 
-    const STARFIELD_VELOCITY_SCALE: f32 = 0.00048;
+    // Starfield from controlled entity: vector = velocity, magnitude = speed, heading = unit direction.
+    // Parallax is distance-over-time: we need the accumulator so scroll reflects integrated displacement (continual smooth motion).
+    // Do not wrap at 1.0 (caused visible reset). Shader uses fract() so pattern is periodic. Wrap at large period to avoid f32 precision loss over long sessions.
+    const STARFIELD_WORLD_TO_UV: f32 = 0.012;
+    const SCROLL_WRAP_PERIOD: f32 = 4096.0;
 
-    let travel_uv = ship_velocity * STARFIELD_VELOCITY_SCALE * dt;
+    let frame_displacement = velocity_vector * dt;
+    let delta_uv = frame_displacement * STARFIELD_WORLD_TO_UV;
+    motion.accumulated_scroll_uv += delta_uv;
+    if motion.accumulated_scroll_uv.x.abs() >= SCROLL_WRAP_PERIOD {
+        motion.accumulated_scroll_uv.x -= motion.accumulated_scroll_uv.x.signum() * SCROLL_WRAP_PERIOD;
+    }
+    if motion.accumulated_scroll_uv.y.abs() >= SCROLL_WRAP_PERIOD {
+        motion.accumulated_scroll_uv.y -= motion.accumulated_scroll_uv.y.signum() * SCROLL_WRAP_PERIOD;
+    }
 
-    let target_warp = ((speed - 480.0) / 1650.0).clamp(0.0, 1.25);
+    let travel_uv = motion.accumulated_scroll_uv;
+
+    let target_warp = ((magnitude - 480.0) / 1650.0).clamp(0.0, 1.25);
     let warp_alpha = 1.0 - (-7.5 * dt).exp();
     motion.smoothed_warp = motion.smoothed_warp.lerp(target_warp, warp_alpha);
 
     let warp = motion.smoothed_warp;
-    let velocity_dir = if speed > 0.01 {
-        ship_velocity / speed
-    } else {
-        Vec2::Y
-    };
 
     for material_handle in &starfield_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
             material.viewport_time =
                 Vec4::new(viewport_size.x, viewport_size.y, time.elapsed_secs(), warp);
-            material.drift_intensity = Vec4::new(travel_uv.x, travel_uv.y, 1.0, 1.0);
-            material.velocity_dir = Vec4::new(velocity_dir.x, velocity_dir.y, speed, 0.0);
+            // Y-flip so world Y-up matches screen: stars stream opposite travel (e.g. 223° → 43°).
+            material.drift_intensity = Vec4::new(travel_uv.x, -travel_uv.y, 1.0, 1.0);
+            material.velocity_dir = Vec4::new(heading.x, heading.y, magnitude, 0.0);
         }
     }
 }

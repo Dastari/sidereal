@@ -89,7 +89,8 @@ pub fn acquire_multi_instance_guard() -> Option<TcpListener> {
         Err(err) => {
             bevy::log::warn!(
                 "sidereal-client multi-instance guard lock unavailable at {} ({}). Assuming secondary instance.",
-                MULTI_INSTANCE_GUARD_ADDR, err
+                MULTI_INSTANCE_GUARD_ADDR,
+                err
             );
             None
         }

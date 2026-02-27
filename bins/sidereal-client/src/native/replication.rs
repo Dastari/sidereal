@@ -1,0 +1,777 @@
+//! Replication adoption, control sync, and prediction runtime state.
+
+use avian2d::prelude::{
+    AngularDamping, AngularInertia, AngularVelocity, Collider, LinearDamping, LinearVelocity,
+    LockedAxes, Mass, Position, RigidBody, Rotation,
+};
+use bevy::ecs::query::Has;
+use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
+use lightyear::prediction::correction::CorrectionPolicy;
+use lightyear::prediction::prelude::PredictionManager;
+use lightyear::prelude::client::Client;
+use sidereal_game::{
+    ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, Hardpoint, MountedOn, OwnerId,
+    PlayerTag, SizeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId, angular_inertia_from_size,
+    default_corvette_mass_kg, default_corvette_size,
+};
+use sidereal_runtime_sync::{
+    RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
+};
+use std::collections::{HashMap, HashSet};
+
+use super::components::{
+    ControlledEntity, RemoteEntity, RemoteVisibleEntity, ReplicatedAdoptionHandled,
+    StreamedSpriteShaderAssetId, StreamedVisualAssetId, StreamedVisualAttached, WorldEntity,
+};
+use super::resources::{
+    BootstrapWatchdogState, DeferredPredictedAdoptionState, LocalSimulationDebugMode,
+    PredictionBootstrapTuning, PredictionCorrectionTuning, RemoteEntityRegistry,
+};
+use super::state::{ClientAppState, ClientSession, LocalPlayerViewState, SessionReadyState};
+
+pub(crate) fn should_defer_controlled_predicted_adoption(
+    is_local_controlled: bool,
+    has_position: bool,
+    has_rotation: bool,
+    has_linear_velocity: bool,
+) -> bool {
+    is_local_controlled && (!has_position || !has_rotation || !has_linear_velocity)
+}
+
+pub(crate) fn candidate_runtime_entity_score(
+    is_root_entity: bool,
+    is_local_controlled_entity: bool,
+    predicted_mode: bool,
+) -> i32 {
+    if is_local_controlled_entity {
+        if predicted_mode { 500 } else { 400 }
+    } else if is_root_entity {
+        if predicted_mode { 200 } else { 100 }
+    } else {
+        50
+    }
+}
+
+pub(crate) fn runtime_entity_id_from_guid(
+    entity_registry: &RuntimeEntityHierarchy,
+    local_player_entity_id: &str,
+    guid: &str,
+) -> Option<String> {
+    for prefix in ["ship", "player", "module", "hardpoint"] {
+        let candidate = format!("{prefix}:{guid}");
+        if entity_registry.by_entity_id.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+    if parse_guid_from_entity_id(local_player_entity_id)
+        .is_some_and(|player_guid| player_guid.to_string() == guid)
+    {
+        return Some(local_player_entity_id.to_string());
+    }
+    None
+}
+
+pub(crate) fn resolve_authoritative_control_entity_id_from_registry(
+    entity_registry: &RuntimeEntityHierarchy,
+    local_player_entity_id: &str,
+    controlled_entity_guid: Option<&ControlledEntityGuid>,
+) -> Option<String> {
+    let control_guid = controlled_entity_guid.and_then(|v| v.0.as_deref())?;
+
+    if parse_guid_from_entity_id(local_player_entity_id)
+        .is_some_and(|player_guid| player_guid.to_string() == control_guid)
+    {
+        return Some(local_player_entity_id.to_string());
+    }
+
+    runtime_entity_id_from_guid(entity_registry, local_player_entity_id, control_guid)
+}
+
+pub(crate) fn resolve_authoritative_control_entity_id_with_snapshot(
+    entity_registry: &RuntimeEntityHierarchy,
+    runtime_entity_id_by_guid: &HashMap<String, String>,
+    local_player_entity_id: &str,
+    controlled_entity_guid: Option<&ControlledEntityGuid>,
+) -> Option<String> {
+    let control_guid = controlled_entity_guid.and_then(|v| v.0.as_deref())?;
+
+    if parse_guid_from_entity_id(local_player_entity_id)
+        .is_some_and(|player_guid| player_guid.to_string() == control_guid)
+    {
+        return Some(local_player_entity_id.to_string());
+    }
+
+    runtime_entity_id_by_guid
+        .get(control_guid)
+        .cloned()
+        .or_else(|| {
+            runtime_entity_id_from_guid(entity_registry, local_player_entity_id, control_guid)
+        })
+}
+
+pub(crate) fn existing_runtime_entity_score(
+    is_world_entity: bool,
+    is_controlled: bool,
+    is_predicted: bool,
+    is_interpolated: bool,
+    is_remote: bool,
+) -> i32 {
+    if is_controlled {
+        if is_predicted { 500 } else { 400 }
+    } else if is_remote {
+        if is_predicted {
+            200
+        } else if is_interpolated {
+            100
+        } else {
+            90
+        }
+    } else if is_world_entity {
+        80
+    } else {
+        0
+    }
+}
+
+pub(crate) fn transition_world_loading_to_in_world(
+    app_state: Option<Res<'_, State<ClientAppState>>>,
+    session: Res<'_, ClientSession>,
+    session_ready: Res<'_, SessionReadyState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    mut next_state: ResMut<'_, NextState<ClientAppState>>,
+) {
+    if !app_state
+        .as_ref()
+        .is_some_and(|state| **state == ClientAppState::WorldLoading)
+    {
+        return;
+    }
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    if session_ready.ready_player_entity_id.as_deref() != Some(local_player_entity_id.as_str()) {
+        return;
+    }
+    if !entity_registry
+        .by_entity_id
+        .contains_key(local_player_entity_id)
+    {
+        return;
+    }
+    next_state.set(ClientAppState::InWorld);
+}
+
+pub(crate) fn configure_prediction_manager_tuning(
+    tuning: Res<'_, PredictionCorrectionTuning>,
+    mut managers: Query<'_, '_, &mut PredictionManager, (With<Client>, Added<PredictionManager>)>,
+) {
+    for mut manager in &mut managers {
+        manager.rollback_policy.max_rollback_ticks = tuning.max_rollback_ticks;
+        manager.correction_policy = if tuning.instant_correction {
+            CorrectionPolicy::instant_correction()
+        } else {
+            CorrectionPolicy::default()
+        };
+        bevy::log::info!(
+            "configured prediction manager (max_rollback_ticks={}, correction_mode={})",
+            tuning.max_rollback_ticks,
+            if tuning.instant_correction {
+                "instant"
+            } else {
+                "smooth"
+            }
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn adopt_native_lightyear_replicated_entities(
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    local_mode: Res<'_, LocalSimulationDebugMode>,
+    tuning: Res<'_, PredictionBootstrapTuning>,
+    time: Res<'_, Time>,
+    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
+    mut watchdog: ResMut<'_, BootstrapWatchdogState>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
+    mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
+    replicated_entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Option<&'_ OwnerId>,
+            Option<&'_ MountedOn>,
+            Option<&'_ Hardpoint>,
+            Option<&'_ PlayerTag>,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ LinearVelocity>,
+            Option<&'_ SizeM>,
+            Option<&'_ TotalMassKg>,
+            Option<&'_ ControlledEntityGuid>,
+            Option<&'_ VisualAssetId>,
+            Option<&'_ SpriteShaderAssetId>,
+        ),
+        (
+            With<lightyear::prelude::Replicated>,
+            Without<ReplicatedAdoptionHandled>,
+            Without<WorldEntity>,
+            Without<DespawnOnExit<ClientAppState>>,
+        ),
+    >,
+    controlled_query: Query<'_, '_, Entity, With<ControlledEntity>>,
+    adopted_entity_state: Query<
+        '_,
+        '_,
+        (
+            Has<WorldEntity>,
+            Has<ControlledEntity>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<RemoteEntity>,
+        ),
+    >,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    let mut runtime_entity_id_by_guid = HashMap::<String, String>::new();
+    for (_, guid, _, mounted_on, hardpoint, player_tag, _, _, _, _, _, _, _, _) in
+        &replicated_entities
+    {
+        let Some(guid) = guid else {
+            continue;
+        };
+        if mounted_on.is_some() || hardpoint.is_some() {
+            continue;
+        }
+        let runtime_entity_id = if player_tag.is_some() {
+            format!("player:{}", guid.0)
+        } else {
+            format!("ship:{}", guid.0)
+        };
+        let guid_key = guid.0.to_string();
+        match runtime_entity_id_by_guid.get(&guid_key) {
+            Some(existing) => {
+                if existing.starts_with("player:") && runtime_entity_id.starts_with("ship:") {
+                    runtime_entity_id_by_guid.insert(guid_key, runtime_entity_id);
+                }
+            }
+            None => {
+                runtime_entity_id_by_guid.insert(guid_key, runtime_entity_id);
+            }
+        }
+    }
+
+    let mut authoritative_controlled_entity_id = player_view_state.controlled_entity_id.clone();
+    for (
+        _,
+        guid,
+        _,
+        mounted_on,
+        hardpoint,
+        player_tag,
+        _,
+        _,
+        _,
+        _,
+        _,
+        controlled_entity_guid,
+        _,
+        _,
+    ) in &replicated_entities
+    {
+        let Some(guid) = guid else {
+            continue;
+        };
+        if mounted_on.is_some() || hardpoint.is_some() || player_tag.is_none() {
+            continue;
+        }
+        let runtime_entity_id = format!("player:{}", guid.0);
+        if runtime_entity_id != *local_player_entity_id {
+            continue;
+        }
+        let controlled_id = resolve_authoritative_control_entity_id_with_snapshot(
+            &entity_registry,
+            &runtime_entity_id_by_guid,
+            local_player_entity_id,
+            controlled_entity_guid,
+        );
+        if let Some(controlled_id) = controlled_id {
+            player_view_state.controlled_entity_id = Some(controlled_id);
+            authoritative_controlled_entity_id = player_view_state.controlled_entity_id.clone();
+        }
+        break;
+    }
+
+    let mut seen_runtime_entity_ids = HashSet::<String>::new();
+
+    for (
+        entity,
+        guid,
+        _owner_id,
+        mounted_on,
+        hardpoint,
+        player_tag,
+        position,
+        rotation,
+        linear_velocity,
+        size_m,
+        total_mass_kg,
+        controlled_entity_guid,
+        visual_asset_id,
+        sprite_shader_asset_id,
+    ) in &replicated_entities
+    {
+        let Some(guid) = guid else {
+            continue;
+        };
+        watchdog.replication_state_seen = true;
+        let runtime_entity_id = if player_tag.is_some() {
+            format!("player:{}", guid.0)
+        } else if mounted_on.is_some() {
+            format!("module:{}", guid.0)
+        } else if hardpoint.is_some() {
+            format!("hardpoint:{}", guid.0)
+        } else {
+            format!("ship:{}", guid.0)
+        };
+        if !seen_runtime_entity_ids.insert(runtime_entity_id.clone()) {
+            commands
+                .entity(entity)
+                .insert((ReplicatedAdoptionHandled, Visibility::Hidden));
+            continue;
+        }
+        let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+        let is_local_controlled_entity = is_root_entity
+            && authoritative_controlled_entity_id.as_deref() == Some(runtime_entity_id.as_str());
+        let is_local_player_entity = runtime_entity_id == *local_player_entity_id;
+        if is_local_player_entity
+            && let Some(controlled_id) = resolve_authoritative_control_entity_id_with_snapshot(
+                &entity_registry,
+                &runtime_entity_id_by_guid,
+                local_player_entity_id,
+                controlled_entity_guid,
+            )
+        {
+            player_view_state.controlled_entity_id = Some(controlled_id);
+        }
+        let predicted_mode = !local_mode.0;
+        let candidate_score = candidate_runtime_entity_score(
+            is_root_entity,
+            is_local_controlled_entity,
+            predicted_mode,
+        );
+        if predicted_mode
+            && should_defer_controlled_predicted_adoption(
+                is_local_controlled_entity,
+                position.is_some(),
+                rotation.is_some(),
+                linear_velocity.is_some(),
+            )
+        {
+            let now_s = time.elapsed_secs_f64();
+            let mut missing = Vec::new();
+            if position.is_none() {
+                missing.push("Position");
+            }
+            if rotation.is_none() {
+                missing.push("Rotation");
+            }
+            if linear_velocity.is_none() {
+                missing.push("LinearVelocity");
+            }
+            let missing_summary = missing.join(", ");
+            if adoption_state.waiting_entity_id.as_deref() != Some(runtime_entity_id.as_str()) {
+                adoption_state.waiting_entity_id = Some(runtime_entity_id.clone());
+                adoption_state.wait_started_at_s = Some(now_s);
+                adoption_state.last_warn_at_s = 0.0;
+                adoption_state.dialog_shown = false;
+            }
+            adoption_state.last_missing_components = missing_summary.clone();
+            if let Some(started_at_s) = adoption_state.wait_started_at_s {
+                let wait_s = (now_s - started_at_s).max(0.0);
+                if wait_s >= tuning.defer_warn_after_s
+                    && now_s - adoption_state.last_warn_at_s >= tuning.defer_warn_interval_s
+                {
+                    bevy::log::warn!(
+                        "deferring predicted controlled adoption for {} (wait {:.2}s, missing: {})",
+                        runtime_entity_id,
+                        wait_s,
+                        missing_summary
+                    );
+                    adoption_state.last_warn_at_s = now_s;
+                }
+            }
+            continue;
+        }
+
+        if let Some(&existing_entity) = entity_registry.by_entity_id.get(runtime_entity_id.as_str())
+            && existing_entity != entity
+        {
+            if let Ok((is_world, is_controlled, is_predicted, is_interpolated, is_remote)) =
+                adopted_entity_state.get(existing_entity)
+            {
+                let existing_score = existing_runtime_entity_score(
+                    is_world,
+                    is_controlled,
+                    is_predicted,
+                    is_interpolated,
+                    is_remote,
+                );
+                if candidate_score <= existing_score {
+                    commands
+                        .entity(entity)
+                        .insert((ReplicatedAdoptionHandled, Visibility::Hidden))
+                        .remove::<(
+                            ControlledEntity,
+                            StreamedVisualAssetId,
+                            StreamedVisualAttached,
+                            StreamedSpriteShaderAssetId,
+                        )>();
+                    continue;
+                }
+
+                commands.entity(existing_entity).remove::<Name>();
+                if is_world {
+                    commands
+                        .entity(existing_entity)
+                        .insert(Visibility::Hidden)
+                        .remove::<(
+                            WorldEntity,
+                            RemoteEntity,
+                            RemoteVisibleEntity,
+                            ControlledEntity,
+                            StreamedVisualAssetId,
+                            StreamedVisualAttached,
+                            StreamedSpriteShaderAssetId,
+                        )>();
+                }
+                if entity_registry.by_entity_id.get(runtime_entity_id.as_str())
+                    == Some(&existing_entity)
+                {
+                    entity_registry
+                        .by_entity_id
+                        .remove(runtime_entity_id.as_str());
+                }
+                if remote_registry.by_entity_id.get(runtime_entity_id.as_str())
+                    == Some(&existing_entity)
+                {
+                    remote_registry
+                        .by_entity_id
+                        .remove(runtime_entity_id.as_str());
+                }
+            } else {
+                entity_registry
+                    .by_entity_id
+                    .remove(runtime_entity_id.as_str());
+                if remote_registry.by_entity_id.get(runtime_entity_id.as_str())
+                    == Some(&existing_entity)
+                {
+                    remote_registry
+                        .by_entity_id
+                        .remove(runtime_entity_id.as_str());
+                }
+            }
+        }
+
+        if adoption_state.waiting_entity_id.as_deref() == Some(runtime_entity_id.as_str()) {
+            if let Some(started_at_s) = adoption_state.wait_started_at_s {
+                let resolved_wait_s = (time.elapsed_secs_f64() - started_at_s).max(0.0);
+                adoption_state.resolved_samples = adoption_state.resolved_samples.saturating_add(1);
+                adoption_state.resolved_total_wait_s += resolved_wait_s;
+                adoption_state.resolved_max_wait_s =
+                    adoption_state.resolved_max_wait_s.max(resolved_wait_s);
+                bevy::log::info!(
+                    "predicted controlled adoption resolved for {} after {:.2}s (samples={}, max_wait_s={:.2})",
+                    runtime_entity_id,
+                    resolved_wait_s,
+                    adoption_state.resolved_samples,
+                    adoption_state.resolved_max_wait_s
+                );
+            }
+            adoption_state.waiting_entity_id = None;
+            adoption_state.wait_started_at_s = None;
+            adoption_state.last_warn_at_s = 0.0;
+            adoption_state.last_missing_components.clear();
+            adoption_state.dialog_shown = false;
+        }
+
+        register_runtime_entity(&mut entity_registry, runtime_entity_id.clone(), entity);
+        let mut entity_commands = commands.entity(entity);
+        entity_commands.insert((
+            Name::new(runtime_entity_id.clone()),
+            ReplicatedAdoptionHandled,
+            Transform::default(),
+            GlobalTransform::default(),
+            WorldEntity,
+            DespawnOnExit(ClientAppState::InWorld),
+            Visibility::Visible,
+            InheritedVisibility::default(),
+            ViewVisibility::default(),
+        ));
+
+        if player_tag.is_none() {
+            if let Some(visual_asset_id) = visual_asset_id {
+                entity_commands.insert(StreamedVisualAssetId(visual_asset_id.0.clone()));
+            } else {
+                entity_commands.remove::<(StreamedVisualAssetId, StreamedVisualAttached)>();
+            }
+        } else {
+            entity_commands.remove::<(
+                StreamedVisualAssetId,
+                StreamedVisualAttached,
+                StreamedSpriteShaderAssetId,
+            )>();
+        }
+        if player_tag.is_none()
+            && let Some(sprite_shader_asset_id) = sprite_shader_asset_id
+            && let Some(shader_asset_id) = sprite_shader_asset_id.0.as_ref()
+        {
+            entity_commands.insert(StreamedSpriteShaderAssetId(shader_asset_id.clone()));
+        } else {
+            entity_commands.remove::<StreamedSpriteShaderAssetId>();
+        }
+
+        if is_local_controlled_entity {
+            let size = size_m.copied().unwrap_or_else(default_corvette_size);
+            let mass_kg = total_mass_kg
+                .map(|m| m.0)
+                .filter(|m| *m > 0.0)
+                .unwrap_or_else(default_corvette_mass_kg);
+            let position = position.map(|p| p.0).unwrap_or(Vec2::ZERO);
+            let rotation = rotation.copied().unwrap_or(Rotation::IDENTITY);
+            let velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
+            entity_commands.insert((
+                RigidBody::Dynamic,
+                Collider::rectangle(size.width, size.length),
+                Mass(mass_kg),
+                angular_inertia_from_size(mass_kg, &size),
+                Position(position),
+                rotation,
+                LinearVelocity(velocity),
+                AngularVelocity::default(),
+                LinearDamping(0.0),
+                AngularDamping(0.0),
+            ));
+            if predicted_mode {
+                entity_commands
+                    .insert(lightyear::prelude::Predicted)
+                    .remove::<lightyear::prelude::Interpolated>();
+            }
+            entity_commands.remove::<RemoteEntity>();
+            entity_commands.insert(RemoteVisibleEntity {
+                entity_id: runtime_entity_id.clone(),
+            });
+        } else if is_root_entity {
+            entity_commands.insert((
+                RemoteEntity,
+                RemoteVisibleEntity {
+                    entity_id: runtime_entity_id.clone(),
+                },
+            ));
+            remote_registry
+                .by_entity_id
+                .insert(runtime_entity_id, entity);
+            if predicted_mode {
+                entity_commands
+                    .insert(lightyear::prelude::Interpolated)
+                    .remove::<lightyear::prelude::Predicted>();
+            }
+            entity_commands.remove::<(ActionQueue, FlightComputer)>();
+            entity_commands.remove::<(
+                RigidBody,
+                Collider,
+                Mass,
+                AngularInertia,
+                LockedAxes,
+                LinearDamping,
+                AngularDamping,
+            )>();
+        }
+    }
+
+    let now_s = time.elapsed_secs_f64();
+    if adoption_state.resolved_samples > 0
+        && now_s - adoption_state.last_summary_at_s >= tuning.defer_summary_interval_s
+    {
+        let avg_wait_s =
+            adoption_state.resolved_total_wait_s / adoption_state.resolved_samples as f64;
+        bevy::log::info!(
+            "predicted adoption delay summary samples={} avg_wait_s={:.2} max_wait_s={:.2}",
+            adoption_state.resolved_samples,
+            avg_wait_s,
+            adoption_state.resolved_max_wait_s
+        );
+        adoption_state.last_summary_at_s = now_s;
+    }
+
+    let controlled_count = controlled_query.iter().count();
+    if controlled_count > 1 {
+        bevy::log::warn!(
+            "multiple controlled entities detected under native replication; keeping latest control target"
+        );
+    }
+    if controlled_count > 0 {
+        adoption_state.waiting_entity_id = None;
+        adoption_state.wait_started_at_s = None;
+        adoption_state.last_warn_at_s = 0.0;
+        adoption_state.last_missing_components.clear();
+        adoption_state.dialog_shown = false;
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_local_player_view_state_system(
+    session: Res<'_, ClientSession>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    player_query: Query<'_, '_, Option<&'_ ControlledEntityGuid>, With<PlayerTag>>,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+
+    let Some(&local_player_entity) = entity_registry
+        .by_entity_id
+        .get(local_player_entity_id.as_str())
+    else {
+        return;
+    };
+    let Ok(controlled) = player_query.get(local_player_entity) else {
+        return;
+    };
+
+    if let Some(authoritative_controlled_id) = resolve_authoritative_control_entity_id_from_registry(
+        &entity_registry,
+        local_player_entity_id,
+        controlled,
+    ) {
+        player_view_state.controlled_entity_id = Some(authoritative_controlled_id);
+        if player_view_state.desired_controlled_entity_id.is_none() {
+            player_view_state.desired_controlled_entity_id =
+                player_view_state.controlled_entity_id.clone();
+        }
+    }
+}
+
+pub(crate) fn sync_controlled_entity_tags_system(
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    player_view_state: ResMut<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    controlled_query: Query<'_, '_, (Entity, &'_ ControlledEntity)>,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+
+    let target_entity_id = match player_view_state.controlled_entity_id.as_ref() {
+        Some(id) if entity_registry.by_entity_id.contains_key(id.as_str()) => Some(id),
+        Some(_) => return,
+        None => Some(local_player_entity_id),
+    };
+    let target_entity = target_entity_id
+        .as_ref()
+        .and_then(|id| entity_registry.by_entity_id.get(id.as_str()).copied());
+
+    for (entity, controlled) in &controlled_query {
+        if Some(entity) != target_entity {
+            commands.entity(entity).remove::<ControlledEntity>();
+        } else if controlled.player_entity_id != *local_player_entity_id {
+            commands.entity(entity).insert(ControlledEntity {
+                entity_id: controlled.entity_id.clone(),
+                player_entity_id: local_player_entity_id.clone(),
+            });
+        }
+    }
+
+    if let Some(entity) = target_entity {
+        commands.entity(entity).insert(ControlledEntity {
+            entity_id: target_entity_id.cloned().unwrap_or_default(),
+            player_entity_id: local_player_entity_id.clone(),
+        });
+    }
+}
+
+pub(crate) fn resolve_camera_anchor_entity(
+    session: &ClientSession,
+    _player_view_state: &LocalPlayerViewState,
+    entity_registry: &RuntimeEntityHierarchy,
+) -> Option<Entity> {
+    let preferred_runtime_id = session
+        .player_entity_id
+        .as_ref()
+        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))?;
+    entity_registry
+        .by_entity_id
+        .get(preferred_runtime_id.as_str())
+        .copied()
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn log_prediction_runtime_state(
+    time: Res<'_, Time>,
+    tuning: Res<'_, PredictionBootstrapTuning>,
+    local_mode: Res<'_, LocalSimulationDebugMode>,
+    watchdog: Res<'_, BootstrapWatchdogState>,
+    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
+    world_entities: Query<'_, '_, Entity, With<WorldEntity>>,
+    replicated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Replicated>>,
+    predicted_entities: Query<'_, '_, Entity, With<lightyear::prelude::Predicted>>,
+    interpolated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Interpolated>>,
+    controlled_entities: Query<'_, '_, Entity, With<ControlledEntity>>,
+) {
+    let now_s = time.elapsed_secs_f64();
+    if now_s - adoption_state.last_runtime_summary_at_s < tuning.defer_summary_interval_s {
+        return;
+    }
+    adoption_state.last_runtime_summary_at_s = now_s;
+    let world_count = world_entities.iter().count();
+    let replicated_count = replicated_entities.iter().count();
+    let predicted_count = predicted_entities.iter().count();
+    let interpolated_count = interpolated_entities.iter().count();
+    let controlled_count = controlled_entities.iter().count();
+    let mode = if local_mode.0 { "local" } else { "predicted" };
+    bevy::log::info!(
+        "prediction runtime summary mode={} world={} replicated={} predicted={} interpolated={} controlled={} deferred_waiting={}",
+        mode,
+        world_count,
+        replicated_count,
+        predicted_count,
+        interpolated_count,
+        controlled_count,
+        adoption_state
+            .waiting_entity_id
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    if !local_mode.0 && watchdog.replication_state_seen {
+        let in_world_age_s = watchdog
+            .in_world_entered_at_s
+            .map(|entered_at_s| (now_s - entered_at_s).max(0.0))
+            .unwrap_or_default();
+        if in_world_age_s > tuning.defer_dialog_after_s && controlled_count == 0 {
+            bevy::log::warn!(
+                "prediction runtime anomaly: no controlled entity after {:.2}s in predicted mode (replicated={} predicted={} interpolated={})",
+                in_world_age_s,
+                replicated_count,
+                predicted_count,
+                interpolated_count
+            );
+        }
+        if replicated_count > 0 && predicted_count == 0 {
+            bevy::log::warn!(
+                "prediction runtime anomaly: replicated entities present but zero Predicted markers (replicated={} interpolated={})",
+                replicated_count,
+                interpolated_count
+            );
+        }
+    }
+}

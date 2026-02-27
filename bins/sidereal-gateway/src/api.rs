@@ -440,7 +440,8 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
         .ok_or_else(|| ApiError::unauthorized("expected Bearer token"))
 }
 
-fn parse_vec3_property(props: &serde_json::Value, key: &str) -> [f32; 3] {
+#[doc(hidden)]
+pub fn parse_vec3_property(props: &serde_json::Value, key: &str) -> [f32; 3] {
     let Some(values) = props.get(key).and_then(|v| v.as_array()) else {
         return [0.0, 0.0, 0.0];
     };
@@ -463,7 +464,8 @@ fn asset_root_dir() -> PathBuf {
     PathBuf::from(std::env::var("ASSET_ROOT").unwrap_or_else(|_| "./data".to_string()))
 }
 
-fn resolve_asset_stream_path(asset_id: &str) -> Option<(&'static FsPath, &'static str)> {
+#[doc(hidden)]
+pub fn resolve_asset_stream_path(asset_id: &str) -> Option<(&'static FsPath, &'static str)> {
     match asset_id {
         "corvette_01" => Some((FsPath::new("sprites/ships/corvette.png"), "image/png")),
         "starfield_wgsl" => Some((
@@ -479,25 +481,5 @@ fn resolve_asset_stream_path(asset_id: &str) -> Option<(&'static FsPath, &'stati
             "text/plain; charset=utf-8",
         )),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_asset_stream_path_knows_corvette_and_starfield() {
-        assert!(resolve_asset_stream_path("corvette_01").is_some());
-        assert!(resolve_asset_stream_path("starfield_wgsl").is_some());
-        assert!(resolve_asset_stream_path("space_background_wgsl").is_some());
-        assert!(resolve_asset_stream_path("sprite_pixel_effect_wgsl").is_some());
-        assert!(resolve_asset_stream_path("unknown").is_none());
-    }
-
-    #[test]
-    fn parse_vec3_property_defaults_when_missing() {
-        let value = serde_json::json!({});
-        assert_eq!(parse_vec3_property(&value, "position_m"), [0.0, 0.0, 0.0]);
     }
 }

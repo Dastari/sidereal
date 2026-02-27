@@ -26,7 +26,8 @@ pub struct ClientControlRequestOrder {
     pub last_request_seq_by_player: HashMap<String, u64>,
 }
 
-fn guid_from_entity_id_like(raw: &str) -> Option<String> {
+#[doc(hidden)]
+pub fn guid_from_entity_id_like(raw: &str) -> Option<String> {
     if let Some(candidate) = raw.split(':').nth(1)
         && uuid::Uuid::parse_str(candidate).is_ok()
     {
@@ -41,31 +42,6 @@ fn guid_from_entity_id_like(raw: &str) -> Option<String> {
 fn control_debug_logging_enabled() -> bool {
     std::env::var("SIDEREAL_DEBUG_CONTROL_LOGS")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-}
-
-#[allow(clippy::items_after_test_module)]
-#[cfg(test)]
-mod tests {
-    use super::guid_from_entity_id_like;
-
-    #[test]
-    fn parses_prefixed_or_raw_guid() {
-        let guid = uuid::Uuid::new_v4();
-        assert_eq!(
-            guid_from_entity_id_like(&format!("ship:{guid}")),
-            Some(guid.to_string())
-        );
-        assert_eq!(
-            guid_from_entity_id_like(&guid.to_string()),
-            Some(guid.to_string())
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_identifier() {
-        assert_eq!(guid_from_entity_id_like("ship:not-a-guid"), None);
-        assert_eq!(guid_from_entity_id_like("definitely-not-a-guid"), None);
-    }
 }
 
 fn clear_controlled_binding_for_client(

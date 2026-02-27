@@ -24,8 +24,9 @@ pub use scanner::{apply_range_buff, compute_scanner_contribution, total_scanner_
 
 // Re-export flight systems (not components, those come from generated)
 pub use flight::{
-    angular_inertia_from_size, apply_engine_thrust, clamp_angular_velocity, process_flight_actions,
-    sanitize_planar_angular_velocity, stabilize_idle_motion,
+    angular_inertia_from_size, apply_engine_thrust, clamp_angular_velocity,
+    compute_brake_decel_accel_mps2, process_flight_actions, sanitize_planar_angular_velocity,
+    stabilize_idle_motion,
 };
 
 /// Registers gameplay component types and reflection metadata only.

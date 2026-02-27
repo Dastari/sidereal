@@ -2,9 +2,9 @@
 
 use bevy::log::info;
 use bevy::prelude::*;
+use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::input::native::{ActionState, InputMarker};
-use lightyear::prelude::MessageSender;
 use sidereal_game::EntityAction;
 use sidereal_net::{ClientRealtimeInputMessage, ControlChannel, PlayerInput};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;

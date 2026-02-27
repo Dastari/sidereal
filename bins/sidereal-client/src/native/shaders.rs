@@ -132,12 +132,17 @@ pub fn fullscreen_layer_shader_ready(
         if rooted_stream_path.exists() || rooted_direct_path.exists() {
             return true;
         }
+        // Cached path from manifest but file not on disk (e.g. not streamed yet); fall through to local fallback.
     }
 
     let Some(streamed_shader_rel_path) = streamed_shader_path_for_asset_id(shader_asset_id) else {
         return false;
     };
-    std::path::PathBuf::from(asset_root)
-        .join(streamed_shader_rel_path)
-        .exists()
+    let cache_path = std::path::PathBuf::from(asset_root).join(streamed_shader_rel_path);
+    if cache_path.exists() {
+        return true;
+    }
+    // Cache file missing (e.g. wrong cwd at startup); ensure placeholders so starfield can render.
+    ensure_shader_placeholders(asset_root);
+    cache_path.exists()
 }

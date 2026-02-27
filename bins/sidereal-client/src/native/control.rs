@@ -10,9 +10,7 @@ use sidereal_net::{
 };
 use std::sync::OnceLock;
 
-use super::resources::{
-    ClientControlDebugState, ClientControlRequestState, HeadlessTransportMode,
-};
+use super::resources::{ClientControlDebugState, ClientControlRequestState, HeadlessTransportMode};
 use super::state::{ClientAppState, ClientSession, LocalPlayerViewState};
 
 pub fn client_control_debug_logging_enabled() -> bool {

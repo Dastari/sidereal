@@ -3,9 +3,7 @@
 use bevy::log::info;
 use bevy::prelude::*;
 use lightyear::prelude::{MessageReceiver, MessageSender};
-use sidereal_net::{
-    ClientAuthMessage, ControlChannel, ServerSessionReadyMessage,
-};
+use sidereal_net::{ClientAuthMessage, ControlChannel, ServerSessionReadyMessage};
 
 use super::resources::{
     BootstrapWatchdogState, ClientAuthSyncState, HeadlessAccountSwitchPlan, HeadlessTransportMode,
@@ -286,7 +284,10 @@ pub fn send_lightyear_auth_messages(
         '_,
         '_,
         (Entity, &mut MessageSender<ClientAuthMessage>),
-        (With<lightyear::prelude::client::Client>, With<lightyear::prelude::client::Connected>),
+        (
+            With<lightyear::prelude::client::Client>,
+            With<lightyear::prelude::client::Connected>,
+        ),
     >,
 ) {
     let active_world_state = app_state.as_ref().is_some_and(|state| {
@@ -344,7 +345,10 @@ pub fn receive_lightyear_session_ready_messages(
         '_,
         '_,
         &mut MessageReceiver<ServerSessionReadyMessage>,
-        (With<lightyear::prelude::client::Client>, With<lightyear::prelude::client::Connected>),
+        (
+            With<lightyear::prelude::client::Client>,
+            With<lightyear::prelude::client::Connected>,
+        ),
     >,
     session: Res<'_, ClientSession>,
     mut session_ready: ResMut<'_, SessionReadyState>,

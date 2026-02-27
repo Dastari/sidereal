@@ -1,18 +1,109 @@
 //! Logout: disconnect client and return to auth state.
+//!
+//! Flow: request (Escape or window close) sets PendingDisconnectNotify; a separate system
+//! sends ClientDisconnectNotifyMessage on ControlChannel and triggers Disconnect; then
+//! logout_cleanup clears state and transitions to Auth. Splitting allows sending the notify
+//! without exceeding Bevy system arity in the cleanup system.
 
 use bevy::prelude::*;
-use lightyear::prelude::client::{Disconnect, RawClient};
+use bevy::window::WindowCloseRequested;
+use lightyear::prelude::MessageSender;
+use lightyear::prelude::client::{Client, Connected, Disconnect, RawClient};
+use sidereal_net::{ClientDisconnectNotifyMessage, ControlChannel};
 
+use super::components::WorldEntity;
 use super::resources::{
     BootstrapWatchdogState, ClientAuthSyncState, ClientControlRequestState, ClientInputAckTracker,
-    LocalAssetManager,
+    LocalAssetManager, LogoutCleanupRequested, PendingDisconnectNotify,
 };
 use super::state::*;
 
-#[allow(clippy::too_many_arguments)]
-pub fn logout_to_auth_system(
+/// Requests logout on window close (native only). Sets PendingDisconnectNotify so the
+/// notify is sent before the app exits. Runs in the same states as Escape logout.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn request_logout_on_window_close_system(
+    session: Res<'_, ClientSession>,
+    mut pending: ResMut<'_, PendingDisconnectNotify>,
+    mut close_reader: MessageReader<'_, '_, WindowCloseRequested>,
+) {
+    if pending.0.is_some() {
+        return;
+    }
+    let Some(player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    if close_reader.read().next().is_some() {
+        pending.0 = Some(player_entity_id.clone());
+    }
+}
+
+/// Requests logout: sets PendingDisconnectNotify so the notify is sent before Disconnect.
+/// Runs on Escape when we have a player (connected).
+pub fn request_logout_system(
     input: Res<'_, ButtonInput<KeyCode>>,
+    session: Res<'_, ClientSession>,
+    mut pending: ResMut<'_, PendingDisconnectNotify>,
+) {
+    if pending.0.is_some() {
+        return;
+    }
+    let Some(player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    if input.just_pressed(KeyCode::Escape) {
+        pending.0 = Some(player_entity_id.clone());
+    }
+}
+
+/// Sends ClientDisconnectNotifyMessage on ControlChannel and triggers Disconnect, then
+/// requests cleanup. Kept in a separate system so we can use MessageSender without
+/// exceeding system arity in the cleanup system.
+pub fn send_disconnect_notify_and_trigger_system(
+    mut pending: ResMut<'_, PendingDisconnectNotify>,
+    mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
+    mut senders: Query<
+        '_,
+        '_,
+        &mut MessageSender<ClientDisconnectNotifyMessage>,
+        (With<Client>, With<Connected>),
+    >,
+    client_entities: Query<'_, '_, Entity, With<RawClient>>,
     mut commands: Commands<'_, '_>,
+) {
+    let Some(player_entity_id) = pending.0.take() else {
+        return;
+    };
+    let msg = ClientDisconnectNotifyMessage {
+        player_entity_id: player_entity_id.clone(),
+    };
+    for mut sender in &mut senders {
+        sender.send::<ControlChannel>(msg.clone());
+    }
+    for entity in &client_entities {
+        commands.trigger(Disconnect { entity });
+    }
+    cleanup_requested.0 = true;
+}
+
+/// Despawns all world entities (replicated/predicted scene, ship, etc.) so the world is empty
+/// when returning to auth/character select. Runs when logout cleanup is requested, before
+/// logout_cleanup_system clears state.
+pub fn logout_despawn_world_entities_system(
+    mut commands: Commands<'_, '_>,
+    cleanup_requested: Res<'_, LogoutCleanupRequested>,
+    world_entities: Query<'_, '_, Entity, With<WorldEntity>>,
+) {
+    if !cleanup_requested.0 {
+        return;
+    }
+    let to_despawn: Vec<Entity> = world_entities.iter().collect();
+    for entity in to_despawn {
+        commands.entity(entity).despawn();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn logout_cleanup_system(
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
     mut remote_registry: ResMut<'_, super::resources::RemoteEntityRegistry>,
@@ -26,16 +117,12 @@ pub fn logout_to_auth_system(
     mut free_camera: ResMut<'_, FreeCameraState>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
-    client_entities: Query<'_, '_, Entity, With<RawClient>>,
+    mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
 ) {
-    if !input.just_pressed(KeyCode::Escape) {
+    if !cleanup_requested.0 {
         return;
     }
-    // TODO: send ClientDisconnectNotifyMessage before Disconnect so server Unlinks immediately.
-    // Client has 16+ system params here; adding MessageSender hits Bevy IntoSystem arity limit.
-    for entity in &client_entities {
-        commands.trigger(Disconnect { entity });
-    }
+    cleanup_requested.0 = false;
     next_state.set(ClientAppState::Auth);
     session.account_id = None;
     session.player_entity_id = None;

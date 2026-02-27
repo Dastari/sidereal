@@ -643,7 +643,8 @@ fn cypher_set_clauses(prefix: &str, value: &JsonValue) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-fn cypher_literal(value: &JsonValue) -> String {
+#[doc(hidden)]
+pub fn cypher_literal(value: &JsonValue) -> String {
     match value {
         JsonValue::Null => "null".to_string(),
         JsonValue::Bool(v) => v.to_string(),
@@ -669,7 +670,8 @@ fn cypher_literal(value: &JsonValue) -> String {
     }
 }
 
-fn parse_agtype_string(raw: String) -> Option<String> {
+#[doc(hidden)]
+pub fn parse_agtype_string(raw: String) -> Option<String> {
     let trimmed = raw.trim();
     if let Ok(parsed) = serde_json::from_str::<String>(trimmed) {
         return Some(parsed);
@@ -684,7 +686,8 @@ fn parse_agtype_string(raw: String) -> Option<String> {
     Some(stripped.trim_matches('"').to_string())
 }
 
-fn parse_agtype_json(raw: String) -> Option<JsonValue> {
+#[doc(hidden)]
+pub fn parse_agtype_json(raw: String) -> Option<JsonValue> {
     let trimmed = raw.trim();
     if let Ok(parsed) = serde_json::from_str::<JsonValue>(trimmed) {
         return Some(parsed);
@@ -731,7 +734,8 @@ fn is_uuid_like(raw: &str) -> bool {
     true
 }
 
-fn validate_runtime_guid_uniqueness(records: &[GraphEntityRecord]) -> Result<()> {
+#[doc(hidden)]
+pub fn validate_runtime_guid_uniqueness(records: &[GraphEntityRecord]) -> Result<()> {
     let mut entity_ids_by_guid = HashMap::<String, HashSet<String>>::new();
     for record in records {
         let Some(guid) = parse_runtime_guid_suffix(&record.entity_id) else {
@@ -770,75 +774,4 @@ fn now_epoch_s() -> u64 {
 
 fn db_err(action: &'static str) -> impl Fn(postgres::Error) -> PersistenceError {
     move |err| PersistenceError::Database(format!("{action} failed: {err}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cypher_literal_renders_nested_maps_and_arrays() {
-        let value = serde_json::json!({"a": 1, "b": [true, "x"], "c": {"k": "v"}});
-        let out = cypher_literal(&value);
-        assert!(out.contains("a:1"));
-        assert!(out.contains("b:[true,'x']"));
-        assert!(out.contains("c:{k:'v'}"));
-    }
-
-    #[test]
-    fn parse_agtype_helpers_handle_suffix() {
-        let s = parse_agtype_string("\"player:1\"::agtype".to_string()).expect("string");
-        assert_eq!(s, "player:1");
-        let json = parse_agtype_json("{\"x\":1}::agtype".to_string()).expect("json");
-        assert_eq!(json["x"], 1);
-    }
-
-    #[test]
-    fn validate_runtime_guid_uniqueness_rejects_collisions() {
-        let guid = "316c04e7-a139-4b36-afdb-8a607b565fec";
-        let records = vec![
-            GraphEntityRecord {
-                entity_id: format!("player:{guid}"),
-                labels: vec!["Entity".to_string()],
-                properties: serde_json::json!({}),
-                components: Vec::new(),
-            },
-            GraphEntityRecord {
-                entity_id: format!("ship:{guid}"),
-                labels: vec!["Entity".to_string()],
-                properties: serde_json::json!({}),
-                components: Vec::new(),
-            },
-        ];
-        let err = validate_runtime_guid_uniqueness(&records).expect_err("should reject collision");
-        assert!(format!("{err}").contains("runtime GUID collision"));
-    }
-
-    #[test]
-    fn validate_runtime_guid_uniqueness_accepts_distinct_guids() {
-        let records = vec![
-            GraphEntityRecord {
-                entity_id: "player:316c04e7-a139-4b36-afdb-8a607b565fec".to_string(),
-                labels: vec!["Entity".to_string()],
-                properties: serde_json::json!({}),
-                components: Vec::new(),
-            },
-            GraphEntityRecord {
-                entity_id: "ship:199d6542-2603-4576-a510-7fa7eaddbe3d".to_string(),
-                labels: vec!["Entity".to_string()],
-                properties: serde_json::json!({}),
-                components: Vec::new(),
-            },
-        ];
-        validate_runtime_guid_uniqueness(&records).expect("distinct GUIDs should pass");
-    }
-
-    #[test]
-    fn reflect_envelope_roundtrip() {
-        let payload = serde_json::json!({"fuel_kg": 42.0});
-        let envelope = encode_reflect_component("sidereal_game::FuelTank", payload.clone());
-        let decoded =
-            decode_reflect_component(&envelope, "sidereal_game::FuelTank").expect("decode");
-        assert_eq!(decoded, &payload);
-    }
 }

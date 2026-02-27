@@ -138,6 +138,8 @@ pub(crate) struct DebugOverlayEnabled {
 pub(crate) struct StarfieldMotionState {
     pub prev_speed: f32,
     pub initialized: bool,
+    /// Accumulated scroll in UV space (distance-over-time). Required for continual parallax; we integrate velocity*dt each frame so scroll reflects total displacement. Shader uses fract() for wrapping.
+    pub accumulated_scroll_uv: Vec2,
     #[allow(dead_code)]
     pub starfield_drift_uv: Vec2,
     pub background_drift_uv: Vec2,
@@ -347,6 +349,14 @@ impl Default for ClientInputSendState {
         }
     }
 }
+
+/// When set, the client will send ClientDisconnectNotifyMessage and then disconnect (logout or window close).
+#[derive(Debug, Resource, Default)]
+pub(crate) struct PendingDisconnectNotify(pub Option<String>);
+
+/// When true, logout cleanup (clear state, transition to Auth) should run.
+#[derive(Debug, Resource, Default, PartialEq, Eq)]
+pub(crate) struct LogoutCleanupRequested(pub bool);
 
 #[derive(Resource, Debug)]
 /// Caps client frame rate when set. Configure via `SIDEREAL_CLIENT_MAX_FPS` (default 60; 0 = disabled).

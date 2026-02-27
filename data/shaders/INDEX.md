@@ -33,6 +33,8 @@ Complete procedural celestial body generation system for Bevy game engine.
 | `asteroid.wgsl` | Mineral-rich asteroids with fracture support | Medium-High |
 | `starfield.wgsl` | Simple background star field (legacy) | Low |
 
+**Streamed shaders (starfield, simple_space_background):** Edit only the files in `data/shaders/`. The client loads from `data/cache_stream/shaders/`, which is overwritten/copied from source; do not edit the cache files.
+
 ### Documentation Files
 | File | Contains |
 |------|----------|

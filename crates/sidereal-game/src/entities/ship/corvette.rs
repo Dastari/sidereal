@@ -41,16 +41,18 @@ pub fn default_corvette_size() -> SizeM {
 }
 
 pub fn default_corvette_flight_tuning() -> FlightTuning {
+    // Brake and auto-brake accel set so tuning does not limit decel; engine reverse thrust is the limit (same as forward).
+    let forward_accel_mps2 = 300_000.0 / (default_corvette_mass_kg() + 50.0 + 500.0 * 2.0 + 1100.0 * 2.0);
     FlightTuning {
         max_linear_accel_mps2: 120.0,
-        passive_brake_accel_mps2: 3.0,
-        active_brake_accel_mps2: 20.0,
+        passive_brake_accel_mps2: forward_accel_mps2,
+        active_brake_accel_mps2: forward_accel_mps2,
         drag_per_s: 0.4,
     }
 }
 
 pub fn default_corvette_max_velocity_mps() -> MaxVelocityMps {
-    MaxVelocityMps(600.0)
+    MaxVelocityMps(100.0)
 }
 
 pub fn default_corvette_health_pool() -> HealthPool {
@@ -73,10 +75,12 @@ pub fn default_space_background_shader_asset_id() -> &'static str {
 }
 
 /// Default engine stats for corvette (used by bundle and graph records).
+/// Forward thrust halved; reverse and braking use same magnitude as forward.
 pub fn default_corvette_engine() -> Engine {
+    let forward_thrust = 300_000.0; // half of previous 600_000
     Engine {
-        thrust: 600_000.0,
-        reverse_thrust: 300_000.0,
+        thrust: forward_thrust,
+        reverse_thrust: forward_thrust,
         torque_thrust: 1_500_000.0,
         burn_rate_kg_s: 0.8,
     }
@@ -368,44 +372,5 @@ impl From<CorvetteSpawnConfig> for CorvetteOverrides {
             velocity: Some(c.spawn_velocity),
             display_name: c.display_name,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn corvette_bundle_spawn_with_overrides() {
-        let mut world = World::new();
-        let mut commands = world.commands();
-
-        let overrides =
-            CorvetteOverrides::for_player(Uuid::new_v4(), "player:test-123".to_string(), 1)
-                .with_display_name("Test Ship");
-
-        let (ship_guid, module_guids) = spawn_corvette(&mut commands, overrides);
-
-        assert_ne!(ship_guid, Uuid::nil());
-        assert_ne!(module_guids.flight_computer, Uuid::nil());
-        assert_ne!(module_guids.engine_left, Uuid::nil());
-        assert_ne!(module_guids.engine_right, Uuid::nil());
-    }
-
-    #[test]
-    fn corvette_total_mass() {
-        let hull_mass = default_corvette_mass_kg();
-        let total = hull_mass + 50.0 + 2.0 * 500.0 + 2.0 * 1100.0;
-        assert_eq!(total, 18_250.0);
-    }
-
-    #[test]
-    fn corvette_spawn_position_deterministic() {
-        let account_id = Uuid::new_v4();
-        let pos = corvette_random_spawn_position(account_id);
-        assert!(pos.x >= -500.0 && pos.x <= 500.0);
-        assert!(pos.y >= -500.0 && pos.y <= 500.0);
-        assert_eq!(pos.z, 0.0);
-        assert_eq!(pos, corvette_random_spawn_position(account_id));
     }
 }

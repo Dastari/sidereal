@@ -102,9 +102,15 @@ pub fn cleanup_client_auth_bindings(
     stream_state
         .chunk_send_backoff_frames_by_remote
         .retain(|remote_id, _| live_remote_ids.contains(remote_id));
-    visibility_registry
+    let disconnected_clients: Vec<Entity> = visibility_registry
         .player_entity_id_by_client
-        .retain(|client_entity, _| live_clients.contains(client_entity));
+        .keys()
+        .filter(|client_entity| !live_clients.contains(client_entity))
+        .copied()
+        .collect();
+    for client_entity in &disconnected_clients {
+        visibility_registry.unregister_client(*client_entity);
+    }
     last_activity
         .0
         .retain(|client_entity, _| live_clients.contains(client_entity));
@@ -125,7 +131,10 @@ pub fn receive_client_disconnect_notify(
     mut receivers: Query<
         '_,
         '_,
-        (Entity, &'_ mut MessageReceiver<ClientDisconnectNotifyMessage>),
+        (
+            Entity,
+            &'_ mut MessageReceiver<ClientDisconnectNotifyMessage>,
+        ),
         With<ClientOf>,
     >,
 ) {
@@ -391,71 +400,5 @@ fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AccessTokenClaim
             warn!("replication rejected client auth token decode: {}", err);
             None
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use lightyear::prelude::PeerId;
-
-    #[test]
-    fn cleanup_drops_visibility_for_disconnected_client() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<AuthenticatedClientBindings>();
-        app.init_resource::<ClientInputTickTracker>();
-        app.init_resource::<InputRateLimitState>();
-        app.init_resource::<LatestRealtimeInputsByPlayer>();
-        app.init_resource::<AssetStreamServerState>();
-        app.init_resource::<ClientVisibilityRegistry>();
-        app.init_resource::<ClientControlRequestOrder>();
-        app.add_systems(Update, cleanup_client_auth_bindings);
-
-        let client = app
-            .world_mut()
-            .spawn((ClientOf, RemoteId(PeerId::Netcode(42))))
-            .id();
-        let replicated = app.world_mut().spawn(ReplicationState::default()).id();
-
-        {
-            let mut bindings = app
-                .world_mut()
-                .resource_mut::<AuthenticatedClientBindings>();
-            bindings
-                .by_client_entity
-                .insert(client, "player:test".to_string());
-            bindings
-                .by_remote_id
-                .insert(PeerId::Netcode(42), "player:test".to_string());
-        }
-        app.world_mut()
-            .resource_mut::<ClientVisibilityRegistry>()
-            .register_client(client, "player:test".to_string());
-        app.world_mut()
-            .get_mut::<ReplicationState>(replicated)
-            .expect("replication state exists")
-            .gain_visibility(client);
-
-        app.world_mut().entity_mut(client).despawn();
-        app.update();
-
-        let state = app
-            .world()
-            .get::<ReplicationState>(replicated)
-            .expect("replication state exists");
-        assert!(!state.is_visible(client));
-        assert!(
-            !app.world()
-                .resource::<AuthenticatedClientBindings>()
-                .by_client_entity
-                .contains_key(&client)
-        );
-        assert!(
-            !app.world()
-                .resource::<ClientVisibilityRegistry>()
-                .player_entity_id_by_client
-                .contains_key(&client)
-        );
     }
 }

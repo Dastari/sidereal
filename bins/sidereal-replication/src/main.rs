@@ -8,8 +8,7 @@ use crate::replication::assets::{
     stream_bootstrap_assets_to_authenticated_clients,
 };
 use crate::replication::auth::{
-    cleanup_client_auth_bindings, receive_client_auth_messages,
-    receive_client_disconnect_notify,
+    cleanup_client_auth_bindings, receive_client_auth_messages, receive_client_disconnect_notify,
 };
 use crate::replication::input::{
     ClientInputDropMetrics, ClientInputDropMetricsLogState, ClientInputTickTracker,
@@ -48,15 +47,16 @@ use crate::replication::visibility::{VisibilityScratch, update_network_visibilit
 use avian2d::prelude::{
     Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems, PhysicsTransformPlugin,
 };
+use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::log::LogPlugin;
 use bevy::log::info;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
-use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::ReplicationBufferSystems;
-use lightyear::prelude::server::ServerPlugins;
 use lightyear::prelude::Unlink;
+use lightyear::prelude::server::ClientOf;
+use lightyear::prelude::server::ServerPlugins;
 use sidereal_asset_runtime::default_asset_dependencies;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::SiderealGamePlugin;
@@ -82,15 +82,20 @@ struct HydratedGraphEntity {
 }
 
 #[derive(Resource, Default)]
-struct AuthenticatedClientBindings {
-    by_client_entity: HashMap<Entity, String>,
-    by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
+pub(crate) struct AuthenticatedClientBindings {
+    pub by_client_entity: HashMap<Entity, String>,
+    pub by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
 }
 
 /// Tracks last time we received any message from each client (by client entity).
 /// Used to disconnect idle clients so the server stops sending to dead sockets.
 #[derive(Resource, Default)]
 pub(crate) struct ClientLastActivity(pub(crate) HashMap<Entity, f64>);
+
+/// Client entities we have already triggered Unlink for (idle timeout). Cleared when the
+/// entity is no longer in the clients query, so we only trigger once per client.
+#[derive(Resource, Default)]
+pub(crate) struct PendingIdleUnlink(pub(crate) HashSet<Entity>);
 
 /// Chunk queued for paced sending to avoid UDP send-buffer overflow (EAGAIN).
 pub(crate) struct PendingAssetChunk {
@@ -102,7 +107,7 @@ pub(crate) struct PendingAssetChunk {
 }
 
 #[derive(Resource, Default)]
-struct AssetStreamServerState {
+pub(crate) struct AssetStreamServerState {
     sent_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
     pending_requested_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
     acked_assets_by_remote: HashMap<lightyear::prelude::PeerId, HashMap<String, u64>>,
@@ -131,7 +136,18 @@ fn main() {
     };
 
     let mut app = App::new();
-    app.add_plugins(MinimalPlugins);
+    // Cap main loop at ~100 Hz so Update (message drain, transport) doesn't spin at full CPU.
+    // FixedUpdate remains time-based at 30 Hz. See docs/features/replication_server_cpu_report.md.
+    let update_cap_hz = std::env::var("REPLICATION_UPDATE_CAP_HZ")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(100.0)
+        .clamp(10.0, 1000.0);
+    app.add_plugins(
+        MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
+            1.0 / update_cap_hz,
+        ))),
+    );
     app.add_plugins(AssetPlugin::default());
     app.add_plugins(ScenePlugin);
     app.add_plugins(LogPlugin::default());
@@ -197,14 +213,16 @@ fn main() {
     app.insert_resource(ClientControlRequestOrder::default());
     app.insert_resource(PlayerControlDebugState::default());
     app.insert_resource(ClientLastActivity::default());
+    app.insert_resource(PendingIdleUnlink::default());
     app.add_systems(
         Update,
         (
+            // Apply deferred so Unlink from previous frame is applied before we read the clients query.
+            bevy::ecs::schedule::ApplyDeferred,
             ensure_server_transport_channels,
-            cleanup_client_auth_bindings,
             receive_client_disconnect_notify,
+            cleanup_client_auth_bindings,
             disconnect_idle_clients,
-            receive_client_auth_messages,
             receive_latest_realtime_input_messages,
             receive_client_control_requests,
             receive_client_asset_requests,
@@ -216,6 +234,9 @@ fn main() {
         )
             .chain(),
     );
+    // Run auth after Update so Lightyear has delivered ControlChannel messages; otherwise
+    // reconnecting clients never get ServerSessionReadyMessage (receiver was still empty in Update).
+    app.add_systems(PostUpdate, receive_client_auth_messages);
     app.add_systems(
         FixedUpdate,
         (
@@ -272,15 +293,23 @@ const DEFAULT_IDLE_DISCONNECT_SECONDS: f64 = 15.0;
 fn disconnect_idle_clients(
     time: Res<Time<Real>>,
     mut last_activity: ResMut<ClientLastActivity>,
+    mut pending_unlink: ResMut<PendingIdleUnlink>,
     clients: Query<'_, '_, Entity, With<ClientOf>>,
     mut commands: Commands<'_, '_>,
 ) {
+    let current_clients: HashSet<Entity> = clients.iter().collect();
+    // Drop entries for clients that are already gone so we don't leak.
+    pending_unlink.0.retain(|e| current_clients.contains(e));
+
     let now_s = time.elapsed_secs_f64();
     let timeout_s = std::env::var("REPLICATION_IDLE_DISCONNECT_SECONDS")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(DEFAULT_IDLE_DISCONNECT_SECONDS);
     for client_entity in &clients {
+        if pending_unlink.0.contains(&client_entity) {
+            continue;
+        }
         let last = *last_activity.0.entry(client_entity).or_insert(now_s);
         if now_s - last > timeout_s {
             info!(
@@ -288,6 +317,7 @@ fn disconnect_idle_clients(
                 client_entity,
                 now_s - last
             );
+            pending_unlink.0.insert(client_entity);
             commands.trigger(Unlink {
                 entity: client_entity,
                 reason: "idle_timeout".to_string(),
