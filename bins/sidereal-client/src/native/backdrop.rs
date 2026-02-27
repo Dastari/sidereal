@@ -140,7 +140,7 @@ pub fn update_starfield_material_system(
     // Starfield from controlled entity: vector = velocity, magnitude = speed, heading = unit direction.
     // Parallax is distance-over-time: we need the accumulator so scroll reflects integrated displacement (continual smooth motion).
     // Do not wrap at 1.0 (caused visible reset). Shader uses fract() so pattern is periodic. Wrap at large period to avoid f32 precision loss over long sessions.
-    const STARFIELD_WORLD_TO_UV: f32 = 0.012;
+    const STARFIELD_WORLD_TO_UV: f32 = 0.024;
     const SCROLL_WRAP_PERIOD: f32 = 4096.0;
 
     let frame_displacement = velocity_vector * dt;
