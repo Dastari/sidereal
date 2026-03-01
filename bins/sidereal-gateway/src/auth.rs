@@ -7,6 +7,11 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, deco
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sidereal_core::auth::AuthClaims;
+use sidereal_core::bootstrap_wire::{
+    AUTH_CHARACTERS_TABLE, BOOTSTRAP_KIND, BootstrapCommand, BootstrapWireMessage,
+};
+use sidereal_core::gateway_dtos::AuthTokens;
 use sidereal_persistence::{
     GraphPersistence, ensure_schema_in_transaction, persist_graph_records_in_transaction,
 };
@@ -24,7 +29,6 @@ use uuid::Uuid;
 
 const MIN_PASSWORD_LEN: usize = 12;
 const ACCOUNTS_TABLE: &str = "auth_accounts";
-const CHARACTERS_TABLE: &str = "auth_characters";
 const REFRESH_TOKENS_TABLE: &str = "auth_refresh_tokens";
 const PASSWORD_RESET_TOKENS_TABLE: &str = "auth_password_reset_tokens";
 
@@ -86,23 +90,6 @@ pub struct Account {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthClaims {
-    pub sub: String,
-    pub player_entity_id: String,
-    pub iat: u64,
-    pub exp: u64,
-    pub jti: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthTokens {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub token_type: String,
-    pub expires_in_s: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthMe {
     pub account_id: Uuid,
     pub email: String,
@@ -124,12 +111,6 @@ pub struct RefreshTokenRecord {
 pub struct PasswordResetTokenRecord {
     pub account_id: Uuid,
     pub expires_at_epoch_s: u64,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct BootstrapCommand {
-    pub account_id: Uuid,
-    pub player_entity_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +178,7 @@ pub trait StarterWorldPersister: Send + Sync {
         &self,
         account_id: Uuid,
         player_entity_id: &str,
+        email: &str,
     ) -> Result<(), AuthError>;
 }
 
@@ -208,10 +190,12 @@ impl StarterWorldPersister for GraphStarterWorldPersister {
         &self,
         account_id: Uuid,
         player_entity_id: &str,
+        email: &str,
     ) -> Result<(), AuthError> {
         let player_entity_id = player_entity_id.to_string();
+        let email = email.to_string();
         tokio::task::spawn_blocking(move || {
-            persist_starter_world_for_new_account(account_id, &player_entity_id)
+            persist_starter_world_for_new_account(account_id, &player_entity_id, &email)
         })
         .await
         .map_err(|err| {
@@ -228,6 +212,7 @@ impl StarterWorldPersister for NoopStarterWorldPersister {
         &self,
         _account_id: Uuid,
         _player_entity_id: &str,
+        _email: &str,
     ) -> Result<(), AuthError> {
         Ok(())
     }
@@ -285,7 +270,11 @@ impl AuthService {
                 .create_account(&normalized_email, &password_hash)
                 .await?;
             self.starter_world_persister
-                .persist_starter_world(account.account_id, &account.player_entity_id)
+                .persist_starter_world(
+                    account.account_id,
+                    &account.player_entity_id,
+                    &normalized_email,
+                )
                 .await?;
             account
         };
@@ -519,7 +508,7 @@ impl PostgresAuthStore {
                     created_at_epoch_s BIGINT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS {CHARACTERS_TABLE} (
+                CREATE TABLE IF NOT EXISTS {AUTH_CHARACTERS_TABLE} (
                     account_id UUID NOT NULL REFERENCES {ACCOUNTS_TABLE}(account_id) ON DELETE CASCADE,
                     player_entity_id TEXT PRIMARY KEY,
                     created_at_epoch_s BIGINT NOT NULL
@@ -566,7 +555,7 @@ impl AuthStore for PostgresAuthStore {
 
             let now = now_epoch_s() as i64;
             let account_id = Uuid::new_v4();
-            let player_entity_id = format!("player:{account_id}");
+            let player_entity_id = account_id.to_string();
             let row = tx.query_one(
                 &format!(
                     "
@@ -576,7 +565,7 @@ impl AuthStore for PostgresAuthStore {
                         RETURNING account_id, email, password_hash, player_entity_id
                     ),
                     inserted_character AS (
-                        INSERT INTO {CHARACTERS_TABLE} (account_id, player_entity_id, created_at_epoch_s)
+                        INSERT INTO {AUTH_CHARACTERS_TABLE} (account_id, player_entity_id, created_at_epoch_s)
                         SELECT account_id, player_entity_id, $5 FROM inserted_account
                     )
                     SELECT account_id, email, password_hash, player_entity_id FROM inserted_account
@@ -598,11 +587,13 @@ impl AuthStore for PostgresAuthStore {
                 AuthError::Internal(format!("starter world schema ensure failed: {err}"))
             })?;
             let position = sidereal_game::corvette_random_spawn_position(account_id);
-            let graph_records = sidereal_runtime_sync::entity_templates::corvette_starter_graph_records(
-                account_id,
-                &player_entity_id,
-                position,
-            );
+            let graph_records =
+                sidereal_runtime_sync::entity_templates::new_player_starter_graph_records(
+                    account_id,
+                    &player_entity_id,
+                    &email,
+                    position,
+                );
             persist_graph_records_in_transaction(&mut tx, "sidereal", &graph_records, 0).map_err(
                 |err| AuthError::Internal(format!("persist starter world failed: {err}")),
             )?;
@@ -625,7 +616,7 @@ impl AuthStore for PostgresAuthStore {
     async fn create_account(&self, email: &str, password_hash: &str) -> Result<Account, AuthError> {
         let now = now_epoch_s() as i64;
         let account_id = Uuid::new_v4();
-        let player_entity_id = format!("player:{account_id}");
+        let player_entity_id = account_id.to_string();
         let row = self
             .client
             .query_one(
@@ -637,7 +628,7 @@ impl AuthStore for PostgresAuthStore {
                     RETURNING account_id, email, password_hash, player_entity_id
                 ),
                 inserted_character AS (
-                    INSERT INTO {CHARACTERS_TABLE} (account_id, player_entity_id, created_at_epoch_s)
+                    INSERT INTO {AUTH_CHARACTERS_TABLE} (account_id, player_entity_id, created_at_epoch_s)
                     SELECT account_id, player_entity_id, $5 FROM inserted_account
                 )
                 SELECT account_id, email, password_hash, player_entity_id FROM inserted_account
@@ -812,7 +803,7 @@ impl AuthStore for PostgresAuthStore {
             .client
             .query(
                 &format!(
-                    "SELECT player_entity_id FROM {CHARACTERS_TABLE} WHERE account_id = $1 ORDER BY created_at_epoch_s ASC"
+                    "SELECT player_entity_id FROM {AUTH_CHARACTERS_TABLE} WHERE account_id = $1 ORDER BY created_at_epoch_s ASC"
                 ),
                 &[&account_id],
             )
@@ -835,7 +826,7 @@ impl AuthStore for PostgresAuthStore {
             .client
             .query_opt(
                 &format!(
-                    "SELECT 1 FROM {CHARACTERS_TABLE} WHERE account_id = $1 AND player_entity_id = $2"
+                    "SELECT 1 FROM {AUTH_CHARACTERS_TABLE} WHERE account_id = $1 AND player_entity_id = $2"
                 ),
                 &[&account_id, &player_entity_id],
             )
@@ -892,19 +883,12 @@ impl DirectBootstrapDispatcher {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct BootstrapWireMessage {
-    kind: &'static str,
-    account_id: Uuid,
-    player_entity_id: String,
-}
-
 #[async_trait]
 impl BootstrapDispatcher for UdpBootstrapDispatcher {
     async fn dispatch(&self, command: &BootstrapCommand) -> Result<(), AuthError> {
         let payload = BootstrapWireMessage {
-            kind: "bootstrap_player",
-            account_id: command.account_id,
+            kind: BOOTSTRAP_KIND.to_string(),
+            account_id: command.account_id.to_string(),
             player_entity_id: command.player_entity_id.clone(),
         };
         let bytes = serde_json::to_vec(&payload)
@@ -1003,7 +987,7 @@ impl AuthStore for InMemoryAuthStore {
             account_id,
             email: email.to_string(),
             password_hash: password_hash.to_string(),
-            player_entity_id: format!("player:{account_id}"),
+            player_entity_id: account_id.to_string(),
         };
         state
             .accounts_by_email
@@ -1121,6 +1105,7 @@ impl AuthStore for InMemoryAuthStore {
 fn persist_starter_world_for_new_account(
     account_id: Uuid,
     player_entity_id: &str,
+    email: &str,
 ) -> Result<(), AuthError> {
     let database_url = std::env::var("GATEWAY_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
@@ -1141,9 +1126,10 @@ fn persist_starter_world_for_new_account(
         )));
     }
     let position = sidereal_game::corvette_random_spawn_position(account_id);
-    let graph_records = sidereal_runtime_sync::entity_templates::corvette_starter_graph_records(
+    let graph_records = sidereal_runtime_sync::entity_templates::new_player_starter_graph_records(
         account_id,
         player_entity_id,
+        email,
         position,
     );
     persistence

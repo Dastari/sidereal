@@ -4,11 +4,11 @@ use avian2d::prelude::{Position, Rotation};
 use bevy::prelude::*;
 use sidereal_game::PlayerTag;
 
+use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
     ControlledEntity, GameplayCamera, InterpolatedVisualSmoothing,
     SuppressedPredictedDuplicateVisual, TopDownCamera, WorldEntity,
 };
-use super::state::{ClientSession, LocalPlayerViewState};
 use avian2d::prelude::{AngularVelocity, LinearVelocity};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 

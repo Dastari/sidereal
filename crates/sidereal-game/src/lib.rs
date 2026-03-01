@@ -7,6 +7,7 @@ pub mod components;
 pub mod entities;
 pub mod flight;
 pub mod generated;
+pub mod hierarchy;
 pub mod mass;
 pub mod scanner;
 
@@ -19,7 +20,10 @@ pub use component_meta::*;
 pub use components::*;
 pub use entities::*;
 pub use generated::components::*;
-pub use mass::recompute_total_mass;
+pub use hierarchy::sync_mounted_hierarchy;
+pub use mass::{
+    bootstrap_root_dynamic_entity_colliders, bootstrap_ship_mass_components, recompute_total_mass,
+};
 pub use scanner::{apply_range_buff, compute_scanner_contribution, total_scanner_range_for_parent};
 
 // Re-export flight systems (not components, those come from generated)
@@ -28,6 +32,21 @@ pub use flight::{
     compute_brake_decel_accel_mps2, process_flight_actions, sanitize_planar_angular_velocity,
     stabilize_idle_motion,
 };
+
+/// Controls whether local Bevy hierarchy reconstruction runs in this runtime.
+/// Replication server disables this to avoid leaking ChildOf/Children into network replication.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct HierarchyRebuildEnabled(pub bool);
+
+impl Default for HierarchyRebuildEnabled {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+fn hierarchy_rebuild_enabled(flag: Option<Res<HierarchyRebuildEnabled>>) -> bool {
+    flag.map(|v| v.0).unwrap_or(true)
+}
 
 /// Registers gameplay component types and reflection metadata only.
 /// Does NOT add simulation systems. Use on the client where simulation
@@ -51,7 +70,18 @@ pub struct SiderealGamePlugin;
 impl Plugin for SiderealGamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(SiderealGameCorePlugin);
+        app.insert_resource(HierarchyRebuildEnabled::default());
 
+        app.add_systems(
+            PostUpdate,
+            (
+                bootstrap_ship_mass_components,
+                bootstrap_root_dynamic_entity_colliders,
+                sync_mounted_hierarchy
+                    .before(bevy::transform::TransformSystems::Propagate)
+                    .run_if(hierarchy_rebuild_enabled),
+            ),
+        );
         app.add_systems(
             FixedUpdate,
             (

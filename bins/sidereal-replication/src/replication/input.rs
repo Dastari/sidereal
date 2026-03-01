@@ -5,10 +5,10 @@ use lightyear::prelude::{MessageReceiver, RemoteId};
 use sidereal_game::{ActionQueue, ControlledEntityGuid, EntityAction, EntityGuid, PlayerTag};
 use sidereal_net::{ClientRealtimeInputMessage, PlayerInput};
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
-use crate::AuthenticatedClientBindings;
-use crate::replication::{PlayerControlledEntityMap, SimulatedControlledEntity};
+use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::lifecycle::ClientLastActivity;
+use crate::replication::{PlayerControlledEntityMap, SimulatedControlledEntity, debug_env};
 
 #[derive(Resource, Default)]
 pub struct ClientInputTickTracker {
@@ -66,8 +66,29 @@ pub(crate) enum InputValidationFailure {
 }
 
 pub(crate) const MAX_ACTIONS_PER_PACKET: usize = 32;
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(ClientInputTickTracker::default());
+    app.insert_resource(ClientInputDropMetrics::default());
+    app.insert_resource(ClientInputDropMetricsLogState::default());
+    app.insert_resource(InputActivityLogState::default());
+    app.insert_resource(InputRateLimitState::default());
+    app.insert_resource(LatestRealtimeInputsByPlayer::default());
+}
+
 const MAX_TICKS_AHEAD: u64 = 6;
+/// When true, accept the latest message even if its tick is far ahead of last accepted (skip-ahead).
+/// Prevents input backlog when client sends faster than server drains (e.g. free-roam at high FPS).
+const SKIP_AHEAD_ON_FUTURE_TICK: bool = true;
 pub(crate) const MAX_MESSAGES_PER_SECOND: u32 = 120;
+
+/// Canonical form for player entity id so client (bare UUID or "player:uuid") and server ("player:uuid") agree.
+pub(crate) fn canonical_player_entity_id(id: &str) -> String {
+    if id.starts_with("player:") {
+        id.to_string()
+    } else {
+        format!("player:{id}")
+    }
+}
 
 impl ClientInputDropMetrics {
     fn record_accepted(&mut self) {
@@ -126,26 +147,21 @@ pub(crate) fn validate_input_message(
 }
 
 fn input_debug_logging_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("SIDEREAL_DEBUG_INPUT_LOGS")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
+    debug_env("SIDEREAL_DEBUG_INPUT_LOGS")
 }
 
 fn summary_logging_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("SIDEREAL_REPLICATION_SUMMARY_LOGS")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
+    debug_env("SIDEREAL_REPLICATION_SUMMARY_LOGS")
 }
 
+/// Drains the receiver and applies only the latest input per player (by tick).
+/// When the client sends many messages per server tick (e.g. free-roam at high FPS),
+/// we discard older messages and apply only the newest, avoiding backlog and redundant work.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn receive_latest_realtime_input_messages(
     time: Res<'_, Time>,
-    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
+    mut last_activity: ResMut<'_, ClientLastActivity>,
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
@@ -171,63 +187,90 @@ pub fn receive_latest_realtime_input_messages(
             }
             continue;
         };
-        for message in receiver.receive() {
-            last_activity.0.insert(client_entity, now_s);
-            if message.player_entity_id != *bound_player_entity_id {
+        let messages: Vec<ClientRealtimeInputMessage> = receiver.receive().collect();
+        if messages.is_empty() {
+            continue;
+        }
+        last_activity.0.insert(client_entity, now_s);
+
+        // Keep only messages claiming this client's bound player; count spoofed.
+        // Use canonical form so "249c313e-..." and "player:249c313e-..." both match.
+        let bound_canonical = canonical_player_entity_id(bound_player_entity_id);
+        let mut valid_claims: Vec<ClientRealtimeInputMessage> = Vec::with_capacity(messages.len());
+        for message in messages {
+            if canonical_player_entity_id(&message.player_entity_id) != bound_canonical {
                 input_drop_metrics.spoofed_player_id =
                     input_drop_metrics.spoofed_player_id.saturating_add(1);
                 warn!(
                     "dropping realtime input with spoofed player id: remote={:?} claimed={} bound={}",
                     remote_id.0, message.player_entity_id, bound_player_entity_id
                 );
+            } else {
+                valid_claims.push(message);
+            }
+        }
+
+        // Discard old inputs in favor of new: apply only the message with the highest tick.
+        let Some(best) = valid_claims
+            .into_iter()
+            .max_by_key(|m| m.tick)
+        else {
+            continue;
+        };
+
+        let player_key = canonical_player_entity_id(&best.player_entity_id);
+        let last_accepted_tick = input_tick_tracker
+            .last_accepted_tick_by_player_entity_id
+            .get(player_key.as_str())
+            .copied();
+        match validate_input_message(&best, last_accepted_tick, now_s, &mut rate_limit_state) {
+            Ok(()) => {}
+            Err(InputValidationFailure::FutureTick) if !SKIP_AHEAD_ON_FUTURE_TICK => {
+                input_drop_metrics.future_tick =
+                    input_drop_metrics.future_tick.saturating_add(1);
                 continue;
             }
-            let last_accepted_tick = input_tick_tracker
-                .last_accepted_tick_by_player_entity_id
-                .get(message.player_entity_id.as_str())
-                .copied();
-            match validate_input_message(&message, last_accepted_tick, now_s, &mut rate_limit_state)
-            {
-                Ok(()) => {}
-                Err(InputValidationFailure::FutureTick) => {
-                    input_drop_metrics.future_tick =
-                        input_drop_metrics.future_tick.saturating_add(1);
-                    continue;
-                }
-                Err(InputValidationFailure::DuplicateOrOutOfOrder) => {
-                    input_drop_metrics.duplicate_or_out_of_order_tick = input_drop_metrics
-                        .duplicate_or_out_of_order_tick
-                        .saturating_add(1);
-                    continue;
-                }
-                Err(InputValidationFailure::RateLimited) => {
-                    input_drop_metrics.rate_limited =
-                        input_drop_metrics.rate_limited.saturating_add(1);
-                    continue;
-                }
-                Err(InputValidationFailure::OversizedPacket) => {
-                    input_drop_metrics.oversized_packet =
-                        input_drop_metrics.oversized_packet.saturating_add(1);
-                    continue;
-                }
+            Err(InputValidationFailure::FutureTick) => {
+                // Skip-ahead: accept latest input anyway so we don't backlog when client sends fast.
             }
-            let entry = latest
-                .by_player_entity_id
-                .entry(message.player_entity_id.clone())
-                .or_insert(LatestRealtimeInput {
-                    tick: 0,
-                    controlled_entity_id: String::new(),
-                    actions: Vec::new(),
-                });
-            if message.tick < entry.tick {
+            Err(InputValidationFailure::DuplicateOrOutOfOrder) => {
+                input_drop_metrics.duplicate_or_out_of_order_tick = input_drop_metrics
+                    .duplicate_or_out_of_order_tick
+                    .saturating_add(1);
                 continue;
             }
+            Err(InputValidationFailure::RateLimited) => {
+                input_drop_metrics.rate_limited =
+                    input_drop_metrics.rate_limited.saturating_add(1);
+                continue;
+            }
+            Err(InputValidationFailure::OversizedPacket) => {
+                input_drop_metrics.oversized_packet =
+                    input_drop_metrics.oversized_packet.saturating_add(1);
+                continue;
+            }
+        }
+
+        let entry = latest
+            .by_player_entity_id
+            .entry(player_key.clone())
+            .or_insert(LatestRealtimeInput {
+                tick: 0,
+                controlled_entity_id: String::new(),
+                actions: Vec::new(),
+            });
+        if best.tick >= entry.tick {
             input_tick_tracker
                 .last_accepted_tick_by_player_entity_id
-                .insert(message.player_entity_id.clone(), message.tick);
-            entry.tick = message.tick;
-            entry.controlled_entity_id = message.controlled_entity_id;
-            entry.actions = message.actions;
+                .insert(player_key.clone(), best.tick);
+            entry.tick = best.tick;
+            // Store controlled_entity_id in canonical form when it's self (player) so drain filter matches.
+            entry.controlled_entity_id = if canonical_player_entity_id(&best.controlled_entity_id) == player_key {
+                player_key.clone()
+            } else {
+                best.controlled_entity_id
+            };
+            entry.actions = best.actions;
         }
     }
 }
@@ -257,9 +300,6 @@ pub fn drain_native_player_inputs_to_action_queue(
     const ACTIVE_INPUT_LOG_INTERVAL_S: f64 = 0.15;
     for (entity, guid, simulated, player_tag, controlled_entity_guid, state, mut queue) in entities
     {
-        if state.0.actions.is_empty() {
-            continue;
-        }
         if simulated.is_none() && player_tag.is_some() {
             let own_guid = guid.0.to_string();
             let controls_other_entity = controlled_entity_guid
@@ -285,15 +325,28 @@ pub fn drain_native_player_inputs_to_action_queue(
             }
         }
         let controlled_entity_id = simulated
-            .map(|controlled| controlled.entity_id.clone())
+            .map(|_| guid.0.to_string())
             .unwrap_or_else(|| player_entity_id.clone());
         let latest_realtime_actions = latest_realtime_inputs
             .by_player_entity_id
             .get(player_entity_id.as_str())
             .filter(|latest| latest.controlled_entity_id == controlled_entity_id)
             .map(|latest| latest.actions.as_slice());
-        let actions = latest_realtime_actions.unwrap_or(state.0.actions.as_slice());
+        let actions = latest_realtime_actions.unwrap_or_else(|| state.0.actions.as_slice());
         if actions.is_empty() {
+            if input_debug_logging_enabled()
+                && latest_realtime_inputs
+                    .by_player_entity_id
+                    .get(player_entity_id.as_str())
+                    .is_some()
+            {
+                info!(
+                    player = %player_entity_id,
+                    controlled = %controlled_entity_id,
+                    action_state_actions = ?state.0.actions,
+                    "server input route has no actions after realtime/action-state selection"
+                );
+            }
             continue;
         }
         // Server input should reflect the latest client intent snapshot for this tick.

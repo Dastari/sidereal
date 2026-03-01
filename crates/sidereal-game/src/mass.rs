@@ -1,12 +1,13 @@
-use avian2d::prelude::{AngularInertia, Mass};
+use avian2d::prelude::{AngularInertia, Collider, Mass, RigidBody};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::entities::ship::corvette::default_corvette_asset_id;
 use crate::flight::angular_inertia_from_size;
 use crate::generated::components::{
     BaseMassKg, CargoMassKg, EntityGuid, Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn,
-    SizeM, TotalMassKg,
+    ShipTag, SizeM, TotalMassKg, VisualAssetId,
 };
 
 fn inventory_mass_kg(inventory: Option<&Inventory>) -> f32 {
@@ -105,8 +106,8 @@ pub fn recompute_total_mass(
         .map(|(entity, inventory)| (entity, inventory_mass_kg(inventory)))
         .collect::<HashMap<_, _>>();
 
-    // Build parent entity -> child entities from roots and MountedOn (avoids Bevy ChildOf so
-    // we don't rely on replicated hierarchy, which can cause client spawn-order panics).
+    // Build parent entity -> child entities from roots and MountedOn (uses the UUID-based
+    // relationship directly rather than traversing Bevy ChildOf hierarchy).
     let root_guid_to_entity: HashMap<Uuid, Entity> = roots
         .p0()
         .iter()
@@ -180,5 +181,83 @@ pub fn recompute_total_mass(
         if let (Some(mut avian_inertia), Some(size)) = (maybe_avian_inertia, maybe_size) {
             *avian_inertia = angular_inertia_from_size(computed_total, size);
         }
+    }
+}
+
+/// Ensures ship entities have the derived mass-tracking components that
+/// `recompute_total_mass` requires. Handles entities hydrated from older
+/// graph records that predate these components.
+#[allow(clippy::type_complexity)]
+pub fn bootstrap_ship_mass_components(
+    mut commands: Commands<'_, '_>,
+    ships: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ MassKg>,
+            Has<BaseMassKg>,
+            Has<CargoMassKg>,
+            Has<ModuleMassKg>,
+            Has<TotalMassKg>,
+            Has<VisualAssetId>,
+        ),
+        (With<ShipTag>, Without<MountedOn>),
+    >,
+) {
+    for (entity, mass_kg, has_base, has_cargo, has_module, has_total, has_visual) in &ships {
+        if has_base && has_cargo && has_module && has_total && has_visual {
+            continue;
+        }
+        let hull = mass_kg.map(|m| m.0).unwrap_or(1.0);
+        let mut cmds = commands.entity(entity);
+        if !has_base {
+            cmds.insert(BaseMassKg(hull));
+        }
+        if !has_cargo {
+            cmds.insert(CargoMassKg(0.0));
+        }
+        if !has_module {
+            cmds.insert(ModuleMassKg(0.0));
+        }
+        if !has_total {
+            cmds.insert((TotalMassKg(hull), MassDirty));
+        }
+        if !has_visual {
+            cmds.insert(VisualAssetId(default_corvette_asset_id().to_string()));
+        }
+    }
+}
+
+/// Ensures root dynamic entities with `SizeM` have an Avian collider.
+/// This covers hydrated entities that may carry `RigidBody` but miss `Collider`.
+#[allow(clippy::type_complexity)]
+pub fn bootstrap_root_dynamic_entity_colliders(
+    mut commands: Commands<'_, '_>,
+    entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ SizeM,
+            Option<&'_ MountedOn>,
+            Option<&'_ RigidBody>,
+            Has<Collider>,
+        ),
+    >,
+) {
+    for (entity, size, mounted_on, rigid_body, has_collider) in &entities {
+        if mounted_on.is_some() || has_collider {
+            continue;
+        }
+        let Some(rigid_body) = rigid_body else {
+            continue;
+        };
+        if !matches!(rigid_body, RigidBody::Dynamic | RigidBody::Kinematic) {
+            continue;
+        }
+        commands
+            .entity(entity)
+            .insert(Collider::rectangle(size.width, size.length));
     }
 }

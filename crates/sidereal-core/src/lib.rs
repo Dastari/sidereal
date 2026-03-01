@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub mod auth;
+pub mod bootstrap_wire;
+pub mod gateway_dtos;
 pub mod remote_inspect;
 
 pub const PROTOCOL_VERSION: u16 = 1;

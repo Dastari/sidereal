@@ -8,6 +8,7 @@ use crate::EntityAction;
     kind = "action_queue",
     persist = true,
     replicate = true,
+    predict = true,
     visibility = [OwnerOnly]
 )]
 #[derive(Debug, Clone, Component, Default, Reflect, Serialize, Deserialize, PartialEq)]

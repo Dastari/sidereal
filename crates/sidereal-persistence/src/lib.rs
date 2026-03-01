@@ -146,7 +146,7 @@ impl GraphPersistence {
             let labels = sanitize_labels(&record.labels);
             let mut set_parts = vec![format!("e.last_tick={tick}")];
             set_parts.push(format!(
-                "e.sidereal_labels={}",
+                "e.entity_labels={}",
                 cypher_literal(&JsonValue::Array(
                     labels
                         .iter()
@@ -181,18 +181,13 @@ impl GraphPersistence {
             ))?;
 
             for component in &record.components {
-                let mut comp_set = vec![
-                    format!("c.last_tick={tick}"),
-                    format!(
-                        "c.component_id={}",
-                        cypher_literal(&JsonValue::String(component.component_id.clone()))
-                    ),
-                    format!(
-                        "c.component_kind={}",
-                        cypher_literal(&JsonValue::String(component.component_kind.clone()))
-                    ),
-                ];
-                comp_set.extend(cypher_set_clauses("c", &component.properties));
+                let reset_props_clause = format!(
+                    "c = {{component_id:{}, component_kind:{}, last_tick:{tick}}}",
+                    cypher_literal(&JsonValue::String(component.component_id.clone())),
+                    cypher_literal(&JsonValue::String(component.component_kind.clone())),
+                );
+                let mut comp_set = vec![reset_props_clause];
+                append_component_property_clauses(&mut comp_set, &component.properties);
                 self.run_cypher(&format!(
                     "MERGE (c:Component {{component_id:'{}'}}) SET {}",
                     escape_cypher_string(&component.component_id),
@@ -301,8 +296,7 @@ impl GraphPersistence {
                 .unwrap_or_else(|| vec!["Entity".to_string()]);
             let properties = parse_agtype_json(row.get::<_, String>("props"))
                 .unwrap_or(JsonValue::Object(JsonMap::new()));
-            if let Some(extra_labels) = properties.get("sidereal_labels").and_then(|v| v.as_array())
-            {
+            if let Some(extra_labels) = properties.get("entity_labels").and_then(|v| v.as_array()) {
                 labels.extend(
                     extra_labels
                         .iter()
@@ -337,6 +331,7 @@ impl GraphPersistence {
                     .flatten()
                     .and_then(parse_agtype_json)
                     .unwrap_or(JsonValue::Object(JsonMap::new()));
+                let component_props = unwrap_scalar_component_props(component_props);
                 if !entry
                     .components
                     .iter()
@@ -362,9 +357,26 @@ impl GraphPersistence {
             .get("parent_entity_id")
             .and_then(JsonValue::as_str)
         {
+            // Keep HAS_CHILD single-parent: remove stale incoming parent edges first.
+            self.run_cypher(&format!(
+                "MATCH (e:Entity {{entity_id:'{}'}}) \
+                 OPTIONAL MATCH (old:Entity)-[r:HAS_CHILD]->(e) \
+                 WHERE old.entity_id <> '{}' \
+                 DELETE r",
+                escape_cypher_string(&record.entity_id),
+                escape_cypher_string(parent_id),
+            ))?;
             self.run_cypher(&format!(
                 "MATCH (p:Entity {{entity_id:'{}'}}), (e:Entity {{entity_id:'{}'}}) MERGE (p)-[:HAS_CHILD]->(e)",
                 escape_cypher_string(parent_id),
+                escape_cypher_string(&record.entity_id),
+            ))?;
+        } else {
+            // Root entities should not keep stale HAS_CHILD incoming edges.
+            self.run_cypher(&format!(
+                "MATCH (e:Entity {{entity_id:'{}'}}) \
+                 OPTIONAL MATCH (:Entity)-[r:HAS_CHILD]->(e) \
+                 DELETE r",
                 escape_cypher_string(&record.entity_id),
             ))?;
         }
@@ -467,7 +479,7 @@ pub fn persist_graph_records_in_transaction(
         let labels = sanitize_labels(&record.labels);
         let mut set_parts = vec![format!("e.last_tick={tick}")];
         set_parts.push(format!(
-            "e.sidereal_labels={}",
+            "e.entity_labels={}",
             cypher_literal(&JsonValue::Array(
                 labels
                     .iter()
@@ -509,18 +521,13 @@ pub fn persist_graph_records_in_transaction(
         )?;
 
         for component in &record.components {
-            let mut comp_set = vec![
-                format!("c.last_tick={tick}"),
-                format!(
-                    "c.component_id={}",
-                    cypher_literal(&JsonValue::String(component.component_id.clone()))
-                ),
-                format!(
-                    "c.component_kind={}",
-                    cypher_literal(&JsonValue::String(component.component_kind.clone()))
-                ),
-            ];
-            comp_set.extend(cypher_set_clauses("c", &component.properties));
+            let reset_props_clause = format!(
+                "c = {{component_id:{}, component_kind:{}, last_tick:{tick}}}",
+                cypher_literal(&JsonValue::String(component.component_id.clone())),
+                cypher_literal(&JsonValue::String(component.component_kind.clone())),
+            );
+            let mut comp_set = vec![reset_props_clause];
+            append_component_property_clauses(&mut comp_set, &component.properties);
             run_cypher_in_transaction(
                 tx,
                 graph_name,
@@ -546,12 +553,37 @@ pub fn persist_graph_records_in_transaction(
             .get("parent_entity_id")
             .and_then(JsonValue::as_str)
         {
+            // Keep HAS_CHILD single-parent: remove stale incoming parent edges first.
+            run_cypher_in_transaction(
+                tx,
+                graph_name,
+                &format!(
+                    "MATCH (e:Entity {{entity_id:'{}'}}) \
+                     OPTIONAL MATCH (old:Entity)-[r:HAS_CHILD]->(e) \
+                     WHERE old.entity_id <> '{}' \
+                     DELETE r",
+                    escape_cypher_string(&record.entity_id),
+                    escape_cypher_string(parent_id),
+                ),
+            )?;
             run_cypher_in_transaction(
                 tx,
                 graph_name,
                 &format!(
                     "MATCH (p:Entity {{entity_id:'{}'}}), (e:Entity {{entity_id:'{}'}}) MERGE (p)-[:HAS_CHILD]->(e)",
                     escape_cypher_string(parent_id),
+                    escape_cypher_string(&record.entity_id),
+                ),
+            )?;
+        } else {
+            // Root entities should not keep stale HAS_CHILD incoming edges.
+            run_cypher_in_transaction(
+                tx,
+                graph_name,
+                &format!(
+                    "MATCH (e:Entity {{entity_id:'{}'}}) \
+                     OPTIONAL MATCH (:Entity)-[r:HAS_CHILD]->(e) \
+                     DELETE r",
                     escape_cypher_string(&record.entity_id),
                 ),
             )?;
@@ -626,6 +658,34 @@ fn sanitize_labels(labels: &[String]) -> Vec<String> {
             }
         })
         .collect::<Vec<_>>()
+}
+
+/// Appends Cypher SET clauses for component properties.
+/// Object values are flattened into individual node properties.
+/// Non-object values (strings, numbers, booleans, arrays, null) are stored
+/// as a serialised JSON string in a `value` property to prevent data loss.
+fn append_component_property_clauses(comp_set: &mut Vec<String>, properties: &JsonValue) {
+    if properties.is_object() {
+        comp_set.extend(cypher_set_clauses("c", properties));
+    } else {
+        let json_str = serde_json::to_string(properties).unwrap_or_default();
+        comp_set.push(format!("c.value='{}'", escape_cypher_string(&json_str)));
+    }
+}
+
+/// Recovers component properties that were stored as non-object JSON.
+/// If the loaded properties object contains a `value` key, parse and return
+/// the original value; otherwise return the properties unchanged.
+fn unwrap_scalar_component_props(props: JsonValue) -> JsonValue {
+    if let Some(json_str) = props
+        .as_object()
+        .and_then(|obj| obj.get("value"))
+        .and_then(|v| v.as_str())
+    {
+        serde_json::from_str(json_str).unwrap_or(props)
+    } else {
+        props
+    }
 }
 
 fn cypher_set_clauses(prefix: &str, value: &JsonValue) -> Vec<String> {

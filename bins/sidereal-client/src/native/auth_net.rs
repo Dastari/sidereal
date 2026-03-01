@@ -1,14 +1,21 @@
 //! Gateway auth API, Lightyear auth/session-ready messages, headless session config.
 
-use bevy::log::info;
+use bevy::log::{info, warn};
 use bevy::prelude::*;
 use lightyear::prelude::{MessageReceiver, MessageSender};
-use sidereal_net::{ClientAuthMessage, ControlChannel, ServerSessionReadyMessage};
+use sidereal_core::gateway_dtos::{
+    AuthTokens, CharactersResponse, EnterWorldRequest, EnterWorldResponse, LoginRequest,
+    MeResponse, PasswordResetConfirmRequest, PasswordResetConfirmResponse, PasswordResetRequest,
+    PasswordResetResponse, RegisterRequest,
+};
+use sidereal_net::{
+    ClientAuthMessage, ControlChannel, ServerSessionDeniedMessage, ServerSessionReadyMessage,
+};
 
+use super::app_state::*;
 use super::resources::{
     BootstrapWatchdogState, ClientAuthSyncState, HeadlessAccountSwitchPlan, HeadlessTransportMode,
 };
-use super::state::*;
 
 fn decode_api_json<T: serde::de::DeserializeOwned>(
     response: reqwest::blocking::Response,
@@ -70,12 +77,12 @@ pub fn submit_auth_request(
             (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
                 let response = client
                     .post(format!("{gateway_url}/auth/password-reset/request"))
-                    .json(&ForgotRequest {
+                    .json(&PasswordResetRequest {
                         email: session.email.clone(),
                     })
                     .send()
                     .map_err(|err| err.to_string())?;
-                let resp = decode_api_json::<ForgotResponse>(response)?;
+                let resp = decode_api_json::<PasswordResetResponse>(response)?;
                 if let Some(token) = resp.reset_token {
                     session.reset_token = token;
                 }
@@ -88,13 +95,13 @@ pub fn submit_auth_request(
             (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
                 let response = client
                     .post(format!("{gateway_url}/auth/password-reset/confirm"))
-                    .json(&ForgotConfirmRequest {
+                    .json(&PasswordResetConfirmRequest {
                         reset_token: session.reset_token.clone(),
                         new_password: session.new_password.clone(),
                     })
                     .send()
                     .map_err(|err| err.to_string())?;
-                let _ = decode_api_json::<ForgotConfirmResponse>(response)?;
+                let _ = decode_api_json::<PasswordResetConfirmResponse>(response)?;
                 session.status = "Password reset confirmed. Switch to Login (F1).".to_string();
                 Ok((None, None::<String>))
             })()
@@ -177,7 +184,7 @@ fn fetch_auth_me(
     client: &reqwest::blocking::Client,
     gateway_url: &str,
     access_token: &str,
-) -> Result<AuthMeResponse, String> {
+) -> Result<MeResponse, String> {
     client
         .get(format!("{gateway_url}/auth/me"))
         .bearer_auth(access_token)
@@ -185,7 +192,7 @@ fn fetch_auth_me(
         .map_err(|err| err.to_string())?
         .error_for_status()
         .map_err(|err| err.to_string())?
-        .json::<AuthMeResponse>()
+        .json::<MeResponse>()
         .map_err(|err| err.to_string())
 }
 
@@ -290,12 +297,7 @@ pub fn send_lightyear_auth_messages(
         ),
     >,
 ) {
-    let active_world_state = app_state.as_ref().is_some_and(|state| {
-        matches!(
-            state.get(),
-            ClientAppState::InWorld | ClientAppState::WorldLoading
-        )
-    }) || headless_mode.0;
+    let active_world_state = is_active_world_state(&app_state, &headless_mode);
     if !active_world_state {
         return;
     }
@@ -362,6 +364,45 @@ pub fn receive_lightyear_session_ready_messages(
                 continue;
             }
             session_ready.ready_player_entity_id = Some(message.player_entity_id);
+        }
+    }
+}
+
+pub fn receive_lightyear_session_denied_messages(
+    mut receivers: Query<
+        '_,
+        '_,
+        &mut MessageReceiver<ServerSessionDeniedMessage>,
+        (
+            With<lightyear::prelude::client::Client>,
+            With<lightyear::prelude::client::Connected>,
+        ),
+    >,
+    session: Res<'_, ClientSession>,
+    mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
+    mut next_state: ResMut<'_, NextState<ClientAppState>>,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    for mut receiver in &mut receivers {
+        for message in receiver.receive() {
+            if message.player_entity_id != *local_player_entity_id {
+                continue;
+            }
+            warn!(
+                "session denied for player {}: {}",
+                message.player_entity_id, message.reason
+            );
+            dialog_queue.push_error(
+                "Session Denied",
+                format!(
+                    "The server denied your session.\n\nReason: {}\n\n\
+                     Returning to character select.",
+                    message.reason
+                ),
+            );
+            next_state.set(ClientAppState::CharacterSelect);
         }
     }
 }

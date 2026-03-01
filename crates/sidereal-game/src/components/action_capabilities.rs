@@ -8,6 +8,7 @@ use crate::EntityAction;
     kind = "action_capabilities",
     persist = true,
     replicate = true,
+    predict = true,
     visibility = [Public]
 )]
 #[derive(Debug, Clone, Component, Reflect, Serialize, Deserialize, PartialEq)]

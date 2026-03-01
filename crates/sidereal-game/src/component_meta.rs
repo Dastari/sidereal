@@ -12,6 +12,7 @@ pub struct SiderealComponentMeta {
     pub kind: &'static str,
     pub persist: bool,
     pub replicate: bool,
+    pub predict: bool,
     pub visibility: &'static [VisibilityScope],
 }
 
@@ -22,6 +23,7 @@ pub trait SiderealComponentMetadata {
 #[derive(Clone, Copy)]
 pub struct SiderealComponentRegistration {
     pub register_reflect: fn(&mut App),
+    pub register_lightyear: fn(&mut App),
     pub type_path: fn() -> &'static str,
     pub meta: SiderealComponentMeta,
 }

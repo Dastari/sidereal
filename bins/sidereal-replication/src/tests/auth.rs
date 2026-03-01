@@ -1,13 +1,15 @@
 use bevy::prelude::*;
 use lightyear::prelude::PeerId;
 
+use crate::replication::assets::AssetStreamServerState;
+use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::auth::cleanup_client_auth_bindings;
+use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
 };
-use crate::replication::view::ClientControlRequestOrder;
-use crate::visibility::ClientVisibilityRegistry;
-use crate::{AssetStreamServerState, AuthenticatedClientBindings, ClientLastActivity};
+use crate::replication::lifecycle::ClientLastActivity;
+use crate::replication::visibility::ClientVisibilityRegistry;
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{RemoteId, ReplicationState};
 

@@ -332,7 +332,7 @@ For each decision:
   - With account->many-characters, account-scoped world snapshot resolution can return the wrong character-owned ship/state.
   - Character-local state is a core model invariant.
 - Decision:
-  - World snapshot/read APIs (for example `/world/me` semantics) should resolve by selected/bound `player_entity_id`, not by account-wide ownership alone.
+  - Any future world snapshot/read APIs should resolve by selected/bound `player_entity_id`, not by account-wide ownership alone.
   - Character-local camera/control/focus/selection and controlled-entity resolution remain tied to the selected character identity.
 - Alternatives considered:
   - Keep account-scoped lookup and select first matching ship: rejected (non-deterministic for multi-character accounts).
@@ -342,16 +342,14 @@ For each decision:
     - Deterministic character-specific world hydration/snapshot behavior.
     - Eliminates cross-character leakage risk in gateway world responses.
   - Negative:
-    - Requires follow-up API contract and query updates.
-- Follow-up:
-  - Update `/world/me` implementation and tests to enforce character-scoped resolution.
-  - Document expected request/response semantics for character-bound world reads.
+    - Requires follow-up API contract and query updates when/if such endpoints are reintroduced.
+- Note:
+  - The gateway previously exposed `/world/me`; it was removed (unused by clients; world state and asset manifests are delivered via the replication stream). Any future world-read endpoint must follow character-scoped resolution per this decision.
 - Decision doc:
   - `docs/features/dr-0001_account_character_session_model.md`
 - References:
   - `docs/features/dr-0001_account_character_session_model.md`
   - `docs/features/dr-0002_explicit_world_entry_flow.md`
-  - `bins/sidereal-gateway/src/api.rs`
   - `docs/sidereal_design_document.md`
 
 ## DR-0011: Headless Client/Test Runtime Must Preserve Core Bevy Resource Invariants
@@ -495,3 +493,35 @@ For each decision:
   - `docs/sidereal_design_document.md`
   - `docs/features/asset_delivery_contract.md`
   - `docs/features/visibility_replication_contract.md`
+
+---
+
+### DR-0015: Hierarchy via MountedOn, not replicated ChildOf
+
+- Date: 2026-02-28
+- Status: Accepted
+- Context:
+  - Bevy's `ChildOf`/`Children` relationship uses raw `Entity` references that are local to a single Bevy world.
+  - When Lightyear replicates `ChildOf`, it must map server entity IDs to client entity IDs. Entity mapping order is undefined — a child can arrive before its parent is mapped, producing `Entity::PLACEHOLDER` and a panic.
+  - The project already uses `MountedOn { parent_entity_id: Uuid, hardpoint_id: String }` to express module-to-parent relationships with UUID-based references that are safe across network boundaries.
+- Decision:
+  - `MountedOn` is the replicated/persisted source of truth for parent-child relationships.
+  - Bevy `ChildOf`/`Children` hierarchy is NEVER replicated through Lightyear.
+  - A shared system (`sync_mounted_hierarchy` in `sidereal-game`) reconstructs Bevy hierarchy locally on each world (server and client) from `MountedOn` + `EntityGuid` lookups.
+  - The system runs in `PostUpdate` before `TransformSystems::Propagate` so `GlobalTransform` is correct for all mounted entities.
+  - Hardpoint `offset_m` is applied as the child's `Transform` when a matching `Hardpoint` entity is found as a sibling under the same parent.
+- Alternatives considered:
+  - Replicate `ChildOf` directly: rejected (entity mapping order panics).
+  - Use Lightyear `ReplicationGroup` to guarantee atomic spawn: rejected (ties all modules to ship visibility granularity and increases bandwidth per-change).
+  - Manual world-position computation without Bevy hierarchy: rejected (loses Bevy transform propagation, gizmos, rendering integration).
+- Consequences:
+  - Positive:
+    - No entity mapping panics on the client.
+    - Bevy transform propagation works naturally via locally-reconstructed hierarchy.
+    - `GlobalTransform` is correct for all entities, enabling future hardpoint-relative rendering and spatial queries.
+  - Negative:
+    - One-frame delay before hierarchy is established (entities arrive, next frame the system parents them).
+    - Hardpoint offset resolution requires `Hardpoint` entities to already have `ChildOf` established (server: immediate via `with_children`; client: available after hardpoints themselves are parented).
+- References:
+  - `crates/sidereal-game/src/hierarchy.rs`
+  - `AGENTS.md` (non-negotiable: clients never authoritatively set world transforms)

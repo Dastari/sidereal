@@ -24,7 +24,8 @@ export function AppLayout({
 }: AppLayoutProps) {
   const [isSidebarDragging, setIsSidebarDragging] = React.useState(false)
   const [isDetailDragging, setIsDetailDragging] = React.useState(false)
-  const [currentSidebarWidth, setCurrentSidebarWidth] = React.useState(sidebarWidth)
+  const [currentSidebarWidth, setCurrentSidebarWidth] =
+    React.useState(sidebarWidth)
   const [currentDetailWidth, setCurrentDetailWidth] =
     React.useState(detailPanelWidth)
 
@@ -146,7 +147,7 @@ interface PanelProps {
 
 export function Panel({ children, className }: PanelProps) {
   return (
-    <div className={cn('flex h-full flex-col overflow-hidden', className)}>
+    <div className={cn('flex h-full flex-col overflow-hidden p-2', className)}>
       {children}
     </div>
   )

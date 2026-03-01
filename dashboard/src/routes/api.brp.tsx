@@ -10,6 +10,7 @@ type BrpRequestBody = {
 }
 
 function parseTarget(value: unknown): BrpTarget {
+  if (value === 'hostClient') return 'hostClient'
   return value === 'client' ? 'client' : 'server'
 }
 

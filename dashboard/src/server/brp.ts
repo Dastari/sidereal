@@ -1,3 +1,5 @@
+import { execSync } from 'node:child_process'
+
 type JsonRpcRequest = {
   jsonrpc?: string
   id?: unknown
@@ -24,14 +26,16 @@ type BrpQueryRow = {
   has?: Record<string, unknown>
 }
 
-export type BrpTarget = 'server' | 'client'
+export type BrpTarget = 'server' | 'client' | 'hostClient'
 
 export type LiveWorldEntity = {
   id: string
   name: string
   kind: string
   parentEntityId?: string
+  entity_labels?: string[]
   mapVisible?: boolean
+  hasPosition?: boolean
   shardId: number
   x: number
   y: number
@@ -39,6 +43,7 @@ export type LiveWorldEntity = {
   vy: number
   sampledAtMs: number
   componentCount: number
+  entityGuid?: string
 }
 
 export type LiveGraphNode = {
@@ -70,9 +75,34 @@ function normalizeUrl(url: string): string {
   return url.endsWith('/') ? url : `${url}/`
 }
 
+/** Resolves default gateway via ip route (Linux). Cached; fallback 127.0.0.1. */
+let cachedGateway: string | null = null
+function getDefaultGateway(): string {
+  if (cachedGateway !== null) return cachedGateway
+  try {
+    const out = execSync("ip route | awk '/default/ {print $3}'", {
+      encoding: 'utf8',
+      timeout: 2000,
+    })
+    const ip = out.trim()
+    if (ip && /^[\d.]+$/.test(ip)) {
+      cachedGateway = ip
+      return cachedGateway
+    }
+  } catch {
+    // Non-Linux or no default route
+  }
+  cachedGateway = '127.0.0.1'
+  return cachedGateway
+}
+
 function getTargetBrpDefaults(target: BrpTarget): Array<string> {
   if (target === 'client') {
     return ['http://127.0.0.1:15714/', 'http://host.docker.internal:15714/']
+  }
+  if (target === 'hostClient') {
+    const host = getDefaultGateway()
+    return [`http://${host}:15714/`]
   }
   return [
     'http://127.0.0.1:15713/',
@@ -85,6 +115,15 @@ function getTargetBrpDefaults(target: BrpTarget): Array<string> {
 function getTargetBrpEnvVars(target: BrpTarget): Array<string> {
   if (target === 'client') {
     return ['CLIENT_BRP_URL', 'SIDEREAL_CLIENT_BRP_URL', 'BRP_CLIENT_URL']
+  }
+  if (target === 'hostClient') {
+    return [
+      'HOST_CLIENT_BRP_URL',
+      'SIDEREAL_HOST_CLIENT_BRP_URL',
+      'CLIENT_BRP_URL',
+      'SIDEREAL_CLIENT_BRP_URL',
+      'BRP_CLIENT_URL',
+    ]
   }
   return ['REPLICATION_BRP_URL', 'SIDEREAL_SERVER_BRP_URL', 'BRP_SERVER_URL']
 }
@@ -115,7 +154,7 @@ export function getBrpUrl(target: BrpTarget = 'server'): string {
 
 function getBrpAuthToken(target: BrpTarget): string | undefined {
   const envNames =
-    target === 'client'
+    target === 'client' || target === 'hostClient'
       ? [
           'SIDEREAL_CLIENT_BRP_AUTH_TOKEN',
           'CLIENT_BRP_AUTH_TOKEN',
@@ -152,16 +191,21 @@ function getBrpCandidates(target: BrpTarget): Array<string> {
   if (target === 'server') {
     candidates.push('http://sidereal-shard:15712/', 'http://shard:15712/')
   }
+  if (target === 'hostClient') {
+    // Add client fallbacks in case gateway host runs client on same port
+    candidates.push('http://127.0.0.1:15714/', 'http://host.docker.internal:15714/')
+  }
   return Array.from(new Set(candidates.map(normalizeUrl)))
 }
 
 function getBrpGraphName(target: BrpTarget): string {
-  return target === 'client'
+  return target === 'client' || target === 'hostClient'
     ? 'bevy_remote_live_client_world'
     : 'bevy_remote_live_server_world'
 }
 
 function getBrpSourceLabel(target: BrpTarget): string {
+  if (target === 'hostClient') return 'hostClient'
   return target === 'client' ? 'client' : 'server'
 }
 
@@ -335,24 +379,32 @@ function parseEntityRef(value: unknown): string | null {
 function getParentEntityIdFromComponents(
   components: Record<string, unknown>,
 ): string | null {
-  // 1) Check for sidereal_game::MountedOn component
+  // 0) ParentGuid component is the canonical hierarchy link.
   for (const [componentPath, value] of Object.entries(components)) {
     if (
-      componentPath.endsWith('::MountedOn') ||
-      componentPath.includes('MountedOn')
+      !(
+        componentPath.endsWith('::ParentGuid') ||
+        componentPath.includes('::parent_guid::')
+      )
     ) {
-      if (value && typeof value === 'object') {
-        const obj = value as Record<string, unknown>
-        const parentId =
-          obj.parent_entity_id ?? obj.parentEntityId ?? obj['parent_entity_id']
-        if (typeof parentId === 'string' && parentId.length > 0) {
-          return parentId
-        }
-      }
+      continue
+    }
+    const parsed = parseEntityRef(value)
+    if (parsed) return parsed
+  }
+
+  // 1) Canonical parent link from explicit parentEntityId/parent_entity_id fields.
+  for (const value of Object.values(components)) {
+    if (!value || typeof value !== 'object') continue
+    const obj = value as Record<string, unknown>
+    const parentCandidate = obj.parentEntityId ?? obj.parent_entity_id
+    const parsed = parseEntityRef(parentCandidate)
+    if (parsed) {
+      return parsed
     }
   }
 
-  // 2) Check for Bevy hierarchy components (fallback)
+  // 2) Check for Bevy hierarchy components (fallback).
   let hasHierarchyParent = false
   for (const [componentPath, value] of Object.entries(components)) {
     if (
@@ -368,6 +420,83 @@ function getParentEntityIdFromComponents(
   if (hasHierarchyParent) {
     // Preserve "this is a child" semantics even when BRP payload shape is unknown.
     return '__hierarchy_parent__'
+  }
+  return null
+}
+
+function findStringArrayDeep(value: unknown): string[] | null {
+  if (Array.isArray(value)) {
+    const strings = value
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+    if (strings.length > 0) return strings
+
+    for (const entry of value) {
+      const nested = findStringArrayDeep(entry)
+      if (nested && nested.length > 0) return nested
+    }
+    return null
+  }
+  if (!value || typeof value !== 'object') return null
+
+  const obj = value as Record<string, unknown>
+  for (const key of ['value', 'labels', 'entity_labels', '0']) {
+    if (!(key in obj)) continue
+    const nested = findStringArrayDeep(obj[key])
+    if (nested && nested.length > 0) return nested
+  }
+  for (const entry of Object.values(obj)) {
+    const nested = findStringArrayDeep(entry)
+    if (nested && nested.length > 0) return nested
+  }
+  return null
+}
+
+function getEntityLabelsFromComponents(
+  components: Record<string, unknown>,
+): string[] | null {
+  for (const [componentPath, value] of Object.entries(components)) {
+    if (
+      !(
+        componentPath.endsWith('::EntityLabels') ||
+        componentPath.includes('components::entity_labels::EntityLabels')
+      )
+    ) {
+      continue
+    }
+    const labels = findStringArrayDeep(value)
+    if (labels && labels.length > 0) return labels
+  }
+  return null
+}
+
+function normalizeGuidLike(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (looksLikeUuid(trimmed)) return trimmed.toLowerCase()
+  const suffix = trimmed.split(':').pop()?.trim() ?? ''
+  if (looksLikeUuid(suffix)) return suffix.toLowerCase()
+  return null
+}
+
+function getEntityGuidFromComponents(
+  components: Record<string, unknown>,
+): string | null {
+  for (const [componentPath, value] of Object.entries(components)) {
+    if (
+      !(
+        componentPath.endsWith('::EntityGuid') ||
+        componentPath.includes('::entity_guid::') ||
+        componentPath.toLowerCase().includes('entityguid')
+      )
+    ) {
+      continue
+    }
+    const found = findStringDeep(value)
+    if (!found) continue
+    const normalized = normalizeGuidLike(found)
+    if (normalized) return normalized
   }
   return null
 }
@@ -479,47 +608,30 @@ function parseXYFromObject(
 function getPositionFromComponents(
   components: Record<string, unknown>,
 ): [number, number] | null {
-  // Prefer authoritative Avian position if present.
+  const readVec2 = (candidate: unknown): [number, number] | null => {
+    if (Array.isArray(candidate) && candidate.length >= 2) {
+      const x = asNumber(candidate[0])
+      const y = asNumber(candidate[1])
+      if (x !== null && y !== null) return [x, y]
+    }
+    if (candidate && typeof candidate === 'object') {
+      const obj = candidate as Record<string, unknown>
+      const nestedValue = readVec2(obj.value)
+      if (nestedValue) return nestedValue
+      const nestedPos = readVec2(obj.position ?? obj.Position ?? obj['0'])
+      if (nestedPos) return nestedPos
+      const xy = parseXYFromObject(obj)
+      if (xy) return xy
+    }
+    return null
+  }
+
+  // Authoritative position source: Avian Position only.
   for (const [componentPath, value] of Object.entries(components)) {
     if (!componentPath.endsWith('::Position')) continue
     if (!componentPath.includes('physics_transform::transform::Position'))
       continue
-    if (Array.isArray(value) && value.length >= 2) {
-      const x = asNumber(value[0])
-      const y = asNumber(value[1])
-      if (x !== null && y !== null) return [x, y]
-    }
-    if (value && typeof value === 'object') {
-      const xy = parseXYFromObject(value as Record<string, unknown>)
-      if (xy) return xy
-    }
-  }
-
-  for (const value of Object.values(components)) {
-    if (!value || typeof value !== 'object') continue
-
-    if (Array.isArray(value)) {
-      if (value.length >= 11) {
-        const x = asNumber(value[9])
-        const y = asNumber(value[10])
-        if (x !== null && y !== null) return [x, y]
-      }
-      continue
-    }
-
-    const obj = value as Record<string, unknown>
-    if (obj.translation && typeof obj.translation === 'object') {
-      const translation = obj.translation as Record<string, unknown>
-      if (Array.isArray(obj.translation) && obj.translation.length >= 2) {
-        const x = asNumber(obj.translation[0])
-        const y = asNumber(obj.translation[1])
-        if (x !== null && y !== null) return [x, y]
-      }
-      const xy = parseXYFromObject(translation)
-      if (xy) return xy
-    }
-
-    const xy = parseXYFromObject(obj)
+    const xy = readVec2(value)
     if (xy) return xy
   }
 
@@ -580,9 +692,10 @@ export async function getLiveWorldSnapshot(
   const entities: Array<LiveWorldEntity> = []
   const nodes: Array<LiveGraphNode> = []
   const edges: Array<LiveGraphEdge> = []
+  const guidToEntityId = new Map<string, string>()
 
   const sampledAtMs = Date.now()
-  rows.forEach((row, index) => {
+  rows.forEach((row) => {
     const entityId = String(row.entity)
     const components = row.components ?? {}
     const extractedName = getNameFromComponents(components)
@@ -593,12 +706,9 @@ export async function getLiveWorldSnapshot(
     const kind = getKindFromComponents(components)
     const xy = getPositionFromComponents(components)
     const velocity = getVelocityFromComponents(components)
-    const fallbackX =
-      Math.cos((index / Math.max(1, rows.length)) * Math.PI * 2) * 200
-    const fallbackY =
-      Math.sin((index / Math.max(1, rows.length)) * Math.PI * 2) * 200
-    const x = xy ? xy[0] : fallbackX
-    const y = xy ? xy[1] : fallbackY
+    const hasPosition = xy !== null
+    const x = xy ? xy[0] : 0
+    const y = xy ? xy[1] : 0
     const vx = velocity ? velocity[0] : 0
     const vy = velocity ? velocity[1] : 0
     const componentEntries = Object.entries(components)
@@ -609,12 +719,19 @@ export async function getLiveWorldSnapshot(
         : mapVisibleFromComponents
     const parentEntityId =
       getParentEntityIdFromComponents(components) ?? undefined
+    const entityLabels = getEntityLabelsFromComponents(components) ?? undefined
+    const entityGuid = getEntityGuidFromComponents(components)
+    if (entityGuid) {
+      guidToEntityId.set(entityGuid, entityId)
+    }
 
     entities.push({
       id: entityId,
       name,
       kind,
       parentEntityId,
+      entity_labels: entityLabels,
+      hasPosition,
       shardId: 1,
       x,
       y,
@@ -623,6 +740,7 @@ export async function getLiveWorldSnapshot(
       sampledAtMs,
       mapVisible,
       componentCount: componentEntries.length,
+      ...(entityGuid ? { entityGuid } : {}),
     })
 
     nodes.push({
@@ -654,6 +772,19 @@ export async function getLiveWorldSnapshot(
       })
     }
   })
+
+  // BRP often exposes parent refs as UUIDs while row.entity is numeric.
+  // Normalize parentEntityId to the corresponding BRP entity id when possible
+  // so tree grouping can reliably attach children under their parents.
+  for (const entity of entities) {
+    if (!entity.parentEntityId) continue
+    const normalizedParentGuid = normalizeGuidLike(entity.parentEntityId)
+    if (!normalizedParentGuid) continue
+    const mappedParentId = guidToEntityId.get(normalizedParentGuid)
+    if (mappedParentId) {
+      entity.parentEntityId = mappedParentId
+    }
+  }
 
   return {
     source: 'bevy_remote',

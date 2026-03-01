@@ -10,8 +10,10 @@ use sidereal_net::{
 };
 use std::sync::OnceLock;
 
+use super::app_state::{
+    ClientAppState, ClientSession, LocalPlayerViewState, is_active_world_state,
+};
 use super::resources::{ClientControlDebugState, ClientControlRequestState, HeadlessTransportMode};
-use super::state::{ClientAppState, ClientSession, LocalPlayerViewState};
 
 pub fn client_control_debug_logging_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -36,12 +38,7 @@ pub fn send_lightyear_control_requests(
     >,
     player_view_state: Res<'_, LocalPlayerViewState>,
 ) {
-    let active_world_state = app_state.as_ref().is_some_and(|state| {
-        matches!(
-            state.get(),
-            ClientAppState::InWorld | ClientAppState::WorldLoading
-        )
-    }) || headless_mode.0;
+    let active_world_state = is_active_world_state(&app_state, &headless_mode);
     if !active_world_state {
         return;
     }

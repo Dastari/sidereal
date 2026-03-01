@@ -6,13 +6,14 @@ use bevy::prelude::*;
 use lightyear::prelude::input::native::ActionState;
 use sidereal_game::{
     ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, Hardpoint, MountedOn, PlayerTag,
-    SizeM, TotalMassKg, angular_inertia_from_size, default_corvette_mass_kg, default_corvette_size,
-    default_flight_action_capabilities,
+    SizeM, TotalMassKg, angular_inertia_from_size, default_flight_action_capabilities,
 };
 use sidereal_net::PlayerInput;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
+use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
     ControlledEntity, NearbyCollisionProxy, SuppressedPredictedDuplicateVisual, WorldEntity,
 };
@@ -20,7 +21,20 @@ use super::resources::{
     LocalSimulationDebugMode, MotionOwnershipAuditEnabled, MotionOwnershipAuditState,
     NearbyCollisionProxyTuning,
 };
-use super::state::{ClientSession, LocalPlayerViewState};
+
+fn prediction_reconcile_debug_logging_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SIDEREAL_DEBUG_PREDICTION_RECONCILE")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct PredictionReconcileLogState {
+    last_logged_at_s: f64,
+}
 
 /// Translates the Lightyear-managed `ActionState<PlayerInput>` into `ActionQueue`
 /// entries each `FixedUpdate` tick. This runs during normal simulation and during
@@ -37,6 +51,8 @@ pub(crate) fn apply_predicted_input_to_action_queue(
 ) {
     for (entity, action_state, maybe_queue) in &mut query {
         if let Some(mut queue) = maybe_queue {
+            // Replace with current snapshot so we don't accumulate across ticks (same as server).
+            queue.clear();
             for action in &action_state.0.actions {
                 queue.push(*action);
             }
@@ -117,12 +133,12 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         _,
     ) in &root_world_entities
     {
-        let is_root_ship = mounted_on.is_none()
+        let is_root_entity = mounted_on.is_none()
             && hardpoint.is_none()
             && player_tag.is_none()
             && guid.is_some()
             && !has_controlled_entity_guid;
-        if entity == target_entity && is_root_ship {
+        if entity == target_entity && is_root_entity {
             target_guid = guid.map(|guid| guid.0);
             break;
         }
@@ -179,12 +195,12 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             is_suppressed,
         ) in &root_world_entities
         {
-            let is_root_ship = mounted_on.is_none()
+            let is_root_entity = mounted_on.is_none()
                 && hardpoint.is_none()
                 && player_tag.is_none()
                 && guid.is_some()
                 && !has_controlled_entity_guid;
-            if !is_root_ship || controlled.is_some() || entity == target_entity || is_suppressed {
+            if !is_root_entity || controlled.is_some() || entity == target_entity || is_suppressed {
                 continue;
             }
             if guid.is_some_and(|guid| Some(guid.0) == target_guid) {
@@ -229,12 +245,47 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         is_suppressed,
     ) in &root_world_entities
     {
-        let is_root_ship = mounted_on.is_none()
+        if entity == target_entity {
+            if is_suppressed {
+                commands.entity(entity).remove::<SuppressedPredictedDuplicateVisual>();
+            }
+            let position = position.map(|p| p.0).unwrap_or(Vec2::ZERO);
+            let rotation = rotation.copied().unwrap_or(Rotation::IDENTITY);
+            let linear_velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
+            let mut entity_commands = commands.entity(entity);
+            let has_physics_data = size_m.is_some() && total_mass_kg.is_some_and(|m| m.0 > 0.0);
+            if has_physics_data && !has_rigidbody {
+                let size = size_m.copied().unwrap();
+                let mass_kg = total_mass_kg.map(|m| m.0).unwrap();
+                entity_commands.insert((
+                    RigidBody::Dynamic,
+                    Collider::rectangle(size.width, size.length),
+                    Mass(mass_kg),
+                    angular_inertia_from_size(mass_kg, &size),
+                    LinearDamping(0.0),
+                    AngularDamping(0.0),
+                ));
+            }
+            entity_commands.insert((Position(position), rotation, LinearVelocity(linear_velocity)));
+            if !local_mode.0 {
+                entity_commands
+                    .insert(lightyear::prelude::Predicted)
+                    .remove::<lightyear::prelude::Interpolated>();
+            }
+            entity_commands.remove::<NearbyCollisionProxy>();
+            continue;
+        }
+
+        if controlled.is_some() {
+            commands.entity(entity).remove::<ControlledEntity>();
+        }
+
+        let is_root_entity = mounted_on.is_none()
             && hardpoint.is_none()
             && player_tag.is_none()
             && _guid.is_some()
             && !has_controlled_entity_guid;
-        if !is_root_ship {
+        if !is_root_entity {
             continue;
         }
         if is_suppressed {
@@ -259,54 +310,19 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             continue;
         }
 
-        if controlled.is_some() || entity == target_entity {
-            if entity == target_entity {
-                let size = size_m.copied().unwrap_or_else(default_corvette_size);
-                let mass_kg = total_mass_kg
-                    .map(|m| m.0)
-                    .filter(|m| *m > 0.0)
-                    .unwrap_or_else(default_corvette_mass_kg);
-                let position = position.map(|p| p.0).unwrap_or(Vec2::ZERO);
-                let rotation = rotation.copied().unwrap_or(Rotation::IDENTITY);
-                let linear_velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
-                let mut entity_commands = commands.entity(entity);
-
-                if !has_rigidbody {
-                    entity_commands.insert((
-                        RigidBody::Dynamic,
-                        Collider::rectangle(size.width, size.length),
-                        Mass(mass_kg),
-                        angular_inertia_from_size(mass_kg, &size),
-                        LinearDamping(0.0),
-                        AngularDamping(0.0),
-                    ));
-                }
-                entity_commands.insert((
-                    Position(position),
-                    rotation,
-                    LinearVelocity(linear_velocity),
-                ));
-            }
-            if !local_mode.0 {
-                commands
-                    .entity(entity)
-                    .insert(lightyear::prelude::Predicted)
-                    .remove::<lightyear::prelude::Interpolated>();
-            }
-            continue;
-        }
-
         let keep_nearby_proxy = nearby_proxy_entities.contains(&entity);
         if keep_nearby_proxy {
-            let size = size_m.copied().unwrap_or_else(default_corvette_size);
-            let mut entity_commands = commands.entity(entity);
-            if !has_rigidbody {
-                entity_commands.insert(RigidBody::Kinematic);
+            if let Some(size) = size_m {
+                let mut entity_commands = commands.entity(entity);
+                if !has_rigidbody {
+                    entity_commands.insert(RigidBody::Kinematic);
+                }
+                entity_commands.insert(Collider::rectangle(size.width, size.length));
+                entity_commands.insert(NearbyCollisionProxy);
+                // Kinematic collision proxy should not carry local dynamic mass/inertia writers.
+                entity_commands.remove::<(Mass, AngularInertia)>();
             }
-            entity_commands.insert(Collider::rectangle(size.width, size.length));
-            entity_commands.insert(NearbyCollisionProxy);
-            // Kinematic collision proxy should not carry local dynamic mass/inertia writers.
-            entity_commands.remove::<(Mass, AngularInertia)>();
+            // No SizeM: physics does not apply; leave entity without RigidBody/Collider.
         } else {
             // Remote/non-controlled ships must remain receive-only on client every tick.
             // Replication may re-add these components after initial adoption.
@@ -321,9 +337,7 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
                 AngularDamping,
             )>();
         }
-        commands
-            .entity(entity)
-            .remove::<(ActionQueue, FlightComputer)>();
+        commands.entity(entity).remove::<ActionQueue>();
         if !local_mode.0 {
             commands
                 .entity(entity)
@@ -405,8 +419,8 @@ pub(crate) fn audit_motion_ownership_system(
         has_linear_velocity,
     ) in &roots
     {
-        let is_root_ship = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
-        if !is_root_ship {
+        let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+        if !is_root_entity {
             continue;
         }
         let entity_name = name
@@ -515,10 +529,13 @@ pub(crate) fn enforce_controlled_planar_motion(
 
 #[allow(clippy::type_complexity)]
 pub(crate) fn reconcile_controlled_prediction_with_confirmed(
+    time: Res<'_, Time>,
+    mut log_state: Local<'_, PredictionReconcileLogState>,
     mut controlled_query: Query<
         '_,
         '_,
         (
+            Option<&EntityGuid>,
             &mut Position,
             &mut Rotation,
             Option<&mut LinearVelocity>,
@@ -537,6 +554,7 @@ pub(crate) fn reconcile_controlled_prediction_with_confirmed(
     const SMOOTH_ROT_ERROR_RAD: f32 = 0.08;
 
     for (
+        guid,
         mut position,
         mut rotation,
         mut linear_velocity,
@@ -553,37 +571,50 @@ pub(crate) fn reconcile_controlled_prediction_with_confirmed(
         let confirmed_pos = confirmed_position.0.0;
         let pos_error = confirmed_pos - position.0;
         let pos_error_len = pos_error.length();
+        let mut pos_mode = "none";
         if pos_error_len >= SNAP_POS_ERROR_M {
             position.0 = confirmed_pos;
+            pos_mode = "snap";
             if let Some(velocity) = linear_velocity.as_mut() {
                 velocity.0 = confirmed_linear_velocity.map_or(Vec2::ZERO, |v| v.0.0);
             }
         } else if pos_error_len >= SMOOTH_POS_ERROR_M {
             position.0 += pos_error * SMOOTH_FACTOR;
+            pos_mode = "smooth";
         }
 
+        let mut vel_error_len = 0.0_f32;
+        let mut vel_mode = "none";
         if let Some(velocity) = linear_velocity.as_mut()
             && let Some(confirmed_vel) = confirmed_linear_velocity
         {
             let confirmed = confirmed_vel.0.0;
             let vel_error = (confirmed - velocity.0).length();
+            vel_error_len = vel_error;
             if pos_error_len >= SNAP_POS_ERROR_M || vel_error >= 2.0 {
                 velocity.0 = confirmed;
+                vel_mode = "snap";
             } else {
                 velocity.0 = velocity.0.lerp(confirmed, 0.35);
+                vel_mode = "smooth";
             }
             if confirmed.length_squared() <= 1.0e-6 && velocity.0.length_squared() <= 1.0e-4 {
                 velocity.0 = Vec2::ZERO;
             }
         }
 
+        let mut rot_error = 0.0_f32;
+        let mut rot_mode = "none";
         if let Some(confirmed_rotation) = confirmed_rotation {
             let confirmed_rot = confirmed_rotation.0;
-            let rot_error = rotation.angle_between(confirmed_rot);
-            if rot_error >= SNAP_ROT_ERROR_RAD {
+            rot_error = rotation.angle_between(confirmed_rot);
+            let rot_error_abs = rot_error.abs();
+            if rot_error_abs >= SNAP_ROT_ERROR_RAD {
                 *rotation = confirmed_rot;
-            } else if rot_error >= SMOOTH_ROT_ERROR_RAD {
+                rot_mode = "snap";
+            } else if rot_error_abs >= SMOOTH_ROT_ERROR_RAD {
                 *rotation = rotation.slerp(confirmed_rot, SMOOTH_FACTOR);
+                rot_mode = "smooth";
             }
         }
 
@@ -592,6 +623,30 @@ pub(crate) fn reconcile_controlled_prediction_with_confirmed(
             transform.translation.y = position.0.y;
             transform.rotation = (*rotation).into();
             transform.translation.z = 0.0;
+        }
+
+        if prediction_reconcile_debug_logging_enabled() {
+            let now_s = time.elapsed_secs_f64();
+            let correction_applied = pos_mode != "none" || vel_mode != "none" || rot_mode != "none";
+            let should_log = correction_applied || now_s - log_state.last_logged_at_s >= 0.5;
+            if should_log {
+                let guid_str = guid
+                    .map(|g| g.0.to_string())
+                    .unwrap_or_else(|| "unknown-guid".to_string());
+                info!(
+                    entity_guid = %guid_str,
+                    pos_error_m = pos_error_len,
+                    rot_error_rad = rot_error,
+                    vel_error_mps = vel_error_len,
+                    pos_mode = %pos_mode,
+                    rot_mode = %rot_mode,
+                    vel_mode = %vel_mode,
+                    predicted_pos = ?position.0,
+                    confirmed_pos = ?confirmed_pos,
+                    "prediction reconcile sample"
+                );
+                log_state.last_logged_at_s = now_s;
+            }
         }
     }
 }

@@ -2,18 +2,18 @@
 
 use bevy::prelude::*;
 
+use super::assets::LocalAssetManager;
 use super::platform::STREAMED_SPRITE_PIXEL_SHADER_PATH;
-use super::resources::LocalAssetManager;
 
 const STREAMED_SHADER_PATHS: &[&str] = &[
     "data/cache_stream/shaders/starfield.wgsl",
-    "data/cache_stream/shaders/simple_space_background.wgsl",
+    "data/cache_stream/shaders/space_background.wgsl",
     STREAMED_SPRITE_PIXEL_SHADER_PATH,
 ];
 
 const LOCAL_SHADER_FALLBACK_PATHS: &[&str] = &[
     "data/shaders/starfield.wgsl",
-    "data/shaders/simple_space_background.wgsl",
+    "data/shaders/space_background.wgsl",
     "data/shaders/sprite_pixel_effect.wgsl",
 ];
 
@@ -23,6 +23,8 @@ pub fn ensure_shader_placeholders(asset_root: &str) {
 @group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
 @group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;
 @group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;
+@group(2) @binding(3) var<uniform> starfield_params: vec4<f32>;
+@group(2) @binding(4) var<uniform> starfield_tint: vec4<f32>;
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -32,11 +34,29 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     const BACKGROUND_PLACEHOLDER: &str = "\
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 @group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
-@group(2) @binding(1) var<uniform> colors: vec4<f32>;
-@group(2) @binding(2) var<uniform> motion: vec4<f32>;
+@group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;
+@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;
+@group(2) @binding(3) var<uniform> space_bg_params: vec4<f32>;
+@group(2) @binding(4) var<uniform> space_bg_tint: vec4<f32>;
+@group(2) @binding(5) var<uniform> space_bg_background: vec4<f32>;
+@group(2) @binding(6) var flare_texture: texture_2d<f32>;
+@group(2) @binding(7) var flare_sampler: sampler;
+@group(2) @binding(8) var<uniform> space_bg_flare: vec4<f32>;
+@group(2) @binding(9) var<uniform> space_bg_noise_a: vec4<f32>;
+@group(2) @binding(10) var<uniform> space_bg_noise_b: vec4<f32>;
+@group(2) @binding(11) var<uniform> space_bg_star_mask_a: vec4<f32>;
+@group(2) @binding(12) var<uniform> space_bg_star_mask_b: vec4<f32>;
+@group(2) @binding(13) var<uniform> space_bg_star_mask_c: vec4<f32>;
+@group(2) @binding(14) var<uniform> space_bg_blend_a: vec4<f32>;
+@group(2) @binding(15) var<uniform> space_bg_blend_b: vec4<f32>;
+@group(2) @binding(16) var<uniform> space_bg_nebula_color_a: vec4<f32>;
+@group(2) @binding(17) var<uniform> space_bg_nebula_color_b: vec4<f32>;
+@group(2) @binding(18) var<uniform> space_bg_nebula_color_c: vec4<f32>;
+@group(2) @binding(19) var<uniform> space_bg_flare_tint: vec4<f32>;
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(colors.r, colors.g, colors.b, 1.0);
+    let flare = textureSample(flare_texture, flare_sampler, mesh.uv).rgb * 0.05 * space_bg_flare.y;
+    return vec4<f32>(space_bg_background.rgb + flare, 1.0);
 }
 ";
 

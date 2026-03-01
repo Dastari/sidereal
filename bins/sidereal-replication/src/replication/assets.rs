@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use sidereal_asset_runtime::{
-    AssetCatalogEntry, asset_version_from_sha256_hex, default_streamable_asset_sources,
-    expand_required_assets, sha256_hex,
+    AssetCatalogEntry, asset_version_from_sha256_hex, default_asset_dependencies,
+    default_streamable_asset_sources, expand_required_assets, sha256_hex,
 };
 use sidereal_game::{
     default_corvette_asset_id, default_space_background_shader_asset_id,
@@ -22,9 +22,45 @@ use sidereal_net::{
     ControlChannel,
 };
 
-use crate::{
-    AssetDependencyMap, AssetStreamServerState, AuthenticatedClientBindings, PendingAssetChunk,
-};
+use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::lifecycle::ClientLastActivity;
+
+/// Chunk queued for paced sending to avoid UDP send-buffer overflow (EAGAIN).
+pub(crate) struct PendingAssetChunk {
+    pub(crate) asset_id: String,
+    pub(crate) relative_cache_path: String,
+    pub(crate) chunk_index: u32,
+    pub(crate) chunk_count: u32,
+    pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct AssetStreamServerState {
+    pub(crate) sent_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
+    pub(crate) pending_requested_asset_ids_by_remote:
+        HashMap<lightyear::prelude::PeerId, HashSet<String>>,
+    pub(crate) acked_assets_by_remote: HashMap<lightyear::prelude::PeerId, HashMap<String, u64>>,
+    /// Chunks to send per remote; drained at a fixed rate per frame to avoid EAGAIN.
+    pub(crate) pending_chunks_by_remote:
+        HashMap<lightyear::prelude::PeerId, std::collections::VecDeque<PendingAssetChunk>>,
+    /// Consecutive chunk send failures per remote for backoff/drop behavior.
+    pub(crate) chunk_send_failures_by_remote: HashMap<lightyear::prelude::PeerId, u32>,
+    /// Remaining FixedUpdate ticks to skip chunk sends per remote after a send error.
+    pub(crate) chunk_send_backoff_frames_by_remote: HashMap<lightyear::prelude::PeerId, u16>,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct AssetDependencyMap {
+    pub(crate) dependencies_by_asset_id: HashMap<String, Vec<String>>,
+}
+
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(AssetStreamServerState::default());
+    app.insert_resource(StreamableAssetCache::default());
+    app.insert_resource(AssetDependencyMap {
+        dependencies_by_asset_id: default_asset_dependencies(),
+    });
+}
 
 const ASSET_STREAM_CHUNK_BYTES: usize = 1024;
 /// Max asset stream chunks sent per remote per frame to avoid UDP send buffer overflow (EAGAIN).
@@ -126,7 +162,7 @@ pub fn initialize_asset_stream_cache(
 
 pub fn receive_client_asset_requests(
     time: Res<'_, Time<Real>>,
-    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
+    mut last_activity: ResMut<'_, ClientLastActivity>,
     mut receivers: Query<
         '_,
         '_,
@@ -168,7 +204,7 @@ pub fn receive_client_asset_requests(
 
 pub fn receive_client_asset_acks(
     time: Res<'_, Time<Real>>,
-    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
+    mut last_activity: ResMut<'_, ClientLastActivity>,
     mut receivers: Query<
         '_,
         '_,

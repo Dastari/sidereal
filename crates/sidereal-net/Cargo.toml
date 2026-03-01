@@ -10,16 +10,19 @@ default = []
 lightyear_protocol = [
     "dep:avian2d",
     "dep:bevy",
+    "dep:inventory",
     "dep:lightyear",
     "dep:serde",
     "dep:serde_json",
     "dep:sidereal-game",
+    "sidereal-game/lightyear",
     "dep:sidereal-asset-runtime",
 ]
 
 [dependencies]
 avian2d = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
+inventory = { workspace = true, optional = true }
 lightyear = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

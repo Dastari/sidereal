@@ -28,6 +28,9 @@ interface EntityTreeProps {
   onDelete: (entityId: string) => Promise<void>
 }
 
+const ENTITY_ROOT_GROUP_KEY = '__entity_root__'
+const DEFAULT_GROUP_KEY = 'Entity'
+
 const kindIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   ship: Rocket,
   station: Hexagon,
@@ -43,6 +46,24 @@ function getKindIcon(kind: string) {
   return Sparkles
 }
 
+function normalizeGroupLabel(groupKey: string): string {
+  if (groupKey.toLowerCase() === 'module') return 'Modules'
+  return groupKey
+}
+
+function getLabelGroupKey(entity: WorldEntity): string | null {
+  const labels =
+    entity.entity_labels ??
+    // Backward compatibility while older snapshots still use sidereal_labels.
+    (entity as WorldEntity & { sidereal_labels?: Array<string> })
+      .sidereal_labels ??
+    undefined
+  if (!labels || labels.length === 0) return null
+
+  const nonEntity = labels.find((label) => label.toLowerCase() !== 'entity')
+  return nonEntity ?? null
+}
+
 function EntityTree({
   entities,
   selectedId,
@@ -55,30 +76,80 @@ function EntityTree({
   )
   const [openNodes, setOpenNodes] = React.useState<Record<string, boolean>>({})
 
-  const { rootsByKind, childrenByParent } = React.useMemo(() => {
+  const { rootsByGroupKey, childrenByParent, useEntityRoot } =
+    React.useMemo(() => {
     const byId = new Map<string, WorldEntity>()
     for (const entity of entities) {
       byId.set(entity.id, entity)
     }
 
+    const useBrpNamePrefixGrouping =
+      sourceMode === 'liveServer' ||
+      sourceMode === 'liveClient' ||
+      sourceMode === 'liveHostClient'
+    // BRP: parentEntityId is often a UUID while entity id is Bevy numeric; index by name suffix (e.g. "ship:uuid" -> uuid) so we can resolve parent
+    const byNameSuffix = new Map<string, WorldEntity>()
+    if (useBrpNamePrefixGrouping) {
+      for (const entity of entities) {
+        const colonIndex = entity.name.indexOf(':')
+        if (colonIndex >= 0) {
+          const suffix = entity.name.slice(colonIndex + 1).trim()
+          if (suffix && !byNameSuffix.has(suffix)) {
+            byNameSuffix.set(suffix, entity)
+          }
+        }
+      }
+    }
+
+    function resolveParent(parentId: string): WorldEntity | null {
+      const byIdParent = byId.get(parentId)
+      if (byIdParent) return byIdParent
+      return byNameSuffix.get(parentId) ?? null
+    }
+
     const children = new Map<string, Array<WorldEntity>>()
     const roots = new Map<string, Array<WorldEntity>>()
 
+    const hasLabelGrouping = entities.some(
+      (e) =>
+        (e.entity_labels && e.entity_labels.length >= 2) ||
+        ((e as WorldEntity & { sidereal_labels?: Array<string> })
+          .sidereal_labels?.length ?? 0) >= 2,
+    )
+    const useDatabaseLabelGrouping =
+      sourceMode === 'database' && hasLabelGrouping
+
+    function getGroupKey(entity: WorldEntity): string {
+      const labelKey = getLabelGroupKey(entity)
+      if (labelKey) {
+        return labelKey
+      }
+      if (useBrpNamePrefixGrouping) {
+        const colonIndex = entity.name.indexOf(':')
+        return colonIndex >= 0
+          ? entity.name.slice(0, colonIndex).trim() || DEFAULT_GROUP_KEY
+          : (entity.kind ?? DEFAULT_GROUP_KEY)
+      }
+      return entity.kind || DEFAULT_GROUP_KEY
+    }
+
     for (const entity of entities) {
       const parentId = entity.parentEntityId
-      if (parentId && byId.has(parentId)) {
-        const list = children.get(parentId)
+      const parent = parentId ? resolveParent(parentId) : null
+      if (parent) {
+        const list = children.get(parent.id)
         if (list) {
           list.push(entity)
         } else {
-          children.set(parentId, [entity])
+          children.set(parent.id, [entity])
         }
       } else {
-        const list = roots.get(entity.kind)
+        const groupKey = getGroupKey(entity)
+        const list = roots.get(groupKey)
         if (list) {
           list.push(entity)
         } else {
-          roots.set(entity.kind, [entity])
+          roots.set(groupKey, [entity])
         }
       }
     }
@@ -90,14 +161,21 @@ function EntityTree({
       list.sort((a, b) => a.name.localeCompare(b.name))
     }
 
-    return { rootsByKind: roots, childrenByParent: children }
-  }, [entities])
+    return {
+      rootsByGroupKey: roots,
+      childrenByParent: children,
+      useEntityRoot:
+        useDatabaseLabelGrouping ||
+        useBrpNamePrefixGrouping ||
+        hasLabelGrouping,
+    }
+  }, [entities, sourceMode])
 
   const sortedGroups = React.useMemo(() => {
-    return Array.from(rootsByKind.entries()).sort(([a], [b]) =>
-      a.localeCompare(b),
-    )
-  }, [rootsByKind])
+    return Array.from(rootsByGroupKey.entries())
+      .filter(([key]) => key !== ENTITY_ROOT_GROUP_KEY)
+      .sort(([a], [b]) => a.localeCompare(b))
+  }, [rootsByGroupKey])
 
   const isGroupOpen = React.useCallback(
     (kind: string) => openGroups[kind] ?? true,
@@ -117,25 +195,56 @@ function EntityTree({
     setOpenNodes((prev) => ({ ...prev, [entityId]: !(prev[entityId] ?? true) }))
   }, [])
 
+  const groupContent = (
+    <>
+      {sortedGroups.map(([groupKey, items]) => (
+        <EntityGroup
+          key={groupKey}
+          kind={groupKey}
+          entities={items}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          sourceMode={sourceMode}
+          onDelete={onDelete}
+          childrenByParent={childrenByParent}
+          isOpen={isGroupOpen(groupKey)}
+          onToggleOpen={() => toggleGroup(groupKey)}
+          isNodeOpen={isNodeOpen}
+          onToggleNode={toggleNode}
+        />
+      ))}
+    </>
+  )
+
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-1">
-        {sortedGroups.map(([kind, items]) => (
-          <EntityGroup
-            key={kind}
-            kind={kind}
-            entities={items}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            sourceMode={sourceMode}
-            onDelete={onDelete}
-            childrenByParent={childrenByParent}
-            isOpen={isGroupOpen(kind)}
-            onToggleOpen={() => toggleGroup(kind)}
-            isNodeOpen={isNodeOpen}
-            onToggleNode={toggleNode}
-          />
-        ))}
+        {useEntityRoot ? (
+          <Collapsible
+            open={isGroupOpen(ENTITY_ROOT_GROUP_KEY)}
+            onOpenChange={() => toggleGroup(ENTITY_ROOT_GROUP_KEY)}
+          >
+            <CollapsibleTrigger className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-secondary/50 text-sm font-medium text-foreground/90 transition-colors">
+              {isGroupOpen(ENTITY_ROOT_GROUP_KEY) ? (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              )}
+              <Sparkles className="h-4 w-4 text-primary" />
+              <span>Entity</span>
+              <span className="ml-auto text-xs text-muted-foreground">
+                {entities.length}
+              </span>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="ml-4 pl-2 border-l border-border-subtle space-y-1 mt-1">
+                {groupContent}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        ) : (
+          groupContent
+        )}
         {entities.length === 0 && (
           <div className="text-sm text-muted-foreground text-center py-8">
             No entities loaded
@@ -187,7 +296,7 @@ function EntityGroup({
           <ChevronRight className="h-4 w-4 text-muted-foreground" />
         )}
         <Icon className="h-4 w-4 text-primary" />
-        <span className="capitalize">{kind}</span>
+        <span className="capitalize">{normalizeGroupLabel(kind)}</span>
         <span className="ml-auto text-xs text-muted-foreground">
           {entities.length}
         </span>
@@ -289,12 +398,15 @@ function EntityTreeNode({
         >
           <Icon className="h-3.5 w-3.5 shrink-0 text-primary/80" />
           <span className="truncate flex-1">{entity.name}</span>
-          <span className="text-xs text-muted-foreground font-mono shrink-0">
-            {entity.componentCount}c
+          <span
+            className="max-w-[14ch] truncate text-xs text-muted-foreground font-mono shrink-0"
+            title={entity.entityGuid ?? undefined}
+          >
+            {entity.entityGuid ?? entity.componentCount}
           </span>
         </button>
 
-        {sourceMode !== 'liveClient' && (
+        {sourceMode !== 'liveClient' && sourceMode !== 'liveHostClient' && (
           <button
             onClick={handleDeleteClick}
             disabled={isDeleting}

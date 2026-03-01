@@ -121,6 +121,36 @@ Any entity with:
 - `MountedOn.parent_entity_id` is canonical across boundaries.
 - Bevy hierarchy is rebuilt from persisted relationships on hydration.
 
+### 4.5 Possible Future Gameplay Systems (Planning)
+
+The following are non-exhaustive candidate systems for future phases.  
+These are directional planning notes and do not override phase gating or enforceable rules.
+
+- **Control and intent**
+  - control handoff validation/ack flow,
+  - intent queue conflict resolution and stale-intent pruning,
+  - capability-based action rejection with explicit reasons.
+- **Flight and propulsion**
+  - fuel request/allocation policy across multiple tanks,
+  - engine degradation/failure effects,
+  - collision-aware correction tuning for predicted controlled entities.
+- **Hierarchy and modular runtime**
+  - parent-link and hardpoint occupancy validation,
+  - module attach/detach transitions with deterministic hierarchy rebuild,
+  - module disable/destroy propagation into parent capabilities.
+- **Combat and survivability**
+  - weapon fire intent -> projectile spawn/authority routing,
+  - hit resolution and damage pipeline (shield/armor/hull),
+  - destroy/disable lifecycle state transitions.
+- **Sensors and visibility**
+  - scanner contribution aggregation and dynamic range buffs,
+  - faction/public visibility policy expansion and redaction,
+  - delivery-scope throttling under load.
+- **Economy/inventory progression**
+  - inventory transfer validation and ownership checks,
+  - cargo mass coupling to runtime physics updates,
+  - persistent progression mutations on player-scoped entities.
+
 ## 5. Simulation, Tick, and Prediction
 
 ### 5.1 Timing Contract

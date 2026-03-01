@@ -6,11 +6,16 @@ import type {
   GraphNode,
   WorldEntity,
 } from '@/components/grid/types'
+import type { DataSourceMode } from '@/components/sidebar/Toolbar'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  ComponentEditorRenderer,
+  isEditableComponent,
+} from '@/components/brp-editors'
 
 interface DetailPanelProps {
   selectedId: string | null
@@ -21,6 +26,14 @@ interface DetailPanelProps {
   onSelect: (id: string) => void
   onExpand: (id: string) => void
   onCollapse: (id: string) => void
+  /** When set, BRP editable component editors are shown and updates are allowed. */
+  sourceMode?: DataSourceMode
+  /** Called after a component value is updated (BRP only). Caller should refresh data. */
+  onComponentUpdate?: (
+    entityId: string,
+    typePath: string,
+    value: unknown,
+  ) => void
 }
 
 export function DetailPanel({
@@ -32,6 +45,8 @@ export function DetailPanel({
   onSelect,
   onExpand,
   onCollapse,
+  sourceMode,
+  onComponentUpdate,
 }: DetailPanelProps) {
   if (!selectedId) {
     return (
@@ -132,8 +147,16 @@ export function DetailPanel({
                     value={worldEntity.y.toFixed(2)}
                     unit="m"
                   />
-                  <PropertyRow label="VX" value={worldEntity.vx.toFixed(2)} unit="m/s" />
-                  <PropertyRow label="VY" value={worldEntity.vy.toFixed(2)} unit="m/s" />
+                  <PropertyRow
+                    label="VX"
+                    value={worldEntity.vx.toFixed(2)}
+                    unit="m/s"
+                  />
+                  <PropertyRow
+                    label="VY"
+                    value={worldEntity.vy.toFixed(2)}
+                    unit="m/s"
+                  />
                 </PropertySection>
               )}
 
@@ -187,6 +210,8 @@ export function DetailPanel({
                 entityId={selectedId}
                 graphNodes={graphNodes}
                 graphEdges={graphEdges}
+                sourceMode={sourceMode}
+                onComponentUpdate={onComponentUpdate}
               />
             </div>
           </ScrollArea>
@@ -259,12 +284,20 @@ interface ComponentsListProps {
   entityId: string
   graphNodes: Map<string, GraphNode>
   graphEdges: Array<GraphEdge>
+  sourceMode?: DataSourceMode
+  onComponentUpdate?: (
+    entityId: string,
+    typePath: string,
+    value: unknown,
+  ) => void
 }
 
 function ComponentsList({
   entityId,
   graphNodes,
   graphEdges,
+  sourceMode,
+  onComponentUpdate,
 }: ComponentsListProps) {
   const [expandedComponents, setExpandedComponents] = React.useState<
     Set<string>
@@ -354,67 +387,88 @@ function ComponentsList({
   }
 
   return (
-    <div className="space-y-1">
-      {components.map(({ id, node }) => {
-        const isExpanded = expandedComponents.has(id)
-        const hasProperties = Object.keys(node.properties).length > 0
-        const previewValue = hasProperties
-          ? getPreviewValue(node.properties)
-          : ''
+    <div className="space-y-1 flex flex-col">
+      {components
+        .sort((a, b) => a.node.label.localeCompare(b.node.label))
+        .map(({ id, node }) => {
+          const isExpanded = expandedComponents.has(id)
+          const hasProperties = Object.keys(node.properties).length > 0
+          const previewValue = hasProperties
+            ? getPreviewValue(node.properties)
+            : ''
 
-        return (
-          <div
-            key={id}
-            className="border border-border rounded-md overflow-hidden"
-          >
-            <button
-              onClick={() => {
-                if (hasProperties) {
-                  toggleComponent(id)
-                }
-              }}
-              className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left"
+          return (
+            <div
+              key={id}
+              className="border border-border rounded-md overflow-hidden"
             >
-              <span className="flex-1 text-sm font-medium min-w-0 flex items-baseline gap-2">
-                <span className="flex-none">{node.label}</span>
-                {previewValue && (
-                  <span className="text-muted-foreground font-normal font-mono text-xs truncate">
-                    {previewValue}
-                  </span>
-                )}
-              </span>
-              {hasProperties && (
-                <ChevronRight
-                  className={cn(
-                    'h-4 w-4 text-muted-foreground transition-transform flex-none',
-                    isExpanded && 'rotate-90',
-                  )}
-                />
-              )}
-            </button>
-
-            {isExpanded && hasProperties && (
-              <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-1">
-                {Object.entries(node.properties).map(([key, value]) => (
-                  <div
-                    key={key}
-                    className="flex items-start gap-2 py-0.5 min-w-0"
-                  >
-                    <span className="text-xs text-muted-foreground truncate shrink-0">
-                      {key}
+              <button
+                onClick={() => {
+                  if (hasProperties) {
+                    toggleComponent(id)
+                  }
+                }}
+                className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left"
+              >
+                <span className="flex-1 text-sm font-medium min-w-0 flex items-baseline gap-2 w-0">
+                  <span className="flex-none">{node.label}</span>
+                  {previewValue && (
+                    <span className="text-muted-foreground font-normal font-mono text-xs truncate">
+                      {previewValue}
                     </span>
-                    <ValueField
-                      value={formatDisplayValue(value)}
-                      mono
-                      className="text-xs text-foreground/90"
-                    />
+                  )}
+                </span>
+                {hasProperties && (
+                  <ChevronRight
+                    className={cn(
+                      'h-4 w-4 text-muted-foreground transition-transform flex-none',
+                      isExpanded && 'rotate-90',
+                    )}
+                  />
+                )}
+              </button>
+
+              {isExpanded && hasProperties && (
+                <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-3 flex flex-col ">
+                  <div className="space-y-1 flex flex-row">
+                    <div className="space-y-1 flex flex-col grow">
+                      {Object.entries(node.properties).map(([key, value]) => (
+                        <div
+                          key={key}
+                          className="flex items-start gap-2 py-0.5 min-w-0 w-full"
+                        >
+                          <span className="text-xs text-muted-foreground truncate shrink-0">
+                            {key}
+                          </span>
+                          <ValueField
+                            value={formatDisplayValue(value)}
+                            mono
+                            className="text-xs text-foreground/90 grow"
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )
-      })}
+                  {isEditableComponent(node) && (
+                    <div className="space-y-1 grow">
+                      <ComponentEditorRenderer
+                        componentNodeId={id}
+                        entityId={entityId}
+                        node={node}
+                        onUpdate={(typePath, value) => {
+                          onComponentUpdate?.(entityId, typePath, value)
+                        }}
+                        readOnly={
+                          sourceMode === 'database' || !onComponentUpdate
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
     </div>
   )
 }
@@ -440,14 +494,14 @@ function formatValueCompact(value: unknown): string {
     if (Number.isInteger(value)) return String(value)
     return value.toFixed(2)
   }
-  if (typeof value === 'string') {
-    if (value.length > 30) return value.substring(0, 27) + '...'
-    return value
-  }
+  // if (typeof value === 'string') {
+  //   if (value.length > 60) return value.substring(0, 27) + '...'
+  //   return value
+  // }
   if (typeof value === 'boolean') return value ? 'true' : 'false'
   if (typeof value === 'object') {
     const str = JSON.stringify(value)
-    if (str.length > 40) return str.substring(0, 37) + '...'
+    // if (str.length > 40) return str.substring(0, 37) + '...'
     return str
   }
   return String(value)
@@ -458,13 +512,27 @@ type FormattedValue = {
   isStructured: boolean
 }
 
+function rightIndentStructuredText(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => {
+      const leading = line.match(/^\s+/)?.[0] ?? ''
+      if (!leading) return line
+      return `${line.trimStart()}${leading}`
+    })
+    .join('\n')
+}
+
 function formatDisplayValue(value: unknown): FormattedValue {
   if (value === null || value === undefined) {
     return { text: 'null', isStructured: false }
   }
 
   if (typeof value === 'object') {
-    return { text: JSON.stringify(value, null, 2), isStructured: true }
+    return {
+      text: rightIndentStructuredText(JSON.stringify(value, null, 2)),
+      isStructured: true,
+    }
   }
 
   if (typeof value === 'string') {
@@ -476,7 +544,10 @@ function formatDisplayValue(value: unknown): FormattedValue {
       try {
         const parsed = JSON.parse(trimmed) as unknown
         if (parsed && typeof parsed === 'object') {
-          return { text: JSON.stringify(parsed, null, 2), isStructured: true }
+          return {
+            text: rightIndentStructuredText(JSON.stringify(parsed, null, 2)),
+            isStructured: true,
+          }
         }
       } catch {
         // Treat as plain string when JSON parsing fails.
@@ -503,7 +574,7 @@ function ValueField({
     return (
       <pre
         className={cn(
-          'min-w-0 flex-1 overflow-hidden whitespace-pre-wrap break-words text-left text-sm text-foreground',
+          'min-w-0 flex-1 overflow-hidden whitespace-pre-wrap wrap-break-word text-right text-sm text-foreground',
           mono && 'font-mono text-xs',
           className,
         )}
@@ -662,21 +733,23 @@ function ChildEntitiesList({
 
             {isExpanded && components.length > 0 && (
               <div className="border-t border-border bg-secondary/20">
-                {components.map(({ id, node }) => (
-                  <button
-                    key={id}
-                    onClick={() => onSelect(id)}
-                    className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left border-b border-border/50 last:border-0"
-                  >
-                    <Box className="h-3.5 w-3.5 text-warning flex-none ml-4" />
-                    <span className="text-xs font-medium truncate flex-1">
-                      {node.label}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {Object.keys(node.properties).length} props
-                    </span>
-                  </button>
-                ))}
+                {components
+                  .sort((a, b) => a.node.label.localeCompare(b.node.label))
+                  .map(({ id, node }) => (
+                    <button
+                      key={id}
+                      onClick={() => onSelect(id)}
+                      className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left border-b border-border/50 last:border-0"
+                    >
+                      <Box className="h-3.5 w-3.5 text-warning flex-none ml-4" />
+                      <span className="text-xs font-medium truncate flex-1">
+                        {node.label}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {Object.keys(node.properties).length} props
+                      </span>
+                    </button>
+                  ))}
               </div>
             )}
           </div>

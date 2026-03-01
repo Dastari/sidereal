@@ -50,9 +50,8 @@ impl RemoteInspectConfig {
         if !self.enabled {
             return Ok(());
         }
-        if !self.bind_addr.is_loopback() {
-            return Err("BRP day-0 scaffold only allows loopback bind address".into());
-        }
+        // Bind may be 0.0.0.0 (all interfaces) or a specific IP (e.g. WSL bridge) for dashboard/remote access.
+        // Security is enforced by auth_token requirement; see AGENTS.md bevy_remote guidance.
         match self.auth_token.as_ref() {
             Some(token) if token.len() >= 16 => Ok(()),
             Some(_) => {

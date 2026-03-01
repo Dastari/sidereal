@@ -11,7 +11,11 @@ export interface WorldEntity {
   name: string
   kind: string
   parentEntityId?: string
+  /** Labels from graph (e.g. ["Entity", "Ship"]); second value used for tree grouping. */
+  entity_labels?: string[]
   mapVisible?: boolean
+  /** True when source data provided an explicit world position. */
+  hasPosition?: boolean
   shardId: number
   x: number
   y: number
@@ -19,6 +23,8 @@ export interface WorldEntity {
   vy: number
   sampledAtMs: number
   componentCount: number
+  /** When present, from EntityGuid component; shown in tree instead of component count when available. */
+  entityGuid?: string
 }
 
 export interface GraphNode {

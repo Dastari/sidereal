@@ -1,5 +1,5 @@
 use crate::auth::{
-    AuthConfig, AuthError, AuthService, AuthTokens, InMemoryAuthStore, NoopBootstrapDispatcher,
+    AuthConfig, AuthError, AuthService, InMemoryAuthStore, NoopBootstrapDispatcher,
     NoopStarterWorldPersister,
 };
 use axum::extract::Path;
@@ -10,8 +10,12 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
-use sidereal_persistence::GraphPersistence;
+use serde::Serialize;
+use sidereal_core::gateway_dtos::{
+    AuthTokens, CharacterSummary, CharactersResponse, EnterWorldRequest, EnterWorldResponse,
+    LoginRequest, MeResponse, PasswordResetConfirmRequest, PasswordResetConfirmResponse,
+    PasswordResetRequest, PasswordResetResponse, RefreshRequest, RegisterRequest,
+};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
@@ -40,101 +44,12 @@ pub fn app_with_service(service: SharedAuthService) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/characters", get(characters))
         .route("/world/enter", post(enter_world))
-        .route("/world/me", get(world_me))
         .route("/assets/stream/{asset_id}", get(stream_asset))
         .with_state(service)
 }
 
 async fn health() -> StatusCode {
     StatusCode::OK
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RegisterRequest {
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LoginRequest {
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RefreshRequest {
-    pub refresh_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PasswordResetRequest {
-    pub email: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PasswordResetConfirmRequest {
-    pub reset_token: String,
-    pub new_password: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PasswordResetRequestResponse {
-    pub accepted: bool,
-    pub reset_token: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PasswordResetConfirmResponse {
-    pub accepted: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct MeResponse {
-    pub account_id: String,
-    pub email: String,
-    pub player_entity_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CharacterSummary {
-    pub player_entity_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CharactersResponse {
-    pub characters: Vec<CharacterSummary>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct EnterWorldRequest {
-    pub player_entity_id: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EnterWorldResponse {
-    pub accepted: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamAssetDescriptor {
-    pub asset_id: String,
-    pub relative_cache_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorldMeResponse {
-    pub player_entity_id: String,
-    pub ship_entity_id: String,
-    pub ship_name: String,
-    pub position_m: [f32; 3],
-    pub velocity_mps: [f32; 3],
-    pub heading_rad: f32,
-    pub health: f32,
-    pub max_health: f32,
-    pub engine_max_accel_mps2: f32,
-    pub engine_ramp_to_max_s: f32,
-    pub model_asset_id: String,
-    pub assets: Vec<StreamAssetDescriptor>,
 }
 
 async fn register(
@@ -166,9 +81,9 @@ async fn refresh(
 async fn password_reset_request(
     State(service): State<SharedAuthService>,
     Json(req): Json<PasswordResetRequest>,
-) -> Result<Json<PasswordResetRequestResponse>, ApiError> {
+) -> Result<Json<PasswordResetResponse>, ApiError> {
     let result = service.password_reset_request(&req.email).await?;
-    Ok(Json(PasswordResetRequestResponse {
+    Ok(Json(PasswordResetResponse {
         accepted: result.accepted,
         reset_token: result.reset_token,
     }))
@@ -228,117 +143,6 @@ async fn enter_world(
         .enter_world(access_token, &req.player_entity_id)
         .await?;
     Ok(Json(EnterWorldResponse { accepted: true }))
-}
-
-async fn world_me(
-    State(service): State<SharedAuthService>,
-    headers: HeaderMap,
-) -> Result<Json<WorldMeResponse>, ApiError> {
-    let access_token = extract_bearer_token(&headers)?;
-    let me = service.me(access_token).await?;
-    let player_entity_id = me.player_entity_id.clone();
-    let account_id = me.account_id;
-    let account_id_s = account_id.to_string();
-    let database_url = gateway_database_url();
-
-    let world = tokio::task::spawn_blocking(move || {
-        let mut persistence = GraphPersistence::connect(&database_url)
-            .map_err(|err| AuthError::Internal(format!("persistence connect failed: {err}")))?;
-        persistence.ensure_schema().map_err(|err| {
-            AuthError::Internal(format!("persistence ensure schema failed: {err}"))
-        })?;
-        let records = persistence
-            .load_graph_records()
-            .map_err(|err| AuthError::Internal(format!("load graph records failed: {err}")))?;
-        let ship = records
-            .iter()
-            .find(|record| {
-                record.labels.iter().any(|label| label == "Ship")
-                    && record
-                        .properties
-                        .get("owner_account_id")
-                        .and_then(|v| v.as_str())
-                        == Some(account_id_s.as_str())
-            })
-            .ok_or_else(|| {
-                AuthError::Unauthorized("no starter ship found for account".to_string())
-            })?
-            .clone();
-        Ok::<_, AuthError>((player_entity_id, ship))
-    })
-    .await
-    .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))??;
-
-    let (player_entity_id, ship) = world;
-    let position_m = parse_vec3_property(&ship.properties, "position_m");
-    let velocity_mps = parse_vec3_property(&ship.properties, "velocity_mps");
-    let model_asset_id = ship
-        .properties
-        .get("asset_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("corvette_01")
-        .to_string();
-    let engine_max_accel_mps2 = ship
-        .properties
-        .get("engine_max_accel_mps2")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(80.0) as f32;
-    let engine_ramp_to_max_s = ship
-        .properties
-        .get("engine_ramp_to_max_s")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(5.0) as f32;
-
-    let assets = vec![
-        StreamAssetDescriptor {
-            asset_id: "corvette_01".to_string(),
-            relative_cache_path: "sprites/ships/corvette.png".to_string(),
-        },
-        StreamAssetDescriptor {
-            asset_id: "starfield_wgsl".to_string(),
-            relative_cache_path: "shaders/starfield.wgsl".to_string(),
-        },
-        StreamAssetDescriptor {
-            asset_id: "space_background_wgsl".to_string(),
-            relative_cache_path: "shaders/simple_space_background.wgsl".to_string(),
-        },
-        StreamAssetDescriptor {
-            asset_id: "sprite_pixel_effect_wgsl".to_string(),
-            relative_cache_path: "shaders/sprite_pixel_effect.wgsl".to_string(),
-        },
-    ];
-
-    Ok(Json(WorldMeResponse {
-        player_entity_id,
-        ship_entity_id: ship.entity_id,
-        ship_name: ship
-            .properties
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Corvette")
-            .to_string(),
-        position_m,
-        velocity_mps,
-        heading_rad: ship
-            .properties
-            .get("heading_rad")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32,
-        health: ship
-            .properties
-            .get("health")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(100.0) as f32,
-        max_health: ship
-            .properties
-            .get("max_health")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(100.0) as f32,
-        engine_max_accel_mps2,
-        engine_ramp_to_max_s,
-        model_asset_id,
-        assets,
-    }))
 }
 
 async fn stream_asset(
@@ -455,11 +259,6 @@ pub fn parse_vec3_property(props: &serde_json::Value, key: &str) -> [f32; 3] {
     ]
 }
 
-fn gateway_database_url() -> String {
-    std::env::var("GATEWAY_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string())
-}
-
 fn asset_root_dir() -> PathBuf {
     PathBuf::from(std::env::var("ASSET_ROOT").unwrap_or_else(|_| "./data".to_string()))
 }
@@ -473,7 +272,7 @@ pub fn resolve_asset_stream_path(asset_id: &str) -> Option<(&'static FsPath, &'s
             "text/plain; charset=utf-8",
         )),
         "space_background_wgsl" => Some((
-            FsPath::new("shaders/simple_space_background.wgsl"),
+            FsPath::new("shaders/space_background.wgsl"),
             "text/plain; charset=utf-8",
         )),
         "sprite_pixel_effect_wgsl" => Some((

@@ -15,6 +15,13 @@ pub struct ServerSessionReadyMessage {
     pub player_entity_id: String,
 }
 
+/// Server denies a replication session for the selected player.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerSessionDeniedMessage {
+    pub player_entity_id: String,
+    pub reason: String,
+}
+
 /// Client notifies server that it is disconnecting (logout or window close).
 /// Server should Unlink the client immediately so it stops sending.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

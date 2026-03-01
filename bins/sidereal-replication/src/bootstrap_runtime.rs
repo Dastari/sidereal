@@ -1,18 +1,21 @@
+//! Runtime bootstrap bridge.
+//!
+//! This module is binary-only Bevy integration that receives bootstrap UDP
+//! messages and forwards entity-binding commands into the replication world.
+
 use bevy::log::info;
 use bevy::prelude::{Commands, Resource};
-use sidereal_game::corvette_random_spawn_position;
 use sidereal_replication::bootstrap::{BootstrapProcessor, PostgresBootstrapStore};
 use std::net::UdpSocket;
 use std::sync::{Mutex, mpsc};
 use std::thread;
 
-/// Channel for bootstrap thread to request ship spawning in the Bevy world.
+/// Channel for bootstrap thread to request entity binding in the Bevy world.
 #[derive(Resource)]
-pub struct BootstrapShipReceiver(pub Mutex<mpsc::Receiver<BootstrapShipCommand>>);
+pub struct BootstrapEntityReceiver(pub Mutex<mpsc::Receiver<BootstrapEntityCommand>>);
 
 #[derive(Debug, Clone)]
-pub struct BootstrapShipCommand {
-    pub account_id: uuid::Uuid,
+pub struct BootstrapEntityCommand {
     pub player_entity_id: String,
 }
 
@@ -44,8 +47,8 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
         }
     };
 
-    let (tx, rx) = mpsc::channel::<BootstrapShipCommand>();
-    commands.insert_resource(BootstrapShipReceiver(Mutex::new(rx)));
+    let (tx, rx) = mpsc::channel::<BootstrapEntityCommand>();
+    commands.insert_resource(BootstrapEntityReceiver(Mutex::new(rx)));
 
     info!("replication control UDP listening on {}", bind_addr);
     thread::spawn(move || {
@@ -65,8 +68,7 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
                         "replication bootstrap processed from {from}: account_id={}, player_entity_id={}, applied={}",
                         result.account_id, result.player_entity_id, result.applied
                     );
-                    let _ = tx.send(BootstrapShipCommand {
-                        account_id: result.account_id,
+                    let _ = tx.send(BootstrapEntityCommand {
                         player_entity_id: result.player_entity_id,
                     });
                 }
@@ -78,9 +80,9 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
     });
 }
 
-pub fn drain_bootstrap_ship_commands(
-    receiver: &BootstrapShipReceiver,
-) -> Vec<BootstrapShipCommand> {
+pub fn drain_bootstrap_entity_commands(
+    receiver: &BootstrapEntityReceiver,
+) -> Vec<BootstrapEntityCommand> {
     let Ok(rx) = receiver.0.lock() else {
         return Vec::new();
     };
@@ -89,8 +91,4 @@ pub fn drain_bootstrap_ship_commands(
         out.push(cmd);
     }
     out
-}
-
-pub fn starter_spawn_position(account_id: uuid::Uuid) -> bevy::prelude::Vec3 {
-    corvette_random_spawn_position(account_id)
 }

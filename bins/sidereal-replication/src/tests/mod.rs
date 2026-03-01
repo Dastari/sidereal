@@ -1,15 +1,15 @@
-//! Tests for the replication binary (remote inspect, auth, view, input, visibility).
+//! Tests for the replication binary (remote inspect, auth, control, input, visibility).
 
 mod auth;
+mod control;
 mod input;
-mod view;
 mod visibility;
 
 use bevy::prelude::*;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use std::net::{IpAddr, Ipv4Addr};
 
-use crate::BrpAuthToken;
+use crate::replication::lifecycle::BrpAuthToken;
 use crate::replication::lifecycle::configure_remote;
 
 #[test]

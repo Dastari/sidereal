@@ -9,9 +9,9 @@ use uuid::Uuid;
 
 use crate::{
     BaseMassKg, CargoMassKg, CollisionAabbM, DisplayName, Engine, EntityGuid, FlightComputer,
-    FlightTuning, FuelTank, Hardpoint, HealthPool, Inventory, MassDirty, MassKg, MaxVelocityMps,
-    ModuleMassKg, MountedOn, OwnerId, ShardAssignment, ShipTag, SizeM, SpriteShaderAssetId,
-    TotalMassKg, VisualAssetId,
+    FlightTuning, FuelTank, HealthPool, Inventory, MassDirty, MassKg, MaxVelocityMps, ModuleMassKg,
+    MountedOn, OwnerId, ParentGuid, ShardAssignment, ShipTag, SizeM, SpriteShaderAssetId,
+    TotalMassKg, VisualAssetId, default_corvette_hardpoint_specs,
 };
 
 // -----------------------------------------------------------------------------
@@ -35,14 +35,15 @@ pub fn default_corvette_mass_kg() -> f32 {
 pub fn default_corvette_size() -> SizeM {
     SizeM {
         length: 25.0,
-        width: 12.0,
+        width: 25.0,
         height: 8.0,
     }
 }
 
 pub fn default_corvette_flight_tuning() -> FlightTuning {
     // Brake and auto-brake accel set so tuning does not limit decel; engine reverse thrust is the limit (same as forward).
-    let forward_accel_mps2 = 300_000.0 / (default_corvette_mass_kg() + 50.0 + 500.0 * 2.0 + 1100.0 * 2.0);
+    let forward_accel_mps2 =
+        300_000.0 / (default_corvette_mass_kg() + 50.0 + 500.0 * 2.0 + 1100.0 * 2.0);
     FlightTuning {
         max_linear_accel_mps2: 120.0,
         passive_brake_accel_mps2: forward_accel_mps2,
@@ -72,6 +73,22 @@ pub fn default_starfield_shader_asset_id() -> &'static str {
 
 pub fn default_space_background_shader_asset_id() -> &'static str {
     "space_background_wgsl"
+}
+
+pub fn default_space_bg_flare_white_asset_id() -> &'static str {
+    "space_bg_flare_white_png"
+}
+
+pub fn default_space_bg_flare_blue_asset_id() -> &'static str {
+    "space_bg_flare_blue_png"
+}
+
+pub fn default_space_bg_flare_red_asset_id() -> &'static str {
+    "space_bg_flare_red_png"
+}
+
+pub fn default_space_bg_flare_sun_asset_id() -> &'static str {
+    "space_bg_flare_sun_png"
 }
 
 /// Default engine stats for corvette (used by bundle and graph records).
@@ -186,7 +203,7 @@ pub fn spawn_corvette(
     let size = default_corvette_size();
     let hull_mass = default_corvette_mass_kg();
 
-    let ship_entity = commands
+    let _ship_entity = commands
         .spawn(CorvetteBundle {
             entity_guid: EntityGuid(ship_guid),
             ship_tag: ShipTag,
@@ -212,33 +229,30 @@ pub fn spawn_corvette(
         })
         .id();
 
-    let hardpoints = vec![
-        Hardpoint {
-            hardpoint_id: "computer_core".to_string(),
-            offset_m: Vec3::new(0.0, 0.0, -5.0),
-        },
-        Hardpoint {
-            hardpoint_id: "engine_left_aft".to_string(),
-            offset_m: Vec3::new(-4.0, -1.0, -10.0),
-        },
-        Hardpoint {
-            hardpoint_id: "engine_right_aft".to_string(),
-            offset_m: Vec3::new(4.0, -1.0, -10.0),
-        },
-    ];
-
-    for hardpoint in hardpoints {
-        commands.entity(ship_entity).with_children(|parent| {
-            parent.spawn((
-                EntityGuid(Uuid::new_v4()),
-                hardpoint.clone(),
-                DisplayName(format!("Hardpoint: {}", hardpoint.hardpoint_id)),
-                OwnerId(player_entity_id.clone()),
-            ));
-        });
+    let mut hardpoint_guid_by_id = std::collections::HashMap::<&'static str, Uuid>::new();
+    for spec in default_corvette_hardpoint_specs() {
+        let hardpoint_guid = Uuid::new_v4();
+        hardpoint_guid_by_id.insert(spec.hardpoint_id, hardpoint_guid);
+        commands.spawn((
+            EntityGuid(hardpoint_guid),
+            crate::Hardpoint {
+                hardpoint_id: spec.hardpoint_id.to_string(),
+                offset_m: spec.offset_m,
+            },
+            DisplayName(spec.display_name.to_string()),
+            ParentGuid(ship_guid),
+            OwnerId(player_entity_id.clone()),
+            ShardAssignment(shard_id),
+        ));
     }
 
-    let module_guids = spawn_corvette_modules(commands, ship_guid, &player_entity_id, shard_id);
+    let module_guids = spawn_corvette_modules(
+        commands,
+        ship_guid,
+        &player_entity_id,
+        shard_id,
+        &hardpoint_guid_by_id,
+    );
     (ship_guid, module_guids)
 }
 
@@ -257,6 +271,7 @@ fn spawn_corvette_modules(
     ship_guid: Uuid,
     player_entity_id: &str,
     shard_id: i32,
+    hardpoint_guid_by_id: &std::collections::HashMap<&'static str, Uuid>,
 ) -> CorvetteModuleGuids {
     let owner = OwnerId(player_entity_id.to_string());
     let shard = ShardAssignment(shard_id);
@@ -268,6 +283,11 @@ fn spawn_corvette_modules(
         EntityGuid(flight_computer_guid),
         DisplayName("Flight Computer MK1".to_string()),
         default_corvette_flight_computer(),
+        ParentGuid(
+            *hardpoint_guid_by_id
+                .get("computer_core")
+                .expect("missing computer_core hardpoint"),
+        ),
         MountedOn {
             parent_entity_id: ship_guid,
             hardpoint_id: "computer_core".to_string(),
@@ -283,6 +303,11 @@ fn spawn_corvette_modules(
         EntityGuid(engine_left_guid),
         DisplayName("Engine Port".to_string()),
         engine.clone(),
+        ParentGuid(
+            *hardpoint_guid_by_id
+                .get("engine_left_aft")
+                .expect("missing engine_left_aft hardpoint"),
+        ),
         MountedOn {
             parent_entity_id: ship_guid,
             hardpoint_id: "engine_left_aft".to_string(),
@@ -295,9 +320,14 @@ fn spawn_corvette_modules(
         EntityGuid(fuel_tank_left_guid),
         DisplayName("Fuel Tank Port".to_string()),
         fuel_tank.clone(),
+        ParentGuid(
+            *hardpoint_guid_by_id
+                .get("fuel_left")
+                .expect("missing fuel_left hardpoint"),
+        ),
         MountedOn {
-            parent_entity_id: engine_left_guid,
-            hardpoint_id: "fuel_supply".to_string(),
+            parent_entity_id: ship_guid,
+            hardpoint_id: "fuel_left".to_string(),
         },
         MassKg(1100.0),
         owner.clone(),
@@ -310,6 +340,11 @@ fn spawn_corvette_modules(
         EntityGuid(engine_right_guid),
         DisplayName("Engine Starboard".to_string()),
         engine.clone(),
+        ParentGuid(
+            *hardpoint_guid_by_id
+                .get("engine_right_aft")
+                .expect("missing engine_right_aft hardpoint"),
+        ),
         MountedOn {
             parent_entity_id: ship_guid,
             hardpoint_id: "engine_right_aft".to_string(),
@@ -322,9 +357,14 @@ fn spawn_corvette_modules(
         EntityGuid(fuel_tank_right_guid),
         DisplayName("Fuel Tank Starboard".to_string()),
         fuel_tank,
+        ParentGuid(
+            *hardpoint_guid_by_id
+                .get("fuel_right")
+                .expect("missing fuel_right hardpoint"),
+        ),
         MountedOn {
-            parent_entity_id: engine_right_guid,
-            hardpoint_id: "fuel_supply".to_string(),
+            parent_entity_id: ship_guid,
+            hardpoint_id: "fuel_right".to_string(),
         },
         MassKg(1100.0),
         owner,

@@ -9,19 +9,13 @@ use lightyear::prelude::{
     AppChannelExt, AppComponentExt, AppMessageExt, ChannelMode, ChannelSettings, NetworkDirection,
     ReliableSettings,
 };
-use sidereal_game::{
-    BaseMassKg, CargoMassKg, CharacterMovementController, ControlledEntityGuid, Cost, Engine,
-    EntityGuid, FactionId, FactionVisibility, FlightComputer, FlightTuning, FuelTank, Hardpoint,
-    HealthPool, Inventory, MassKg, MaxVelocityMps, ModuleMassKg, MountedOn, OwnerId,
-    PublicVisibility, ScannerComponent, ScannerRangeBuff, ScannerRangeM, SiderealComponentMetadata,
-    SizeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId,
-};
+use sidereal_game::component_meta::SiderealComponentRegistration;
 
 use super::{
     AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
     ClientRealtimeInputMessage, ControlChannel, PlayerInput, ServerControlAckMessage,
-    ServerControlRejectMessage, ServerSessionReadyMessage,
+    ServerControlRejectMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 
 pub fn register_lightyear_protocol(app: &mut App) {
@@ -32,6 +26,8 @@ pub fn register_lightyear_protocol(app: &mut App) {
     app.register_message::<ClientRealtimeInputMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerSessionReadyMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerSessionDeniedMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ClientDisconnectNotifyMessage>()
         .add_direction(NetworkDirection::Bidirectional);
@@ -59,22 +55,8 @@ pub fn register_lightyear_protocol(app: &mut App) {
 }
 
 fn register_lightyear_replication_components(app: &mut App) {
-    macro_rules! register_game_component {
-        ($app:expr, $ty:ty) => {
-            if <$ty as SiderealComponentMetadata>::META.replicate {
-                $app.register_component::<$ty>();
-            }
-        };
-    }
-    macro_rules! register_game_component_with_prediction {
-        ($app:expr, $ty:ty) => {
-            if <$ty as SiderealComponentMetadata>::META.replicate {
-                $app.register_component::<$ty>().add_prediction();
-            }
-        };
-    }
-
-    // Avian physics components — replicated so the client can run prediction/rollback.
+    // Avian physics components — not managed by the sidereal_component macro,
+    // registered manually with prediction for client-side rollback/resimulation.
     app.register_component::<Position>().add_prediction();
     app.register_component::<Rotation>().add_prediction();
     app.register_component::<LinearVelocity>().add_prediction();
@@ -82,37 +64,19 @@ fn register_lightyear_replication_components(app: &mut App) {
     app.register_component::<LinearDamping>().add_prediction();
     app.register_component::<AngularDamping>().add_prediction();
 
-    // Gameplay components needed by client-side rollback/resimulation.
-    register_game_component_with_prediction!(app, FlightComputer);
-    register_game_component_with_prediction!(app, FlightTuning);
-    register_game_component_with_prediction!(app, MaxVelocityMps);
-    register_game_component_with_prediction!(app, SizeM);
-    register_game_component_with_prediction!(app, TotalMassKg);
-
-    // Entity identity/ownership and world composition.
-    register_game_component!(app, EntityGuid);
-    register_game_component!(app, ControlledEntityGuid);
-    register_game_component!(app, OwnerId);
-    register_game_component!(app, MountedOn);
-    register_game_component!(app, Hardpoint);
-
-    // Replicated gameplay state and visibility metadata.
-    register_game_component!(app, HealthPool);
-    register_game_component!(app, MassKg);
-    register_game_component!(app, BaseMassKg);
-    register_game_component!(app, CargoMassKg);
-    register_game_component!(app, ModuleMassKg);
-    register_game_component!(app, Inventory);
-    register_game_component!(app, Cost);
-    register_game_component!(app, Engine);
-    register_game_component!(app, FuelTank);
-    register_game_component!(app, ScannerRangeM);
-    register_game_component!(app, ScannerComponent);
-    register_game_component!(app, ScannerRangeBuff);
-    register_game_component!(app, FactionId);
-    register_game_component!(app, FactionVisibility);
-    register_game_component!(app, PublicVisibility);
-    register_game_component!(app, CharacterMovementController);
-    register_game_component!(app, VisualAssetId);
-    register_game_component!(app, SpriteShaderAssetId);
+    // All sidereal_component-annotated types: the proc macro generates a
+    // register_lightyear function per component that calls
+    // register_component (+ add_prediction when predict = true).
+    // Sort by component_kind to ensure deterministic registration order
+    // across server and client binaries (inventory iteration order depends
+    // on link order, which differs between binaries).
+    let mut registrations: Vec<&SiderealComponentRegistration> =
+        inventory::iter::<SiderealComponentRegistration>
+            .into_iter()
+            .filter(|r| r.meta.replicate)
+            .collect();
+    registrations.sort_by_key(|r| r.meta.kind);
+    for registration in registrations {
+        (registration.register_lightyear)(app);
+    }
 }

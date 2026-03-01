@@ -8,9 +8,42 @@ use sidereal_game::{
 };
 use std::collections::{HashMap, HashSet};
 
-use crate::visibility::{
-    ClientObserverAnchorPositionMap, ClientVisibilityRegistry, DEFAULT_VIEW_RANGE_M,
-};
+pub const DEFAULT_VIEW_RANGE_M: f32 = 300.0;
+
+#[derive(Resource, Default)]
+pub struct ClientVisibilityRegistry {
+    pub player_entity_id_by_client: HashMap<Entity, String>,
+}
+
+impl ClientVisibilityRegistry {
+    pub fn register_client(&mut self, client_entity: Entity, player_entity_id: String) {
+        self.player_entity_id_by_client
+            .insert(client_entity, player_entity_id);
+    }
+
+    pub fn unregister_client(&mut self, client_entity: Entity) {
+        self.player_entity_id_by_client.remove(&client_entity);
+    }
+}
+
+/// Tracks position of each player's observer anchor entity for spatial queries.
+#[derive(Resource, Default)]
+pub struct ClientObserverAnchorPositionMap {
+    pub position_by_player_entity_id: HashMap<String, Vec3>,
+}
+
+impl ClientObserverAnchorPositionMap {
+    pub fn update_position(&mut self, player_entity_id: &str, position: Vec3) {
+        self.position_by_player_entity_id
+            .insert(player_entity_id.to_string(), position);
+    }
+
+    pub fn get_position(&self, player_entity_id: &str) -> Option<Vec3> {
+        self.position_by_player_entity_id
+            .get(player_entity_id)
+            .copied()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlayerVisibilityContext {
@@ -33,6 +66,12 @@ pub struct VisibilityScratch {
     scanner_sources_by_owner: HashMap<String, Vec<(Vec3, f32)>>,
     player_faction_by_owner: HashMap<String, String>,
     context_by_client: HashMap<Entity, PlayerVisibilityContext>,
+}
+
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(ClientVisibilityRegistry::default());
+    app.insert_resource(VisibilityScratch::default());
+    app.insert_resource(ClientObserverAnchorPositionMap::default());
 }
 
 impl VisibilityScratch {
@@ -70,15 +109,9 @@ pub fn update_network_visibility(
             Option<&'_ PublicVisibility>,
             Option<&'_ FactionId>,
         ),
-        (With<Replicate>, Without<MountedOn>, Without<ChildOf>),
+        (With<Replicate>, Without<MountedOn>),
     >,
-    position_by_entity: Query<'_, '_, &'_ Position>,
-    guid_entities: Query<
-        '_,
-        '_,
-        (Entity, &'_ EntityGuid),
-        (With<Replicate>, Without<MountedOn>, Without<ChildOf>),
-    >,
+    guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid), (With<Replicate>, Without<MountedOn>)>,
     mut replicated_entities: Query<
         '_,
         '_,
@@ -92,7 +125,6 @@ pub fn update_network_visibility(
             Option<&'_ FactionVisibility>,
             Option<&'_ FactionId>,
             Option<&'_ Position>,
-            Option<&'_ ChildOf>,
             Option<&'_ MountedOn>,
         ),
         With<Replicate>,
@@ -191,19 +223,15 @@ pub fn update_network_visibility(
         faction_visibility,
         faction_id,
         own_position,
-        child_of,
         mounted_on,
     ) in &mut replicated_entities
     {
-        let root_entity = child_of
-            .map(|p| p.parent())
-            .or_else(|| {
-                mounted_on.and_then(|mounted| {
-                    scratch
-                        .root_entity_by_guid
-                        .get(&mounted.parent_entity_id)
-                        .copied()
-                })
+        let root_entity = mounted_on
+            .and_then(|mounted| {
+                scratch
+                    .root_entity_by_guid
+                    .get(&mounted.parent_entity_id)
+                    .copied()
             })
             .unwrap_or(entity);
 
@@ -211,12 +239,7 @@ pub fn update_network_visibility(
             .root_position_by_entity
             .get(&root_entity)
             .copied()
-            .or_else(|| own_position.map(|position| position.0.extend(0.0)))
-            .or_else(|| {
-                child_of
-                    .and_then(|parent| position_by_entity.get(parent.parent()).ok())
-                    .map(|position| position.0.extend(0.0))
-            });
+            .or_else(|| own_position.map(|position| position.0.extend(0.0)));
         let is_public = public_visibility.is_some()
             || scratch
                 .root_public_by_entity

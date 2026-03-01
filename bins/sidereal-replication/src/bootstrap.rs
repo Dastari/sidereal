@@ -1,52 +1,16 @@
+//! Bootstrap store layer.
+//!
+//! This module is Bevy-independent and lib-exported so bootstrap validation and
+//! persistence behavior can be reused from tests and runtime wrappers.
+
 use postgres::{Client, NoTls};
-use serde::Deserialize;
+use sidereal_core::bootstrap_wire::{
+    AUTH_CHARACTERS_TABLE, BootstrapCommand, BootstrapWireError, BootstrapWireMessage,
+};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
-
-const BOOTSTRAP_KIND: &str = "bootstrap_player";
-const AUTH_CHARACTERS_TABLE: &str = "auth_characters";
-
-#[derive(Debug, Deserialize)]
-pub struct BootstrapWireMessage {
-    pub kind: String,
-    pub account_id: String,
-    pub player_entity_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootstrapCommand {
-    pub account_id: Uuid,
-    pub player_entity_id: String,
-}
-
-impl TryFrom<BootstrapWireMessage> for BootstrapCommand {
-    type Error = BootstrapError;
-
-    fn try_from(value: BootstrapWireMessage) -> Result<Self, Self::Error> {
-        if value.kind != BOOTSTRAP_KIND {
-            return Err(BootstrapError::Validation(format!(
-                "unknown bootstrap kind: {}",
-                value.kind
-            )));
-        }
-        let account_id = Uuid::parse_str(&value.account_id)
-            .map_err(|_| BootstrapError::Validation("invalid account_id uuid".to_string()))?;
-        if !value.player_entity_id.starts_with("player:")
-            || value.player_entity_id.trim().len() <= "player:".len()
-        {
-            return Err(BootstrapError::Validation(
-                "player_entity_id must be a non-empty player:<id> value".to_string(),
-            ));
-        }
-
-        Ok(Self {
-            account_id,
-            player_entity_id: value.player_entity_id,
-        })
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapHandleResult {
@@ -79,7 +43,8 @@ impl<S: BootstrapStore> BootstrapProcessor<S> {
     ) -> Result<BootstrapHandleResult, BootstrapError> {
         let message: BootstrapWireMessage = serde_json::from_slice(payload)
             .map_err(|err| BootstrapError::Serialization(err.to_string()))?;
-        let command = BootstrapCommand::try_from(message)?;
+        let command = BootstrapCommand::try_from(message)
+            .map_err(|err| BootstrapError::Validation(err.to_string()))?;
         let applied = self.store.apply_bootstrap_if_absent(&command)?;
         Ok(BootstrapHandleResult {
             account_id: command.account_id,
@@ -231,6 +196,12 @@ pub enum BootstrapError {
     Serialization(String),
     #[error("{0}")]
     Storage(String),
+}
+
+impl From<BootstrapWireError> for BootstrapError {
+    fn from(value: BootstrapWireError) -> Self {
+        Self::Validation(value.to_string())
+    }
 }
 
 fn now_epoch_s() -> u64 {

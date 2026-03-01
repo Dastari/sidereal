@@ -1,20 +1,14 @@
-use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
-use sidereal_game::{
-    AccountId, ControlledEntityGuid, Engine, EntityGuid, FlightComputer, FuelTank,
-    GeneratedComponentRegistry, Hardpoint, HealthPool, Inventory, MassKg, MountedOn, OwnerId,
-    PlayerTag, TotalMassKg,
-};
+use sidereal_game::{EntityGuid, EntityLabels, GeneratedComponentRegistry, MountedOn};
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::serialize_entity_components_to_graph_records;
-use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::Duration;
 
-use crate::replication::SimulatedControlledEntity;
+use crate::replication::debug_env;
 
 #[derive(Debug)]
 struct PersistenceWriteBatch {
@@ -70,6 +64,13 @@ pub struct PersistenceWorkerState {
     coalesced_replacements: u64,
     disconnected_events: u64,
     last_logged_at_s: f64,
+}
+
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(PersistenceWorkerState::default());
+    app.insert_resource(PersistenceDirtyState::default());
+    app.insert_resource(PersistenceSchemaInitState::default());
+    app.insert_resource(SimulationPersistenceTimer::default());
 }
 
 pub fn start_persistence_worker(world: &mut World) {
@@ -131,138 +132,85 @@ pub fn report_persistence_worker_metrics(
 }
 
 fn persistence_summary_logging_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("SIDEREAL_REPLICATION_SUMMARY_LOGS")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
+    debug_env("SIDEREAL_REPLICATION_SUMMARY_LOGS")
 }
 
-fn mark_dirty_runtime_entity_id(
-    dirty: &mut PersistenceDirtyState,
-    identity: (
-        &'_ EntityGuid,
-        Option<&'_ SimulatedControlledEntity>,
-        Option<&'_ PlayerTag>,
-        Option<&'_ MountedOn>,
-    ),
+fn mark_dirty_entity(dirty: &mut PersistenceDirtyState, guid: &EntityGuid) {
+    dirty.dirty_entity_ids.insert(guid.0.to_string());
+}
+
+/// Marks any entity whose registered components changed as dirty for persistence.
+/// This is intentionally broad: any `EntityGuid`-bearing entity with a changed
+/// component triggers a persistence pass for that entity.
+pub fn mark_dirty_persistable_entities(
+    mut dirty: ResMut<'_, PersistenceDirtyState>,
+    changed: Query<'_, '_, &'_ EntityGuid, Changed<EntityGuid>>,
 ) {
-    let (guid, simulated, player_tag, mounted_on) = identity;
-    dirty.dirty_entity_ids.insert(runtime_entity_id_for(
-        guid, simulated, player_tag, mounted_on,
-    ));
+    for guid in &changed {
+        mark_dirty_entity(&mut dirty, guid);
+    }
 }
 
+/// Catches spatial/physics component changes on persistable entities.
 #[allow(clippy::type_complexity)]
 pub fn mark_dirty_persistable_entities_spatial(
     mut dirty: ResMut<'_, PersistenceDirtyState>,
     changed: Query<
         '_,
         '_,
-        (
-            &'_ EntityGuid,
-            Option<&'_ SimulatedControlledEntity>,
-            Option<&'_ PlayerTag>,
-            Option<&'_ MountedOn>,
-        ),
+        &'_ EntityGuid,
         Or<(
             Added<EntityGuid>,
-            Added<SimulatedControlledEntity>,
-            Added<PlayerTag>,
-            Added<MountedOn>,
             Changed<Transform>,
-            Changed<Position>,
-            Changed<Rotation>,
-            Changed<LinearVelocity>,
-            Changed<AngularVelocity>,
+            Changed<avian2d::prelude::Position>,
+            Changed<avian2d::prelude::Rotation>,
+            Changed<avian2d::prelude::LinearVelocity>,
+            Changed<avian2d::prelude::AngularVelocity>,
         )>,
     >,
 ) {
-    for identity in &changed {
-        mark_dirty_runtime_entity_id(&mut dirty, identity);
+    for guid in &changed {
+        mark_dirty_entity(&mut dirty, guid);
     }
 }
 
+/// Catches gameplay/module component changes on persistable entities.
 #[allow(clippy::type_complexity)]
-pub fn mark_dirty_persistable_entities_runtime_state(
+pub fn mark_dirty_persistable_entities_components(
     mut dirty: ResMut<'_, PersistenceDirtyState>,
     changed: Query<
         '_,
         '_,
-        (
-            &'_ EntityGuid,
-            Option<&'_ SimulatedControlledEntity>,
-            Option<&'_ PlayerTag>,
-            Option<&'_ MountedOn>,
-        ),
-        Or<(
-            Changed<OwnerId>,
-            Changed<AccountId>,
-            Changed<ControlledEntityGuid>,
-            Added<Hardpoint>,
-        )>,
-    >,
-) {
-    for identity in &changed {
-        mark_dirty_runtime_entity_id(&mut dirty, identity);
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub fn mark_dirty_persistable_entities_modules(
-    mut dirty: ResMut<'_, PersistenceDirtyState>,
-    changed: Query<
-        '_,
-        '_,
-        (
-            &'_ EntityGuid,
-            Option<&'_ SimulatedControlledEntity>,
-            Option<&'_ PlayerTag>,
-            Option<&'_ MountedOn>,
-        ),
+        &'_ EntityGuid,
         Or<(
             Changed<MountedOn>,
-            Changed<Engine>,
-            Changed<FuelTank>,
-            Changed<Inventory>,
-            Changed<MassKg>,
+            Changed<sidereal_game::OwnerId>,
+            Changed<sidereal_game::AccountId>,
+            Changed<sidereal_game::ControlledEntityGuid>,
+            Changed<sidereal_game::Hardpoint>,
+            Changed<sidereal_game::Engine>,
+            Changed<sidereal_game::FuelTank>,
+            Changed<sidereal_game::Inventory>,
+            Changed<sidereal_game::MassKg>,
+            Changed<sidereal_game::FlightComputer>,
+            Changed<sidereal_game::HealthPool>,
+            Changed<sidereal_game::TotalMassKg>,
+            Changed<sidereal_game::PlayerTag>,
         )>,
     >,
 ) {
-    for identity in &changed {
-        mark_dirty_runtime_entity_id(&mut dirty, identity);
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub fn mark_dirty_persistable_entities_gameplay(
-    mut dirty: ResMut<'_, PersistenceDirtyState>,
-    changed: Query<
-        '_,
-        '_,
-        (
-            &'_ EntityGuid,
-            Option<&'_ SimulatedControlledEntity>,
-            Option<&'_ PlayerTag>,
-            Option<&'_ MountedOn>,
-        ),
-        Or<(
-            Changed<FlightComputer>,
-            Changed<HealthPool>,
-            Changed<TotalMassKg>,
-        )>,
-    >,
-) {
-    for identity in &changed {
-        mark_dirty_runtime_entity_id(&mut dirty, identity);
+    for guid in &changed {
+        mark_dirty_entity(&mut dirty, guid);
     }
 }
 
 /// Exclusive system: collects current simulation state for dirty persistable entities,
 /// then enqueues writes to a dedicated worker thread.
 ///
-/// This is entity-agnostic: any entity with EntityGuid is eligible. Current labels/properties
-/// preserve compatibility for existing player/controlled/module/hardpoint hydration paths.
+/// Fully entity-type-agnostic: any entity with EntityGuid is persisted. Labels come
+/// from EntityLabels component. All component data (spatial, gameplay, physics) flows
+/// through the generic component registry. Entity-level properties contain only
+/// structural metadata (parent_entity_id for graph relationship traversal).
 pub fn flush_simulation_state_persistence(world: &mut World) {
     {
         let mut timer = world.resource_mut::<SimulationPersistenceTimer>();
@@ -287,149 +235,35 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
         return;
     }
 
-    let mut entity_id_by_guid = HashMap::<uuid::Uuid, String>::new();
-    {
-        let mut id_query = world.query::<(
-            &'_ EntityGuid,
-            Option<&'_ SimulatedControlledEntity>,
-            Option<&'_ PlayerTag>,
-            Option<&'_ MountedOn>,
-        )>();
-        for (guid, simulated, player_tag, mounted_on) in id_query.iter(world) {
-            entity_id_by_guid.insert(
-                guid.0,
-                runtime_entity_id_for(guid, simulated, player_tag, mounted_on),
-            );
-        }
-    }
-
     let mut records = Vec::<GraphEntityRecord>::new();
     let mut entity_query = world.query::<(
         Entity,
         &'_ EntityGuid,
-        Option<&'_ SimulatedControlledEntity>,
-        Option<&'_ PlayerTag>,
+        Option<&'_ EntityLabels>,
         Option<&'_ MountedOn>,
-        Option<&'_ Hardpoint>,
-        Option<&'_ AccountId>,
-        Option<&'_ OwnerId>,
-        Option<&'_ Transform>,
-        Option<&'_ Position>,
-        Option<&'_ Rotation>,
-        Option<&'_ LinearVelocity>,
     )>();
 
-    for (
-        entity,
-        guid,
-        simulated,
-        player_tag,
-        mounted_on,
-        hardpoint,
-        account_id,
-        owner_id,
-        transform,
-        position,
-        rotation,
-        velocity,
-    ) in entity_query.iter(world)
-    {
-        let entity_id = runtime_entity_id_for(guid, simulated, player_tag, mounted_on);
+    for (entity, guid, entity_labels, mounted_on) in entity_query.iter(world) {
+        let entity_id = guid.0.to_string();
         if !persist_all && !dirty_entity_ids.contains(&entity_id) {
             continue;
         }
 
-        let labels = runtime_labels_for(simulated, player_tag, mounted_on, hardpoint);
+        let mut labels = vec!["Entity".to_string()];
+        if let Some(el) = entity_labels {
+            for label in &el.0 {
+                if label != "Entity" {
+                    labels.push(label.clone());
+                }
+            }
+        }
+
         let mut properties = serde_json::Map::<String, serde_json::Value>::new();
 
-        if let Some(simulated) = simulated {
-            properties.insert(
-                "player_entity_id".to_string(),
-                serde_json::Value::String(simulated.player_entity_id.clone()),
-            );
-            let mut pos = position.map(|p| p.0).unwrap_or_else(|| Vec2::ZERO);
-            if !pos.is_finite() {
-                pos = Vec2::ZERO;
-            }
-            properties.insert(
-                "position_m".to_string(),
-                serde_json::json!([pos.x, pos.y, 0.0]),
-            );
-
-            let mut vel = velocity.map(|v| v.0).unwrap_or_else(|| Vec2::ZERO);
-            if !vel.is_finite() {
-                vel = Vec2::ZERO;
-            }
-            properties.insert(
-                "velocity_mps".to_string(),
-                serde_json::json!([vel.x, vel.y, 0.0]),
-            );
-
-            let heading_rad = if let Some(rotation) = rotation {
-                if rotation.is_finite() {
-                    let h = rotation.as_radians();
-                    if h.is_finite() { h } else { 0.0 }
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            properties.insert("heading_rad".to_string(), serde_json::json!(heading_rad));
-        }
-
-        if player_tag.is_some() {
-            if let Some(account_id) = account_id {
-                properties.insert(
-                    "owner_account_id".to_string(),
-                    serde_json::Value::String(account_id.0.clone()),
-                );
-            }
-            properties.insert(
-                "player_entity_id".to_string(),
-                serde_json::Value::String(entity_id.clone()),
-            );
-            let camera = transform.map(|t| t.translation).unwrap_or(Vec3::ZERO);
-            properties.insert(
-                "position_m".to_string(),
-                serde_json::json!([camera.x, camera.y, camera.z]),
-            );
-        }
-
-        if let Some(owner_id) = owner_id {
-            properties.insert(
-                "owner_id".to_string(),
-                serde_json::Value::String(owner_id.0.clone()),
-            );
-        }
-
         if let Some(mounted_on) = mounted_on {
-            let parent_entity_id = entity_id_by_guid
-                .get(&mounted_on.parent_entity_id)
-                .cloned()
-                .unwrap_or_else(|| format!("entity:{}", mounted_on.parent_entity_id));
             properties.insert(
                 "parent_entity_id".to_string(),
-                serde_json::Value::String(parent_entity_id),
-            );
-            properties.insert(
-                "hardpoint_id".to_string(),
-                serde_json::Value::String(mounted_on.hardpoint_id.clone()),
-            );
-        }
-
-        if let Some(hardpoint) = hardpoint {
-            properties.insert(
-                "hardpoint_id".to_string(),
-                serde_json::Value::String(hardpoint.hardpoint_id.clone()),
-            );
-            properties.insert(
-                "hardpoint_offset_m".to_string(),
-                serde_json::json!([
-                    hardpoint.offset_m.x,
-                    hardpoint.offset_m.y,
-                    hardpoint.offset_m.z
-                ]),
+                serde_json::Value::String(mounted_on.parent_entity_id.to_string()),
             );
         }
 
@@ -464,47 +298,6 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
             .resource_mut::<PersistenceDirtyState>()
             .initial_full_snapshot_pending = false;
     }
-}
-
-fn runtime_entity_id_for(
-    guid: &EntityGuid,
-    simulated: Option<&SimulatedControlledEntity>,
-    player_tag: Option<&PlayerTag>,
-    mounted_on: Option<&MountedOn>,
-) -> String {
-    if let Some(simulated) = simulated {
-        return simulated.entity_id.clone();
-    }
-    if player_tag.is_some() {
-        return format!("player:{}", guid.0);
-    }
-    if mounted_on.is_some() {
-        return format!("module:{}", guid.0);
-    }
-    format!("entity:{}", guid.0)
-}
-
-fn runtime_labels_for(
-    simulated: Option<&SimulatedControlledEntity>,
-    player_tag: Option<&PlayerTag>,
-    mounted_on: Option<&MountedOn>,
-    hardpoint: Option<&Hardpoint>,
-) -> Vec<String> {
-    let mut labels = vec!["Entity".to_string()];
-    if player_tag.is_some() {
-        labels.push("Player".to_string());
-    }
-    if simulated.is_some() {
-        // Compatibility label for existing controlled-entity hydration flow.
-        labels.push("Ship".to_string());
-    }
-    if mounted_on.is_some() {
-        labels.push("Module".to_string());
-    }
-    if hardpoint.is_some() {
-        labels.push("Hardpoint".to_string());
-    }
-    labels
 }
 
 fn enqueue_batch(state: &mut PersistenceWorkerState, batch: PersistenceWriteBatch) {

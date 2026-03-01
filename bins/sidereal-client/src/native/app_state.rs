@@ -1,6 +1,8 @@
-//! App state, auth/character selection state, and gateway API DTOs.
+//! App state enums and session-facing resources.
 
 use bevy::prelude::*;
+
+use super::resources::HeadlessTransportMode;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[states(scoped_entities)]
@@ -71,80 +73,22 @@ pub(crate) struct FreeCameraState {
 }
 
 #[derive(Debug, Resource, Default)]
-pub(crate) struct OwnedShipsPanelState {
-    pub last_ship_ids: Vec<String>,
+pub(crate) struct OwnedEntitiesPanelState {
+    pub last_entity_ids: Vec<String>,
     pub last_selected_id: Option<String>,
     pub last_detached_mode: bool,
 }
 
-// Gateway API DTOs
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct RegisterRequest {
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct LoginRequest {
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ForgotRequest {
-    pub email: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ForgotConfirmRequest {
-    pub reset_token: String,
-    pub new_password: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AuthTokens {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub token_type: String,
-    pub expires_in_s: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ForgotResponse {
-    pub accepted: bool,
-    pub reset_token: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ForgotConfirmResponse {
-    pub accepted: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AuthMeResponse {
-    pub account_id: String,
-    pub email: String,
-    pub player_entity_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CharactersResponse {
-    pub characters: Vec<CharacterSummary>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CharacterSummary {
-    pub player_entity_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct EnterWorldRequest {
-    pub player_entity_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct EnterWorldResponse {
-    pub accepted: bool,
+pub(crate) fn is_active_world_state(
+    app_state: &Option<Res<'_, State<ClientAppState>>>,
+    headless_mode: &HeadlessTransportMode,
+) -> bool {
+    app_state.as_ref().is_some_and(|state| {
+        matches!(
+            state.get(),
+            ClientAppState::InWorld | ClientAppState::WorldLoading
+        )
+    }) || headless_mode.0
 }
 
 impl Default for ClientSession {

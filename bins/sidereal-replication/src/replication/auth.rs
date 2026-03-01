@@ -7,30 +7,35 @@ use lightyear::prelude::{
     ServerMultiMessageSender, Unlink,
 };
 use sidereal_game::{AccountId, PlayerTag};
-use sidereal_game::{
-    ActionQueue, CharacterMovementController, ControlledEntityGuid, EntityGuid, SelectedEntityGuid,
-    default_character_movement_action_capabilities,
-};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use sidereal_core::auth::AuthClaims;
 use sidereal_net::{
-    ClientAuthMessage, ClientDisconnectNotifyMessage, ControlChannel, ServerSessionReadyMessage,
+    ClientAuthMessage, ClientDisconnectNotifyMessage, ControlChannel, ServerSessionDeniedMessage,
+    ServerSessionReadyMessage,
 };
 
+use crate::replication::assets::AssetStreamServerState;
+use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
-    ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
+    canonical_player_entity_id, ClientInputTickTracker, InputRateLimitState,
+    LatestRealtimeInputsByPlayer,
 };
-use crate::replication::view::ClientControlRequestOrder;
+use crate::replication::lifecycle::ClientLastActivity;
+use crate::replication::visibility::ClientVisibilityRegistry;
 use crate::replication::{
     PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
 };
-use crate::{AssetStreamServerState, AuthenticatedClientBindings, ClientVisibilityRegistry};
 
-#[derive(Debug, serde::Deserialize)]
-struct AccessTokenClaims {
-    sub: String,
-    player_entity_id: String,
+#[derive(Resource, Default)]
+pub(crate) struct AuthenticatedClientBindings {
+    pub by_client_entity: HashMap<Entity, String>,
+    pub by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
+}
+
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(AuthenticatedClientBindings::default());
 }
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
@@ -46,7 +51,7 @@ pub fn cleanup_client_auth_bindings(
     mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
-    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
+    mut last_activity: ResMut<'_, ClientLastActivity>,
 ) {
     let live_clients = clients
         .iter()
@@ -69,18 +74,23 @@ pub fn cleanup_client_auth_bindings(
         .values()
         .cloned()
         .collect::<HashSet<_>>();
+    // Input resources use canonical "player:uuid" keys; retain if key's canonical form is live.
+    let live_canonical: HashSet<String> = live_player_entity_ids
+        .iter()
+        .map(|id| canonical_player_entity_id(id))
+        .collect();
     input_tick_tracker
         .last_accepted_tick_by_player_entity_id
-        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
     input_rate_limit_state
         .current_window_index_by_player_entity_id
-        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
     input_rate_limit_state
         .message_count_in_window_by_player_entity_id
-        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
     latest_realtime_inputs
         .by_player_entity_id
-        .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
+        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
     control_order
         .last_request_seq_by_player
         .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
@@ -159,7 +169,7 @@ pub fn receive_client_auth_messages(
     server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     time: Res<'_, Time<Real>>,
-    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
+    mut last_activity: ResMut<'_, ClientLastActivity>,
     mut auth_receivers: Query<
         '_,
         '_,
@@ -171,7 +181,7 @@ pub fn receive_client_auth_messages(
         With<ClientOf>,
     >,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
-    mut player_entity_map: ResMut<'_, PlayerRuntimeEntityMap>,
+    player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
     player_accounts: Query<'_, '_, &'_ AccountId, With<PlayerTag>>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
@@ -317,46 +327,34 @@ pub fn receive_client_auth_messages(
                 .by_player_entity_id
                 .contains_key(&message.player_entity_id)
             {
-                // Fail-open for runtime presence (character only): if bootstrap/runtime timing
-                // is late, create the player runtime entity now so session-ready can complete.
-                // Ship creation remains bootstrap/hydration-owned and is never synthesized here.
-                let player_guid = message
-                    .player_entity_id
-                    .strip_prefix("player:")
-                    .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
-                    .unwrap_or_else(uuid::Uuid::new_v4);
-                let mut entity_commands = commands.spawn((
-                    Name::new(message.player_entity_id.clone()),
-                    EntityGuid(player_guid),
-                    PlayerTag,
-                    AccountId(claims.sub.clone()),
-                    ActionQueue::default(),
-                    default_character_movement_action_capabilities(),
-                    CharacterMovementController { speed_mps: 40.0 },
-                    ControlledEntityGuid(Some(player_guid.to_string())),
-                    SelectedEntityGuid(None),
-                    Transform::default(),
-                    avian2d::prelude::Position(Vec2::ZERO),
-                ));
-                entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-                let player_entity = entity_commands.id();
-                player_entity_map
-                    .by_player_entity_id
-                    .insert(message.player_entity_id.clone(), player_entity);
                 warn!(
-                    "replication auth repaired missing runtime player entity for {} during bind",
+                    "replication auth: player entity {} not found in world; denying session",
                     message.player_entity_id
                 );
+                let target = NetworkTarget::Single(remote_id.0);
+                let denied = ServerSessionDeniedMessage {
+                    player_entity_id: message.player_entity_id.clone(),
+                    reason: "Player entity not yet loaded into the world. Please try again."
+                        .to_string(),
+                };
+                if let Err(err) = sender
+                    .send::<ServerSessionDeniedMessage, ControlChannel>(&denied, server, &target)
+                {
+                    warn!(
+                        "replication failed sending session-denied to remote={:?} player={} err={}",
+                        remote_id.0, message.player_entity_id, err
+                    );
+                }
+                continue;
             }
 
-            // Defer ControlledBy to PostUpdate to avoid same-frame replication/hierarchy ordering issues.
-            if let Some(&ship_entity) = controlled_entity_map
+            if let Some(&controlled_entity) = controlled_entity_map
                 .by_player_entity_id
                 .get(&message.player_entity_id)
             {
                 pending_controlled_by
                     .bindings
-                    .push((client_entity, ship_entity));
+                    .push((client_entity, controlled_entity));
             } else if let Some(&player_entity) = player_entity_map
                 .by_player_entity_id
                 .get(&message.player_entity_id)
@@ -387,10 +385,10 @@ pub fn receive_client_auth_messages(
     }
 }
 
-fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AccessTokenClaims> {
+fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AuthClaims> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
-    match decode::<AccessTokenClaims>(
+    match decode::<AuthClaims>(
         token,
         &DecodingKey::from_secret(jwt_secret.as_bytes()),
         &validation,

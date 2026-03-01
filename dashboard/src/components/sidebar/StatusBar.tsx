@@ -8,7 +8,7 @@ import {
 } from '@/components/ui/tooltip'
 
 interface StatusBarProps {
-  sourceMode: 'database' | 'liveServer' | 'liveClient'
+  sourceMode: 'database' | 'liveServer' | 'liveClient' | 'liveHostClient'
   graphStatus: {
     connected: boolean
     nodeCount: number
@@ -31,9 +31,15 @@ export function StatusBar({
   onRefresh,
 }: StatusBarProps) {
   const liveMode =
-    sourceMode === 'liveServer' || sourceMode === 'liveClient'
+    sourceMode === 'liveServer' ||
+    sourceMode === 'liveClient' ||
+    sourceMode === 'liveHostClient'
   const sourceLabel =
-    sourceMode === 'liveClient' ? 'Client Bevy Remote' : 'Server Bevy Remote'
+    sourceMode === 'liveHostClient'
+      ? 'Host Client Bevy Remote'
+      : sourceMode === 'liveClient'
+        ? 'Client Bevy Remote'
+        : 'Server Bevy Remote'
 
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border-subtle text-xs">

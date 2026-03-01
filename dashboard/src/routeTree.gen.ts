@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiWorldRouteImport } from './routes/api.world'
 import { Route as ApiLiveWorldRouteImport } from './routes/api.live-world'
+import { Route as ApiLiveHostClientWorldRouteImport } from './routes/api.live-host-client-world'
 import { Route as ApiLiveClientWorldRouteImport } from './routes/api.live-client-world'
 import { Route as ApiGraphRouteImport } from './routes/api.graph'
 import { Route as ApiBrpRouteImport } from './routes/api.brp'
@@ -32,6 +33,11 @@ const ApiWorldRoute = ApiWorldRouteImport.update({
 const ApiLiveWorldRoute = ApiLiveWorldRouteImport.update({
   id: '/api/live-world',
   path: '/api/live-world',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLiveHostClientWorldRoute = ApiLiveHostClientWorldRouteImport.update({
+  id: '/api/live-host-client-world',
+  path: '/api/live-host-client-world',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiLiveClientWorldRoute = ApiLiveClientWorldRouteImport.update({
@@ -71,6 +77,7 @@ export interface FileRoutesByFullPath {
   '/api/brp': typeof ApiBrpRoute
   '/api/graph': typeof ApiGraphRoute
   '/api/live-client-world': typeof ApiLiveClientWorldRoute
+  '/api/live-host-client-world': typeof ApiLiveHostClientWorldRoute
   '/api/live-world': typeof ApiLiveWorldRoute
   '/api/world': typeof ApiWorldRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
@@ -82,6 +89,7 @@ export interface FileRoutesByTo {
   '/api/brp': typeof ApiBrpRoute
   '/api/graph': typeof ApiGraphRoute
   '/api/live-client-world': typeof ApiLiveClientWorldRoute
+  '/api/live-host-client-world': typeof ApiLiveHostClientWorldRoute
   '/api/live-world': typeof ApiLiveWorldRoute
   '/api/world': typeof ApiWorldRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
@@ -94,6 +102,7 @@ export interface FileRoutesById {
   '/api/brp': typeof ApiBrpRoute
   '/api/graph': typeof ApiGraphRoute
   '/api/live-client-world': typeof ApiLiveClientWorldRoute
+  '/api/live-host-client-world': typeof ApiLiveHostClientWorldRoute
   '/api/live-world': typeof ApiLiveWorldRoute
   '/api/world': typeof ApiWorldRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
@@ -107,6 +116,7 @@ export interface FileRouteTypes {
     | '/api/brp'
     | '/api/graph'
     | '/api/live-client-world'
+    | '/api/live-host-client-world'
     | '/api/live-world'
     | '/api/world'
     | '/api/delete-entity/$entityId'
@@ -118,6 +128,7 @@ export interface FileRouteTypes {
     | '/api/brp'
     | '/api/graph'
     | '/api/live-client-world'
+    | '/api/live-host-client-world'
     | '/api/live-world'
     | '/api/world'
     | '/api/delete-entity/$entityId'
@@ -129,6 +140,7 @@ export interface FileRouteTypes {
     | '/api/brp'
     | '/api/graph'
     | '/api/live-client-world'
+    | '/api/live-host-client-world'
     | '/api/live-world'
     | '/api/world'
     | '/api/delete-entity/$entityId'
@@ -141,6 +153,7 @@ export interface RootRouteChildren {
   ApiBrpRoute: typeof ApiBrpRoute
   ApiGraphRoute: typeof ApiGraphRoute
   ApiLiveClientWorldRoute: typeof ApiLiveClientWorldRoute
+  ApiLiveHostClientWorldRoute: typeof ApiLiveHostClientWorldRoute
   ApiLiveWorldRoute: typeof ApiLiveWorldRoute
   ApiWorldRoute: typeof ApiWorldRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
@@ -169,6 +182,13 @@ declare module '@tanstack/react-router' {
       path: '/api/live-world'
       fullPath: '/api/live-world'
       preLoaderRoute: typeof ApiLiveWorldRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/live-host-client-world': {
+      id: '/api/live-host-client-world'
+      path: '/api/live-host-client-world'
+      fullPath: '/api/live-host-client-world'
+      preLoaderRoute: typeof ApiLiveHostClientWorldRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/live-client-world': {
@@ -221,6 +241,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiBrpRoute: ApiBrpRoute,
   ApiGraphRoute: ApiGraphRoute,
   ApiLiveClientWorldRoute: ApiLiveClientWorldRoute,
+  ApiLiveHostClientWorldRoute: ApiLiveHostClientWorldRoute,
   ApiLiveWorldRoute: ApiLiveWorldRoute,
   ApiWorldRoute: ApiWorldRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,

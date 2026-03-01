@@ -50,7 +50,7 @@ type ApiWorld = {
 
 type ApiLiveWorld = {
   source: 'bevy_remote'
-  target: 'server' | 'client'
+  target: 'server' | 'client' | 'hostClient'
   brpUrl: string
   graph: string
   entities: Array<WorldEntity>
@@ -68,6 +68,29 @@ type ApiLiveWorld = {
     properties?: Record<string, unknown>
   }>
   error?: string
+}
+
+const CAMERA_HIDE_SUBSTRING = 'bevy_camera::camera::Camera'
+
+/** True if this entity should be hidden from the map (tree still shows it). */
+function isCameraEntity(
+  entity: WorldEntity,
+  graphNodes: Map<string, GraphNode>,
+  graphEdges: Array<GraphEdge>,
+): boolean {
+  if (
+    entity.id.includes(CAMERA_HIDE_SUBSTRING) ||
+    entity.name.includes(CAMERA_HIDE_SUBSTRING)
+  ) {
+    return true
+  }
+  const hasCameraComponent = graphEdges.some(
+    (edge) =>
+      edge.from === entity.id &&
+      edge.label === 'HAS_COMPONENT' &&
+      graphNodes.get(edge.to)?.label === 'Camera',
+  )
+  return hasCameraComponent
 }
 
 function DashboardPage() {
@@ -105,10 +128,33 @@ function DashboardPage() {
   const filteredEntities = useMemo(
     () =>
       filterMapInvisible
-        ? entities.filter((entity) => entity.mapVisible !== false)
+        ? entities.filter((entity) => {
+            // Map Visible Only: show only entities that have an EntityGuid component (BRP and database).
+            if (!entity.entityGuid) return false
+            if (entity.mapVisible === false) return false
+            // Keep child entries available in tree/detail, but hide root entities
+            // that do not have a real position sample.
+            if (!entity.parentEntityId && entity.hasPosition === false) return false
+            return true
+          })
         : entities,
     [entities, filterMapInvisible],
   )
+
+  // Map-only: exclude camera entities (id/name contains bevy_camera::camera::Camera, or has Camera component). Tree still shows all.
+  const { entitiesForMap, cameraEntityIds } = useMemo(() => {
+    const cameraIds = new Set<string>()
+    const forMap = filteredEntities.filter((entity) => {
+      // Never render entities without source position on the map.
+      if (entity.hasPosition === false) {
+        return false
+      }
+      const hide = isCameraEntity(entity, graphNodes, graphEdges)
+      if (hide) cameraIds.add(entity.id)
+      return !hide
+    })
+    return { entitiesForMap: forMap, cameraEntityIds: cameraIds }
+  }, [filteredEntities, graphNodes, graphEdges])
 
   // Load data
   const loadData = useCallback(async () => {
@@ -177,7 +223,11 @@ function DashboardPage() {
         }
       } else {
         const liveEndpoint =
-          sourceMode === 'liveClient' ? '/api/live-client-world' : '/api/live-world'
+          sourceMode === 'liveHostClient'
+            ? '/api/live-host-client-world'
+            : sourceMode === 'liveClient'
+              ? '/api/live-client-world'
+              : '/api/live-world'
         const liveRes = await fetch(liveEndpoint).then(
           (r) => r.json() as Promise<ApiLiveWorld>,
         )
@@ -194,7 +244,13 @@ function DashboardPage() {
             connected: false,
             nodeCount: 0,
             edgeCount: 0,
-            graphName: `${sourceMode === 'liveClient' ? 'Client' : 'Server'} BRP error: ${errorMsg}`,
+            graphName: `${
+              sourceMode === 'liveHostClient'
+                ? 'Host Client'
+                : sourceMode === 'liveClient'
+                  ? 'Client'
+                  : 'Server'
+            } BRP error: ${errorMsg}`,
           })
           setWorldStatus({
             loaded: false,
@@ -222,12 +278,31 @@ function DashboardPage() {
             properties: edge.properties ?? {},
           })),
         )
-        setEntities(liveRes.entities)
+        // Enrich parentEntityId from edges when not set on entity (BRP tree parent-child)
+        const parentFromEdges = new Map<string, string>()
+        for (const edge of liveRes.edges) {
+          const label = (edge.label ?? '').toUpperCase()
+          if (label === 'HAS_CHILD' || label === 'PARENT') {
+            parentFromEdges.set(edge.to, edge.from)
+          }
+        }
+        const entitiesWithParentFromEdges = liveRes.entities.map((e) => ({
+          ...e,
+          parentEntityId:
+            e.parentEntityId ?? parentFromEdges.get(e.id) ?? undefined,
+        }))
+        setEntities(entitiesWithParentFromEdges)
         setGraphStatus({
           connected: true,
           nodeCount: liveRes.nodes.length,
           edgeCount: liveRes.edges.length,
-          graphName: `${liveRes.target === 'client' ? 'Client' : 'Server'} BRP @ ${liveRes.brpUrl}`,
+          graphName: `${
+            liveRes.target === 'hostClient'
+              ? 'Host Client'
+              : liveRes.target === 'client'
+                ? 'Client'
+                : 'Server'
+          } BRP @ ${liveRes.brpUrl}`,
         })
         setWorldStatus({
           loaded: true,
@@ -290,7 +365,7 @@ function DashboardPage() {
           (entity) => entity.parentEntityId === id,
         )
         const hiddenChildren = childEntities.filter(
-          (child) => !next.has(child.id),
+          (child) => child.hasPosition !== false && !next.has(child.id),
         )
 
         // Position hidden neighbors in a circle around the center with animation-friendly layout
@@ -329,6 +404,41 @@ function DashboardPage() {
       })
     },
     [filteredEntities],
+  )
+
+  // Update a component value via BRP (Server BRP or Client BRP only)
+  const handleComponentUpdate = useCallback(
+    async (entityId: string, typePath: string, value: unknown) => {
+      if (
+        sourceMode !== 'liveServer' &&
+        sourceMode !== 'liveClient' &&
+        sourceMode !== 'liveHostClient'
+      )
+        return
+      const target =
+        sourceMode === 'liveHostClient'
+          ? 'hostClient'
+          : sourceMode === 'liveClient'
+            ? 'client'
+            : 'server'
+      const url = `/api/live-entity/${entityId}?target=${target}`
+      try {
+        const res = await fetch(url, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ typePath, value }),
+        })
+        const data = (await res.json()) as { error?: string; ok?: boolean }
+        if (!res.ok || data.error) {
+          console.error('Component update failed:', data.error ?? res.statusText)
+          return
+        }
+        void loadData()
+      } catch (err) {
+        console.error('Component update request failed:', err)
+      }
+    },
+    [sourceMode, loadData],
   )
 
   // Handle node collapse
@@ -400,7 +510,7 @@ function DashboardPage() {
             : null
 
       if (!endpoint) {
-        throw new Error('Delete is disabled for client BRP mode')
+        throw new Error('Delete is disabled for client / host client BRP mode')
       }
 
       const response = await fetch(endpoint, { method: 'DELETE' })
@@ -486,12 +596,14 @@ function DashboardPage() {
                 onSelect={setSelectedId}
                 onExpand={handleExpand}
                 onCollapse={handleCollapse}
+                sourceMode={sourceMode}
+                onComponentUpdate={handleComponentUpdate}
               />
             </Panel>
           }
         >
           <GridCanvas
-            entities={filteredEntities}
+            entities={entitiesForMap}
             graphNodes={graphNodes}
             graphEdges={graphEdges}
             selectedId={selectedId}
@@ -499,6 +611,8 @@ function DashboardPage() {
             onExpand={handleExpand}
             expandedNodes={expandedNodes}
             filterMapInvisible={filterMapInvisible}
+            sourceMode={sourceMode}
+            excludedFromMapIds={cameraEntityIds}
           />
         </AppLayout>
       </TooltipProvider>

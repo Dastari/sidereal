@@ -1,7 +1,8 @@
+use sidereal_core::bootstrap_wire::BootstrapCommand;
 use sidereal_gateway::auth::{
-    AuthConfig, AuthService, BootstrapCommand, BootstrapDispatcher, InMemoryAuthStore,
-    NoopStarterWorldPersister, RecordingBootstrapDispatcher, UdpBootstrapDispatcher,
-    hash_password, normalize_email, validate_password, verify_password,
+    AuthConfig, AuthService, BootstrapDispatcher, InMemoryAuthStore, NoopStarterWorldPersister,
+    RecordingBootstrapDispatcher, UdpBootstrapDispatcher, hash_password, normalize_email,
+    validate_password, verify_password,
 };
 use sidereal_replication::bootstrap::{BootstrapProcessor, InMemoryBootstrapStore};
 use std::sync::Arc;
@@ -29,7 +30,10 @@ async fn jwt_claim_encode_decode_roundtrip() {
     let claims = service
         .decode_access_token(&tokens.access_token)
         .expect("decode");
-    assert!(claims.player_entity_id.starts_with("player:"));
+    assert!(
+        uuid::Uuid::parse_str(&claims.player_entity_id).is_ok(),
+        "player_entity_id should be a valid UUID"
+    );
     assert!(claims.exp > claims.iat);
 }
 

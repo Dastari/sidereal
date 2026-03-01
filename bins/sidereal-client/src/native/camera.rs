@@ -6,14 +6,28 @@ use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
+use super::app_state::{ClientSession, FreeCameraState, LocalPlayerViewState};
 use super::components::{
     ControlledEntity, GameplayCamera, GameplayHud, TopDownCamera, UiOverlayCamera,
 };
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
-use super::replication::resolve_camera_anchor_entity;
 use super::resources::CameraMotionState;
-use super::state::{ClientSession, FreeCameraState, LocalPlayerViewState};
 use avian2d::prelude::Position;
+
+pub(crate) fn resolve_camera_anchor_entity(
+    session: &ClientSession,
+    _player_view_state: &LocalPlayerViewState,
+    entity_registry: &RuntimeEntityHierarchy,
+) -> Option<Entity> {
+    let preferred_runtime_id = session
+        .player_entity_id
+        .as_ref()
+        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))?;
+    entity_registry
+        .by_entity_id
+        .get(preferred_runtime_id.as_str())
+        .copied()
+}
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
@@ -127,14 +141,12 @@ pub(crate) fn update_topdown_camera_system(
     camera_transform.rotation = Quat::IDENTITY;
 }
 
+/// Keeps the UI overlay camera in true screen space: fixed at pixel (0,0) origin, orthographic
+/// scale so 1 world unit = 1 pixel. HUD and nameplates then use stable pixel coordinates and
+/// segment gaps stay consistent.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
-    gameplay_camera: Query<
-        '_,
-        '_,
-        (&Transform, &Projection),
-        (With<GameplayCamera>, Without<UiOverlayCamera>),
-    >,
+    window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
     mut ui_camera: Query<
         '_,
         '_,
@@ -142,17 +154,23 @@ pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
         (With<UiOverlayCamera>, Without<GameplayCamera>),
     >,
 ) {
-    let Ok((gameplay_transform, gameplay_projection)) = gameplay_camera.single() else {
+    let Ok(window) = window_query.single() else {
         return;
     };
+    let w = window.resolution.width();
+    let h = window.resolution.height();
+    if h <= 0.0 {
+        return;
+    }
+    // 1 unit = 1 pixel: view height = h, view width = w, origin at bottom-left.
+    // Bevy 2D ortho: scale is inverse of half-height, so half_height = 1/scale. For half_height = h/2, scale = 2/h.
+    let scale = 2.0 / h;
     for (mut ui_transform, mut ui_projection) in &mut ui_camera {
-        ui_transform.translation.x = gameplay_transform.translation.x;
-        ui_transform.translation.y = gameplay_transform.translation.y;
-        ui_transform.translation.z = gameplay_transform.translation.z;
-        if let (Projection::Orthographic(ui_ortho), Projection::Orthographic(game_ortho)) =
-            (&mut *ui_projection, gameplay_projection)
-        {
-            ui_ortho.scale = game_ortho.scale;
+        ui_transform.translation.x = w * 0.5;
+        ui_transform.translation.y = h * 0.5;
+        ui_transform.translation.z = ui_transform.translation.z;
+        if let Projection::Orthographic(ui_ortho) = &mut *ui_projection {
+            ui_ortho.scale = scale;
         }
     }
 }

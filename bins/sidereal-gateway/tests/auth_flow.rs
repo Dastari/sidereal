@@ -3,10 +3,9 @@ use axum::http::{Method, Request, StatusCode, header};
 use serde_json::Value;
 use sidereal_gateway::api::app_with_service;
 use sidereal_gateway::auth::{
-    AuthConfig, AuthService, InMemoryAuthStore, NoopBootstrapDispatcher, NoopStarterWorldPersister,
+    AuthConfig, AuthService, InMemoryAuthStore, NoopStarterWorldPersister,
     RecordingBootstrapDispatcher,
 };
-use sidereal_persistence::GraphPersistence;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -86,11 +85,12 @@ async fn register_login_refresh_me_happy_path() {
         me_json["email"].as_str().expect("email"),
         "pilot@example.com"
     );
+    let player_entity_id = me_json["player_entity_id"]
+        .as_str()
+        .expect("player entity id");
     assert!(
-        me_json["player_entity_id"]
-            .as_str()
-            .expect("player entity id")
-            .starts_with("player:")
+        uuid::Uuid::parse_str(player_entity_id).is_ok(),
+        "player_entity_id should be a valid UUID, got: {player_entity_id}"
     );
 }
 
@@ -243,82 +243,6 @@ async fn password_reset_request_confirm_allows_new_login() {
         .await
         .expect("new login response");
     assert_eq!(new_login.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn register_then_world_me_returns_starter_ship_and_assets() {
-    let database_url = test_database_url();
-    let db_available = std::thread::spawn({
-        let database_url = database_url.clone();
-        move || GraphPersistence::connect(&database_url).is_ok()
-    })
-    .join()
-    .unwrap_or(false);
-    if !db_available {
-        eprintln!("skipping world_me bootstrap lifecycle test; postgres unavailable");
-        return;
-    }
-
-    let service = Arc::new(AuthService::new(
-        AuthConfig::for_tests(),
-        Arc::new(InMemoryAuthStore::default()),
-        Arc::new(NoopBootstrapDispatcher),
-    ));
-    let app = app_with_service(service);
-
-    let register_response = app
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            "/auth/register",
-            r#"{"email":"pilot-world@example.com","password":"very-strong-password"}"#,
-            None,
-        ))
-        .await
-        .expect("register response");
-    assert_eq!(register_response.status(), StatusCode::OK);
-    let register_json = response_json(register_response).await;
-    let access_token = register_json["access_token"]
-        .as_str()
-        .expect("access token")
-        .to_string();
-
-    let world_me_response = app
-        .oneshot(json_request(
-            Method::GET,
-            "/world/me",
-            "",
-            Some(&access_token),
-        ))
-        .await
-        .expect("world/me response");
-    assert_eq!(world_me_response.status(), StatusCode::OK);
-    let world_me_json = response_json(world_me_response).await;
-
-    assert_eq!(world_me_json["model_asset_id"], "corvette_01");
-    assert!(
-        world_me_json["ship_entity_id"]
-            .as_str()
-            .expect("ship id")
-            .starts_with("ship:")
-    );
-    let assets = world_me_json["assets"].as_array().expect("assets array");
-    assert!(
-        assets
-            .iter()
-            .any(|asset| asset["asset_id"] == "corvette_01")
-    );
-    assert!(
-        assets
-            .iter()
-            .any(|asset| asset["asset_id"] == "starfield_wgsl")
-    );
-}
-
-fn test_database_url() -> String {
-    std::env::var("SIDEREAL_TEST_DATABASE_URL")
-        .or_else(|_| std::env::var("GATEWAY_DATABASE_URL"))
-        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string())
 }
 
 fn json_request(

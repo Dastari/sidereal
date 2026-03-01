@@ -11,6 +11,8 @@ WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER ?= 1
 SIDEREAL_DEBUG_INPUT_LOGS ?= 1
 SIDEREAL_DEBUG_CONTROL_LOGS ?= 1
 SIDEREAL_CLIENT_MOTION_AUDIT ?= 1
+SIDEREAL_CLIENT_WGPU_BACKENDS ?= vulkan
+WGPU_POWER_PREF ?= high
 
 REPLICATION_UDP_BIND ?= 0.0.0.0:7001
 REPLICATION_UDP_ADDR ?= 127.0.0.1:7001
@@ -36,7 +38,7 @@ CLIENT2_BRP_URL ?= http://127.0.0.1:$(CLIENT2_BRP_PORT)/
 BRP_DUMP_DIR ?= ./data/debug/brp_dumps
 DASHBOARD_DIR ?= ./dashboard
 
-.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
+.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -66,6 +68,9 @@ help:
 	@echo "  make run-shard          Run shard server"
 	@echo "  make run-gateway        Run gateway API server"
 	@echo "  make run-client         Run native client"
+	@echo "  make run-client-release Run native client in release mode (recommended for perf)"
+	@echo "  make run-client-wsl-perf Run release client with WSL perf-oriented GPU env"
+	@echo "  make run-client-wsl-safe Run release client with conservative WSL GPU env"
 	@echo "  make run-client2        Run second native client on UDP 7004"
 	@echo "  make run-client-headless Run transport-only native client"
 	@echo "  make run-dashboard      Run dashboard with BRP env configured"
@@ -175,12 +180,14 @@ run-gateway:
 	GATEWAY_REPLICATION_CONTROL_UDP_BIND=$(GATEWAY_REPLICATION_CONTROL_UDP_BIND) \
 	REPLICATION_CONTROL_UDP_ADDR=$(REPLICATION_CONTROL_UDP_ADDR) \
 	ASSET_ROOT=$(ASSET_ROOT) \
-	cargo run -p sidereal-gateway 
+	cargo run -p sidereal-gateway
 
 run-client:
 	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) \
 	CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) \
 	GATEWAY_URL=$(GATEWAY_CLIENT_URL) \
+	SIDEREAL_CLIENT_WGPU_BACKENDS=$(SIDEREAL_CLIENT_WGPU_BACKENDS) \
+	WGPU_POWER_PREF=$(WGPU_POWER_PREF) \
 	SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) \
 	SIDEREAL_CLIENT_BRP_BIND_ADDR=$(CLIENT_BRP_BIND_ADDR) \
 	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
@@ -188,6 +195,49 @@ run-client:
 	SIDEREAL_ASSET_ROOT=/home/toby/dev/sidereal_v3 \
 	WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=$(WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER) \
 	cargo run -p sidereal-client
+
+run-client-release:
+	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) \
+	CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) \
+	GATEWAY_URL=$(GATEWAY_CLIENT_URL) \
+	SIDEREAL_CLIENT_WGPU_BACKENDS=$(SIDEREAL_CLIENT_WGPU_BACKENDS) \
+	WGPU_POWER_PREF=$(WGPU_POWER_PREF) \
+	SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) \
+	SIDEREAL_CLIENT_BRP_BIND_ADDR=$(CLIENT_BRP_BIND_ADDR) \
+	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
+	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
+	SIDEREAL_ASSET_ROOT=/home/toby/dev/sidereal_v3 \
+	WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=$(WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER) \
+	cargo run -p sidereal-client --release
+
+run-client-wsl-perf:
+	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) \
+	CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) \
+	GATEWAY_URL=$(GATEWAY_CLIENT_URL) \
+	SIDEREAL_CLIENT_WGPU_BACKENDS=vulkan \
+	WGPU_POWER_PREF=high \
+	MESA_VK_DEVICE_SELECT=10de:27e0 \
+	WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1 \
+	SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) \
+	SIDEREAL_CLIENT_BRP_BIND_ADDR=$(CLIENT_BRP_BIND_ADDR) \
+	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
+	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
+	SIDEREAL_ASSET_ROOT=/home/toby/dev/sidereal_v3 \
+	cargo run -p sidereal-client --release
+
+run-client-wsl-safe:
+	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) \
+	CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) \
+	GATEWAY_URL=$(GATEWAY_CLIENT_URL) \
+	SIDEREAL_CLIENT_WGPU_BACKENDS=vulkan \
+	WGPU_POWER_PREF=low \
+	WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1 \
+	SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) \
+	SIDEREAL_CLIENT_BRP_BIND_ADDR=$(CLIENT_BRP_BIND_ADDR) \
+	SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) \
+	SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) \
+	SIDEREAL_ASSET_ROOT=/home/toby/dev/sidereal_v3 \
+	cargo run -p sidereal-client --release
 
 run-client2:
 	$(MAKE) run-client CLIENT_UDP_BIND=$(CLIENT2_UDP_BIND) CLIENT_BRP_PORT=$(CLIENT2_BRP_PORT)
@@ -274,7 +324,7 @@ dev-stack-client:
 	sleep 1; \
 	GATEWAY_DATABASE_URL=$(PG_URL) GATEWAY_BIND=$(GATEWAY_BIND) GATEWAY_BOOTSTRAP_MODE=$(GATEWAY_BOOTSTRAP_MODE) GATEWAY_JWT_SECRET=$(GATEWAY_JWT_SECRET) GATEWAY_REPLICATION_CONTROL_UDP_BIND=$(GATEWAY_REPLICATION_CONTROL_UDP_BIND) REPLICATION_CONTROL_UDP_ADDR=$(REPLICATION_CONTROL_UDP_ADDR) ASSET_ROOT=$(ASSET_ROOT) cargo run -p sidereal-gateway & \
 	sleep 2; \
-	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) GATEWAY_URL=http://$(GATEWAY_BIND) SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) cargo run -p sidereal-client & \
+	REPLICATION_UDP_ADDR=$(REPLICATION_UDP_ADDR) CLIENT_UDP_BIND=$(CLIENT_UDP_BIND) GATEWAY_URL=http://$(GATEWAY_BIND) SIDEREAL_CLIENT_WGPU_BACKENDS=$(SIDEREAL_CLIENT_WGPU_BACKENDS) WGPU_POWER_PREF=$(WGPU_POWER_PREF) SIDEREAL_CLIENT_BRP_ENABLED=$(CLIENT_BRP_ENABLED) SIDEREAL_CLIENT_BRP_PORT=$(CLIENT_BRP_PORT) SIDEREAL_CLIENT_BRP_AUTH_TOKEN=$(BRP_AUTH_TOKEN) cargo run -p sidereal-client & \
 	wait
 
 register-demo:

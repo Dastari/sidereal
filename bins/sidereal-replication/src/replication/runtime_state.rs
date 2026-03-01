@@ -5,8 +5,8 @@ use sidereal_game::{
     ScannerRangeM, total_scanner_range_for_parent,
 };
 
-use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity};
-use crate::visibility::{self, ClientObserverAnchorPositionMap};
+use crate::replication::visibility::{ClientObserverAnchorPositionMap, DEFAULT_VIEW_RANGE_M};
+use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity, debug_env};
 
 #[derive(Resource, Default)]
 pub struct PlayerControlDebugState {
@@ -14,8 +14,11 @@ pub struct PlayerControlDebugState {
 }
 
 fn control_debug_logging_enabled() -> bool {
-    std::env::var("SIDEREAL_DEBUG_CONTROL_LOGS")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    debug_env("SIDEREAL_DEBUG_CONTROL_LOGS")
+}
+
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(PlayerControlDebugState::default());
 }
 
 #[allow(clippy::type_complexity)]
@@ -144,7 +147,7 @@ pub fn compute_controlled_entity_scanner_ranges(
     for (entity_guid, mut scanner_range, own_scanner, own_buff) in &mut controlled_entities {
         scanner_range.0 = total_scanner_range_for_parent(
             entity_guid.0,
-            visibility::DEFAULT_VIEW_RANGE_M,
+            DEFAULT_VIEW_RANGE_M,
             own_scanner,
             own_buff,
             scanner_modules.iter(),

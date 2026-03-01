@@ -10,14 +10,58 @@ use sidereal_net::{ClientRealtimeInputMessage, ControlChannel, PlayerInput};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 use std::sync::OnceLock;
 
-use crate::client::input::{neutral_player_input, player_input_from_keyboard};
-
+use super::app_state::{
+    ClientAppState, ClientSession, LocalPlayerViewState, is_active_world_state,
+};
 use super::components::ControlledEntity;
 use super::resources::{
     ClientControlRequestState, ClientInputAckTracker, ClientInputLogState, ClientInputSendState,
     ClientNetworkTick, HeadlessTransportMode,
 };
-use super::state::{ClientAppState, ClientSession, LocalPlayerViewState};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct InputAxes {
+    pub thrust: f32,
+    pub turn: f32,
+    pub brake: bool,
+}
+
+pub(crate) fn player_input_from_keyboard(
+    input: Option<&ButtonInput<KeyCode>>,
+) -> (PlayerInput, InputAxes) {
+    let brake = input.is_some_and(|keys| keys.pressed(KeyCode::Space));
+    let thrust = if brake {
+        0.0
+    } else if input.is_some_and(|keys| keys.pressed(KeyCode::KeyW)) {
+        1.0
+    } else if input.is_some_and(|keys| keys.pressed(KeyCode::KeyS)) {
+        -0.7
+    } else {
+        0.0
+    };
+    let turn = if input.is_some_and(|keys| keys.pressed(KeyCode::KeyA)) {
+        1.0
+    } else if input.is_some_and(|keys| keys.pressed(KeyCode::KeyD)) {
+        -1.0
+    } else {
+        0.0
+    };
+    let axes = InputAxes {
+        thrust,
+        turn,
+        brake,
+    };
+    (PlayerInput::from_axis_inputs(thrust, turn, brake), axes)
+}
+
+pub(crate) fn neutral_player_input() -> (PlayerInput, InputAxes) {
+    let axes = InputAxes {
+        thrust: 0.0,
+        turn: 0.0,
+        brake: false,
+    };
+    (PlayerInput::from_axis_inputs(0.0, 0.0, false), axes)
+}
 
 pub fn should_send_realtime_input_message(
     now_s: f64,
@@ -27,6 +71,15 @@ pub fn should_send_realtime_input_message(
 ) -> bool {
     const HEARTBEAT_INTERVAL_S: f64 = 0.1;
     input_changed || target_changed || (now_s - last_sent_at_s) >= HEARTBEAT_INTERVAL_S
+}
+
+/// Canonical form for player entity id so server lookup matches (server uses "player:uuid").
+fn canonical_player_entity_id(id: &str) -> String {
+    if id.starts_with("player:") {
+        id.to_string()
+    } else {
+        format!("player:{id}")
+    }
 }
 
 pub fn client_input_debug_logging_enabled() -> bool {
@@ -59,10 +112,7 @@ pub fn send_lightyear_input_messages(
     mut input_send_state: ResMut<'_, ClientInputSendState>,
     request_state: Res<'_, ClientControlRequestState>,
 ) {
-    let in_world_state = app_state
-        .as_ref()
-        .is_some_and(|state| **state == ClientAppState::InWorld)
-        || headless_mode.0;
+    let in_world_state = is_active_world_state(&app_state, &headless_mode);
 
     let (player_entity_id, player_input) = if in_world_state {
         let Some(player_entity_id) = session.player_entity_id.clone() else {
@@ -99,9 +149,17 @@ pub fn send_lightyear_input_messages(
         .get(target_entity_id.as_str())
         .copied();
 
+    // Canonical ids for network message so server lookup matches (same form used for target_changed).
+    let message_player_id = canonical_player_entity_id(&player_entity_id);
+    let message_controlled_id = if canonical_player_entity_id(&target_entity_id) == message_player_id {
+        message_player_id.clone()
+    } else {
+        target_entity_id.clone()
+    };
+
     let input_changed = input_send_state.last_sent_actions != player_input.actions;
     let target_changed =
-        input_send_state.last_sent_target_entity_id.as_deref() != Some(target_entity_id.as_str());
+        input_send_state.last_sent_target_entity_id.as_deref() != Some(message_controlled_id.as_str());
     let should_send_network = should_send_realtime_input_message(
         now_s,
         input_send_state.last_sent_at_s,
@@ -158,8 +216,8 @@ pub fn send_lightyear_input_messages(
     }
 
     let realtime_message = ClientRealtimeInputMessage {
-        player_entity_id,
-        controlled_entity_id: target_entity_id,
+        player_entity_id: message_player_id,
+        controlled_entity_id: message_controlled_id,
         actions: player_input.actions,
         tick: tick.0,
     };
@@ -167,8 +225,30 @@ pub fn send_lightyear_input_messages(
         sender.send::<ControlChannel>(realtime_message.clone());
     }
     input_send_state.last_sent_at_s = now_s;
-    input_send_state.last_sent_actions = realtime_message.actions;
+    input_send_state.last_sent_actions = realtime_message.actions.clone();
     input_send_state.last_sent_target_entity_id = Some(realtime_message.controlled_entity_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn neutral_input_has_no_actions() {
+        let (input, axes) = neutral_player_input();
+        assert_eq!(axes.thrust, 0.0);
+        assert_eq!(axes.turn, 0.0);
+        assert!(!axes.brake);
+        assert!(input.actions.iter().all(|action| {
+            matches!(
+                action,
+                sidereal_game::EntityAction::ThrustNeutral
+                    | sidereal_game::EntityAction::YawNeutral
+                    | sidereal_game::EntityAction::LongitudinalNeutral
+                    | sidereal_game::EntityAction::LateralNeutral
+            )
+        }));
+    }
 }
 
 #[allow(clippy::type_complexity)]

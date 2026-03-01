@@ -5,7 +5,7 @@ use lightyear::prelude::server::RawServer;
 use lightyear::prelude::{
     ControlledBy, MessageReceiver, NetworkTarget, RemoteId, Server, ServerMultiMessageSender,
 };
-use sidereal_game::{ActionQueue, ControlledEntityGuid, EntityGuid, OwnerId, PlayerTag};
+use sidereal_game::{ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag};
 use std::collections::HashMap;
 
 use sidereal_net::{
@@ -13,17 +13,19 @@ use sidereal_net::{
     ServerControlRejectMessage,
 };
 
-use crate::{
-    AuthenticatedClientBindings,
-    replication::{
-        PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
-        SimulatedControlledEntity,
-    },
+use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::{
+    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
+    SimulatedControlledEntity, debug_env,
 };
 
 #[derive(Resource, Default)]
 pub struct ClientControlRequestOrder {
     pub last_request_seq_by_player: HashMap<String, u64>,
+}
+
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(ClientControlRequestOrder::default());
 }
 
 #[doc(hidden)]
@@ -40,8 +42,7 @@ pub fn guid_from_entity_id_like(raw: &str) -> Option<String> {
 }
 
 fn control_debug_logging_enabled() -> bool {
-    std::env::var("SIDEREAL_DEBUG_CONTROL_LOGS")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    debug_env("SIDEREAL_DEBUG_CONTROL_LOGS")
 }
 
 fn clear_controlled_binding_for_client(
@@ -56,13 +57,30 @@ fn clear_controlled_binding_for_client(
     }
 }
 
+fn neutralize_control_intent_on_handoff(
+    commands: &mut Commands<'_, '_>,
+    previous_controlled_entity: Entity,
+) {
+    commands.queue(move |world: &mut World| {
+        if let Some(mut queue) = world.get_mut::<ActionQueue>(previous_controlled_entity) {
+            queue.clear();
+        }
+        if let Some(mut flight_computer) = world.get_mut::<FlightComputer>(previous_controlled_entity)
+        {
+            flight_computer.throttle = 0.0;
+            flight_computer.yaw_input = 0.0;
+            flight_computer.brake_active = false;
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn receive_client_control_requests(
     mut commands: Commands<'_, '_>,
     server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     time: Res<'_, Time<Real>>,
-    mut last_activity: ResMut<'_, crate::ClientLastActivity>,
+    mut last_activity: ResMut<'_, crate::replication::lifecycle::ClientLastActivity>,
     mut receivers: Query<
         '_,
         '_,
@@ -120,7 +138,9 @@ pub fn receive_client_control_requests(
                     .send::<ServerControlRejectMessage, ControlChannel>(&reject, server, &target);
                 continue;
             }
-            if let Some(last_seq) = order_state.last_request_seq_by_player.get(bound_player)
+            if let Some(last_seq) = order_state
+                .last_request_seq_by_player
+                .get(bound_player.as_str())
                 && message.request_seq <= *last_seq
             {
                 if control_debug_logging_enabled() {
@@ -145,7 +165,7 @@ pub fn receive_client_control_requests(
                             .find(|(_, guid, owner, _)| {
                                 owner.0 == *bound_player && guid.0.to_string() == control_guid
                             })
-                            .map(|(_, _, _, sim_controlled)| sim_controlled.entity_id.clone())
+                            .map(|(_, guid, _, _)| guid.0.to_string())
                     });
                 let reject = ServerControlRejectMessage {
                     player_entity_id: bound_player.clone(),
@@ -197,16 +217,9 @@ pub fn receive_client_control_requests(
                 .controlled_entity_id
                 .as_deref()
                 .and_then(guid_from_entity_id_like);
-            let requested_control_raw = message.controlled_entity_id.clone();
-            let requested_explicitly_player = requested_control_raw
-                .as_deref()
-                .is_some_and(|raw| raw.starts_with("player:"));
-
             let (resolved_control_guid, resolved_target_entity, resolved_runtime_entity_id) =
                 if let Some(control_guid) = requested_control_guid.clone() {
-                    // Disambiguate by raw identifier intent first.
-                    // Some legacy worlds reuse GUIDs across player+ship IDs; GUID-only comparison is ambiguous.
-                    if requested_explicitly_player && control_guid == player_guid {
+                    if control_guid == player_guid {
                         (
                             Some(player_guid.clone()),
                             player_entity,
@@ -217,11 +230,11 @@ pub fn receive_client_control_requests(
                             controllable_entities.iter().find(|(_, guid, owner, _)| {
                                 guid.0.to_string() == control_guid && owner.0 == *bound_player
                             });
-                        if let Some((target_entity, _, _, sim_controlled)) = requested_target {
+                        if let Some((target_entity, target_guid, _, _)) = requested_target {
                             (
                                 Some(control_guid),
                                 target_entity,
-                                Some(sim_controlled.entity_id.clone()),
+                                Some(target_guid.0.to_string()),
                             )
                         } else {
                             warn!(
@@ -250,11 +263,11 @@ pub fn receive_client_control_requests(
                         Some(player_runtime_id.clone()),
                     )
                 };
-            let currently_bound_entity = controlled_entity_map
+            let currently_bound = controlled_entity_map
                 .by_player_entity_id
                 .get(bound_player)
-                .copied()
-                .unwrap_or(player_entity);
+                .copied();
+            let currently_bound_entity = currently_bound.unwrap_or(player_entity);
             commands
                 .entity(player_entity)
                 .insert(ControlledEntityGuid(resolved_control_guid.clone()));
@@ -263,7 +276,7 @@ pub fn receive_client_control_requests(
                 .by_player_entity_id
                 .insert(bound_player.clone(), resolved_target_entity);
 
-            if currently_bound_entity != resolved_target_entity {
+            if currently_bound.is_none() || currently_bound_entity != resolved_target_entity {
                 let handoff_anchor_entity = if resolved_target_entity == player_entity {
                     currently_bound_entity
                 } else {
@@ -282,10 +295,9 @@ pub fn receive_client_control_requests(
                 }
             }
 
-            // Only rebind ControlledBy when target actually changes; avoid per-update ownership churn
-            // that can starve input streams and cause bursty replay behavior.
             let rebind_required = currently_bound_entity != resolved_target_entity;
             if rebind_required {
+                neutralize_control_intent_on_handoff(&mut commands, currently_bound_entity);
                 clear_controlled_binding_for_client(
                     &mut commands,
                     client_entity,
@@ -305,7 +317,7 @@ pub fn receive_client_control_requests(
                     bound_player,
                     client_entity,
                     message.request_seq,
-                    requested_control_raw,
+                    message.controlled_entity_id,
                     requested_control_guid,
                     resolved_control_guid,
                     currently_bound_entity,

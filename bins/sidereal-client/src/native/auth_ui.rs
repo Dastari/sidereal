@@ -8,8 +8,7 @@ use bevy::state::state_scoped::DespawnOnExit;
 use super::dialog_ui;
 use super::{
     AssetRootPath, AuthAction, CharacterSelectionState, ClientAppState, ClientSession,
-    EmbeddedFonts, FocusField, SessionReadyState, active_field_mut, is_printable_char, mask,
-    submit_auth_request,
+    EmbeddedFonts, FocusField, SessionReadyState, submit_auth_request,
 };
 
 #[derive(Component)]
@@ -667,4 +666,27 @@ fn next_focus_field(action: AuthAction, current: FocusField) -> FocusField {
             _ => FocusField::ResetToken,
         },
     }
+}
+
+fn active_field_mut(session: &mut ClientSession) -> &mut String {
+    match session.focus {
+        FocusField::Email => &mut session.email,
+        FocusField::Password => &mut session.password,
+        FocusField::ResetToken => &mut session.reset_token,
+        FocusField::NewPassword => &mut session.new_password,
+    }
+}
+
+fn mask(value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    "*".repeat(value.chars().count())
+}
+
+fn is_printable_char(chr: char) -> bool {
+    let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
+        || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
+        || ('\u{100000}'..='\u{10fffd}').contains(&chr);
+    !is_in_private_use_area && !chr.is_ascii_control()
 }

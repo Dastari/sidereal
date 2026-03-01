@@ -26,6 +26,7 @@ const MAX_ANGULAR_VELOCITY_RAD_S: f32 = 2.0;
 const IDLE_LINEAR_SPEED_EPSILON_MPS: f32 = 3.0;
 const IDLE_ANGULAR_SPEED_EPSILON_RAD_S: f32 = 0.08;
 const ACTIVE_BRAKE_STOP_EPSILON_MPS: f32 = 5.0;
+
 type BodyForceQuery<'w, 's> = Query<
     'w,
     's,
@@ -134,8 +135,9 @@ pub fn apply_engine_thrust(
     computers: Query<(&EntityGuid, &FlightComputer), Without<MountedOn>>,
     // Parent entities that can receive forces (Avian Forces query helper)
     mut body_queries: ParamSet<(BodyForceQuery<'_, '_>, BodyKinematicsQuery<'_, '_>)>,
-    // Engine modules
-    mut engines: Query<(&MountedOn, &Engine, &mut FuelTank)>,
+    // Engine and fuel modules (mounted under a shared parent GUID)
+    engines: Query<(&MountedOn, &Engine)>,
+    mut fuel_tanks: Query<(&MountedOn, &mut FuelTank)>,
 ) {
     let dt = time.delta_secs();
 
@@ -154,25 +156,21 @@ pub fn apply_engine_thrust(
         );
     }
 
-    // Aggregate engine thrust/torque budgets by parent GUID.
-    let mut forward_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
-    let mut reverse_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
-    let mut torque_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
+    // Aggregate requested burn and engine capability by parent GUID.
+    let mut requested_burn_kg_by_parent = HashMap::<Uuid, f32>::new();
+    let mut forward_thrust_cap_by_parent = HashMap::<Uuid, f32>::new();
+    let mut reverse_thrust_cap_by_parent = HashMap::<Uuid, f32>::new();
+    let mut torque_thrust_cap_by_parent = HashMap::<Uuid, f32>::new();
+    let mut fuel_available_kg_by_parent = HashMap::<Uuid, f32>::new();
+    let mut fuel_tank_count_by_parent = HashMap::<Uuid, usize>::new();
     let mut fuel_exhausted_count = HashMap::<Uuid, usize>::new();
 
-    for (mounted_on, engine, mut fuel_tank) in &mut engines {
+    for (mounted_on, engine) in &engines {
         let Some((throttle, yaw_input, _, brake_active)) =
             control_by_parent.get(&mounted_on.parent_entity_id)
         else {
             continue;
         };
-
-        if fuel_tank.fuel_kg <= 0.0 {
-            *fuel_exhausted_count
-                .entry(mounted_on.parent_entity_id)
-                .or_insert(0) += 1;
-            continue;
-        }
 
         let throttle_demand = throttle.abs().clamp(0.0, 1.0);
         let brake_demand = if *brake_active { 1.0 } else { 0.0 };
@@ -181,23 +179,105 @@ pub fn apply_engine_thrust(
         let requested_burn_kg = engine.burn_rate_kg_s * demand * dt;
 
         if requested_burn_kg > 0.0 {
-            let actual_burn_kg = requested_burn_kg.min(fuel_tank.fuel_kg);
-            let thrust_scale = actual_burn_kg / requested_burn_kg;
-            fuel_tank.fuel_kg -= actual_burn_kg;
-
-            forward_thrust_budget_by_parent
+            requested_burn_kg_by_parent
                 .entry(mounted_on.parent_entity_id)
-                .and_modify(|v| *v += engine.thrust.abs() * thrust_scale)
-                .or_insert(engine.thrust.abs() * thrust_scale);
-            reverse_thrust_budget_by_parent
+                .and_modify(|v| *v += requested_burn_kg)
+                .or_insert(requested_burn_kg);
+            forward_thrust_cap_by_parent
                 .entry(mounted_on.parent_entity_id)
-                .and_modify(|v| *v += engine.reverse_thrust.abs() * thrust_scale)
-                .or_insert(engine.reverse_thrust.abs() * thrust_scale);
-            torque_thrust_budget_by_parent
+                .and_modify(|v| *v += engine.thrust.abs())
+                .or_insert(engine.thrust.abs());
+            reverse_thrust_cap_by_parent
                 .entry(mounted_on.parent_entity_id)
-                .and_modify(|v| *v += engine.torque_thrust.abs() * thrust_scale)
-                .or_insert(engine.torque_thrust.abs() * thrust_scale);
+                .and_modify(|v| *v += engine.reverse_thrust.abs())
+                .or_insert(engine.reverse_thrust.abs());
+            torque_thrust_cap_by_parent
+                .entry(mounted_on.parent_entity_id)
+                .and_modify(|v| *v += engine.torque_thrust.abs())
+                .or_insert(engine.torque_thrust.abs());
         }
+    }
+
+    // Sum available fuel by parent across all tanks.
+    for (mounted_on, fuel_tank) in &mut fuel_tanks {
+        let fuel_kg = fuel_tank.fuel_kg.max(0.0);
+        fuel_available_kg_by_parent
+            .entry(mounted_on.parent_entity_id)
+            .and_modify(|v| *v += fuel_kg)
+            .or_insert(fuel_kg);
+        fuel_tank_count_by_parent
+            .entry(mounted_on.parent_entity_id)
+            .and_modify(|v| *v += 1)
+            .or_insert(1);
+    }
+
+    // Compute fuel-limited thrust budgets by parent.
+    let mut forward_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
+    let mut reverse_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
+    let mut torque_thrust_budget_by_parent = HashMap::<Uuid, f32>::new();
+    let mut fuel_burn_kg_by_parent = HashMap::<Uuid, f32>::new();
+    for (parent, requested_burn_kg) in &requested_burn_kg_by_parent {
+        let available = fuel_available_kg_by_parent
+            .get(parent)
+            .copied()
+            .unwrap_or(0.0);
+        let actual_burn_kg = requested_burn_kg.min(available).max(0.0);
+        let thrust_scale = if *requested_burn_kg > 0.0 {
+            actual_burn_kg / *requested_burn_kg
+        } else {
+            0.0
+        };
+        if thrust_scale <= 0.0 {
+            let empty_count = fuel_tank_count_by_parent.get(parent).copied().unwrap_or(0);
+            if empty_count > 0 {
+                fuel_exhausted_count.insert(*parent, empty_count);
+            }
+        }
+        fuel_burn_kg_by_parent.insert(*parent, actual_burn_kg);
+        forward_thrust_budget_by_parent.insert(
+            *parent,
+            forward_thrust_cap_by_parent
+                .get(parent)
+                .copied()
+                .unwrap_or(0.0)
+                * thrust_scale,
+        );
+        reverse_thrust_budget_by_parent.insert(
+            *parent,
+            reverse_thrust_cap_by_parent
+                .get(parent)
+                .copied()
+                .unwrap_or(0.0)
+                * thrust_scale,
+        );
+        torque_thrust_budget_by_parent.insert(
+            *parent,
+            torque_thrust_cap_by_parent
+                .get(parent)
+                .copied()
+                .unwrap_or(0.0)
+                * thrust_scale,
+        );
+    }
+
+    // Consume fuel from all tanks on the parent, proportionally by available fuel.
+    // Equal tanks drain equally; uneven tanks drain proportionally.
+    for (mounted_on, mut fuel_tank) in &mut fuel_tanks {
+        let Some(total_burn) = fuel_burn_kg_by_parent.get(&mounted_on.parent_entity_id) else {
+            continue;
+        };
+        if *total_burn <= 0.0 {
+            continue;
+        }
+        let available_total = fuel_available_kg_by_parent
+            .get(&mounted_on.parent_entity_id)
+            .copied()
+            .unwrap_or(0.0);
+        if available_total <= 0.0 {
+            continue;
+        }
+        let share = (*total_burn) * (fuel_tank.fuel_kg.max(0.0) / available_total);
+        fuel_tank.fuel_kg = (fuel_tank.fuel_kg - share).max(0.0);
     }
 
     let mut kinematics_by_guid = HashMap::<Uuid, (Vec2, f32)>::new();

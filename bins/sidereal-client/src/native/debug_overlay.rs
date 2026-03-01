@@ -6,9 +6,12 @@ use bevy::prelude::*;
 use sidereal_game::{EntityGuid, Hardpoint, MountedOn, ScannerRangeM, SizeM};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
+use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{ControlledEntity, WorldEntity};
-use super::resources::DebugOverlayEnabled;
-use super::state::{ClientSession, LocalPlayerViewState};
+use super::resources::{
+    BootstrapWatchdogState, DebugOverlayEnabled, DeferredPredictedAdoptionState,
+    LocalSimulationDebugMode, PredictionBootstrapTuning,
+};
 
 pub(crate) fn toggle_debug_overlay_system(
     input: Res<'_, ButtonInput<KeyCode>>,
@@ -160,6 +163,68 @@ pub(crate) fn draw_debug_overlay_system(
             let next = center + Vec3::new(radius * t.cos(), radius * t.sin(), 0.0);
             gizmos.line(prev, next, visibility_range_color);
             prev = next;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn log_prediction_runtime_state(
+    time: Res<'_, Time>,
+    tuning: Res<'_, PredictionBootstrapTuning>,
+    local_mode: Res<'_, LocalSimulationDebugMode>,
+    watchdog: Res<'_, BootstrapWatchdogState>,
+    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
+    world_entities: Query<'_, '_, Entity, With<WorldEntity>>,
+    replicated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Replicated>>,
+    predicted_entities: Query<'_, '_, Entity, With<lightyear::prelude::Predicted>>,
+    interpolated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Interpolated>>,
+    controlled_entities: Query<'_, '_, Entity, With<ControlledEntity>>,
+) {
+    let now_s = time.elapsed_secs_f64();
+    if now_s - adoption_state.last_runtime_summary_at_s < tuning.defer_summary_interval_s {
+        return;
+    }
+    adoption_state.last_runtime_summary_at_s = now_s;
+    let world_count = world_entities.iter().count();
+    let replicated_count = replicated_entities.iter().count();
+    let predicted_count = predicted_entities.iter().count();
+    let interpolated_count = interpolated_entities.iter().count();
+    let controlled_count = controlled_entities.iter().count();
+    let mode = if local_mode.0 { "local" } else { "predicted" };
+    bevy::log::info!(
+        "prediction runtime summary mode={} world={} replicated={} predicted={} interpolated={} controlled={} deferred_waiting={}",
+        mode,
+        world_count,
+        replicated_count,
+        predicted_count,
+        interpolated_count,
+        controlled_count,
+        adoption_state
+            .waiting_entity_id
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    if !local_mode.0 && watchdog.replication_state_seen {
+        let in_world_age_s = watchdog
+            .in_world_entered_at_s
+            .map(|entered_at_s| (now_s - entered_at_s).max(0.0))
+            .unwrap_or_default();
+        if in_world_age_s > tuning.defer_dialog_after_s && controlled_count == 0 {
+            bevy::log::warn!(
+                "prediction runtime anomaly: no controlled entity after {:.2}s in predicted mode (replicated={} predicted={} interpolated={})",
+                in_world_age_s,
+                replicated_count,
+                predicted_count,
+                interpolated_count
+            );
+        }
+        if replicated_count > 0 && predicted_count == 0 {
+            bevy::log::warn!(
+                "prediction runtime anomaly: replicated entities present but zero Predicted markers (replicated={} interpolated={})",
+                replicated_count,
+                interpolated_count
+            );
         }
     }
 }

@@ -6,7 +6,46 @@ use bevy::prelude::*;
 pub(crate) struct WorldEntity;
 
 #[derive(Component)]
-pub(crate) struct HudText;
+pub(crate) struct HudFpsText;
+
+#[derive(Component)]
+pub(crate) struct HudSpeedValueText;
+
+#[derive(Component)]
+pub(crate) struct HudPositionValueText;
+
+#[derive(Component)]
+pub(crate) struct HudHealthBarFill;
+
+#[derive(Component)]
+pub(crate) struct HudFuelBarFill;
+
+#[derive(Component, Clone, Copy)]
+pub(crate) struct SegmentedBarStyle {
+    pub segments: u8,
+    pub active_color: Color,
+    pub inactive_color: Color,
+}
+
+#[derive(Component, Clone, Copy)]
+pub(crate) struct SegmentedBarValue {
+    pub ratio: f32,
+}
+
+#[derive(Component, Clone, Copy)]
+pub(crate) struct SegmentedBarSegment {
+    pub index: u8,
+}
+
+#[derive(Component)]
+pub(crate) struct ShipNameplateRoot {
+    pub target: Entity,
+}
+
+#[derive(Component)]
+pub(crate) struct ShipNameplateHealthBar {
+    pub target: Entity,
+}
 
 #[derive(Component)]
 pub(crate) struct LoadingOverlayText;
@@ -26,6 +65,11 @@ pub(crate) struct GameplayCamera;
 #[derive(Component)]
 pub(crate) struct GameplayHud;
 
+/// Marker for entities that belong to the screen-space UI overlay (HUD). Used to propagate
+/// `RenderLayers::layer(UI_OVERLAY_RENDER_LAYER)` to all descendants so they render on the UI camera.
+#[derive(Component)]
+pub(crate) struct UiOverlayLayer;
+
 #[derive(Component)]
 pub(crate) struct UiOverlayCamera;
 
@@ -44,15 +88,15 @@ pub(crate) struct CharacterSelectButton {
 pub(crate) struct CharacterSelectEnterButton;
 
 #[derive(Component)]
-pub(crate) struct OwnedShipsPanelRoot;
+pub(crate) struct OwnedEntitiesPanelRoot;
 
 #[derive(Component)]
-pub(crate) struct OwnedShipsPanelButton {
-    pub action: OwnedShipsPanelAction,
+pub(crate) struct OwnedEntitiesPanelButton {
+    pub action: OwnedEntitiesPanelAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OwnedShipsPanelAction {
+pub(crate) enum OwnedEntitiesPanelAction {
     FreeRoam,
     ControlEntity(String),
 }

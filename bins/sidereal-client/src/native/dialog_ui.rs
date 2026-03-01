@@ -151,7 +151,6 @@ fn show_next_dialog(
     let font_bold = fonts.bold.clone();
     let font_regular = fonts.regular.clone();
 
-    // Get severity-specific colors
     let (title_color, border_color) = match dialog.severity {
         DialogSeverity::Info => (Color::srgb(0.6, 0.8, 1.0), Color::srgba(0.3, 0.5, 0.7, 0.8)),
         DialogSeverity::Warning => (Color::srgb(1.0, 0.8, 0.3), Color::srgba(0.8, 0.6, 0.2, 0.8)),
@@ -175,7 +174,6 @@ fn show_next_dialog(
             ZIndex(1000),
         ))
         .with_children(|root| {
-            // Semi-transparent backdrop
             root.spawn((
                 Node {
                     position_type: PositionType::Absolute,
@@ -187,7 +185,6 @@ fn show_next_dialog(
                 DialogBackdrop,
             ));
 
-            // Dialog panel
             root.spawn((
                 Node {
                     width: Val::Px(600.0),
@@ -203,7 +200,6 @@ fn show_next_dialog(
                 BorderColor::all(border_color),
             ))
             .with_children(|panel| {
-                // Title
                 panel.spawn((
                     Text::new(&dialog.title),
                     TextFont {
@@ -214,7 +210,6 @@ fn show_next_dialog(
                     TextColor(title_color),
                 ));
 
-                // Message body
                 panel.spawn((
                     Text::new(&dialog.message),
                     TextFont {
@@ -229,7 +224,6 @@ fn show_next_dialog(
                     },
                 ));
 
-                // Okay button
                 panel
                     .spawn((
                         Button,
@@ -274,12 +268,10 @@ fn handle_dialog_interactions(
     dialog_root: Query<Entity, With<DialogRoot>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    // Handle button interaction
     for (interaction, mut bg_color, mut border_color) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
                 info!("client dialog dismissed via button");
-                // Clear current dialog and despawn UI
                 dialog_queue.current = None;
                 for entity in &dialog_root {
                     commands.entity(entity).despawn();
@@ -296,7 +288,6 @@ fn handle_dialog_interactions(
         }
     }
 
-    // Also allow Enter or Escape to dismiss
     if !dialog_root.is_empty()
         && (keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::Escape))
     {

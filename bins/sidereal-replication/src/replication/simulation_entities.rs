@@ -1,47 +1,37 @@
-//! Simulation entity spawn, hydration, and controlled-entity binding.
-//! Keeps generic entity terminology; domain-specific labels (e.g. graph "Ship") stay at persistence boundary.
+//! Simulation entity hydration and controlled-entity binding (replication server only).
+//!
+//! Single dependency-ordered pass: for each graph record, spawn one entity with identity
+//! (Name, EntityGuid), run the generic component insert. Hierarchy is tracked via
+//! `MountedOn` (UUID-based), NOT Bevy `ChildOf`/`Children`, because Lightyear cannot
+//! safely replicate Bevy hierarchy (client-side entity mapping order is undefined).
+//! Control binding is derived from OwnerId + PlayerTag after the generic pass.
 
-use avian2d::prelude::*;
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, RigidBody, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
 use lightyear::prelude::{ControlledBy, Lifetime, NetworkTarget, Replicate};
 use sidereal_game::{
-    AccountId, ActionQueue, BaseMassKg, CargoMassKg, CharacterMovementController,
-    ControlledEntityGuid, Engine, EntityGuid, FactionVisibility, FuelTank,
-    GeneratedComponentRegistry, Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn, OwnerId,
-    PlayerTag, PublicVisibility, ScannerRangeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId,
-    angular_inertia_from_size, default_character_movement_action_capabilities,
-    default_corvette_asset_id, default_corvette_flight_computer, default_corvette_flight_tuning,
-    default_corvette_health_pool, default_corvette_mass_kg, default_corvette_max_velocity_mps,
-    default_corvette_size, default_flight_action_capabilities,
+    ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
 };
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::{
     component_record, component_type_path_map, decode_graph_component_payload,
-    insert_registered_components_from_graph_records, parse_guid_from_entity_id, parse_vec3_value,
+    insert_registered_components_from_graph_records, parse_guid_from_entity_id,
 };
 use std::collections::{HashMap, HashSet};
 
-use super::hydration_parse::{
-    base_mass_from_record, cargo_mass_from_record, engine_from_record, faction_id_from_record,
-    flight_computer_from_record, flight_tuning_from_record, fuel_tank_from_record,
-    hardpoint_from_record, has_marker_component_record, health_pool_from_record,
-    inventory_from_record, mass_kg_from_record, max_velocity_from_record, module_mass_from_record,
-    mounted_on_from_record, owner_id_from_record, scanner_component_from_record,
-    scanner_range_buff_from_record, scanner_range_from_record, size_m_from_record,
-    sprite_shader_asset_id_from_record, total_mass_from_record, visual_asset_id_from_record,
-};
-use crate::AuthenticatedClientBindings;
-use crate::bootstrap_runtime::{self, BootstrapShipReceiver};
+use crate::bootstrap_runtime::{self, BootstrapEntityReceiver};
+use crate::replication::auth::AuthenticatedClientBindings;
 
 #[derive(Resource, Default)]
 pub struct PlayerControlledEntityMap {
     pub by_player_entity_id: HashMap<String, Entity>,
 }
 
+/// Marker for entities that are controlled by a player. Derived post-hydration
+/// from OwnerId pointing at a player entity. Not persisted; runtime-only.
 #[derive(Debug, Component)]
 pub struct SimulatedControlledEntity {
-    pub entity_id: String,
     pub player_entity_id: String,
 }
 
@@ -55,6 +45,12 @@ pub struct PendingControlledByBindings {
 #[derive(Resource, Default)]
 pub struct PlayerRuntimeEntityMap {
     pub by_player_entity_id: HashMap<String, Entity>,
+}
+
+pub fn init_resources(app: &mut App) {
+    app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(PlayerRuntimeEntityMap::default());
+    app.insert_resource(PendingControlledByBindings::default());
 }
 
 fn find_runtime_guid_collisions(records: &[GraphEntityRecord]) -> Vec<(String, Vec<String>)> {
@@ -80,212 +76,119 @@ fn find_runtime_guid_collisions(records: &[GraphEntityRecord]) -> Vec<(String, V
     collisions
 }
 
-fn ensure_player_runtime_entity(
-    commands: &mut Commands<'_, '_>,
-    player_entity_map: &mut PlayerRuntimeEntityMap,
-    player_entity_id: &str,
-    account_id: uuid::Uuid,
-    mut position: Vec3,
-) -> Entity {
-    if let Some(entity) = player_entity_map.by_player_entity_id.get(player_entity_id) {
-        return *entity;
-    }
-    position.z = 0.0;
-    let mut entity_commands = commands.spawn((
-        Name::new(player_entity_id.to_string()),
-        EntityGuid(parse_guid_from_entity_id(player_entity_id).unwrap_or_else(uuid::Uuid::new_v4)),
-        PlayerTag,
-        AccountId(account_id.to_string()),
-        ActionQueue::default(),
-        default_character_movement_action_capabilities(),
-        CharacterMovementController { speed_mps: 40.0 },
-        ControlledEntityGuid(
-            parse_guid_from_entity_id(player_entity_id).map(|guid| guid.to_string()),
-        ),
-        Transform::from_translation(position),
-        Position(position.truncate()),
-    ));
-    entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-    let player_entity = entity_commands.id();
-    player_entity_map
-        .by_player_entity_id
-        .insert(player_entity_id.to_string(), player_entity);
-    player_entity
-}
-
-fn load_persisted_controlled_entity_seed(player_entity_id: &str) -> Option<(String, Vec3, Vec3)> {
-    let database_url = std::env::var("REPLICATION_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
-    let mut persistence = match GraphPersistence::connect(&database_url) {
-        Ok(v) => v,
-        Err(err) => {
-            bevy::log::warn!(
-                "bootstrap persistence check skipped; connect failed for {}: {}",
-                player_entity_id,
-                err
-            );
-            return None;
-        }
-    };
-    let records = match persistence.load_graph_records() {
-        Ok(v) => v,
-        Err(err) => {
-            bevy::log::warn!(
-                "bootstrap persistence check skipped; graph load failed for {}: {}",
-                player_entity_id,
-                err
-            );
-            return None;
-        }
-    };
-
-    let mut matches = records
-        .into_iter()
-        .filter(|record| {
-            record
-                .properties
-                .get("player_entity_id")
-                .and_then(|value| value.as_str())
-                == Some(player_entity_id)
-                && record.entity_id.starts_with("ship:")
+/// Resolves a human-readable name for an entity from its component records,
+/// falling back to the entity_id/UUID.
+fn resolve_display_name(
+    record: &GraphEntityRecord,
+    type_paths: &HashMap<String, String>,
+) -> String {
+    component_record(&record.components, "display_name")
+        .and_then(|c| decode_graph_component_payload(c, type_paths))
+        .and_then(|payload| serde_json::from_value::<DisplayName>(payload.clone()).ok())
+        .map(|dn| dn.0)
+        .unwrap_or_else(|| {
+            parse_guid_from_entity_id(&record.entity_id)
+                .map(|g| g.to_string())
+                .unwrap_or_else(|| record.entity_id.clone())
         })
-        .collect::<Vec<_>>();
-    matches.sort_by(|a, b| a.entity_id.cmp(&b.entity_id));
-    let record = matches.into_iter().next()?;
-    let mut pos = record
-        .properties
-        .get("position_m")
-        .and_then(parse_vec3_value)
-        .unwrap_or(Vec3::ZERO);
-    let mut vel = record
-        .properties
-        .get("velocity_mps")
-        .and_then(parse_vec3_value)
-        .unwrap_or(Vec3::ZERO);
-    pos.z = 0.0;
-    vel.z = 0.0;
-    Some((record.entity_id, pos, vel))
 }
 
-pub fn spawn_simulation_entity(
+/// General-purpose entity hydration: takes a set of graph records and spawns them
+/// into the Bevy world with full component and hierarchy support.
+///
+/// Entity-agnostic and reusable for:
+/// 1. Startup bulk hydration (entire graph DB)
+/// 2. Bootstrap deferred hydration (player's entities loaded post-startup)
+/// 3. Future spatial streaming (entity subgraphs entering visibility range)
+///
+/// The `existing_guids` set prevents double-spawning entities already in the world.
+/// Returns a map of entity_id -> spawned Bevy Entity.
+pub fn hydrate_records_into_world(
     commands: &mut Commands<'_, '_>,
+    records: &[GraphEntityRecord],
+    component_registry: &GeneratedComponentRegistry,
+    app_type_registry: &AppTypeRegistry,
+    existing_guids: &HashSet<uuid::Uuid>,
+    player_entity_map: &mut PlayerRuntimeEntityMap,
     controlled_entity_map: &mut PlayerControlledEntityMap,
-    entity_id: &str,
-    player_entity_id: &str,
-    mut pos: Vec3,
-    mut vel: Vec3,
-) {
-    pos.z = 0.0;
-    vel.z = 0.0;
-    let hull_guid = parse_guid_from_entity_id(entity_id).unwrap_or_else(uuid::Uuid::new_v4);
+) -> HashMap<String, Entity> {
+    let type_paths = component_type_path_map(component_registry);
 
-    let hull_mass = default_corvette_mass_kg();
-    let hull_size = default_corvette_size();
-    let mut entity_commands = commands.spawn((
-        Name::new(entity_id.to_string()),
-        SimulatedControlledEntity {
-            entity_id: entity_id.to_string(),
-            player_entity_id: player_entity_id.to_string(),
-        },
-        EntityGuid(hull_guid),
-        OwnerId(player_entity_id.to_string()),
-        ActionQueue::default(),
-        default_flight_action_capabilities(),
-        default_corvette_flight_computer(),
-        default_corvette_flight_tuning(),
-        default_corvette_max_velocity_mps(),
-        default_corvette_health_pool(),
-        VisualAssetId(default_corvette_asset_id().to_string()),
-        SpriteShaderAssetId(None),
-        hull_size,
-        Transform::from_translation(pos),
-    ));
-    entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-    let entity = entity_commands
-        .insert((
-            MassKg(hull_mass),
-            BaseMassKg(hull_mass),
-            CargoMassKg(0.0),
-            ModuleMassKg(0.0),
-            TotalMassKg(hull_mass),
-            MassDirty,
-            Inventory::default(),
-        ))
-        .insert((
-            RigidBody::Dynamic,
-            Collider::rectangle(hull_size.width, hull_size.length),
-            Mass(hull_mass),
-            angular_inertia_from_size(hull_mass, &hull_size),
-            Position(pos.truncate()),
-            Rotation::default(),
-            LinearVelocity(vel.truncate()),
-            AngularVelocity::default(),
-            LinearDamping(0.0),
-            AngularDamping(0.0),
-        ))
-        .id();
-    controlled_entity_map
-        .by_player_entity_id
-        .insert(player_entity_id.to_string(), entity);
+    let mut parentless_records = Vec::new();
+    let mut parented_records = Vec::new();
+    for record in records {
+        if record
+            .properties
+            .get("parent_entity_id")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
+            parented_records.push(record);
+        } else {
+            parentless_records.push(record);
+        }
+    }
 
-    // Flight computer module
-    let fc_guid = uuid::Uuid::new_v4();
-    let mut fc_commands = commands.spawn((
-        Name::new(format!("{}:flight_computer", entity_id)),
-        EntityGuid(fc_guid),
-        default_corvette_flight_computer(),
-        MountedOn {
-            parent_entity_id: hull_guid,
-            hardpoint_id: "computer_core".to_string(),
-        },
-        MassKg(50.0),
-        OwnerId(player_entity_id.to_string()),
-    ));
-    fc_commands.insert(Replicate::to_clients(NetworkTarget::All));
+    let mut spawned_entity_by_id = HashMap::<String, Entity>::new();
+    let mut hydrated_count = 0usize;
 
-    // Left engine + fuel tank
-    let engine_left_guid = uuid::Uuid::new_v4();
-    let mut engine_left_commands = commands.spawn((
-        Name::new(format!("{}:engine_left", entity_id)),
-        EntityGuid(engine_left_guid),
-        MountedOn {
-            parent_entity_id: hull_guid,
-            hardpoint_id: "engine_left_aft".to_string(),
-        },
-        Engine {
-            thrust: 1_200_000.0,
-            reverse_thrust: 600_000.0,
-            torque_thrust: 3_000_000.0,
-            burn_rate_kg_s: 0.8,
-        },
-        FuelTank { fuel_kg: 1000.0 },
-        MassKg(500.0),
-        OwnerId(player_entity_id.to_string()),
-    ));
-    engine_left_commands.insert(Replicate::to_clients(NetworkTarget::All));
+    for record in parentless_records.iter().chain(parented_records.iter()) {
+        let entity_guid =
+            parse_guid_from_entity_id(&record.entity_id).unwrap_or_else(uuid::Uuid::new_v4);
 
-    // Right engine + fuel tank
-    let engine_right_guid = uuid::Uuid::new_v4();
-    let mut engine_right_commands = commands.spawn((
-        Name::new(format!("{}:engine_right", entity_id)),
-        EntityGuid(engine_right_guid),
-        MountedOn {
-            parent_entity_id: hull_guid,
-            hardpoint_id: "engine_right_aft".to_string(),
-        },
-        Engine {
-            thrust: 1_200_000.0,
-            reverse_thrust: 600_000.0,
-            torque_thrust: 3_000_000.0,
-            burn_rate_kg_s: 0.8,
-        },
-        FuelTank { fuel_kg: 1000.0 },
-        MassKg(500.0),
-        OwnerId(player_entity_id.to_string()),
-    ));
-    engine_right_commands.insert(Replicate::to_clients(NetworkTarget::All));
+        if existing_guids.contains(&entity_guid) {
+            let guid_key = entity_guid.to_string();
+            spawned_entity_by_id.insert(record.entity_id.clone(), Entity::PLACEHOLDER);
+            if guid_key != record.entity_id {
+                spawned_entity_by_id.insert(guid_key, Entity::PLACEHOLDER);
+            }
+            continue;
+        }
+
+        let display_name = resolve_display_name(record, &type_paths);
+
+        let entity_commands = commands.spawn((
+            Name::new(display_name),
+            EntityGuid(entity_guid),
+            Transform::default(),
+            Visibility::default(),
+            Replicate::to_clients(NetworkTarget::All),
+        ));
+        let entity = entity_commands.id();
+
+        insert_registered_components_from_graph_records(
+            commands,
+            entity,
+            &record.components,
+            &type_paths,
+            app_type_registry,
+        );
+
+        spawned_entity_by_id.insert(record.entity_id.clone(), entity);
+        let guid_key = entity_guid.to_string();
+        if guid_key != record.entity_id {
+            spawned_entity_by_id.insert(guid_key, entity);
+        }
+        hydrated_count += 1;
+    }
+
+    derive_control_bindings(
+        commands,
+        &spawned_entity_by_id,
+        records,
+        &type_paths,
+        controlled_entity_map,
+        player_entity_map,
+    );
+
+    if hydrated_count > 0 {
+        bevy::log::info!("hydrated {hydrated_count} entities into world");
+    }
+
+    spawned_entity_by_id
 }
 
+/// Startup system: loads all entities from the graph database and hydrates them.
 pub fn hydrate_simulation_entities(
     mut commands: Commands<'_, '_>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
@@ -293,10 +196,7 @@ pub fn hydrate_simulation_entities(
     component_registry: Res<'_, GeneratedComponentRegistry>,
     app_type_registry: Res<'_, AppTypeRegistry>,
 ) {
-    let database_url = std::env::var("REPLICATION_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
-
-    let mut persistence = match GraphPersistence::connect(&database_url) {
+    let mut persistence = match GraphPersistence::connect(&replication_database_url()) {
         Ok(v) => v,
         Err(err) => {
             eprintln!("replication simulation hydration skipped; connect failed: {err}");
@@ -323,425 +223,179 @@ pub fn hydrate_simulation_entities(
         return;
     }
 
-    let type_paths = component_type_path_map(&component_registry);
-    let mut spawned_entity_by_entity_id = HashMap::<String, Entity>::new();
-    let mut observer_records = Vec::new();
-    let mut controlled_root_records = Vec::new();
-    let mut hardpoint_records = Vec::new();
-    let mut attached_entity_records = Vec::new();
-    let mut other_records = Vec::new();
+    let existing_guids = HashSet::new();
+    hydrate_records_into_world(
+        &mut commands,
+        &records,
+        &component_registry,
+        &app_type_registry,
+        &existing_guids,
+        &mut player_entity_map,
+        &mut controlled_entity_map,
+    );
+}
+
+fn derive_control_bindings(
+    commands: &mut Commands<'_, '_>,
+    spawned: &HashMap<String, Entity>,
+    records: &[GraphEntityRecord],
+    type_paths: &HashMap<String, String>,
+    controlled_map: &mut PlayerControlledEntityMap,
+    player_map: &mut PlayerRuntimeEntityMap,
+) {
+    let mut player_entities = HashMap::<String, Entity>::new();
+    let mut desired_control_by_player = HashMap::<String, Option<String>>::new();
 
     for record in records {
-        let is_hardpoint = component_record(&record.components, "hardpoint").is_some()
-            || record.entity_id.starts_with("hardpoint:")
-            || record.labels.iter().any(|label| label == "Hardpoint");
-        let is_attached = component_record(&record.components, "mounted_on").is_some()
-            || record.entity_id.starts_with("module:")
-            || record.labels.iter().any(|label| label == "Module");
-        let is_observer = component_record(&record.components, "player_tag").is_some()
-            || record.entity_id.starts_with("player:")
-            || record.labels.iter().any(|label| label == "Player");
-        let is_controlled_root = record
-            .properties
-            .get("player_entity_id")
-            .and_then(|v| v.as_str())
-            .is_some()
-            || record.entity_id.starts_with("ship:")
-            || record.labels.iter().any(|label| label == "Ship");
-
-        if is_hardpoint {
-            hardpoint_records.push(record);
-        } else if is_attached {
-            attached_entity_records.push(record);
-        } else if is_observer {
-            observer_records.push(record);
-        } else if is_controlled_root {
-            controlled_root_records.push(record);
-        } else {
-            other_records.push(record);
+        let has_player_tag = component_record(&record.components, "player_tag").is_some();
+        if !has_player_tag {
+            continue;
         }
-    }
+        let guid = parse_guid_from_entity_id(&record.entity_id);
+        let Some(&entity) = spawned.get(&record.entity_id) else {
+            continue;
+        };
+        if entity == Entity::PLACEHOLDER {
+            continue;
+        }
+        let player_id = guid
+            .map(|g| g.to_string())
+            .unwrap_or(record.entity_id.clone());
 
-    let mut hydrated_root_entities = 0usize;
-    let mut hydrated_hardpoints = 0usize;
-    let mut hydrated_modules = 0usize;
-    let mut desired_control_guid_by_player = HashMap::<String, Option<String>>::new();
+        player_entities.insert(player_id.clone(), entity);
+        player_map
+            .by_player_entity_id
+            .insert(record.entity_id.clone(), entity);
+        // Legacy compat: also register under "player:uuid" if that was the old format.
+        if let Some(g) = guid {
+            let legacy_key = format!("player:{g}");
+            if legacy_key != record.entity_id {
+                player_map.by_player_entity_id.insert(legacy_key, entity);
+            }
+        }
 
-    for record in &observer_records {
-        let player_entity_id = record.entity_id.clone();
-        let mut player_transform = Transform::default();
-        let account_id = record
-            .properties
-            .get("owner_account_id")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .or_else(|| parse_guid_from_entity_id(&player_entity_id).map(|guid| guid.to_string()))
-            .unwrap_or_default();
-        let camera_position = record
-            .properties
-            .get("position_m")
-            .and_then(parse_vec3_value)
-            .or_else(|| {
-                // Legacy compatibility with older persisted player runtime schema.
-                record
-                    .properties
-                    .get("camera_position_m")
-                    .and_then(parse_vec3_value)
-            })
-            .unwrap_or(Vec3::ZERO);
-        player_transform.translation = camera_position;
-
-        let mut entity_commands = commands.spawn((
-            Name::new(player_entity_id.clone()),
-            EntityGuid(
-                parse_guid_from_entity_id(&player_entity_id).unwrap_or_else(uuid::Uuid::new_v4),
-            ),
-            PlayerTag,
-            AccountId(account_id),
-            ActionQueue::default(),
-            default_character_movement_action_capabilities(),
-            CharacterMovementController { speed_mps: 40.0 },
-            ControlledEntityGuid(
-                parse_guid_from_entity_id(&player_entity_id).map(|guid| guid.to_string()),
-            ),
-            player_transform,
-            Position(camera_position.truncate()),
-        ));
-        entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-        let entity = entity_commands.id();
-        insert_registered_components_from_graph_records(
-            &mut commands,
-            entity,
-            &record.components,
-            &type_paths,
-            &app_type_registry,
-        );
-
-        let resolved_control_guid = component_record(&record.components, "controlled_entity_guid")
-            .and_then(|component| decode_graph_component_payload(component, &type_paths))
+        let control_guid = component_record(&record.components, "controlled_entity_guid")
+            .and_then(|c| decode_graph_component_payload(c, type_paths))
             .and_then(|payload| {
                 serde_json::from_value::<ControlledEntityGuid>(payload.clone()).ok()
             })
-            .and_then(|value| value.0);
-        desired_control_guid_by_player.insert(player_entity_id.clone(), resolved_control_guid);
-        player_entity_map
+            .and_then(|v| v.0);
+        desired_control_by_player.insert(player_id, control_guid);
+    }
+
+    for record in records {
+        if component_record(&record.components, "player_tag").is_some() {
+            continue;
+        }
+        let owner_id = component_record(&record.components, "owner_id")
+            .and_then(|c| decode_graph_component_payload(c, type_paths))
+            .and_then(|payload| serde_json::from_value::<OwnerId>(payload.clone()).ok());
+        let Some(owner) = owner_id else { continue };
+
+        // The owner_id value might be a bare UUID or a legacy "player:uuid".
+        let player_guid = parse_guid_from_entity_id(&owner.0)
+            .map(|g| g.to_string())
+            .unwrap_or(owner.0.clone());
+
+        if !player_entities.contains_key(&player_guid) {
+            continue;
+        }
+
+        let Some(&entity) = spawned.get(&record.entity_id) else {
+            continue;
+        };
+        if entity == Entity::PLACEHOLDER {
+            continue;
+        }
+        let entity_guid = parse_guid_from_entity_id(&record.entity_id);
+
+        commands.entity(entity).insert(SimulatedControlledEntity {
+            player_entity_id: owner.0.clone(),
+        });
+
+        // Check if this entity matches any player's desired control target.
+        if let Some(desired) = desired_control_by_player.get(&player_guid) {
+            let matches = desired
+                .as_ref()
+                .is_some_and(|guid_str| entity_guid.is_some_and(|eg| eg.to_string() == *guid_str));
+            if matches {
+                controlled_map
+                    .by_player_entity_id
+                    .insert(owner.0.clone(), entity);
+                // Also register under legacy key.
+                let legacy_key = format!("player:{player_guid}");
+                controlled_map
+                    .by_player_entity_id
+                    .insert(legacy_key, entity);
+            }
+        }
+    }
+
+    // Handle free-roam: player's ControlledEntityGuid points to its own GUID.
+    for (player_id, &player_entity) in &player_entities {
+        if controlled_map
             .by_player_entity_id
-            .insert(player_entity_id, entity);
-    }
-
-    // Pass 1: root entities first so module relationships can resolve parent GUIDs.
-    for record in &controlled_root_records {
-        let player_entity_id = record
-            .properties
-            .get("player_entity_id")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-            .or_else(|| {
-                owner_id_from_record(record, &type_paths)
-                    .map(|owner| owner.0)
-                    .filter(|owner| owner.starts_with("player:"))
-            });
-        let Some(player_entity_id) = player_entity_id else {
+            .values()
+            .any(|&e| e == player_entity)
+        {
             continue;
-        };
-
-        let root_guid =
-            parse_guid_from_entity_id(&record.entity_id).unwrap_or_else(uuid::Uuid::new_v4);
-
-        let mut pos = record
-            .properties
-            .get("position_m")
-            .and_then(parse_vec3_value)
-            .unwrap_or(Vec3::ZERO);
-        let mut vel = record
-            .properties
-            .get("velocity_mps")
-            .and_then(parse_vec3_value)
-            .unwrap_or(Vec3::ZERO);
-        pos.z = 0.0;
-        vel.z = 0.0;
-        let heading_rad = record
-            .properties
-            .get("heading_rad")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32;
-        let health_pool = health_pool_from_record(record, &type_paths)
-            .unwrap_or_else(default_corvette_health_pool);
-        let flight_computer = flight_computer_from_record(record, &type_paths)
-            .unwrap_or_else(default_corvette_flight_computer);
-        let flight_tuning = flight_tuning_from_record(record, &type_paths)
-            .unwrap_or_else(default_corvette_flight_tuning);
-        let max_velocity_mps = max_velocity_from_record(record, &type_paths)
-            .unwrap_or_else(default_corvette_max_velocity_mps);
-        let scanner_range =
-            scanner_range_from_record(record, &type_paths).unwrap_or(ScannerRangeM(0.0));
-        let scanner_component = scanner_component_from_record(record, &type_paths);
-        let scanner_buff = scanner_range_buff_from_record(record, &type_paths);
-        let faction_id = faction_id_from_record(record, &type_paths);
-        let faction_visibility =
-            has_marker_component_record(record, "faction_visibility").then_some(FactionVisibility);
-        let public_visibility =
-            has_marker_component_record(record, "public_visibility").then_some(PublicVisibility);
-        let mass_kg =
-            mass_kg_from_record(record, &type_paths).unwrap_or(MassKg(default_corvette_mass_kg()));
-        let base_mass = base_mass_from_record(record, &type_paths)
-            .unwrap_or(BaseMassKg(default_corvette_mass_kg()));
-        let cargo_mass = cargo_mass_from_record(record, &type_paths).unwrap_or(CargoMassKg(0.0));
-        let module_mass = module_mass_from_record(record, &type_paths).unwrap_or(ModuleMassKg(0.0));
-        let total_mass =
-            total_mass_from_record(record, &type_paths).unwrap_or(TotalMassKg(base_mass.0));
-        let inventory = inventory_from_record(record, &type_paths).unwrap_or_default();
-
-        let body_size =
-            size_m_from_record(record, &type_paths).unwrap_or_else(default_corvette_size);
-        let visual_asset_id = visual_asset_id_from_record(record, &type_paths)
-            .unwrap_or_else(|| VisualAssetId(default_corvette_asset_id().to_string()));
-        let sprite_shader_asset_id =
-            sprite_shader_asset_id_from_record(record, &type_paths).unwrap_or_default();
-        let body_mass_for_physics = total_mass.0.max(1.0);
-        let mut entity_commands = commands.spawn((
-            Name::new(record.entity_id.clone()),
-            SimulatedControlledEntity {
-                entity_id: record.entity_id.clone(),
-                player_entity_id: player_entity_id.clone(),
-            },
-            EntityGuid(root_guid),
-            OwnerId(player_entity_id.clone()),
-            ActionQueue::default(),
-            default_flight_action_capabilities(),
-            flight_computer,
-            flight_tuning,
-            max_velocity_mps,
-            health_pool,
-            visual_asset_id,
-            sprite_shader_asset_id,
-            scanner_range,
-            Transform::from_translation(pos).with_rotation(Quat::from_rotation_z(heading_rad)),
-        ));
-        entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-        entity_commands.insert(body_size);
-        entity_commands.insert((
-            mass_kg,
-            base_mass,
-            cargo_mass,
-            module_mass,
-            total_mass,
-            MassDirty,
-            inventory,
-        ));
-        if let Some(scanner_component) = scanner_component {
-            entity_commands.insert(scanner_component);
         }
-        if let Some(scanner_buff) = scanner_buff {
-            entity_commands.insert(scanner_buff);
-        }
-        if let Some(faction_id) = faction_id {
-            entity_commands.insert(faction_id);
-        }
-        if let Some(faction_visibility) = faction_visibility {
-            entity_commands.insert(faction_visibility);
-        }
-        if let Some(public_visibility) = public_visibility {
-            entity_commands.insert(public_visibility);
-        }
-        let entity = entity_commands
-            .insert((
-                RigidBody::Dynamic,
-                Collider::rectangle(body_size.width.max(0.1), body_size.length.max(0.1)),
-                Mass(body_mass_for_physics),
-                angular_inertia_from_size(body_mass_for_physics, &body_size),
-                Position(pos.truncate()),
-                Rotation::radians(heading_rad),
-                LinearVelocity(vel.truncate()),
-                AngularVelocity::default(),
-                LinearDamping(0.0),
-                AngularDamping(0.0),
-            ))
-            .id();
-        insert_registered_components_from_graph_records(
-            &mut commands,
-            entity,
-            &record.components,
-            &type_paths,
-            &app_type_registry,
-        );
-
-        let root_guid_key = root_guid.to_string();
-        spawned_entity_by_entity_id.insert(root_guid_key, entity);
-        spawned_entity_by_entity_id.insert(record.entity_id.clone(), entity);
-        hydrated_root_entities = hydrated_root_entities.saturating_add(1);
-    }
-
-    for (player_entity_id, desired_control_guid) in desired_control_guid_by_player {
-        let Some(control_guid) = desired_control_guid else {
-            controlled_entity_map
+        let desired = desired_control_by_player.get(player_id);
+        let is_self_control =
+            desired.is_some_and(|d| d.as_ref().is_some_and(|guid_str| guid_str == player_id));
+        if is_self_control {
+            controlled_map
                 .by_player_entity_id
-                .remove(&player_entity_id);
-            continue;
-        };
-        if let Some(&entity) = spawned_entity_by_entity_id.get(&control_guid) {
-            controlled_entity_map
-                .by_player_entity_id
-                .insert(player_entity_id, entity);
+                .insert(player_id.clone(), player_entity);
         }
     }
+}
 
-    // Pass 2: hardpoint entities with Bevy parent-child hierarchy links.
-    for record in &hardpoint_records {
-        let Some(hardpoint) = hardpoint_from_record(record, &type_paths) else {
-            continue;
-        };
-        let hardpoint_guid =
-            parse_guid_from_entity_id(&record.entity_id).unwrap_or_else(uuid::Uuid::new_v4);
-        let mut entity_commands = commands.spawn((
-            Name::new(record.entity_id.clone()),
-            EntityGuid(hardpoint_guid),
-            hardpoint.clone(),
-            Transform::from_translation(hardpoint.offset_m),
-        ));
-        entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-        if let Some(owner) = owner_id_from_record(record, &type_paths) {
-            entity_commands.insert(owner);
-        }
-        if let Some(faction_id) = faction_id_from_record(record, &type_paths) {
-            entity_commands.insert(faction_id);
-        }
-        if has_marker_component_record(record, "faction_visibility") {
-            entity_commands.insert(FactionVisibility);
-        }
-        if has_marker_component_record(record, "public_visibility") {
-            entity_commands.insert(PublicVisibility);
-        }
-        if let Some(mass_kg) = mass_kg_from_record(record, &type_paths) {
-            entity_commands.insert(mass_kg);
-        }
-        if let Some(inventory) = inventory_from_record(record, &type_paths) {
-            entity_commands.insert(inventory);
-        }
-        let hardpoint_entity = entity_commands.id();
-        insert_registered_components_from_graph_records(
-            &mut commands,
-            hardpoint_entity,
-            &record.components,
-            &type_paths,
-            &app_type_registry,
-        );
-        spawned_entity_by_entity_id.insert(record.entity_id.clone(), hardpoint_entity);
-        hydrated_hardpoints = hydrated_hardpoints.saturating_add(1);
-    }
+/// Collects the set of EntityGuid UUIDs already present in the Bevy world,
+/// used to prevent double-spawning during deferred hydration.
+fn collect_existing_guids(guid_query: &Query<'_, '_, &EntityGuid>) -> HashSet<uuid::Uuid> {
+    guid_query.iter().map(|g| g.0).collect()
+}
 
-    // Pass 3: generic records that are not part of legacy controlled/observer/hardpoint paths.
-    for record in &other_records {
-        let entity_guid =
-            parse_guid_from_entity_id(&record.entity_id).unwrap_or_else(uuid::Uuid::new_v4);
-        let position = record
-            .properties
-            .get("position_m")
-            .and_then(parse_vec3_value)
-            .unwrap_or(Vec3::ZERO);
-        let heading_rad = record
-            .properties
-            .get("heading_rad")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32;
-        let mut entity_commands = commands.spawn((
-            Name::new(record.entity_id.clone()),
-            EntityGuid(entity_guid),
-            Transform::from_translation(position).with_rotation(Quat::from_rotation_z(heading_rad)),
-        ));
-        entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-        let entity = entity_commands.id();
-        insert_registered_components_from_graph_records(
-            &mut commands,
-            entity,
-            &record.components,
-            &type_paths,
-            &app_type_registry,
-        );
-        spawned_entity_by_entity_id.insert(record.entity_id.clone(), entity);
-    }
+/// Filters graph records to those belonging to a specific player: the player
+/// entity itself (matched by entity_id) plus all entities whose OwnerId
+/// component value matches the player_entity_id.
+fn filter_records_for_player(
+    all_records: &[GraphEntityRecord],
+    player_entity_id: &str,
+    type_paths: &HashMap<String, String>,
+) -> Vec<GraphEntityRecord> {
+    let player_guid = parse_guid_from_entity_id(player_entity_id)
+        .map(|g| g.to_string())
+        .unwrap_or_else(|| player_entity_id.to_string());
 
-    // Pass 4: attached entities after parent entities are indexed.
-    for record in &attached_entity_records {
-        let Some(mounted_on) = mounted_on_from_record(record, &type_paths) else {
-            continue;
-        };
-        let parent_entity_id = record
-            .properties
-            .get("parent_entity_id")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| format!("ship:{}", mounted_on.parent_entity_id));
-        if !spawned_entity_by_entity_id.contains_key(&parent_entity_id) {
-            continue;
-        }
+    all_records
+        .iter()
+        .filter(|record| {
+            let record_guid = parse_guid_from_entity_id(&record.entity_id)
+                .map(|g| g.to_string())
+                .unwrap_or_else(|| record.entity_id.clone());
+            if record_guid == player_guid || record.entity_id == player_entity_id {
+                return true;
+            }
+            let owner_id = component_record(&record.components, "owner_id")
+                .and_then(|c| decode_graph_component_payload(c, type_paths))
+                .and_then(|payload| serde_json::from_value::<OwnerId>(payload.clone()).ok());
+            if let Some(owner) = owner_id {
+                let owner_guid = parse_guid_from_entity_id(&owner.0)
+                    .map(|g| g.to_string())
+                    .unwrap_or(owner.0.clone());
+                return owner_guid == player_guid || owner.0 == player_entity_id;
+            }
+            false
+        })
+        .cloned()
+        .collect()
+}
 
-        let module_guid =
-            parse_guid_from_entity_id(&record.entity_id).unwrap_or_else(uuid::Uuid::new_v4);
-        let mut entity_commands = commands.spawn((
-            Name::new(record.entity_id.clone()),
-            EntityGuid(module_guid),
-            mounted_on,
-        ));
-        entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-        if let Some(owner) = owner_id_from_record(record, &type_paths) {
-            entity_commands.insert(owner);
-        }
-        if let Some(faction_id) = faction_id_from_record(record, &type_paths) {
-            entity_commands.insert(faction_id);
-        }
-        if has_marker_component_record(record, "faction_visibility") {
-            entity_commands.insert(FactionVisibility);
-        }
-        if has_marker_component_record(record, "public_visibility") {
-            entity_commands.insert(PublicVisibility);
-        }
-        if let Some(engine) = engine_from_record(record, &type_paths) {
-            entity_commands.insert(engine);
-        }
-        if let Some(fuel_tank) = fuel_tank_from_record(record, &type_paths) {
-            entity_commands.insert(fuel_tank);
-        }
-        if let Some(flight_computer) = flight_computer_from_record(record, &type_paths) {
-            entity_commands.insert(flight_computer);
-        }
-        if let Some(scanner_range) = scanner_range_from_record(record, &type_paths) {
-            entity_commands.insert(scanner_range);
-        }
-        if let Some(scanner_component) = scanner_component_from_record(record, &type_paths) {
-            entity_commands.insert(scanner_component);
-        }
-        if let Some(scanner_buff) = scanner_range_buff_from_record(record, &type_paths) {
-            entity_commands.insert(scanner_buff);
-        }
-        if let Some(mass_kg) = mass_kg_from_record(record, &type_paths) {
-            entity_commands.insert(mass_kg);
-        }
-        if let Some(inventory) = inventory_from_record(record, &type_paths) {
-            entity_commands.insert(inventory);
-        }
-        let module_entity = entity_commands.id();
-        insert_registered_components_from_graph_records(
-            &mut commands,
-            module_entity,
-            &record.components,
-            &type_paths,
-            &app_type_registry,
-        );
-        spawned_entity_by_entity_id.insert(record.entity_id.clone(), module_entity);
-        hydrated_modules = hydrated_modules.saturating_add(1);
-    }
-
-    let expected_modules = attached_entity_records.len();
-    if hydrated_root_entities > 0 && expected_modules > 0 && hydrated_modules == 0 {
-        bevy::log::warn!(
-            "replication hydration restored entities but hydrated 0/{expected_modules} mounted modules; keeping authoritative no-module state"
-        );
-    }
-
-    bevy::log::info!(
-        "replication simulation hydrated {hydrated_root_entities} entities, {hydrated_hardpoints} hardpoints and {hydrated_modules} modules"
-    );
+fn replication_database_url() -> String {
+    std::env::var("REPLICATION_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -751,84 +405,110 @@ pub fn process_bootstrap_entity_commands(
     mut player_entity_map: ResMut<'_, PlayerRuntimeEntityMap>,
     mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
     bindings: Res<'_, AuthenticatedClientBindings>,
-    controlled_entity_guids: Query<'_, '_, &'_ EntityGuid, With<SimulatedControlledEntity>>,
+    component_registry: Res<'_, GeneratedComponentRegistry>,
+    app_type_registry: Res<'_, AppTypeRegistry>,
+    all_guids: Query<'_, '_, &'_ EntityGuid>,
     simulated_entities: Query<
         '_,
         '_,
-        (Entity, &'_ Name, &'_ EntityGuid, &'_ OwnerId),
+        (Entity, &'_ EntityGuid, &'_ OwnerId),
         With<SimulatedControlledEntity>,
     >,
-    receiver: Option<Res<'_, BootstrapShipReceiver>>,
+    receiver: Option<Res<'_, BootstrapEntityReceiver>>,
 ) {
     let Some(receiver) = receiver else { return };
     let mut processed_players = HashSet::new();
-    for cmd in bootstrap_runtime::drain_bootstrap_ship_commands(receiver.as_ref()) {
+    for cmd in bootstrap_runtime::drain_bootstrap_entity_commands(receiver.as_ref()) {
         if !processed_players.insert(cmd.player_entity_id.clone()) {
             continue;
         }
-        let spawn_position = bootstrap_runtime::starter_spawn_position(cmd.account_id);
-        let player_entity = ensure_player_runtime_entity(
-            &mut commands,
-            player_entity_map.as_mut(),
-            &cmd.player_entity_id,
-            cmd.account_id,
-            spawn_position,
-        );
+
+        // If the player entity isn't in the world yet, attempt deferred hydration.
+        if !player_entity_map
+            .by_player_entity_id
+            .contains_key(&cmd.player_entity_id)
+        {
+            bevy::log::info!(
+                "bootstrap: player {} not in world; attempting deferred hydration",
+                cmd.player_entity_id
+            );
+            let database_url = replication_database_url();
+            let mut persistence = match GraphPersistence::connect(&database_url) {
+                Ok(v) => v,
+                Err(err) => {
+                    bevy::log::error!("bootstrap deferred hydration failed (connect): {err}");
+                    continue;
+                }
+            };
+            let all_records = match persistence.load_graph_records() {
+                Ok(v) => v,
+                Err(err) => {
+                    bevy::log::error!("bootstrap deferred hydration failed (load): {err}");
+                    continue;
+                }
+            };
+            let type_paths = component_type_path_map(&component_registry);
+            let player_records =
+                filter_records_for_player(&all_records, &cmd.player_entity_id, &type_paths);
+            if player_records.is_empty() {
+                bevy::log::warn!(
+                    "bootstrap: player {} has no records in graph DB; skipping",
+                    cmd.player_entity_id
+                );
+                continue;
+            }
+            let existing_guids = collect_existing_guids(&all_guids);
+            hydrate_records_into_world(
+                &mut commands,
+                &player_records,
+                &component_registry,
+                &app_type_registry,
+                &existing_guids,
+                &mut player_entity_map,
+                &mut controlled_entity_map,
+            );
+            bevy::log::info!(
+                "bootstrap: deferred hydration complete for player {} ({} records)",
+                cmd.player_entity_id,
+                player_records.len()
+            );
+        }
+
+        let Some(&player_entity) = player_entity_map
+            .by_player_entity_id
+            .get(&cmd.player_entity_id)
+        else {
+            bevy::log::warn!(
+                "bootstrap: player entity {} still not found after deferred hydration; skipping",
+                cmd.player_entity_id
+            );
+            continue;
+        };
 
         let has_live_controlled_entity = controlled_entity_map
             .by_player_entity_id
             .get(&cmd.player_entity_id)
-            .is_some_and(|entity| controlled_entity_guids.get(*entity).is_ok());
+            .is_some_and(|entity| all_guids.get(*entity).is_ok());
 
         if !has_live_controlled_entity {
-            if let Some((persisted_entity_id, persisted_pos, persisted_vel)) =
-                load_persisted_controlled_entity_seed(&cmd.player_entity_id)
-            {
-                let persisted_control_guid =
-                    parse_guid_from_entity_id(&persisted_entity_id).map(|guid| guid.to_string());
-                let mut existing_matches = simulated_entities
-                    .iter()
-                    .filter(|(_, name, _, owner)| {
-                        name.as_str() == persisted_entity_id && owner.0 == cmd.player_entity_id
-                    })
-                    .collect::<Vec<_>>();
-                if let Some((existing_entity, _, existing_guid, _)) = existing_matches.pop() {
-                    if !existing_matches.is_empty() {
-                        bevy::log::warn!(
-                            "bootstrap found duplicate runtime entities for {} (player={}); using latest match",
-                            persisted_entity_id,
-                            cmd.player_entity_id
-                        );
-                    }
-                    controlled_entity_map
-                        .by_player_entity_id
-                        .insert(cmd.player_entity_id.clone(), existing_entity);
-                    commands
-                        .entity(player_entity)
-                        .insert(ControlledEntityGuid(Some(existing_guid.0.to_string())));
-                } else {
-                    bevy::log::info!(
-                        "hydrating controlled entity {} for {} from persistence",
-                        persisted_entity_id,
+            let owner_match = cmd.player_entity_id.clone();
+            let mut existing_matches = simulated_entities
+                .iter()
+                .filter(|(_, _, owner)| owner.0 == owner_match)
+                .collect::<Vec<_>>();
+            if let Some((existing_entity, existing_guid, _)) = existing_matches.pop() {
+                if !existing_matches.is_empty() {
+                    bevy::log::warn!(
+                        "bootstrap found duplicate controlled entities for player={}; using latest match",
                         cmd.player_entity_id
                     );
-                    spawn_simulation_entity(
-                        &mut commands,
-                        &mut controlled_entity_map,
-                        &persisted_entity_id,
-                        &cmd.player_entity_id,
-                        persisted_pos,
-                        persisted_vel,
-                    );
-                    commands
-                        .entity(player_entity)
-                        .insert(ControlledEntityGuid(persisted_control_guid));
                 }
-            } else {
-                bevy::log::warn!(
-                    "bootstrap skipped controlled-entity spawn for {}: no persisted ship record found",
-                    cmd.player_entity_id
-                );
+                controlled_entity_map
+                    .by_player_entity_id
+                    .insert(cmd.player_entity_id.clone(), existing_entity);
+                commands
+                    .entity(player_entity)
+                    .insert(ControlledEntityGuid(Some(existing_guid.0.to_string())));
             }
         }
 
@@ -836,7 +516,7 @@ pub fn process_bootstrap_entity_commands(
             .by_player_entity_id
             .get(&cmd.player_entity_id)
         {
-            if let Ok(control_guid) = controlled_entity_guids.get(controlled_entity) {
+            if let Ok(control_guid) = all_guids.get(controlled_entity) {
                 commands
                     .entity(player_entity)
                     .insert(ControlledEntityGuid(Some(control_guid.0.to_string())));
@@ -862,7 +542,77 @@ pub fn apply_pending_controlled_by_bindings(
     for (client_entity, controlled_entity) in pending.bindings.drain(..) {
         commands.entity(controlled_entity).insert(ControlledBy {
             owner: client_entity,
-            lifetime: Lifetime::SessionBased,
+            lifetime: Lifetime::Persistent,
         });
+    }
+}
+
+/// Syncs Avian Position/Rotation to Bevy Transform for root physics entities
+/// (entities with RigidBody that are not mounted children).
+#[allow(clippy::type_complexity)]
+pub fn sync_controlled_entity_transforms(
+    mut entities: Query<
+        '_,
+        '_,
+        (&'_ Position, &'_ Rotation, &'_ mut Transform),
+        (With<RigidBody>, Without<sidereal_game::MountedOn>),
+    >,
+) {
+    for (position, rotation, mut transform) in &mut entities {
+        let mut planar_position = position.0;
+        if !planar_position.is_finite() {
+            planar_position = Vec2::ZERO;
+        }
+        let safe_rotation = if rotation.is_finite() {
+            *rotation
+        } else {
+            Rotation::IDENTITY
+        };
+        let mut heading = safe_rotation.as_radians();
+        if !heading.is_finite() {
+            heading = 0.0;
+        }
+        transform.translation.x = planar_position.x;
+        transform.translation.y = planar_position.y;
+        transform.translation.z = 0.0;
+        transform.rotation = Quat::from_rotation_z(heading);
+    }
+}
+
+/// Sanitizes non-finite physics values to prevent NaN propagation through
+/// the simulation for root physics entities.
+#[allow(clippy::type_complexity)]
+pub fn enforce_planar_motion(
+    mut entities: Query<
+        '_,
+        '_,
+        (
+            &'_ mut Position,
+            &'_ mut LinearVelocity,
+            &'_ mut Rotation,
+            &'_ mut AngularVelocity,
+        ),
+        (With<RigidBody>, Without<sidereal_game::MountedOn>),
+    >,
+) {
+    for (mut position, mut velocity, mut rotation, mut angular_velocity) in &mut entities {
+        if !position.0.is_finite() {
+            position.0 = Vec2::ZERO;
+        }
+        if !velocity.0.is_finite() {
+            velocity.0 = Vec2::ZERO;
+        }
+        if !angular_velocity.0.is_finite() {
+            angular_velocity.0 = 0.0;
+        }
+        let mut heading = if rotation.is_finite() {
+            rotation.as_radians()
+        } else {
+            0.0
+        };
+        if !heading.is_finite() {
+            heading = 0.0;
+        }
+        *rotation = Rotation::radians(heading);
     }
 }

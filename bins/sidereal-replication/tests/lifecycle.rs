@@ -3,7 +3,7 @@ use sidereal_persistence::{
     ChannelClass, GraphComponentRecord, GraphEntityRecord, NetEnvelope, decode_envelope_json,
     encode_envelope_json,
 };
-use sidereal_replication::state::{
+use sidereal_replication::persistence_helpers::{
     GraphDeltaBatch, flush_pending_updates, hydrate_known_entity_ids, ingest_graph_envelope,
 };
 use std::collections::{HashMap, HashSet};
@@ -146,7 +146,7 @@ fn replication_ingest_persist_hydrate_lifecycle() {
 
     let hydrated_ids = hydrate_known_entity_ids(&mut persistence).expect("hydrate ids after flush");
     assert_eq!(hydrated_ids.len(), 3);
-    assert!(hydrated_ids.iter().any(|id| id.starts_with("ship:")));
+    assert!(hydrated_ids.iter().any(|id| id == &ship_id));
 
     let encoded = encode_envelope_json(&make_envelope(
         501,

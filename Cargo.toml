@@ -48,7 +48,8 @@ parry2d = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", pack
 parry2d-f64 = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", package = "parry2d-f64" }
 
 [profile.release]
-strip = "symbols"
-lto = "thin"
+opt-level = 'z'
+lto = true
 codegen-units = 1
-debug = 0
+panic = 'abort'
+strip = true

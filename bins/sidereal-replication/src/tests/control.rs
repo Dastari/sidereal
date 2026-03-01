@@ -1,4 +1,4 @@
-use crate::replication::view::guid_from_entity_id_like;
+use crate::replication::control::guid_from_entity_id_like;
 
 #[test]
 fn parses_prefixed_or_raw_guid() {

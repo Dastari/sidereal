@@ -1,129 +1,22 @@
 mod bootstrap_runtime;
 mod replication;
-mod visibility;
-
-use crate::replication::assets::{
-    StreamableAssetCache, initialize_asset_stream_cache, receive_client_asset_acks,
-    receive_client_asset_requests, send_asset_stream_chunks_paced,
-    stream_bootstrap_assets_to_authenticated_clients,
+use crate::replication::{
+    assets, auth, control, input, lifecycle, persistence, runtime_state, simulation_entities,
+    visibility,
 };
-use crate::replication::auth::{
-    cleanup_client_auth_bindings, receive_client_auth_messages, receive_client_disconnect_notify,
-};
-use crate::replication::input::{
-    ClientInputDropMetrics, ClientInputDropMetricsLogState, ClientInputTickTracker,
-    InputActivityLogState, InputRateLimitState, LatestRealtimeInputsByPlayer,
-    drain_native_player_inputs_to_action_queue, receive_latest_realtime_input_messages,
-    report_input_drop_metrics,
-};
-use crate::replication::lifecycle::{
-    configure_remote, hydrate_replication_world, log_replication_client_connected,
-    setup_client_replication_sender, start_lightyear_server,
-};
-use crate::replication::persistence::{
-    PersistenceDirtyState, PersistenceSchemaInitState, PersistenceWorkerState,
-    SimulationPersistenceTimer, flush_simulation_state_persistence,
-    mark_dirty_persistable_entities_gameplay, mark_dirty_persistable_entities_modules,
-    mark_dirty_persistable_entities_runtime_state, mark_dirty_persistable_entities_spatial,
-    report_persistence_worker_metrics, start_persistence_worker,
-};
-use crate::replication::physics_runtime::{
-    enforce_planar_ship_motion, sync_simulated_ship_components,
-};
-use crate::replication::runtime_state::{
-    PlayerControlDebugState, compute_controlled_entity_scanner_ranges,
-    log_player_control_state_changes, sync_player_anchor_to_controlled_entity,
-    update_client_observer_anchor_positions,
-};
-use crate::replication::simulation_entities::{
-    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
-    apply_pending_controlled_by_bindings, hydrate_simulation_entities,
-    process_bootstrap_entity_commands,
-};
-use crate::replication::transport::ensure_server_transport_channels;
-use crate::replication::view::ClientControlRequestOrder;
-use crate::replication::view::receive_client_control_requests;
-use crate::replication::visibility::{VisibilityScratch, update_network_visibility};
 use avian2d::prelude::{
     Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems, PhysicsTransformPlugin,
 };
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::log::LogPlugin;
-use bevy::log::info;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
-use lightyear::prelude::ReplicationBufferSystems;
-use lightyear::prelude::Unlink;
-use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::server::ServerPlugins;
-use sidereal_asset_runtime::default_asset_dependencies;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
-use sidereal_game::SiderealGamePlugin;
+use sidereal_game::{HierarchyRebuildEnabled, SiderealGamePlugin};
 use sidereal_net::register_lightyear_protocol;
-use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use visibility::{ClientObserverAnchorPositionMap, ClientVisibilityRegistry};
-
-#[derive(Debug, Resource, Clone)]
-#[allow(dead_code)]
-pub(crate) struct BrpAuthToken(String);
-
-#[derive(Debug, Resource, Clone, Copy)]
-#[allow(dead_code)]
-struct HydratedEntityCount(usize);
-
-#[derive(Debug, Component)]
-#[allow(dead_code)]
-struct HydratedGraphEntity {
-    entity_id: String,
-    labels: Vec<String>,
-    component_count: usize,
-}
-
-#[derive(Resource, Default)]
-pub(crate) struct AuthenticatedClientBindings {
-    pub by_client_entity: HashMap<Entity, String>,
-    pub by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
-}
-
-/// Tracks last time we received any message from each client (by client entity).
-/// Used to disconnect idle clients so the server stops sending to dead sockets.
-#[derive(Resource, Default)]
-pub(crate) struct ClientLastActivity(pub(crate) HashMap<Entity, f64>);
-
-/// Client entities we have already triggered Unlink for (idle timeout). Cleared when the
-/// entity is no longer in the clients query, so we only trigger once per client.
-#[derive(Resource, Default)]
-pub(crate) struct PendingIdleUnlink(pub(crate) HashSet<Entity>);
-
-/// Chunk queued for paced sending to avoid UDP send-buffer overflow (EAGAIN).
-pub(crate) struct PendingAssetChunk {
-    pub(crate) asset_id: String,
-    pub(crate) relative_cache_path: String,
-    pub(crate) chunk_index: u32,
-    pub(crate) chunk_count: u32,
-    pub(crate) bytes: Vec<u8>,
-}
-
-#[derive(Resource, Default)]
-pub(crate) struct AssetStreamServerState {
-    sent_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
-    pending_requested_asset_ids_by_remote: HashMap<lightyear::prelude::PeerId, HashSet<String>>,
-    acked_assets_by_remote: HashMap<lightyear::prelude::PeerId, HashMap<String, u64>>,
-    /// Chunks to send per remote; drained at a fixed rate per frame to avoid EAGAIN.
-    pub(crate) pending_chunks_by_remote:
-        HashMap<lightyear::prelude::PeerId, std::collections::VecDeque<PendingAssetChunk>>,
-    /// Consecutive chunk send failures per remote for backoff/drop behavior.
-    pub(crate) chunk_send_failures_by_remote: HashMap<lightyear::prelude::PeerId, u32>,
-    /// Remaining FixedUpdate ticks to skip chunk sends per remote after a send error.
-    pub(crate) chunk_send_backoff_frames_by_remote: HashMap<lightyear::prelude::PeerId, u16>,
-}
-
-#[derive(Resource, Default)]
-struct AssetDependencyMap {
-    dependencies_by_asset_id: HashMap<String, Vec<String>>,
-}
 
 fn main() {
     let remote_cfg: RemoteInspectConfig = match RemoteInspectConfig::from_env("REPLICATION", 15713)
@@ -152,6 +45,8 @@ fn main() {
     app.add_plugins(ScenePlugin);
     app.add_plugins(LogPlugin::default());
     app.add_plugins(SiderealGamePlugin);
+    // Prevent server-side Bevy hierarchy components from being replicated.
+    app.insert_resource(HierarchyRebuildEnabled(false));
     app.add_plugins(
         PhysicsPlugins::default()
             .with_length_unit(1.0)
@@ -166,18 +61,38 @@ fn main() {
         tick_duration: Duration::from_secs_f64(1.0 / 30.0),
     });
     register_lightyear_protocol(&mut app);
-    configure_remote(&mut app, &remote_cfg);
-    // (rust-analyzer may show "expected &[], found &[; 1]" here; compiler accepts it — macro expansion quirk)
-    info!("replication running native world-sync runtime path");
+    lifecycle::configure_remote(&mut app, &remote_cfg);
+
     // Lightyear/Bevy plugins can initialize Fixed time; enforce authoritative 30 Hz after plugin wiring.
     app.insert_resource(Time::<Fixed>::from_hz(30.0));
+    init_resources(&mut app);
+    register_systems(&mut app);
+    app.add_observer(lifecycle::log_replication_client_connected);
+    app.add_observer(lifecycle::setup_client_replication_sender);
+    app.run();
+}
+
+fn init_resources(app: &mut App) {
+    visibility::init_resources(app);
+    simulation_entities::init_resources(app);
+    auth::init_resources(app);
+    assets::init_resources(app);
+    input::init_resources(app);
+    persistence::init_resources(app);
+    control::init_resources(app);
+    runtime_state::init_resources(app);
+    lifecycle::init_resources(app);
+}
+
+fn register_systems(app: &mut App) {
     app.add_systems(
         Startup,
         (
-            hydrate_replication_world,
-            hydrate_simulation_entities,
-            start_lightyear_server,
-            start_persistence_worker,
+            lifecycle::hydrate_replication_world,
+            simulation_entities::hydrate_simulation_entities,
+            lifecycle::start_lightyear_server,
+            persistence::start_persistence_worker,
+            assets::initialize_asset_stream_cache,
         )
             .chain(),
     );
@@ -185,73 +100,50 @@ fn main() {
         Startup,
         bootstrap_runtime::start_replication_control_listener,
     );
-    app.add_systems(Startup, initialize_asset_stream_cache);
-    app.add_observer(log_replication_client_connected);
-    app.add_observer(setup_client_replication_sender);
-    app.insert_resource(ClientVisibilityRegistry::default());
-    app.insert_resource(VisibilityScratch::default());
-    app.insert_resource(ClientObserverAnchorPositionMap::default());
-    app.insert_resource(PlayerControlledEntityMap::default());
-    app.insert_resource(PlayerRuntimeEntityMap::default());
-    app.insert_resource(AuthenticatedClientBindings::default());
-    app.insert_resource(AssetStreamServerState::default());
-    app.insert_resource(StreamableAssetCache::default());
-    app.insert_resource(ClientInputTickTracker::default());
-    app.insert_resource(ClientInputDropMetrics::default());
-    app.insert_resource(ClientInputDropMetricsLogState::default());
-    app.insert_resource(InputActivityLogState::default());
-    app.insert_resource(InputRateLimitState::default());
-    app.insert_resource(LatestRealtimeInputsByPlayer::default());
-    app.insert_resource(AssetDependencyMap {
-        dependencies_by_asset_id: default_asset_dependencies(),
-    });
-    app.insert_resource(PersistenceWorkerState::default());
-    app.insert_resource(PersistenceDirtyState::default());
-    app.insert_resource(PersistenceSchemaInitState::default());
-    app.insert_resource(SimulationPersistenceTimer::default());
-    app.insert_resource(PendingControlledByBindings::default());
-    app.insert_resource(ClientControlRequestOrder::default());
-    app.insert_resource(PlayerControlDebugState::default());
-    app.insert_resource(ClientLastActivity::default());
-    app.insert_resource(PendingIdleUnlink::default());
+
     app.add_systems(
         Update,
         (
-            // Apply deferred so Unlink from previous frame is applied before we read the clients query.
             bevy::ecs::schedule::ApplyDeferred,
-            ensure_server_transport_channels,
-            receive_client_disconnect_notify,
-            cleanup_client_auth_bindings,
-            disconnect_idle_clients,
-            receive_latest_realtime_input_messages,
-            receive_client_control_requests,
-            receive_client_asset_requests,
-            receive_client_asset_acks,
-            report_input_drop_metrics,
-            report_persistence_worker_metrics,
-            process_bootstrap_entity_commands,
-            log_player_control_state_changes.after(process_bootstrap_entity_commands),
+            lifecycle::ensure_server_transport_channels,
+            auth::receive_client_disconnect_notify,
+            auth::cleanup_client_auth_bindings,
+            input::receive_latest_realtime_input_messages,
+            control::receive_client_control_requests,
+            assets::receive_client_asset_requests,
+            assets::receive_client_asset_acks,
+            input::report_input_drop_metrics,
+            persistence::report_persistence_worker_metrics,
+            simulation_entities::process_bootstrap_entity_commands,
+            runtime_state::log_player_control_state_changes
+                .after(simulation_entities::process_bootstrap_entity_commands),
+            lifecycle::disconnect_idle_clients,
         )
             .chain(),
     );
-    // Run auth after Update so Lightyear has delivered ControlChannel messages; otherwise
-    // reconnecting clients never get ServerSessionReadyMessage (receiver was still empty in Update).
-    app.add_systems(PostUpdate, receive_client_auth_messages);
+    app.add_systems(PostUpdate, auth::receive_client_auth_messages);
+    app.add_systems(
+        PostUpdate,
+        simulation_entities::apply_pending_controlled_by_bindings
+            .after(lightyear::prelude::ReplicationBufferSystems::AfterBuffer),
+    );
+
     app.add_systems(
         FixedUpdate,
         (
-            stream_bootstrap_assets_to_authenticated_clients,
-            send_asset_stream_chunks_paced.after(stream_bootstrap_assets_to_authenticated_clients),
+            assets::stream_bootstrap_assets_to_authenticated_clients,
+            assets::send_asset_stream_chunks_paced
+                .after(assets::stream_bootstrap_assets_to_authenticated_clients),
         ),
     );
     app.add_systems(
         FixedUpdate,
         (
-            sync_simulated_ship_components,
-            sync_player_anchor_to_controlled_entity,
-            update_client_observer_anchor_positions,
-            compute_controlled_entity_scanner_ranges,
-            update_network_visibility,
+            simulation_entities::sync_controlled_entity_transforms,
+            runtime_state::sync_player_anchor_to_controlled_entity,
+            runtime_state::update_client_observer_anchor_positions,
+            runtime_state::compute_controlled_entity_scanner_ranges,
+            visibility::update_network_visibility,
         )
             .chain()
             .after(PhysicsSystems::Writeback),
@@ -259,72 +151,31 @@ fn main() {
     app.add_systems(
         FixedUpdate,
         (
+            mark_dirty_persistable_entities,
             mark_dirty_persistable_entities_spatial,
-            mark_dirty_persistable_entities_runtime_state,
-            mark_dirty_persistable_entities_modules,
-            mark_dirty_persistable_entities_gameplay,
+            mark_dirty_persistable_entities_components,
         )
             .after(PhysicsSystems::Writeback),
     );
     app.add_systems(
         FixedUpdate,
-        flush_simulation_state_persistence.after(update_network_visibility),
+        persistence::flush_simulation_state_persistence
+            .after(visibility::update_network_visibility),
     );
     app.add_systems(
         FixedUpdate,
-        enforce_planar_ship_motion.before(PhysicsSystems::Prepare),
+        simulation_entities::enforce_planar_motion.before(PhysicsSystems::Prepare),
     );
     app.add_systems(
         FixedUpdate,
-        drain_native_player_inputs_to_action_queue.before(PhysicsSystems::Prepare),
+        input::drain_native_player_inputs_to_action_queue.before(PhysicsSystems::Prepare),
     );
-    app.add_systems(
-        PostUpdate,
-        apply_pending_controlled_by_bindings.after(ReplicationBufferSystems::AfterBuffer),
-    );
-    app.run();
 }
 
-/// Default idle time (seconds) after which we disconnect a client we have not heard from.
-/// With raw UDP, the server never learns the client closed; it keeps sending. We disconnect
-/// so we stop sending to a dead socket and free resources.
-const DEFAULT_IDLE_DISCONNECT_SECONDS: f64 = 15.0;
-
-fn disconnect_idle_clients(
-    time: Res<Time<Real>>,
-    mut last_activity: ResMut<ClientLastActivity>,
-    mut pending_unlink: ResMut<PendingIdleUnlink>,
-    clients: Query<'_, '_, Entity, With<ClientOf>>,
-    mut commands: Commands<'_, '_>,
-) {
-    let current_clients: HashSet<Entity> = clients.iter().collect();
-    // Drop entries for clients that are already gone so we don't leak.
-    pending_unlink.0.retain(|e| current_clients.contains(e));
-
-    let now_s = time.elapsed_secs_f64();
-    let timeout_s = std::env::var("REPLICATION_IDLE_DISCONNECT_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(DEFAULT_IDLE_DISCONNECT_SECONDS);
-    for client_entity in &clients {
-        if pending_unlink.0.contains(&client_entity) {
-            continue;
-        }
-        let last = *last_activity.0.entry(client_entity).or_insert(now_s);
-        if now_s - last > timeout_s {
-            info!(
-                "replication disconnecting idle client entity={:?} (no activity for {:.0}s)",
-                client_entity,
-                now_s - last
-            );
-            pending_unlink.0.insert(client_entity);
-            commands.trigger(Unlink {
-                entity: client_entity,
-                reason: "idle_timeout".to_string(),
-            });
-        }
-    }
-}
+use crate::replication::persistence::{
+    mark_dirty_persistable_entities, mark_dirty_persistable_entities_components,
+    mark_dirty_persistable_entities_spatial,
+};
 
 #[cfg(test)]
 mod tests;

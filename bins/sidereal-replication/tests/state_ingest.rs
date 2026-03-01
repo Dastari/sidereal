@@ -1,5 +1,5 @@
 use sidereal_persistence::GraphEntityRecord;
-use sidereal_replication::state::{GraphDeltaBatch, ingest_graph_batch};
+use sidereal_replication::persistence_helpers::{GraphDeltaBatch, ingest_graph_batch};
 use std::collections::{HashMap, HashSet};
 
 #[test]

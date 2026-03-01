@@ -12,6 +12,7 @@ struct SiderealComponentArgs {
     kind: LitStr,
     persist: LitBool,
     replicate: LitBool,
+    predict: LitBool,
     visibility: Option<ExprArray>,
 }
 
@@ -20,6 +21,7 @@ impl Parse for SiderealComponentArgs {
         let mut kind = None;
         let mut persist = None;
         let mut replicate = None;
+        let mut predict = None;
         let mut visibility = None;
 
         let entries = Punctuated::<MetaArg, Token![,]>::parse_terminated(input)?;
@@ -28,6 +30,7 @@ impl Parse for SiderealComponentArgs {
                 MetaArg::Kind(v) => kind = Some(v),
                 MetaArg::Persist(v) => persist = Some(v),
                 MetaArg::Replicate(v) => replicate = Some(v),
+                MetaArg::Predict(v) => predict = Some(v),
                 MetaArg::Visibility(v) => visibility = Some(v),
             }
         }
@@ -37,6 +40,7 @@ impl Parse for SiderealComponentArgs {
                 .ok_or_else(|| Error::new(input.span(), "missing required argument: kind"))?,
             persist: persist.unwrap_or(LitBool::new(true, input.span())),
             replicate: replicate.unwrap_or(LitBool::new(true, input.span())),
+            predict: predict.unwrap_or(LitBool::new(false, input.span())),
             visibility,
         })
     }
@@ -46,6 +50,7 @@ enum MetaArg {
     Kind(LitStr),
     Persist(LitBool),
     Replicate(LitBool),
+    Predict(LitBool),
     Visibility(ExprArray),
 }
 
@@ -65,6 +70,10 @@ impl Parse for MetaArg {
             "replicate" => {
                 let lit: LitBool = input.parse()?;
                 Ok(Self::Replicate(lit))
+            }
+            "predict" => {
+                let lit: LitBool = input.parse()?;
+                Ok(Self::Predict(lit))
             }
             "visibility" => {
                 let expr: Expr = input.parse()?;
@@ -105,8 +114,13 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let kind = args.kind;
     let persist = args.persist.value;
     let replicate = args.replicate.value;
+    let predict = args.predict.value;
     let register_fn_ident = format_ident!(
         "__sidereal_register_reflect_{}",
+        item_ident.to_string().to_lowercase()
+    );
+    let register_lightyear_fn_ident = format_ident!(
+        "__sidereal_register_lightyear_{}",
         item_ident.to_string().to_lowercase()
     );
     let type_path_fn_ident = format_ident!(
@@ -146,6 +160,27 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { &[crate::component_meta::VisibilityScope::OwnerOnly] }
     };
 
+    let lightyear_body = if replicate && predict {
+        quote! {
+            #[cfg(feature = "lightyear")]
+            {
+                use lightyear::prelude::AppComponentExt;
+                use lightyear::prediction::prelude::PredictionRegistrationExt;
+                app.register_component::<#item_ident>().add_prediction();
+            }
+        }
+    } else if replicate {
+        quote! {
+            #[cfg(feature = "lightyear")]
+            {
+                use lightyear::prelude::AppComponentExt;
+                app.register_component::<#item_ident>();
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
         #item_ast
 
@@ -154,12 +189,18 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
                 kind: #kind,
                 persist: #persist,
                 replicate: #replicate,
+                predict: #predict,
                 visibility: #visibility_items,
             };
         }
 
         fn #register_fn_ident(app: &mut bevy::prelude::App) {
             app.register_type::<#item_ident>();
+        }
+
+        #[allow(unused_variables)]
+        fn #register_lightyear_fn_ident(app: &mut bevy::prelude::App) {
+            #lightyear_body
         }
 
         fn #type_path_fn_ident() -> &'static str {
@@ -169,6 +210,7 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
         inventory::submit! {
             crate::component_meta::SiderealComponentRegistration {
                 register_reflect: #register_fn_ident,
+                register_lightyear: #register_lightyear_fn_ident,
                 type_path: #type_path_fn_ident,
                 meta: <#item_ident as crate::component_meta::SiderealComponentMetadata>::META,
             }

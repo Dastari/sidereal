@@ -1,16 +1,19 @@
-//! Platform and render config: constants, wgpu, viewport, frame cap, auth UI helpers.
+//! Platform and render config: constants, wgpu, viewport, frame cap.
 
 use bevy::prelude::*;
 use bevy::render::settings::{Backends, WgpuSettings};
+use std::fs;
 use std::net::TcpListener;
 use std::time::Instant;
 
 use super::resources::FrameRateCap;
-use super::state::{ClientSession, FocusField};
 
 pub const BACKDROP_RENDER_LAYER: usize = 1;
 pub const UI_OVERLAY_RENDER_LAYER: usize = 31;
 pub const ORTHO_SCALE_PER_DISTANCE: f32 = 0.02;
+/// Not used when UI overlay uses true screen space (scale derived from window height).
+#[allow(dead_code)]
+pub const UI_OVERLAY_ORTHO_SCALE: f32 = 0.6;
 pub const MIN_WINDOW_WIDTH: f32 = 960.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 540.0;
 pub const STREAMED_SPRITE_PIXEL_SHADER_PATH: &str =
@@ -25,29 +28,6 @@ pub fn safe_viewport_size(window: &bevy::window::Window) -> Option<Vec2> {
     Some(Vec2::new(width, height))
 }
 
-pub fn active_field_mut(session: &mut ClientSession) -> &mut String {
-    match session.focus {
-        FocusField::Email => &mut session.email,
-        FocusField::Password => &mut session.password,
-        FocusField::ResetToken => &mut session.reset_token,
-        FocusField::NewPassword => &mut session.new_password,
-    }
-}
-
-pub fn mask(value: &str) -> String {
-    if value.is_empty() {
-        return "".to_string();
-    }
-    "*".repeat(value.chars().count())
-}
-
-pub fn is_printable_char(chr: char) -> bool {
-    let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
-        || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
-        || ('\u{100000}'..='\u{10fffd}').contains(&chr);
-    !is_in_private_use_area && !chr.is_ascii_control()
-}
-
 pub fn preferred_backends() -> Backends {
     if let Ok(raw_value) = std::env::var("SIDEREAL_CLIENT_WGPU_BACKENDS") {
         let parsed = Backends::from_comma_list(&raw_value);
@@ -60,7 +40,24 @@ pub fn preferred_backends() -> Backends {
             return parsed;
         }
     }
-    Backends::from_env().unwrap_or(Backends::PRIMARY)
+    if let Some(from_env) = Backends::from_env() {
+        return from_env;
+    }
+    if is_wsl_runtime() {
+        bevy::log::warn!(
+            "WSL runtime detected; defaulting client backend to VULKAN. Override with SIDEREAL_CLIENT_WGPU_BACKENDS or WGPU_BACKEND."
+        );
+        return Backends::VULKAN;
+    }
+    Backends::PRIMARY
+}
+
+fn is_wsl_runtime() -> bool {
+    let osrelease = fs::read_to_string("/proc/sys/kernel/osrelease")
+        .or_else(|_| fs::read_to_string("/proc/version"))
+        .unwrap_or_default();
+    let lowered = osrelease.to_ascii_lowercase();
+    lowered.contains("microsoft") || lowered.contains("wsl")
 }
 
 pub fn configured_wgpu_settings() -> WgpuSettings {

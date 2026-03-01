@@ -47,7 +47,7 @@ pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
         },
         StreamableAssetSource {
             asset_id: "space_background_wgsl",
-            relative_cache_path: "shaders/simple_space_background.wgsl",
+            relative_cache_path: "shaders/space_background.wgsl",
             content_type: "text/plain; charset=utf-8",
         },
         StreamableAssetSource {
@@ -55,11 +55,39 @@ pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
             relative_cache_path: "shaders/sprite_pixel_effect.wgsl",
             content_type: "text/plain; charset=utf-8",
         },
+        StreamableAssetSource {
+            asset_id: "space_bg_flare_white_png",
+            relative_cache_path: "textures/spacescape/flare-white-small1.png",
+            content_type: "image/png",
+        },
+        StreamableAssetSource {
+            asset_id: "space_bg_flare_blue_png",
+            relative_cache_path: "textures/spacescape/flare-blue-purple2.png",
+            content_type: "image/png",
+        },
+        StreamableAssetSource {
+            asset_id: "space_bg_flare_red_png",
+            relative_cache_path: "textures/spacescape/flare-red-yellow1.png",
+            content_type: "image/png",
+        },
+        StreamableAssetSource {
+            asset_id: "space_bg_flare_sun_png",
+            relative_cache_path: "textures/spacescape/sun.png",
+            content_type: "image/png",
+        },
     ]
 }
 
 pub fn default_asset_dependencies() -> HashMap<String, Vec<String>> {
-    HashMap::new()
+    HashMap::from([(
+        "space_background_wgsl".to_string(),
+        vec![
+            "space_bg_flare_white_png".to_string(),
+            "space_bg_flare_blue_png".to_string(),
+            "space_bg_flare_red_png".to_string(),
+            "space_bg_flare_sun_png".to_string(),
+        ],
+    )])
 }
 
 pub fn expand_required_assets(

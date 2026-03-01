@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import { callBrp, type BrpTarget } from '@/server/brp'
 
 function parseTarget(value: unknown): BrpTarget {
+  if (value === 'hostClient') return 'hostClient'
   return value === 'client' ? 'client' : 'server'
 }
 
@@ -13,7 +14,7 @@ export const Route = createFileRoute('/api/delete-live-entity/$entityId')({
         const { entityId } = params
         const url = new URL(request.url)
         const target = parseTarget(url.searchParams.get('target'))
-        if (target === 'client') {
+        if (target === 'client' || target === 'hostClient') {
           return json(
             {
               error: 'Deleting entities from client BRP is disabled',

@@ -11,12 +11,12 @@ use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected, Disconnect, RawClient};
 use sidereal_net::{ClientDisconnectNotifyMessage, ControlChannel};
 
-use super::components::WorldEntity;
+use super::app_state::*;
+use super::assets::LocalAssetManager;
 use super::resources::{
     BootstrapWatchdogState, ClientAuthSyncState, ClientControlRequestState, ClientInputAckTracker,
-    LocalAssetManager, LogoutCleanupRequested, PendingDisconnectNotify,
+    LogoutCleanupRequested, PendingDisconnectNotify,
 };
-use super::state::*;
 
 /// Requests logout on window close (native only). Sets PendingDisconnectNotify so the
 /// notify is sent before the app exits. Runs in the same states as Escape logout.
@@ -83,23 +83,6 @@ pub fn send_disconnect_notify_and_trigger_system(
         commands.trigger(Disconnect { entity });
     }
     cleanup_requested.0 = true;
-}
-
-/// Despawns all world entities (replicated/predicted scene, ship, etc.) so the world is empty
-/// when returning to auth/character select. Runs when logout cleanup is requested, before
-/// logout_cleanup_system clears state.
-pub fn logout_despawn_world_entities_system(
-    mut commands: Commands<'_, '_>,
-    cleanup_requested: Res<'_, LogoutCleanupRequested>,
-    world_entities: Query<'_, '_, Entity, With<WorldEntity>>,
-) {
-    if !cleanup_requested.0 {
-        return;
-    }
-    let to_despawn: Vec<Entity> = world_entities.iter().collect();
-    for entity in to_despawn {
-        commands.entity(entity).despawn();
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

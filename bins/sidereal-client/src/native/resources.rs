@@ -1,7 +1,6 @@
 //! Shared ECS resources (network, assets, tuning, debug, etc.).
 
 use bevy::prelude::*;
-use sidereal_asset_runtime::AssetCacheIndex;
 use sidereal_game::EntityAction;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -45,86 +44,6 @@ pub(crate) struct ClientControlDebugState {
     pub last_detached_free_camera: bool,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PendingAssetChunks {
-    pub relative_cache_path: String,
-    pub byte_len: u64,
-    pub chunk_count: u32,
-    pub chunks: Vec<Option<Vec<u8>>>,
-    pub counts_toward_bootstrap: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct LocalAssetRecord {
-    pub relative_cache_path: String,
-    pub _content_type: String,
-    pub _byte_len: u64,
-    pub _chunk_count: u32,
-    pub asset_version: u64,
-    pub sha256_hex: String,
-    pub ready: bool,
-}
-
-#[derive(Debug, Resource, Default)]
-pub(crate) struct LocalAssetManager {
-    pub records_by_asset_id: HashMap<String, LocalAssetRecord>,
-    pub pending_assets: HashMap<String, PendingAssetChunks>,
-    pub requested_asset_ids: std::collections::HashSet<String>,
-    pub cache_index: AssetCacheIndex,
-    pub cache_index_loaded: bool,
-    pub bootstrap_manifest_seen: bool,
-    pub bootstrap_phase_complete: bool,
-    pub bootstrap_total_bytes: u64,
-    pub bootstrap_ready_bytes: u64,
-}
-
-impl LocalAssetManager {
-    pub fn bootstrap_complete(&self) -> bool {
-        self.bootstrap_phase_complete
-    }
-
-    pub fn bootstrap_progress(&self) -> f32 {
-        if self.bootstrap_total_bytes == 0 {
-            return if self.bootstrap_manifest_seen {
-                1.0
-            } else {
-                0.0
-            };
-        }
-        (self.bootstrap_ready_bytes as f32 / self.bootstrap_total_bytes as f32).clamp(0.0, 1.0)
-    }
-
-    pub fn cached_relative_path(&self, asset_id: &str) -> Option<&str> {
-        self.records_by_asset_id
-            .get(asset_id)
-            .filter(|record| record.ready)
-            .map(|record| record.relative_cache_path.as_str())
-    }
-
-    pub fn should_show_runtime_stream_indicator(&self) -> bool {
-        self.bootstrap_complete() && !self.pending_assets.is_empty()
-    }
-
-    pub fn is_cache_fresh(&self, asset_id: &str, asset_version: u64, sha256_hex: &str) -> bool {
-        self.cache_index
-            .by_asset_id
-            .get(asset_id)
-            .is_some_and(|entry| {
-                entry.asset_version == asset_version && entry.sha256_hex == sha256_hex
-            })
-    }
-}
-
-#[derive(Debug, Resource, Default)]
-pub(crate) struct RuntimeAssetStreamIndicatorState {
-    pub blinking_phase_s: f32,
-}
-
-#[derive(Debug, Resource, Default)]
-pub(crate) struct CriticalAssetRequestState {
-    pub last_request_at_s: f64,
-}
-
 #[derive(Debug, Resource, Default)]
 pub(crate) struct DebugBlueOverlayEnabled(pub bool);
 
@@ -144,6 +63,23 @@ pub(crate) struct StarfieldMotionState {
     pub starfield_drift_uv: Vec2,
     pub background_drift_uv: Vec2,
     pub smoothed_warp: f32,
+}
+
+#[derive(Debug, Resource, Clone)]
+pub(crate) struct FullscreenExternalWorldData {
+    pub viewport_time: Vec4,
+    pub drift_intensity: Vec4,
+    pub velocity_dir: Vec4,
+}
+
+impl Default for FullscreenExternalWorldData {
+    fn default() -> Self {
+        Self {
+            viewport_time: Vec4::new(1920.0, 1080.0, 0.0, 0.0),
+            drift_intensity: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            velocity_dir: Vec4::new(0.0, 1.0, 1.0, 0.0),
+        }
+    }
 }
 
 #[derive(Debug, Resource)]

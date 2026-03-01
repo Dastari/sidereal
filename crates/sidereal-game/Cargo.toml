@@ -5,11 +5,17 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+lightyear = ["dep:lightyear"]
+
 [dependencies]
 avian2d.workspace = true
 bevy.workspace = true
 inventory.workspace = true
+lightyear = { workspace = true, optional = true }
 serde.workspace = true
+serde_json.workspace = true
 sidereal-core = { path = "../sidereal-core" }
 sidereal-component-macros = { path = "../sidereal-component-macros" }
 uuid.workspace = true

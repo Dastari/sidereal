@@ -1,11 +1,12 @@
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
-// Three parallax layers: far (slow, tiny, dim) -> mid -> close (fast, large, bright). Wrapping via fract().
-const NUM_LAYERS: f32 = 3.0;
+const MAX_LAYERS: i32 = 8;
 
 @group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
 @group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;   // .xy = accumulated scroll (Y flipped on CPU for screen); shader aspect-corrects only
-@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;      // .xy = heading (unit vector), .z = magnitude (speed)
+@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;      // .xy = heading (unit vector), .z = camera zoom scale, .w reserved
+@group(2) @binding(3) var<uniform> starfield_params: vec4<f32>;  // .x = density, .y = layer count, .z = initial z offset, .w = alpha
+@group(2) @binding(4) var<uniform> starfield_tint: vec4<f32>;    // .rgb = color tint, .w = intensity
 
 fn hash21(p_in: vec2<f32>) -> f32 {
     var p = fract(p_in * vec2<f32>(123.23, 456.34));
@@ -37,7 +38,8 @@ fn star(local: vec2<f32>, radius: f32, dir: vec2<f32>, elongation: f32) -> f32 {
 }
 
 // depth 0 = far (tiny, dim), 0.5 = mid, 1 = close (large, bright). Far radius modest so far layer reads as distant stars.
-fn star_layer(uv: vec2<f32>, depth: f32, vel_dir: vec2<f32>, warp: f32) -> vec3<f32> {
+// density_scale: 0 = no stars, 1 = full density (current look).
+fn star_layer(uv: vec2<f32>, depth: f32, vel_dir: vec2<f32>, warp: f32, density_scale: f32) -> vec3<f32> {
     var col = vec3<f32>(0.0);
     let gv = fract(uv) - 0.5;
     let id = floor(uv);
@@ -49,7 +51,7 @@ fn star_layer(uv: vec2<f32>, depth: f32, vel_dir: vec2<f32>, warp: f32) -> vec3<
             let offset = vec2<f32>(f32(x), f32(y));
             let cell_id = id + offset;
             
-            if (hash21(cell_id * 1.73) > density) {
+            if (hash21(cell_id * 1.73) > density * density_scale) {
                 continue;
             }
 
@@ -60,9 +62,13 @@ fn star_layer(uv: vec2<f32>, depth: f32, vel_dir: vec2<f32>, warp: f32) -> vec3<
             let elongation = warp * mix(0.45, 1.45, depth);
 
             let s = star(local, radius, vel_dir, elongation);
+            let d = length(local);
+            let soft_halo = smoothstep(radius * 2.9, radius * 0.35, d) * 0.28;
             let brightness = mix(0.7, 2.0, depth * depth) * (1.0 + warp * depth * 0.55);
+            let star_tint = mix(vec3<f32>(0.72, 0.83, 1.0), vec3<f32>(0.6, 0.76, 1.0), depth);
+            let glow_tint = vec3<f32>(0.44, 0.64, 1.0);
 
-            col += s * brightness;
+            col += (s * star_tint + soft_halo * glow_tint) * brightness;
         }
     }
     return col;
@@ -72,8 +78,8 @@ fn star_layer(uv: vec2<f32>, depth: f32, vel_dir: vec2<f32>, warp: f32) -> vec3<
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let viewport = viewport_time.xy;
     let warp = viewport_time.w;
-    let intensity = drift_intensity.z;
-    let user_alpha = drift_intensity.w;
+    let intensity = drift_intensity.z * max(starfield_tint.w, 0.0);
+    let user_alpha = drift_intensity.w * clamp(starfield_params.w, 0.0, 1.0);
     
     let aspect = viewport.x / max(viewport.y, 1.0);
     // Aspect-correct travel only (direction handled by CPU Y-flip)
@@ -81,6 +87,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     travel = vec2<f32>(travel.x * aspect, travel.y);
 
     let heading = velocity_dir.xy;
+    // Bevy orthographic scale grows when zooming out; invert for shader-space zoom response.
+    let zoom_scale = 1.0 / max(velocity_dir.z, 0.01);
+    let density_scale = clamp(starfield_params.x, 0.0, 1.0);
+    let layer_count = clamp(i32(starfield_params.y + 0.5), 1, MAX_LAYERS);
+    let initial_z_offset = clamp(starfield_params.z, 0.0, 1.0);
     var vel_dir = vec2<f32>(1.0, 0.0);
     if (length(heading) > 0.01) {
         vel_dir = normalize(vec2<f32>(-heading.x, heading.y));
@@ -89,32 +100,38 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var uv = (in.uv - 0.5) * vec2<f32>(aspect, 1.0);
 
     var col = vec3<f32>(0.0);
-    let inv_layers = 1.0 / NUM_LAYERS;
-    var i = 0.0;
-    
-    // Scroll factors: far = slow (0.12), near = 1.2. Layer alpha: far 25%, mid 50%, near 100%.
-    loop {
-        if (i >= 1.0) { break; }
-        let depth = i;
-        
-        let scale = mix(55.0, 12.0, pow(depth, 0.7));
-        let scroll_factor = mix(0.12, 1.2, depth);
+    // Scroll factors: far = slow (0.12), near = 1.2. Layer alpha: far 25%, near 100%.
+    for (var layer_idx: i32 = 0; layer_idx < MAX_LAYERS; layer_idx = layer_idx + 1) {
+        if (layer_idx >= layer_count) {
+            break;
+        }
+        let depth = f32(layer_idx) / max(f32(layer_count - 1), 1.0);
+        let effective_depth = depth * (1.0 - initial_z_offset);
+
+        // Depth-dependent zoom response: near layers react more than far layers.
+        let layer_zoom = mix(
+            1.0 + (zoom_scale - 1.0) * 0.18,
+            1.0 + (zoom_scale - 1.0) * 0.92,
+            effective_depth
+        );
+        let scale = mix(55.0, 12.0, pow(effective_depth, 0.7)) / max(layer_zoom, 0.01);
+        let scroll_factor = mix(0.12, 1.2, effective_depth);
         let layer_drift = travel * scroll_factor;
-        let layer_uv = uv * scale + vec2<f32>(i * 271.0, i * 389.0) + layer_drift;
-        let layer_alpha = mix(0.25, 1.0, depth);
+        let layer_seed = f32(layer_idx);
+        let layer_uv = uv * scale + vec2<f32>(layer_seed * 271.0, layer_seed * 389.0) + layer_drift;
+        let layer_alpha = mix(0.36, 0.10, effective_depth);
 
-        col += star_layer(layer_uv, depth, vel_dir, warp) * mix(0.9, 1.5, depth) * layer_alpha;
+        col += star_layer(layer_uv, effective_depth, vel_dir, warp, density_scale) * mix(0.9, 1.5, effective_depth) * layer_alpha;
 
-        i += inv_layers;
     }
 
-    col = min(col, vec3<f32>(1.9));
+    col = min(col * starfield_tint.rgb, vec3<f32>(1.9));
 
     let vignette = 1.0 - length(in.uv - 0.5) * 0.29;
     col *= vignette * intensity;
 
-    let luma = dot(col, vec3<f32>(0.299, 0.587, 0.114));
-    let star_alpha = min(1.0, luma * 2.85 * user_alpha);
+    let luma = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let star_alpha = min(1.0, luma * 1.55 * user_alpha);
 
-    return vec4<f32>(1.0, 1.0, 1.0, star_alpha);
+    return vec4<f32>(col, star_alpha);
 }

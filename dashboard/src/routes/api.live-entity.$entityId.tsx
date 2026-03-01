@@ -4,13 +4,84 @@ import { callBrp, getBrpUrl, type BrpTarget } from '@/server/brp'
 
 type ComponentMap = Record<string, unknown>
 
+type PatchComponentBody = {
+  typePath: string
+  value: unknown
+}
+
 function parseTarget(value: unknown): BrpTarget {
+  if (value === 'hostClient') return 'hostClient'
   return value === 'client' ? 'client' : 'server'
 }
 
 export const Route = createFileRoute('/api/live-entity/$entityId')({
   server: {
     handlers: {
+      PATCH: async ({ params, request }) => {
+        const entityIdRaw = params.entityId
+        const entityId = Number(entityIdRaw)
+        const url = new URL(request.url)
+        const target = parseTarget(url.searchParams.get('target'))
+        if (!Number.isFinite(entityId)) {
+          return json(
+            { error: 'Entity ID must be numeric for BRP' },
+            { status: 400 },
+          )
+        }
+        let body: PatchComponentBody
+        try {
+          body = (await request.json()) as PatchComponentBody
+        } catch {
+          return json({ error: 'Invalid JSON body' }, { status: 400 })
+        }
+        const { typePath, value } = body
+        if (typeof typePath !== 'string' || typePath.length === 0) {
+          return json(
+            { error: 'Body must include typePath (string)' },
+            { status: 400 },
+          )
+        }
+        try {
+          const res = await callBrp(
+            {
+              method: 'world.insert_components',
+              params: {
+                entity: entityId,
+                components: { [typePath]: value },
+              },
+            },
+            target,
+          )
+          if (res.error) {
+            return json(
+              {
+                error: `BRP world.insert_components failed (${res.error.code}): ${res.error.message}`,
+                target,
+                brpUrl: getBrpUrl(target),
+              },
+              { status: 502 },
+            )
+          }
+          return json({
+            ok: true,
+            entityId,
+            typePath,
+            target,
+            brpUrl: getBrpUrl(target),
+          })
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Unknown error'
+          return json(
+            {
+              error: message,
+              target,
+              brpUrl: getBrpUrl(target),
+            },
+            { status: 502 },
+          )
+        }
+      },
       GET: async ({ params, request }) => {
         const entityIdRaw = params.entityId
         const entityId = Number(entityIdRaw)

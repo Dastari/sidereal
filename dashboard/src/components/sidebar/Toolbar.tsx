@@ -8,7 +8,11 @@ import {
 } from '@/components/ui/tooltip'
 import { ThemeToggle } from '@/components/ThemeToggle'
 
-export type DataSourceMode = 'database' | 'liveServer' | 'liveClient'
+export type DataSourceMode =
+  | 'database'
+  | 'liveServer'
+  | 'liveClient'
+  | 'liveHostClient'
 
 interface ToolbarProps {
   onZoomIn: () => void
@@ -106,6 +110,14 @@ export function Toolbar({
           className="h-7 px-3 text-xs"
         >
           Client BRP
+        </Button>
+        <Button
+          size="sm"
+          variant={sourceMode === 'liveHostClient' ? 'default' : 'ghost'}
+          onClick={() => onSourceModeChange('liveHostClient')}
+          className="h-7 px-3 text-xs"
+        >
+          Host Client
         </Button>
       </div>
 
