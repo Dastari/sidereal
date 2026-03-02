@@ -1,25 +1,29 @@
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
-@group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
-@group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;
-@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;
-@group(2) @binding(3) var<uniform> space_bg_params: vec4<f32>; // .x intensity, .y drift scale, .z velocity glow, .w nebula strength
-@group(2) @binding(4) var<uniform> space_bg_tint: vec4<f32>;   // .rgb color tint, .w deterministic seed
-@group(2) @binding(5) var<uniform> space_bg_background: vec4<f32>; // .rgb base deep-space color
-@group(2) @binding(6) var flare_texture: texture_2d<f32>;
-@group(2) @binding(7) var flare_sampler: sampler;
-@group(2) @binding(8) var<uniform> space_bg_flare: vec4<f32>; // .x enabled, .y intensity, .z density, .w size
-@group(2) @binding(9) var<uniform> space_bg_noise_a: vec4<f32>; // .x mode, .y octaves, .z gain, .w lacunarity
-@group(2) @binding(10) var<uniform> space_bg_noise_b: vec4<f32>; // .x power, .y shelf, .z ridge_offset
-@group(2) @binding(11) var<uniform> space_bg_star_mask_a: vec4<f32>; // .x enabled, .y mode, .z octaves, .w scale
-@group(2) @binding(12) var<uniform> space_bg_star_mask_b: vec4<f32>; // .x threshold, .y power, .z gain, .w lacunarity
-@group(2) @binding(13) var<uniform> space_bg_star_mask_c: vec4<f32>; // .x ridge_offset
-@group(2) @binding(14) var<uniform> space_bg_blend_a: vec4<f32>; // .x nebula mode, .y nebula opacity, .z stars mode, .w stars opacity
-@group(2) @binding(15) var<uniform> space_bg_blend_b: vec4<f32>; // .x flares mode, .y flares opacity
-@group(2) @binding(16) var<uniform> space_bg_nebula_color_a: vec4<f32>; // .rgb primary nebula color
-@group(2) @binding(17) var<uniform> space_bg_nebula_color_b: vec4<f32>; // .rgb secondary nebula color
-@group(2) @binding(18) var<uniform> space_bg_nebula_color_c: vec4<f32>; // .rgb accent nebula color
-@group(2) @binding(19) var<uniform> space_bg_flare_tint: vec4<f32>; // .rgb flare tint
+struct SpaceBackgroundParams {
+    viewport_time: vec4<f32>,
+    drift_intensity: vec4<f32>,
+    velocity_dir: vec4<f32>,
+    space_bg_params: vec4<f32>,   // .x intensity, .y drift scale, .z velocity glow, .w nebula strength
+    space_bg_tint: vec4<f32>,     // .rgb color tint, .w deterministic seed
+    space_bg_background: vec4<f32>,
+    space_bg_flare: vec4<f32>,
+    space_bg_noise_a: vec4<f32>,
+    space_bg_noise_b: vec4<f32>,
+    space_bg_star_mask_a: vec4<f32>,
+    space_bg_star_mask_b: vec4<f32>,
+    space_bg_star_mask_c: vec4<f32>,
+    space_bg_blend_a: vec4<f32>,
+    space_bg_blend_b: vec4<f32>,
+    space_bg_nebula_color_a: vec4<f32>,
+    space_bg_nebula_color_b: vec4<f32>,
+    space_bg_nebula_color_c: vec4<f32>,
+    space_bg_flare_tint: vec4<f32>,
+}
+
+@group(2) @binding(0) var<uniform> params: SpaceBackgroundParams;
+@group(2) @binding(1) var flare_texture: texture_2d<f32>;
+@group(2) @binding(2) var flare_sampler: sampler;
 
 fn hash21(p: vec2<f32>, seed: f32) -> f32 {
     let q = p + vec2<f32>(seed * 0.173, seed * 0.347);
@@ -202,58 +206,58 @@ fn apply_layer_blend(base: vec3<f32>, layer: vec3<f32>, mode: f32, opacity: f32)
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let res = max(viewport_time.xy, vec2<f32>(1.0, 1.0));
-    let time = viewport_time.z;
-    let warp_factor = max(viewport_time.w, 0.0); // retained for subtle velocity glow only
-    let intensity = max(space_bg_params.x, 0.0001);
-    let drift_scale = max(space_bg_params.y, 0.0);
-    let velocity_glow = max(space_bg_params.z, 0.0);
-    let nebula_strength = max(space_bg_params.w, 0.0);
-    let seed = max(space_bg_tint.w, 0.0);
-    let base_background = max(space_bg_background.rgb, vec3<f32>(0.0));
-    let flare_enabled = space_bg_flare.x >= 0.5;
-    let flare_intensity = max(space_bg_flare.y, 0.0);
-    let flare_density = clamp(space_bg_flare.z, 0.0, 1.0);
-    let flare_size = max(space_bg_flare.w, 0.1);
-    let ridged_mode = space_bg_noise_a.x >= 0.5;
-    let nebula_octaves = u32(clamp(space_bg_noise_a.y, 1.0, 8.0));
-    let nebula_gain = clamp(space_bg_noise_a.z, 0.1, 0.95);
-    let nebula_lacunarity = clamp(space_bg_noise_a.w, 1.1, 4.0);
-    let nebula_power = clamp(space_bg_noise_b.x, 0.2, 4.0);
-    let nebula_shelf = clamp(space_bg_noise_b.y, 0.0, 0.95);
-    let nebula_ridge_offset = clamp(space_bg_noise_b.z, 0.5, 2.5);
-    let star_mask_enabled = space_bg_star_mask_a.x >= 0.5;
-    let star_mask_ridged = space_bg_star_mask_a.y >= 0.5;
-    let star_mask_octaves = u32(clamp(space_bg_star_mask_a.z, 1.0, 8.0));
-    let star_mask_scale = clamp(space_bg_star_mask_a.w, 0.2, 8.0);
-    let star_mask_threshold = clamp(space_bg_star_mask_b.x, 0.0, 0.99);
-    let star_mask_power = clamp(space_bg_star_mask_b.y, 0.2, 4.0);
-    let star_mask_gain = clamp(space_bg_star_mask_b.z, 0.1, 0.95);
-    let star_mask_lacunarity = clamp(space_bg_star_mask_b.w, 1.1, 4.0);
-    let star_mask_ridge_offset = clamp(space_bg_star_mask_c.x, 0.5, 2.5);
-    let nebula_blend_mode = clamp(space_bg_blend_a.x, 0.0, 2.0);
-    let nebula_opacity = clamp(space_bg_blend_a.y, 0.0, 1.0);
-    let stars_blend_mode = clamp(space_bg_blend_a.z, 0.0, 2.0);
-    let stars_opacity = clamp(space_bg_blend_a.w, 0.0, 1.0);
-    let flares_blend_mode = clamp(space_bg_blend_b.x, 0.0, 2.0);
-    let flares_opacity = clamp(space_bg_blend_b.y, 0.0, 1.0);
-    let nebula_color_a = max(space_bg_nebula_color_a.rgb, vec3<f32>(0.0));
-    let nebula_color_b = max(space_bg_nebula_color_b.rgb, vec3<f32>(0.0));
-    let nebula_color_c = max(space_bg_nebula_color_c.rgb, vec3<f32>(0.0));
-    let flare_tint = max(space_bg_flare_tint.rgb, vec3<f32>(0.0));
+    let res = max(params.viewport_time.xy, vec2<f32>(1.0, 1.0));
+    let time = params.viewport_time.z;
+    let warp_factor = max(params.viewport_time.w, 0.0); // retained for subtle velocity glow only
+    let intensity = max(params.space_bg_params.x, 0.0001);
+    let drift_scale = max(params.space_bg_params.y, 0.0);
+    let velocity_glow = max(params.space_bg_params.z, 0.0);
+    let nebula_strength = max(params.space_bg_params.w, 0.0);
+    let seed = max(params.space_bg_tint.w, 0.0);
+    let base_background = max(params.space_bg_background.rgb, vec3<f32>(0.0));
+    let flare_enabled = params.space_bg_flare.x >= 0.5;
+    let flare_intensity = max(params.space_bg_flare.y, 0.0);
+    let flare_density = clamp(params.space_bg_flare.z, 0.0, 1.0);
+    let flare_size = max(params.space_bg_flare.w, 0.1);
+    let ridged_mode = params.space_bg_noise_a.x >= 0.5;
+    let nebula_octaves = u32(clamp(params.space_bg_noise_a.y, 1.0, 8.0));
+    let nebula_gain = clamp(params.space_bg_noise_a.z, 0.1, 0.95);
+    let nebula_lacunarity = clamp(params.space_bg_noise_a.w, 1.1, 4.0);
+    let nebula_power = clamp(params.space_bg_noise_b.x, 0.2, 4.0);
+    let nebula_shelf = clamp(params.space_bg_noise_b.y, 0.0, 0.95);
+    let nebula_ridge_offset = clamp(params.space_bg_noise_b.z, 0.5, 2.5);
+    let star_mask_enabled = params.space_bg_star_mask_a.x >= 0.5;
+    let star_mask_ridged = params.space_bg_star_mask_a.y >= 0.5;
+    let star_mask_octaves = u32(clamp(params.space_bg_star_mask_a.z, 1.0, 8.0));
+    let star_mask_scale = clamp(params.space_bg_star_mask_a.w, 0.2, 8.0);
+    let star_mask_threshold = clamp(params.space_bg_star_mask_b.x, 0.0, 0.99);
+    let star_mask_power = clamp(params.space_bg_star_mask_b.y, 0.2, 4.0);
+    let star_mask_gain = clamp(params.space_bg_star_mask_b.z, 0.1, 0.95);
+    let star_mask_lacunarity = clamp(params.space_bg_star_mask_b.w, 1.1, 4.0);
+    let star_mask_ridge_offset = clamp(params.space_bg_star_mask_c.x, 0.5, 2.5);
+    let nebula_blend_mode = clamp(params.space_bg_blend_a.x, 0.0, 2.0);
+    let nebula_opacity = clamp(params.space_bg_blend_a.y, 0.0, 1.0);
+    let stars_blend_mode = clamp(params.space_bg_blend_a.z, 0.0, 2.0);
+    let stars_opacity = clamp(params.space_bg_blend_a.w, 0.0, 1.0);
+    let flares_blend_mode = clamp(params.space_bg_blend_b.x, 0.0, 2.0);
+    let flares_opacity = clamp(params.space_bg_blend_b.y, 0.0, 1.0);
+    let nebula_color_a = max(params.space_bg_nebula_color_a.rgb, vec3<f32>(0.0));
+    let nebula_color_b = max(params.space_bg_nebula_color_b.rgb, vec3<f32>(0.0));
+    let nebula_color_c = max(params.space_bg_nebula_color_c.rgb, vec3<f32>(0.0));
+    let flare_tint = max(params.space_bg_flare_tint.rgb, vec3<f32>(0.0));
     let aspect = res.x / res.y;
 
     let uv_n = in.uv * 2.0 - 1.0;
     let uv = vec2<f32>(uv_n.x * aspect, uv_n.y);
 
-    let heading_raw = velocity_dir.xy;
+    let heading_raw = params.velocity_dir.xy;
     var heading = vec2<f32>(0.0, 1.0); // for drift direction only
     if (length(heading_raw) > 0.001) {
         heading = normalize(heading_raw);
     }
     // Intentionally tiny movement to keep the background almost static.
     let subtle_motion = (
-        drift_intensity.xy * 0.0018 +
+        params.drift_intensity.xy * 0.0018 +
         heading * (0.0007 + warp_factor * 0.0008)
     ) * drift_scale;
 
@@ -415,7 +419,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     composed = apply_layer_blend(composed, stars_layer, stars_blend_mode, stars_opacity);
     composed = apply_layer_blend(composed, flares_layer, flares_blend_mode, flares_opacity);
     composed += vec3<f32>(0.05, 0.08, 0.14) * clamp(warp_factor * velocity_glow * 0.045, 0.0, 0.06);
-    composed = mix(composed, composed * space_bg_tint.rgb * 2.8, 0.20);
+    composed = mix(composed, composed * params.space_bg_tint.rgb * 2.8, 0.20);
 
     var col = composed;
     col = min(col, vec3<f32>(1.0));

@@ -3,7 +3,7 @@
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
-use bevy::render::render_resource::AsBindGroup;
+use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d, MeshMaterial2d};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
@@ -66,50 +66,40 @@ impl Material2d for StarfieldMaterial {
     }
 }
 
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-pub struct SpaceBackgroundMaterial {
-    #[uniform(0)]
+/// Packed uniforms for the space background shader (one buffer to stay under
+/// max_uniform_buffers_per_shader_stage limits on Windows/DX).
+#[derive(ShaderType, Debug, Clone)]
+pub struct SpaceBackgroundUniforms {
     pub viewport_time: Vec4,
-    #[uniform(1)]
     pub drift_intensity: Vec4,
-    #[uniform(2)]
     pub velocity_dir: Vec4,
-    #[uniform(3)]
     pub space_bg_params: Vec4,
-    #[uniform(4)]
     pub space_bg_tint: Vec4,
-    #[uniform(5)]
     pub space_bg_background: Vec4,
-    #[texture(6)]
-    #[sampler(7)]
-    pub flare_texture: Handle<Image>,
-    #[uniform(8)]
     pub space_bg_flare: Vec4,
-    #[uniform(9)]
     pub space_bg_noise_a: Vec4,
-    #[uniform(10)]
     pub space_bg_noise_b: Vec4,
-    #[uniform(11)]
     pub space_bg_star_mask_a: Vec4,
-    #[uniform(12)]
     pub space_bg_star_mask_b: Vec4,
-    #[uniform(13)]
     pub space_bg_star_mask_c: Vec4,
-    #[uniform(14)]
     pub space_bg_blend_a: Vec4,
-    #[uniform(15)]
     pub space_bg_blend_b: Vec4,
-    #[uniform(16)]
     pub space_bg_nebula_color_a: Vec4,
-    #[uniform(17)]
     pub space_bg_nebula_color_b: Vec4,
-    #[uniform(18)]
     pub space_bg_nebula_color_c: Vec4,
-    #[uniform(19)]
     pub space_bg_flare_tint: Vec4,
 }
 
-impl Default for SpaceBackgroundMaterial {
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct SpaceBackgroundMaterial {
+    #[uniform(0)]
+    pub params: SpaceBackgroundUniforms,
+    #[texture(1)]
+    #[sampler(2)]
+    pub flare_texture: Handle<Image>,
+}
+
+impl Default for SpaceBackgroundUniforms {
     fn default() -> Self {
         Self {
             viewport_time: Vec4::new(1920.0, 1080.0, 0.0, 0.0),
@@ -118,7 +108,6 @@ impl Default for SpaceBackgroundMaterial {
             space_bg_params: Vec4::new(1.0, 1.0, 1.0, 1.0),
             space_bg_tint: Vec4::ONE,
             space_bg_background: Vec4::new(0.004, 0.007, 0.018, 1.0),
-            flare_texture: Handle::default(),
             space_bg_flare: Vec4::new(1.0, 0.2, 0.85, 0.0),
             space_bg_noise_a: Vec4::new(0.0, 5.0, 0.52, 2.0),
             space_bg_noise_b: Vec4::new(1.0, 0.42, 1.0, 0.0),
@@ -131,6 +120,15 @@ impl Default for SpaceBackgroundMaterial {
             space_bg_nebula_color_b: Vec4::new(0.12, 0.24, 0.40, 0.0),
             space_bg_nebula_color_c: Vec4::new(0.18, 0.16, 0.36, 0.0),
             space_bg_flare_tint: Vec4::ONE,
+        }
+    }
+}
+
+impl Default for SpaceBackgroundMaterial {
+    fn default() -> Self {
+        Self {
+            params: SpaceBackgroundUniforms::default(),
+            flare_texture: Handle::default(),
         }
     }
 }
@@ -317,17 +315,17 @@ pub fn update_space_background_material_system(
                     Visibility::Hidden
                 };
             }
-            material.viewport_time = world_data.viewport_time;
-            material.drift_intensity = world_data.drift_intensity;
-            material.velocity_dir = world_data.velocity_dir;
-            material.space_bg_params = Vec4::new(
+            material.params.viewport_time = world_data.viewport_time;
+            material.params.drift_intensity = world_data.drift_intensity;
+            material.params.velocity_dir = world_data.velocity_dir;
+            material.params.space_bg_params = Vec4::new(
                 settings.intensity.max(0.0),
                 settings.drift_scale.max(0.0),
                 settings.velocity_glow.max(0.0),
                 settings.nebula_strength.max(0.0),
             );
-            material.space_bg_tint = settings.tint_rgb.extend(settings.seed);
-            material.space_bg_background = settings.background_rgb.extend(1.0);
+            material.params.space_bg_tint = settings.tint_rgb.extend(settings.seed);
+            material.params.space_bg_background = settings.background_rgb.extend(1.0);
             let flare_asset_id = flare_texture_asset_id_for_set(settings.flare_texture_set);
             let mut flare_enabled = settings.flare_enabled;
             if let Some(path) = assets::streamed_visual_asset_path(flare_asset_id, &asset_manager) {
@@ -335,67 +333,67 @@ pub fn update_space_background_material_system(
             } else {
                 flare_enabled = false;
             }
-            material.space_bg_flare = Vec4::new(
+            material.params.space_bg_flare = Vec4::new(
                 if flare_enabled { 1.0 } else { 0.0 },
                 settings.flare_intensity.max(0.0),
                 settings.flare_density.clamp(0.0, 1.0),
                 settings.flare_size.max(0.01),
             );
-            material.space_bg_noise_a = Vec4::new(
+            material.params.space_bg_noise_a = Vec4::new(
                 settings.nebula_noise_mode.clamp(0, 1) as f32,
                 settings.nebula_octaves.clamp(1, 8) as f32,
                 settings.nebula_gain.clamp(0.1, 0.95),
                 settings.nebula_lacunarity.clamp(1.1, 4.0),
             );
-            material.space_bg_noise_b = Vec4::new(
+            material.params.space_bg_noise_b = Vec4::new(
                 settings.nebula_power.clamp(0.2, 4.0),
                 settings.nebula_shelf.clamp(0.0, 0.95),
                 settings.nebula_ridge_offset.clamp(0.5, 2.5),
                 0.0,
             );
-            material.space_bg_star_mask_a = Vec4::new(
+            material.params.space_bg_star_mask_a = Vec4::new(
                 if settings.star_mask_enabled { 1.0 } else { 0.0 },
                 settings.star_mask_mode.clamp(0, 1) as f32,
                 settings.star_mask_octaves.clamp(1, 8) as f32,
                 settings.star_mask_scale.clamp(0.2, 8.0),
             );
-            material.space_bg_star_mask_b = Vec4::new(
+            material.params.space_bg_star_mask_b = Vec4::new(
                 settings.star_mask_threshold.clamp(0.0, 0.99),
                 settings.star_mask_power.clamp(0.2, 4.0),
                 settings.star_mask_gain.clamp(0.1, 0.95),
                 settings.star_mask_lacunarity.clamp(1.1, 4.0),
             );
-            material.space_bg_star_mask_c = Vec4::new(
+            material.params.space_bg_star_mask_c = Vec4::new(
                 settings.star_mask_ridge_offset.clamp(0.5, 2.5),
                 0.0,
                 0.0,
                 0.0,
             );
-            material.space_bg_blend_a = Vec4::new(
+            material.params.space_bg_blend_a = Vec4::new(
                 settings.nebula_blend_mode.clamp(0, 2) as f32,
                 settings.nebula_opacity.clamp(0.0, 1.0),
                 settings.stars_blend_mode.clamp(0, 2) as f32,
                 settings.stars_opacity.clamp(0.0, 1.0),
             );
-            material.space_bg_blend_b = Vec4::new(
+            material.params.space_bg_blend_b = Vec4::new(
                 settings.flares_blend_mode.clamp(0, 2) as f32,
                 settings.flares_opacity.clamp(0.0, 1.0),
                 0.0,
                 0.0,
             );
-            material.space_bg_nebula_color_a = settings
+            material.params.space_bg_nebula_color_a = settings
                 .nebula_color_primary_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(2.0))
                 .extend(0.0);
-            material.space_bg_nebula_color_b = settings
+            material.params.space_bg_nebula_color_b = settings
                 .nebula_color_secondary_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(2.0))
                 .extend(0.0);
-            material.space_bg_nebula_color_c = settings
+            material.params.space_bg_nebula_color_c = settings
                 .nebula_color_accent_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(2.0))
                 .extend(0.0);
-            material.space_bg_flare_tint = settings
+            material.params.space_bg_flare_tint = settings
                 .flare_tint_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(2.0))
                 .extend(1.0);

@@ -17,6 +17,14 @@ const LOCAL_SHADER_FALLBACK_PATHS: &[&str] = &[
     "data/shaders/sprite_pixel_effect.wgsl",
 ];
 
+fn is_legacy_space_background_shader(content: &str) -> bool {
+    // Legacy layout used many separate uniforms (binding 0..19) and commonly
+    // includes binding(5) for `space_bg_background`.
+    content.contains("@binding(5) var<uniform> space_bg_background")
+        || (!content.contains("struct SpaceBackgroundParams")
+            && content.contains("space_bg_background"))
+}
+
 pub fn ensure_shader_placeholders(asset_root: &str) {
     const STARFIELD_PLACEHOLDER: &str = "\
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
@@ -33,30 +41,33 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 
     const BACKGROUND_PLACEHOLDER: &str = "\
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
-@group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
-@group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;
-@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;
-@group(2) @binding(3) var<uniform> space_bg_params: vec4<f32>;
-@group(2) @binding(4) var<uniform> space_bg_tint: vec4<f32>;
-@group(2) @binding(5) var<uniform> space_bg_background: vec4<f32>;
-@group(2) @binding(6) var flare_texture: texture_2d<f32>;
-@group(2) @binding(7) var flare_sampler: sampler;
-@group(2) @binding(8) var<uniform> space_bg_flare: vec4<f32>;
-@group(2) @binding(9) var<uniform> space_bg_noise_a: vec4<f32>;
-@group(2) @binding(10) var<uniform> space_bg_noise_b: vec4<f32>;
-@group(2) @binding(11) var<uniform> space_bg_star_mask_a: vec4<f32>;
-@group(2) @binding(12) var<uniform> space_bg_star_mask_b: vec4<f32>;
-@group(2) @binding(13) var<uniform> space_bg_star_mask_c: vec4<f32>;
-@group(2) @binding(14) var<uniform> space_bg_blend_a: vec4<f32>;
-@group(2) @binding(15) var<uniform> space_bg_blend_b: vec4<f32>;
-@group(2) @binding(16) var<uniform> space_bg_nebula_color_a: vec4<f32>;
-@group(2) @binding(17) var<uniform> space_bg_nebula_color_b: vec4<f32>;
-@group(2) @binding(18) var<uniform> space_bg_nebula_color_c: vec4<f32>;
-@group(2) @binding(19) var<uniform> space_bg_flare_tint: vec4<f32>;
+struct SpaceBackgroundParams {
+    viewport_time: vec4<f32>,
+    drift_intensity: vec4<f32>,
+    velocity_dir: vec4<f32>,
+    space_bg_params: vec4<f32>,
+    space_bg_tint: vec4<f32>,
+    space_bg_background: vec4<f32>,
+    space_bg_flare: vec4<f32>,
+    space_bg_noise_a: vec4<f32>,
+    space_bg_noise_b: vec4<f32>,
+    space_bg_star_mask_a: vec4<f32>,
+    space_bg_star_mask_b: vec4<f32>,
+    space_bg_star_mask_c: vec4<f32>,
+    space_bg_blend_a: vec4<f32>,
+    space_bg_blend_b: vec4<f32>,
+    space_bg_nebula_color_a: vec4<f32>,
+    space_bg_nebula_color_b: vec4<f32>,
+    space_bg_nebula_color_c: vec4<f32>,
+    space_bg_flare_tint: vec4<f32>,
+}
+@group(2) @binding(0) var<uniform> params: SpaceBackgroundParams;
+@group(2) @binding(1) var flare_texture: texture_2d<f32>;
+@group(2) @binding(2) var flare_sampler: sampler;
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    let flare = textureSample(flare_texture, flare_sampler, mesh.uv).rgb * 0.05 * space_bg_flare.y;
-    return vec4<f32>(space_bg_background.rgb + flare, 1.0);
+    let flare = textureSample(flare_texture, flare_sampler, mesh.uv).rgb * 0.05 * params.space_bg_flare.y;
+    return vec4<f32>(params.space_bg_background.rgb + flare, 1.0);
 }
 ";
 
@@ -90,13 +101,27 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 
     for &(cache_rel_path, source_rel_path, placeholder_content) in placeholders {
         let cache_path = std::path::PathBuf::from(asset_root).join(cache_rel_path);
+        let source_path = std::path::PathBuf::from(asset_root).join(source_rel_path);
+
         if cache_path.exists() {
+            // Self-heal stale cache entries for space background shader layout
+            // changes (old cache expects binding(5), new material binds 0/1/2).
+            if cache_rel_path.ends_with("space_background.wgsl") {
+                if let Ok(existing) = std::fs::read_to_string(&cache_path) {
+                    if is_legacy_space_background_shader(&existing) {
+                        let replacement = std::fs::read_to_string(&source_path)
+                            .ok()
+                            .unwrap_or_else(|| placeholder_content.to_string());
+                        let _ = std::fs::write(&cache_path, replacement);
+                    }
+                }
+            }
             continue;
         }
+
         if let Some(parent) = cache_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let source_path = std::path::PathBuf::from(asset_root).join(source_rel_path);
         let content = std::fs::read_to_string(&source_path)
             .ok()
             .unwrap_or_else(|| placeholder_content.to_string());
@@ -119,12 +144,20 @@ pub fn reload_streamed_shaders(
         );
 
         let selected_path = if cache_path.exists() {
-            cache_path
+            &cache_path
         } else {
-            local_fallback_path
+            &local_fallback_path
         };
 
-        if let Ok(content) = std::fs::read_to_string(&selected_path) {
+        if let Ok(mut content) = std::fs::read_to_string(&selected_path) {
+            if path.ends_with("space_background.wgsl")
+                && is_legacy_space_background_shader(&content)
+            {
+                if let Ok(replacement) = std::fs::read_to_string(&local_fallback_path) {
+                    content = replacement;
+                    let _ = std::fs::write(selected_path, &content);
+                }
+            }
             let handle: Handle<bevy::shader::Shader> = asset_server.load(path);
             let _ = shaders.insert(handle.id(), bevy::shader::Shader::from_wgsl(content, path));
         }
