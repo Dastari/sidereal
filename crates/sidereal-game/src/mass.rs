@@ -80,9 +80,8 @@ pub fn recompute_total_mass(
                 Option<&SizeM>,
                 Option<&mut AngularInertia>,
             ),
-            Without<MountedOn>,
         >,
-        Query<(&TotalMassKg, Option<&MassDirty>), Without<MountedOn>>,
+        Query<(&TotalMassKg, Option<&MassDirty>)>,
     )>,
     modules: Query<(
         Entity,
@@ -202,7 +201,7 @@ pub fn bootstrap_ship_mass_components(
             Has<TotalMassKg>,
             Has<VisualAssetId>,
         ),
-        (With<ShipTag>, Without<MountedOn>),
+        With<ShipTag>,
     >,
 ) {
     for (entity, mass_kg, has_base, has_cargo, has_module, has_total, has_visual) in &ships {

@@ -16,9 +16,7 @@
   --color-card-foreground: oklch(0.95 0.01 280);
 
   /* Borders */
-  --color-border: oklch(0.28 0.025 280);
-  --color-border-subtle: oklch(0.22 0.02 280);
-
+  
   /* Interactive states */
   --color-primary: oklch(0.7 0.15 220);
   --color-primary-foreground: oklch(0.15 0.02 220);
@@ -42,10 +40,16 @@
   --color-entity-planet: oklch(0.6 0.15 145);
   --color-entity-default: oklch(0.6 0.1 200);
 
-  /* Grid colors */
-  --color-grid-major: oklch(0.35 0.03 280);
-  --color-grid-minor: oklch(0.22 0.02 280);
-  --color-grid-micro: oklch(0.18 0.015 280);
+  /* Grid entity colors by entity_label (Ship = red-500, player = green-500, default = foreground) */
+  --color-entity-label-ship: #ef4444;
+  --color-entity-label-player: #22c55e;
+
+  /* Grid: background muted/40; origin (0,0) = border; other lines = border/80, border/60 */
+  --color-grid-background: color-mix(in oklch, var(--color-muted) 40%, var(--color-card));
+  --color-grid-origin: color-mix(in oklch, var(--color-border) 90%, var(--color-grid-background));
+  --color-grid-major: color-mix(in oklch, var(--color-border) 80%, var(--color-grid-background));
+  --color-grid-minor: color-mix(in oklch, var(--color-border) 70%, var(--color-grid-background));
+  --color-grid-micro: color-mix(in oklch, var(--color-border) 60%, var(--color-grid-background));
 
   /* Ring/glow */
   --color-ring: oklch(0.6 0.15 220);
@@ -114,14 +118,16 @@
   --color-card: oklch(0.99 0.003 280);
   --color-card-foreground: oklch(0.15 0.015 280);
   --color-border: oklch(0.85 0.015 280);
-  --color-border-subtle: oklch(0.9 0.01 280);
+  --color-border-subtle: oklch(0.85 0.015 280);
   --color-primary: oklch(0.5 0.18 220);
   --color-primary-foreground: oklch(0.98 0.005 220);
   --color-secondary: oklch(0.92 0.01 280);
   --color-secondary-foreground: oklch(0.2 0.015 280);
-  --color-grid-major: oklch(0.75 0.02 280);
-  --color-grid-minor: oklch(0.85 0.015 280);
-  --color-grid-micro: oklch(0.92 0.01 280);
+  --color-grid-background: color-mix(in oklch, var(--color-muted) 40%, var(--color-background));
+  --color-grid-origin: var(--color-border);
+  --color-grid-major: color-mix(in oklch, var(--color-border) 90%, var(--color-grid-background));
+  --color-grid-minor: color-mix(in oklch, var(--color-border) 80%, var(--color-grid-background));
+  --color-grid-micro: color-mix(in oklch, var(--color-border) 60%, var(--color-grid-background));
 }
 
 /* Base resets - Tailwind v4 preflight handles box-sizing and margins */

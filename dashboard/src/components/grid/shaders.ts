@@ -27,6 +27,7 @@ uniform vec3 u_gridMajor;
 uniform vec3 u_gridMinor;
 uniform vec3 u_gridMicro;
 uniform vec3 u_background;
+uniform vec3 u_originLine;
 
 float gridLine(float coord, float spacing, float lineWidth) {
   float halfWidth = lineWidth * 0.5;
@@ -73,7 +74,7 @@ void main() {
   float originX = gridLine(v_worldPos.x, 100000.0, originWidth);
   float originY = gridLine(v_worldPos.y, 100000.0, originWidth);
   float origin = max(originX, originY);
-  color = mix(color, vec3(0.4, 0.5, 0.7), origin * 0.8);
+  color = mix(color, u_originLine, origin * 0.8);
   
   fragColor = vec4(color, 1.0);
 }
@@ -115,6 +116,7 @@ precision mediump float;
 in vec3 v_color;
 in float v_selected;
 in float v_hovered;
+uniform vec3 u_selectionRing;
 out vec4 fragColor;
 
 void main() {
@@ -127,11 +129,11 @@ void main() {
   
   vec3 color = v_color;
   
-  // Selection ring
+  // Selection ring (theme color)
   if (v_selected > 0.5) {
     float ringDist = abs(dist - 0.4);
     float ring = 1.0 - smoothstep(0.0, 0.08, ringDist);
-    color = mix(color, vec3(0.4, 0.95, 0.6), ring);
+    color = mix(color, u_selectionRing, ring);
   }
   
   // Hover glow

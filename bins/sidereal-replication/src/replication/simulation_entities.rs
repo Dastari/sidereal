@@ -547,15 +547,14 @@ pub fn apply_pending_controlled_by_bindings(
     }
 }
 
-/// Syncs Avian Position/Rotation to Bevy Transform for root physics entities
-/// (entities with RigidBody that are not mounted children).
+/// Syncs Avian Position/Rotation to Bevy Transform for physics entities (With<RigidBody>).
 #[allow(clippy::type_complexity)]
 pub fn sync_controlled_entity_transforms(
     mut entities: Query<
         '_,
         '_,
         (&'_ Position, &'_ Rotation, &'_ mut Transform),
-        (With<RigidBody>, Without<sidereal_game::MountedOn>),
+        With<RigidBody>,
     >,
 ) {
     for (position, rotation, mut transform) in &mut entities {
@@ -580,7 +579,7 @@ pub fn sync_controlled_entity_transforms(
 }
 
 /// Sanitizes non-finite physics values to prevent NaN propagation through
-/// the simulation for root physics entities.
+/// the simulation for physics entities (With<RigidBody>).
 #[allow(clippy::type_complexity)]
 pub fn enforce_planar_motion(
     mut entities: Query<
@@ -592,7 +591,7 @@ pub fn enforce_planar_motion(
             &'_ mut Rotation,
             &'_ mut AngularVelocity,
         ),
-        (With<RigidBody>, Without<sidereal_game::MountedOn>),
+        With<RigidBody>,
     >,
 ) {
     for (mut position, mut velocity, mut rotation, mut angular_velocity) in &mut entities {

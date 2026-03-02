@@ -129,17 +129,26 @@ function DashboardPage() {
     () =>
       filterMapInvisible
         ? entities.filter((entity) => {
-            // Map Visible Only: show only entities that have an EntityGuid component (BRP and database).
-            if (!entity.entityGuid) return false
-            if (entity.mapVisible === false) return false
-            // Keep child entries available in tree/detail, but hide root entities
-            // that do not have a real position sample.
-            if (!entity.parentEntityId && entity.hasPosition === false) return false
-            return true
-          })
+          // Sidereal Entities Only: show only entities that have an EntityGuid component (BRP and database).
+          return Boolean(entity.entityGuid)
+        })
         : entities,
     [entities, filterMapInvisible],
   )
+
+  // When an entity is selected from the tree and has a position, center the grid camera on it.
+  const centerOnPosition = useMemo(() => {
+    if (!selectedId) return null
+    const entity = filteredEntities.find((e) => e.id === selectedId)
+    if (
+      !entity ||
+      entity.hasPosition === false ||
+      !Number.isFinite(entity.x) ||
+      !Number.isFinite(entity.y)
+    )
+      return null
+    return { x: entity.x, y: entity.y }
+  }, [selectedId, filteredEntities])
 
   // Map-only: exclude camera entities (id/name contains bevy_camera::camera::Camera, or has Camera component). Tree still shows all.
   const { entitiesForMap, cameraEntityIds } = useMemo(() => {
@@ -390,6 +399,7 @@ function DashboardPage() {
               sampledAtMs: child.sampledAtMs,
               componentCount: child.componentCount,
               parentEntityId: child.parentEntityId,
+              entity_labels: child.entity_labels,
             },
           })
         })
@@ -554,11 +564,11 @@ function DashboardPage() {
                     Sidereal Explorer
                   </h1>
                   <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="whitespace-nowrap">Map Visible Only</span>
+                    <span className="whitespace-nowrap">Entities Only</span>
                     <Switch
                       checked={filterMapInvisible}
                       onCheckedChange={setFilterMapInvisible}
-                      aria-label="Filter entities with mapVisible false"
+                      aria-label="Filter to entities with EntityGuid component"
                     />
                   </label>
                 </div>
@@ -598,6 +608,7 @@ function DashboardPage() {
                 onCollapse={handleCollapse}
                 sourceMode={sourceMode}
                 onComponentUpdate={handleComponentUpdate}
+                onClose={() => setSelectedId(null)}
               />
             </Panel>
           }
@@ -613,6 +624,7 @@ function DashboardPage() {
             filterMapInvisible={filterMapInvisible}
             sourceMode={sourceMode}
             excludedFromMapIds={cameraEntityIds}
+            centerOnPosition={centerOnPosition}
           />
         </AppLayout>
       </TooltipProvider>

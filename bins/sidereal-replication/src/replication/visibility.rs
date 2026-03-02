@@ -1,4 +1,3 @@
-use avian2d::prelude::Position;
 use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{Replicate, ReplicationState};
@@ -58,8 +57,14 @@ pub struct VisibilityScratch {
     live_clients: Vec<Entity>,
     live_client_set: HashSet<Entity>,
     registered_clients: Vec<(Entity, String)>,
-    root_entity_by_guid: HashMap<uuid::Uuid, Entity>,
-    root_position_by_entity: HashMap<Entity, Vec3>,
+    /// All replicated entities by GUID (roots and mounted children) for mount-chain resolution.
+    entity_by_guid: HashMap<uuid::Uuid, Entity>,
+    /// World position from GlobalTransform for every replicated entity.
+    world_position_by_entity: HashMap<Entity, Vec3>,
+    /// Parent entity in mount chain (MountedOn.parent_entity_id -> entity). Used to resolve root.
+    parent_entity_by_entity: HashMap<Entity, Entity>,
+    /// Mount root entity for inheritance (owner/public/faction). Resolved by traversing MountedOn.
+    root_entity_by_entity: HashMap<Entity, Entity>,
     root_public_by_entity: HashMap<Entity, bool>,
     root_owner_by_entity: HashMap<Entity, String>,
     root_faction_by_entity: HashMap<Entity, String>,
@@ -79,8 +84,10 @@ impl VisibilityScratch {
         self.live_clients.clear();
         self.live_client_set.clear();
         self.registered_clients.clear();
-        self.root_entity_by_guid.clear();
-        self.root_position_by_entity.clear();
+        self.entity_by_guid.clear();
+        self.world_position_by_entity.clear();
+        self.parent_entity_by_entity.clear();
+        self.root_entity_by_entity.clear();
         self.root_public_by_entity.clear();
         self.root_owner_by_entity.clear();
         self.root_faction_by_entity.clear();
@@ -97,21 +104,21 @@ pub fn update_network_visibility(
     visibility_registry: Res<'_, ClientVisibilityRegistry>,
     mut scratch: ResMut<'_, VisibilityScratch>,
     observer_anchor_positions: Res<'_, ClientObserverAnchorPositionMap>,
-    root_entities: Query<
+    all_replicated: Query<
         '_,
         '_,
         (
             Entity,
-            &'_ Position,
+            &'_ GlobalTransform,
             Option<&'_ EntityGuid>,
             Option<&'_ OwnerId>,
             Option<&'_ ScannerRangeM>,
             Option<&'_ PublicVisibility>,
             Option<&'_ FactionId>,
+            Option<&'_ MountedOn>,
         ),
-        (With<Replicate>, Without<MountedOn>),
+        With<Replicate>,
     >,
-    guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid), (With<Replicate>, Without<MountedOn>)>,
     mut replicated_entities: Query<
         '_,
         '_,
@@ -124,7 +131,6 @@ pub fn update_network_visibility(
             Option<&'_ PublicVisibility>,
             Option<&'_ FactionVisibility>,
             Option<&'_ FactionId>,
-            Option<&'_ Position>,
             Option<&'_ MountedOn>,
         ),
         With<Replicate>,
@@ -150,16 +156,17 @@ pub fn update_network_visibility(
         .collect::<Vec<_>>();
     scratch.registered_clients.extend(registered_clients);
 
-    scratch
-        .root_entity_by_guid
-        .extend(guid_entities.iter().map(|(entity, guid)| (guid.0, entity)));
-
-    for (entity, position, _, owner_id, scanner_range, public_visibility, faction_id) in
-        &root_entities
+    // 1) Build entity_by_guid and world position from GlobalTransform for all replicated entities.
+    for (entity, global_transform, entity_guid, owner_id, scanner_range, public_visibility, faction_id, mounted_on) in
+        &all_replicated
     {
+        let world_pos = global_transform.translation();
         scratch
-            .root_position_by_entity
-            .insert(entity, position.0.extend(0.0));
+            .world_position_by_entity
+            .insert(entity, world_pos);
+        if let Some(guid) = entity_guid {
+            scratch.entity_by_guid.insert(guid.0, entity);
+        }
         scratch
             .root_public_by_entity
             .insert(entity, public_visibility.is_some());
@@ -177,7 +184,7 @@ pub fn update_network_visibility(
                 .scanner_sources_by_owner
                 .entry(owner.0.clone())
                 .or_default()
-                .push((position.0.extend(0.0), range));
+                .push((world_pos, range));
             if let Some(faction) = faction_id {
                 scratch
                     .player_faction_by_owner
@@ -185,6 +192,22 @@ pub fn update_network_visibility(
                     .or_insert_with(|| faction.0.clone());
             }
         }
+        let _ = mounted_on;
+    }
+
+    // 2) Build parent map (entity -> parent entity) for entities with MountedOn.
+    for (entity, _, _, _, _, _, _, mounted_on) in &all_replicated {
+        if let Some(mounted) = mounted_on {
+            if let Some(&parent_entity) = scratch.entity_by_guid.get(&mounted.parent_entity_id) {
+                scratch.parent_entity_by_entity.insert(entity, parent_entity);
+            }
+        }
+    }
+
+    // 3) Resolve mount root for each entity (traverse parent chain).
+    for (entity, _, _, _, _, _, _, _) in &all_replicated {
+        let root = resolve_mount_root(entity, &scratch.parent_entity_by_entity);
+        scratch.root_entity_by_entity.insert(entity, root);
     }
 
     let registered_clients = scratch.registered_clients.clone();
@@ -194,8 +217,6 @@ pub fn update_network_visibility(
             .get(player_entity_id.as_str())
             .cloned()
             .unwrap_or_default();
-        // Delivery scope center is always the player observer anchor.
-        // Scanner sources participate in authorization only.
         let observer_anchor_position =
             observer_anchor_positions.get_position(player_entity_id.as_str());
         let player_faction_id = scratch
@@ -222,24 +243,17 @@ pub fn update_network_visibility(
         public_visibility,
         faction_visibility,
         faction_id,
-        own_position,
-        mounted_on,
+        _mounted_on,
     ) in &mut replicated_entities
     {
-        let root_entity = mounted_on
-            .and_then(|mounted| {
-                scratch
-                    .root_entity_by_guid
-                    .get(&mounted.parent_entity_id)
-                    .copied()
-            })
+        let root_entity = scratch
+            .root_entity_by_entity
+            .get(&entity)
+            .copied()
             .unwrap_or(entity);
 
-        let entity_position = scratch
-            .root_position_by_entity
-            .get(&root_entity)
-            .copied()
-            .or_else(|| own_position.map(|position| position.0.extend(0.0)));
+        // Use world position from GlobalTransform (same as all_replicated); fallback from scratch.
+        let entity_position = scratch.world_position_by_entity.get(&entity).copied();
         let is_public = public_visibility.is_some()
             || scratch
                 .root_public_by_entity
@@ -273,9 +287,6 @@ pub fn update_network_visibility(
                 .player_entity_id_by_client
                 .get(client_entity)
             else {
-                // Ignore unauthenticated/unregistered clients entirely.
-                // They should not receive world replication, and sending repeated
-                // lose-visibility updates here causes noisy "despawn unknown entity" logs.
                 continue;
             };
             let Some(visibility_context) = scratch.context_by_client.get(client_entity) else {
@@ -297,6 +308,24 @@ pub fn update_network_visibility(
             }
         }
     }
+}
+
+/// Resolves the mount root entity by traversing the parent chain (MountedOn).
+/// The root is used for owner/public/faction inheritance; the entity's own world
+/// position is used for distance checks.
+fn resolve_mount_root(
+    entity: Entity,
+    parent_entity_by_entity: &HashMap<Entity, Entity>,
+) -> Entity {
+    let mut current = entity;
+    let mut visited = std::collections::HashSet::new();
+    while let Some(&parent) = parent_entity_by_entity.get(&current) {
+        if !visited.insert(current) {
+            break;
+        }
+        current = parent;
+    }
+    current
 }
 
 pub(crate) fn is_entity_visible_to_player(

@@ -168,7 +168,6 @@ pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
     for (mut ui_transform, mut ui_projection) in &mut ui_camera {
         ui_transform.translation.x = w * 0.5;
         ui_transform.translation.y = h * 0.5;
-        ui_transform.translation.z = ui_transform.translation.z;
         if let Projection::Orthographic(ui_ortho) = &mut *ui_projection {
             ui_ortho.scale = scale;
         }

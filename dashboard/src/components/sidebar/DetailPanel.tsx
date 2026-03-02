@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Box, ChevronRight, Layers, MapPin, Users } from 'lucide-react'
+import { Box, ChevronRight, Layers, MapPin, Users, X } from 'lucide-react'
 import type {
   ExpandedNode,
   GraphEdge,
@@ -34,6 +34,8 @@ interface DetailPanelProps {
     typePath: string,
     value: unknown,
   ) => void
+  /** Called when the close button is clicked. Caller should clear selection. */
+  onClose?: () => void
 }
 
 export function DetailPanel({
@@ -47,6 +49,7 @@ export function DetailPanel({
   onCollapse,
   sourceMode,
   onComponentUpdate,
+  onClose,
 }: DetailPanelProps) {
   if (!selectedId) {
     return (
@@ -75,7 +78,7 @@ export function DetailPanel({
       {/* Header */}
       <div className="flex-none p-5 border-b border-border-subtle">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h2 className="font-semibold text-foreground truncate">{name}</h2>
             <div className="flex items-center gap-2 mt-1">
               <Badge variant="secondary" className="capitalize text-xs">
@@ -88,6 +91,17 @@ export function DetailPanel({
               )}
             </div>
           </div>
+          {onClose && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              aria-label="Close panel"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
 
         {/* Quick actions */}
@@ -132,7 +146,7 @@ export function DetailPanel({
         </TabsList>
 
         <TabsContent value="properties" className="flex-1 overflow-hidden m-0">
-          <ScrollArea className="h-full">
+          <ScrollArea className="h-full ml-1">
             <div className="p-5 space-y-4">
               {/* Position info */}
               {worldEntity && (
@@ -204,7 +218,7 @@ export function DetailPanel({
         </TabsContent>
 
         <TabsContent value="components" className="flex-1 overflow-hidden m-0">
-          <ScrollArea className="h-full">
+          <ScrollArea className="h-full ml-1">
             <div className="p-5">
               <ComponentsList
                 entityId={selectedId}
@@ -217,7 +231,7 @@ export function DetailPanel({
           </ScrollArea>
         </TabsContent>
         <TabsContent value="children" className="flex-1 overflow-hidden m-0">
-          <ScrollArea className="h-full">
+          <ScrollArea className="h-full ml-1">
             <div className="p-5">
               <ChildEntitiesList
                 entityId={selectedId}
@@ -331,6 +345,30 @@ function ComponentsList({
     })
   }
 
+  /** Flatten object values into dotted key paths so e.g. value: { x: 1, y: 2 } → value.x, value.y */
+  const flattenProperties = (
+    properties: Record<string, unknown>,
+    prefix = '',
+  ): Array<{ keyPath: string; value: unknown }> => {
+    const result: Array<{ keyPath: string; value: unknown }> = []
+    for (const [key, value] of Object.entries(properties)) {
+      const keyPath = prefix ? `${prefix}.${key}` : key
+      const isPlainObject =
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.getPrototypeOf(value) === Object.prototype
+      if (isPlainObject) {
+        result.push(
+          ...flattenProperties(value as Record<string, unknown>, keyPath),
+        )
+      } else {
+        result.push({ keyPath, value })
+      }
+    }
+    return result
+  }
+
   // Extract the most relevant value to show in the header
   const getPreviewValue = (properties: Record<string, unknown>): string => {
     const entries = Object.entries(properties)
@@ -432,21 +470,23 @@ function ComponentsList({
                 <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-3 flex flex-col ">
                   <div className="space-y-1 flex flex-row">
                     <div className="space-y-1 flex flex-col grow">
-                      {Object.entries(node.properties).map(([key, value]) => (
-                        <div
-                          key={key}
-                          className="flex items-start gap-2 py-0.5 min-w-0 w-full"
-                        >
-                          <span className="text-xs text-muted-foreground truncate shrink-0">
-                            {key}
-                          </span>
-                          <ValueField
-                            value={formatDisplayValue(value)}
-                            mono
-                            className="text-xs text-foreground/90 grow"
-                          />
-                        </div>
-                      ))}
+                      {flattenProperties(node.properties).map(
+                        ({ keyPath, value }) => (
+                          <div
+                            key={keyPath}
+                            className="flex items-start gap-2 py-0.5 min-w-0 w-full"
+                          >
+                            <span className="text-xs text-muted-foreground truncate shrink-0">
+                              {keyPath.split('.').pop() ?? keyPath}
+                            </span>
+                            <ValueField
+                              value={formatDisplayValue(value)}
+                              mono
+                              className="text-xs text-foreground/90 min-w-0 flex-1 truncate grow w-0"
+                            />
+                          </div>
+                        ),
+                      )}
                     </div>
                   </div>
                   {isEditableComponent(node) && (
@@ -574,7 +614,7 @@ function ValueField({
     return (
       <pre
         className={cn(
-          'min-w-0 flex-1 overflow-hidden whitespace-pre-wrap wrap-break-word text-right text-sm text-foreground',
+          'min-w-0 flex-1 overflow-hidden text-ellipsis line-clamp-3 text-right text-sm text-foreground',
           mono && 'font-mono text-xs',
           className,
         )}
@@ -587,7 +627,7 @@ function ValueField({
   return (
     <span
       className={cn(
-        'min-w-0 flex-1 truncate text-right text-sm text-foreground',
+        'min-w-0 flex-1 truncate text-right text-sm text-foreground block',
         mono && 'font-mono text-xs',
         className,
       )}

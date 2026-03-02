@@ -40,8 +40,9 @@ Implemented now:
 - per-client entity visibility updates in replication fixed tick,
 - owner/public/faction visibility allowances,
 - scanner range fallback with default floor,
-- mounted/child positional fallback for visibility checks.
-- observer anchor from player runtime camera state (`Transform` on player entity), with scanner-source union over owned entities.
+- **global world position**: all range/delivery checks use `GlobalTransform` (world position). Roots and mounted children are included; mounted entities' visibility uses their world position so components on children are correctly in scope.
+- mount-root resolution by traversing `MountedOn` parent chain for owner/public/faction inheritance; no `Without<MountedOn>` filter.
+- observer anchor from player entity **GlobalTransform** (world position), with scanner-source union over owned entities (also world positions).
 - control semantics align to `camera <- player <- controlled(optional)`; observer/player anchor is the delivery-center source-of-truth.
 
 Known gap:

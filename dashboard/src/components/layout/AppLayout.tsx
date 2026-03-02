@@ -119,7 +119,9 @@ export function AppLayout({
             />
           </aside>
         )}
-        <main className="flex-1 overflow-hidden relative">{children}</main>
+        <main className="flex-1 overflow-hidden relative bg-card">
+          {children}
+        </main>
         {detailPanel && (
           <aside
             className="flex-none border-l border-border bg-card overflow-hidden relative"
@@ -147,7 +149,9 @@ interface PanelProps {
 
 export function Panel({ children, className }: PanelProps) {
   return (
-    <div className={cn('flex h-full flex-col overflow-hidden p-2', className)}>
+    <div
+      className={cn('flex h-full flex-col overflow-hidden z-100', className)}
+    >
       {children}
     </div>
   )

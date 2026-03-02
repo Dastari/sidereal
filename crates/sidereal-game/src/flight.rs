@@ -114,7 +114,7 @@ pub fn apply_flight_action_to_computer(
 
 /// System that processes actions and updates FlightComputer state
 pub fn process_flight_actions(
-    mut query: Query<(&mut ActionQueue, &mut FlightComputer), Without<MountedOn>>,
+    mut query: Query<(&mut ActionQueue, &mut FlightComputer)>,
 ) {
     for (mut queue, mut computer) in &mut query {
         if queue.pending.is_empty() {
@@ -131,8 +131,8 @@ pub fn process_flight_actions(
 /// Uses Avian's Forces query helper for proper force integration
 pub fn apply_engine_thrust(
     time: Res<Time>,
-    // Root hull entities with flight computers (by GUID)
-    computers: Query<(&EntityGuid, &FlightComputer), Without<MountedOn>>,
+    // Hull entities with flight computers (by GUID)
+    computers: Query<(&EntityGuid, &FlightComputer)>,
     // Parent entities that can receive forces (Avian Forces query helper)
     mut body_queries: ParamSet<(BodyForceQuery<'_, '_>, BodyKinematicsQuery<'_, '_>)>,
     // Engine and fuel modules (mounted under a shared parent GUID)

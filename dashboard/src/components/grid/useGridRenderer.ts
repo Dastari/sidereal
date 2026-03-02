@@ -7,6 +7,7 @@ import {
   nodeFragmentShader,
   nodeVertexShader,
 } from './shaders'
+import type { GridThemeColors } from '@/lib/theme-colors'
 import type { Camera, ExpandedNode, GraphEdge } from './types'
 
 interface RendererState {
@@ -26,6 +27,7 @@ interface RendererState {
     uGridMinor: WebGLUniformLocation | null
     uGridMicro: WebGLUniformLocation | null
     uBackground: WebGLUniformLocation | null
+    uOriginLine: WebGLUniformLocation | null
   }
   nodeLocs: {
     aPosition: number
@@ -36,6 +38,7 @@ interface RendererState {
     uResolution: WebGLUniformLocation | null
     uCamera: WebGLUniformLocation | null
     uZoom: WebGLUniformLocation | null
+    uSelectionRing: WebGLUniformLocation | null
   }
   edgeLocs: {
     aPosition: number
@@ -82,26 +85,9 @@ function createProgram(
   return program
 }
 
-const ENTITY_COLORS: Record<string, [number, number, number]> = {
-  ship: [0.44, 0.75, 0.98],
-  station: [0.7, 0.55, 0.95],
-  asteroid: [0.75, 0.65, 0.45],
-  planet: [0.45, 0.8, 0.55],
-  component: [0.95, 0.7, 0.4],
-  default: [0.6, 0.7, 0.85],
-}
-
-function getEntityColor(kind: string): [number, number, number] {
-  const lower = kind.toLowerCase()
-  const color = ENTITY_COLORS[lower]
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- runtime key lookup
-  if (color) return color
-  return [0.6, 0.7, 0.85]
-}
-
 export function useGridRenderer(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
-  isDark: boolean,
+  themeColors: GridThemeColors,
 ) {
   const rendererRef = useRef<RendererState | null>(null)
   const rafRef = useRef<number>(0)
@@ -153,6 +139,7 @@ export function useGridRenderer(
         uGridMinor: gl.getUniformLocation(gridProgram, 'u_gridMinor'),
         uGridMicro: gl.getUniformLocation(gridProgram, 'u_gridMicro'),
         uBackground: gl.getUniformLocation(gridProgram, 'u_background'),
+        uOriginLine: gl.getUniformLocation(gridProgram, 'u_originLine'),
       },
       nodeLocs: {
         aPosition: gl.getAttribLocation(nodeProgram, 'a_position'),
@@ -163,6 +150,7 @@ export function useGridRenderer(
         uResolution: gl.getUniformLocation(nodeProgram, 'u_resolution'),
         uCamera: gl.getUniformLocation(nodeProgram, 'u_camera'),
         uZoom: gl.getUniformLocation(nodeProgram, 'u_zoom'),
+        uSelectionRing: gl.getUniformLocation(nodeProgram, 'u_selectionRing'),
       },
       edgeLocs: {
         aPosition: gl.getAttribLocation(edgeProgram, 'a_position'),
@@ -210,19 +198,16 @@ export function useGridRenderer(
 
       const { gl } = state
 
-      // Theme colors
-      const bgColor: [number, number, number] = isDark
-        ? [0.055, 0.07, 0.12]
-        : [0.96, 0.97, 0.98]
-      const gridMajor: [number, number, number] = isDark
-        ? [0.25, 0.3, 0.4]
-        : [0.7, 0.72, 0.75]
-      const gridMinor: [number, number, number] = isDark
-        ? [0.15, 0.18, 0.25]
-        : [0.82, 0.84, 0.86]
-      const gridMicro: [number, number, number] = isDark
-        ? [0.1, 0.12, 0.17]
-        : [0.9, 0.91, 0.92]
+      const {
+        background: bgColor,
+        gridMajor,
+        gridMinor,
+        gridMicro,
+        edge: edgeColor,
+        selectionRing,
+        originLine,
+        getEntityColor,
+      } = themeColors
 
       gl.clearColor(...bgColor, 1)
       gl.clear(gl.COLOR_BUFFER_BIT)
@@ -242,6 +227,7 @@ export function useGridRenderer(
       gl.uniform3fv(state.gridLocs.uGridMinor, gridMinor)
       gl.uniform3fv(state.gridLocs.uGridMicro, gridMicro)
       gl.uniform3fv(state.gridLocs.uBackground, bgColor)
+      gl.uniform3fv(state.gridLocs.uOriginLine, originLine)
       gl.drawArrays(gl.TRIANGLES, 0, 6)
 
       // Filter edges to only those with both endpoints visible
@@ -258,9 +244,7 @@ export function useGridRenderer(
           const toNode = nodes.get(edge.to)
           if (!fromNode || !toNode) continue
 
-          const color: [number, number, number] = isDark
-            ? [0.35, 0.45, 0.6]
-            : [0.5, 0.55, 0.65]
+          const color = edgeColor
 
           edgeData[ei++] = fromNode.x
           edgeData[ei++] = fromNode.y
@@ -312,7 +296,10 @@ export function useGridRenderer(
         let ni = 0
 
         for (const [id, node] of nodes) {
-          const color = getEntityColor(node.kind)
+          const entityLabels = node.properties?.entity_labels as
+            | string[]
+            | undefined
+          const color = getEntityColor(node.kind, entityLabels)
           const baseSize = node.depth === 0 ? 20 : 12
 
           nodeData[ni++] = node.x
@@ -379,13 +366,14 @@ export function useGridRenderer(
         gl.uniform2f(state.nodeLocs.uResolution, width, height)
         gl.uniform2f(state.nodeLocs.uCamera, camera.x, camera.y)
         gl.uniform1f(state.nodeLocs.uZoom, camera.zoom)
+        gl.uniform3fv(state.nodeLocs.uSelectionRing, selectionRing)
 
         gl.enable(gl.BLEND)
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
         gl.drawArrays(gl.POINTS, 0, nodes.size)
       }
     },
-    [canvasRef, init, isDark],
+    [canvasRef, init, themeColors],
   )
 
   useEffect(() => {

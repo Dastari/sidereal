@@ -3,7 +3,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useGridRenderer } from './useGridRenderer'
 import type { Camera, ExpandedNode, GraphEdge, WorldEntity } from './types'
 import type { DataSourceMode } from '@/components/sidebar/Toolbar'
+import { useGridThemeColors } from '@/hooks/use-grid-theme-colors'
 import { useTheme } from '@/hooks/use-theme'
+import { cn } from '@/lib/utils'
 
 interface GridCanvasProps {
   entities: Array<WorldEntity>
@@ -20,6 +22,8 @@ interface GridCanvasProps {
   sourceMode: DataSourceMode
   /** Entity IDs to exclude from the map (e.g. camera entities). Still shown in tree. */
   excludedFromMapIds?: Set<string>
+  /** When set, center the grid camera on this world position (e.g. when selecting an entity from the tree). */
+  centerOnPosition?: { x: number; y: number } | null
 }
 
 // graphNodes is used indirectly via expandedNodes
@@ -35,12 +39,13 @@ export function GridCanvas({
   filterMapInvisible,
   sourceMode,
   excludedFromMapIds,
+  centerOnPosition,
 }: GridCanvasProps) {
   void _graphNodes // Used indirectly via expandedNodes
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const labelsCanvasRef = useRef<HTMLCanvasElement>(null)
   const { resolvedTheme } = useTheme()
-  const isDark = resolvedTheme === 'dark'
+  const themeColors = useGridThemeColors(resolvedTheme)
 
   const cameraRef = useRef<Camera>({ x: 0, y: 0, zoom: 0.5 })
   const draggingRef = useRef(false)
@@ -50,7 +55,7 @@ export function GridCanvas({
   const [zoomPercent, setZoomPercent] = useState(50)
   const rafRef = useRef<number>(0)
 
-  const { init, resize, render } = useGridRenderer(canvasRef, isDark)
+  const { init, resize, render } = useGridRenderer(canvasRef, themeColors)
   const renderNodesRef = useRef<Map<string, ExpandedNode>>(new Map())
 
   const extrapolate2d = useCallback(
@@ -80,12 +85,8 @@ export function GridCanvas({
 
     // Add ONLY root world entities (no parentEntityId) at depth 0
     for (const entity of entities) {
-      // Map Visible Only: show only entities that have an EntityGuid component (BRP and database).
+      // Sidereal Entities Only: show only entities that have an EntityGuid component (BRP and database).
       if (filterMapInvisible && !entity.entityGuid) {
-        continue
-      }
-      // Keep non-renderable entities in sidebar/detail only.
-      if (filterMapInvisible && entity.mapVisible === false) {
         continue
       }
       // Do not render entities that do not have source world position.
@@ -112,6 +113,7 @@ export function GridCanvas({
           vy: entity.vy,
           sampledAtMs: entity.sampledAtMs,
           componentCount: entity.componentCount,
+          entity_labels: entity.entity_labels,
         },
       })
     }
@@ -209,9 +211,8 @@ export function GridCanvas({
 
     ctx.clearRect(0, 0, labelsCanvas.width, labelsCanvas.height)
     ctx.font = `${11 * dpr}px Inter, system-ui, sans-serif`
-    ctx.fillStyle = isDark
-      ? 'rgba(220, 230, 250, 0.9)'
-      : 'rgba(30, 40, 60, 0.9)'
+    const [lr, lg, lb] = themeColors.label
+    ctx.fillStyle = `rgba(${Math.round(lr * 255)}, ${Math.round(lg * 255)}, ${Math.round(lb * 255)}, 0.9)`
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
 
@@ -242,7 +243,7 @@ export function GridCanvas({
         screenPos.y - offset * dpr,
       )
     }
-  }, [worldToScreen, selectedId, hoveredId, isDark])
+  }, [worldToScreen, selectedId, hoveredId, themeColors])
 
   // Main render loop
   const frame = useCallback(() => {
@@ -252,6 +253,14 @@ export function GridCanvas({
     drawLabels()
     rafRef.current = requestAnimationFrame(frame)
   }, [render, getRenderNodes, graphEdges, selectedId, hoveredId, drawLabels])
+
+  // Center camera when parent requests (e.g. entity selected from tree)
+  useEffect(() => {
+    if (centerOnPosition && Number.isFinite(centerOnPosition.x) && Number.isFinite(centerOnPosition.y)) {
+      cameraRef.current.x = centerOnPosition.x
+      cameraRef.current.y = centerOnPosition.y
+    }
+  }, [centerOnPosition])
 
   // Initialize and start render loop
   useEffect(() => {
@@ -311,9 +320,8 @@ export function GridCanvas({
           } else {
             onSelect(hit)
           }
-        } else {
-          onSelect(null)
         }
+        // Click on empty space: keep current selection (do not deselect)
       }
     },
     [pickNode, selectedId, onSelect, onExpand],
@@ -358,7 +366,10 @@ export function GridCanvas({
     <div className="relative w-full h-full overflow-hidden">
       <canvas
         ref={canvasRef}
-        className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"
+        className={cn(
+          'absolute inset-0 w-full h-full',
+          hoveredId ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
+        )}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}

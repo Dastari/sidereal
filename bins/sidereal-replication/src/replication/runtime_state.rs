@@ -106,12 +106,12 @@ pub fn log_player_control_state_changes(
 
 pub fn update_client_observer_anchor_positions(
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
-    camera_transforms: Query<'_, '_, &'_ Transform>,
+    global_transforms: Query<'_, '_, &'_ GlobalTransform>,
     mut position_map: ResMut<'_, ClientObserverAnchorPositionMap>,
 ) {
     for (player_entity_id, player_entity) in &player_entities.by_player_entity_id {
-        if let Ok(camera_transform) = camera_transforms.get(*player_entity) {
-            position_map.update_position(player_entity_id, camera_transform.translation);
+        if let Ok(global) = global_transforms.get(*player_entity) {
+            position_map.update_position(player_entity_id, global.translation());
         }
     }
 }
