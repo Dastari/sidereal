@@ -57,6 +57,11 @@ function safeGraphName(input: string): string {
   return cleaned
 }
 
+/** Escape a string for safe use inside a Cypher single-quoted string literal (\\ and '). */
+function escapeCypherString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "''")
+}
+
 export const Route = createFileRoute('/api/delete-entity/$entityId')({
   server: {
     handlers: {
@@ -70,15 +75,17 @@ export const Route = createFileRoute('/api/delete-entity/$entityId')({
           await client.query("LOAD 'age'")
           await client.query('SET search_path = ag_catalog, public')
 
+          // AGE cypher() does not bind PostgreSQL $1 inside the query; embed escaped value.
+          const escapedId = escapeCypherString(entityId)
+
           // Delete entity and all its components from the graph
-          await client.query(
-            `SELECT * FROM ag_catalog.cypher('${graphName}', $$
-              MATCH (e:Entity {entity_id: $1})
+          await client.query(`
+            SELECT * FROM ag_catalog.cypher('${graphName}', $$
+              MATCH (e:Entity {entity_id: '${escapedId}'})
               OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(c:Component)
               DETACH DELETE e, c
-            $$) AS (result agtype)`,
-            [entityId],
-          )
+            $$) AS (result agtype)
+          `)
 
           return json({ success: true, entityId })
         } catch (error) {

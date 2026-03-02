@@ -1,5 +1,15 @@
 import * as React from 'react'
-import { Box, ChevronRight, Layers, MapPin, Users, X } from 'lucide-react'
+import {
+  Box,
+  ChevronRight,
+  Copy,
+  Gauge,
+  Layers,
+  MapPin,
+  Puzzle,
+  Users,
+  X,
+} from 'lucide-react'
 import type {
   ExpandedNode,
   GraphEdge,
@@ -11,7 +21,6 @@ import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   ComponentEditorRenderer,
   isEditableComponent,
@@ -45,8 +54,8 @@ export function DetailPanel({
   graphNodes,
   graphEdges,
   onSelect,
-  onExpand,
-  onCollapse,
+  onExpand: _onExpand,
+  onCollapse: _onCollapse,
   sourceMode,
   onComponentUpdate,
   onClose,
@@ -71,7 +80,7 @@ export function DetailPanel({
     worldEntity?.name || expandedNode?.label || graphNode?.label || selectedId
   const kind =
     worldEntity?.kind || expandedNode?.kind || graphNode?.kind || 'unknown'
-  const isExpanded = expandedNodes.has(selectedId)
+  const entityLabels = worldEntity?.entity_labels
 
   return (
     <div className="flex flex-col h-full">
@@ -80,10 +89,22 @@ export function DetailPanel({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
             <h2 className="font-semibold text-foreground truncate">{name}</h2>
-            <div className="flex items-center gap-2 mt-1">
-              <Badge variant="secondary" className="capitalize text-xs">
-                {kind}
-              </Badge>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              {entityLabels && entityLabels.length > 0
+                ? entityLabels.map((label) => (
+                    <Badge
+                      key={label}
+                      variant="secondary"
+                      className="capitalize text-xs"
+                    >
+                      {label}
+                    </Badge>
+                  ))
+                : (
+                  <Badge variant="secondary" className="capitalize text-xs">
+                    {kind}
+                  </Badge>
+                )}
               {worldEntity && (
                 <span className="text-xs text-muted-foreground">
                   Shard {worldEntity.shardId}
@@ -103,85 +124,102 @@ export function DetailPanel({
             </Button>
           )}
         </div>
-
-        {/* Quick actions */}
-        <div className="flex gap-2 mt-3">
-          <Button
-            size="sm"
-            variant="default"
-            onClick={() => onExpand(selectedId)}
-            className="flex-1"
-          >
-            Expand
-            <ChevronRight className="h-4 w-4 ml-1" />
-          </Button>
-          {isExpanded && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onCollapse(selectedId)}
-              className="flex-1"
-            >
-              Collapse
-            </Button>
-          )}
-        </div>
       </div>
 
-      {/* Content */}
-      <Tabs
-        defaultValue="properties"
-        className="flex-1 flex flex-col overflow-hidden"
-      >
-        <TabsList className="flex-none mx-4 mt-3">
-          <TabsTrigger value="properties" className="flex-1">
-            Properties
-          </TabsTrigger>
-          <TabsTrigger value="components" className="flex-1">
-            Components
-          </TabsTrigger>
-          <TabsTrigger value="children" className="flex-1">
-            Children
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="properties" className="flex-1 overflow-hidden m-0">
-          <ScrollArea className="h-full ml-1">
-            <div className="p-5 space-y-4">
-              {/* Position info */}
+      {/* Content - single scrollable properties view */}
+      <ScrollArea className="flex-1 ml-1">
+        <div className="p-5 space-y-4">
+              {/* Position: X/Y on same line as heading, no unit. Speed: magnitude with m/s. */}
               {worldEntity && (
-                <PropertySection title="Position" icon={MapPin}>
-                  <PropertyRow
-                    label="X"
-                    value={worldEntity.x.toFixed(2)}
-                    unit="m"
-                  />
-                  <PropertyRow
-                    label="Y"
-                    value={worldEntity.y.toFixed(2)}
-                    unit="m"
-                  />
-                  <PropertyRow
-                    label="VX"
-                    value={worldEntity.vx.toFixed(2)}
-                    unit="m/s"
-                  />
-                  <PropertyRow
-                    label="VY"
-                    value={worldEntity.vy.toFixed(2)}
-                    unit="m/s"
-                  />
-                </PropertySection>
+                <>
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-2 w-full">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                          Position
+                        </h3>
+                      </div>
+                      <span className="text-xs text-foreground text-right shrink-0 tabular-nums">
+                        <span className="text-muted-foreground">X:</span>{' '}
+                        {worldEntity.x.toFixed(2)} ·{' '}
+                        <span className="text-muted-foreground">Y:</span>{' '}
+                        {worldEntity.y.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-2 w-full">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Gauge className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                          Speed
+                        </h3>
+                      </div>
+                      <span className="text-xs text-foreground text-right shrink-0 tabular-nums">
+                        {Math.sqrt(
+                          worldEntity.vx * worldEntity.vx +
+                            worldEntity.vy * worldEntity.vy,
+                        ).toFixed(2)}{' '}
+                        <span className="text-muted-foreground">m/s</span>
+                      </span>
+                    </div>
+                  </div>
+                </>
               )}
 
-              {/* Entity info */}
-              <PropertySection title="Entity" icon={Layers}>
-                <PropertyRow label="ID" value={selectedId} mono />
-                <PropertyRow
-                  label="Components"
-                  value={String(worldEntity?.componentCount || 0)}
-                />
-              </PropertySection>
+              {/* Entity GUID: ID on same line as heading with copy button */}
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2 w-full">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      Entity Guid
+                    </h3>
+                  </div>
+                  <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
+                    <span className="text-xs text-foreground font-mono tabular-nums min-w-0 break-all text-right">
+                      {selectedId}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      aria-label="Copy entity ID"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(selectedId)
+                      }}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Parent: link to parent entity like children */}
+              {worldEntity?.parentEntityId && (
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2 w-full">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                        Parent
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onSelect(worldEntity.parentEntityId!)}
+                      className="flex items-center gap-2 px-2 py-1 rounded hover:bg-secondary/50 text-sm transition-colors text-left text-foreground"
+                    >
+                      <span className="truncate max-w-[140px]">
+                        {entities.find((e) => e.id === worldEntity.parentEntityId)
+                          ?.name ?? worldEntity.parentEntityId}
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0 rotate-180" />
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Child Entities Section */}
               <ChildEntitiesSection
@@ -190,15 +228,15 @@ export function DetailPanel({
                 onSelect={onSelect}
               />
 
-              {/* Graph properties */}
+              {/* Graph properties (exclude entity_labels) */}
               {graphNode?.properties &&
                 Object.keys(graphNode.properties).length > 0 && (
                   <PropertySection title="Graph Properties" icon={Box}>
-                    {Object.entries(graphNode.properties).map(
-                      ([key, value]) => (
+                    {Object.entries(graphNode.properties)
+                      .filter(([key]) => key !== 'entity_labels')
+                      .map(([key, value]) => (
                         <PropertyRow key={key} label={key} value={value} mono />
-                      ),
-                    )}
+                      ))}
                   </PropertySection>
                 )}
 
@@ -213,37 +251,36 @@ export function DetailPanel({
                     )}
                   </PropertySection>
                 )}
-            </div>
-          </ScrollArea>
-        </TabsContent>
 
-        <TabsContent value="components" className="flex-1 overflow-hidden m-0">
-          <ScrollArea className="h-full ml-1">
-            <div className="p-5">
-              <ComponentsList
-                entityId={selectedId}
-                graphNodes={graphNodes}
-                graphEdges={graphEdges}
-                sourceMode={sourceMode}
-                onComponentUpdate={onComponentUpdate}
-              />
+              {/* Components - same style heading as Position, Speed, Children; count in header */}
+              {(() => {
+                const componentCount =
+                  worldEntity?.componentCount ??
+                  graphEdges.filter(
+                    (e) => e.from === selectedId && e.label === 'HAS_COMPONENT',
+                  ).length
+                return (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Puzzle className="h-4 w-4 text-muted-foreground" />
+                      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                        Components ({componentCount})
+                      </h3>
+                    </div>
+                    <div className="pl-6">
+                      <ComponentsList
+                        entityId={selectedId}
+                        graphNodes={graphNodes}
+                        graphEdges={graphEdges}
+                        sourceMode={sourceMode}
+                        onComponentUpdate={onComponentUpdate}
+                      />
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
-          </ScrollArea>
-        </TabsContent>
-        <TabsContent value="children" className="flex-1 overflow-hidden m-0">
-          <ScrollArea className="h-full ml-1">
-            <div className="p-5">
-              <ChildEntitiesList
-                entityId={selectedId}
-                entities={entities}
-                graphNodes={graphNodes}
-                graphEdges={graphEdges}
-                onSelect={onSelect}
-              />
-            </div>
-          </ScrollArea>
-        </TabsContent>
-      </Tabs>
+      </ScrollArea>
     </div>
   )
 }
@@ -675,126 +712,5 @@ function ChildEntitiesSection({
         ))}
       </div>
     </PropertySection>
-  )
-}
-
-interface ChildEntitiesListProps {
-  entityId: string
-  entities: Array<WorldEntity>
-  graphNodes: Map<string, GraphNode>
-  graphEdges: Array<GraphEdge>
-  onSelect: (id: string) => void
-}
-
-function ChildEntitiesList({
-  entityId,
-  entities,
-  graphNodes,
-  graphEdges,
-  onSelect,
-}: ChildEntitiesListProps) {
-  const [expandedChildren, setExpandedChildren] = React.useState<Set<string>>(
-    new Set(),
-  )
-
-  const children = React.useMemo(() => {
-    return entities.filter((e) => e.parentEntityId === entityId)
-  }, [entityId, entities])
-
-  const getChildComponents = (childId: string) => {
-    const componentIds = graphEdges
-      .filter((edge) => edge.from === childId && edge.label === 'HAS_COMPONENT')
-      .map((edge) => edge.to)
-    return componentIds
-      .map((id) => {
-        const node = graphNodes.get(id)
-        return node ? { id, node } : null
-      })
-      .filter(
-        (entry): entry is { id: string; node: GraphNode } => entry !== null,
-      )
-  }
-
-  const toggleChild = (childId: string) => {
-    setExpandedChildren((prev) => {
-      const next = new Set(prev)
-      if (next.has(childId)) {
-        next.delete(childId)
-      } else {
-        next.add(childId)
-      }
-      return next
-    })
-  }
-
-  if (children.length === 0) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-6">
-        <p>No child entities found.</p>
-        <p className="mt-1 text-xs">
-          Child entities have this entity as their parent (mounted_on).
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-2">
-      {children.map((child) => {
-        const isExpanded = expandedChildren.has(child.id)
-        const components = getChildComponents(child.id)
-
-        return (
-          <div
-            key={child.id}
-            className="border border-border rounded-md overflow-hidden"
-          >
-            <button
-              onClick={() => {
-                onSelect(child.id)
-                toggleChild(child.id)
-              }}
-              className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left"
-            >
-              <Box className="h-4 w-4 text-primary flex-none" />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-sm truncate">{child.name}</div>
-                <div className="text-xs text-muted-foreground">
-                  {child.kind} • {components.length} components
-                </div>
-              </div>
-              <ChevronRight
-                className={cn(
-                  'h-4 w-4 text-muted-foreground transition-transform',
-                  isExpanded && 'rotate-90',
-                )}
-              />
-            </button>
-
-            {isExpanded && components.length > 0 && (
-              <div className="border-t border-border bg-secondary/20">
-                {components
-                  .sort((a, b) => a.node.label.localeCompare(b.node.label))
-                  .map(({ id, node }) => (
-                    <button
-                      key={id}
-                      onClick={() => onSelect(id)}
-                      className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left border-b border-border/50 last:border-0"
-                    >
-                      <Box className="h-3.5 w-3.5 text-warning flex-none ml-4" />
-                      <span className="text-xs font-medium truncate flex-1">
-                        {node.label}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {Object.keys(node.properties).length} props
-                      </span>
-                    </button>
-                  ))}
-              </div>
-            )}
-          </div>
-        )
-      })}
-    </div>
   )
 }
