@@ -166,10 +166,9 @@ Additional systems are defined in `native/*.rs` modules.
   - top-down camera update, then UI-overlay camera sync, then camera motion update
   - UI overlay layer propagation
   - HUD update, nameplate sync, segmented bars update, debug overlay toggle
-- Separate interpolation chain:
-  1. `refresh_interpolated_visual_targets_system` (after world sync)
-  2. `apply_interpolated_visual_smoothing_system`
-  3. `lock_player_entity_to_controlled_entity_end_of_frame`
+- Interpolation path:
+  - remote/non-controlled motion interpolation is handled by Lightyear interpolation on replicated Avian motion components (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`).
+  - client-only secondary interpolation systems are not used.
 - `audit_active_world_cameras_system` also runs in `InWorld`.
 
 ### PostUpdate
@@ -676,4 +675,3 @@ These are concrete mismatches between docs and current runtime behavior.
 - Component persist/replicate/reflect/predict metadata: cataloged.
 - Optimization + pluginization recommendations: included.
 - Documentation drift findings: included with file-level evidence.
-

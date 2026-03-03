@@ -1,6 +1,9 @@
 use avian2d::prelude::{AngularVelocity, LinearVelocity};
 use bevy::prelude::*;
-use sidereal_game::{ActionQueue, EntityAction, FlightComputer, MountedOn};
+use sidereal_game::flight::compute_flight_forces;
+use sidereal_game::{
+    ActionQueue, AfterburnerState, EntityAction, FlightComputer, FlightControlAuthority, MountedOn,
+};
 use sidereal_game::{
     clamp_angular_velocity, compute_brake_decel_accel_mps2, process_flight_actions,
     sanitize_planar_angular_velocity, stabilize_idle_motion,
@@ -28,13 +31,14 @@ fn process_flight_actions_only_updates_flight_intents() {
                 brake_active: false,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
         ))
         .id();
     app.update();
 
     let queue = app.world().entity(entity).get::<ActionQueue>().unwrap();
     let computer = app.world().entity(entity).get::<FlightComputer>().unwrap();
-    assert!(queue.pending.is_empty());
+    assert_eq!(queue.pending, vec![EntityAction::FirePrimary]);
     assert!((computer.throttle - 1.0).abs() < f32::EPSILON);
     assert!((computer.yaw_input + 1.0).abs() < f32::EPSILON);
 }
@@ -56,6 +60,7 @@ fn process_flight_actions_handles_brake_as_intent_only() {
                 brake_active: false,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
         ))
         .id();
     app.update();
@@ -83,13 +88,46 @@ fn process_flight_actions_ignores_non_flight_actions() {
                 brake_active: false,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
         ))
         .id();
     app.update();
 
     let computer = app.world().entity(entity).get::<FlightComputer>().unwrap();
+    let queue = app.world().entity(entity).get::<ActionQueue>().unwrap();
     assert!((computer.throttle - 0.25).abs() < f32::EPSILON);
     assert!((computer.yaw_input + 0.5).abs() < f32::EPSILON);
+    assert_eq!(queue.pending, vec![EntityAction::FirePrimary]);
+}
+
+#[test]
+fn process_flight_actions_toggles_afterburner_state() {
+    let mut app = App::new();
+    app.add_systems(Update, process_flight_actions);
+    let entity = app
+        .world_mut()
+        .spawn((
+            ActionQueue {
+                pending: vec![EntityAction::AfterburnerOn, EntityAction::AfterburnerOff],
+            },
+            FlightComputer {
+                profile: "basic_fly_by_wire".to_string(),
+                throttle: 0.0,
+                yaw_input: 0.0,
+                brake_active: false,
+                turn_rate_deg_s: 45.0,
+            },
+            AfterburnerState::default(),
+            FlightControlAuthority,
+        ))
+        .id();
+    app.update();
+    let afterburner_state = app
+        .world()
+        .entity(entity)
+        .get::<AfterburnerState>()
+        .unwrap();
+    assert!(!afterburner_state.active);
 }
 
 #[test]
@@ -106,6 +144,7 @@ fn stabilize_idle_motion_zeros_small_residual_velocity_and_spin() {
                 brake_active: false,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
             LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03)),
             AngularVelocity(0.01),
         ))
@@ -133,6 +172,7 @@ fn stabilize_idle_motion_preserves_active_control_state() {
                 brake_active: false,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
             LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03)),
             AngularVelocity(0.01),
         ))
@@ -160,6 +200,7 @@ fn stabilize_idle_motion_honors_brake_stop_window() {
                 brake_active: true,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
             LinearVelocity(bevy::prelude::Vec2::new(3.0, -1.0)),
             AngularVelocity(0.01),
         ))
@@ -217,6 +258,7 @@ fn clamp_angular_velocity_skips_mounted_modules() {
                 brake_active: false,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
             AngularVelocity(6.0),
         ))
         .id();
@@ -230,6 +272,7 @@ fn clamp_angular_velocity_skips_mounted_modules() {
                 brake_active: false,
                 turn_rate_deg_s: 45.0,
             },
+            FlightControlAuthority,
             MountedOn {
                 parent_entity_id: parent,
                 hardpoint_id: "test".to_string(),
@@ -249,4 +292,58 @@ fn clamp_angular_velocity_skips_mounted_modules() {
         .get::<AngularVelocity>()
         .unwrap();
     assert!((module_angular.0 - 9.0).abs() < 1e-6);
+}
+
+#[test]
+fn forward_thrust_does_not_brake_when_overspeed_from_external_velocity() {
+    let rotation = Quat::IDENTITY;
+    let velocity = Vec2::Y * 300.0;
+    let flight_tuning = sidereal_game::FlightTuning {
+        max_linear_accel_mps2: 120.0,
+        passive_brake_accel_mps2: 1.0,
+        active_brake_accel_mps2: 10.0,
+        drag_per_s: 0.0,
+    };
+    let (force, _torque) = compute_flight_forces(
+        (1.0, 0.0, 90.0, false),
+        velocity,
+        0.0,
+        rotation,
+        10_000.0,
+        1000.0,
+        &flight_tuning,
+        100.0,
+        200_000.0,
+        200_000.0,
+        0.0,
+        1.0 / 60.0,
+    );
+    assert!(force.dot(Vec2::Y) >= -1e-3);
+}
+
+#[test]
+fn reverse_thrust_can_decelerate_overspeed_forward_motion() {
+    let rotation = Quat::IDENTITY;
+    let velocity = Vec2::Y * 300.0;
+    let flight_tuning = sidereal_game::FlightTuning {
+        max_linear_accel_mps2: 120.0,
+        passive_brake_accel_mps2: 1.0,
+        active_brake_accel_mps2: 10.0,
+        drag_per_s: 0.0,
+    };
+    let (force, _torque) = compute_flight_forces(
+        (-0.7, 0.0, 90.0, false),
+        velocity,
+        0.0,
+        rotation,
+        10_000.0,
+        1000.0,
+        &flight_tuning,
+        100.0,
+        200_000.0,
+        200_000.0,
+        0.0,
+        1.0 / 60.0,
+    );
+    assert!(force.dot(Vec2::Y) < 0.0);
 }

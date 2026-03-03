@@ -19,6 +19,17 @@ fn ensure_test_db_available() -> bool {
     Client::connect(&test_database_url(), NoTls).is_ok()
 }
 
+fn available_player_entity_ids(limit: i64) -> Option<Vec<String>> {
+    let mut client = Client::connect(&test_database_url(), NoTls).ok()?;
+    let rows = client
+        .query(
+            "SELECT player_entity_id FROM auth_characters ORDER BY created_at_epoch_s ASC LIMIT $1",
+            &[&limit],
+        )
+        .ok()?;
+    Some(rows.into_iter().map(|row| row.get(0)).collect())
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -185,9 +196,13 @@ fn replication_client_lightyear_transport_flow() {
     let replication_udp_addr = format!("127.0.0.1:{replication_udp_port}");
     let control_udp_addr = format!("127.0.0.1:{control_udp_port}");
     let client_udp_addr = format!("127.0.0.1:{client_udp_port}");
-    let player_entity_id = "player:transport-e2e";
+    let Some(player_entity_id) = available_player_entity_ids(1).and_then(|mut ids| ids.pop())
+    else {
+        eprintln!("skipping transport e2e test; no auth_characters player_entity_id available");
+        return;
+    };
     let jwt_secret = test_jwt_secret();
-    let access_token = test_access_token(player_entity_id, &jwt_secret);
+    let access_token = test_access_token(&player_entity_id, &jwt_secret);
 
     let mut rep_cmd = Command::new(&replication_bin);
     rep_cmd
@@ -212,7 +227,7 @@ fn replication_client_lightyear_transport_flow() {
         &client_bin,
         &replication_udp_addr,
         &client_udp_addr,
-        player_entity_id,
+        &player_entity_id,
         &access_token,
         None,
     );
@@ -279,11 +294,19 @@ fn replication_rebinds_same_remote_after_player_switch() {
     let replication_udp_addr = format!("127.0.0.1:{replication_udp_port}");
     let control_udp_addr = format!("127.0.0.1:{control_udp_port}");
     let client_udp_addr = format!("127.0.0.1:{client_udp_port}");
-    let player_a = "player:transport-switch-a";
-    let player_b = "player:transport-switch-b";
+    let Some(player_ids) = available_player_entity_ids(2) else {
+        eprintln!("skipping transport e2e test; failed loading auth_characters player ids");
+        return;
+    };
+    if player_ids.len() < 2 {
+        eprintln!("skipping transport e2e test; need at least 2 player_entity_id values");
+        return;
+    }
+    let player_a = player_ids[0].clone();
+    let player_b = player_ids[1].clone();
     let jwt_secret = test_jwt_secret();
-    let token_a = test_access_token(player_a, &jwt_secret);
-    let token_b = test_access_token(player_b, &jwt_secret);
+    let token_a = test_access_token(&player_a, &jwt_secret);
+    let token_b = test_access_token(&player_b, &jwt_secret);
 
     let mut rep_cmd = Command::new(&replication_bin);
     rep_cmd
@@ -308,23 +331,23 @@ fn replication_rebinds_same_remote_after_player_switch() {
         &client_bin,
         &replication_udp_addr,
         &client_udp_addr,
-        player_a,
+        &player_a,
         &token_a,
-        Some((player_b, &token_b, 1.0)),
+        Some((&player_b, &token_b, 1.0)),
     );
     let a_bound = wait_for_log(
         &rep_log,
-        "player_entity_id=player:transport-switch-a",
+        &format!("player_entity_id={player_a}"),
         Duration::from_secs(20),
     );
     let b_bound = wait_for_log(
         &rep_log,
-        "player_entity_id=player:transport-switch-b",
+        &format!("player_entity_id={player_b}"),
         Duration::from_secs(25),
     );
     let spoofed_b_vs_a = wait_for_log(
         &rep_log,
-        "claimed=player:transport-switch-b, bound=player:transport-switch-a",
+        &format!("claimed={player_b}, bound={player_a}"),
         Duration::from_secs(5),
     );
 

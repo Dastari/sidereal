@@ -1,14 +1,14 @@
 use sidereal_game::EntityAction;
-use sidereal_net::ClientRealtimeInputMessage;
+use sidereal_net::{ClientRealtimeInputMessage, PlayerEntityId, RuntimeEntityId};
 
 use crate::replication::input::{
     InputRateLimitState, InputValidationFailure, MAX_ACTIONS_PER_PACKET, MAX_MESSAGES_PER_SECOND,
-    validate_input_message,
+    canonical_controlled_entity_id, validate_input_message,
 };
 
 fn message_with(tick: u64, actions: usize) -> ClientRealtimeInputMessage {
     ClientRealtimeInputMessage {
-        player_entity_id: "player:test".to_string(),
+        player_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
         controlled_entity_id: "ship:test".to_string(),
         actions: vec![EntityAction::ThrustNeutral; actions],
         tick,
@@ -47,5 +47,27 @@ fn validation_rejects_oversized_and_rate_limited() {
     assert_eq!(
         validate_input_message(&normal, Some(10), 2.0, &mut rate_limit),
         Err(InputValidationFailure::RateLimited)
+    );
+}
+
+#[test]
+fn canonical_controlled_entity_id_normalizes_player_and_prefixed_guids() {
+    let player_id = PlayerEntityId::parse("player:11111111-1111-1111-1111-111111111111").unwrap();
+    assert_eq!(
+        canonical_controlled_entity_id("11111111-1111-1111-1111-111111111111", player_id),
+        Some(RuntimeEntityId(player_id.0))
+    );
+    assert_eq!(
+        canonical_controlled_entity_id("player:11111111-1111-1111-1111-111111111111", player_id),
+        Some(RuntimeEntityId(player_id.0))
+    );
+
+    assert_eq!(
+        canonical_controlled_entity_id("ship:22222222-2222-2222-2222-222222222222", player_id),
+        RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222")
+    );
+    assert_eq!(
+        canonical_controlled_entity_id("22222222-2222-2222-2222-222222222222", player_id),
+        RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222")
     );
 }

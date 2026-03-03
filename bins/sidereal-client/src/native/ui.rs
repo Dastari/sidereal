@@ -2,10 +2,12 @@
 
 use avian2d::prelude::{LinearVelocity, Rotation};
 use bevy::camera::visibility::RenderLayers;
-use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use sidereal_game::{DisplayName, EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, OwnerId, SizeM};
+use sidereal_game::{
+    DisplayName, EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, OwnerId, SizeM,
+};
+use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::HashMap;
 
 use super::app_state::{
@@ -13,11 +15,11 @@ use super::app_state::{
 };
 use super::assets::{LocalAssetManager, RuntimeAssetStreamIndicatorState};
 use super::components::{
-    ControlledEntity, GameplayCamera, GameplayHud, HudFpsText, HudFuelBarFill, HudHealthBarFill,
+    ControlledEntity, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
     HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
-    LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton, OwnedEntitiesPanelRoot,
-    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, ShipNameplateHealthBar,
-    ShipNameplateRoot, UiOverlayLayer, WorldEntity,
+    LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
+    OwnedEntitiesPanelRoot, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
+    ShipNameplateHealthBar, ShipNameplateRoot, UiOverlayLayer, WorldEntity,
 };
 use super::platform::UI_OVERLAY_RENDER_LAYER;
 use super::resources::{ClientControlRequestState, EmbeddedFonts};
@@ -97,6 +99,15 @@ pub(super) fn update_runtime_stream_icon_system(
     color.0 = Color::srgba(0.3 + pulse * 0.7, 0.85, 1.0, 0.5 + pulse * 0.5);
 }
 
+fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    parse_guid_from_entity_id(left)
+        .zip(parse_guid_from_entity_id(right))
+        .is_some_and(|(l, r)| l == r)
+}
+
 #[allow(clippy::type_complexity)]
 pub(super) fn update_owned_entities_panel_system(
     mut commands: Commands<'_, '_>,
@@ -108,7 +119,12 @@ pub(super) fn update_owned_entities_panel_system(
     ships: Query<
         '_,
         '_,
-        (&EntityGuid, Option<&OwnerId>, Option<&EntityLabels>, Option<&DisplayName>),
+        (
+            &EntityGuid,
+            Option<&OwnerId>,
+            Option<&EntityLabels>,
+            Option<&DisplayName>,
+        ),
         With<WorldEntity>,
     >,
 ) {
@@ -122,7 +138,9 @@ pub(super) fn update_owned_entities_panel_system(
             if !is_ship {
                 return None;
             }
-            if owner.is_none_or(|owner| owner.0 != *local_player_entity_id) {
+            if owner.is_none_or(|owner| {
+                !ids_refer_to_same_guid(owner.0.as_str(), local_player_entity_id)
+            }) {
                 return None;
             }
             let entity_id = guid.0.to_string();
@@ -160,7 +178,7 @@ pub(super) fn update_owned_entities_panel_system(
     panel_state.last_detached_mode = player_view_state.detached_free_camera;
 
     for panel in &existing_panels {
-        commands.entity(panel).despawn();
+        commands.entity(panel).try_despawn();
     }
 
     commands
@@ -197,8 +215,9 @@ pub(super) fn update_owned_entities_panel_system(
                 TextColor(Color::srgb(0.9, 0.95, 1.0)),
             ));
 
-            let free_roam_selected = selected_id.as_deref()
-                == Some(local_player_entity_id.as_str())
+            let free_roam_selected = selected_id
+                .as_deref()
+                .is_some_and(|selected| ids_refer_to_same_guid(selected, local_player_entity_id))
                 && !player_view_state.detached_free_camera;
             panel
                 .spawn((
@@ -339,8 +358,13 @@ pub(super) fn handle_owned_entities_panel_buttons(
             Interaction::None => {
                 let is_selected = match &button.action {
                     OwnedEntitiesPanelAction::FreeRoam => {
-                        player_view_state.desired_controlled_entity_id.as_ref()
-                            == session.player_entity_id.as_ref()
+                        player_view_state
+                            .desired_controlled_entity_id
+                            .as_deref()
+                            .zip(session.player_entity_id.as_deref())
+                            .is_some_and(|(desired, session_player)| {
+                                ids_refer_to_same_guid(desired, session_player)
+                            })
                             && !player_view_state.detached_free_camera
                     }
                     OwnedEntitiesPanelAction::ControlEntity(entity_id) => {
@@ -373,12 +397,11 @@ pub(super) fn update_hud_system(
         With<ControlledEntity>,
     >,
     fuel_tank_query: Query<'_, '_, (&MountedOn, &FuelTank)>,
-    camera_query: Query<'_, '_, (&Transform, Option<&Projection>), With<GameplayCamera>>,
+    camera_query: Query<'_, '_, &Transform, With<GameplayCamera>>,
     mut text_queries: ParamSet<
         '_,
         '_,
         (
-            Query<'_, '_, &mut Text, With<HudFpsText>>,
             Query<'_, '_, &mut Text, With<HudSpeedValueText>>,
             Query<'_, '_, &mut Text, With<HudPositionValueText>>,
         ),
@@ -391,85 +414,61 @@ pub(super) fn update_hud_system(
             Query<'_, '_, &mut SegmentedBarValue, With<HudFuelBarFill>>,
         ),
     >,
-    diagnostics: Option<Res<'_, DiagnosticsStore>>,
 ) {
-    let zoom_text = camera_query
-        .single()
-        .ok()
-        .and_then(|(_, projection)| projection)
-        .and_then(|projection| match projection {
-            Projection::Orthographic(ortho) => Some(format!("{:.2}x", ortho.scale.max(0.01))),
-            _ => None,
-        })
-        .unwrap_or_else(|| "--.--x".to_string());
-
-    let (pos, _heading_rad, vel, health_ratio, fuel_ratio) = if let Ok((
-        guid,
-        transform,
-        maybe_rotation,
-        maybe_velocity,
-        maybe_health,
-    )) = controlled_query.single()
-    {
-        let vel = maybe_velocity.map_or(Vec2::ZERO, |velocity| velocity.0);
-        let heading_rad = maybe_rotation
-            .map(|rotation| rotation.as_radians())
-            .unwrap_or_else(|| vel.to_angle());
-        let health_ratio = if let Some(health) = maybe_health {
-            let ratio = if health.maximum > 0.0 {
-                (health.current / health.maximum).clamp(0.0, 1.0)
+    let (pos, _heading_rad, vel, health_ratio, fuel_ratio) =
+        if let Ok((guid, transform, maybe_rotation, maybe_velocity, maybe_health)) =
+            controlled_query.single()
+        {
+            let vel = maybe_velocity.map_or(Vec2::ZERO, |velocity| velocity.0);
+            let heading_rad = maybe_rotation
+                .map(|rotation| rotation.as_radians())
+                .unwrap_or_else(|| vel.to_angle());
+            let health_ratio = if let Some(health) = maybe_health {
+                if health.maximum > 0.0 {
+                    (health.current / health.maximum).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             };
-            ratio
-        } else {
-            0.0
-        };
 
-        let mut fuel_current = 0.0_f32;
-        for (mounted_on, fuel_tank) in &fuel_tank_query {
-            if mounted_on.parent_entity_id == guid.0 {
-                fuel_current += fuel_tank.fuel_kg.max(0.0);
+            let mut fuel_current = 0.0_f32;
+            for (mounted_on, fuel_tank) in &fuel_tank_query {
+                if mounted_on.parent_entity_id == guid.0 {
+                    fuel_current += fuel_tank.fuel_kg.max(0.0);
+                }
             }
-        }
-        let baseline_entry = fuel_baseline_by_parent.entry(guid.0).or_insert(fuel_current);
-        *baseline_entry = baseline_entry.max(fuel_current);
-        let fuel_capacity = (*baseline_entry).max(1.0);
-        let fuel_ratio = if fuel_current > 0.0 || fuel_capacity > 1.0 {
-            let ratio = (fuel_current / fuel_capacity).clamp(0.0, 1.0);
-            ratio
-        } else {
-            0.0
-        };
+            let baseline_entry = fuel_baseline_by_parent
+                .entry(guid.0)
+                .or_insert(fuel_current);
+            *baseline_entry = baseline_entry.max(fuel_current);
+            let fuel_capacity = (*baseline_entry).max(1.0);
+            let fuel_ratio = if fuel_current > 0.0 || fuel_capacity > 1.0 {
+                (fuel_current / fuel_capacity).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
 
-        (
-            transform.translation,
-            heading_rad,
-            vel,
-            health_ratio,
-            fuel_ratio,
-        )
-    } else {
-        let Ok((camera_transform, _)) = camera_query.single() else {
-            return;
+            (
+                transform.translation,
+                heading_rad,
+                vel,
+                health_ratio,
+                fuel_ratio,
+            )
+        } else {
+            let Ok(camera_transform) = camera_query.single() else {
+                return;
+            };
+            (camera_transform.translation, 0.0, Vec2::ZERO, 0.0, 0.0)
         };
-        (camera_transform.translation, 0.0, Vec2::ZERO, 0.0, 0.0)
-    };
-    let fps_text = diagnostics
-        .as_ref()
-        .and_then(|store| store.get(&FrameTimeDiagnosticsPlugin::FPS))
-        .and_then(|fps| fps.smoothed().or_else(|| fps.value()))
-        .map(|fps| format!("{fps:.1}"))
-        .unwrap_or_else(|| "--.-".to_string());
     let speed = vel.length();
 
     if let Ok(mut text) = text_queries.p0().single_mut() {
-        text.0 = format!("FPS {}  ZOOM {}", fps_text, zoom_text);
-    }
-    if let Ok(mut text) = text_queries.p1().single_mut() {
         text.0 = format!("{:.1} m/s", speed);
     }
-    if let Ok(mut text) = text_queries.p2().single_mut() {
+    if let Ok(mut text) = text_queries.p1().single_mut() {
         text.0 = format!("({:.0}, {:.0})", pos.x, pos.y);
     }
     if let Ok(mut fill) = bar_value_queries.p0().single_mut() {
@@ -488,7 +487,8 @@ pub(super) fn update_segmented_bars_system(
     for (value, style, children) in &bar_roots {
         let seg_count = style.segments.max(1);
         let ratio = value.ratio.clamp(0.0, 1.0);
-        let active_segments = ((ratio * seg_count as f32).round() as i32).clamp(0, seg_count as i32);
+        let active_segments =
+            ((ratio * seg_count as f32).round() as i32).clamp(0, seg_count as i32);
         for child in children.iter() {
             let Ok((segment, mut color)) = segments.get_mut(child) else {
                 continue;
@@ -508,14 +508,8 @@ pub(super) fn sync_ship_nameplates_system(
     ships: Query<
         '_,
         '_,
-        (
-            Entity,
-            Option<&EntityLabels>,
-        ),
-        (
-            With<WorldEntity>,
-            Without<ShipNameplateRoot>,
-        ),
+        (Entity, Option<&EntityLabels>),
+        (With<WorldEntity>, Without<ShipNameplateRoot>),
     >,
     existing: Query<'_, '_, (Entity, &ShipNameplateRoot)>,
 ) {
@@ -540,7 +534,9 @@ pub(super) fn sync_ship_nameplates_system(
                     ..default()
                 },
                 Visibility::Hidden,
-                ShipNameplateRoot { target: ship_entity },
+                ShipNameplateRoot {
+                    target: ship_entity,
+                },
                 GameplayHud,
                 UiOverlayLayer,
                 RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
@@ -551,7 +547,9 @@ pub(super) fn sync_ship_nameplates_system(
                 plate
                     .spawn((
                         Node {
-                            width: percent(100.0),
+                            // 16 segments @ 5px + 15 gaps @ 1px + 2px padding = 97px total.
+                            // Fixed-width segments avoid uneven fractional flex spacing.
+                            width: px(97.0),
                             height: px(8.0),
                             column_gap: px(1.0),
                             align_items: AlignItems::Stretch,
@@ -575,7 +573,7 @@ pub(super) fn sync_ship_nameplates_system(
                         for index in 0..16u8 {
                             bar.spawn((
                                 Node {
-                                    flex_grow: 1.0,
+                                    width: px(5.0),
                                     height: percent(100.0),
                                     ..default()
                                 },
@@ -589,7 +587,7 @@ pub(super) fn sync_ship_nameplates_system(
 
     for (nameplate_entity, root) in &existing {
         if ships.get(root.target).is_err() {
-            commands.entity(nameplate_entity).despawn();
+            commands.entity(nameplate_entity).try_despawn();
         }
     }
 }
@@ -610,20 +608,18 @@ pub(super) fn update_ship_nameplate_positions_system(
         ),
         With<WorldEntity>,
     >,
-    controlled_query: Query<'_, '_, &Transform, With<ControlledEntity>>,
-    gameplay_camera: Query<'_, '_, (&Camera, &GlobalTransform), With<GameplayCamera>>,
+    gameplay_camera: Query<'_, '_, (&Camera, &Transform), With<GameplayCamera>>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let Ok((camera, camera_transform)) = gameplay_camera.single() else {
         return;
     };
+    // This runs in `Last` after camera transform updates. Convert the current camera
+    // `Transform` directly so projection uses the final same-frame camera state.
+    let camera_global = GlobalTransform::from(*camera_transform);
     let Ok(window) = window_query.single() else {
         return;
     };
-    let controlled_position = controlled_query
-        .single()
-        .ok()
-        .map(|transform| transform.translation.truncate());
 
     let mut ship_data_by_entity = HashMap::<Entity, (Vec3, f32, f32)>::new();
     for (entity, transform, size_m, health_pool, labels) in &ships {
@@ -643,11 +639,7 @@ pub(super) fn update_ship_nameplate_positions_system(
         let half_height_world = size_m.map(|s| s.length * 0.5).unwrap_or(6.0);
         ship_data_by_entity.insert(
             entity,
-            (
-                transform.translation,
-                half_height_world,
-                health_ratio,
-            ),
+            (transform.translation, half_height_world, health_ratio),
         );
     }
 
@@ -656,21 +648,13 @@ pub(super) fn update_ship_nameplate_positions_system(
             *visibility = Visibility::Hidden;
             continue;
         };
-        if let Some(controlled_pos) = controlled_position {
-            let ship_pos = world_pos.truncate();
-            let visibility_radius_m = 300.0_f32;
-            if (ship_pos - controlled_pos).length_squared() > visibility_radius_m * visibility_radius_m {
-                *visibility = Visibility::Hidden;
-                continue;
-            }
-        }
         let center_world = Vec3::new(world_pos.x, world_pos.y, 0.0);
-        let Ok(viewport_pos) = camera.world_to_viewport(camera_transform, center_world) else {
+        let Ok(viewport_pos) = camera.world_to_viewport(&camera_global, center_world) else {
             *visibility = Visibility::Hidden;
             continue;
         };
         let top_world = Vec3::new(world_pos.x, world_pos.y + *half_height_world, 0.0);
-        let Ok(top_viewport_pos) = camera.world_to_viewport(camera_transform, top_world) else {
+        let Ok(top_viewport_pos) = camera.world_to_viewport(&camera_global, top_world) else {
             *visibility = Visibility::Hidden;
             continue;
         };

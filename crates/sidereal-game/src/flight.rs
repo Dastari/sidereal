@@ -16,8 +16,9 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
-    ActionQueue, Engine, EntityAction, EntityGuid, FlightComputer, FlightTuning, FuelTank,
-    MaxVelocityMps, MountedOn, SizeM, TotalMassKg,
+    ActionQueue, AfterburnerCapability, AfterburnerState, Engine, EntityAction, EntityGuid,
+    FlightComputer, FlightControlAuthority, FlightTuning, FuelTank, MaxVelocityMps, MountedOn,
+    SizeM, TotalMassKg,
 };
 
 const PASSIVE_ANGULAR_DAMP_RATE: f32 = 4.0;
@@ -78,6 +79,7 @@ pub fn is_brake_active(computer: &FlightComputer) -> bool {
 
 pub fn apply_flight_action_to_computer(
     computer: &mut FlightComputer,
+    mut afterburner_state: Option<&mut AfterburnerState>,
     action: EntityAction,
 ) -> bool {
     match action {
@@ -107,6 +109,16 @@ pub fn apply_flight_action_to_computer(
             computer.brake_active = false;
         }
         EntityAction::LateralNeutral | EntityAction::YawNeutral => computer.yaw_input = 0.0,
+        EntityAction::AfterburnerOn => {
+            if let Some(state) = afterburner_state.as_mut() {
+                state.active = true;
+            }
+        }
+        EntityAction::AfterburnerOff => {
+            if let Some(state) = afterburner_state.as_mut() {
+                state.active = false;
+            }
+        }
         _ => return false,
     }
     true
@@ -114,15 +126,31 @@ pub fn apply_flight_action_to_computer(
 
 /// System that processes actions and updates FlightComputer state
 pub fn process_flight_actions(
-    mut query: Query<(&mut ActionQueue, &mut FlightComputer)>,
+    mut query: Query<
+        (
+            &mut ActionQueue,
+            &mut FlightComputer,
+            Option<&mut AfterburnerState>,
+        ),
+        With<FlightControlAuthority>,
+    >,
 ) {
-    for (mut queue, mut computer) in &mut query {
+    for (mut queue, mut computer, afterburner_state) in &mut query {
         if queue.pending.is_empty() {
             continue;
         }
 
-        for action in queue.drain() {
-            let _ = apply_flight_action_to_computer(&mut computer, action);
+        let mut afterburner_state = afterburner_state;
+        let pending = std::mem::take(&mut queue.pending);
+        for action in pending {
+            let handled = apply_flight_action_to_computer(
+                &mut computer,
+                afterburner_state.as_deref_mut(),
+                action,
+            );
+            if !handled {
+                queue.pending.push(action);
+            }
         }
     }
 }
@@ -132,19 +160,23 @@ pub fn process_flight_actions(
 pub fn apply_engine_thrust(
     time: Res<Time>,
     // Hull entities with flight computers (by GUID)
-    computers: Query<(&EntityGuid, &FlightComputer)>,
+    computers: Query<
+        (&EntityGuid, &FlightComputer, Option<&AfterburnerState>),
+        With<FlightControlAuthority>,
+    >,
     // Parent entities that can receive forces (Avian Forces query helper)
     mut body_queries: ParamSet<(BodyForceQuery<'_, '_>, BodyKinematicsQuery<'_, '_>)>,
     // Engine and fuel modules (mounted under a shared parent GUID)
-    engines: Query<(&MountedOn, &Engine)>,
+    engines: Query<(&MountedOn, &Engine, Option<&AfterburnerCapability>)>,
     mut fuel_tanks: Query<(&MountedOn, &mut FuelTank)>,
 ) {
     let dt = time.delta_secs();
 
     // Build control state by root parent GUID from hull flight-computer only.
-    let mut control_by_parent = HashMap::<Uuid, (f32, f32, f32, bool)>::new();
-    for (guid, computer) in &computers {
+    let mut control_by_parent = HashMap::<Uuid, (f32, f32, f32, bool, bool)>::new();
+    for (guid, computer, afterburner_state) in &computers {
         let brake_active = is_brake_active(computer);
+        let afterburner_active = afterburner_state.is_some_and(|state| state.active);
         control_by_parent.insert(
             guid.0,
             (
@@ -152,6 +184,7 @@ pub fn apply_engine_thrust(
                 computer.yaw_input,
                 computer.turn_rate_deg_s,
                 brake_active,
+                afterburner_active,
             ),
         );
     }
@@ -161,12 +194,13 @@ pub fn apply_engine_thrust(
     let mut forward_thrust_cap_by_parent = HashMap::<Uuid, f32>::new();
     let mut reverse_thrust_cap_by_parent = HashMap::<Uuid, f32>::new();
     let mut torque_thrust_cap_by_parent = HashMap::<Uuid, f32>::new();
+    let mut afterburner_forward_speed_cap_by_parent = HashMap::<Uuid, f32>::new();
     let mut fuel_available_kg_by_parent = HashMap::<Uuid, f32>::new();
     let mut fuel_tank_count_by_parent = HashMap::<Uuid, usize>::new();
     let mut fuel_exhausted_count = HashMap::<Uuid, usize>::new();
 
-    for (mounted_on, engine) in &engines {
-        let Some((throttle, yaw_input, _, brake_active)) =
+    for (mounted_on, engine, afterburner_capability) in &engines {
+        let Some((throttle, yaw_input, _, brake_active, afterburner_active)) =
             control_by_parent.get(&mounted_on.parent_entity_id)
         else {
             continue;
@@ -176,7 +210,24 @@ pub fn apply_engine_thrust(
         let brake_demand = if *brake_active { 1.0 } else { 0.0 };
         let yaw_demand = yaw_input.abs().clamp(0.0, 1.0);
         let demand = throttle_demand.max(brake_demand).max(yaw_demand);
-        let requested_burn_kg = engine.burn_rate_kg_s * demand * dt;
+        let can_afterburn = *throttle > 0.0
+            && *afterburner_active
+            && afterburner_capability.is_some_and(|cap| cap.enabled);
+        let burn_multiplier = if can_afterburn {
+            afterburner_capability
+                .map(|cap| cap.fuel_burn_multiplier.max(1.0))
+                .unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let thrust_multiplier = if can_afterburn {
+            afterburner_capability
+                .map(|cap| cap.multiplier.max(1.0))
+                .unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let requested_burn_kg = engine.burn_rate_kg_s * demand * burn_multiplier * dt;
 
         if requested_burn_kg > 0.0 {
             requested_burn_kg_by_parent
@@ -185,8 +236,8 @@ pub fn apply_engine_thrust(
                 .or_insert(requested_burn_kg);
             forward_thrust_cap_by_parent
                 .entry(mounted_on.parent_entity_id)
-                .and_modify(|v| *v += engine.thrust.abs())
-                .or_insert(engine.thrust.abs());
+                .and_modify(|v| *v += engine.thrust.abs() * thrust_multiplier)
+                .or_insert(engine.thrust.abs() * thrust_multiplier);
             reverse_thrust_cap_by_parent
                 .entry(mounted_on.parent_entity_id)
                 .and_modify(|v| *v += engine.reverse_thrust.abs())
@@ -195,6 +246,16 @@ pub fn apply_engine_thrust(
                 .entry(mounted_on.parent_entity_id)
                 .and_modify(|v| *v += engine.torque_thrust.abs())
                 .or_insert(engine.torque_thrust.abs());
+            if can_afterburn
+                && let Some(cap) = afterburner_capability
+                    .and_then(|capability| capability.max_afterburner_velocity_mps)
+                    .filter(|cap| cap.is_finite() && *cap > 0.0)
+            {
+                afterburner_forward_speed_cap_by_parent
+                    .entry(mounted_on.parent_entity_id)
+                    .and_modify(|v| *v = v.max(cap))
+                    .or_insert(cap);
+            }
         }
     }
 
@@ -293,7 +354,7 @@ pub fn apply_engine_thrust(
         let planar_moi_kg_m2 = planar_moment_of_inertia_z_kg_m2(mass_kg, size_m.copied());
         let control = control_by_parent.get(&guid.0).copied();
 
-        if let Some((throttle, yaw_input, turn_rate_deg_s, brake_active)) = control {
+        if let Some((throttle, yaw_input, turn_rate_deg_s, brake_active, _)) = control {
             let (velocity, angular_velocity) = kinematics_by_guid
                 .get(&guid.0)
                 .copied()
@@ -312,6 +373,12 @@ pub fn apply_engine_thrust(
                 .copied()
                 .unwrap_or(0.0);
 
+            let forward_speed_cap_mps = afterburner_forward_speed_cap_by_parent
+                .get(&guid.0)
+                .copied()
+                .map(|afterburner_cap| afterburner_cap.max(max_velocity.0.max(1.0)))
+                .unwrap_or_else(|| max_velocity.0.max(1.0));
+
             let (force, torque) = compute_flight_forces(
                 (throttle, yaw_input, turn_rate_deg_s, brake_active),
                 velocity,
@@ -320,7 +387,7 @@ pub fn apply_engine_thrust(
                 mass_kg,
                 planar_moi_kg_m2,
                 flight_tuning,
-                max_velocity.0.max(1.0),
+                forward_speed_cap_mps,
                 forward_available_thrust,
                 reverse_available_thrust,
                 available_torque_thrust,
@@ -332,7 +399,7 @@ pub fn apply_engine_thrust(
         }
 
         // Log if throttle was applied but no thrust budget was available (fuel exhausted path).
-        if let Some((throttle, _, _, brake_active)) = control_by_parent.get(&guid.0)
+        if let Some((throttle, _, _, brake_active, _)) = control_by_parent.get(&guid.0)
             && !*brake_active
             && *throttle != 0.0
             && forward_thrust_budget_by_parent
@@ -416,7 +483,11 @@ pub fn compute_flight_forces(
 
         let current_forward_speed = planar_velocity.dot(forward_axis_world);
         let target_forward_speed = max_linear_speed_mps * throttle.abs() * throttle.signum();
-        let speed_delta = target_forward_speed - current_forward_speed;
+        let speed_delta = if throttle > 0.0 {
+            (target_forward_speed - current_forward_speed).max(0.0)
+        } else {
+            target_forward_speed - current_forward_speed
+        };
 
         // Use standard acceleration approach rather than immediate target velocity matching if below target speed
         if dt > 0.0 && accel_cap > 0.0 && speed_delta.abs() > 0.01 {
@@ -425,14 +496,6 @@ pub fn compute_flight_forces(
             let actual_accel = applied_step / dt;
             let required_force = forward_axis_world * (actual_accel * mass_kg);
             applied_force += required_force;
-        }
-
-        // Hard speed governor to prevent runaway values.
-        if speed > max_linear_speed_mps {
-            let overspeed = speed - max_linear_speed_mps;
-            let governor_accel = (overspeed / dt.max(1e-6)).min(max_linear_accel_mps2 * 2.0);
-            let governor_force = -(planar_velocity / speed) * governor_accel * mass_kg;
-            applied_force += governor_force;
         }
     } else if brake_active && speed > 0.01
         || !brake_active && speed > IDLE_LINEAR_SPEED_EPSILON_MPS && throttle == 0.0
@@ -509,8 +572,12 @@ fn sanitize_finite_scalar(value: f32) -> f32 {
 }
 
 /// Clamp angular velocity around Z to prevent excessive blur-spin.
+#[allow(clippy::type_complexity)]
 pub fn clamp_angular_velocity(
-    mut bodies: Query<(&mut AngularVelocity, Option<&MountedOn>), With<FlightComputer>>,
+    mut bodies: Query<
+        (&mut AngularVelocity, Option<&MountedOn>),
+        (With<FlightComputer>, With<FlightControlAuthority>),
+    >,
 ) {
     for (mut angular_velocity, mounted_on) in &mut bodies {
         if mounted_on.is_some() {
@@ -527,12 +594,15 @@ pub fn sanitize_planar_angular_velocity(angular_velocity: f32, max_abs_z_rad_s: 
 
 /// Clamp tiny residual drift/spin while controls are neutral.
 pub fn stabilize_idle_motion(
-    mut bodies: Query<(
-        &FlightComputer,
-        &mut LinearVelocity,
-        &mut AngularVelocity,
-        Option<&MountedOn>,
-    )>,
+    mut bodies: Query<
+        (
+            &FlightComputer,
+            &mut LinearVelocity,
+            &mut AngularVelocity,
+            Option<&MountedOn>,
+        ),
+        With<FlightControlAuthority>,
+    >,
 ) {
     for (computer, mut linear_velocity, mut angular_velocity, mounted_on) in &mut bodies {
         if mounted_on.is_some() {
@@ -565,5 +635,25 @@ pub fn stabilize_idle_motion(
         if angular_velocity.0.abs() <= IDLE_ANGULAR_SPEED_EPSILON_RAD_S {
             angular_velocity.0 = 0.0;
         }
+    }
+}
+
+/// Server/runtime helper: entities with FlightComputer gain write authority by default.
+pub fn grant_flight_control_authority_system(
+    mut commands: Commands<'_, '_>,
+    entities: Query<Entity, (With<FlightComputer>, Without<FlightControlAuthority>)>,
+) {
+    for entity in &entities {
+        commands.entity(entity).insert(FlightControlAuthority);
+    }
+}
+
+/// Cleanup helper for entities that no longer expose FlightComputer.
+pub fn revoke_stale_flight_control_authority_system(
+    mut commands: Commands<'_, '_>,
+    entities: Query<Entity, (With<FlightControlAuthority>, Without<FlightComputer>)>,
+) {
+    for entity in &entities {
+        commands.entity(entity).remove::<FlightControlAuthority>();
     }
 }

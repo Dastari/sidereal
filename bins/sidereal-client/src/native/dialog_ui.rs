@@ -274,7 +274,7 @@ fn handle_dialog_interactions(
                 info!("client dialog dismissed via button");
                 dialog_queue.current = None;
                 for entity in &dialog_root {
-                    commands.entity(entity).despawn();
+                    commands.entity(entity).try_despawn();
                 }
             }
             Interaction::Hovered => {
@@ -294,7 +294,7 @@ fn handle_dialog_interactions(
         info!("client dialog dismissed via keyboard");
         dialog_queue.current = None;
         for entity in &dialog_root {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
     }
 }

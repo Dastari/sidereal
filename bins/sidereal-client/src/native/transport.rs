@@ -6,7 +6,7 @@ use lightyear::prelude::client::{Client, Connect, Connected, RawClient};
 use lightyear::prelude::{
     ChannelRegistry, LocalAddr, MessageManager, PeerAddr, ReplicationReceiver, Transport, UdpIo,
 };
-use sidereal_net::ControlChannel;
+use sidereal_net::{AssetChannel, ControlChannel, InputChannel};
 use std::net::SocketAddr;
 
 /// Spawns the Lightyear client and triggers Connect if no client entity exists.
@@ -30,11 +30,15 @@ pub fn ensure_lightyear_client_system(
     }
     for (entity, connected, connecting) in &existing {
         if !connected && !connecting {
-            commands.trigger(Connect { entity });
+            // Recreate transport entity instead of reconnecting in-place to avoid
+            // stale transport/message state across repeated logout/login cycles.
+            commands.entity(entity).try_despawn();
+            start_lightyear_client_transport_inner(&mut commands);
             info!(
-                "native client lightyear UDP reconnecting existing client entity={:?}",
+                "native client lightyear UDP replacing stale client entity={:?}",
                 entity
             );
+            return;
         }
     }
 }
@@ -45,7 +49,7 @@ pub fn start_lightyear_client_transport(mut commands: Commands<'_, '_>) {
 
 pub fn start_lightyear_client_transport_inner(commands: &mut Commands<'_, '_>) {
     let local_addr = std::env::var("CLIENT_UDP_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:7003".to_string())
+        .unwrap_or_else(|_| "127.0.0.1:0".to_string())
         .parse::<SocketAddr>();
     let local_addr = match local_addr {
         Ok(v) => v,
@@ -93,6 +97,18 @@ pub fn ensure_client_transport_channels(
         }
         if !transport.has_receiver::<ControlChannel>() {
             transport.add_receiver_from_registry::<ControlChannel>(&registry);
+        }
+        if !transport.has_sender::<InputChannel>() {
+            transport.add_sender_from_registry::<InputChannel>(&registry);
+        }
+        if !transport.has_receiver::<InputChannel>() {
+            transport.add_receiver_from_registry::<InputChannel>(&registry);
+        }
+        if !transport.has_sender::<AssetChannel>() {
+            transport.add_sender_from_registry::<AssetChannel>(&registry);
+        }
+        if !transport.has_receiver::<AssetChannel>() {
+            transport.add_receiver_from_registry::<AssetChannel>(&registry);
         }
     }
 }

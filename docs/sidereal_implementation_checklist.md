@@ -89,8 +89,8 @@ Primary spec: `docs/sidereal_design_document.md`
 - [ ] Maintain WebRTC-first direction for WASM transport boundary implementation.
 - [ ] Keep gameplay/prediction logic shared between native and WASM builds.
 - [ ] Restrict platform differences to transport/bootstrap boundary code only.
-- [ ] Complete WASM Lightyear transport enablement (WebTransport-first, WebSocket fallback):
-  - [ ] Enable Lightyear transport features needed for browser clients (`webtransport` + explicit `websocket` fallback) in workspace dependency config.
+- [ ] Complete WASM Lightyear transport enablement (WebRTC-first with explicit fallback path):
+  - [ ] Enable Lightyear/browser transport features needed for accepted WASM transport contract and explicit fallback behavior.
   - [ ] Keep current native UDP/raw-connection transport path for non-WASM targets without changing authority/prediction flow.
   - [ ] Add WASM transport bootstrap module(s) that connect browser clients via Lightyear transport adapters; avoid gameplay-system forks.
 - [ ] Remove temporary WASM scaffold-only runtime and wire shared client runtime plugin stack for both targets:

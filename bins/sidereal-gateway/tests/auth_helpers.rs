@@ -117,9 +117,10 @@ async fn udp_bootstrap_dispatcher_sends_bootstrap_player_message() {
     let target = listener.local_addr().expect("local addr");
     let sender = UdpSocket::bind("127.0.0.1:0").await.expect("bind sender");
     let dispatcher = UdpBootstrapDispatcher::new(sender, target);
+    let player_entity_id = Uuid::new_v4().to_string();
     let command = BootstrapCommand {
         account_id: Uuid::new_v4(),
-        player_entity_id: "player:test".to_string(),
+        player_entity_id: player_entity_id.clone(),
     };
 
     dispatcher.dispatch(&command).await.expect("dispatch");
@@ -129,7 +130,7 @@ async fn udp_bootstrap_dispatcher_sends_bootstrap_player_message() {
 
     assert_eq!(msg["kind"], "bootstrap_player");
     assert_eq!(msg["account_id"], command.account_id.to_string());
-    assert_eq!(msg["player_entity_id"], "player:test");
+    assert_eq!(msg["player_entity_id"], player_entity_id);
 }
 
 #[tokio::test]
@@ -141,7 +142,7 @@ async fn gateway_udp_bootstrap_message_roundtrips_with_replication_processor() {
     let account_id = Uuid::new_v4();
     let command = BootstrapCommand {
         account_id,
-        player_entity_id: format!("player:{account_id}"),
+        player_entity_id: account_id.to_string(),
     };
 
     dispatcher.dispatch(&command).await.expect("dispatch");
@@ -158,7 +159,7 @@ async fn gateway_udp_bootstrap_message_roundtrips_with_replication_processor() {
         .expect("second apply should succeed");
 
     assert_eq!(first.account_id, account_id);
-    assert_eq!(first.player_entity_id, format!("player:{account_id}"));
+    assert_eq!(first.player_entity_id, account_id.to_string());
     assert!(first.applied);
     assert!(!second.applied);
 }

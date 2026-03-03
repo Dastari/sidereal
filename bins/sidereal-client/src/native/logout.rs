@@ -133,3 +133,12 @@ pub fn logout_cleanup_system(
     *watchdog = BootstrapWatchdogState::default();
     *ack_tracker = ClientInputAckTracker::default();
 }
+
+pub fn purge_stale_world_and_transport_on_enter_auth_system(
+    mut commands: Commands<'_, '_>,
+    raw_clients: Query<'_, '_, Entity, With<RawClient>>,
+) {
+    for entity in &raw_clients {
+        commands.entity(entity).try_despawn();
+    }
+}

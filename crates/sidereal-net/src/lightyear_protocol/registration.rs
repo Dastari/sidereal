@@ -4,6 +4,7 @@ use avian2d::prelude::{
 use bevy::prelude::App;
 use core::time::Duration;
 use lightyear::prediction::prelude::PredictionRegistrationExt;
+use lightyear::prelude::InterpolationRegistrationExt;
 use lightyear::prelude::input::native::InputPlugin as NativeInputPlugin;
 use lightyear::prelude::{
     AppChannelExt, AppComponentExt, AppMessageExt, ChannelMode, ChannelSettings, NetworkDirection,
@@ -12,11 +13,32 @@ use lightyear::prelude::{
 use sidereal_game::component_meta::SiderealComponentRegistration;
 
 use super::{
-    AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
-    ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
-    ClientRealtimeInputMessage, ControlChannel, PlayerInput, ServerControlAckMessage,
-    ServerControlRejectMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
+    AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
+    AssetStreamManifestMessage, ClientAuthMessage, ClientControlRequestMessage,
+    ClientDisconnectNotifyMessage, ClientRealtimeInputMessage, ControlChannel, InputChannel,
+    PlayerInput, ServerControlAckMessage, ServerControlRejectMessage, ServerSessionDeniedMessage,
+    ServerSessionReadyMessage, ServerWeaponFiredMessage,
 };
+
+fn lerp_position(start: Position, other: Position, t: f32) -> Position {
+    lightyear::avian2d::types::position::lerp(&start, &other, t)
+}
+
+fn lerp_rotation(start: Rotation, other: Rotation, t: f32) -> Rotation {
+    lightyear::avian2d::types::rotation::lerp(&start, &other, t)
+}
+
+fn lerp_linear_velocity(start: LinearVelocity, other: LinearVelocity, t: f32) -> LinearVelocity {
+    lightyear::avian2d::types::linear_velocity::lerp(&start, &other, t)
+}
+
+fn lerp_angular_velocity(
+    start: AngularVelocity,
+    other: AngularVelocity,
+    t: f32,
+) -> AngularVelocity {
+    lightyear::avian2d::types::angular_velocity::lerp(&start, &other, t)
+}
 
 pub fn register_lightyear_protocol(app: &mut App) {
     app.register_message::<ClientAuthMessage>()
@@ -24,6 +46,8 @@ pub fn register_lightyear_protocol(app: &mut App) {
     app.register_message::<ClientControlRequestMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ClientRealtimeInputMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerWeaponFiredMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerSessionReadyMessage>()
         .add_direction(NetworkDirection::Bidirectional);
@@ -52,15 +76,37 @@ pub fn register_lightyear_protocol(app: &mut App) {
         priority: 8.0,
     })
     .add_direction(NetworkDirection::Bidirectional);
+
+    app.add_channel::<InputChannel>(ChannelSettings {
+        mode: ChannelMode::SequencedUnreliable,
+        send_frequency: Duration::default(),
+        priority: 10.0,
+    })
+    .add_direction(NetworkDirection::Bidirectional);
+
+    app.add_channel::<AssetChannel>(ChannelSettings {
+        mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
+        send_frequency: Duration::default(),
+        priority: 4.0,
+    })
+    .add_direction(NetworkDirection::Bidirectional);
 }
 
 fn register_lightyear_replication_components(app: &mut App) {
     // Avian physics components — not managed by the sidereal_component macro,
     // registered manually with prediction for client-side rollback/resimulation.
-    app.register_component::<Position>().add_prediction();
-    app.register_component::<Rotation>().add_prediction();
-    app.register_component::<LinearVelocity>().add_prediction();
-    app.register_component::<AngularVelocity>().add_prediction();
+    app.register_component::<Position>()
+        .add_prediction()
+        .add_interpolation_with(lerp_position);
+    app.register_component::<Rotation>()
+        .add_prediction()
+        .add_interpolation_with(lerp_rotation);
+    app.register_component::<LinearVelocity>()
+        .add_prediction()
+        .add_interpolation_with(lerp_linear_velocity);
+    app.register_component::<AngularVelocity>()
+        .add_prediction()
+        .add_interpolation_with(lerp_angular_velocity);
     app.register_component::<LinearDamping>().add_prediction();
     app.register_component::<AngularDamping>().add_prediction();
 

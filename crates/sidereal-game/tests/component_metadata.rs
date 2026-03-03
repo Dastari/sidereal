@@ -1,4 +1,7 @@
-use sidereal_game::{Cost, Inventory, SiderealComponentMetadata, VisibilityScope};
+use sidereal_game::{
+    CollisionOutlineM, CollisionProfile, Cost, Inventory, SiderealComponentMetadata,
+    VisibilityScope,
+};
 
 #[test]
 fn inventory_metadata_defaults_owner_visibility() {
@@ -19,4 +22,22 @@ fn cost_metadata_supports_visibility_array() {
         meta.visibility,
         &[VisibilityScope::OwnerOnly, VisibilityScope::Public]
     );
+}
+
+#[test]
+fn collision_profile_metadata_is_public_and_persisted() {
+    let meta = <CollisionProfile as SiderealComponentMetadata>::META;
+    assert_eq!(meta.kind, "collision_profile");
+    assert!(meta.persist);
+    assert!(meta.replicate);
+    assert_eq!(meta.visibility, &[VisibilityScope::Public]);
+}
+
+#[test]
+fn collision_outline_metadata_is_public_and_persisted() {
+    let meta = <CollisionOutlineM as SiderealComponentMetadata>::META;
+    assert_eq!(meta.kind, "collision_outline_m");
+    assert!(meta.persist);
+    assert!(meta.replicate);
+    assert_eq!(meta.visibility, &[VisibilityScope::Public]);
 }

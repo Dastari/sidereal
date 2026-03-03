@@ -18,6 +18,7 @@ struct SpaceBackgroundParams {
     space_bg_nebula_color_a: vec4<f32>,
     space_bg_nebula_color_b: vec4<f32>,
     space_bg_nebula_color_c: vec4<f32>,
+    space_bg_star_color: vec4<f32>,
     space_bg_flare_tint: vec4<f32>,
 }
 
@@ -129,13 +130,16 @@ fn subtle_star_layer(
     size: f32,
     twinkle_rate: f32,
     time: f32,
-    seed: f32
+    seed: f32,
+    count_scale: f32,
+    color_tint: vec3<f32>
 ) -> vec3<f32> {
     let grid_uv = uv * density;
     let id = floor(grid_uv);
     let local = fract(grid_uv) - 0.5;
     let n = hash21(id, seed);
-    if n > threshold {
+    let spawn_threshold = clamp(threshold * count_scale, 0.0, 0.999);
+    if n > spawn_threshold {
         return vec3<f32>(0.0);
     }
 
@@ -151,7 +155,7 @@ fn subtle_star_layer(
         vec3<f32>(0.75, 0.84, 1.0),
         vec3<f32>(0.90, 0.95, 1.0),
         fract(n * 19.0)
-    );
+    ) * color_tint;
     return (core + halo) * twinkle * tint;
 }
 
@@ -235,6 +239,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let star_mask_gain = clamp(params.space_bg_star_mask_b.z, 0.1, 0.95);
     let star_mask_lacunarity = clamp(params.space_bg_star_mask_b.w, 1.1, 4.0);
     let star_mask_ridge_offset = clamp(params.space_bg_star_mask_c.x, 0.5, 2.5);
+    let star_count = clamp(params.space_bg_star_mask_c.y, 0.0, 5.0);
+    let star_size_a = clamp(params.space_bg_star_mask_c.z, 0.01, 0.35);
+    let star_size_b = clamp(params.space_bg_star_mask_c.w, 0.01, 0.35);
+    let star_size_min = min(star_size_a, star_size_b);
+    let star_size_max = max(star_size_a, star_size_b);
+    let star_color = max(params.space_bg_star_color.rgb, vec3<f32>(0.0));
     let nebula_blend_mode = clamp(params.space_bg_blend_a.x, 0.0, 2.0);
     let nebula_opacity = clamp(params.space_bg_blend_a.y, 0.0, 1.0);
     let stars_blend_mode = clamp(params.space_bg_blend_a.z, 0.0, 2.0);
@@ -352,28 +362,34 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         uv + subtle_motion * 0.22,
         34.0,
         0.090,
-        0.090,
+        star_size_min,
         0.40,
         time,
-        seed + 3.0
+        seed + 3.0,
+        star_count,
+        star_color
     ) * 0.20;
     let stars_mid = subtle_star_layer(
         uv + subtle_motion * 0.35,
         22.0,
         0.070,
-        0.104,
+        mix(star_size_min, star_size_max, 0.5),
         0.55,
         time,
-        seed + 11.0
+        seed + 11.0,
+        star_count,
+        star_color
     ) * 0.30;
     let stars_near = subtle_star_layer(
         uv + subtle_motion * 0.50,
         14.0,
         0.050,
-        0.118,
+        star_size_max,
         0.72,
         time,
-        seed + 29.0
+        seed + 29.0,
+        star_count,
+        star_color
     ) * 0.40;
 
     let star_mask_base = uv * star_mask_scale + subtle_motion * 0.45 + vec2<f32>(seed * 0.07, seed * 0.11);

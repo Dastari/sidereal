@@ -6,6 +6,9 @@ use bevy::prelude::*;
 pub(crate) struct WorldEntity;
 
 #[derive(Component)]
+pub(crate) struct ClientSceneEntity;
+
+#[derive(Component)]
 pub(crate) struct HudFpsText;
 
 #[derive(Component)]
@@ -129,22 +132,45 @@ pub(crate) struct StreamedVisualAttached;
 #[derive(Component)]
 pub(crate) struct StreamedVisualChild;
 
+#[derive(Component)]
+pub(crate) struct ThrusterPlumeAttached;
+
+#[derive(Component)]
+pub(crate) struct ThrusterPlumeChild;
+
+#[derive(Component)]
+pub(crate) struct WeaponTracerBolt {
+    pub excluded_entity: Option<Entity>,
+    pub velocity: Vec2,
+    pub ttl_s: f32,
+    pub lateral_normal: Vec2,
+    pub wiggle_phase_rad: f32,
+    pub wiggle_freq_hz: f32,
+    pub wiggle_amp_mps: f32,
+}
+
+#[derive(Component)]
+pub(crate) struct WeaponImpactSpark {
+    pub ttl_s: f32,
+    pub max_ttl_s: f32,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct WeaponTracerPool {
+    pub bolts: Vec<Entity>,
+    pub next_index: usize,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct WeaponTracerCooldowns {
+    pub by_weapon_entity: std::collections::HashMap<Entity, f32>,
+}
+
 #[derive(Component, Clone)]
 pub(crate) struct StreamedSpriteShaderAssetId(pub String);
 
 #[derive(Component)]
 pub(crate) struct SuppressedPredictedDuplicateVisual;
-
-#[derive(Component, Debug, Clone)]
-pub(crate) struct InterpolatedVisualSmoothing {
-    pub from_pos: Vec2,
-    pub to_pos: Vec2,
-    pub from_rot: Quat,
-    pub to_rot: Quat,
-    pub elapsed_s: f32,
-    pub duration_s: f32,
-    pub last_snapshot_at_s: f64,
-}
 
 #[derive(Component)]
 pub(crate) struct ReplicatedAdoptionHandled;

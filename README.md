@@ -5,16 +5,19 @@ Sidereal rebuild workspace (server-authoritative architecture, Bevy 0.18, Lighty
 ## Quick Start
 
 1. Start database:
+
 ```bash
 make pg-up
 ```
 
 2. Run core services:
+
 ```bash
 make dev-stack
 ```
 
 3. (Optional) Run native client too:
+
 ```bash
 make dev-stack-client
 ```
@@ -24,10 +27,4 @@ make dev-stack-client
 ```bash
 make help
 make pg-reset          # destructive: resets local postgres volume
-make fmt
-make clippy
-make check
-make wasm-check
-make test
-make register-demo     # quick register call against gateway
 ```

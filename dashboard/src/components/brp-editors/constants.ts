@@ -6,17 +6,23 @@ export const COMPONENT_TYPE_DENSITY =
   'sidereal_game::components::density::Density'
 export const COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER =
   'sidereal_game::components::character_movement_controller::CharacterMovementController'
+export const COMPONENT_TYPE_ENGINE =
+  'sidereal_game::components::engine::Engine'
 export const COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS =
   'sidereal_game::components::starfield_shader_settings::StarfieldShaderSettings'
 export const COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS =
   'sidereal_game::components::space_background_shader_settings::SpaceBackgroundShaderSettings'
+export const COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS =
+  'sidereal_game::components::thruster_plume_shader_settings::ThrusterPlumeShaderSettings'
 
 /** Type paths that have an editable UI in the BRP detail panel. */
 export const EDITABLE_COMPONENT_TYPE_PATHS: ReadonlySet<string> = new Set([
   COMPONENT_TYPE_DENSITY,
   COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER,
+  COMPONENT_TYPE_ENGINE,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
   COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
+  COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
 ])
 
 /**
@@ -47,6 +53,12 @@ export function getComponentTypeKey(node: {
   }
   if (
     node.kind.toLowerCase() === 'component' &&
+    node.label === 'Engine'
+  ) {
+    return COMPONENT_TYPE_ENGINE
+  }
+  if (
+    node.kind.toLowerCase() === 'component' &&
     node.label === 'StarfieldShaderSettings'
   ) {
     return COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS
@@ -56,6 +68,12 @@ export function getComponentTypeKey(node: {
     node.label === 'SpaceBackgroundShaderSettings'
   ) {
     return COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS
+  }
+  if (
+    node.kind.toLowerCase() === 'component' &&
+    node.label === 'ThrusterPlumeShaderSettings'
+  ) {
+    return COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS
   }
   return null
 }

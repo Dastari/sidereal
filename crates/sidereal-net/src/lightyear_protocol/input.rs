@@ -12,7 +12,13 @@ impl MapEntities for PlayerInput {
     fn map_entities<M: EntityMapper>(&mut self, _entity_mapper: &mut M) {}
 }
 
-pub fn actions_from_axis_inputs(thrust: f32, turn: f32, brake: bool) -> Vec<EntityAction> {
+pub fn actions_from_axis_inputs(
+    thrust: f32,
+    turn: f32,
+    brake: bool,
+    afterburner: bool,
+    fire_primary: bool,
+) -> Vec<EntityAction> {
     let mut actions = Vec::new();
     if brake {
         actions.push(EntityAction::Brake);
@@ -32,13 +38,28 @@ pub fn actions_from_axis_inputs(thrust: f32, turn: f32, brake: bool) -> Vec<Enti
         actions.push(EntityAction::LateralNeutral);
     }
 
+    if afterburner {
+        actions.push(EntityAction::AfterburnerOn);
+    } else {
+        actions.push(EntityAction::AfterburnerOff);
+    }
+    if fire_primary {
+        actions.push(EntityAction::FirePrimary);
+    }
+
     actions
 }
 
 impl PlayerInput {
-    pub fn from_axis_inputs(thrust: f32, turn: f32, brake: bool) -> Self {
+    pub fn from_axis_inputs(
+        thrust: f32,
+        turn: f32,
+        brake: bool,
+        afterburner: bool,
+        fire_primary: bool,
+    ) -> Self {
         Self {
-            actions: actions_from_axis_inputs(thrust, turn, brake),
+            actions: actions_from_axis_inputs(thrust, turn, brake, afterburner, fire_primary),
         }
     }
 }

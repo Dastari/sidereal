@@ -5,11 +5,13 @@ use lightyear::prelude::server::RawServer;
 use lightyear::prelude::{
     ControlledBy, MessageReceiver, NetworkTarget, RemoteId, Server, ServerMultiMessageSender,
 };
-use sidereal_game::{ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag};
+use sidereal_game::{
+    ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag,
+};
 use std::collections::HashMap;
 
 use sidereal_net::{
-    ClientControlRequestMessage, ControlChannel, ServerControlAckMessage,
+    ClientControlRequestMessage, ControlChannel, PlayerEntityId, ServerControlAckMessage,
     ServerControlRejectMessage,
 };
 
@@ -65,7 +67,8 @@ fn neutralize_control_intent_on_handoff(
         if let Some(mut queue) = world.get_mut::<ActionQueue>(previous_controlled_entity) {
             queue.clear();
         }
-        if let Some(mut flight_computer) = world.get_mut::<FlightComputer>(previous_controlled_entity)
+        if let Some(mut flight_computer) =
+            world.get_mut::<FlightComputer>(previous_controlled_entity)
         {
             flight_computer.throttle = 0.0;
             flight_computer.yaw_input = 0.0;
@@ -120,16 +123,32 @@ pub fn receive_client_control_requests(
         for message in receiver.receive() {
             last_activity.0.insert(client_entity, now_s);
             let target = NetworkTarget::Single(remote_id.0);
+            let Some(message_player_id) = PlayerEntityId::parse(message.player_entity_id.as_str())
+            else {
+                warn!(
+                    "replication dropped control request from {:?}: invalid message player id {}",
+                    client_entity, message.player_entity_id
+                );
+                continue;
+            };
+            let message_player_wire = message_player_id.canonical_wire_id();
             let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
                 continue;
             };
-            if bound_player != &message.player_entity_id {
+            let Some(bound_player_id) = PlayerEntityId::parse(bound_player.as_str()) else {
+                warn!(
+                    "replication dropped control request from {:?}: invalid bound player id {}",
+                    client_entity, bound_player
+                );
+                continue;
+            };
+            if bound_player_id != message_player_id {
                 warn!(
                     "replication dropped client control request from {:?}: player mismatch {} != {}",
                     client_entity, message.player_entity_id, bound_player
                 );
                 let reject = ServerControlRejectMessage {
-                    player_entity_id: message.player_entity_id.clone(),
+                    player_entity_id: message_player_wire,
                     request_seq: message.request_seq,
                     reason: "player_mismatch".to_string(),
                     authoritative_controlled_entity_id: None,
@@ -137,6 +156,14 @@ pub fn receive_client_control_requests(
                 let _ = sender
                     .send::<ServerControlRejectMessage, ControlChannel>(&reject, server, &target);
                 continue;
+            }
+            if bound_player != &message.player_entity_id {
+                warn!(
+                    "replication control invariant: canonical match but encoding differs bound={} message={} canonical={}",
+                    bound_player,
+                    message.player_entity_id,
+                    bound_player_id.canonical_wire_id()
+                );
             }
             if let Some(last_seq) = order_state
                 .last_request_seq_by_player
@@ -155,15 +182,17 @@ pub fn receive_client_control_requests(
                     .and_then(|player_entity| player_controlled.get(*player_entity).ok())
                     .and_then(|guid| {
                         let control_guid = guid.0.as_deref()?;
-                        let player_guid = bound_player.strip_prefix("player:")?;
-                        let player_runtime_id = format!("player:{player_guid}");
+                        let player_guid = bound_player_id.0.to_string();
+                        let player_runtime_id = player_guid.clone();
                         if control_guid == player_guid {
                             return Some(player_runtime_id);
                         }
                         controllable_entities
                             .iter()
                             .find(|(_, guid, owner, _)| {
-                                owner.0 == *bound_player && guid.0.to_string() == control_guid
+                                PlayerEntityId::parse(owner.0.as_str())
+                                    .is_some_and(|owner_id| owner_id == bound_player_id)
+                                    && guid.0.to_string() == control_guid
                             })
                             .map(|(_, guid, _, _)| guid.0.to_string())
                     });
@@ -211,7 +240,7 @@ pub fn receive_client_control_requests(
                     .send::<ServerControlRejectMessage, ControlChannel>(&reject, server, &target);
                 continue;
             };
-            let player_runtime_id = format!("player:{player_guid}");
+            let player_runtime_id = player_guid.clone();
 
             let requested_control_guid = message
                 .controlled_entity_id
@@ -228,7 +257,9 @@ pub fn receive_client_control_requests(
                     } else {
                         let requested_target =
                             controllable_entities.iter().find(|(_, guid, owner, _)| {
-                                guid.0.to_string() == control_guid && owner.0 == *bound_player
+                                guid.0.to_string() == control_guid
+                                    && PlayerEntityId::parse(owner.0.as_str())
+                                        .is_some_and(|owner_id| owner_id == bound_player_id)
                             });
                         if let Some((target_entity, target_guid, _, _)) = requested_target {
                             (
@@ -265,7 +296,7 @@ pub fn receive_client_control_requests(
                 };
             let currently_bound = controlled_entity_map
                 .by_player_entity_id
-                .get(bound_player)
+                .get(&bound_player_id)
                 .copied();
             let currently_bound_entity = currently_bound.unwrap_or(player_entity);
             commands
@@ -274,7 +305,7 @@ pub fn receive_client_control_requests(
 
             controlled_entity_map
                 .by_player_entity_id
-                .insert(bound_player.clone(), resolved_target_entity);
+                .insert(bound_player_id, resolved_target_entity);
 
             if currently_bound.is_none() || currently_bound_entity != resolved_target_entity {
                 let handoff_anchor_entity = if resolved_target_entity == player_entity {

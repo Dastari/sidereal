@@ -50,6 +50,8 @@ Core player loop:
   - native input transport.
 - Runtime protocol traffic is bincode-driven through Lightyear registrations.
 - Legacy JSON envelope helpers are persistence/test fixtures only.
+- Production native runtime transport is currently UDP (`UdpIo` / `ServerUdpIo`).
+- Browser/WASM transport is not yet implemented end-to-end; WebRTC-first remains the accepted target direction.
 
 ### 3.3 WASM Transport Direction (Future)
 
@@ -357,8 +359,11 @@ Implementation note:
 
 **Visibility and scale**
 
-- **Current:** `update_network_visibility` does a full scan: for each client, it iterates every replicated entity and evaluates range/ownership/faction. Complexity is O(clients × entities) per fixed tick.
-- **Target (see 7.7):** Spatial indexing (e.g. grid or BVH) so visibility uses “nearby cells” and owned/scanner-derived coverage, not a full-world scan. Without this, thousands of entities and many clients will not be viable.
+- **Current runtime modes:** `update_network_visibility` has a pluggable candidate stage:
+  - default: `full_scan` (O(clients × entities)),
+  - opt-in: `spatial_grid` (uniform-grid candidate preselection + policy exception bypass paths).
+- **Safety rule:** candidate preselection is optimization-only; ownership/public/faction/scanner exceptions must still be considered even if an entity misses candidate preselection.
+- **Target (see 7.7):** move production/default operation to spatial indexing (and later LOD/culling tiers) with telemetry-backed tuning.
 
 **Observer and scanner aggregation**
 
@@ -381,7 +386,7 @@ Implementation note:
 
 **Summary**
 
-- **Thousands of entities, multiple players:** Not robust until visibility uses spatial indexing and possibly replication culling/LOD as described in 7.5–7.7.
+- **Thousands of entities, multiple players:** Not robust under `full_scan`; use `spatial_grid` (then next-stage index/LOD improvements) for large sessions as described in 7.5–7.7.
 - **Players swapping between ships they own:** Implemented with server-side ownership validation and persisted player runtime state.
 
 ## 8. Auth and Session Identity
@@ -402,11 +407,12 @@ Implementation note:
 ## 9. Asset Streaming
 
 - Asset delivery is stream-based through backend/client runtime channels.
-- Client uses local cache (`assets.pak` + index metadata) with checksum/version invalidation.
+- Current client cache backend is file-tree based under `data/cache_stream/**`.
+- `assets.pak` + index metadata remains the target cache shape; rollout is tracked in `docs/features/asset_delivery_contract.md`.
 - Starter corvette runtime visual default is defined via gameplay component `VisualAssetId("corvette_01")`; default stream source maps that asset ID to `sprites/ships/corvette.png` (served from `ASSET_ROOT`, typically `data/sprites/ships/corvette.png` in local development).
 - Optional per-entity sprite shader is driven by `SpriteShaderAssetId`; baseline streamed shader asset ID is `sprite_pixel_effect_wgsl` (`shaders/sprite_pixel_effect.wgsl`) and binds to client runtime shader path `data/cache_stream/shaders/sprite_pixel_effect.wgsl`.
 - Missing assets must fail soft (no gameplay crash).
-- No standalone HTTP asset-file serving for gameplay runtime paths.
+- Transitional note: gateway still exposes `/assets/stream/{asset_id}`; runtime asset consumption is stream-first and standalone HTTP serving is slated for removal from gameplay paths.
 
 ## 10. Client Platform Model
 

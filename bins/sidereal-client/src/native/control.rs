@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::{MessageReceiver, MessageSender};
 use sidereal_net::{
-    ClientControlRequestMessage, ControlChannel, ServerControlAckMessage,
+    ClientControlRequestMessage, ControlChannel, PlayerEntityId, ServerControlAckMessage,
     ServerControlRejectMessage,
 };
 use std::sync::OnceLock;
@@ -45,6 +45,11 @@ pub fn send_lightyear_control_requests(
     let Some(player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
+    let Some(canonical_player_entity_id) =
+        PlayerEntityId::parse(player_entity_id.as_str()).map(PlayerEntityId::canonical_wire_id)
+    else {
+        return;
+    };
     if senders.is_empty() {
         return;
     }
@@ -76,7 +81,7 @@ pub fn send_lightyear_control_requests(
     }
     let requested_controlled_entity_id = request_state.pending_controlled_entity_id.clone();
     let message = ClientControlRequestMessage {
-        player_entity_id: player_entity_id.clone(),
+        player_entity_id: canonical_player_entity_id,
         controlled_entity_id: requested_controlled_entity_id,
         request_seq,
     };
@@ -108,10 +113,17 @@ pub fn receive_lightyear_control_results(
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
+    let Some(local_player_id) = PlayerEntityId::parse(local_player_entity_id.as_str()) else {
+        return;
+    };
 
     for mut receiver in &mut ack_receivers {
         for message in receiver.receive() {
-            if message.player_entity_id != *local_player_entity_id {
+            let Some(message_player_id) = PlayerEntityId::parse(message.player_entity_id.as_str())
+            else {
+                continue;
+            };
+            if message_player_id != local_player_id {
                 continue;
             }
             if request_state.pending_request_seq == Some(message.request_seq) {
@@ -131,7 +143,11 @@ pub fn receive_lightyear_control_results(
 
     for mut receiver in &mut reject_receivers {
         for message in receiver.receive() {
-            if message.player_entity_id != *local_player_entity_id {
+            let Some(message_player_id) = PlayerEntityId::parse(message.player_entity_id.as_str())
+            else {
+                continue;
+            };
+            if message_player_id != local_player_id {
                 continue;
             }
             if request_state.pending_request_seq == Some(message.request_seq) {

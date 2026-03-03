@@ -1,17 +1,17 @@
-use bevy::log::{error, info, warn};
+use bevy::log::{error, info};
 use bevy::prelude::*;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
 use lightyear::prelude::LocalAddr;
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::{ClientOf, LinkOf, RawServer, ServerUdpIo, Start, Stopped};
-use lightyear::prelude::{ChannelRegistry, ReplicationSender, SendUpdatesMode, Transport, Unlink};
+use lightyear::prelude::{
+    ChannelRegistry, Replicate, ReplicationGroup, ReplicationSender, SendUpdatesMode, Transport,
+    Unlink,
+};
 use sidereal_core::remote_inspect::RemoteInspectConfig;
-use sidereal_persistence::GraphPersistence;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-
-use crate::replication::persistence::PersistenceSchemaInitState;
 
 #[derive(Debug, Resource, Clone)]
 pub(crate) struct BrpAuthToken {
@@ -74,49 +74,6 @@ pub fn configure_remote(app: &mut App, cfg: &RemoteInspectConfig) {
     });
 }
 
-pub fn hydrate_replication_world(
-    mut commands: Commands<'_, '_>,
-    mut schema_init_state: ResMut<'_, PersistenceSchemaInitState>,
-) {
-    let database_url = std::env::var("REPLICATION_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
-
-    let mut persistence = match GraphPersistence::connect(&database_url) {
-        Ok(v) => v,
-        Err(err) => {
-            warn!("replication hydration skipped; connect failed: {err}");
-            return;
-        }
-    };
-    if let Err(err) = persistence.ensure_schema() {
-        warn!("replication hydration skipped; schema init failed: {err}");
-        return;
-    }
-    schema_init_state.0 = true;
-    let records = match persistence.load_graph_records() {
-        Ok(v) => v,
-        Err(err) => {
-            warn!("replication hydration skipped; graph load failed: {err}");
-            return;
-        }
-    };
-
-    for record in &records {
-        commands.spawn(HydratedGraphEntity {
-            _entity_id: record.entity_id.clone(),
-            _labels: record.labels.clone(),
-            _component_count: record.components.len(),
-        });
-    }
-    commands.insert_resource(HydratedEntityCount {
-        _count: records.len(),
-    });
-    info!(
-        "replication hydrated {} graph entities into Bevy world",
-        records.len()
-    );
-}
-
 pub fn start_lightyear_server(mut commands: Commands<'_, '_>) {
     let bind_addr = std::env::var("REPLICATION_UDP_BIND")
         .unwrap_or_else(|_| "0.0.0.0:7001".to_string())
@@ -157,7 +114,7 @@ pub fn log_replication_client_connected(
 /// Attaches `ReplicationSender` to each new client link entity so Lightyear
 /// can replicate entity state and process visibility for this client.
 pub fn setup_client_replication_sender(trigger: On<Add, LinkOf>, mut commands: Commands<'_, '_>) {
-    let send_interval = std::time::Duration::from_millis(33); // ~30 Hz, matching server tick
+    let send_interval = std::time::Duration::from_secs_f64(1.0 / 30.0); // exactly 30 Hz, matching server tick
     commands
         .entity(trigger.entity)
         .insert(ReplicationSender::new(
@@ -181,6 +138,36 @@ pub fn ensure_server_transport_channels(
         }
         if !transport.has_sender::<sidereal_net::ControlChannel>() {
             transport.add_sender_from_registry::<sidereal_net::ControlChannel>(&registry);
+        }
+        if !transport.has_receiver::<sidereal_net::InputChannel>() {
+            transport.add_receiver_from_registry::<sidereal_net::InputChannel>(&registry);
+        }
+        if !transport.has_sender::<sidereal_net::InputChannel>() {
+            transport.add_sender_from_registry::<sidereal_net::InputChannel>(&registry);
+        }
+        if !transport.has_receiver::<sidereal_net::AssetChannel>() {
+            transport.add_receiver_from_registry::<sidereal_net::AssetChannel>(&registry);
+        }
+        if !transport.has_sender::<sidereal_net::AssetChannel>() {
+            transport.add_sender_from_registry::<sidereal_net::AssetChannel>(&registry);
+        }
+    }
+}
+
+/// Ensure replicated entities use per-entity replication groups by default.
+///
+/// Lightyear's default `ReplicationGroup(0)` is shared and can cause update starvation
+/// patterns when many entities are active. We normalize untouched defaults to
+/// `ReplicationGroup::new_from_entity()` so each entity advances independently.
+pub fn ensure_entity_scoped_replication_groups(
+    mut commands: Commands<'_, '_>,
+    groups: Query<'_, '_, (Entity, &'_ ReplicationGroup), With<Replicate>>,
+) {
+    for (entity, group) in &groups {
+        if *group == ReplicationGroup::default() {
+            commands
+                .entity(entity)
+                .insert(ReplicationGroup::new_from_entity());
         }
     }
 }

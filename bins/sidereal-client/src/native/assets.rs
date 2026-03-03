@@ -12,8 +12,8 @@ use sidereal_game::{
     SizeM, default_space_background_shader_asset_id, default_starfield_shader_asset_id,
 };
 use sidereal_net::{
-    AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
-    ControlChannel, RequestedAsset,
+    AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
+    AssetStreamManifestMessage, RequestedAsset,
 };
 use std::collections::HashMap;
 
@@ -290,7 +290,7 @@ pub(super) fn receive_lightyear_asset_stream_messages(
                     requests: requested_assets,
                 };
                 for mut sender in &mut request_senders {
-                    sender.send::<ControlChannel>(request_message.clone());
+                    sender.send::<AssetChannel>(request_message.clone());
                 }
             }
         }
@@ -356,7 +356,7 @@ pub(super) fn receive_lightyear_asset_stream_messages(
                     let index_path = cache_index_path(&asset_root.0);
                     let _ = save_cache_index(&index_path, &asset_manager.cache_index);
                     for mut sender in &mut ack_senders {
-                        sender.send::<ControlChannel>(ack.clone());
+                        sender.send::<AssetChannel>(ack.clone());
                     }
                 }
                 if let Some(pending) = asset_manager.pending_assets.remove(&chunk.asset_id)
@@ -439,7 +439,7 @@ pub(super) fn ensure_critical_assets_available_system(
         .collect::<Vec<_>>();
     let request_message = AssetRequestMessage { requests };
     for mut sender in &mut request_senders {
-        sender.send::<ControlChannel>(request_message.clone());
+        sender.send::<AssetChannel>(request_message.clone());
     }
 }
 

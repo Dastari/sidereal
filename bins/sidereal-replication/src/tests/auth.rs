@@ -39,14 +39,15 @@ fn cleanup_drops_visibility_for_disconnected_client() {
             .resource_mut::<AuthenticatedClientBindings>();
         bindings
             .by_client_entity
-            .insert(client, "player:test".to_string());
-        bindings
-            .by_remote_id
-            .insert(PeerId::Netcode(42), "player:test".to_string());
+            .insert(client, "11111111-1111-1111-1111-111111111111".to_string());
+        bindings.by_remote_id.insert(
+            PeerId::Netcode(42),
+            "11111111-1111-1111-1111-111111111111".to_string(),
+        );
     }
     app.world_mut()
         .resource_mut::<ClientVisibilityRegistry>()
-        .register_client(client, "player:test".to_string());
+        .register_client(client, "11111111-1111-1111-1111-111111111111".to_string());
     app.world_mut()
         .get_mut::<ReplicationState>(replicated)
         .expect("replication state exists")

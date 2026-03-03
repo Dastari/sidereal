@@ -1,5 +1,6 @@
 //! Top-down camera, overlay sync, motion state, and camera audit.
 
+use bevy::camera::ScalingMode;
 use bevy::camera::visibility::RenderLayers;
 use bevy::ecs::query::Has;
 use bevy::input::mouse::MouseWheel;
@@ -8,7 +9,8 @@ use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::app_state::{ClientSession, FreeCameraState, LocalPlayerViewState};
 use super::components::{
-    ControlledEntity, GameplayCamera, GameplayHud, TopDownCamera, UiOverlayCamera,
+    ClientSceneEntity, ControlledEntity, GameplayCamera, GameplayHud, TopDownCamera,
+    UiOverlayCamera,
 };
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
 use super::resources::CameraMotionState;
@@ -16,12 +18,13 @@ use avian2d::prelude::Position;
 
 pub(crate) fn resolve_camera_anchor_entity(
     session: &ClientSession,
-    _player_view_state: &LocalPlayerViewState,
+    player_view_state: &LocalPlayerViewState,
     entity_registry: &RuntimeEntityHierarchy,
 ) -> Option<Entity> {
-    let preferred_runtime_id = session
-        .player_entity_id
+    let preferred_runtime_id = player_view_state
+        .controlled_entity_id
         .as_ref()
+        .or(session.player_entity_id.as_ref())
         .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))?;
     entity_registry
         .by_entity_id
@@ -146,7 +149,6 @@ pub(crate) fn update_topdown_camera_system(
 /// segment gaps stay consistent.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
-    window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
     mut ui_camera: Query<
         '_,
         '_,
@@ -154,22 +156,14 @@ pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
         (With<UiOverlayCamera>, Without<GameplayCamera>),
     >,
 ) {
-    let Ok(window) = window_query.single() else {
-        return;
-    };
-    let w = window.resolution.width();
-    let h = window.resolution.height();
-    if h <= 0.0 {
-        return;
-    }
-    // 1 unit = 1 pixel: view height = h, view width = w, origin at bottom-left.
-    // Bevy 2D ortho: scale is inverse of half-height, so half_height = 1/scale. For half_height = h/2, scale = 2/h.
-    let scale = 2.0 / h;
+    // Keep the overlay camera in Bevy's default window-space mapping so UI layout
+    // remains full-screen and independent from gameplay camera zoom/translation.
     for (mut ui_transform, mut ui_projection) in &mut ui_camera {
-        ui_transform.translation.x = w * 0.5;
-        ui_transform.translation.y = h * 0.5;
+        ui_transform.translation = Vec3::ZERO;
+        ui_transform.rotation = Quat::IDENTITY;
         if let Projection::Orthographic(ui_ortho) = &mut *ui_projection {
-            ui_ortho.scale = scale;
+            ui_ortho.scaling_mode = ScalingMode::WindowSize;
+            ui_ortho.scale = 1.0;
         }
     }
 }
@@ -210,14 +204,63 @@ pub(crate) fn update_camera_motion_state(
 }
 
 pub(crate) fn gate_gameplay_camera_system(
-    mut camera_query: Query<'_, '_, &mut Camera, With<GameplayCamera>>,
+    mut camera_query: Query<'_, '_, &mut Camera, (With<GameplayCamera>, Without<UiOverlayCamera>)>,
     mut hud_query: Query<'_, '_, &mut Visibility, With<GameplayHud>>,
+    mut ui_camera_query: Query<
+        '_,
+        '_,
+        &mut Camera,
+        (With<UiOverlayCamera>, Without<GameplayCamera>),
+    >,
 ) {
     for mut camera in &mut camera_query {
         camera.is_active = true;
     }
     for mut visibility in &mut hud_query {
         *visibility = Visibility::Visible;
+    }
+    for mut camera in &mut ui_camera_query {
+        camera.clear_color = ClearColorConfig::None;
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn gate_menu_camera_system(
+    mut scene_cameras: Query<
+        '_,
+        '_,
+        &mut Camera,
+        (
+            With<ClientSceneEntity>,
+            Without<UiOverlayCamera>,
+            Without<GameplayCamera>,
+        ),
+    >,
+    mut gameplay_cameras: Query<
+        '_,
+        '_,
+        &mut Camera,
+        (With<GameplayCamera>, Without<UiOverlayCamera>),
+    >,
+    mut hud_query: Query<'_, '_, &mut Visibility, With<GameplayHud>>,
+    mut ui_camera_query: Query<
+        '_,
+        '_,
+        &mut Camera,
+        (With<UiOverlayCamera>, Without<GameplayCamera>),
+    >,
+) {
+    for mut camera in &mut scene_cameras {
+        camera.is_active = false;
+    }
+    for mut camera in &mut gameplay_cameras {
+        camera.is_active = false;
+    }
+    for mut visibility in &mut hud_query {
+        *visibility = Visibility::Hidden;
+    }
+    for mut camera in &mut ui_camera_query {
+        camera.clear_color = ClearColorConfig::Custom(Color::BLACK);
     }
 }
 

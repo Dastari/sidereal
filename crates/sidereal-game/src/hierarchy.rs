@@ -27,12 +27,18 @@ use crate::{EntityGuid, Hardpoint, MountedOn, ParentGuid};
 /// Entities whose parents have not yet spawned are silently skipped and
 /// retried on subsequent frames (the `Without<ChildOf>` filter re-includes
 /// them automatically).
+#[allow(clippy::type_complexity)]
 pub fn sync_mounted_hierarchy(
     mut commands: Commands<'_, '_>,
     unmounted: Query<
         '_,
         '_,
-        (Entity, Option<&'_ ParentGuid>, Option<&'_ MountedOn>),
+        (
+            Entity,
+            Option<&'_ ParentGuid>,
+            Option<&'_ MountedOn>,
+            Option<&'_ Hardpoint>,
+        ),
         (Without<ChildOf>, Or<(With<ParentGuid>, With<MountedOn>)>),
     >,
     guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid)>,
@@ -47,15 +53,18 @@ pub fn sync_mounted_hierarchy(
         .map(|(entity, guid)| (guid.0, entity))
         .collect();
 
-    let mut hardpoint_offsets: HashMap<(Uuid, &str), Vec3> = HashMap::new();
+    let mut hardpoint_transforms: HashMap<(Uuid, &str), (Vec3, Quat)> = HashMap::new();
     for (_hardpoint_guid, hp, parent_guid) in &hardpoints {
         let Some(parent_guid) = parent_guid else {
             continue;
         };
-        hardpoint_offsets.insert((parent_guid.0, hp.hardpoint_id.as_str()), hp.offset_m);
+        hardpoint_transforms.insert(
+            (parent_guid.0, hp.hardpoint_id.as_str()),
+            (hp.offset_m, hp.local_rotation),
+        );
     }
 
-    for (child_entity, parent_guid, mounted_on) in &unmounted {
+    for (child_entity, parent_guid, mounted_on, hardpoint) in &unmounted {
         let parent_guid = parent_guid
             .map(|v| v.0)
             .or_else(|| mounted_on.map(|v| v.parent_entity_id));
@@ -68,19 +77,27 @@ pub fn sync_mounted_hierarchy(
 
         commands.entity(parent_entity).add_child(child_entity);
 
+        if let Some(hardpoint) = hardpoint {
+            commands.entity(child_entity).insert(
+                Transform::from_translation(hardpoint.offset_m)
+                    .with_rotation(hardpoint.local_rotation),
+            );
+            continue;
+        }
+
         // Legacy fallback: if entity is attached by MountedOn directly to root ship
         // and not to a dedicated hardpoint entity, apply hardpoint offset manually.
         if mounted_on.is_some()
             && mounted_on.is_some_and(|v| parent_guid == v.parent_entity_id)
             && let Some(mounted_on) = mounted_on
-            && let Some(&offset) = hardpoint_offsets.get(&(
+            && let Some(&(offset, rotation)) = hardpoint_transforms.get(&(
                 mounted_on.parent_entity_id,
                 mounted_on.hardpoint_id.as_str(),
             ))
         {
             commands
                 .entity(child_entity)
-                .insert(Transform::from_translation(offset));
+                .insert(Transform::from_translation(offset).with_rotation(rotation));
         }
     }
 }

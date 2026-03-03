@@ -1,8 +1,7 @@
 import * as React from 'react'
 import type { ComponentEditorProps } from './types'
-import { Input } from '@/components/ui/input'
-import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
+import { DebouncedNumberField } from './DebouncedNumberField'
 
 type SpaceBackgroundShaderSettings = {
   enabled: boolean
@@ -41,6 +40,10 @@ type SpaceBackgroundShaderSettings = {
   nebula_opacity: number
   stars_blend_mode: number
   stars_opacity: number
+  star_count: number
+  star_size_min: number
+  star_size_max: number
+  star_color_rgb: { x: number; y: number; z: number }
   flares_blend_mode: number
   flares_opacity: number
   tint_rgb: { x: number; y: number; z: number }
@@ -83,6 +86,10 @@ type SpaceBackgroundShaderSettingsPayload = {
   nebula_opacity: number
   stars_blend_mode: number
   stars_opacity: number
+  star_count: number
+  star_size_min: number
+  star_size_max: number
+  star_color_rgb: [number, number, number]
   flares_blend_mode: number
   flares_opacity: number
   tint_rgb: [number, number, number]
@@ -170,6 +177,10 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
       nebula_opacity: 1.0,
       stars_blend_mode: 0,
       stars_opacity: 1.0,
+      star_count: 1.0,
+      star_size_min: 0.09,
+      star_size_max: 0.118,
+      star_color_rgb: { x: 1, y: 1, z: 1 },
       flares_blend_mode: 1,
       flares_opacity: 0.85,
       tint_rgb: { x: 1, y: 1, z: 1 },
@@ -209,6 +220,10 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
   const nebulaOpacity = Number(obj.nebula_opacity ?? 1.0)
   const starsBlendMode = Number(obj.stars_blend_mode ?? 0)
   const starsOpacity = Number(obj.stars_opacity ?? 1.0)
+  const starCount = Number(obj.star_count ?? 1.0)
+  const starSizeMin = Number(obj.star_size_min ?? 0.09)
+  const starSizeMax = Number(obj.star_size_max ?? 0.118)
+  const starColorRgb = parseVec3(obj.star_color_rgb)
   const flaresBlendMode = Number(obj.flares_blend_mode ?? 1)
   const flaresOpacity = Number(obj.flares_opacity ?? 0.85)
   return {
@@ -256,6 +271,10 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
     nebula_opacity: Number.isFinite(nebulaOpacity) ? nebulaOpacity : 1.0,
     stars_blend_mode: Number.isFinite(starsBlendMode) ? starsBlendMode : 0,
     stars_opacity: Number.isFinite(starsOpacity) ? starsOpacity : 1.0,
+    star_count: Number.isFinite(starCount) ? starCount : 1.0,
+    star_size_min: Number.isFinite(starSizeMin) ? starSizeMin : 0.09,
+    star_size_max: Number.isFinite(starSizeMax) ? starSizeMax : 0.118,
+    star_color_rgb: starColorRgb,
     flares_blend_mode: Number.isFinite(flaresBlendMode) ? flaresBlendMode : 1,
     flares_opacity: Number.isFinite(flaresOpacity) ? flaresOpacity : 0.85,
     tint_rgb: parseVec3(obj.tint_rgb),
@@ -332,6 +351,14 @@ export function SpaceBackgroundShaderSettingsEditor({
       nebula_opacity: clamp(roundToStep(next.nebula_opacity, 0.01), 0, 1),
       stars_blend_mode: clamp(Math.round(next.stars_blend_mode), 0, 2),
       stars_opacity: clamp(roundToStep(next.stars_opacity, 0.01), 0, 1),
+      star_count: clamp(roundToStep(next.star_count, 0.05), 0, 5),
+      star_size_min: clamp(roundToStep(next.star_size_min, 0.001), 0.01, 0.35),
+      star_size_max: clamp(roundToStep(next.star_size_max, 0.001), 0.01, 0.35),
+      star_color_rgb: [
+        clamp(roundToStep(next.star_color_rgb.x, 0.001), 0, 2),
+        clamp(roundToStep(next.star_color_rgb.y, 0.001), 0, 2),
+        clamp(roundToStep(next.star_color_rgb.z, 0.001), 0, 2),
+      ],
       flares_blend_mode: clamp(Math.round(next.flares_blend_mode), 0, 2),
       flares_opacity: clamp(roundToStep(next.flares_opacity, 0.01), 0, 1),
       tint_rgb: [
@@ -404,6 +431,16 @@ export function SpaceBackgroundShaderSettingsEditor({
       ...parsed,
       flare_tint_rgb: {
         ...parsed.flare_tint_rgb,
+        [axis]: next,
+      },
+    })
+  }
+
+  const updateStarColor = (axis: 'x' | 'y' | 'z', next: number) => {
+    emit({
+      ...parsed,
+      star_color_rgb: {
+        ...parsed.star_color_rgb,
         [axis]: next,
       },
     })
@@ -970,6 +1007,60 @@ export function SpaceBackgroundShaderSettingsEditor({
         readOnly={readOnly}
         onChange={(next) => updateField('stars_opacity', next)}
       />
+      <Field
+        label="Star Count"
+        value={parsed.star_count}
+        min={0}
+        max={5}
+        step={0.05}
+        readOnly={readOnly}
+        onChange={(next) => updateField('star_count', next)}
+      />
+      <Field
+        label="Star Size Min"
+        value={parsed.star_size_min}
+        min={0.01}
+        max={0.35}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateField('star_size_min', next)}
+      />
+      <Field
+        label="Star Size Max"
+        value={parsed.star_size_max}
+        min={0.01}
+        max={0.35}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateField('star_size_max', next)}
+      />
+      <Field
+        label="Star Color R"
+        value={parsed.star_color_rgb.x}
+        min={0}
+        max={2}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateStarColor('x', next)}
+      />
+      <Field
+        label="Star Color G"
+        value={parsed.star_color_rgb.y}
+        min={0}
+        max={2}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateStarColor('y', next)}
+      />
+      <Field
+        label="Star Color B"
+        value={parsed.star_color_rgb.z}
+        min={0}
+        max={2}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateStarColor('z', next)}
+      />
       <SelectField
         label="Flares Blend Mode"
         value={String(parsed.flares_blend_mode)}
@@ -1062,39 +1153,17 @@ function Field({
   readOnly: boolean
   onChange: (next: number) => void
 }) {
-  const safe = Number.isFinite(value) ? value : min
   return (
-    <div className="space-y-1">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="flex items-center gap-2">
-        <Slider
-          min={min}
-          max={max}
-          step={step}
-          value={[safe]}
-          onValueChange={(values) => {
-            const v = values[0]
-            if (typeof v === 'number') onChange(v)
-          }}
-          disabled={readOnly}
-          className="flex-1"
-        />
-        <Input
-          type="number"
-          min={min}
-          max={max}
-          step={step}
-          value={safe}
-          onChange={(e) => {
-            const next = Number.parseFloat(e.target.value)
-            if (Number.isFinite(next)) onChange(next)
-          }}
-          disabled={readOnly}
-          className="w-20 text-right font-mono text-xs"
-          aria-label={`${label} value`}
-        />
-      </div>
-    </div>
+    <DebouncedNumberField
+      label={label}
+      value={value}
+      min={min}
+      max={max}
+      step={step}
+      readOnly={readOnly}
+      onChange={onChange}
+      inputClassName="w-20 text-right font-mono text-xs"
+    />
   )
 }
 

@@ -63,6 +63,15 @@ pub struct ClientRealtimeInputMessage {
     pub tick: u64,
 }
 
+/// Server authoritative weapon fire notification for client-side tracer visuals.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerWeaponFiredMessage {
+    pub shooter_entity_id: String,
+    pub origin_xy: [f32; 2],
+    pub velocity_xy: [f32; 2],
+    pub ttl_s: f32,
+}
+
 /// Client requests one or more assets by known version/checksum.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssetRequestMessage {

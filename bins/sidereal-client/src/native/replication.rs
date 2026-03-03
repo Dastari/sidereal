@@ -11,8 +11,9 @@ use lightyear::prediction::correction::CorrectionPolicy;
 use lightyear::prediction::prelude::PredictionManager;
 use lightyear::prelude::client::Client;
 use sidereal_game::{
-    ActionQueue, ControlledEntityGuid, EntityGuid, Hardpoint, MountedOn, OwnerId, PlayerTag,
-    SizeM, SpriteShaderAssetId, TotalMassKg, VisualAssetId, angular_inertia_from_size,
+    ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, ControlledEntityGuid,
+    EntityGuid, Hardpoint, MountedOn, PlayerTag, SizeM, SpriteShaderAssetId, TotalMassKg,
+    VisualAssetId, angular_inertia_from_size, collider_from_collision_shape,
 };
 use sidereal_runtime_sync::{
     RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
@@ -53,6 +54,96 @@ pub(crate) fn ensure_replicated_entity_spatial_components(
     }
     for entity in &missing_visibility {
         commands.entity(entity).insert(Visibility::default());
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn ensure_hierarchy_parent_spatial_components(
+    mut commands: Commands<'_, '_>,
+    children_with_parent: Query<'_, '_, &'_ ChildOf>,
+    parent_components: Query<'_, '_, (Has<Transform>, Has<GlobalTransform>, Has<Visibility>)>,
+) {
+    let mut visited_parents = HashSet::<Entity>::new();
+    for child_of in &children_with_parent {
+        let entity = child_of.parent();
+        if !visited_parents.insert(entity) {
+            continue;
+        }
+        let Ok((has_transform, has_global_transform, has_visibility)) =
+            parent_components.get(entity)
+        else {
+            continue;
+        };
+        if has_transform && has_global_transform && has_visibility {
+            continue;
+        }
+        let mut entity_commands = commands.entity(entity);
+        if !has_transform {
+            entity_commands.insert(Transform::default());
+        }
+        if !has_global_transform {
+            entity_commands.insert(GlobalTransform::default());
+        }
+        if !has_visibility {
+            entity_commands.insert(Visibility::default());
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn ensure_ui_node_spatial_components(
+    mut commands: Commands<'_, '_>,
+    ui_nodes: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Has<Transform>,
+            Has<GlobalTransform>,
+            Has<Visibility>,
+        ),
+        With<Node>,
+    >,
+) {
+    for (entity, has_transform, has_global_transform, has_visibility) in &ui_nodes {
+        if has_transform && has_global_transform && has_visibility {
+            continue;
+        }
+        let mut entity_commands = commands.entity(entity);
+        if !has_transform {
+            entity_commands.insert(Transform::default());
+        }
+        if !has_global_transform {
+            entity_commands.insert(GlobalTransform::default());
+        }
+        if !has_visibility {
+            entity_commands.insert(Visibility::default());
+        }
+    }
+}
+
+pub(crate) fn ensure_parent_spatial_components_on_children_added(
+    trigger: On<Add, Children>,
+    mut commands: Commands<'_, '_>,
+    parent_components: Query<'_, '_, (Has<Transform>, Has<GlobalTransform>, Has<Visibility>)>,
+) {
+    let entity = trigger.entity;
+    let Ok((has_transform, has_global_transform, has_visibility)) = parent_components.get(entity)
+    else {
+        return;
+    };
+    if has_transform && has_global_transform && has_visibility {
+        return;
+    }
+    let mut entity_commands = commands.entity(entity);
+    if !has_transform {
+        entity_commands.insert(Transform::default());
+    }
+    if !has_global_transform {
+        entity_commands.insert(GlobalTransform::default());
+    }
+    if !has_visibility {
+        entity_commands.insert(Visibility::default());
     }
 }
 
@@ -103,6 +194,15 @@ pub(crate) fn runtime_entity_id_from_guid(
     None
 }
 
+fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    parse_guid_from_entity_id(left)
+        .zip(parse_guid_from_entity_id(right))
+        .is_some_and(|(l, r)| l == r)
+}
+
 pub(crate) fn resolve_authoritative_control_entity_id_from_registry(
     entity_registry: &RuntimeEntityHierarchy,
     local_player_entity_id: &str,
@@ -113,7 +213,8 @@ pub(crate) fn resolve_authoritative_control_entity_id_from_registry(
     if parse_guid_from_entity_id(local_player_entity_id)
         .is_some_and(|player_guid| player_guid.to_string() == control_guid)
     {
-        return Some(local_player_entity_id.to_string());
+        return runtime_entity_id_from_guid(entity_registry, local_player_entity_id, control_guid)
+            .or_else(|| Some(local_player_entity_id.to_string()));
     }
 
     runtime_entity_id_from_guid(entity_registry, local_player_entity_id, control_guid)
@@ -130,7 +231,13 @@ pub(crate) fn resolve_authoritative_control_entity_id_with_snapshot(
     if parse_guid_from_entity_id(local_player_entity_id)
         .is_some_and(|player_guid| player_guid.to_string() == control_guid)
     {
-        return Some(local_player_entity_id.to_string());
+        return runtime_entity_id_by_guid
+            .get(control_guid)
+            .cloned()
+            .or_else(|| {
+                runtime_entity_id_from_guid(entity_registry, local_player_entity_id, control_guid)
+            })
+            .or_else(|| Some(local_player_entity_id.to_string()));
     }
 
     runtime_entity_id_by_guid
@@ -184,10 +291,15 @@ pub(crate) fn transition_world_loading_to_in_world(
     if session_ready.ready_player_entity_id.as_deref() != Some(local_player_entity_id.as_str()) {
         return;
     }
-    if !entity_registry
+    let has_local_player_entity = entity_registry
         .by_entity_id
         .contains_key(local_player_entity_id)
-    {
+        || parse_guid_from_entity_id(local_player_entity_id).is_some_and(|guid| {
+            entity_registry
+                .by_entity_id
+                .contains_key(guid.to_string().as_str())
+        });
+    if !has_local_player_entity {
         return;
     }
     next_state.set(ClientAppState::InWorld);
@@ -229,13 +341,13 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
     mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     mut entity_registry: ResMut<'_, RuntimeEntityHierarchy>,
     mut remote_registry: ResMut<'_, RemoteEntityRegistry>,
+    collision_outlines: Query<'_, '_, &'_ CollisionOutlineM>,
     replicated_entities: Query<
         '_,
         '_,
         (
             Entity,
             Option<&'_ EntityGuid>,
-            Option<&'_ OwnerId>,
             Option<&'_ MountedOn>,
             Option<&'_ Hardpoint>,
             Option<&'_ PlayerTag>,
@@ -244,6 +356,8 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             Option<&'_ LinearVelocity>,
             Option<&'_ SizeM>,
             Option<&'_ TotalMassKg>,
+            Option<&'_ CollisionAabbM>,
+            Option<&'_ CollisionProfile>,
             Option<&'_ ControlledEntityGuid>,
             Option<&'_ VisualAssetId>,
             Option<&'_ SpriteShaderAssetId>,
@@ -272,9 +386,7 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
         return;
     };
     let mut runtime_entity_id_by_guid = HashMap::<String, String>::new();
-    for (_, guid, _, mounted_on, hardpoint, _player_tag, _, _, _, _, _, _, _, _) in
-        &replicated_entities
-    {
+    for (_, guid, mounted_on, hardpoint, _player_tag, ..) in &replicated_entities {
         let Some(guid) = guid else {
             continue;
         };
@@ -288,22 +400,8 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
     }
 
     let mut authoritative_controlled_entity_id = player_view_state.controlled_entity_id.clone();
-    for (
-        _,
-        guid,
-        _,
-        mounted_on,
-        hardpoint,
-        player_tag,
-        _,
-        _,
-        _,
-        _,
-        _,
-        controlled_entity_guid,
-        _,
-        _,
-    ) in &replicated_entities
+    for (_, guid, mounted_on, hardpoint, player_tag, .., controlled_entity_guid, _, _) in
+        &replicated_entities
     {
         let Some(guid) = guid else {
             continue;
@@ -312,9 +410,7 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             continue;
         }
         let runtime_entity_id = guid.0.to_string();
-        if runtime_entity_id != *local_player_entity_id
-            && format!("player:{}", guid.0) != *local_player_entity_id
-        {
+        if !ids_refer_to_same_guid(runtime_entity_id.as_str(), local_player_entity_id) {
             continue;
         }
         let controlled_id = resolve_authoritative_control_entity_id_with_snapshot(
@@ -335,7 +431,6 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
     for (
         entity,
         guid,
-        _owner_id,
         mounted_on,
         hardpoint,
         player_tag,
@@ -344,6 +439,8 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
         linear_velocity,
         size_m,
         total_mass_kg,
+        collision_aabb,
+        collision_profile,
         controlled_entity_guid,
         visual_asset_id,
         sprite_shader_asset_id,
@@ -361,7 +458,8 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             continue;
         }
         let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
-        let is_local_player_entity = runtime_entity_id == *local_player_entity_id;
+        let is_local_player_entity =
+            ids_refer_to_same_guid(runtime_entity_id.as_str(), local_player_entity_id);
         let is_local_controlled_entity = (is_root_entity || is_local_player_entity)
             && authoritative_controlled_entity_id.as_deref() == Some(runtime_entity_id.as_str());
         if is_local_player_entity
@@ -552,21 +650,47 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             let rotation = rotation.copied().unwrap_or(Rotation::IDENTITY);
             let velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
             let has_physics_data = size_m.is_some() && total_mass_kg.is_some_and(|m| m.0 > 0.0);
+            let allow_collider = collision_profile
+                .copied()
+                .is_some_and(CollisionProfile::is_collidable);
             if has_physics_data {
                 let size = size_m.copied().unwrap();
                 let mass_kg = total_mass_kg.map(|m| m.0).unwrap();
-                entity_commands.insert((
-                    RigidBody::Dynamic,
-                    Collider::rectangle(size.width, size.length),
-                    Mass(mass_kg),
-                    angular_inertia_from_size(mass_kg, &size),
-                    Position(position),
-                    rotation,
-                    LinearVelocity(velocity),
-                    AngularVelocity::default(),
-                    LinearDamping(0.0),
-                    AngularDamping(0.0),
-                ));
+                if allow_collider {
+                    let collider = collider_from_collision_shape(
+                        &size,
+                        collision_aabb,
+                        collision_outlines.get(entity).ok(),
+                    );
+                    entity_commands.insert((
+                        RigidBody::Dynamic,
+                        collider,
+                        Mass(mass_kg),
+                        angular_inertia_from_size(mass_kg, &size),
+                        Position(position),
+                        rotation,
+                        LinearVelocity(velocity),
+                        AngularVelocity::default(),
+                        LinearDamping(0.0),
+                        AngularDamping(0.0),
+                    ));
+                } else {
+                    entity_commands.insert((
+                        Position(position),
+                        rotation,
+                        LinearVelocity(velocity),
+                        AngularVelocity::default(),
+                    ));
+                    entity_commands.remove::<(
+                        RigidBody,
+                        Collider,
+                        Mass,
+                        AngularInertia,
+                        LockedAxes,
+                        LinearDamping,
+                        AngularDamping,
+                    )>();
+                }
             } else {
                 entity_commands.insert((Position(position), rotation, LinearVelocity(velocity)));
             }
@@ -590,9 +714,12 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
                 .by_entity_id
                 .insert(runtime_entity_id, entity);
             if predicted_mode {
-                entity_commands
-                    .insert(lightyear::prelude::Interpolated)
-                    .remove::<lightyear::prelude::Predicted>();
+                // Non-controlled roots are receive-only and must not depend on interpolation
+                // marker transitions to receive authoritative motion updates.
+                entity_commands.remove::<(
+                    lightyear::prelude::Predicted,
+                    lightyear::prelude::Interpolated,
+                )>();
             }
             entity_commands.remove::<ActionQueue>();
             entity_commands.remove::<(
@@ -604,6 +731,16 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
                 LinearDamping,
                 AngularDamping,
             )>();
+        } else if predicted_mode {
+            // Non-root entities (including player anchor entities) must not retain
+            // stale prediction markers from previous control modes.
+            entity_commands.remove::<(
+                lightyear::prelude::Predicted,
+                lightyear::prelude::Interpolated,
+            )>();
+            if !is_local_player_entity {
+                entity_commands.remove::<ActionQueue>();
+            }
         }
     }
 
@@ -647,10 +784,17 @@ pub(crate) fn sync_local_player_view_state_system(
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
+    let Some(local_player_runtime_id) = runtime_entity_id_from_guid(
+        &entity_registry,
+        local_player_entity_id,
+        local_player_entity_id,
+    ) else {
+        return;
+    };
 
     let Some(&local_player_entity) = entity_registry
         .by_entity_id
-        .get(local_player_entity_id.as_str())
+        .get(local_player_runtime_id.as_str())
     else {
         return;
     };
@@ -681,11 +825,17 @@ pub(crate) fn sync_controlled_entity_tags_system(
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
+    let local_player_runtime_id = runtime_entity_id_from_guid(
+        &entity_registry,
+        local_player_entity_id,
+        local_player_entity_id,
+    )
+    .unwrap_or_else(|| local_player_entity_id.clone());
 
     let target_entity_id = match player_view_state.controlled_entity_id.as_ref() {
-        Some(id) if entity_registry.by_entity_id.contains_key(id.as_str()) => Some(id),
-        Some(_) => return,
-        None => Some(local_player_entity_id),
+        Some(id) if entity_registry.by_entity_id.contains_key(id.as_str()) => Some(id.clone()),
+        Some(id) => runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, id),
+        None => Some(local_player_runtime_id.clone()),
     };
     let target_entity = target_entity_id
         .as_ref()
@@ -694,18 +844,100 @@ pub(crate) fn sync_controlled_entity_tags_system(
     for (entity, controlled) in &controlled_query {
         if Some(entity) != target_entity {
             commands.entity(entity).remove::<ControlledEntity>();
-        } else if controlled.player_entity_id != *local_player_entity_id {
+        } else if controlled.player_entity_id != local_player_runtime_id {
             commands.entity(entity).insert(ControlledEntity {
                 entity_id: controlled.entity_id.clone(),
-                player_entity_id: local_player_entity_id.clone(),
+                player_entity_id: local_player_runtime_id.clone(),
             });
         }
     }
 
     if let Some(entity) = target_entity {
         commands.entity(entity).insert(ControlledEntity {
-            entity_id: target_entity_id.cloned().unwrap_or_default(),
-            player_entity_id: local_player_entity_id.clone(),
+            entity_id: target_entity_id.clone().unwrap_or_default(),
+            player_entity_id: local_player_runtime_id,
         });
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn converge_local_prediction_markers_system(
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Option<&'_ MountedOn>,
+            Option<&'_ Hardpoint>,
+            Option<&'_ PlayerTag>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+        With<WorldEntity>,
+    >,
+) {
+    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    let local_player_runtime_id = runtime_entity_id_from_guid(
+        &entity_registry,
+        local_player_entity_id,
+        local_player_entity_id,
+    )
+    .unwrap_or_else(|| local_player_entity_id.clone());
+    let controlled_entity_id = player_view_state
+        .controlled_entity_id
+        .clone()
+        .unwrap_or_else(|| local_player_runtime_id.clone());
+
+    for (entity, guid, mounted_on, hardpoint, player_tag, is_predicted, is_interpolated) in
+        &entities
+    {
+        let Some(guid) = guid else { continue };
+        let guid_str = guid.0.to_string();
+        let is_local_player =
+            ids_refer_to_same_guid(guid_str.as_str(), local_player_runtime_id.as_str());
+        let is_controlled_target =
+            ids_refer_to_same_guid(guid_str.as_str(), controlled_entity_id.as_str());
+        let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+
+        if is_controlled_target {
+            if !is_predicted || is_interpolated {
+                commands
+                    .entity(entity)
+                    .insert(lightyear::prelude::Predicted)
+                    .remove::<lightyear::prelude::Interpolated>();
+            }
+            continue;
+        }
+
+        if is_local_player {
+            if is_predicted || is_interpolated {
+                commands.entity(entity).remove::<(
+                    lightyear::prelude::Predicted,
+                    lightyear::prelude::Interpolated,
+                )>();
+            }
+            continue;
+        }
+
+        if is_root_entity {
+            if is_predicted || is_interpolated {
+                commands.entity(entity).remove::<(
+                    lightyear::prelude::Predicted,
+                    lightyear::prelude::Interpolated,
+                )>();
+            }
+        } else if is_predicted || is_interpolated {
+            commands.entity(entity).remove::<(
+                lightyear::prelude::Predicted,
+                lightyear::prelude::Interpolated,
+            )>();
+        }
     }
 }

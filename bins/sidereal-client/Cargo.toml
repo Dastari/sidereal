@@ -7,7 +7,7 @@ authors.workspace = true
 
 [dependencies]
 avian2d.workspace = true
-bevy = { workspace = true, features = ["webgpu"] }
+bevy = { workspace = true, features = ["webgpu", "mp3"] }
 sidereal-core = { path = "../../crates/sidereal-core" }
 serde.workspace = true
 serde_json.workspace = true

@@ -55,6 +55,10 @@ pub enum EntityAction {
     YawRight,
     /// Stop yaw input
     YawNeutral,
+    /// Enable afterburner while held/active.
+    AfterburnerOn,
+    /// Disable afterburner when released/inactive.
+    AfterburnerOff,
 
     // === Combat (future) ===
     /// Fire primary weapon group
@@ -105,7 +109,7 @@ impl ActionQueue {
     }
 }
 
-pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
+pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 9] = [
     EntityAction::Forward,
     EntityAction::Backward,
     EntityAction::LongitudinalNeutral,
@@ -113,7 +117,11 @@ pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
     EntityAction::Right,
     EntityAction::LateralNeutral,
     EntityAction::Brake,
+    EntityAction::AfterburnerOn,
+    EntityAction::AfterburnerOff,
 ];
+pub const WEAPON_ACTIONS: [EntityAction; 2] =
+    [EntityAction::FirePrimary, EntityAction::FireSecondary];
 
 pub const LEGACY_FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
     EntityAction::ThrustForward,
@@ -132,6 +140,7 @@ pub fn is_flight_control_action(action: EntityAction) -> bool {
 pub fn default_flight_action_capabilities() -> ActionCapabilities {
     let mut supported = FLIGHT_CONTROL_ACTIONS.to_vec();
     supported.extend(LEGACY_FLIGHT_CONTROL_ACTIONS);
+    supported.extend(WEAPON_ACTIONS);
     ActionCapabilities { supported }
 }
 

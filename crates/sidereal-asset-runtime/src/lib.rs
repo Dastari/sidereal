@@ -56,6 +56,11 @@ pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
             content_type: "text/plain; charset=utf-8",
         },
         StreamableAssetSource {
+            asset_id: "thruster_plume_wgsl",
+            relative_cache_path: "shaders/thruster_plume.wgsl",
+            content_type: "text/plain; charset=utf-8",
+        },
+        StreamableAssetSource {
             asset_id: "space_bg_flare_white_png",
             relative_cache_path: "textures/spacescape/flare-white-small1.png",
             content_type: "image/png",

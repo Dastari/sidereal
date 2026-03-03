@@ -4,14 +4,14 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
-use super::app_state::{CharacterSelectionState, ClientAppState, ClientSession, SessionReadyState};
+use super::app_state::{CharacterSelectionState, ClientAppState, ClientSession};
 use super::auth_net;
 use super::components::{
     CharacterSelectButton, CharacterSelectEnterButton, CharacterSelectRoot,
     CharacterSelectStatusText, UiOverlayCamera,
 };
 use super::platform::UI_OVERLAY_RENDER_LAYER;
-use super::resources::{ClientAuthSyncState, EmbeddedFonts};
+use super::resources::EmbeddedFonts;
 
 pub(super) fn spawn_ui_overlay_camera(mut commands: Commands<'_, '_>) {
     commands.spawn((
@@ -55,6 +55,8 @@ pub(super) fn setup_character_select_screen(
                 align_items: AlignItems::Center,
                 ..default()
             },
+            Transform::default(),
+            GlobalTransform::default(),
             CharacterSelectRoot,
             DespawnOnExit(ClientAppState::CharacterSelect),
         ))
@@ -69,6 +71,8 @@ pub(super) fn setup_character_select_screen(
                     row_gap: Val::Px(12.0),
                     ..default()
                 },
+                Transform::default(),
+                GlobalTransform::default(),
                 BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.95)),
                 BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
             ))
@@ -108,6 +112,8 @@ pub(super) fn setup_character_select_screen(
                                 border_radius: BorderRadius::all(Val::Px(7.0)),
                                 ..default()
                             },
+                            Transform::default(),
+                            GlobalTransform::default(),
                             BackgroundColor(Color::srgba(0.14, 0.18, 0.24, 0.9)),
                         ))
                         .with_children(|button| {
@@ -135,6 +141,8 @@ pub(super) fn setup_character_select_screen(
                             border_radius: BorderRadius::all(Val::Px(8.0)),
                             ..default()
                         },
+                        Transform::default(),
+                        GlobalTransform::default(),
                         BackgroundColor(Color::srgb(0.2, 0.46, 0.85)),
                     ))
                     .with_children(|button| {
@@ -177,11 +185,9 @@ pub(super) fn handle_character_select_buttons(
         ),
         Changed<Interaction>,
     >,
-    mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
-    mut auth_state: ResMut<'_, ClientAuthSyncState>,
-    mut session_ready: ResMut<'_, SessionReadyState>,
     mut character_selection: ResMut<'_, CharacterSelectionState>,
+    mut request_state: ResMut<'_, auth_net::GatewayRequestState>,
     mut status_texts: Query<'_, '_, &mut Text, With<CharacterSelectStatusText>>,
 ) {
     if !app_state
@@ -190,8 +196,6 @@ pub(super) fn handle_character_select_buttons(
     {
         return;
     }
-    let client = reqwest::blocking::Client::new();
-    let gateway_url = session.gateway_url.clone();
     for (interaction, select_button, enter_button, mut bg) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
@@ -200,38 +204,17 @@ pub(super) fn handle_character_select_buttons(
                         Some(select_button.player_entity_id.clone());
                     *bg = BackgroundColor(Color::srgba(0.22, 0.3, 0.42, 0.98));
                 } else if enter_button.is_some() {
-                    let Some(access_token) = session.access_token.as_ref() else {
-                        session.status = "No access token; please log in again.".to_string();
-                        continue;
-                    };
                     let Some(selected_player_entity_id) =
                         character_selection.selected_player_entity_id.clone()
                     else {
                         session.status = "No character selected.".to_string();
                         continue;
                     };
-                    match auth_net::enter_world_request(
-                        &client,
-                        &gateway_url,
-                        access_token,
-                        &selected_player_entity_id,
-                    ) {
-                        Ok(response) if response.accepted => {
-                            session.player_entity_id = Some(selected_player_entity_id);
-                            auth_state.sent_for_client_entities.clear();
-                            auth_state.last_player_entity_id = None;
-                            session_ready.ready_player_entity_id = None;
-                            session.status =
-                                "World entry accepted. Waiting for replication bind...".to_string();
-                            next_state.set(ClientAppState::WorldLoading);
-                        }
-                        Ok(_) => {
-                            session.status = "Enter World request rejected by gateway.".to_string();
-                        }
-                        Err(err) => {
-                            session.status = format!("Enter World failed: {err}");
-                        }
-                    }
+                    auth_net::submit_enter_world_request(
+                        &mut session,
+                        request_state.as_mut(),
+                        selected_player_entity_id,
+                    );
                     *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));
                 }
             }

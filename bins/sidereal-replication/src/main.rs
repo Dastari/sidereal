@@ -1,4 +1,5 @@
 mod bootstrap_runtime;
+mod plugins;
 mod replication;
 use crate::replication::{
     assets, auth, control, input, lifecycle, persistence, runtime_state, simulation_entities,
@@ -66,9 +67,7 @@ fn main() {
     // Lightyear/Bevy plugins can initialize Fixed time; enforce authoritative 30 Hz after plugin wiring.
     app.insert_resource(Time::<Fixed>::from_hz(30.0));
     init_resources(&mut app);
-    register_systems(&mut app);
-    app.add_observer(lifecycle::log_replication_client_connected);
-    app.add_observer(lifecycle::setup_client_replication_sender);
+    register_plugins(&mut app);
     app.run();
 }
 
@@ -84,23 +83,15 @@ fn init_resources(app: &mut App) {
     lifecycle::init_resources(app);
 }
 
-fn register_systems(app: &mut App) {
-    app.add_systems(
-        Startup,
-        (
-            lifecycle::hydrate_replication_world,
-            simulation_entities::hydrate_simulation_entities,
-            lifecycle::start_lightyear_server,
-            persistence::start_persistence_worker,
-            assets::initialize_asset_stream_cache,
-        )
-            .chain(),
-    );
-    app.add_systems(
-        Startup,
-        bootstrap_runtime::start_replication_control_listener,
-    );
-
+fn register_plugins(app: &mut App) {
+    app.add_plugins(plugins::ReplicationLifecyclePlugin);
+    app.add_plugins(plugins::ReplicationAuthPlugin);
+    app.add_plugins(plugins::ReplicationInputPlugin);
+    app.add_plugins(plugins::ReplicationControlPlugin);
+    app.add_plugins(plugins::ReplicationVisibilityPlugin);
+    app.add_plugins(plugins::ReplicationPersistencePlugin);
+    app.add_plugins(plugins::ReplicationAssetsPlugin);
+    app.add_plugins(plugins::ReplicationBootstrapBridgePlugin);
     app.add_systems(
         Update,
         (
@@ -115,67 +106,19 @@ fn register_systems(app: &mut App) {
             input::report_input_drop_metrics,
             persistence::report_persistence_worker_metrics,
             simulation_entities::process_bootstrap_entity_commands,
-            runtime_state::log_player_control_state_changes
+            lifecycle::ensure_entity_scoped_replication_groups
                 .after(simulation_entities::process_bootstrap_entity_commands),
+            runtime_state::log_player_control_state_changes
+                .after(lifecycle::ensure_entity_scoped_replication_groups),
             lifecycle::disconnect_idle_clients,
         )
             .chain(),
-    );
-    app.add_systems(PostUpdate, auth::receive_client_auth_messages);
-    app.add_systems(
-        PostUpdate,
-        simulation_entities::apply_pending_controlled_by_bindings
-            .after(lightyear::prelude::ReplicationBufferSystems::AfterBuffer),
-    );
-
-    app.add_systems(
-        FixedUpdate,
-        (
-            assets::stream_bootstrap_assets_to_authenticated_clients,
-            assets::send_asset_stream_chunks_paced
-                .after(assets::stream_bootstrap_assets_to_authenticated_clients),
-        ),
-    );
-    app.add_systems(
-        FixedUpdate,
-        (
-            simulation_entities::sync_controlled_entity_transforms,
-            runtime_state::sync_player_anchor_to_controlled_entity,
-            runtime_state::update_client_observer_anchor_positions,
-            runtime_state::compute_controlled_entity_scanner_ranges,
-            visibility::update_network_visibility,
-        )
-            .chain()
-            .after(PhysicsSystems::Writeback),
-    );
-    app.add_systems(
-        FixedUpdate,
-        (
-            mark_dirty_persistable_entities,
-            mark_dirty_persistable_entities_spatial,
-            mark_dirty_persistable_entities_components,
-        )
-            .after(PhysicsSystems::Writeback),
-    );
-    app.add_systems(
-        FixedUpdate,
-        persistence::flush_simulation_state_persistence
-            .after(visibility::update_network_visibility),
     );
     app.add_systems(
         FixedUpdate,
         simulation_entities::enforce_planar_motion.before(PhysicsSystems::Prepare),
     );
-    app.add_systems(
-        FixedUpdate,
-        input::drain_native_player_inputs_to_action_queue.before(PhysicsSystems::Prepare),
-    );
 }
-
-use crate::replication::persistence::{
-    mark_dirty_persistable_entities, mark_dirty_persistable_entities_components,
-    mark_dirty_persistable_entities_spatial,
-};
 
 #[cfg(test)]
 mod tests;

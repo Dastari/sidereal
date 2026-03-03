@@ -4,6 +4,7 @@ use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{MessageReceiver, RemoteId};
 use sidereal_game::{ActionQueue, ControlledEntityGuid, EntityAction, EntityGuid, PlayerTag};
 use sidereal_net::{ClientRealtimeInputMessage, PlayerInput};
+use sidereal_net::{PlayerEntityId, RuntimeEntityId};
 use std::collections::HashMap;
 
 use crate::replication::auth::AuthenticatedClientBindings;
@@ -25,6 +26,7 @@ pub struct ClientInputDropMetrics {
     pub empty_after_filter: u64,
     pub unbound_client: u64,
     pub spoofed_player_id: u64,
+    pub controlled_target_mismatch: u64,
 }
 
 #[derive(Resource, Debug, Default)]
@@ -42,13 +44,13 @@ pub struct InputActivityLogState {
 #[derive(Debug, Clone)]
 pub struct LatestRealtimeInput {
     pub tick: u64,
-    pub controlled_entity_id: String,
+    pub controlled_entity_id: RuntimeEntityId,
     pub actions: Vec<EntityAction>,
 }
 
 #[derive(Resource, Default)]
 pub struct LatestRealtimeInputsByPlayer {
-    pub by_player_entity_id: HashMap<String, LatestRealtimeInput>,
+    pub by_player_entity_id: HashMap<PlayerEntityId, LatestRealtimeInput>,
 }
 
 #[derive(Resource, Debug, Default)]
@@ -81,13 +83,33 @@ const MAX_TICKS_AHEAD: u64 = 6;
 const SKIP_AHEAD_ON_FUTURE_TICK: bool = true;
 pub(crate) const MAX_MESSAGES_PER_SECOND: u32 = 120;
 
-/// Canonical form for player entity id so client (bare UUID or "player:uuid") and server ("player:uuid") agree.
+/// Canonical form for player entity id so legacy encodings converge on bare UUID wire format.
 pub(crate) fn canonical_player_entity_id(id: &str) -> String {
-    if id.starts_with("player:") {
-        id.to_string()
-    } else {
-        format!("player:{id}")
+    PlayerEntityId::parse(id)
+        .map(PlayerEntityId::canonical_wire_id)
+        .unwrap_or_else(|| id.to_string())
+}
+
+fn parse_player_entity_id(id: &str) -> Option<PlayerEntityId> {
+    PlayerEntityId::parse(id)
+}
+
+fn parse_runtime_entity_id(id: &str) -> Option<RuntimeEntityId> {
+    RuntimeEntityId::parse(id)
+}
+
+pub(crate) fn canonical_controlled_entity_id(
+    id: &str,
+    player_entity_id: PlayerEntityId,
+) -> Option<RuntimeEntityId> {
+    if canonical_player_entity_id(id) == player_entity_id.canonical_wire_id() {
+        return Some(RuntimeEntityId(player_entity_id.0));
     }
+    parse_runtime_entity_id(id)
+}
+
+fn authoritative_fallback_to_action_state_enabled() -> bool {
+    debug_env("SIDEREAL_ALLOW_ACTION_STATE_FALLBACK")
 }
 
 impl ClientInputDropMetrics {
@@ -124,20 +146,20 @@ pub(crate) fn validate_input_message(
         }
     }
     let window_index = now_s.max(0.0).floor() as u64;
-    let player_entity_id = message.player_entity_id.as_str();
+    let player_entity_id = canonical_player_entity_id(message.player_entity_id.as_str());
     let stored_window = rate_limit_state
         .current_window_index_by_player_entity_id
-        .entry(player_entity_id.to_string())
+        .entry(player_entity_id.clone())
         .or_insert(window_index);
     if *stored_window != window_index {
         *stored_window = window_index;
         rate_limit_state
             .message_count_in_window_by_player_entity_id
-            .insert(player_entity_id.to_string(), 0);
+            .insert(player_entity_id.clone(), 0);
     }
     let counter = rate_limit_state
         .message_count_in_window_by_player_entity_id
-        .entry(player_entity_id.to_string())
+        .entry(player_entity_id)
         .or_insert(0);
     if *counter >= MAX_MESSAGES_PER_SECOND {
         return Err(InputValidationFailure::RateLimited);
@@ -187,6 +209,18 @@ pub fn receive_latest_realtime_input_messages(
             }
             continue;
         };
+        let Some(bound_player_id) = parse_player_entity_id(bound_player_entity_id.as_str()) else {
+            warn!(
+                "dropping realtime input: invalid bound player id for client {:?}: {}",
+                client_entity, bound_player_entity_id
+            );
+            for _ in receiver.receive() {
+                input_drop_metrics.unbound_client =
+                    input_drop_metrics.unbound_client.saturating_add(1);
+            }
+            continue;
+        };
+        let bound_player_wire = bound_player_id.canonical_wire_id();
         let messages: Vec<ClientRealtimeInputMessage> = receiver.receive().collect();
         if messages.is_empty() {
             continue;
@@ -195,39 +229,49 @@ pub fn receive_latest_realtime_input_messages(
 
         // Keep only messages claiming this client's bound player; count spoofed.
         // Use canonical form so "249c313e-..." and "player:249c313e-..." both match.
-        let bound_canonical = canonical_player_entity_id(bound_player_entity_id);
         let mut valid_claims: Vec<ClientRealtimeInputMessage> = Vec::with_capacity(messages.len());
         for message in messages {
-            if canonical_player_entity_id(&message.player_entity_id) != bound_canonical {
+            let Some(claimed_player_id) = parse_player_entity_id(message.player_entity_id.as_str())
+            else {
+                input_drop_metrics.spoofed_player_id =
+                    input_drop_metrics.spoofed_player_id.saturating_add(1);
+                warn!(
+                    "dropping realtime input with invalid claimed player id: remote={:?} claimed={} bound={}",
+                    remote_id.0, message.player_entity_id, bound_player_wire
+                );
+                continue;
+            };
+            if claimed_player_id != bound_player_id {
                 input_drop_metrics.spoofed_player_id =
                     input_drop_metrics.spoofed_player_id.saturating_add(1);
                 warn!(
                     "dropping realtime input with spoofed player id: remote={:?} claimed={} bound={}",
-                    remote_id.0, message.player_entity_id, bound_player_entity_id
+                    remote_id.0, message.player_entity_id, bound_player_wire
                 );
             } else {
+                if message.player_entity_id != bound_player_wire {
+                    warn!(
+                        "realtime input invariant: canonical player id match but encoding differs claimed={} canonical={}",
+                        message.player_entity_id, bound_player_wire
+                    );
+                }
                 valid_claims.push(message);
             }
         }
 
         // Discard old inputs in favor of new: apply only the message with the highest tick.
-        let Some(best) = valid_claims
-            .into_iter()
-            .max_by_key(|m| m.tick)
-        else {
+        let Some(best) = valid_claims.into_iter().max_by_key(|m| m.tick) else {
             continue;
         };
 
-        let player_key = canonical_player_entity_id(&best.player_entity_id);
         let last_accepted_tick = input_tick_tracker
             .last_accepted_tick_by_player_entity_id
-            .get(player_key.as_str())
+            .get(bound_player_wire.as_str())
             .copied();
         match validate_input_message(&best, last_accepted_tick, now_s, &mut rate_limit_state) {
             Ok(()) => {}
             Err(InputValidationFailure::FutureTick) if !SKIP_AHEAD_ON_FUTURE_TICK => {
-                input_drop_metrics.future_tick =
-                    input_drop_metrics.future_tick.saturating_add(1);
+                input_drop_metrics.future_tick = input_drop_metrics.future_tick.saturating_add(1);
                 continue;
             }
             Err(InputValidationFailure::FutureTick) => {
@@ -240,8 +284,7 @@ pub fn receive_latest_realtime_input_messages(
                 continue;
             }
             Err(InputValidationFailure::RateLimited) => {
-                input_drop_metrics.rate_limited =
-                    input_drop_metrics.rate_limited.saturating_add(1);
+                input_drop_metrics.rate_limited = input_drop_metrics.rate_limited.saturating_add(1);
                 continue;
             }
             Err(InputValidationFailure::OversizedPacket) => {
@@ -251,26 +294,47 @@ pub fn receive_latest_realtime_input_messages(
             }
         }
 
-        let entry = latest
-            .by_player_entity_id
-            .entry(player_key.clone())
-            .or_insert(LatestRealtimeInput {
-                tick: 0,
-                controlled_entity_id: String::new(),
-                actions: Vec::new(),
-            });
+        let entry =
+            latest
+                .by_player_entity_id
+                .entry(bound_player_id)
+                .or_insert(LatestRealtimeInput {
+                    tick: 0,
+                    controlled_entity_id: RuntimeEntityId(bound_player_id.0),
+                    actions: Vec::new(),
+                });
         if best.tick >= entry.tick {
             input_tick_tracker
                 .last_accepted_tick_by_player_entity_id
-                .insert(player_key.clone(), best.tick);
-            entry.tick = best.tick;
-            // Store controlled_entity_id in canonical form when it's self (player) so drain filter matches.
-            entry.controlled_entity_id = if canonical_player_entity_id(&best.controlled_entity_id) == player_key {
-                player_key.clone()
-            } else {
-                best.controlled_entity_id
+                .insert(bound_player_wire.clone(), best.tick);
+            let Some(controlled_id) =
+                canonical_controlled_entity_id(&best.controlled_entity_id, bound_player_id)
+            else {
+                input_drop_metrics.empty_after_filter =
+                    input_drop_metrics.empty_after_filter.saturating_add(1);
+                warn!(
+                    "dropping realtime input with invalid controlled entity id: player={} controlled_raw={}",
+                    bound_player_wire, best.controlled_entity_id
+                );
+                continue;
             };
+            if best.controlled_entity_id != controlled_id.to_string()
+                && best.controlled_entity_id != bound_player_wire
+            {
+                warn!(
+                    "realtime input invariant: controlled entity id encoding normalized raw={} canonical={}",
+                    best.controlled_entity_id, controlled_id
+                );
+            }
+            entry.tick = best.tick;
+            entry.controlled_entity_id = controlled_id;
             entry.actions = best.actions;
+            if input_debug_logging_enabled() {
+                info!(
+                    "replication received client input: player_entity_id={} controlled_entity_id={} tick={} actions={:?}",
+                    bound_player_wire, entry.controlled_entity_id, entry.tick, entry.actions
+                );
+            }
         }
     }
 }
@@ -311,34 +375,56 @@ pub fn drain_native_player_inputs_to_action_queue(
                 continue;
             }
         }
-        let player_entity_id = simulated
-            .map(|controlled| controlled.player_entity_id.clone())
-            .or_else(|| player_tag.map(|_| format!("player:{}", guid.0)))
+        let player_entity_id_raw = simulated
+            .map(|controlled| controlled.player_entity_id.canonical_wire_id())
+            .or_else(|| player_tag.map(|_| guid.0.to_string()))
             .unwrap_or_else(|| format!("entity:{}", guid.0));
+        let player_entity_id = canonical_player_entity_id(player_entity_id_raw.as_str());
+        let Some(player_id) = parse_player_entity_id(player_entity_id.as_str()) else {
+            continue;
+        };
         if simulated.is_some() {
             let is_authoritative_target = controlled_entity_map
                 .by_player_entity_id
-                .get(player_entity_id.as_str())
+                .get(&player_id)
                 .is_some_and(|mapped| *mapped == entity);
             if !is_authoritative_target {
                 continue;
             }
         }
-        let controlled_entity_id = simulated
-            .map(|_| guid.0.to_string())
-            .unwrap_or_else(|| player_entity_id.clone());
-        let latest_realtime_actions = latest_realtime_inputs
-            .by_player_entity_id
-            .get(player_entity_id.as_str())
-            .filter(|latest| latest.controlled_entity_id == controlled_entity_id)
-            .map(|latest| latest.actions.as_slice());
-        let actions = latest_realtime_actions.unwrap_or_else(|| state.0.actions.as_slice());
+        let controlled_entity_id = RuntimeEntityId(guid.0);
+        let latest_for_player = latest_realtime_inputs.by_player_entity_id.get(&player_id);
+        let (actions, action_source) = match latest_for_player {
+            Some(latest) if latest.controlled_entity_id == controlled_entity_id => {
+                (latest.actions.as_slice(), "realtime")
+            }
+            // Accept realtime input for the authoritative target even when the client's
+            // controlled id encoding/routing is stale or mismatched. The server-side
+            // authoritative control map already scoped this entity to the player.
+            Some(latest) if simulated.is_some() => {
+                input_drop_metrics.controlled_target_mismatch = input_drop_metrics
+                    .controlled_target_mismatch
+                    .saturating_add(1);
+                (latest.actions.as_slice(), "realtime_mismatch_accepted")
+            }
+            // For non-simulated entities, keep strict target matching to avoid
+            // accidentally applying player intent outside authoritative control flow.
+            Some(_) => {
+                input_drop_metrics.controlled_target_mismatch = input_drop_metrics
+                    .controlled_target_mismatch
+                    .saturating_add(1);
+                (&[][..], "mismatch")
+            }
+            None if simulated.is_some() && !authoritative_fallback_to_action_state_enabled() => {
+                (&[][..], "no_realtime")
+            }
+            None => (state.0.actions.as_slice(), "action_state"),
+        };
         if actions.is_empty() {
             if input_debug_logging_enabled()
                 && latest_realtime_inputs
                     .by_player_entity_id
-                    .get(player_entity_id.as_str())
-                    .is_some()
+                    .contains_key(&player_id)
             {
                 info!(
                     player = %player_entity_id,
@@ -357,7 +443,7 @@ pub fn drain_native_player_inputs_to_action_queue(
         }
         let accepted_tick = latest_realtime_inputs
             .by_player_entity_id
-            .get(player_entity_id.as_str())
+            .get(&player_id)
             .map(|latest| latest.tick)
             .unwrap_or(0);
         if input_debug_logging_enabled() {
@@ -374,11 +460,14 @@ pub fn drain_native_player_inputs_to_action_queue(
             let should_log = time_due || actions_changed;
             if should_log {
                 info!(
+                    entity = ?entity,
+                    guid = %guid.0,
                     actions = ?actions,
                     accepted_tick = accepted_tick,
+                    source = action_source,
                     player = %player_entity_id,
                     controlled = %controlled_entity_id,
-                    "server received input route"
+                    "server applied input to action queue"
                 );
                 input_log_state
                     .last_logged_at_s_by_player_entity_id
@@ -421,7 +510,7 @@ pub fn report_input_drop_metrics(
     state.last_logged_at_s = now;
     state.last_accepted_inputs = metrics.accepted_inputs;
     info!(
-        "replication input summary accepted={} accepted_per_s={:.1} drops_total={} future={} duplicate_or_out_of_order={} rate_limited={} oversized={} empty_after_filter={} unbound={} spoofed={}",
+        "replication input summary accepted={} accepted_per_s={:.1} drops_total={} future={} duplicate_or_out_of_order={} rate_limited={} oversized={} empty_after_filter={} unbound={} spoofed={} controlled_target_mismatch={}",
         accepted_delta,
         accepted_per_s,
         metrics.total_drops(),
@@ -431,6 +520,7 @@ pub fn report_input_drop_metrics(
         metrics.oversized_packet,
         metrics.empty_after_filter,
         metrics.unbound_client,
-        metrics.spoofed_player_id
+        metrics.spoofed_player_id,
+        metrics.controlled_target_mismatch
     );
 }

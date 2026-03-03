@@ -14,6 +14,7 @@ avian2d.workspace = true
 bevy.workspace = true
 inventory.workspace = true
 lightyear = { workspace = true, optional = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde.workspace = true
 serde_json.workspace = true
 sidereal-core = { path = "../sidereal-core" }

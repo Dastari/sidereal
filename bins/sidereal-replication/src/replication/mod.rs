@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod auth;
+pub mod combat;
 pub mod control;
 pub mod input;
 pub mod lifecycle;

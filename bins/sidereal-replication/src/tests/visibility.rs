@@ -1,8 +1,8 @@
 use bevy::prelude::Vec3;
 
 use crate::replication::visibility::{
-    PlayerVisibilityContext, VisibilityAuthorization, authorize_visibility,
-    is_entity_visible_to_player,
+    DEFAULT_VIEW_RANGE_M, PlayerVisibilityContext, VisibilityAuthorization, authorize_visibility,
+    is_entity_visible_to_player, should_bypass_candidate_filter,
 };
 
 fn visibility_context(
@@ -33,7 +33,8 @@ fn owner_authorization_bypasses_delivery_scope() {
         false,
         None,
         None,
-        &ctx
+        &ctx,
+        DEFAULT_VIEW_RANGE_M
     ));
 }
 
@@ -51,7 +52,8 @@ fn public_authorization_is_independent_of_delivery_scope() {
         false,
         None,
         Some(Vec3::new(10.0, 0.0, 0.0)),
-        &ctx
+        &ctx,
+        DEFAULT_VIEW_RANGE_M
     ));
 }
 
@@ -69,7 +71,8 @@ fn faction_authorization_is_independent_of_delivery_scope() {
         true,
         Some("faction-1"),
         Some(Vec3::ZERO),
-        &ctx
+        &ctx,
+        DEFAULT_VIEW_RANGE_M
     ));
 }
 
@@ -123,7 +126,8 @@ fn scanner_authorization_still_requires_delivery_scope() {
         false,
         None,
         Some(target_position),
-        &ctx
+        &ctx,
+        DEFAULT_VIEW_RANGE_M
     ));
 }
 
@@ -155,7 +159,8 @@ fn scanner_authorization_with_missing_observer_anchor_is_culled() {
         false,
         None,
         Some(target_position),
-        &ctx
+        &ctx,
+        DEFAULT_VIEW_RANGE_M
     ));
 }
 
@@ -175,6 +180,59 @@ fn scanner_authorization_with_player_anchor_in_range_is_visible() {
         false,
         None,
         Some(target_position),
-        &ctx
+        &ctx,
+        DEFAULT_VIEW_RANGE_M
+    ));
+}
+
+#[test]
+fn candidate_bypass_triggers_for_owner_public_faction_and_scanner() {
+    let owner_ctx = visibility_context("player-a", None, None, vec![]);
+    assert!(should_bypass_candidate_filter(
+        "player-a",
+        Some("player-a"),
+        false,
+        false,
+        None,
+        None,
+        &owner_ctx
+    ));
+
+    let public_ctx = visibility_context("player-a", None, None, vec![]);
+    assert!(should_bypass_candidate_filter(
+        "player-a",
+        None,
+        true,
+        false,
+        None,
+        None,
+        &public_ctx
+    ));
+
+    let faction_ctx = visibility_context("player-a", None, Some("faction-1"), vec![]);
+    assert!(should_bypass_candidate_filter(
+        "player-a",
+        None,
+        false,
+        true,
+        Some("faction-1"),
+        Some(Vec3::ZERO),
+        &faction_ctx
+    ));
+
+    let scanner_ctx = visibility_context(
+        "player-a",
+        None,
+        None,
+        vec![(Vec3::new(10.0, 0.0, 0.0), 25.0)],
+    );
+    assert!(should_bypass_candidate_filter(
+        "player-a",
+        None,
+        false,
+        false,
+        None,
+        Some(Vec3::new(20.0, 0.0, 0.0)),
+        &scanner_ctx
     ));
 }

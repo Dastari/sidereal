@@ -45,18 +45,21 @@ impl TryFrom<BootstrapWireMessage> for BootstrapCommand {
         }
         let account_id = Uuid::parse_str(&value.account_id)
             .map_err(|_| BootstrapWireError::Validation("invalid account_id uuid".to_string()))?;
-        let is_bare_uuid = Uuid::parse_str(value.player_entity_id.trim()).is_ok();
-        let is_legacy_prefixed = value.player_entity_id.starts_with("player:")
-            && value.player_entity_id.trim().len() > "player:".len();
-        if !is_bare_uuid && !is_legacy_prefixed {
+        let trimmed_player_id = value.player_entity_id.trim();
+        let parsed_player_entity_id = Uuid::parse_str(trimmed_player_id).ok().or_else(|| {
+            trimmed_player_id
+                .strip_prefix("player:")
+                .and_then(|suffix| Uuid::parse_str(suffix).ok())
+        });
+        let Some(player_entity_id) = parsed_player_entity_id else {
             return Err(BootstrapWireError::Validation(
                 "player_entity_id must be a valid UUID or legacy player:<uuid> value".to_string(),
             ));
-        }
+        };
 
         Ok(Self {
             account_id,
-            player_entity_id: value.player_entity_id,
+            player_entity_id: player_entity_id.to_string(),
         })
     }
 }

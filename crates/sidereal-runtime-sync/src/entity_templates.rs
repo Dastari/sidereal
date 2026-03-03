@@ -3,16 +3,19 @@
 
 use serde::Serialize;
 use sidereal_game::{
-    AccountId, ActionQueue, BaseMassKg, CargoMassKg, CharacterMovementController,
-    ControlledEntityGuid, DisplayName, EntityLabels, MassDirty, ModuleMassKg, MountedOn, OwnerId,
-    ParentGuid, PlayerTag, ShipTag, TotalMassKg, VisualAssetId,
-    default_character_movement_action_capabilities,
-    default_corvette_asset_id, default_corvette_engine, default_corvette_flight_computer,
-    default_corvette_flight_tuning, default_corvette_fuel_tank, default_corvette_hardpoint_specs,
-    default_corvette_health_pool, default_corvette_mass_kg, default_corvette_max_velocity_mps,
+    AccountId, ActionQueue, AfterburnerState, AmmoCount, BallisticWeapon, BaseMassKg, CargoMassKg,
+    CharacterMovementController, CollisionProfile, ControlledEntityGuid, CorvetteModuleKind,
+    DisplayName, EntityLabels, MassDirty, ModuleMassKg, MountedOn, OwnerId, ParentGuid, PlayerTag,
+    ShipTag, ThrusterPlumeShaderSettings, TotalMassKg, VisualAssetId, WeaponTag,
+    default_character_movement_action_capabilities, default_corvette_afterburner_capability,
+    default_corvette_asset_id, default_corvette_collision_aabb, default_corvette_collision_outline,
+    default_corvette_engine, default_corvette_flight_computer, default_corvette_flight_tuning,
+    default_corvette_fuel_tank, default_corvette_hardpoint_specs, default_corvette_health_pool,
+    default_corvette_mass_kg, default_corvette_max_velocity_mps, default_corvette_module_specs,
     default_corvette_size, default_flight_action_capabilities,
 };
 use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::format_component_id;
@@ -47,26 +50,7 @@ pub fn new_player_starter_graph_records(
 
     let ship_guid = Uuid::new_v4();
     let ship_id = ship_guid.to_string();
-    let fc_guid = Uuid::new_v4();
-    let fc_id = fc_guid.to_string();
-    let engine_left_guid = Uuid::new_v4();
-    let engine_left_id = engine_left_guid.to_string();
-    let engine_right_guid = Uuid::new_v4();
-    let engine_right_id = engine_right_guid.to_string();
-    let fuel_left_guid = Uuid::new_v4();
-    let fuel_left_id = fuel_left_guid.to_string();
-    let fuel_right_guid = Uuid::new_v4();
-    let fuel_right_id = fuel_right_guid.to_string();
-    let hp_computer_guid = Uuid::new_v4();
-    let hp_computer_id = hp_computer_guid.to_string();
-    let hp_engine_left_guid = Uuid::new_v4();
-    let hp_engine_left_id = hp_engine_left_guid.to_string();
-    let hp_engine_right_guid = Uuid::new_v4();
-    let hp_engine_right_id = hp_engine_right_guid.to_string();
-    let hp_fuel_left_guid = Uuid::new_v4();
-    let hp_fuel_left_id = hp_fuel_left_guid.to_string();
-    let hp_fuel_right_guid = Uuid::new_v4();
-    let hp_fuel_right_id = hp_fuel_right_guid.to_string();
+    let owner_id = OwnerId(player_id.clone());
 
     let health_pool = default_corvette_health_pool();
     let flight_computer = default_corvette_flight_computer();
@@ -74,12 +58,39 @@ pub fn new_player_starter_graph_records(
     let max_velocity_mps = default_corvette_max_velocity_mps();
     let hull_size = default_corvette_size();
     let hull_mass = default_corvette_mass_kg();
-    let owner_id = OwnerId(player_id.clone());
     let engine = default_corvette_engine();
+    let afterburner_capability = default_corvette_afterburner_capability();
+    let plume_settings = ThrusterPlumeShaderSettings::default();
     let fuel_tank = default_corvette_fuel_tank();
+    let hardpoint_specs = default_corvette_hardpoint_specs();
+    let module_specs = default_corvette_module_specs();
 
-    vec![
-        // Player entity
+    let mut hardpoint_ids = HashMap::<&'static str, (Uuid, String)>::new();
+    for spec in hardpoint_specs {
+        let guid = Uuid::new_v4();
+        hardpoint_ids.insert(spec.hardpoint_id, (guid, guid.to_string()));
+    }
+
+    let mut module_ids = HashMap::<&'static str, (Uuid, String)>::new();
+    for spec in module_specs {
+        let guid = Uuid::new_v4();
+        module_ids.insert(spec.module_id, (guid, guid.to_string()));
+    }
+
+    let module_labels = |kind: CorvetteModuleKind| match kind {
+        CorvetteModuleKind::FlightComputer => vec!["Module".to_string()],
+        CorvetteModuleKind::Engine => vec!["Module".to_string(), "Engine".to_string()],
+        CorvetteModuleKind::FuelTank => vec!["Module".to_string(), "FuelTank".to_string()],
+        CorvetteModuleKind::BallisticGatling => {
+            vec![
+                "Module".to_string(),
+                "Weapon".to_string(),
+                "BallisticWeapon".to_string(),
+            ]
+        }
+    };
+
+    let mut records = vec![
         GraphEntityRecord {
             entity_id: player_id.clone(),
             labels: vec!["Entity".to_string(), "Player".to_string()],
@@ -151,7 +162,6 @@ pub fn new_player_starter_graph_records(
                 },
             ],
         },
-        // Ship hull entity
         GraphEntityRecord {
             entity_id: ship_id.clone(),
             labels: vec!["Entity".to_string(), "Ship".to_string()],
@@ -170,12 +180,28 @@ pub fn new_player_starter_graph_records(
                         &EntityLabels(vec!["Ship".to_string(), "Corvette".to_string()]),
                     ),
                     component_record(&ship_id, "flight_computer", &flight_computer),
+                    component_record(&ship_id, "afterburner_state", &AfterburnerState::default()),
                     component_record(&ship_id, "flight_tuning", &flight_tuning),
                     component_record(&ship_id, "max_velocity_mps", &max_velocity_mps),
                     component_record(&ship_id, "health_pool", &health_pool),
                     component_record(&ship_id, "owner_id", &owner_id),
                     component_record(&ship_id, "mass_kg", &sidereal_game::MassKg(hull_mass)),
                     component_record(&ship_id, "size_m", &hull_size),
+                    component_record(
+                        &ship_id,
+                        "collision_profile",
+                        &CollisionProfile::solid_aabb(),
+                    ),
+                    component_record(
+                        &ship_id,
+                        "collision_outline_m",
+                        &default_corvette_collision_outline(),
+                    ),
+                    component_record(
+                        &ship_id,
+                        "collision_aabb_m",
+                        &default_corvette_collision_aabb(),
+                    ),
                     component_record(
                         &ship_id,
                         "action_capabilities",
@@ -193,8 +219,6 @@ pub fn new_player_starter_graph_records(
                     component_record(&ship_id, "total_mass_kg", &TotalMassKg(hull_mass)),
                     component_record(&ship_id, "mass_dirty", &MassDirty),
                 ];
-                // Spatial/physics as component records (Avian types).
-                // These use the registry `component_kind` keys.
                 comps.push(GraphComponentRecord {
                     component_id: format_component_id(&ship_id, "avian_position"),
                     component_kind: "avian_position".to_string(),
@@ -243,323 +267,121 @@ pub fn new_player_starter_graph_records(
                 comps
             },
         },
-        // Ship hardpoint entities
-        GraphEntityRecord {
-            entity_id: hp_computer_id.clone(),
+    ];
+
+    for spec in hardpoint_specs {
+        let (_, hp_id) = hardpoint_ids
+            .get(spec.hardpoint_id)
+            .expect("missing hardpoint id");
+        records.push(GraphEntityRecord {
+            entity_id: hp_id.clone(),
             labels: vec!["Entity".to_string(), "Hardpoint".to_string()],
             properties: serde_json::json!({
                 "parent_entity_id": ship_id,
             }),
             components: vec![
                 component_record(
-                    &hp_computer_id,
+                    hp_id,
                     "display_name",
-                    &DisplayName("Computer Core Hardpoint".to_string()),
+                    &DisplayName(spec.display_name.to_string()),
                 ),
                 component_record(
-                    &hp_computer_id,
+                    hp_id,
                     "entity_labels",
                     &EntityLabels(vec!["Hardpoint".to_string()]),
                 ),
                 component_record(
-                    &hp_computer_id,
+                    hp_id,
                     "hardpoint",
                     &sidereal_game::Hardpoint {
-                        hardpoint_id: "computer_core".to_string(),
-                        offset_m: default_corvette_hardpoint_specs()[0].offset_m,
+                        hardpoint_id: spec.hardpoint_id.to_string(),
+                        offset_m: spec.offset_m,
+                        local_rotation: spec.local_rotation,
                     },
                 ),
-                component_record(&hp_computer_id, "parent_guid", &ParentGuid(ship_guid)),
-                component_record(&hp_computer_id, "owner_id", &owner_id),
+                component_record(hp_id, "parent_guid", &ParentGuid(ship_guid)),
+                component_record(hp_id, "owner_id", &owner_id),
             ],
-        },
-        GraphEntityRecord {
-            entity_id: hp_engine_left_id.clone(),
-            labels: vec!["Entity".to_string(), "Hardpoint".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": ship_id,
-            }),
-            components: vec![
-                component_record(
-                    &hp_engine_left_id,
-                    "display_name",
-                    &DisplayName("Engine Left Aft Hardpoint".to_string()),
-                ),
-                component_record(
-                    &hp_engine_left_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Hardpoint".to_string()]),
-                ),
-                component_record(
-                    &hp_engine_left_id,
-                    "hardpoint",
-                    &sidereal_game::Hardpoint {
-                        hardpoint_id: "engine_left_aft".to_string(),
-                        offset_m: default_corvette_hardpoint_specs()[1].offset_m,
-                    },
-                ),
-                component_record(&hp_engine_left_id, "parent_guid", &ParentGuid(ship_guid)),
-                component_record(&hp_engine_left_id, "owner_id", &owner_id),
-            ],
-        },
-        GraphEntityRecord {
-            entity_id: hp_engine_right_id.clone(),
-            labels: vec!["Entity".to_string(), "Hardpoint".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": ship_id,
-            }),
-            components: vec![
-                component_record(
-                    &hp_engine_right_id,
-                    "display_name",
-                    &DisplayName("Engine Right Aft Hardpoint".to_string()),
-                ),
-                component_record(
-                    &hp_engine_right_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Hardpoint".to_string()]),
-                ),
-                component_record(
-                    &hp_engine_right_id,
-                    "hardpoint",
-                    &sidereal_game::Hardpoint {
-                        hardpoint_id: "engine_right_aft".to_string(),
-                        offset_m: default_corvette_hardpoint_specs()[2].offset_m,
-                    },
-                ),
-                component_record(&hp_engine_right_id, "parent_guid", &ParentGuid(ship_guid)),
-                component_record(&hp_engine_right_id, "owner_id", &owner_id),
-            ],
-        },
-        GraphEntityRecord {
-            entity_id: hp_fuel_left_id.clone(),
-            labels: vec!["Entity".to_string(), "Hardpoint".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": ship_id,
-            }),
-            components: vec![
-                component_record(
-                    &hp_fuel_left_id,
-                    "display_name",
-                    &DisplayName("Fuel Tank Left Hardpoint".to_string()),
-                ),
-                component_record(
-                    &hp_fuel_left_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Hardpoint".to_string()]),
-                ),
-                component_record(
-                    &hp_fuel_left_id,
-                    "hardpoint",
-                    &sidereal_game::Hardpoint {
-                        hardpoint_id: "fuel_left".to_string(),
-                        offset_m: default_corvette_hardpoint_specs()[3].offset_m,
-                    },
-                ),
-                component_record(&hp_fuel_left_id, "parent_guid", &ParentGuid(ship_guid)),
-                component_record(&hp_fuel_left_id, "owner_id", &owner_id),
-            ],
-        },
-        GraphEntityRecord {
-            entity_id: hp_fuel_right_id.clone(),
-            labels: vec!["Entity".to_string(), "Hardpoint".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": ship_id,
-            }),
-            components: vec![
-                component_record(
-                    &hp_fuel_right_id,
-                    "display_name",
-                    &DisplayName("Fuel Tank Right Hardpoint".to_string()),
-                ),
-                component_record(
-                    &hp_fuel_right_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Hardpoint".to_string()]),
-                ),
-                component_record(
-                    &hp_fuel_right_id,
-                    "hardpoint",
-                    &sidereal_game::Hardpoint {
-                        hardpoint_id: "fuel_right".to_string(),
-                        offset_m: default_corvette_hardpoint_specs()[4].offset_m,
-                    },
-                ),
-                component_record(&hp_fuel_right_id, "parent_guid", &ParentGuid(ship_guid)),
-                component_record(&hp_fuel_right_id, "owner_id", &owner_id),
-            ],
-        },
-        // Flight computer module
-        GraphEntityRecord {
-            entity_id: fc_id.clone(),
+        });
+    }
+
+    for spec in module_specs {
+        let (_, module_id) = module_ids.get(spec.module_id).expect("missing module id");
+        let (hardpoint_guid, hardpoint_id) = hardpoint_ids
+            .get(spec.hardpoint_id)
+            .expect("missing module hardpoint id");
+
+        let mut components = vec![
+            component_record(
+                module_id,
+                "display_name",
+                &DisplayName(spec.display_name.to_string()),
+            ),
+            component_record(
+                module_id,
+                "entity_labels",
+                &EntityLabels(module_labels(spec.kind)),
+            ),
+            component_record(
+                module_id,
+                "mounted_on",
+                &MountedOn {
+                    parent_entity_id: ship_guid,
+                    hardpoint_id: spec.hardpoint_id.to_string(),
+                },
+            ),
+            component_record(module_id, "parent_guid", &ParentGuid(*hardpoint_guid)),
+            component_record(module_id, "mass_kg", &sidereal_game::MassKg(spec.mass_kg)),
+            component_record(module_id, "owner_id", &owner_id),
+        ];
+        match spec.kind {
+            CorvetteModuleKind::FlightComputer => {
+                components.push(component_record(
+                    module_id,
+                    "flight_computer",
+                    &flight_computer,
+                ));
+            }
+            CorvetteModuleKind::Engine => {
+                components.push(component_record(module_id, "engine", &engine));
+                components.push(component_record(
+                    module_id,
+                    "afterburner_capability",
+                    &afterburner_capability,
+                ));
+                components.push(component_record(
+                    module_id,
+                    "thruster_plume_shader_settings",
+                    &plume_settings,
+                ));
+            }
+            CorvetteModuleKind::FuelTank => {
+                components.push(component_record(module_id, "fuel_tank", &fuel_tank));
+            }
+            CorvetteModuleKind::BallisticGatling => {
+                components.push(component_record(module_id, "weapon_tag", &WeaponTag));
+                components.push(component_record(
+                    module_id,
+                    "ballistic_weapon",
+                    &BallisticWeapon::corvette_ballistic_gatling(),
+                ));
+                components.push(component_record(
+                    module_id,
+                    "ammo_count",
+                    &AmmoCount::new(500, 500),
+                ));
+            }
+        }
+
+        records.push(GraphEntityRecord {
+            entity_id: module_id.clone(),
             labels: vec!["Entity".to_string(), "Module".to_string()],
             properties: serde_json::json!({
-                "parent_entity_id": hp_computer_id,
+                "parent_entity_id": hardpoint_id,
             }),
-            components: vec![
-                component_record(
-                    &fc_id,
-                    "display_name",
-                    &DisplayName("Computer Core".to_string()),
-                ),
-                component_record(
-                    &fc_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Module".to_string()]),
-                ),
-                component_record(
-                    &fc_id,
-                    "mounted_on",
-                    &MountedOn {
-                        parent_entity_id: ship_guid,
-                        hardpoint_id: "computer_core".to_string(),
-                    },
-                ),
-                component_record(&fc_id, "parent_guid", &ParentGuid(hp_computer_guid)),
-                component_record(&fc_id, "flight_computer", &flight_computer),
-                component_record(&fc_id, "mass_kg", &sidereal_game::MassKg(50.0)),
-                component_record(&fc_id, "owner_id", &owner_id),
-            ],
-        },
-        // Left engine module
-        GraphEntityRecord {
-            entity_id: engine_left_id.clone(),
-            labels: vec!["Entity".to_string(), "Module".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": hp_engine_left_id,
-            }),
-            components: vec![
-                component_record(
-                    &engine_left_id,
-                    "display_name",
-                    &DisplayName("Engine Left Aft".to_string()),
-                ),
-                component_record(
-                    &engine_left_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Module".to_string(), "Engine".to_string()]),
-                ),
-                component_record(
-                    &engine_left_id,
-                    "mounted_on",
-                    &MountedOn {
-                        parent_entity_id: ship_guid,
-                        hardpoint_id: "engine_left_aft".to_string(),
-                    },
-                ),
-                component_record(
-                    &engine_left_id,
-                    "parent_guid",
-                    &ParentGuid(hp_engine_left_guid),
-                ),
-                component_record(&engine_left_id, "engine", &engine),
-                component_record(&engine_left_id, "mass_kg", &sidereal_game::MassKg(500.0)),
-                component_record(&engine_left_id, "owner_id", &owner_id),
-            ],
-        },
-        // Left fuel tank module
-        GraphEntityRecord {
-            entity_id: fuel_left_id.clone(),
-            labels: vec!["Entity".to_string(), "Module".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": hp_fuel_left_id,
-            }),
-            components: vec![
-                component_record(
-                    &fuel_left_id,
-                    "display_name",
-                    &DisplayName("Fuel Tank Left".to_string()),
-                ),
-                component_record(
-                    &fuel_left_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Module".to_string(), "FuelTank".to_string()]),
-                ),
-                component_record(
-                    &fuel_left_id,
-                    "mounted_on",
-                    &MountedOn {
-                        parent_entity_id: ship_guid,
-                        hardpoint_id: "fuel_left".to_string(),
-                    },
-                ),
-                component_record(&fuel_left_id, "parent_guid", &ParentGuid(hp_fuel_left_guid)),
-                component_record(&fuel_left_id, "fuel_tank", &fuel_tank),
-                component_record(&fuel_left_id, "mass_kg", &sidereal_game::MassKg(1100.0)),
-                component_record(&fuel_left_id, "owner_id", &owner_id),
-            ],
-        },
-        // Right engine module
-        GraphEntityRecord {
-            entity_id: engine_right_id.clone(),
-            labels: vec!["Entity".to_string(), "Module".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": hp_engine_right_id,
-            }),
-            components: vec![
-                component_record(
-                    &engine_right_id,
-                    "display_name",
-                    &DisplayName("Engine Right Aft".to_string()),
-                ),
-                component_record(
-                    &engine_right_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Module".to_string(), "Engine".to_string()]),
-                ),
-                component_record(
-                    &engine_right_id,
-                    "mounted_on",
-                    &MountedOn {
-                        parent_entity_id: ship_guid,
-                        hardpoint_id: "engine_right_aft".to_string(),
-                    },
-                ),
-                component_record(
-                    &engine_right_id,
-                    "parent_guid",
-                    &ParentGuid(hp_engine_right_guid),
-                ),
-                component_record(&engine_right_id, "engine", &engine),
-                component_record(&engine_right_id, "mass_kg", &sidereal_game::MassKg(500.0)),
-                component_record(&engine_right_id, "owner_id", &owner_id),
-            ],
-        },
-        // Right fuel tank module
-        GraphEntityRecord {
-            entity_id: fuel_right_id.clone(),
-            labels: vec!["Entity".to_string(), "Module".to_string()],
-            properties: serde_json::json!({
-                "parent_entity_id": hp_fuel_right_id,
-            }),
-            components: vec![
-                component_record(
-                    &fuel_right_id,
-                    "display_name",
-                    &DisplayName("Fuel Tank Right".to_string()),
-                ),
-                component_record(
-                    &fuel_right_id,
-                    "entity_labels",
-                    &EntityLabels(vec!["Module".to_string(), "FuelTank".to_string()]),
-                ),
-                component_record(
-                    &fuel_right_id,
-                    "mounted_on",
-                    &MountedOn {
-                        parent_entity_id: ship_guid,
-                        hardpoint_id: "fuel_right".to_string(),
-                    },
-                ),
-                component_record(
-                    &fuel_right_id,
-                    "parent_guid",
-                    &ParentGuid(hp_fuel_right_guid),
-                ),
-                component_record(&fuel_right_id, "fuel_tank", &fuel_tank),
-                component_record(&fuel_right_id, "mass_kg", &sidereal_game::MassKg(1100.0)),
-                component_record(&fuel_right_id, "owner_id", &owner_id),
-            ],
-        },
-    ]
+            components,
+        });
+    }
+
+    records
 }

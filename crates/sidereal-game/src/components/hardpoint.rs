@@ -11,4 +11,10 @@ use crate::EntityGuid;
 pub struct Hardpoint {
     pub hardpoint_id: String,
     pub offset_m: Vec3,
+    #[serde(default = "default_hardpoint_local_rotation")]
+    pub local_rotation: Quat,
+}
+
+fn default_hardpoint_local_rotation() -> Quat {
+    Quat::IDENTITY
 }

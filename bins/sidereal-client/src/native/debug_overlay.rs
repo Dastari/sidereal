@@ -1,13 +1,15 @@
 //! F3 debug overlay: toggle and draw (AABB, velocity arrows, visibility circle).
 
 use avian2d::prelude::{LinearVelocity, Position, Rotation};
-use bevy::ecs::query::Has;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
-use sidereal_game::{EntityGuid, Hardpoint, MountedOn, ScannerRangeM, SizeM};
+use sidereal_game::{
+    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ScannerRangeM, SizeM,
+};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
-use super::components::{ControlledEntity, WorldEntity};
+use super::components::{ControlledEntity, HudFpsText, WorldEntity};
 use super::resources::{
     BootstrapWatchdogState, DebugOverlayEnabled, DeferredPredictedAdoptionState,
     LocalSimulationDebugMode, PredictionBootstrapTuning,
@@ -19,6 +21,59 @@ pub(crate) fn toggle_debug_overlay_system(
 ) {
     if input.just_pressed(KeyCode::F3) {
         debug_overlay.enabled = !debug_overlay.enabled;
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct DebugFpsSmoothingState {
+    ema_fps: Option<f64>,
+}
+
+pub(crate) fn update_debug_fps_text_system(
+    debug_overlay: Res<'_, DebugOverlayEnabled>,
+    diagnostics: Res<'_, DiagnosticsStore>,
+    mut smoothing: Local<'_, DebugFpsSmoothingState>,
+    mut fps_query: Query<
+        '_,
+        '_,
+        (&'_ mut Text, &'_ mut TextColor, &'_ mut Visibility),
+        With<HudFpsText>,
+    >,
+) {
+    if fps_query.is_empty() {
+        return;
+    }
+
+    if !debug_overlay.enabled {
+        for (mut text, mut text_color, mut visibility) in &mut fps_query {
+            text.0.clear();
+            text_color.0.set_alpha(0.0);
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let instant_fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed().or_else(|| fps.value()));
+
+    if let Some(sample) = instant_fps {
+        // Additional long-window EMA on top of diagnostics smoothing.
+        let alpha = 0.08_f64;
+        smoothing.ema_fps = Some(match smoothing.ema_fps {
+            Some(previous) => previous + (sample - previous) * alpha,
+            None => sample,
+        });
+    }
+
+    let display = smoothing
+        .ema_fps
+        .map(|fps| format!("FPS {}", fps.round() as i64))
+        .unwrap_or_else(|| "FPS --".to_string());
+    for (mut text, mut text_color, mut visibility) in &mut fps_query {
+        text.0 = display.clone();
+        text_color.0.set_alpha(1.0);
+        *visibility = Visibility::Visible;
     }
 }
 
@@ -36,6 +91,8 @@ pub(crate) fn draw_debug_overlay_system(
             Entity,
             &'_ Transform,
             Option<&'_ SizeM>,
+            Option<&'_ CollisionAabbM>,
+            Option<&'_ CollisionOutlineM>,
             Option<&'_ LinearVelocity>,
             Option<&'_ MountedOn>,
             Option<&'_ Hardpoint>,
@@ -44,9 +101,6 @@ pub(crate) fn draw_debug_overlay_system(
             Option<&'_ EntityGuid>,
             Option<&'_ lightyear::prelude::Confirmed<Position>>,
             Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Replicated>,
-            Has<lightyear::prelude::Interpolated>,
         ),
         With<WorldEntity>,
     >,
@@ -79,6 +133,8 @@ pub(crate) fn draw_debug_overlay_system(
         entity,
         transform,
         size_m,
+        collision_aabb,
+        collision_outline,
         linear_velocity,
         mounted_on,
         hardpoint,
@@ -87,15 +143,13 @@ pub(crate) fn draw_debug_overlay_system(
         _entity_guid,
         confirmed_position,
         confirmed_rotation,
-        _is_predicted,
-        _is_replicated,
-        _is_interpolated,
     ) in &entities
     {
         let pos = transform.translation;
         let rot = transform.rotation;
-        let half_extents =
-            size_m.map(|size| Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5));
+        let half_extents = collision_aabb.map(|aabb| aabb.half_extents).or_else(|| {
+            size_m.map(|size| Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5))
+        });
 
         let is_local_controlled = (mounted_on.is_none()
             && hardpoint.is_none()
@@ -107,7 +161,20 @@ pub(crate) fn draw_debug_overlay_system(
                     .is_some_and(|player_id| controlled.player_entity_id == player_id)
             });
 
-        if let Some(half_extents) = half_extents {
+        if let Some(outline) = collision_outline {
+            let draw_color = if is_local_controlled && mounted_on.is_none() {
+                controlled_predicted_color
+            } else {
+                collision_color
+            };
+            for idx in 0..outline.points.len() {
+                let a = outline.points[idx];
+                let b = outline.points[(idx + 1) % outline.points.len()];
+                let world_a = pos + (rot * a.extend(0.0));
+                let world_b = pos + (rot * b.extend(0.0));
+                gizmos.line(world_a, world_b, draw_color);
+            }
+        } else if let Some(half_extents) = half_extents {
             let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, half_extents);
             let transform = Transform::from_translation(pos).with_rotation(rot);
             let draw_color = if is_local_controlled && mounted_on.is_none() {
@@ -140,6 +207,7 @@ pub(crate) fn draw_debug_overlay_system(
         }
 
         if mounted_on.is_none()
+            && is_local_controlled
             && let Some(vel) = linear_velocity
         {
             let len = vel.0.length();

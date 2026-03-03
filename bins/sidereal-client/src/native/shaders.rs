@@ -9,12 +9,14 @@ const STREAMED_SHADER_PATHS: &[&str] = &[
     "data/cache_stream/shaders/starfield.wgsl",
     "data/cache_stream/shaders/space_background.wgsl",
     STREAMED_SPRITE_PIXEL_SHADER_PATH,
+    "data/cache_stream/shaders/thruster_plume.wgsl",
 ];
 
 const LOCAL_SHADER_FALLBACK_PATHS: &[&str] = &[
     "data/shaders/starfield.wgsl",
     "data/shaders/space_background.wgsl",
     "data/shaders/sprite_pixel_effect.wgsl",
+    "data/shaders/thruster_plume.wgsl",
 ];
 
 fn is_legacy_space_background_shader(content: &str) -> bool {
@@ -23,6 +25,11 @@ fn is_legacy_space_background_shader(content: &str) -> bool {
     content.contains("@binding(5) var<uniform> space_bg_background")
         || (!content.contains("struct SpaceBackgroundParams")
             && content.contains("space_bg_background"))
+}
+
+fn is_placeholder_thruster_plume_shader(content: &str) -> bool {
+    // Early placeholder returned a flat color rectangle and ignored plume shaping.
+    content.contains("return vec4<f32>(plume.base_color.rgb, plume.state_params.z);")
 }
 
 pub fn ensure_shader_placeholders(asset_root: &str) {
@@ -59,6 +66,7 @@ struct SpaceBackgroundParams {
     space_bg_nebula_color_a: vec4<f32>,
     space_bg_nebula_color_b: vec4<f32>,
     space_bg_nebula_color_c: vec4<f32>,
+    space_bg_star_color: vec4<f32>,
     space_bg_flare_tint: vec4<f32>,
 }
 @group(2) @binding(0) var<uniform> params: SpaceBackgroundParams;
@@ -80,6 +88,29 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(image, image_sampler, mesh.uv);
 }
 ";
+    const THRUSTER_PLUME_PLACEHOLDER: &str = "\
+#import bevy_sprite::mesh2d_vertex_output::VertexOutput
+struct ThrusterPlumeParams {
+    shape_params: vec4<f32>,
+    state_params: vec4<f32>,
+    base_color: vec4<f32>,
+    hot_color: vec4<f32>,
+    afterburner_color: vec4<f32>,
+}
+@group(2) @binding(0) var<uniform> plume: ThrusterPlumeParams;
+@fragment
+fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
+    let uv = mesh.uv;
+    let centered_x = (uv.x - 0.5) * 2.0;
+    let along = clamp(uv.y, 0.0, 1.0);
+    let radius = mix(0.65, 0.04, along);
+    let radial = abs(centered_x) / max(0.001, radius);
+    let edge = 1.0 - smoothstep(0.65, 1.0, radial);
+    let tip_fade = 1.0 - smoothstep(0.88, 1.0, along);
+    let alpha = edge * tip_fade * clamp(plume.state_params.z, 0.0, 1.0);
+    return vec4<f32>(plume.base_color.rgb, alpha);
+}
+";
 
     let placeholders: &[(&str, &str, &str)] = &[
         (
@@ -97,6 +128,11 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
             LOCAL_SHADER_FALLBACK_PATHS[2],
             SPRITE_PIXEL_PLACEHOLDER,
         ),
+        (
+            STREAMED_SHADER_PATHS[3],
+            LOCAL_SHADER_FALLBACK_PATHS[3],
+            THRUSTER_PLUME_PLACEHOLDER,
+        ),
     ];
 
     for &(cache_rel_path, source_rel_path, placeholder_content) in placeholders {
@@ -106,15 +142,24 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         if cache_path.exists() {
             // Self-heal stale cache entries for space background shader layout
             // changes (old cache expects binding(5), new material binds 0/1/2).
-            if cache_rel_path.ends_with("space_background.wgsl") {
-                if let Ok(existing) = std::fs::read_to_string(&cache_path) {
-                    if is_legacy_space_background_shader(&existing) {
-                        let replacement = std::fs::read_to_string(&source_path)
-                            .ok()
-                            .unwrap_or_else(|| placeholder_content.to_string());
-                        let _ = std::fs::write(&cache_path, replacement);
-                    }
-                }
+            if cache_rel_path.ends_with("space_background.wgsl")
+                && let Ok(existing) = std::fs::read_to_string(&cache_path)
+                && is_legacy_space_background_shader(&existing)
+            {
+                let replacement = std::fs::read_to_string(&source_path)
+                    .ok()
+                    .unwrap_or_else(|| placeholder_content.to_string());
+                let _ = std::fs::write(&cache_path, replacement);
+            }
+            // Self-heal stale placeholder plume shader cache entries.
+            if cache_rel_path.ends_with("thruster_plume.wgsl")
+                && let Ok(existing) = std::fs::read_to_string(&cache_path)
+                && is_placeholder_thruster_plume_shader(&existing)
+            {
+                let replacement = std::fs::read_to_string(&source_path)
+                    .ok()
+                    .unwrap_or_else(|| placeholder_content.to_string());
+                let _ = std::fs::write(&cache_path, replacement);
             }
             continue;
         }
@@ -149,14 +194,20 @@ pub fn reload_streamed_shaders(
             &local_fallback_path
         };
 
-        if let Ok(mut content) = std::fs::read_to_string(&selected_path) {
+        if let Ok(mut content) = std::fs::read_to_string(selected_path) {
             if path.ends_with("space_background.wgsl")
                 && is_legacy_space_background_shader(&content)
+                && let Ok(replacement) = std::fs::read_to_string(&local_fallback_path)
             {
-                if let Ok(replacement) = std::fs::read_to_string(&local_fallback_path) {
-                    content = replacement;
-                    let _ = std::fs::write(selected_path, &content);
-                }
+                content = replacement;
+                let _ = std::fs::write(selected_path, &content);
+            }
+            if path.ends_with("thruster_plume.wgsl")
+                && is_placeholder_thruster_plume_shader(&content)
+                && let Ok(replacement) = std::fs::read_to_string(&local_fallback_path)
+            {
+                content = replacement;
+                let _ = std::fs::write(selected_path, &content);
             }
             let handle: Handle<bevy::shader::Shader> = asset_server.load(path);
             let _ = shaders.insert(handle.id(), bevy::shader::Shader::from_wgsl(content, path));
@@ -168,6 +219,7 @@ pub fn streamed_shader_path_for_asset_id(shader_asset_id: &str) -> Option<&'stat
     match shader_asset_id {
         "starfield_wgsl" => Some(STREAMED_SHADER_PATHS[0]),
         "space_background_wgsl" => Some(STREAMED_SHADER_PATHS[1]),
+        "thruster_plume_wgsl" => Some(STREAMED_SHADER_PATHS[3]),
         _ => None,
     }
 }

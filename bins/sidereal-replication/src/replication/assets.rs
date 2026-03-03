@@ -18,8 +18,8 @@ use sidereal_game::{
     default_starfield_shader_asset_id,
 };
 use sidereal_net::{
-    AssetAckMessage, AssetRequestMessage, AssetStreamChunkMessage, AssetStreamManifestMessage,
-    ControlChannel,
+    AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
+    AssetStreamManifestMessage,
 };
 
 use crate::replication::auth::AuthenticatedClientBindings;
@@ -327,7 +327,7 @@ pub fn stream_bootstrap_assets_to_authenticated_clients(
             .collect::<Vec<_>>();
         let target = NetworkTarget::Single(remote_id.0);
         if let Err(err) =
-            sender.send::<AssetStreamManifestMessage, ControlChannel>(&manifest, server, &target)
+            sender.send::<AssetStreamManifestMessage, AssetChannel>(&manifest, server, &target)
         {
             error!("replication failed sending asset manifest: {}", err);
             continue;
@@ -413,7 +413,7 @@ pub fn send_asset_stream_chunks_paced(
                 bytes: pending.bytes,
             };
             if let Err(err) =
-                sender.send::<AssetStreamChunkMessage, ControlChannel>(&message, server, &target)
+                sender.send::<AssetStreamChunkMessage, AssetChannel>(&message, server, &target)
             {
                 let failures = {
                     let entry = stream_state

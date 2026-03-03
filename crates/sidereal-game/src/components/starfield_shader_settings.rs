@@ -52,7 +52,9 @@ fn builtin_starfield_defaults() -> StarfieldShaderSettings {
 
 impl Default for StarfieldShaderSettings {
     fn default() -> Self {
-        match serde_json::from_str::<StarfieldShaderSettings>(DEFAULT_STARFIELD_SHADER_SETTINGS_JSON) {
+        match serde_json::from_str::<StarfieldShaderSettings>(
+            DEFAULT_STARFIELD_SHADER_SETTINGS_JSON,
+        ) {
             Ok(settings) => settings,
             Err(err) => {
                 eprintln!(

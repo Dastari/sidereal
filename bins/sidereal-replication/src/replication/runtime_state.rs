@@ -31,13 +31,23 @@ pub fn sync_player_anchor_to_controlled_entity(
             &ControlledEntityGuid,
             &mut Transform,
             Option<&mut avian2d::prelude::Position>,
+            Option<&mut avian2d::prelude::Rotation>,
+            Option<&mut avian2d::prelude::LinearVelocity>,
+            Option<&mut avian2d::prelude::AngularVelocity>,
         ),
         With<PlayerTag>,
     >,
     controlled_entities: Query<
         '_,
         '_,
-        (&EntityGuid, &Transform, Option<&avian2d::prelude::Position>),
+        (
+            &EntityGuid,
+            &Transform,
+            Option<&avian2d::prelude::Position>,
+            Option<&avian2d::prelude::Rotation>,
+            Option<&avian2d::prelude::LinearVelocity>,
+            Option<&avian2d::prelude::AngularVelocity>,
+        ),
         (With<SimulatedControlledEntity>, Without<PlayerTag>),
     >,
     rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
@@ -46,15 +56,43 @@ pub fn sync_player_anchor_to_controlled_entity(
         return;
     }
 
-    let mut controlled_world_by_guid = std::collections::HashMap::<uuid::Uuid, Vec2>::new();
-    for (guid, transform, position) in &controlled_entities {
+    #[derive(Clone, Copy)]
+    struct ControlledMotionSample {
+        world: Vec2,
+        rotation: Option<avian2d::prelude::Rotation>,
+        linear_velocity: Option<Vec2>,
+        angular_velocity: Option<f32>,
+    }
+
+    let mut controlled_motion_by_guid =
+        std::collections::HashMap::<uuid::Uuid, ControlledMotionSample>::new();
+    for (guid, transform, position, rotation, linear_velocity, angular_velocity) in
+        &controlled_entities
+    {
         let world = position
             .map(|position| position.0)
             .unwrap_or(transform.translation.truncate());
-        controlled_world_by_guid.insert(guid.0, world);
+        controlled_motion_by_guid.insert(
+            guid.0,
+            ControlledMotionSample {
+                world,
+                rotation: rotation.copied(),
+                linear_velocity: linear_velocity.map(|velocity| velocity.0),
+                angular_velocity: angular_velocity.map(|velocity| velocity.0),
+            },
+        );
     }
 
-    for (player_guid, controlled_guid, mut player_transform, player_position) in &mut players {
+    for (
+        player_guid,
+        controlled_guid,
+        mut player_transform,
+        player_position,
+        player_rotation,
+        player_linear_velocity,
+        player_angular_velocity,
+    ) in &mut players
+    {
         let Some(control_guid_raw) = controlled_guid.0.as_deref() else {
             continue;
         };
@@ -64,14 +102,28 @@ pub fn sync_player_anchor_to_controlled_entity(
         if control_guid == player_guid.0 {
             continue;
         }
-        let Some(target_world) = controlled_world_by_guid.get(&control_guid).copied() else {
+        let Some(sample) = controlled_motion_by_guid.get(&control_guid).copied() else {
             continue;
         };
-        player_transform.translation.x = target_world.x;
-        player_transform.translation.y = target_world.y;
+        player_transform.translation.x = sample.world.x;
+        player_transform.translation.y = sample.world.y;
         player_transform.translation.z = 0.0;
         if let Some(mut player_position) = player_position {
-            player_position.0 = target_world;
+            player_position.0 = sample.world;
+        }
+        if let (Some(mut player_rotation), Some(rotation)) = (player_rotation, sample.rotation) {
+            *player_rotation = rotation;
+            player_transform.rotation = rotation.into();
+        }
+        if let (Some(mut player_linear_velocity), Some(linear_velocity)) =
+            (player_linear_velocity, sample.linear_velocity)
+        {
+            player_linear_velocity.0 = linear_velocity;
+        }
+        if let (Some(mut player_angular_velocity), Some(angular_velocity)) =
+            (player_angular_velocity, sample.angular_velocity)
+        {
+            player_angular_velocity.0 = angular_velocity;
         }
     }
 }
@@ -106,12 +158,32 @@ pub fn log_player_control_state_changes(
 
 pub fn update_client_observer_anchor_positions(
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
-    global_transforms: Query<'_, '_, &'_ GlobalTransform>,
+    anchor_positions: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ avian2d::prelude::Position>,
+            Option<&'_ GlobalTransform>,
+            Option<&'_ Transform>,
+        ),
+    >,
     mut position_map: ResMut<'_, ClientObserverAnchorPositionMap>,
 ) {
     for (player_entity_id, player_entity) in &player_entities.by_player_entity_id {
-        if let Ok(global) = global_transforms.get(*player_entity) {
-            position_map.update_position(player_entity_id, global.translation());
+        if let Ok((position, global, transform)) = anchor_positions.get(*player_entity) {
+            let world = position
+                .map(|p| p.0.extend(0.0))
+                .or_else(|| global.map(GlobalTransform::translation))
+                .or_else(|| transform.map(|t| t.translation))
+                .unwrap_or(Vec3::ZERO);
+            let canonical_player_entity_id =
+                sidereal_net::PlayerEntityId::parse(player_entity_id.as_str())
+                    .map(sidereal_net::PlayerEntityId::canonical_wire_id)
+                    .unwrap_or_else(|| player_entity_id.clone());
+            position_map.update_position(player_entity_id, world);
+            if canonical_player_entity_id != *player_entity_id {
+                position_map.update_position(canonical_player_entity_id.as_str(), world);
+            }
         }
     }
 }

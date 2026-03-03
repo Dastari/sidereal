@@ -28,3 +28,4 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sidereal-game = { path = "../sidereal-game", optional = true }
 sidereal-asset-runtime = { path = "../sidereal-asset-runtime", optional = true }
+uuid = { workspace = true }

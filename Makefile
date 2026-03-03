@@ -17,8 +17,8 @@ WGPU_POWER_PREF ?= high
 REPLICATION_UDP_BIND ?= 0.0.0.0:7001
 REPLICATION_UDP_ADDR ?= 127.0.0.1:7001
 SHARD_UDP_BIND ?= 127.0.0.1:7002
-CLIENT_UDP_BIND ?= 127.0.0.1:7003
-CLIENT2_UDP_BIND ?= 127.0.0.1:7004
+CLIENT_UDP_BIND ?= 127.0.0.1:0
+CLIENT2_UDP_BIND ?= 127.0.0.1:0
 
 REPLICATION_CONTROL_UDP_BIND ?= 127.0.0.1:9004
 REPLICATION_CONTROL_UDP_ADDR ?= 127.0.0.1:9004
@@ -71,7 +71,7 @@ help:
 	@echo "  make run-client-release Run native client in release mode (recommended for perf)"
 	@echo "  make run-client-wsl-perf Run release client with WSL perf-oriented GPU env"
 	@echo "  make run-client-wsl-safe Run release client with conservative WSL GPU env"
-	@echo "  make run-client2        Run second native client on UDP 7004"
+	@echo "  make run-client2        Run second native client (ephemeral UDP bind by default)"
 	@echo "  make run-client-headless Run transport-only native client"
 	@echo "  make run-dashboard      Run dashboard with BRP env configured"
 	@echo "  make brp-dump-replication Dump replication BRP world.query JSON"

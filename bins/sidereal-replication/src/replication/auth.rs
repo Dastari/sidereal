@@ -6,21 +6,22 @@ use lightyear::prelude::{
     MessageReceiver, NetworkTarget, RemoteId, Replicate, ReplicationState, Server,
     ServerMultiMessageSender, Unlink,
 };
+use serde::Deserialize;
 use sidereal_game::{AccountId, PlayerTag};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sidereal_core::auth::AuthClaims;
 use sidereal_net::{
-    ClientAuthMessage, ClientDisconnectNotifyMessage, ControlChannel, ServerSessionDeniedMessage,
-    ServerSessionReadyMessage,
+    ClientAuthMessage, ClientDisconnectNotifyMessage, ControlChannel, PlayerEntityId,
+    ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 
 use crate::replication::assets::AssetStreamServerState;
 use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
-    canonical_player_entity_id, ClientInputTickTracker, InputRateLimitState,
-    LatestRealtimeInputsByPlayer,
+    ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
+    canonical_player_entity_id,
 };
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::visibility::ClientVisibilityRegistry;
@@ -81,16 +82,24 @@ pub fn cleanup_client_auth_bindings(
         .collect();
     input_tick_tracker
         .last_accepted_tick_by_player_entity_id
-        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
+        .retain(|player_entity_id, _| {
+            live_canonical.contains(&canonical_player_entity_id(player_entity_id))
+        });
     input_rate_limit_state
         .current_window_index_by_player_entity_id
-        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
+        .retain(|player_entity_id, _| {
+            live_canonical.contains(&canonical_player_entity_id(player_entity_id))
+        });
     input_rate_limit_state
         .message_count_in_window_by_player_entity_id
-        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
+        .retain(|player_entity_id, _| {
+            live_canonical.contains(&canonical_player_entity_id(player_entity_id))
+        });
     latest_realtime_inputs
         .by_player_entity_id
-        .retain(|player_entity_id, _| live_canonical.contains(&canonical_player_entity_id(player_entity_id)));
+        .retain(|player_entity_id, _| {
+            live_canonical.contains(&player_entity_id.canonical_wire_id())
+        });
     control_order
         .last_request_seq_by_player
         .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
@@ -138,22 +147,47 @@ pub fn cleanup_client_auth_bindings(
 /// so the server stops sending to that peer without waiting for idle timeout.
 pub fn receive_client_disconnect_notify(
     mut commands: Commands<'_, '_>,
+    mut bindings: ResMut<'_, AuthenticatedClientBindings>,
+    mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
+    mut stream_state: ResMut<'_, AssetStreamServerState>,
+    mut control_order: ResMut<'_, ClientControlRequestOrder>,
+    mut last_activity: ResMut<'_, ClientLastActivity>,
     mut receivers: Query<
         '_,
         '_,
         (
             Entity,
+            &'_ RemoteId,
             &'_ mut MessageReceiver<ClientDisconnectNotifyMessage>,
         ),
         With<ClientOf>,
     >,
 ) {
-    for (client_entity, mut receiver) in &mut receivers {
+    for (client_entity, remote_id, mut receiver) in &mut receivers {
         for msg in receiver.receive() {
             info!(
                 "replication received client disconnect notify from client_entity={:?} player={}",
                 client_entity, msg.player_entity_id
             );
+            bindings.by_client_entity.remove(&client_entity);
+            bindings.by_remote_id.remove(&remote_id.0);
+            visibility_registry.unregister_client(client_entity);
+            control_order
+                .last_request_seq_by_player
+                .remove(&msg.player_entity_id);
+            stream_state.sent_asset_ids_by_remote.remove(&remote_id.0);
+            stream_state
+                .pending_requested_asset_ids_by_remote
+                .remove(&remote_id.0);
+            stream_state.acked_assets_by_remote.remove(&remote_id.0);
+            stream_state.pending_chunks_by_remote.remove(&remote_id.0);
+            stream_state
+                .chunk_send_failures_by_remote
+                .remove(&remote_id.0);
+            stream_state
+                .chunk_send_backoff_frames_by_remote
+                .remove(&remote_id.0);
+            last_activity.0.remove(&client_entity);
             commands.trigger(Unlink {
                 entity: client_entity,
                 reason: "client_notify".to_string(),
@@ -212,6 +246,15 @@ pub fn receive_client_auth_messages(
     for (client_entity, remote_id, mut receiver) in &mut auth_receivers {
         for message in receiver.receive() {
             last_activity.0.insert(client_entity, now_s);
+            let Some(message_player_id) = PlayerEntityId::parse(message.player_entity_id.as_str())
+            else {
+                warn!(
+                    "replication rejected client auth: invalid player id encoding player={}",
+                    message.player_entity_id
+                );
+                continue;
+            };
+            let message_player_wire = message_player_id.canonical_wire_id();
             let claims = match decode_access_token(&message.access_token, &jwt_secret) {
                 Some(claims) => claims,
                 None => {
@@ -222,16 +265,31 @@ pub fn receive_client_auth_messages(
                     continue;
                 }
             };
-            if claims.player_entity_id != message.player_entity_id {
+            let Some(token_player_id) = PlayerEntityId::parse(claims.player_entity_id.as_str())
+            else {
+                warn!(
+                    "replication rejected client auth: invalid token player id encoding token_player={}",
+                    claims.player_entity_id
+                );
+                continue;
+            };
+            if token_player_id != message_player_id {
                 warn!(
                     "replication rejected client auth: token player mismatch token_player={} message_player={}",
                     claims.player_entity_id, message.player_entity_id
                 );
                 continue;
             }
-            if let Some(player_entity) = player_entity_map
-                .by_player_entity_id
-                .get(&message.player_entity_id)
+            if claims.player_entity_id != message.player_entity_id {
+                warn!(
+                    "replication auth invariant: token/message player encodings differ token_player={} message_player={} canonical={}",
+                    claims.player_entity_id, message.player_entity_id, message_player_wire
+                );
+            }
+            if !claims.sub.is_empty()
+                && let Some(player_entity) = player_entity_map
+                    .by_player_entity_id
+                    .get(&message_player_wire)
             {
                 let account_id_value = if let Ok(account_id_component) =
                     player_accounts.get(*player_entity)
@@ -258,22 +316,49 @@ pub fn receive_client_auth_messages(
                 }
             }
 
+            let already_bound_same_player = bindings
+                .by_client_entity
+                .get(&client_entity)
+                .is_some_and(|bound| bound == &message_player_wire)
+                && bindings
+                    .by_remote_id
+                    .get(&remote_id.0)
+                    .is_some_and(|bound| bound == &message_player_wire);
+            if already_bound_same_player {
+                // Idempotent auth refresh for an already-bound client:
+                // keep current visibility/bindings intact and simply acknowledge readiness.
+                visibility_registry.register_client(client_entity, message_player_wire.clone());
+                let target = NetworkTarget::Single(remote_id.0);
+                let ready = ServerSessionReadyMessage {
+                    player_entity_id: message_player_wire.clone(),
+                };
+                if let Err(err) = sender
+                    .send::<ServerSessionReadyMessage, ControlChannel>(&ready, server, &target)
+                {
+                    warn!(
+                        "replication failed sending session-ready refresh to remote={:?} player={} err={}",
+                        remote_id.0, message_player_wire, err
+                    );
+                }
+                continue;
+            }
+
             if let Some(bound_player) = bindings.by_remote_id.get(&remote_id.0)
-                && bound_player != &message.player_entity_id
+                && bound_player != &message_player_wire
             {
                 info!(
                     "replication rebinding remote {:?} from {} to {}",
-                    remote_id.0, bound_player, message.player_entity_id
+                    remote_id.0, bound_player, message_player_wire
                 );
             }
 
             bindings
                 .by_client_entity
-                .insert(client_entity, message.player_entity_id.clone());
+                .insert(client_entity, message_player_wire.clone());
             if let Some(previous_player) = bindings
                 .by_remote_id
-                .insert(remote_id.0, message.player_entity_id.clone())
-                && previous_player != message.player_entity_id.as_str()
+                .insert(remote_id.0, message_player_wire.clone())
+                && previous_player != message_player_wire
             {
                 bindings
                     .by_client_entity
@@ -286,7 +371,7 @@ pub fn receive_client_auth_messages(
             let old_client_entity_for_new_player = bindings
                 .by_client_entity
                 .iter()
-                .find(|(k, v)| v == &&message.player_entity_id && *k != &client_entity)
+                .find(|(k, v)| v == &&message_player_wire && *k != &client_entity)
                 .map(|(k, _)| *k);
             if let Some(old_entity) = old_client_entity_for_new_player {
                 bindings.by_client_entity.remove(&old_entity);
@@ -311,9 +396,9 @@ pub fn receive_client_auth_messages(
             // are not rejected as stale against a prior disconnected session.
             control_order
                 .last_request_seq_by_player
-                .remove(&message.player_entity_id);
+                .remove(&message_player_wire);
 
-            visibility_registry.register_client(client_entity, message.player_entity_id.clone());
+            visibility_registry.register_client(client_entity, message_player_wire.clone());
             // Force a clean visibility handshake for this authenticated client.
             // This guarantees reconnects receive fresh spawn baseline even if the
             // underlying remote link entity was reused across quick logout/login.
@@ -325,15 +410,15 @@ pub fn receive_client_auth_messages(
 
             if !player_entity_map
                 .by_player_entity_id
-                .contains_key(&message.player_entity_id)
+                .contains_key(&message_player_wire)
             {
                 warn!(
                     "replication auth: player entity {} not found in world; denying session",
-                    message.player_entity_id
+                    message_player_wire
                 );
                 let target = NetworkTarget::Single(remote_id.0);
                 let denied = ServerSessionDeniedMessage {
-                    player_entity_id: message.player_entity_id.clone(),
+                    player_entity_id: message_player_wire.clone(),
                     reason: "Player entity not yet loaded into the world. Please try again."
                         .to_string(),
                 };
@@ -342,7 +427,7 @@ pub fn receive_client_auth_messages(
                 {
                     warn!(
                         "replication failed sending session-denied to remote={:?} player={} err={}",
-                        remote_id.0, message.player_entity_id, err
+                        remote_id.0, message_player_wire, err
                     );
                 }
                 continue;
@@ -350,14 +435,14 @@ pub fn receive_client_auth_messages(
 
             if let Some(&controlled_entity) = controlled_entity_map
                 .by_player_entity_id
-                .get(&message.player_entity_id)
+                .get(&message_player_id)
             {
                 pending_controlled_by
                     .bindings
                     .push((client_entity, controlled_entity));
             } else if let Some(&player_entity) = player_entity_map
                 .by_player_entity_id
-                .get(&message.player_entity_id)
+                .get(&message_player_wire)
             {
                 pending_controlled_by
                     .bindings
@@ -366,19 +451,19 @@ pub fn receive_client_auth_messages(
 
             info!(
                 "replication client authenticated and bound: client={:?} remote={:?} player_entity_id={}",
-                client_entity, remote_id.0, message.player_entity_id
+                client_entity, remote_id.0, message_player_wire
             );
 
             let target = NetworkTarget::Single(remote_id.0);
             let ready = ServerSessionReadyMessage {
-                player_entity_id: message.player_entity_id.clone(),
+                player_entity_id: message_player_wire.clone(),
             };
             if let Err(err) =
                 sender.send::<ServerSessionReadyMessage, ControlChannel>(&ready, server, &target)
             {
                 warn!(
                     "replication failed sending session-ready message to remote={:?} player={} err={}",
-                    remote_id.0, message.player_entity_id, err
+                    remote_id.0, message_player_wire, err
                 );
             }
         }
@@ -388,15 +473,33 @@ pub fn receive_client_auth_messages(
 fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AuthClaims> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
-    match decode::<AuthClaims>(
+    match decode::<CompatAuthClaims>(
         token,
         &DecodingKey::from_secret(jwt_secret.as_bytes()),
         &validation,
     ) {
-        Ok(decoded) => Some(decoded.claims),
+        Ok(decoded) => Some(AuthClaims {
+            sub: decoded.claims.sub.unwrap_or_default(),
+            player_entity_id: decoded.claims.player_entity_id,
+            iat: decoded.claims.iat.unwrap_or_default(),
+            exp: decoded.claims.exp,
+            jti: decoded.claims.jti.unwrap_or_default(),
+        }),
         Err(err) => {
             warn!("replication rejected client auth token decode: {}", err);
             None
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct CompatAuthClaims {
+    #[serde(default)]
+    sub: Option<String>,
+    player_entity_id: String,
+    #[serde(default)]
+    iat: Option<u64>,
+    exp: u64,
+    #[serde(default)]
+    jti: Option<String>,
 }

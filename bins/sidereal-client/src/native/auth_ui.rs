@@ -5,10 +5,8 @@ use bevy::log::info;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
-use super::dialog_ui;
 use super::{
-    AssetRootPath, AuthAction, CharacterSelectionState, ClientAppState, ClientSession,
-    EmbeddedFonts, FocusField, SessionReadyState, submit_auth_request,
+    AuthAction, ClientAppState, ClientSession, EmbeddedFonts, FocusField, submit_auth_request,
 };
 
 #[derive(Component)]
@@ -104,6 +102,8 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
                 align_items: AlignItems::Center,
                 ..default()
             },
+            Transform::default(),
+            GlobalTransform::default(),
             AuthUiRoot,
             DespawnOnExit(ClientAppState::Auth),
         ))
@@ -115,6 +115,8 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
                     height: Val::Percent(100.0),
                     ..default()
                 },
+                Transform::default(),
+                GlobalTransform::default(),
                 BackgroundColor(Color::srgb(0.03, 0.04, 0.08)),
                 AuthUiBackdrop,
             ));
@@ -129,6 +131,8 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
                     row_gap: Val::Px(14.0),
                     ..default()
                 },
+                Transform::default(),
+                GlobalTransform::default(),
                 BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.92)),
                 BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
             ))
@@ -199,13 +203,17 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
                     });
 
                 panel
-                    .spawn((Node {
-                        width: Val::Percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        justify_content: JustifyContent::SpaceBetween,
-                        column_gap: Val::Px(8.0),
-                        ..default()
-                    },))
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Row,
+                            justify_content: JustifyContent::SpaceBetween,
+                            column_gap: Val::Px(8.0),
+                            ..default()
+                        },
+                        Transform::default(),
+                        GlobalTransform::default(),
+                    ))
                     .with_children(|row| {
                         spawn_flow_button(row, &font_regular, "Login", AuthAction::Login);
                         spawn_flow_button(row, &font_regular, "Register", AuthAction::Register);
@@ -252,6 +260,8 @@ fn spawn_input_field(
                 row_gap: Val::Px(6.0),
                 ..default()
             },
+            Transform::default(),
+            GlobalTransform::default(),
             AuthUiFieldContainer { field },
         ))
         .with_children(|container| {
@@ -280,6 +290,8 @@ fn spawn_input_field(
                         border_radius: BorderRadius::all(Val::Px(7.0)),
                         ..default()
                     },
+                    Transform::default(),
+                    GlobalTransform::default(),
                     BackgroundColor(Color::srgba(0.09, 0.11, 0.16, 0.95)),
                     BorderColor::all(Color::srgba(0.24, 0.28, 0.35, 0.9)),
                 ))
@@ -328,6 +340,8 @@ fn spawn_flow_button(
                 align_items: AlignItems::Center,
                 ..default()
             },
+            Transform::default(),
+            GlobalTransform::default(),
             BackgroundColor(Color::srgba(0.18, 0.2, 0.26, 0.85)),
         ))
         .with_children(|button| {
@@ -365,12 +379,8 @@ fn tick_cursor_blink(time: Res<'_, Time>, mut blink: ResMut<'_, CursorBlink>) {
 fn handle_auth_keyboard_input(
     mut keyboard_input_reader: MessageReader<'_, '_, KeyboardInput>,
     keys: Res<'_, ButtonInput<KeyCode>>,
-    mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
-    mut character_selection: ResMut<'_, CharacterSelectionState>,
-    mut session_ready: ResMut<'_, SessionReadyState>,
-    mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
-    asset_root: Res<'_, AssetRootPath>,
+    mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
 ) {
     let mut submit = false;
     for event in keyboard_input_reader.read() {
@@ -426,14 +436,7 @@ fn handle_auth_keyboard_input(
     }
 
     if submit {
-        submit_auth_request(
-            &mut session,
-            &mut character_selection,
-            &mut session_ready,
-            &mut next_state,
-            &mut dialog_queue,
-            &asset_root,
-        );
+        submit_auth_request(&mut session, request_state.as_mut());
     }
 }
 
@@ -449,12 +452,8 @@ fn handle_auth_button_interactions(
         ),
         Changed<Interaction>,
     >,
-    mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
-    mut character_selection: ResMut<'_, CharacterSelectionState>,
-    mut session_ready: ResMut<'_, SessionReadyState>,
-    mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
-    asset_root: Res<'_, AssetRootPath>,
+    mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
 ) {
     for (interaction, button, mut bg, input_box) in &mut interactions {
         match *interaction {
@@ -469,14 +468,7 @@ fn handle_auth_button_interactions(
                 match button.0 {
                     AuthButtonKind::Submit => {
                         *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));
-                        submit_auth_request(
-                            &mut session,
-                            &mut character_selection,
-                            &mut session_ready,
-                            &mut next_state,
-                            &mut dialog_queue,
-                            &asset_root,
-                        );
+                        submit_auth_request(&mut session, request_state.as_mut());
                     }
                     AuthButtonKind::SwitchFlow(action) => {
                         session.selected_action = action;

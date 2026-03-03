@@ -87,10 +87,11 @@ pub struct SpaceBackgroundUniforms {
     pub space_bg_nebula_color_a: Vec4,
     pub space_bg_nebula_color_b: Vec4,
     pub space_bg_nebula_color_c: Vec4,
+    pub space_bg_star_color: Vec4,
     pub space_bg_flare_tint: Vec4,
 }
 
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone, Default)]
 pub struct SpaceBackgroundMaterial {
     #[uniform(0)]
     pub params: SpaceBackgroundUniforms,
@@ -119,16 +120,8 @@ impl Default for SpaceBackgroundUniforms {
             space_bg_nebula_color_a: Vec4::new(0.07, 0.13, 0.28, 0.0),
             space_bg_nebula_color_b: Vec4::new(0.12, 0.24, 0.40, 0.0),
             space_bg_nebula_color_c: Vec4::new(0.18, 0.16, 0.36, 0.0),
+            space_bg_star_color: Vec4::ONE,
             space_bg_flare_tint: Vec4::ONE,
-        }
-    }
-}
-
-impl Default for SpaceBackgroundMaterial {
-    fn default() -> Self {
-        Self {
-            params: SpaceBackgroundUniforms::default(),
-            flare_texture: Handle::default(),
         }
     }
 }
@@ -153,6 +146,45 @@ pub struct StreamedSpriteShaderMaterial {
 impl Material2d for StreamedSpriteShaderMaterial {
     fn fragment_shader() -> ShaderRef {
         platform::STREAMED_SPRITE_PIXEL_SHADER_PATH.into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct ThrusterPlumeMaterial {
+    #[uniform(0)]
+    pub params: ThrusterPlumeUniforms,
+}
+
+#[derive(ShaderType, Debug, Clone)]
+pub struct ThrusterPlumeUniforms {
+    pub shape_params: Vec4,
+    pub state_params: Vec4,
+    pub base_color: Vec4,
+    pub hot_color: Vec4,
+    pub afterburner_color: Vec4,
+}
+
+impl Default for ThrusterPlumeMaterial {
+    fn default() -> Self {
+        Self {
+            params: ThrusterPlumeUniforms {
+                shape_params: Vec4::new(1.25, 1.7, 0.35, 0.0),
+                state_params: Vec4::new(0.0, 0.0, 0.0, 0.0),
+                base_color: Vec4::new(1.0, 0.4, 0.15, 1.0),
+                hot_color: Vec4::new(1.0, 0.82, 0.3, 1.0),
+                afterburner_color: Vec4::new(0.68, 0.88, 1.12, 1.0),
+            },
+        }
+    }
+}
+
+impl Material2d for ThrusterPlumeMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "data/cache_stream/shaders/thruster_plume.wgsl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -251,6 +283,7 @@ pub fn compute_fullscreen_external_world_system(
     world_data.velocity_dir = Vec4::new(heading.x, heading.y, zoom_scale, 0.0);
 }
 
+#[allow(clippy::type_complexity)]
 pub fn update_starfield_material_system(
     world_data: Res<'_, FullscreenExternalWorldData>,
     starfield_query: Query<
@@ -289,6 +322,7 @@ pub fn update_starfield_material_system(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn update_space_background_material_system(
     world_data: Res<'_, FullscreenExternalWorldData>,
     asset_server: Res<'_, AssetServer>,
@@ -365,9 +399,9 @@ pub fn update_space_background_material_system(
             );
             material.params.space_bg_star_mask_c = Vec4::new(
                 settings.star_mask_ridge_offset.clamp(0.5, 2.5),
-                0.0,
-                0.0,
-                0.0,
+                settings.star_count.clamp(0.0, 5.0),
+                settings.star_size_min.clamp(0.01, 0.35),
+                settings.star_size_max.clamp(0.01, 0.35),
             );
             material.params.space_bg_blend_a = Vec4::new(
                 settings.nebula_blend_mode.clamp(0, 2) as f32,
@@ -393,6 +427,10 @@ pub fn update_space_background_material_system(
                 .nebula_color_accent_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(2.0))
                 .extend(0.0);
+            material.params.space_bg_star_color = settings
+                .star_color_rgb
+                .clamp(Vec3::ZERO, Vec3::splat(2.0))
+                .extend(1.0);
             material.params.space_bg_flare_tint = settings
                 .flare_tint_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(2.0))

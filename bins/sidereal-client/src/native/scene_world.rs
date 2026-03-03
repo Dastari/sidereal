@@ -9,11 +9,11 @@ use sidereal_game::{SpaceBackgroundFullscreenLayerBundle, StarfieldFullscreenLay
 
 use super::app_state::{ClientAppState, ClientSession};
 use super::components::{
-    DebugBlueBackdrop, FallbackFullscreenLayer, GameplayCamera, GameplayHud, HudFpsText,
-    HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
-    LoadingOverlayText, LoadingProgressBarFill, RuntimeStreamingIconText, SegmentedBarSegment,
-    SegmentedBarStyle, SegmentedBarValue, SpaceBackdropFallback, TopDownCamera, UiOverlayLayer,
-    WorldEntity,
+    ClientSceneEntity, DebugBlueBackdrop, FallbackFullscreenLayer, GameplayCamera, GameplayHud,
+    HudFpsText, HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText,
+    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, RuntimeStreamingIconText,
+    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SpaceBackdropFallback,
+    TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{BACKDROP_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
@@ -46,7 +46,7 @@ pub(super) fn spawn_world_scene(
             ..default()
         },
         RenderLayers::layer(BACKDROP_RENDER_LAYER),
-        WorldEntity,
+        ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
 
@@ -58,7 +58,7 @@ pub(super) fn spawn_world_scene(
         Transform::from_xyz(0.0, 0.0, -210.0),
         RenderLayers::layer(BACKDROP_RENDER_LAYER),
         SpaceBackdropFallback,
-        WorldEntity,
+        ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
 
@@ -83,7 +83,7 @@ pub(super) fn spawn_world_scene(
             filtered_focus_xy: Vec2::ZERO,
             focus_initialized: false,
         },
-        WorldEntity,
+        ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
 
@@ -93,7 +93,7 @@ pub(super) fn spawn_world_scene(
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
-        WorldEntity,
+        ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
 
@@ -111,11 +111,12 @@ pub(super) fn spawn_world_scene(
             ..default()
         },
         TextColor(Color::srgb(0.85, 0.92, 1.0)),
+        Visibility::Hidden,
         HudFpsText,
         GameplayHud,
         UiOverlayLayer,
         RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-        WorldEntity,
+        ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
     commands
@@ -137,20 +138,18 @@ pub(super) fn spawn_world_scene(
             GameplayHud,
             UiOverlayLayer,
             RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-            WorldEntity,
+            ClientSceneEntity,
             DespawnOnExit(ClientAppState::InWorld),
         ))
         .with_children(|panel| {
             panel
-                .spawn((
-                    Node {
-                        width: percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        column_gap: px(8),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                ))
+                .spawn((Node {
+                    width: percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(8),
+                    align_items: AlignItems::Center,
+                    ..default()
+                },))
                 .with_children(|row| {
                     row.spawn((
                         Text::new("SPEED"),
@@ -173,15 +172,13 @@ pub(super) fn spawn_world_scene(
                     ));
                 });
             panel
-                .spawn((
-                    Node {
-                        width: percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        column_gap: px(8),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                ))
+                .spawn((Node {
+                    width: percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(8),
+                    align_items: AlignItems::Center,
+                    ..default()
+                },))
                 .with_children(|row| {
                     row.spawn((
                         Text::new("POSITION"),
@@ -204,15 +201,13 @@ pub(super) fn spawn_world_scene(
                     ));
                 });
             panel
-                .spawn((
-                    Node {
-                        width: percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        column_gap: px(8.0),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                ))
+                .spawn((Node {
+                    width: percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(8.0),
+                    align_items: AlignItems::Center,
+                    ..default()
+                },))
                 .with_children(|row| {
                     row.spawn((
                         Node {
@@ -229,7 +224,9 @@ pub(super) fn spawn_world_scene(
                     ));
                     row.spawn((
                         Node {
-                            width: px(230),
+                            // 20 segments @ 9px + 19 gaps @ 2px + 2px padding = 220px total.
+                            // Keep integer segment widths to avoid fractional flex distribution jitter.
+                            width: px(220),
                             height: px(14),
                             column_gap: px(2.0),
                             align_items: AlignItems::Stretch,
@@ -251,7 +248,7 @@ pub(super) fn spawn_world_scene(
                         for index in 0..20u8 {
                             bar.spawn((
                                 Node {
-                                    flex_grow: 1.0,
+                                    width: px(9.0),
                                     height: percent(100.0),
                                     ..default()
                                 },
@@ -262,15 +259,13 @@ pub(super) fn spawn_world_scene(
                     });
                 });
             panel
-                .spawn((
-                    Node {
-                        width: percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        column_gap: px(8.0),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                ))
+                .spawn((Node {
+                    width: percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(8.0),
+                    align_items: AlignItems::Center,
+                    ..default()
+                },))
                 .with_children(|row| {
                     row.spawn((
                         Node {
@@ -287,7 +282,9 @@ pub(super) fn spawn_world_scene(
                     ));
                     row.spawn((
                         Node {
-                            width: px(230),
+                            // 20 segments @ 9px + 19 gaps @ 2px + 2px padding = 220px total.
+                            // Keep integer segment widths to avoid fractional flex distribution jitter.
+                            width: px(220),
                             height: px(14),
                             column_gap: px(2.0),
                             align_items: AlignItems::Stretch,
@@ -309,7 +306,7 @@ pub(super) fn spawn_world_scene(
                         for index in 0..20u8 {
                             bar.spawn((
                                 Node {
-                                    flex_grow: 1.0,
+                                    width: px(9.0),
                                     height: percent(100.0),
                                     ..default()
                                 },
@@ -400,7 +397,7 @@ pub(super) fn spawn_world_scene(
             Transform::from_xyz(0.0, 0.0, -180.0),
             RenderLayers::layer(BACKDROP_RENDER_LAYER),
             DebugBlueBackdrop,
-            WorldEntity,
+            ClientSceneEntity,
             DespawnOnExit(ClientAppState::InWorld),
         ));
         info!("client debug blue fullscreen overlay enabled");
@@ -408,13 +405,13 @@ pub(super) fn spawn_world_scene(
     commands.spawn((
         SpaceBackgroundFullscreenLayerBundle::default(),
         FallbackFullscreenLayer,
-        WorldEntity,
+        ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
     commands.spawn((
         StarfieldFullscreenLayerBundle::default(),
         FallbackFullscreenLayer,
-        WorldEntity,
+        ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
     session.status = "Scene ready. Waiting for replicated entities...".to_string();

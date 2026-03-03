@@ -20,6 +20,7 @@ pub struct HardpointSpec {
     pub hardpoint_id: &'static str,
     pub display_name: &'static str,
     pub offset_m: Vec3,
+    pub local_rotation: Quat,
 }
 
 pub fn default_corvette_hardpoint_specs() -> [HardpointSpec; 5] {
@@ -28,26 +29,31 @@ pub fn default_corvette_hardpoint_specs() -> [HardpointSpec; 5] {
             hardpoint_id: "computer_core",
             display_name: "Computer Core Hardpoint",
             offset_m: Vec3::new(0.0, 0.0, -5.0),
+            local_rotation: Quat::IDENTITY,
         },
         HardpointSpec {
-            hardpoint_id: "engine_left_aft",
-            display_name: "Engine Left Aft Hardpoint",
-            offset_m: Vec3::new(-4.0, -1.0, -10.0),
-        },
-        HardpointSpec {
-            hardpoint_id: "engine_right_aft",
-            display_name: "Engine Right Aft Hardpoint",
-            offset_m: Vec3::new(4.0, -1.0, -10.0),
+            hardpoint_id: "engine_main_aft",
+            display_name: "Engine Main Aft Hardpoint",
+            offset_m: Vec3::new(0.0, -1.0, -10.0),
+            local_rotation: Quat::IDENTITY,
         },
         HardpointSpec {
             hardpoint_id: "fuel_left",
             display_name: "Fuel Tank Left Hardpoint",
             offset_m: Vec3::new(-3.0, 1.5, -8.0),
+            local_rotation: Quat::IDENTITY,
         },
         HardpointSpec {
             hardpoint_id: "fuel_right",
             display_name: "Fuel Tank Right Hardpoint",
             offset_m: Vec3::new(3.0, 1.5, -8.0),
+            local_rotation: Quat::IDENTITY,
+        },
+        HardpointSpec {
+            hardpoint_id: "weapon_fore_center",
+            display_name: "Weapon Fore Center Hardpoint",
+            offset_m: Vec3::new(0.0, 10.0, -10.0),
+            local_rotation: Quat::IDENTITY,
         },
     ]
 }
@@ -65,6 +71,7 @@ pub fn spawn_hardpoint(
         hardpoint: Hardpoint {
             hardpoint_id: spec.hardpoint_id.to_string(),
             offset_m: spec.offset_m,
+            local_rotation: spec.local_rotation,
         },
         display_name: DisplayName(spec.display_name.to_string()),
         parent_guid: ParentGuid(ship_guid),

@@ -77,8 +77,7 @@ pub fn process_character_movement_actions(
         maybe_transform,
         maybe_position,
         controlled,
-    ) in
-        &mut query
+    ) in &mut query
     {
         let own_guid = entity_guid.0.to_string();
         let controls_other_entity = controlled
@@ -94,8 +93,12 @@ pub fn process_character_movement_actions(
 
         let mut longitudinal = 0.0_f32;
         let mut lateral = 0.0_f32;
-        for action in queue.drain() {
-            let _ = apply_character_action(&mut longitudinal, &mut lateral, action);
+        let pending = std::mem::take(&mut queue.pending);
+        for action in pending {
+            let handled = apply_character_action(&mut longitudinal, &mut lateral, action);
+            if !handled {
+                queue.pending.push(action);
+            }
         }
 
         let speed_mps = maybe_controller

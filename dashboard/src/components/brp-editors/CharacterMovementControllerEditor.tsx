@@ -1,7 +1,6 @@
 import * as React from 'react'
 import type { ComponentEditorProps } from './types'
-import { Input } from '@/components/ui/input'
-import { Slider } from '@/components/ui/slider'
+import { DebouncedNumberField } from './DebouncedNumberField'
 
 type CharacterMovementController = {
   speed_mps: number
@@ -111,38 +110,16 @@ function Field({
   readOnly: boolean
   onChange: (next: number) => void
 }) {
-  const safe = Number.isFinite(value) ? value : min
   return (
-    <div className="space-y-1">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="flex items-center gap-2">
-        <Slider
-          min={min}
-          max={max}
-          step={step}
-          value={[safe]}
-          onValueChange={(values) => {
-            const v = values[0]
-            if (typeof v === 'number') onChange(v)
-          }}
-          disabled={readOnly}
-          className="flex-1"
-        />
-        <Input
-          type="number"
-          min={min}
-          max={max}
-          step={step}
-          value={safe}
-          onChange={(e) => {
-            const next = Number.parseFloat(e.target.value)
-            if (Number.isFinite(next)) onChange(next)
-          }}
-          disabled={readOnly}
-          className="w-24 text-right font-mono text-xs"
-          aria-label={`${label} value`}
-        />
-      </div>
-    </div>
+    <DebouncedNumberField
+      label={label}
+      value={value}
+      min={min}
+      max={max}
+      step={step}
+      readOnly={readOnly}
+      onChange={onChange}
+      inputClassName="w-24 text-right font-mono text-xs"
+    />
   )
 }

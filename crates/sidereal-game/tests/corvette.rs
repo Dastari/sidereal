@@ -16,15 +16,15 @@ fn corvette_bundle_spawn_with_overrides() {
 
     assert_ne!(ship_guid, Uuid::nil());
     assert_ne!(module_guids.flight_computer, Uuid::nil());
-    assert_ne!(module_guids.engine_left, Uuid::nil());
-    assert_ne!(module_guids.engine_right, Uuid::nil());
+    assert_ne!(module_guids.engine_main, Uuid::nil());
+    assert_ne!(module_guids.weapon_gatling_fore, Uuid::nil());
 }
 
 #[test]
 fn corvette_total_mass() {
     let hull_mass = default_corvette_mass_kg();
-    let total = hull_mass + 50.0 + 2.0 * 500.0 + 2.0 * 1100.0;
-    assert_eq!(total, 18_250.0);
+    let total = hull_mass + 50.0 + 500.0 + 2.0 * 1100.0 + 120.0;
+    assert_eq!(total, 17_870.0);
 }
 
 #[test]

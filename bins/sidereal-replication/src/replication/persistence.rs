@@ -3,7 +3,8 @@ use bevy::prelude::*;
 use sidereal_game::{EntityGuid, EntityLabels, GeneratedComponentRegistry, MountedOn};
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::serialize_entity_components_to_graph_records;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::Duration;
@@ -55,6 +56,11 @@ impl Default for PersistenceDirtyState {
 }
 
 #[derive(Resource, Default)]
+pub struct PersistenceFingerprintState {
+    pub by_entity_id: HashMap<String, u64>,
+}
+
+#[derive(Resource, Default)]
 pub struct PersistenceWorkerState {
     sender: Option<SyncSender<PersistenceWriteBatch>>,
     latest_pending_batch: Option<PersistenceWriteBatch>,
@@ -69,6 +75,7 @@ pub struct PersistenceWorkerState {
 pub fn init_resources(app: &mut App) {
     app.insert_resource(PersistenceWorkerState::default());
     app.insert_resource(PersistenceDirtyState::default());
+    app.insert_resource(PersistenceFingerprintState::default());
     app.insert_resource(PersistenceSchemaInitState::default());
     app.insert_resource(SimulationPersistenceTimer::default());
 }
@@ -174,33 +181,70 @@ pub fn mark_dirty_persistable_entities_spatial(
     }
 }
 
-/// Catches gameplay/module component changes on persistable entities.
-#[allow(clippy::type_complexity)]
-pub fn mark_dirty_persistable_entities_components(
-    mut dirty: ResMut<'_, PersistenceDirtyState>,
-    changed: Query<
-        '_,
-        '_,
-        &'_ EntityGuid,
-        Or<(
-            Changed<MountedOn>,
-            Changed<sidereal_game::OwnerId>,
-            Changed<sidereal_game::AccountId>,
-            Changed<sidereal_game::ControlledEntityGuid>,
-            Changed<sidereal_game::Hardpoint>,
-            Changed<sidereal_game::Engine>,
-            Changed<sidereal_game::FuelTank>,
-            Changed<sidereal_game::Inventory>,
-            Changed<sidereal_game::MassKg>,
-            Changed<sidereal_game::FlightComputer>,
-            Changed<sidereal_game::HealthPool>,
-            Changed<sidereal_game::TotalMassKg>,
-            Changed<sidereal_game::PlayerTag>,
-        )>,
-    >,
-) {
-    for guid in &changed {
-        mark_dirty_entity(&mut dirty, guid);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sidereal_game::SiderealGameCorePlugin;
+
+    #[test]
+    fn flush_persists_ammo_changes_without_component_dirty_whitelist() {
+        let mut app = App::new();
+        app.add_plugins(SiderealGameCorePlugin);
+        init_resources(&mut app);
+
+        let (sender, receiver) = sync_channel::<PersistenceWriteBatch>(4);
+        {
+            let mut worker = app.world_mut().resource_mut::<PersistenceWorkerState>();
+            worker.sender = Some(sender);
+        }
+        {
+            let mut timer = app.world_mut().resource_mut::<SimulationPersistenceTimer>();
+            timer.interval_ticks = 1;
+            timer.current_tick = 0;
+        }
+        {
+            let mut dirty = app.world_mut().resource_mut::<PersistenceDirtyState>();
+            dirty.initial_full_snapshot_pending = false;
+            dirty.dirty_entity_ids.clear();
+        }
+
+        let guid = uuid::Uuid::new_v4();
+        let entity = app
+            .world_mut()
+            .spawn((EntityGuid(guid), sidereal_game::AmmoCount::new(5, 5)))
+            .id();
+
+        // First flush seeds fingerprint state and writes current ammo.
+        flush_simulation_state_persistence(app.world_mut());
+        let first_batch = receiver
+            .try_recv()
+            .expect("initial flush should enqueue a persistence batch");
+        assert!(
+            first_batch
+                .records
+                .iter()
+                .any(|record| record.entity_id == guid.to_string()),
+            "initial flush should include ammo-bearing entity"
+        );
+
+        // Mutate ammo without any explicit component dirty-mark query.
+        app.world_mut()
+            .entity_mut(entity)
+            .get_mut::<sidereal_game::AmmoCount>()
+            .expect("ammo count present")
+            .consume(1);
+
+        flush_simulation_state_persistence(app.world_mut());
+        let second_batch = receiver
+            .try_recv()
+            .expect("ammo mutation should enqueue a persistence batch");
+        assert!(
+            second_batch
+                .records
+                .iter()
+                .any(|record| record.entity_id == guid.to_string()),
+            "second flush should include ammo-bearing entity after ammo change"
+        );
     }
 }
 
@@ -230,10 +274,11 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
         let dirty_entity_ids = std::mem::take(&mut dirty.dirty_entity_ids);
         (persist_all, dirty_entity_ids)
     };
-
-    if !persist_all && dirty_entity_ids.is_empty() {
-        return;
-    }
+    let previous_fingerprints = {
+        let mut fingerprints = world.resource_mut::<PersistenceFingerprintState>();
+        std::mem::take(&mut fingerprints.by_entity_id)
+    };
+    let mut next_fingerprints = HashMap::<String, u64>::new();
 
     let mut records = Vec::<GraphEntityRecord>::new();
     let mut entity_query = world.query::<(
@@ -245,9 +290,6 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
 
     for (entity, guid, entity_labels, mounted_on) in entity_query.iter(world) {
         let entity_id = guid.0.to_string();
-        if !persist_all && !dirty_entity_ids.contains(&entity_id) {
-            continue;
-        }
 
         let mut labels = vec!["Entity".to_string()];
         if let Some(el) = entity_labels {
@@ -274,6 +316,14 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
             &component_registry,
             &app_type_registry,
         );
+        let fingerprint = fingerprint_record_payload(&labels, &properties, &components);
+        let changed_since_last_snapshot =
+            previous_fingerprints.get(&entity_id).copied() != Some(fingerprint);
+        next_fingerprints.insert(entity_id.clone(), fingerprint);
+
+        if !persist_all && !dirty_entity_ids.contains(&entity_id) && !changed_since_last_snapshot {
+            continue;
+        }
 
         records.push(GraphEntityRecord {
             entity_id,
@@ -284,6 +334,9 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
     }
 
     if records.is_empty() {
+        world
+            .resource_mut::<PersistenceFingerprintState>()
+            .by_entity_id = next_fingerprints;
         return;
     }
 
@@ -298,6 +351,34 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
             .resource_mut::<PersistenceDirtyState>()
             .initial_full_snapshot_pending = false;
     }
+    world
+        .resource_mut::<PersistenceFingerprintState>()
+        .by_entity_id = next_fingerprints;
+}
+
+fn fingerprint_record_payload(
+    labels: &[String],
+    properties: &serde_json::Map<String, serde_json::Value>,
+    components: &[sidereal_persistence::GraphComponentRecord],
+) -> u64 {
+    #[derive(serde::Serialize)]
+    struct FingerprintView<'a> {
+        labels: Vec<&'a str>,
+        properties: &'a serde_json::Map<String, serde_json::Value>,
+        components: &'a [sidereal_persistence::GraphComponentRecord],
+    }
+
+    let mut sorted_labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
+    sorted_labels.sort_unstable();
+    let view = FingerprintView {
+        labels: sorted_labels,
+        properties,
+        components,
+    };
+    let bytes = serde_json::to_vec(&view).unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn enqueue_batch(state: &mut PersistenceWorkerState, batch: PersistenceWriteBatch) {

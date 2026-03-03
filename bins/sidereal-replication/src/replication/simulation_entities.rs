@@ -13,6 +13,7 @@ use lightyear::prelude::{ControlledBy, Lifetime, NetworkTarget, Replicate};
 use sidereal_game::{
     ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
 };
+use sidereal_net::PlayerEntityId;
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::{
     component_record, component_type_path_map, decode_graph_component_payload,
@@ -22,17 +23,19 @@ use std::collections::{HashMap, HashSet};
 
 use crate::bootstrap_runtime::{self, BootstrapEntityReceiver};
 use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::lifecycle::{HydratedEntityCount, HydratedGraphEntity};
+use crate::replication::persistence::PersistenceSchemaInitState;
 
 #[derive(Resource, Default)]
 pub struct PlayerControlledEntityMap {
-    pub by_player_entity_id: HashMap<String, Entity>,
+    pub by_player_entity_id: HashMap<PlayerEntityId, Entity>,
 }
 
 /// Marker for entities that are controlled by a player. Derived post-hydration
 /// from OwnerId pointing at a player entity. Not persisted; runtime-only.
 #[derive(Debug, Component)]
 pub struct SimulatedControlledEntity {
-    pub player_entity_id: String,
+    pub player_entity_id: PlayerEntityId,
 }
 
 /// Deferred (client_entity, controlled_entity) bindings so ControlledBy is applied in PostUpdate,
@@ -193,6 +196,7 @@ pub fn hydrate_simulation_entities(
     mut commands: Commands<'_, '_>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
     mut player_entity_map: ResMut<'_, PlayerRuntimeEntityMap>,
+    mut schema_init_state: ResMut<'_, PersistenceSchemaInitState>,
     component_registry: Res<'_, GeneratedComponentRegistry>,
     app_type_registry: Res<'_, AppTypeRegistry>,
 ) {
@@ -203,6 +207,11 @@ pub fn hydrate_simulation_entities(
             return;
         }
     };
+    if let Err(err) = persistence.ensure_schema() {
+        eprintln!("replication simulation hydration skipped; schema init failed: {err}");
+        return;
+    }
+    schema_init_state.0 = true;
     let records = match persistence.load_graph_records() {
         Ok(v) => v,
         Err(err) => {
@@ -210,6 +219,17 @@ pub fn hydrate_simulation_entities(
             return;
         }
     };
+
+    for record in &records {
+        commands.spawn(HydratedGraphEntity {
+            _entity_id: record.entity_id.clone(),
+            _labels: record.labels.clone(),
+            _component_count: record.components.len(),
+        });
+    }
+    commands.insert_resource(HydratedEntityCount {
+        _count: records.len(),
+    });
     let collisions = find_runtime_guid_collisions(&records);
     if !collisions.is_empty() {
         let formatted = collisions
@@ -243,8 +263,8 @@ fn derive_control_bindings(
     controlled_map: &mut PlayerControlledEntityMap,
     player_map: &mut PlayerRuntimeEntityMap,
 ) {
-    let mut player_entities = HashMap::<String, Entity>::new();
-    let mut desired_control_by_player = HashMap::<String, Option<String>>::new();
+    let mut player_entities = HashMap::<PlayerEntityId, Entity>::new();
+    let mut desired_control_by_player = HashMap::<PlayerEntityId, Option<uuid::Uuid>>::new();
 
     for record in records {
         let has_player_tag = component_record(&record.components, "player_tag").is_some();
@@ -258,28 +278,29 @@ fn derive_control_bindings(
         if entity == Entity::PLACEHOLDER {
             continue;
         }
-        let player_id = guid
-            .map(|g| g.to_string())
-            .unwrap_or(record.entity_id.clone());
+        let Some(player_id) = guid.map(PlayerEntityId) else {
+            warn!(
+                "derive_control_bindings skipping player record with non-uuid entity_id={}",
+                record.entity_id
+            );
+            continue;
+        };
 
-        player_entities.insert(player_id.clone(), entity);
+        player_entities.insert(player_id, entity);
         player_map
             .by_player_entity_id
             .insert(record.entity_id.clone(), entity);
-        // Legacy compat: also register under "player:uuid" if that was the old format.
-        if let Some(g) = guid {
-            let legacy_key = format!("player:{g}");
-            if legacy_key != record.entity_id {
-                player_map.by_player_entity_id.insert(legacy_key, entity);
-            }
-        }
+        player_map
+            .by_player_entity_id
+            .insert(player_id.canonical_wire_id(), entity);
 
         let control_guid = component_record(&record.components, "controlled_entity_guid")
             .and_then(|c| decode_graph_component_payload(c, type_paths))
             .and_then(|payload| {
                 serde_json::from_value::<ControlledEntityGuid>(payload.clone()).ok()
             })
-            .and_then(|v| v.0);
+            .and_then(|v| v.0)
+            .and_then(|raw| sidereal_net::RuntimeEntityId::parse(raw.as_str()).map(|id| id.0));
         desired_control_by_player.insert(player_id, control_guid);
     }
 
@@ -293,11 +314,11 @@ fn derive_control_bindings(
         let Some(owner) = owner_id else { continue };
 
         // The owner_id value might be a bare UUID or a legacy "player:uuid".
-        let player_guid = parse_guid_from_entity_id(&owner.0)
-            .map(|g| g.to_string())
-            .unwrap_or(owner.0.clone());
+        let Some(player_id) = PlayerEntityId::parse(owner.0.as_str()) else {
+            continue;
+        };
 
-        if !player_entities.contains_key(&player_guid) {
+        if !player_entities.contains_key(&player_id) {
             continue;
         }
 
@@ -310,23 +331,16 @@ fn derive_control_bindings(
         let entity_guid = parse_guid_from_entity_id(&record.entity_id);
 
         commands.entity(entity).insert(SimulatedControlledEntity {
-            player_entity_id: owner.0.clone(),
+            player_entity_id: player_id,
         });
 
         // Check if this entity matches any player's desired control target.
-        if let Some(desired) = desired_control_by_player.get(&player_guid) {
+        if let Some(desired) = desired_control_by_player.get(&player_id) {
             let matches = desired
                 .as_ref()
-                .is_some_and(|guid_str| entity_guid.is_some_and(|eg| eg.to_string() == *guid_str));
+                .is_some_and(|guid| entity_guid == Some(*guid));
             if matches {
-                controlled_map
-                    .by_player_entity_id
-                    .insert(owner.0.clone(), entity);
-                // Also register under legacy key.
-                let legacy_key = format!("player:{player_guid}");
-                controlled_map
-                    .by_player_entity_id
-                    .insert(legacy_key, entity);
+                controlled_map.by_player_entity_id.insert(player_id, entity);
             }
         }
     }
@@ -342,11 +356,11 @@ fn derive_control_bindings(
         }
         let desired = desired_control_by_player.get(player_id);
         let is_self_control =
-            desired.is_some_and(|d| d.as_ref().is_some_and(|guid_str| guid_str == player_id));
+            desired.is_some_and(|d| d.as_ref().is_some_and(|guid| *guid == player_id.0));
         if is_self_control {
             controlled_map
                 .by_player_entity_id
-                .insert(player_id.clone(), player_entity);
+                .insert(*player_id, player_entity);
         }
     }
 }
@@ -422,6 +436,13 @@ pub fn process_bootstrap_entity_commands(
         if !processed_players.insert(cmd.player_entity_id.clone()) {
             continue;
         }
+        let Some(player_id) = PlayerEntityId::parse(cmd.player_entity_id.as_str()) else {
+            bevy::log::warn!(
+                "bootstrap: invalid player_entity_id={}, skipping",
+                cmd.player_entity_id
+            );
+            continue;
+        };
 
         // If the player entity isn't in the world yet, attempt deferred hydration.
         if !player_entity_map
@@ -487,14 +508,15 @@ pub fn process_bootstrap_entity_commands(
 
         let has_live_controlled_entity = controlled_entity_map
             .by_player_entity_id
-            .get(&cmd.player_entity_id)
+            .get(&player_id)
             .is_some_and(|entity| all_guids.get(*entity).is_ok());
 
         if !has_live_controlled_entity {
-            let owner_match = cmd.player_entity_id.clone();
             let mut existing_matches = simulated_entities
                 .iter()
-                .filter(|(_, _, owner)| owner.0 == owner_match)
+                .filter(|(_, _, owner)| {
+                    PlayerEntityId::parse(owner.0.as_str()).is_some_and(|id| id == player_id)
+                })
                 .collect::<Vec<_>>();
             if let Some((existing_entity, existing_guid, _)) = existing_matches.pop() {
                 if !existing_matches.is_empty() {
@@ -505,16 +527,14 @@ pub fn process_bootstrap_entity_commands(
                 }
                 controlled_entity_map
                     .by_player_entity_id
-                    .insert(cmd.player_entity_id.clone(), existing_entity);
+                    .insert(player_id, existing_entity);
                 commands
                     .entity(player_entity)
                     .insert(ControlledEntityGuid(Some(existing_guid.0.to_string())));
             }
         }
 
-        if let Some(&controlled_entity) = controlled_entity_map
-            .by_player_entity_id
-            .get(&cmd.player_entity_id)
+        if let Some(&controlled_entity) = controlled_entity_map.by_player_entity_id.get(&player_id)
         {
             if let Ok(control_guid) = all_guids.get(controlled_entity) {
                 commands
@@ -550,12 +570,7 @@ pub fn apply_pending_controlled_by_bindings(
 /// Syncs Avian Position/Rotation to Bevy Transform for physics entities (With<RigidBody>).
 #[allow(clippy::type_complexity)]
 pub fn sync_controlled_entity_transforms(
-    mut entities: Query<
-        '_,
-        '_,
-        (&'_ Position, &'_ Rotation, &'_ mut Transform),
-        With<RigidBody>,
-    >,
+    mut entities: Query<'_, '_, (&'_ Position, &'_ Rotation, &'_ mut Transform), With<RigidBody>>,
 ) {
     for (position, rotation, mut transform) in &mut entities {
         let mut planar_position = position.0;

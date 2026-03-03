@@ -27,6 +27,9 @@ fn default_flight_capabilities_match_allowlist() {
     for action in LEGACY_FLIGHT_CONTROL_ACTIONS {
         assert!(caps.can_handle(action));
     }
+    assert!(caps.can_handle(EntityAction::AfterburnerOn));
+    assert!(caps.can_handle(EntityAction::AfterburnerOff));
     assert!(caps.can_handle(EntityAction::Brake));
-    assert!(!caps.can_handle(EntityAction::FirePrimary));
+    assert!(caps.can_handle(EntityAction::FirePrimary));
+    assert!(caps.can_handle(EntityAction::FireSecondary));
 }

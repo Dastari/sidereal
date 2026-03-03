@@ -11,15 +11,15 @@ Deliver a browser-hosted WASM client that runs the same gameplay-facing runtime 
 
 ## 2. Current Baseline (Code-Accurate)
 
-- Native runtime remains monolithic in `bins/sidereal-client/src/native.rs` (~5.5k LOC).
-- WASM runtime is scaffold-only in `bins/sidereal-client/src/wasm.rs` (startup log + render plugin only).
+- Native runtime is now plugin-separated under `bins/sidereal-client/src/native/` with feature plugins wired from `native/mod.rs`.
+- WASM runtime remains scaffold-only in `bins/sidereal-client/src/wasm.rs` (startup log + render plugin only).
 - Native transport is explicitly UDP (`UdpIo`) and replication server startup is explicitly UDP (`ServerUdpIo`).
 - Client dependency wiring is native-heavy:
   - `sidereal-game`, `sidereal-net`, `sidereal-runtime-sync`, `sidereal-asset-runtime`, `lightyear`, and `reqwest` are currently in `cfg(not(target_arch = "wasm32"))`.
   - wasm target currently only wires `bevy_remote`.
-- Protocol registration currently hardwires `lightyear` native input plugin (`NativeInputPlugin<PlayerInput>`), which blocks direct reuse for browser input transport wiring.
+- Protocol registration currently includes native input plugin wiring (`NativeInputPlugin<PlayerInput>`), which still needs separation for browser transport wiring.
 - Native asset cache/shader flow currently uses direct filesystem APIs (`std::fs`, local path probing/writes).
-- Native auth/world-entry flow currently uses blocking HTTP client APIs (`reqwest::blocking`).
+- Native auth/world-entry flow is non-blocking in ECS schedules, but still uses native-specific HTTP adapter paths that must be abstracted for WASM.
 - `cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu` passing today does not indicate runtime parity.
 
 ## 3. Non-Negotiable Constraints
@@ -45,24 +45,16 @@ Problem: source-of-truth docs currently use mixed browser transport wording (`We
 Exit criteria:
 - One transport contract is documented everywhere with no contradictions.
 
-## 5. Phase 1: Decompose Native Monolith into Shared Runtime Modules
+## 5. Phase 1: Share Native Runtime Modules with WASM Entry
 
-Refactor `bins/sidereal-client/src/native.rs` into `bins/sidereal-client/src/client/` domain modules.
+Native plugin/module decomposition is in place. Remaining work is to share those modules with WASM runtime entry.
 
-- [ ] Create module boundaries for:
-  - app/plugin wiring
-  - auth + session state machine
-  - protocol/replication message wiring
-  - prediction/reconciliation setup
-  - entity projection/render adapters
-  - asset stream/cache state machine
-  - UI screens/dialog orchestration
-- [ ] Keep `native.rs` as thin bootstrap/wiring entrypoint.
-- [ ] Rewire `wasm.rs` to use the same shared module graph (initially with transport/auth/cache adapters as stubs where needed).
+- [ ] Reuse `native/` shared gameplay/runtime modules from `wasm.rs` where target-safe.
+- [ ] Introduce explicit transport/auth/cache adapter boundaries for WASM-specific I/O.
 - [ ] Ensure no gameplay/prediction system duplication between native and WASM paths.
 
 Exit criteria:
-- Shared client runtime modules are used by both `native.rs` and `wasm.rs`.
+- Shared client runtime modules are used by both `native/mod.rs` and `wasm.rs`.
 
 ## 6. Phase 2: Dependency and Protocol Registration Reshaping
 

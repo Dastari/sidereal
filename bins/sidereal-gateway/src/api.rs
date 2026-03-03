@@ -157,15 +157,21 @@ async fn stream_asset(
     let (relative_path, content_type) = resolve_asset_stream_path(&asset_id)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown asset_id"))?;
     let full_path = root.join(relative_path);
-    if !full_path.exists() {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            format!("asset missing on gateway: {}", full_path.display()),
-        ));
-    }
-    let file = tokio::fs::File::open(&full_path)
-        .await
-        .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let file = match tokio::fs::File::open(&full_path).await {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("asset missing on gateway: {}", full_path.display()),
+            ));
+        }
+        Err(err) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                err.to_string(),
+            ));
+        }
+    };
     let stream = ReaderStream::new(file);
     let body = axum::body::Body::from_stream(stream);
     Ok(([(header::CONTENT_TYPE, content_type)], body).into_response())

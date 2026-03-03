@@ -1,4 +1,5 @@
 //! Client input: realtime input messages, input marker ownership, debug logging.
+#![allow(clippy::items_after_test_module)]
 
 use bevy::log::info;
 use bevy::prelude::*;
@@ -6,7 +7,7 @@ use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::input::native::{ActionState, InputMarker};
 use sidereal_game::EntityAction;
-use sidereal_net::{ClientRealtimeInputMessage, ControlChannel, PlayerInput};
+use sidereal_net::{ClientRealtimeInputMessage, InputChannel, PlayerEntityId, PlayerInput};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 use std::sync::OnceLock;
 
@@ -24,12 +25,17 @@ pub(crate) struct InputAxes {
     pub thrust: f32,
     pub turn: f32,
     pub brake: bool,
+    pub afterburner: bool,
+    pub fire_primary: bool,
 }
 
 pub(crate) fn player_input_from_keyboard(
     input: Option<&ButtonInput<KeyCode>>,
 ) -> (PlayerInput, InputAxes) {
-    let brake = input.is_some_and(|keys| keys.pressed(KeyCode::Space));
+    let brake = input.is_some_and(|keys| {
+        keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight)
+    });
+    let fire_primary = input.is_some_and(|keys| keys.pressed(KeyCode::Space));
     let thrust = if brake {
         0.0
     } else if input.is_some_and(|keys| keys.pressed(KeyCode::KeyW)) {
@@ -46,12 +52,19 @@ pub(crate) fn player_input_from_keyboard(
     } else {
         0.0
     };
+    let afterburner = input
+        .is_some_and(|keys| keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
     let axes = InputAxes {
         thrust,
         turn,
         brake,
+        afterburner,
+        fire_primary,
     };
-    (PlayerInput::from_axis_inputs(thrust, turn, brake), axes)
+    (
+        PlayerInput::from_axis_inputs(thrust, turn, brake, afterburner, fire_primary),
+        axes,
+    )
 }
 
 pub(crate) fn neutral_player_input() -> (PlayerInput, InputAxes) {
@@ -59,8 +72,13 @@ pub(crate) fn neutral_player_input() -> (PlayerInput, InputAxes) {
         thrust: 0.0,
         turn: 0.0,
         brake: false,
+        afterburner: false,
+        fire_primary: false,
     };
-    (PlayerInput::from_axis_inputs(0.0, 0.0, false), axes)
+    (
+        PlayerInput::from_axis_inputs(0.0, 0.0, false, false, false),
+        axes,
+    )
 }
 
 pub fn should_send_realtime_input_message(
@@ -73,13 +91,11 @@ pub fn should_send_realtime_input_message(
     input_changed || target_changed || (now_s - last_sent_at_s) >= HEARTBEAT_INTERVAL_S
 }
 
-/// Canonical form for player entity id so server lookup matches (server uses "player:uuid").
+/// Canonical form for player entity id so server/client lookup matches.
 fn canonical_player_entity_id(id: &str) -> String {
-    if id.starts_with("player:") {
-        id.to_string()
-    } else {
-        format!("player:{id}")
-    }
+    PlayerEntityId::parse(id)
+        .map(PlayerEntityId::canonical_wire_id)
+        .unwrap_or_else(|| id.to_string())
 }
 
 pub fn client_input_debug_logging_enabled() -> bool {
@@ -93,6 +109,7 @@ pub fn client_input_debug_logging_enabled() -> bool {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn send_lightyear_input_messages(
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
+    windows: Query<'_, '_, &'_ Window, With<bevy::window::PrimaryWindow>>,
     app_state: Option<Res<'_, State<ClientAppState>>>,
     headless_mode: Res<'_, HeadlessTransportMode>,
     time: Res<'_, Time>,
@@ -113,12 +130,13 @@ pub fn send_lightyear_input_messages(
     request_state: Res<'_, ClientControlRequestState>,
 ) {
     let in_world_state = is_active_world_state(&app_state, &headless_mode);
+    let window_focused = windows.single().map(|w| w.focused).unwrap_or(true);
 
     let (player_entity_id, player_input) = if in_world_state {
         let Some(player_entity_id) = session.player_entity_id.clone() else {
             return;
         };
-        let (player_input, _axes) = if player_view_state.detached_free_camera {
+        let (player_input, _axes) = if player_view_state.detached_free_camera || !window_focused {
             neutral_player_input()
         } else {
             player_input_from_keyboard(input.as_deref())
@@ -151,15 +169,16 @@ pub fn send_lightyear_input_messages(
 
     // Canonical ids for network message so server lookup matches (same form used for target_changed).
     let message_player_id = canonical_player_entity_id(&player_entity_id);
-    let message_controlled_id = if canonical_player_entity_id(&target_entity_id) == message_player_id {
-        message_player_id.clone()
-    } else {
-        target_entity_id.clone()
-    };
+    let message_controlled_id =
+        if canonical_player_entity_id(&target_entity_id) == message_player_id {
+            message_player_id.clone()
+        } else {
+            target_entity_id.clone()
+        };
 
     let input_changed = input_send_state.last_sent_actions != player_input.actions;
-    let target_changed =
-        input_send_state.last_sent_target_entity_id.as_deref() != Some(message_controlled_id.as_str());
+    let target_changed = input_send_state.last_sent_target_entity_id.as_deref()
+        != Some(message_controlled_id.as_str());
     let should_send_network = should_send_realtime_input_message(
         now_s,
         input_send_state.last_sent_at_s,
@@ -222,7 +241,7 @@ pub fn send_lightyear_input_messages(
         tick: tick.0,
     };
     for mut sender in &mut realtime_input_senders {
-        sender.send::<ControlChannel>(realtime_message.clone());
+        sender.send::<InputChannel>(realtime_message.clone());
     }
     input_send_state.last_sent_at_s = now_s;
     input_send_state.last_sent_actions = realtime_message.actions.clone();
@@ -239,6 +258,8 @@ mod tests {
         assert_eq!(axes.thrust, 0.0);
         assert_eq!(axes.turn, 0.0);
         assert!(!axes.brake);
+        assert!(!axes.afterburner);
+        assert!(!axes.fire_primary);
         assert!(input.actions.iter().all(|action| {
             matches!(
                 action,
@@ -246,6 +267,7 @@ mod tests {
                     | sidereal_game::EntityAction::YawNeutral
                     | sidereal_game::EntityAction::LongitudinalNeutral
                     | sidereal_game::EntityAction::LateralNeutral
+                    | sidereal_game::EntityAction::AfterburnerOff
             )
         }));
     }

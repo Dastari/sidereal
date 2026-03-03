@@ -1,128 +1,94 @@
 //! World entity transform sync, interpolation, and player/camera lock.
 
-use avian2d::prelude::{Position, Rotation};
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::prelude::*;
-use sidereal_game::PlayerTag;
+use sidereal_game::{ControlledEntityGuid, EntityGuid, PlayerTag};
+use std::sync::OnceLock;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
-    ControlledEntity, GameplayCamera, InterpolatedVisualSmoothing,
-    SuppressedPredictedDuplicateVisual, TopDownCamera, WorldEntity,
+    ControlledEntity, GameplayCamera, NearbyCollisionProxy, TopDownCamera, WorldEntity,
 };
-use avian2d::prelude::{AngularVelocity, LinearVelocity};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
+
+const REMOTE_VISUAL_SMOOTH_RATE: f32 = 20.0;
+const REMOTE_VISUAL_SNAP_THRESHOLD_M: f32 = 64.0;
+
+fn remote_root_anchor_fallback_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SIDEREAL_CLIENT_REMOTE_ROOT_ANCHOR_FALLBACK")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    })
+}
 
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_world_entity_transforms_from_physics(
+    time: Res<'_, Time>,
     mut entities: Query<
         '_,
         '_,
-        (&mut Transform, Option<&Position>, Option<&Rotation>),
+        (
+            &mut Transform,
+            Option<&Position>,
+            Option<&Rotation>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<avian2d::prelude::RigidBody>,
+            Has<NearbyCollisionProxy>,
+            Has<ControlledEntity>,
+        ),
         (
             With<WorldEntity>,
             Or<(With<Position>, With<Rotation>)>,
             Without<Camera>,
-            Without<lightyear::prelude::Interpolated>,
         ),
     >,
 ) {
-    for (mut transform, position, rotation) in &mut entities {
+    for (
+        mut transform,
+        position,
+        rotation,
+        is_interpolated,
+        has_rigidbody,
+        is_nearby_proxy,
+        is_controlled,
+    ) in &mut entities
+    {
+        // Interpolated entities that still carry a local rigid body are synced by the
+        // Lightyear/Avian integration path. Nearby collision proxies are a local kinematic
+        // exception, so keep fallback transform sync enabled for them.
+        if is_interpolated && has_rigidbody && !is_nearby_proxy {
+            continue;
+        }
+        let should_snap = is_controlled || is_nearby_proxy;
+        let alpha = 1.0 - (-REMOTE_VISUAL_SMOOTH_RATE * time.delta_secs()).exp();
+
         if let Some(position) = position {
-            transform.translation.x = position.0.x;
-            transform.translation.y = position.0.y;
+            if should_snap {
+                transform.translation.x = position.0.x;
+                transform.translation.y = position.0.y;
+            } else {
+                let current = transform.translation.truncate();
+                let target = position.0;
+                if (target - current).length() > REMOTE_VISUAL_SNAP_THRESHOLD_M {
+                    transform.translation.x = target.x;
+                    transform.translation.y = target.y;
+                } else {
+                    transform.translation.x += (target.x - current.x) * alpha;
+                    transform.translation.y += (target.y - current.y) * alpha;
+                }
+            }
         }
         if let Some(rotation) = rotation {
-            transform.rotation = (*rotation).into();
+            let target: Quat = (*rotation).into();
+            if should_snap {
+                transform.rotation = target;
+            } else {
+                transform.rotation = transform.rotation.slerp(target, alpha);
+            }
         }
         transform.translation.z = 0.0;
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub(crate) fn refresh_interpolated_visual_targets_system(
-    time: Res<'_, Time>,
-    mut commands: Commands<'_, '_>,
-    mut entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &Position,
-            Option<&Rotation>,
-            &mut Transform,
-            Option<&mut InterpolatedVisualSmoothing>,
-        ),
-        (
-            With<WorldEntity>,
-            With<lightyear::prelude::Interpolated>,
-            Without<SuppressedPredictedDuplicateVisual>,
-            Or<(Changed<Position>, Changed<Rotation>)>,
-        ),
-    >,
-) {
-    let now_s = time.elapsed_secs_f64();
-    for (entity, position, rotation, mut transform, smoothing) in &mut entities {
-        let target_pos = position.0;
-        let target_rot: Quat = rotation
-            .copied()
-            .map(Quat::from)
-            .unwrap_or(transform.rotation);
-
-        if let Some(mut smoothing) = smoothing {
-            let interval_s = (now_s - smoothing.last_snapshot_at_s) as f32;
-            let duration_s = interval_s.clamp(1.0 / 120.0, 0.25);
-            smoothing.from_pos = transform.translation.truncate();
-            smoothing.to_pos = target_pos;
-            smoothing.from_rot = transform.rotation;
-            smoothing.to_rot = target_rot;
-            smoothing.elapsed_s = 0.0;
-            smoothing.duration_s = duration_s;
-            smoothing.last_snapshot_at_s = now_s;
-        } else {
-            transform.translation.x = target_pos.x;
-            transform.translation.y = target_pos.y;
-            transform.translation.z = 0.0;
-            transform.rotation = target_rot;
-            commands.entity(entity).insert(InterpolatedVisualSmoothing {
-                from_pos: target_pos,
-                to_pos: target_pos,
-                from_rot: target_rot,
-                to_rot: target_rot,
-                elapsed_s: 1.0 / 30.0,
-                duration_s: 1.0 / 30.0,
-                last_snapshot_at_s: now_s,
-            });
-        }
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub(crate) fn apply_interpolated_visual_smoothing_system(
-    time: Res<'_, Time>,
-    mut entities: Query<
-        '_,
-        '_,
-        (&mut Transform, &mut InterpolatedVisualSmoothing),
-        (
-            With<WorldEntity>,
-            With<lightyear::prelude::Interpolated>,
-            Without<SuppressedPredictedDuplicateVisual>,
-        ),
-    >,
-) {
-    let dt = time.delta_secs().max(0.0);
-    for (mut transform, mut smoothing) in &mut entities {
-        smoothing.elapsed_s = (smoothing.elapsed_s + dt).max(0.0);
-        let alpha = if smoothing.duration_s <= 0.0 {
-            1.0
-        } else {
-            (smoothing.elapsed_s / smoothing.duration_s).clamp(0.0, 1.0)
-        };
-        let pos = smoothing.from_pos.lerp(smoothing.to_pos, alpha);
-        transform.translation.x = pos.x;
-        transform.translation.y = pos.y;
-        transform.translation.z = 0.0;
-        transform.rotation = smoothing.from_rot.slerp(smoothing.to_rot, alpha);
     }
 }
 
@@ -282,4 +248,131 @@ pub(crate) fn lock_camera_to_player_entity_end_of_frame(
     camera_transform.translation.x = anchor_xy.x;
     camera_transform.translation.y = anchor_xy.y;
     camera_transform.translation.z = 80.0;
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_remote_controlled_ship_roots_from_player_anchors(
+    session: Res<'_, ClientSession>,
+    players: Query<
+        '_,
+        '_,
+        (
+            &'_ EntityGuid,
+            &'_ ControlledEntityGuid,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ LinearVelocity>,
+            Option<&'_ AngularVelocity>,
+            Option<&'_ Transform>,
+        ),
+        With<PlayerTag>,
+    >,
+    mut roots: Query<
+        '_,
+        '_,
+        (
+            &'_ EntityGuid,
+            Option<&'_ mut Position>,
+            Option<&'_ mut Rotation>,
+            Option<&'_ mut LinearVelocity>,
+            Option<&'_ mut AngularVelocity>,
+            Option<&'_ mut Transform>,
+        ),
+        (
+            With<WorldEntity>,
+            Without<PlayerTag>,
+            Without<ControlledEntity>,
+            Without<lightyear::prelude::Predicted>,
+        ),
+    >,
+) {
+    if !remote_root_anchor_fallback_enabled() {
+        return;
+    }
+
+    let local_player_guid = session
+        .player_entity_id
+        .as_deref()
+        .and_then(|raw| uuid::Uuid::parse_str(raw).ok());
+
+    #[derive(Clone, Copy)]
+    struct AnchorMotionSample {
+        world: Vec2,
+        rotation: Option<Rotation>,
+        linear_velocity: Option<Vec2>,
+        angular_velocity: Option<f32>,
+    }
+
+    let mut controlled_motion_by_guid =
+        std::collections::HashMap::<uuid::Uuid, AnchorMotionSample>::new();
+    for (
+        player_guid,
+        controlled_guid,
+        player_position,
+        player_rotation,
+        player_linear_velocity,
+        player_angular_velocity,
+        player_transform,
+    ) in &players
+    {
+        if Some(player_guid.0) == local_player_guid {
+            continue;
+        }
+        let Some(controlled_guid_raw) = controlled_guid.0.as_deref() else {
+            continue;
+        };
+        let Ok(controlled_root_guid) = uuid::Uuid::parse_str(controlled_guid_raw) else {
+            continue;
+        };
+        let world = player_position
+            .map(|position| position.0)
+            .unwrap_or_else(|| player_transform.map_or(Vec2::ZERO, |t| t.translation.truncate()));
+        controlled_motion_by_guid.insert(
+            controlled_root_guid,
+            AnchorMotionSample {
+                world,
+                rotation: player_rotation.copied(),
+                linear_velocity: player_linear_velocity.map(|velocity| velocity.0),
+                angular_velocity: player_angular_velocity.map(|velocity| velocity.0),
+            },
+        );
+    }
+
+    for (
+        root_guid,
+        root_position,
+        root_rotation,
+        root_linear_velocity,
+        root_angular_velocity,
+        root_transform,
+    ) in &mut roots
+    {
+        let Some(sample) = controlled_motion_by_guid.get(&root_guid.0).copied() else {
+            continue;
+        };
+        if let Some(mut position) = root_position {
+            position.0 = sample.world;
+        }
+        if let (Some(mut rotation), Some(source_rotation)) = (root_rotation, sample.rotation) {
+            *rotation = source_rotation;
+        }
+        if let (Some(mut linear_velocity), Some(source_linear_velocity)) =
+            (root_linear_velocity, sample.linear_velocity)
+        {
+            linear_velocity.0 = source_linear_velocity;
+        }
+        if let (Some(mut angular_velocity), Some(source_angular_velocity)) =
+            (root_angular_velocity, sample.angular_velocity)
+        {
+            angular_velocity.0 = source_angular_velocity;
+        }
+        if let Some(mut transform) = root_transform {
+            transform.translation.x = sample.world.x;
+            transform.translation.y = sample.world.y;
+            transform.translation.z = 0.0;
+            if let Some(source_rotation) = sample.rotation {
+                transform.rotation = source_rotation.into();
+            }
+        }
+    }
 }

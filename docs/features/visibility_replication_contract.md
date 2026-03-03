@@ -40,10 +40,21 @@ Implemented now:
 - per-client entity visibility updates in replication fixed tick,
 - owner/public/faction visibility allowances,
 - scanner range fallback with default floor,
+- candidate-generation stage is explicit and pluggable:
+  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=full_scan` (default),
+  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=spatial_grid` (uniform-grid candidate preselection),
 - **global world position**: all range/delivery checks use `GlobalTransform` (world position). Roots and mounted children are included; mounted entities' visibility uses their world position so components on children are correctly in scope.
 - mount-root resolution by traversing `MountedOn` parent chain for owner/public/faction inheritance; no `Without<MountedOn>` filter.
 - observer anchor from player entity **GlobalTransform** (world position), with scanner-source union over owned entities (also world positions).
 - control semantics align to `camera <- player <- controlled(optional)`; observer/player anchor is the delivery-center source-of-truth.
+- candidate filtering is fail-closed:
+  - ownership/public/faction/scanner policy exceptions bypass candidate-miss culling,
+  - final visibility decision still runs full policy checks.
+- visibility telemetry is emitted in summary logs (`SIDEREAL_REPLICATION_SUMMARY_LOGS=1`):
+  - `query_ms`,
+  - `clients`,
+  - `entities`,
+  - `candidates_per_client`.
 
 Known gap:
 - `#[sidereal_component(..., visibility = [...])]` metadata is recorded but not yet used as a strict per-component outbound redaction gate.

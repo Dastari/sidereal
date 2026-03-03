@@ -2,8 +2,10 @@ import * as React from 'react'
 import {
   COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER,
   COMPONENT_TYPE_DENSITY,
+  COMPONENT_TYPE_ENGINE,
   COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
+  COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
   getComponentTypeKey,
   isEditableComponent,
 } from './constants'
@@ -18,6 +20,11 @@ const CharacterMovementControllerEditor = React.lazy(() =>
     default: m.CharacterMovementControllerEditor,
   })),
 )
+const EngineEditor = React.lazy(() =>
+  import('./EngineEditor').then((m) => ({
+    default: m.EngineEditor,
+  })),
+)
 const StarfieldShaderSettingsEditor = React.lazy(() =>
   import('./StarfieldShaderSettingsEditor').then((m) => ({
     default: m.StarfieldShaderSettingsEditor,
@@ -28,6 +35,11 @@ const SpaceBackgroundShaderSettingsEditor = React.lazy(() =>
     default: m.SpaceBackgroundShaderSettingsEditor,
   })),
 )
+const ThrusterPlumeShaderSettingsEditor = React.lazy(() =>
+  import('./ThrusterPlumeShaderSettingsEditor').then((m) => ({
+    default: m.ThrusterPlumeShaderSettingsEditor,
+  })),
+)
 
 const EDITOR_MAP: Record<
   string,
@@ -36,9 +48,12 @@ const EDITOR_MAP: Record<
   [COMPONENT_TYPE_DENSITY]: DensityEditor,
   [COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER]:
     CharacterMovementControllerEditor,
+  [COMPONENT_TYPE_ENGINE]: EngineEditor,
   [COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS]: StarfieldShaderSettingsEditor,
   [COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS]:
     SpaceBackgroundShaderSettingsEditor,
+  [COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS]:
+    ThrusterPlumeShaderSettingsEditor,
 }
 
 export { isEditableComponent, getComponentTypeKey }

@@ -16,7 +16,6 @@ Project operating contract for human and AI contributors working in this reposit
 - Visibility/replication implementation contract: `docs/features/visibility_replication_contract.md`
 - Asset delivery implementation contract: `docs/features/asset_delivery_contract.md`
 - UI design system and component patterns: `docs/ui_design_guide.md`
-- Workspace test area guidance: `tests/README.md`
 - Repo overview: `README.md`
 
 If any code change conflicts with docs, update docs in the same change or stop and resolve ambiguity first.
