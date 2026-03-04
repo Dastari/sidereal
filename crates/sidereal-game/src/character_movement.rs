@@ -14,6 +14,24 @@ const DEFAULT_PLAYER_DAMPING_PER_S: f32 = 8.0;
 const MIN_PLAYER_SPEED_MPS: f32 = 1.0;
 const STOP_EPSILON_MPS: f32 = 0.05;
 
+fn parse_guid_like(value: &str) -> Option<Uuid> {
+    Uuid::parse_str(value).ok().or_else(|| {
+        value
+            .split(':')
+            .nth(1)
+            .and_then(|raw| Uuid::parse_str(raw).ok())
+    })
+}
+
+fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    parse_guid_like(left)
+        .zip(parse_guid_like(right))
+        .is_some_and(|(l, r)| l == r)
+}
+
 fn apply_character_action(longitudinal: &mut f32, lateral: &mut f32, action: EntityAction) -> bool {
     match action {
         EntityAction::Forward | EntityAction::ThrustForward => {
@@ -82,7 +100,7 @@ pub fn process_character_movement_actions(
         let own_guid = entity_guid.0.to_string();
         let controls_other_entity = controlled
             .and_then(|value| value.0.as_ref())
-            .is_some_and(|guid| guid != &own_guid);
+            .is_some_and(|guid| !ids_refer_to_same_guid(guid, &own_guid));
         if controls_other_entity {
             queue.clear();
             continue;
@@ -95,10 +113,9 @@ pub fn process_character_movement_actions(
         let mut lateral = 0.0_f32;
         let pending = std::mem::take(&mut queue.pending);
         for action in pending {
-            let handled = apply_character_action(&mut longitudinal, &mut lateral, action);
-            if !handled {
-                queue.pending.push(action);
-            }
+            // Character movement supports only directional intents.
+            // Drop unsupported actions (e.g. AfterburnerOff) instead of re-queuing forever.
+            let _ = apply_character_action(&mut longitudinal, &mut lateral, action);
         }
 
         let speed_mps = maybe_controller

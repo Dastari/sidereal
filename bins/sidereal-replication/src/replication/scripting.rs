@@ -1,6 +1,6 @@
 use mlua::{Function, Table, Value};
-use sidereal_persistence::GraphEntityRecord;
 use sidereal_game::default_corvette_collision_outline;
+use sidereal_persistence::GraphEntityRecord;
 use sidereal_scripting::{
     LuaSandboxPolicy, ScriptError, load_lua_module_from_root, lua_value_to_json,
     resolve_scripts_root, table_get_required_string,

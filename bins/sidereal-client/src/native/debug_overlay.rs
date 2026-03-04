@@ -3,6 +3,8 @@
 use avian2d::prelude::{LinearVelocity, Position, Rotation};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use lightyear::interpolation::interpolation_history::ConfirmedHistory;
+use lightyear::prediction::prelude::{PredictionHistory, PredictionManager};
 use sidereal_game::{
     CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ScannerRangeM, SizeM,
 };
@@ -14,6 +16,15 @@ use super::resources::{
     BootstrapWatchdogState, DebugOverlayEnabled, DeferredPredictedAdoptionState,
     LocalSimulationDebugMode, PredictionBootstrapTuning,
 };
+
+#[derive(Default)]
+pub(crate) struct RollbackSampleState {
+    last_active: bool,
+    total_entries: u64,
+    entries_since_log: u64,
+    active_frames_since_log: u64,
+    last_confirmed_tick: Option<u16>,
+}
 
 pub(crate) fn toggle_debug_overlay_system(
     input: Res<'_, ButtonInput<KeyCode>>,
@@ -174,6 +185,23 @@ pub(crate) fn draw_debug_overlay_system(
                 let world_b = pos + (rot * b.extend(0.0));
                 gizmos.line(world_a, world_b, draw_color);
             }
+
+            if is_local_controlled
+                && mounted_on.is_none()
+                && let (Some(confirmed_position), Some(confirmed_rotation)) =
+                    (confirmed_position, confirmed_rotation)
+            {
+                let confirmed_pos = confirmed_position.0.0.extend(0.0);
+                let confirmed_rot: Quat = confirmed_rotation.0.into();
+                for idx in 0..outline.points.len() {
+                    let a = outline.points[idx];
+                    let b = outline.points[(idx + 1) % outline.points.len()];
+                    let world_a = confirmed_pos + (confirmed_rot * a.extend(0.0));
+                    let world_b = confirmed_pos + (confirmed_rot * b.extend(0.0));
+                    gizmos.line(world_a, world_b, controlled_confirmed_color);
+                }
+                gizmos.line(pos, confirmed_pos, prediction_error_color);
+            }
         } else if let Some(half_extents) = half_extents {
             let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, half_extents);
             let transform = Transform::from_translation(pos).with_rotation(rot);
@@ -248,8 +276,65 @@ pub(crate) fn log_prediction_runtime_state(
     predicted_entities: Query<'_, '_, Entity, With<lightyear::prelude::Predicted>>,
     interpolated_entities: Query<'_, '_, Entity, With<lightyear::prelude::Interpolated>>,
     controlled_entities: Query<'_, '_, Entity, With<ControlledEntity>>,
+    interpolated_spatial_entities: Query<
+        '_,
+        '_,
+        Entity,
+        (With<lightyear::prelude::Interpolated>, With<Position>),
+    >,
+    interpolation_history_probe: Query<
+        '_,
+        '_,
+        Has<ConfirmedHistory<Position>>,
+        (With<lightyear::prelude::Interpolated>, With<Position>),
+    >,
+    controlled_prediction_state: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Has<lightyear::prelude::Predicted>,
+            Option<&'_ lightyear::prelude::Confirmed<Position>>,
+            Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
+            Option<&'_ lightyear::prelude::Confirmed<LinearVelocity>>,
+            Option<&'_ lightyear::prelude::ConfirmedTick>,
+            Has<PredictionHistory<Position>>,
+            Has<PredictionHistory<Rotation>>,
+            Has<PredictionHistory<LinearVelocity>>,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ LinearVelocity>,
+        ),
+        With<ControlledEntity>,
+    >,
+    prediction_managers: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ PredictionManager,
+            Has<lightyear::prelude::client::Client>,
+            Has<lightyear::prelude::Rollback>,
+        ),
+    >,
+    mut rollback_sample: Local<'_, RollbackSampleState>,
 ) {
     let now_s = time.elapsed_secs_f64();
+    let mut rollback_active = false;
+    for (_, manager, _, _) in &prediction_managers {
+        rollback_active |= manager.is_rollback();
+    }
+    if rollback_active {
+        rollback_sample.active_frames_since_log =
+            rollback_sample.active_frames_since_log.saturating_add(1);
+        if !rollback_sample.last_active {
+            rollback_sample.total_entries = rollback_sample.total_entries.saturating_add(1);
+            rollback_sample.entries_since_log = rollback_sample.entries_since_log.saturating_add(1);
+        }
+    }
+    rollback_sample.last_active = rollback_active;
+
     if now_s - adoption_state.last_runtime_summary_at_s < tuning.defer_summary_interval_s {
         return;
     }
@@ -259,20 +344,110 @@ pub(crate) fn log_prediction_runtime_state(
     let predicted_count = predicted_entities.iter().count();
     let interpolated_count = interpolated_entities.iter().count();
     let controlled_count = controlled_entities.iter().count();
+    let manager_count = prediction_managers.iter().count();
+    let manager_with_client_count = prediction_managers
+        .iter()
+        .filter(|(_, _, has_client, _)| *has_client)
+        .count();
+    let manager_with_rollback_count = prediction_managers
+        .iter()
+        .filter(|(_, _, _, has_rollback)| *has_rollback)
+        .count();
+    let manager_state = prediction_managers
+        .iter()
+        .next()
+        .map(|(entity, manager, _, _)| {
+            (
+                entity,
+                manager.rollback_policy.state,
+                manager.rollback_policy.input,
+                manager.rollback_policy.max_rollback_ticks,
+                manager.get_rollback_start_tick().map(|tick| tick.0),
+            )
+        });
     let mode = if local_mode.0 { "local" } else { "predicted" };
     bevy::log::info!(
-        "prediction runtime summary mode={} world={} replicated={} predicted={} interpolated={} controlled={} deferred_waiting={}",
+        "prediction runtime summary mode={} world={} replicated={} predicted={} interpolated={} controlled={} rollback_active={} rollback_entries_since_log={} rollback_entries_total={} rollback_active_frames_since_log={} managers={} managers_with_client={} managers_with_rollback={} manager_entity={:?} rollback_policy={:?}/{:?} rollback_max_ticks={} rollback_start_tick={:?} deferred_waiting={}",
         mode,
         world_count,
         replicated_count,
         predicted_count,
         interpolated_count,
         controlled_count,
+        rollback_active,
+        rollback_sample.entries_since_log,
+        rollback_sample.total_entries,
+        rollback_sample.active_frames_since_log,
+        manager_count,
+        manager_with_client_count,
+        manager_with_rollback_count,
+        manager_state.map(|v| v.0),
+        manager_state.map(|v| v.1),
+        manager_state.map(|v| v.2),
+        manager_state.map(|v| v.3).unwrap_or_default(),
+        manager_state.and_then(|v| v.4),
         adoption_state
             .waiting_entity_id
             .as_deref()
             .unwrap_or("<none>")
     );
+    let interpolated_spatial_count = interpolated_spatial_entities.iter().count();
+    let interp_with_history = interpolation_history_probe
+        .iter()
+        .filter(|has| *has)
+        .count();
+    let interp_without_history = interpolated_spatial_count.saturating_sub(interp_with_history);
+    if interpolated_count > 0 {
+        bevy::log::info!(
+            "interpolation pipeline: interpolated={} spatial={} with_confirmed_history={} missing_history={}",
+            interpolated_count,
+            interpolated_spatial_count,
+            interp_with_history,
+            interp_without_history,
+        );
+    }
+    if let Ok((
+        controlled_entity,
+        guid,
+        is_predicted_marker,
+        confirmed_position,
+        confirmed_rotation,
+        confirmed_velocity,
+        confirmed_tick,
+        has_position_history,
+        has_rotation_history,
+        has_velocity_history,
+        current_position,
+        current_rotation,
+        current_velocity,
+    )) = controlled_prediction_state.single()
+    {
+        let confirmed_tick_value = confirmed_tick.map(|tick| tick.tick.0);
+        let confirmed_tick_advanced = confirmed_tick_value
+            .zip(rollback_sample.last_confirmed_tick)
+            .is_some_and(|(current, previous)| current != previous);
+        bevy::log::info!(
+            "prediction controlled entity={} guid={} predicted_marker={} confirmed_pos={} confirmed_rot={} confirmed_vel={} confirmed_tick={:?} confirmed_tick_advanced={} hist_pos={} hist_rot={} hist_vel={} current_pos={:?} current_rot_rad={:?} current_vel={:?}",
+            controlled_entity,
+            guid.map(|v| v.0.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            is_predicted_marker,
+            confirmed_position.is_some(),
+            confirmed_rotation.is_some(),
+            confirmed_velocity.is_some(),
+            confirmed_tick_value,
+            confirmed_tick_advanced,
+            has_position_history,
+            has_rotation_history,
+            has_velocity_history,
+            current_position.map(|v| v.0),
+            current_rotation.map(|v| v.as_radians()),
+            current_velocity.map(|v| v.0),
+        );
+        rollback_sample.last_confirmed_tick = confirmed_tick_value;
+    }
+    rollback_sample.entries_since_log = 0;
+    rollback_sample.active_frames_since_log = 0;
     if !local_mode.0 && watchdog.replication_state_seen {
         let in_world_age_s = watchdog
             .in_world_entered_at_s

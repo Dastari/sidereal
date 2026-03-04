@@ -383,15 +383,17 @@ fn build_script_context(
 
     let emit_intents = Rc::clone(&pending_intents);
     let emit_intent = lua
-        .create_function(move |_lua, (_ctx, action, payload): (Table, String, Value)| {
-            let payload_json = lua_value_to_json(payload).map_err(|err| {
-                mlua::Error::runtime(format!("intent payload decode failed: {err}"))
-            })?;
-            let intent =
-                parse_intent(action.as_str(), &payload_json).map_err(mlua::Error::runtime)?;
-            emit_intents.borrow_mut().push(intent);
-            Ok(())
-        })
+        .create_function(
+            move |_lua, (_ctx, action, payload): (Table, String, Value)| {
+                let payload_json = lua_value_to_json(payload).map_err(|err| {
+                    mlua::Error::runtime(format!("intent payload decode failed: {err}"))
+                })?;
+                let intent =
+                    parse_intent(action.as_str(), &payload_json).map_err(mlua::Error::runtime)?;
+                emit_intents.borrow_mut().push(intent);
+                Ok(())
+            },
+        )
         .map_err(|err| ScriptError::Runtime(format!("create emit_intent failed: {err}")))?;
     ctx.set("emit_intent", emit_intent)
         .map_err(|err| ScriptError::Runtime(format!("set emit_intent failed: {err}")))?;

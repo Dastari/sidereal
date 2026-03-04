@@ -9,11 +9,11 @@ use bevy::state::state_scoped::DespawnOnExit;
 use lightyear::prelude::MessageReceiver;
 use lightyear::prelude::input::native::ActionState;
 use sidereal_game::{
-    AfterburnerCapability, AfterburnerState, AmmoCount, BallisticWeapon, Engine, EntityAction,
-    EntityGuid, FlightComputer, FullscreenLayer, Hardpoint, MountedOn, ParentGuid, PlayerTag,
-    SPACE_BACKGROUND_LAYER_KIND, STARFIELD_LAYER_KIND, SizeM, SpaceBackgroundFullscreenLayerBundle,
-    SpaceBackgroundShaderSettings, StarfieldFullscreenLayerBundle, StarfieldShaderSettings,
-    ThrusterPlumeShaderSettings,
+    AfterburnerCapability, AfterburnerState, AmmoCount, BallisticWeapon, ControlledEntityGuid,
+    Engine, EntityAction, EntityGuid, FlightComputer, FullscreenLayer, Hardpoint, MountedOn,
+    ParentGuid, PlayerTag, SPACE_BACKGROUND_LAYER_KIND, STARFIELD_LAYER_KIND, SizeM,
+    SpaceBackgroundFullscreenLayerBundle, SpaceBackgroundShaderSettings,
+    StarfieldFullscreenLayerBundle, StarfieldShaderSettings, ThrusterPlumeShaderSettings,
 };
 use sidereal_net::PlayerInput;
 use sidereal_net::ServerWeaponFiredMessage;
@@ -233,6 +233,8 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
         (
             Entity,
             Option<&EntityGuid>,
+            Has<ControlledEntityGuid>,
+            Has<PlayerTag>,
             Has<ControlledEntity>,
             Has<lightyear::prelude::Interpolated>,
             Has<lightyear::prelude::Predicted>,
@@ -241,12 +243,22 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
         With<WorldEntity>,
     >,
 ) {
-    let mut best_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32)>::new();
-    for (entity, guid, is_controlled, is_interpolated, is_predicted, _is_suppressed) in
-        &world_entities
+    let mut best_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32, bool)>::new();
+    for (
+        entity,
+        guid,
+        has_controlled_entity_guid,
+        has_player_tag,
+        is_controlled,
+        is_interpolated,
+        is_predicted,
+        is_suppressed,
+    ) in &world_entities
     {
         let Some(guid) = guid else { continue };
-        let score = if is_controlled {
+        let score = if has_controlled_entity_guid || has_player_tag {
+            -100
+        } else if is_controlled {
             3
         } else if is_interpolated {
             2
@@ -256,24 +268,44 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
             0
         };
         match best_entity_by_guid.get_mut(&guid.0) {
-            Some((winner, winner_score)) => {
-                if score > *winner_score {
+            Some((winner, winner_score, winner_is_suppressed)) => {
+                let winner_entity = *winner;
+                let should_replace = score > *winner_score
+                    || (score == *winner_score
+                        && is_suppressed != *winner_is_suppressed
+                        && *winner_is_suppressed)
+                    || (score == *winner_score
+                        && is_suppressed == *winner_is_suppressed
+                        && entity.to_bits() < winner_entity.to_bits());
+                if should_replace {
                     *winner = entity;
                     *winner_score = score;
+                    *winner_is_suppressed = is_suppressed;
                 }
             }
             None => {
-                best_entity_by_guid.insert(guid.0, (entity, score));
+                best_entity_by_guid.insert(guid.0, (entity, score, is_suppressed));
             }
         }
     }
 
-    for (entity, guid, _is_controlled, _is_interpolated, _is_predicted, is_suppressed) in
-        &world_entities
+    for (
+        entity,
+        guid,
+        has_controlled_entity_guid,
+        has_player_tag,
+        _is_controlled,
+        _is_interpolated,
+        _is_predicted,
+        is_suppressed,
+    ) in &world_entities
     {
-        let should_suppress = guid
-            .and_then(|guid| best_entity_by_guid.get(&guid.0).copied())
-            .is_some_and(|(winner, _)| winner != entity);
+        let should_suppress = if has_controlled_entity_guid || has_player_tag {
+            true
+        } else {
+            guid.and_then(|guid| best_entity_by_guid.get(&guid.0).copied())
+                .is_some_and(|(winner, _, _)| winner != entity)
+        };
         if should_suppress {
             if let Ok(mut entity_commands) = commands.get_entity(entity) {
                 if !is_suppressed {
@@ -302,6 +334,7 @@ pub(super) fn cleanup_streamed_visual_children_system(
             Has<StreamedVisualAttached>,
             Has<SuppressedPredictedDuplicateVisual>,
             Option<&'_ PlayerTag>,
+            Has<ControlledEntityGuid>,
         ),
         With<WorldEntity>,
     >,
@@ -314,10 +347,13 @@ pub(super) fn cleanup_streamed_visual_children_system(
         has_visual_attached,
         is_suppressed,
         player_tag,
+        has_controlled_entity_guid,
     ) in &parents
     {
-        let should_clear_visual =
-            visual_asset_id.is_none() || is_suppressed || player_tag.is_some();
+        let should_clear_visual = visual_asset_id.is_none()
+            || is_suppressed
+            || player_tag.is_some()
+            || has_controlled_entity_guid;
         if !should_clear_visual {
             continue;
         }
@@ -358,6 +394,8 @@ pub(super) fn attach_streamed_visual_assets_system(
         ),
         (
             With<WorldEntity>,
+            Without<PlayerTag>,
+            Without<ControlledEntityGuid>,
             Without<StreamedVisualAttached>,
             Without<SuppressedPredictedDuplicateVisual>,
         ),

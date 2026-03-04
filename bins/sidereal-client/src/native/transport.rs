@@ -9,6 +9,10 @@ use lightyear::prelude::{
 use sidereal_net::{AssetChannel, ControlChannel, InputChannel};
 use std::net::SocketAddr;
 
+use super::app_state::ClientAppState;
+use super::dialog_ui::DialogQueue;
+use super::resources::{LogoutCleanupRequested, PendingDisconnectNotify};
+
 /// Spawns the Lightyear client and triggers Connect if no client entity exists.
 /// Used on Enter Auth so we have a connection for sending auth after (re)login.
 pub fn ensure_lightyear_client_system(
@@ -111,4 +115,46 @@ pub fn ensure_client_transport_channels(
             transport.add_receiver_from_registry::<AssetChannel>(&registry);
         }
     }
+}
+
+pub fn handle_unexpected_server_disconnect_system(
+    mut removed_connected: RemovedComponents<'_, '_, Connected>,
+    raw_clients: Query<'_, '_, Entity, With<RawClient>>,
+    app_state: Option<Res<'_, State<ClientAppState>>>,
+    pending_disconnect: Res<'_, PendingDisconnectNotify>,
+    mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
+    mut dialog_queue: ResMut<'_, DialogQueue>,
+) {
+    // Ignore expected disconnects initiated by local logout flow.
+    if pending_disconnect.0.is_some() || cleanup_requested.0 {
+        let _: Vec<_> = removed_connected.read().collect();
+        return;
+    }
+
+    // Only show server-disconnected UX when we were in active world flow.
+    if !app_state.as_ref().is_some_and(|state| {
+        matches!(
+            state.get(),
+            ClientAppState::InWorld
+                | ClientAppState::WorldLoading
+                | ClientAppState::CharacterSelect
+        )
+    }) {
+        let _: Vec<_> = removed_connected.read().collect();
+        return;
+    }
+
+    let live_raw_clients = raw_clients.iter().collect::<std::collections::HashSet<_>>();
+    let disconnected = removed_connected
+        .read()
+        .any(|entity| live_raw_clients.contains(&entity));
+    if !disconnected {
+        return;
+    }
+
+    dialog_queue.push_error(
+        "Server Disconnected",
+        "The replication server connection was lost.\n\nYou have been returned to the login screen.",
+    );
+    cleanup_requested.0 = true;
 }

@@ -101,7 +101,6 @@ impl Plugin for SiderealGamePlugin {
                 grant_flight_control_authority_system,
                 revoke_stale_flight_control_authority_system,
                 validate_action_capabilities,
-                sync_player_to_controlled_entity,
                 process_character_movement_actions,
                 process_flight_actions,
                 bootstrap_weapon_cooldown_state,

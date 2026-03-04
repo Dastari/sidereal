@@ -9,7 +9,11 @@
 use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, RigidBody, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
-use lightyear::prelude::{ControlledBy, Lifetime, NetworkTarget, Replicate};
+use lightyear::prelude::server::ClientOf;
+use lightyear::prelude::{
+    ControlledBy, InterpolationTarget, Lifetime, NetworkTarget, PredictionTarget, RemoteId,
+    Replicate,
+};
 use sidereal_game::{
     ActionQueue, ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
 };
@@ -159,7 +163,6 @@ pub fn hydrate_records_into_world(
             EntityGuid(entity_guid),
             Transform::default(),
             Visibility::default(),
-            Replicate::to_clients(NetworkTarget::All),
         ));
         let entity = entity_commands.id();
 
@@ -170,8 +173,22 @@ pub fn hydrate_records_into_world(
             &type_paths,
             app_type_registry,
         );
-        let has_action_queue = component_record(&record.components, "action_queue").is_some();
         let is_player_anchor = component_record(&record.components, "player_tag").is_some();
+        let has_position = component_record(&record.components, "position").is_some();
+        // Insert replication targets only after gameplay components are hydrated so
+        // initial spawn snapshots do not leak default/uninitialized component values.
+        let mut entity_commands = commands.entity(entity);
+        if is_player_anchor {
+            // Player anchor entities are private observer/runtime state and must never
+            // be broadcast globally. Auth binding later assigns owner-only replication.
+            entity_commands.insert(Replicate::to_clients(NetworkTarget::None));
+        } else {
+            entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
+        }
+        if !is_player_anchor && has_position {
+            entity_commands.insert(InterpolationTarget::to_clients(NetworkTarget::All));
+        }
+        let has_action_queue = component_record(&record.components, "action_queue").is_some();
         let has_flight_control = component_record(&record.components, "flight_computer").is_some();
         if !has_action_queue && (is_player_anchor || has_flight_control) {
             bevy::log::warn!(
@@ -614,12 +631,40 @@ pub fn process_bootstrap_entity_commands(
 pub fn apply_pending_controlled_by_bindings(
     mut commands: Commands<'_, '_>,
     mut pending: ResMut<'_, PendingControlledByBindings>,
+    client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
+    player_tags: Query<'_, '_, (), With<sidereal_game::PlayerTag>>,
 ) {
     for (client_entity, controlled_entity) in pending.bindings.drain(..) {
-        commands.entity(controlled_entity).insert(ControlledBy {
+        let mut entity_commands = commands.entity(controlled_entity);
+        entity_commands.insert(ControlledBy {
             owner: client_entity,
             lifetime: Lifetime::Persistent,
         });
+        let is_player_anchor = player_tags.get(controlled_entity).is_ok();
+        if let Ok(remote_id) = client_remote_ids.get(client_entity) {
+            if is_player_anchor {
+                entity_commands.insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
+            } else {
+                entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
+            }
+            entity_commands.insert(PredictionTarget::to_clients(NetworkTarget::Single(
+                remote_id.0,
+            )));
+            if is_player_anchor {
+                entity_commands.remove::<InterpolationTarget>();
+            } else {
+                entity_commands.insert(InterpolationTarget::to_clients(
+                    NetworkTarget::AllExceptSingle(remote_id.0),
+                ));
+            }
+        } else {
+            entity_commands.remove::<PredictionTarget>();
+            if is_player_anchor {
+                entity_commands.remove::<InterpolationTarget>();
+            } else {
+                entity_commands.insert(InterpolationTarget::to_clients(NetworkTarget::All));
+            }
+        }
     }
 }
 

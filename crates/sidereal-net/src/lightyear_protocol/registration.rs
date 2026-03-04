@@ -97,9 +97,11 @@ fn register_lightyear_replication_components(app: &mut App) {
     // registered manually with prediction for client-side rollback/resimulation.
     app.register_component::<Position>()
         .add_prediction()
+        .add_correction_fn(lerp_position)
         .add_interpolation_with(lerp_position);
     app.register_component::<Rotation>()
         .add_prediction()
+        .add_correction_fn(lerp_rotation)
         .add_interpolation_with(lerp_rotation);
     app.register_component::<LinearVelocity>()
         .add_prediction()

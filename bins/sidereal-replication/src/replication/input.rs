@@ -90,6 +90,15 @@ pub(crate) fn canonical_player_entity_id(id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
+fn runtime_ids_refer_to_same_guid(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    parse_runtime_entity_id(left)
+        .zip(parse_runtime_entity_id(right))
+        .is_some_and(|(l, r)| l == r)
+}
+
 fn parse_player_entity_id(id: &str) -> Option<PlayerEntityId> {
     PlayerEntityId::parse(id)
 }
@@ -368,7 +377,7 @@ pub fn drain_native_player_inputs_to_action_queue(
             let own_guid = guid.0.to_string();
             let controls_other_entity = controlled_entity_guid
                 .and_then(|value| value.0.as_ref())
-                .is_some_and(|target_guid| target_guid != &own_guid);
+                .is_some_and(|target_guid| !runtime_ids_refer_to_same_guid(target_guid, &own_guid));
             if controls_other_entity {
                 // Player anchors that currently control another entity should not consume
                 // network input into their own ActionQueue; that queue is for local observer movement only.
@@ -383,14 +392,14 @@ pub fn drain_native_player_inputs_to_action_queue(
         let Some(player_id) = parse_player_entity_id(player_entity_id.as_str()) else {
             continue;
         };
-        if simulated.is_some() {
-            let is_authoritative_target = controlled_entity_map
-                .by_player_entity_id
-                .get(&player_id)
-                .is_some_and(|mapped| *mapped == entity);
-            if !is_authoritative_target {
-                continue;
-            }
+        let is_authoritative_target = controlled_entity_map
+            .by_player_entity_id
+            .get(&player_id)
+            .is_some_and(|mapped| *mapped == entity);
+        // Only the current authoritative control target for this player should consume
+        // realtime input, whether it's a simulated ship or the free-roam player anchor.
+        if (simulated.is_some() || player_tag.is_some()) && !is_authoritative_target {
+            continue;
         }
         let controlled_entity_id = RuntimeEntityId(guid.0);
         let latest_for_player = latest_realtime_inputs.by_player_entity_id.get(&player_id);
@@ -401,7 +410,7 @@ pub fn drain_native_player_inputs_to_action_queue(
             // Accept realtime input for the authoritative target even when the client's
             // controlled id encoding/routing is stale or mismatched. The server-side
             // authoritative control map already scoped this entity to the player.
-            Some(latest) if simulated.is_some() => {
+            Some(latest) if is_authoritative_target => {
                 input_drop_metrics.controlled_target_mismatch = input_drop_metrics
                     .controlled_target_mismatch
                     .saturating_add(1);
@@ -421,6 +430,10 @@ pub fn drain_native_player_inputs_to_action_queue(
             None => (state.0.actions.as_slice(), "action_state"),
         };
         if actions.is_empty() {
+            // Latest snapshot has no actions; clear stale queue state.
+            if !queue.pending.is_empty() {
+                queue.clear();
+            }
             if input_debug_logging_enabled()
                 && latest_realtime_inputs
                     .by_player_entity_id

@@ -3,7 +3,8 @@ use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::server::RawServer;
 use lightyear::prelude::{
-    ControlledBy, MessageReceiver, NetworkTarget, RemoteId, Server, ServerMultiMessageSender,
+    ControlledBy, InterpolationTarget, MessageReceiver, NetworkTarget, PredictionTarget, RemoteId,
+    Replicate, Server, ServerMultiMessageSender,
 };
 use sidereal_game::{
     ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag,
@@ -50,11 +51,25 @@ fn control_debug_logging_enabled() -> bool {
 fn clear_controlled_binding_for_client(
     commands: &mut Commands<'_, '_>,
     client_entity: Entity,
+    remote_id: RemoteId,
     controlled_entities: &Query<'_, '_, (Entity, Option<&'_ ControlledBy>), With<ActionQueue>>,
+    player_entities: &Query<'_, '_, &'_ EntityGuid, With<PlayerTag>>,
 ) {
     for (entity, controlled_by) in controlled_entities {
         if controlled_by.is_some_and(|binding| binding.owner == client_entity) {
-            commands.entity(entity).remove::<ControlledBy>();
+            commands
+                .entity(entity)
+                .remove::<(ControlledBy, PredictionTarget)>();
+            if player_entities.get(entity).is_ok() {
+                commands
+                    .entity(entity)
+                    .remove::<InterpolationTarget>()
+                    .insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
+            } else {
+                commands
+                    .entity(entity)
+                    .insert(InterpolationTarget::to_clients(NetworkTarget::All));
+            }
         }
     }
 }
@@ -72,7 +87,7 @@ fn neutralize_control_intent_on_handoff(
         {
             flight_computer.throttle = 0.0;
             flight_computer.yaw_input = 0.0;
-            flight_computer.brake_active = false;
+            flight_computer.brake_active = true;
         }
     });
 }
@@ -106,7 +121,6 @@ pub fn receive_client_control_requests(
         With<SimulatedControlledEntity>,
     >,
     controlled_entities: Query<'_, '_, (Entity, Option<&'_ ControlledBy>), With<ActionQueue>>,
-    anchor_positions: Query<'_, '_, (&'_ Transform, Option<&'_ avian2d::prelude::Position>)>,
     player_guids: Query<'_, '_, &'_ EntityGuid, With<PlayerTag>>,
     player_controlled: Query<'_, '_, &'_ ControlledEntityGuid, With<PlayerTag>>,
     bindings: Res<'_, AuthenticatedClientBindings>,
@@ -307,32 +321,15 @@ pub fn receive_client_control_requests(
                 .by_player_entity_id
                 .insert(bound_player_id, resolved_target_entity);
 
-            if currently_bound.is_none() || currently_bound_entity != resolved_target_entity {
-                let handoff_anchor_entity = if resolved_target_entity == player_entity {
-                    currently_bound_entity
-                } else {
-                    resolved_target_entity
-                };
-                if let Ok((anchor_transform, anchor_position)) =
-                    anchor_positions.get(handoff_anchor_entity)
-                {
-                    let anchor_world = anchor_position
-                        .map(|position| position.0)
-                        .unwrap_or(anchor_transform.translation.truncate());
-                    commands.entity(player_entity).insert((
-                        Transform::from_translation(anchor_world.extend(0.0)),
-                        avian2d::prelude::Position(anchor_world),
-                    ));
-                }
-            }
-
             let rebind_required = currently_bound_entity != resolved_target_entity;
             if rebind_required {
                 neutralize_control_intent_on_handoff(&mut commands, currently_bound_entity);
                 clear_controlled_binding_for_client(
                     &mut commands,
                     client_entity,
+                    *remote_id,
                     &controlled_entities,
+                    &player_guids,
                 );
                 pending_controlled_by
                     .bindings

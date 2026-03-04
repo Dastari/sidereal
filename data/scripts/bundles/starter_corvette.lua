@@ -161,6 +161,7 @@ function StarterCorvette.build_graph_records(ctx)
           points = corvette_collision_outline_points(ctx),
         }),
         component(ship_id, "collision_aabb_m", { half_extents = { 7.2, 10.6, 4.0 } }),
+        component(ship_id, "scanner_range_m", 300.0),
         component(ship_id, "action_capabilities", { supported = flight_actions_supported() }),
         component(ship_id, "action_queue", { pending = { "LongitudinalNeutral", "LateralNeutral" } }),
         component(ship_id, "visual_asset_id", "corvette_01"),
@@ -269,6 +270,10 @@ function StarterCorvette.build_graph_records(ctx)
         component(module_flight_computer_id, "parent_guid", hardpoint_computer_core_id),
         component(module_flight_computer_id, "mass_kg", 50.0),
         component(module_flight_computer_id, "owner_id", ctx.player_entity_id),
+        component(module_flight_computer_id, "scanner_component", {
+          base_range_m = 450.0,
+          level = 1,
+        }),
         component(module_flight_computer_id, "flight_computer", {
           profile = "basic_fly_by_wire",
           throttle = 0.0,

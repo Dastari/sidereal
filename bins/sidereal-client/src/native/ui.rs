@@ -8,7 +8,7 @@ use sidereal_game::{
     DisplayName, EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, OwnerId, SizeM,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, OwnedEntitiesPanelState,
@@ -19,7 +19,8 @@ use super::components::{
     HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
     LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
     OwnedEntitiesPanelRoot, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
-    ShipNameplateHealthBar, ShipNameplateRoot, UiOverlayLayer, WorldEntity,
+    ShipNameplateHealthBar, ShipNameplateRoot, SuppressedPredictedDuplicateVisual, UiOverlayLayer,
+    WorldEntity,
 };
 use super::platform::UI_OVERLAY_RENDER_LAYER;
 use super::resources::{ClientControlRequestState, EmbeddedFonts};
@@ -332,8 +333,10 @@ pub(super) fn handle_owned_entities_panel_buttons(
                             Some(control_request_state.next_request_seq);
                         control_request_state.last_sent_request_seq = None;
                         control_request_state.last_sent_at_s = 0.0;
+                        // Free roam means the player entity is the controlled entity.
+                        // Keep attached camera/input flow active so player movement works.
                         player_view_state.detached_free_camera = false;
-                        player_view_state.selected_entity_id = None;
+                        player_view_state.selected_entity_id = session.player_entity_id.clone();
                     }
                     OwnedEntitiesPanelAction::ControlEntity(entity_id) => {
                         player_view_state.desired_controlled_entity_id = Some(entity_id.clone());
@@ -508,8 +511,19 @@ pub(super) fn sync_ship_nameplates_system(
     ships: Query<
         '_,
         '_,
-        (Entity, Option<&EntityLabels>),
-        (With<WorldEntity>, Without<ShipNameplateRoot>),
+        (
+            Entity,
+            Option<&EntityGuid>,
+            Option<&EntityLabels>,
+            Has<ControlledEntity>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<lightyear::prelude::Predicted>,
+        ),
+        (
+            With<WorldEntity>,
+            Without<ShipNameplateRoot>,
+            Without<SuppressedPredictedDuplicateVisual>,
+        ),
     >,
     existing: Query<'_, '_, (Entity, &ShipNameplateRoot)>,
 ) {
@@ -518,9 +532,44 @@ pub(super) fn sync_ship_nameplates_system(
         existing_targets.insert(root.target, entity);
     }
 
-    for (ship_entity, labels) in &ships {
+    let mut best_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32)>::new();
+    let mut winner_entities = HashSet::<Entity>::new();
+    for (ship_entity, guid, labels, is_controlled, is_interpolated, is_predicted) in &ships {
         let is_ship = labels.is_some_and(|labels| labels.0.iter().any(|label| label == "Ship"));
-        if !is_ship || existing_targets.contains_key(&ship_entity) {
+        if !is_ship {
+            continue;
+        }
+        let score = if is_controlled {
+            3
+        } else if is_interpolated {
+            2
+        } else if is_predicted {
+            1
+        } else {
+            0
+        };
+        if let Some(guid) = guid {
+            match best_entity_by_guid.get_mut(&guid.0) {
+                Some((winner, winner_score)) => {
+                    if score > *winner_score
+                        || (score == *winner_score && ship_entity.to_bits() < winner.to_bits())
+                    {
+                        *winner = ship_entity;
+                        *winner_score = score;
+                    }
+                }
+                None => {
+                    best_entity_by_guid.insert(guid.0, (ship_entity, score));
+                }
+            }
+        } else {
+            winner_entities.insert(ship_entity);
+        }
+    }
+    winner_entities.extend(best_entity_by_guid.values().map(|(entity, _)| *entity));
+
+    for ship_entity in &winner_entities {
+        if existing_targets.contains_key(ship_entity) {
             continue;
         }
         commands
@@ -535,7 +584,7 @@ pub(super) fn sync_ship_nameplates_system(
                 },
                 Visibility::Hidden,
                 ShipNameplateRoot {
-                    target: ship_entity,
+                    target: *ship_entity,
                 },
                 GameplayHud,
                 UiOverlayLayer,
@@ -566,7 +615,7 @@ pub(super) fn sync_ship_nameplates_system(
                         },
                         SegmentedBarValue { ratio: 1.0 },
                         ShipNameplateHealthBar {
-                            target: ship_entity,
+                            target: *ship_entity,
                         },
                     ))
                     .with_children(|bar| {
@@ -586,7 +635,7 @@ pub(super) fn sync_ship_nameplates_system(
     }
 
     for (nameplate_entity, root) in &existing {
-        if ships.get(root.target).is_err() {
+        if !winner_entities.contains(&root.target) {
             commands.entity(nameplate_entity).try_despawn();
         }
     }
@@ -606,7 +655,10 @@ pub(super) fn update_ship_nameplate_positions_system(
             Option<&HealthPool>,
             Option<&EntityLabels>,
         ),
-        With<WorldEntity>,
+        (
+            With<WorldEntity>,
+            Without<SuppressedPredictedDuplicateVisual>,
+        ),
     >,
     gameplay_camera: Query<'_, '_, (&Camera, &Transform), With<GameplayCamera>>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,

@@ -1,7 +1,7 @@
 use avian2d::prelude::Position;
 use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
-use lightyear::prelude::{Replicate, ReplicationState};
+use lightyear::prelude::{ControlledBy, Replicate, ReplicationState};
 use sidereal_game::{
     EntityGuid, FactionId, FactionVisibility, MountedOn, OwnerId, PlayerTag, PublicVisibility,
     ScannerRangeM,
@@ -19,6 +19,20 @@ fn canonical_player_entity_id(id: &str) -> String {
     sidereal_net::PlayerEntityId::parse(id)
         .map(sidereal_net::PlayerEntityId::canonical_wire_id)
         .unwrap_or_else(|| id.to_string())
+}
+
+fn player_entity_ids_match(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    let left_canonical = canonical_player_entity_id(left);
+    let right_canonical = canonical_player_entity_id(right);
+    if left_canonical == right_canonical {
+        return true;
+    }
+    sidereal_runtime_sync::parse_guid_from_entity_id(left)
+        .zip(sidereal_runtime_sync::parse_guid_from_entity_id(right))
+        .is_some_and(|(l, r)| l == r)
 }
 
 fn parse_delivery_range_m(raw: Option<&str>) -> Option<f32> {
@@ -47,6 +61,15 @@ fn cell_size_m_from_env() -> f32 {
             .as_deref(),
     )
     .unwrap_or(DEFAULT_VISIBILITY_CELL_SIZE_M)
+}
+
+fn bypass_all_visibility_filters_from_env() -> bool {
+    std::env::var("SIDEREAL_VISIBILITY_BYPASS_ALL")
+        .ok()
+        .is_some_and(|raw| {
+            let normalized = raw.trim().to_ascii_lowercase();
+            normalized == "1" || normalized == "true" || normalized == "on"
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +180,7 @@ pub(crate) struct VisibilityRuntimeConfig {
     candidate_mode: VisibilityCandidateMode,
     delivery_range_m: f32,
     cell_size_m: f32,
+    bypass_all_filters: bool,
 }
 
 #[derive(Resource, Default)]
@@ -184,6 +208,7 @@ pub fn init_resources(app: &mut App) {
         candidate_mode,
         delivery_range_m,
         cell_size_m,
+        bypass_all_filters: bypass_all_visibility_filters_from_env(),
     });
     app.insert_resource(VisibilityTelemetryLogState::default());
 }
@@ -359,6 +384,7 @@ pub fn update_network_visibility(
         (
             Entity,
             &'_ mut ReplicationState,
+            Option<&'_ ControlledBy>,
             Option<&'_ EntityGuid>,
             Option<&'_ PlayerTag>,
             Option<&'_ OwnerId>,
@@ -512,6 +538,7 @@ pub fn update_network_visibility(
     for (
         entity,
         mut replication_state,
+        controlled_by,
         entity_guid,
         player_tag,
         owner_id,
@@ -559,7 +586,41 @@ pub fn update_network_visibility(
         });
         let is_faction_visible = faction_visibility.is_some();
 
+        // Player anchor entities are strictly owner-only: never replicate them to
+        // non-owner clients regardless of candidate mode, range, or bypass settings.
+        if player_tag.is_some() {
+            for client_entity in &scratch.live_clients {
+                let is_owner = scratch
+                    .context_by_client
+                    .get(client_entity)
+                    .is_some_and(|ctx| {
+                        owner_player_id.is_some_and(|owner_id| {
+                            player_entity_ids_match(ctx.player_entity_id.as_str(), owner_id)
+                        })
+                    });
+                if is_owner {
+                    replication_state.gain_visibility(*client_entity);
+                } else if replication_state.is_visible(*client_entity) {
+                    replication_state.lose_visibility(*client_entity);
+                }
+            }
+            continue;
+        }
+
+        if runtime_cfg.bypass_all_filters {
+            for client_entity in &scratch.live_clients {
+                replication_state.gain_visibility(*client_entity);
+            }
+            continue;
+        }
+
         for client_entity in &scratch.live_clients {
+            if controlled_by.is_some_and(|binding| binding.owner == *client_entity) {
+                // Hard guarantee: the owning client must always receive state for
+                // their currently controlled entity, independent of scanner/range.
+                replication_state.gain_visibility(*client_entity);
+                continue;
+            }
             let Some(candidates) = scratch.candidate_entities_by_client.get(client_entity) else {
                 continue;
             };
@@ -675,8 +736,9 @@ pub fn update_network_visibility(
                 0.0
             };
             info!(
-                "replication visibility summary mode={} delivery_range_m={:.1} query_ms={:.2} clients={} entities={} candidates_per_client={:.1}",
+                "replication visibility summary mode={} bypass_all={} delivery_range_m={:.1} query_ms={:.2} clients={} entities={} candidates_per_client={:.1}",
                 runtime_cfg.candidate_mode.as_str(),
+                runtime_cfg.bypass_all_filters,
                 runtime_cfg.delivery_range_m,
                 started_at.elapsed().as_secs_f64() * 1000.0,
                 clients_count,

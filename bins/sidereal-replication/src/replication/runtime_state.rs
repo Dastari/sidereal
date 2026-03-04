@@ -21,113 +21,6 @@ pub fn init_resources(app: &mut App) {
     app.insert_resource(PlayerControlDebugState::default());
 }
 
-#[allow(clippy::type_complexity)]
-pub fn sync_player_anchor_to_controlled_entity(
-    mut players: Query<
-        '_,
-        '_,
-        (
-            &EntityGuid,
-            &ControlledEntityGuid,
-            &mut Transform,
-            Option<&mut avian2d::prelude::Position>,
-            Option<&mut avian2d::prelude::Rotation>,
-            Option<&mut avian2d::prelude::LinearVelocity>,
-            Option<&mut avian2d::prelude::AngularVelocity>,
-        ),
-        With<PlayerTag>,
-    >,
-    controlled_entities: Query<
-        '_,
-        '_,
-        (
-            &EntityGuid,
-            &Transform,
-            Option<&avian2d::prelude::Position>,
-            Option<&avian2d::prelude::Rotation>,
-            Option<&avian2d::prelude::LinearVelocity>,
-            Option<&avian2d::prelude::AngularVelocity>,
-        ),
-        (With<SimulatedControlledEntity>, Without<PlayerTag>),
-    >,
-    rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
-) {
-    if is_in_rollback(rollback_query) {
-        return;
-    }
-
-    #[derive(Clone, Copy)]
-    struct ControlledMotionSample {
-        world: Vec2,
-        rotation: Option<avian2d::prelude::Rotation>,
-        linear_velocity: Option<Vec2>,
-        angular_velocity: Option<f32>,
-    }
-
-    let mut controlled_motion_by_guid =
-        std::collections::HashMap::<uuid::Uuid, ControlledMotionSample>::new();
-    for (guid, transform, position, rotation, linear_velocity, angular_velocity) in
-        &controlled_entities
-    {
-        let world = position
-            .map(|position| position.0)
-            .unwrap_or(transform.translation.truncate());
-        controlled_motion_by_guid.insert(
-            guid.0,
-            ControlledMotionSample {
-                world,
-                rotation: rotation.copied(),
-                linear_velocity: linear_velocity.map(|velocity| velocity.0),
-                angular_velocity: angular_velocity.map(|velocity| velocity.0),
-            },
-        );
-    }
-
-    for (
-        player_guid,
-        controlled_guid,
-        mut player_transform,
-        player_position,
-        player_rotation,
-        player_linear_velocity,
-        player_angular_velocity,
-    ) in &mut players
-    {
-        let Some(control_guid_raw) = controlled_guid.0.as_deref() else {
-            continue;
-        };
-        let Ok(control_guid) = uuid::Uuid::parse_str(control_guid_raw) else {
-            continue;
-        };
-        if control_guid == player_guid.0 {
-            continue;
-        }
-        let Some(sample) = controlled_motion_by_guid.get(&control_guid).copied() else {
-            continue;
-        };
-        player_transform.translation.x = sample.world.x;
-        player_transform.translation.y = sample.world.y;
-        player_transform.translation.z = 0.0;
-        if let Some(mut player_position) = player_position {
-            player_position.0 = sample.world;
-        }
-        if let (Some(mut player_rotation), Some(rotation)) = (player_rotation, sample.rotation) {
-            *player_rotation = rotation;
-            player_transform.rotation = rotation.into();
-        }
-        if let (Some(mut player_linear_velocity), Some(linear_velocity)) =
-            (player_linear_velocity, sample.linear_velocity)
-        {
-            player_linear_velocity.0 = linear_velocity;
-        }
-        if let (Some(mut player_angular_velocity), Some(angular_velocity)) =
-            (player_angular_velocity, sample.angular_velocity)
-        {
-            player_angular_velocity.0 = angular_velocity;
-        }
-    }
-}
-
 pub fn log_player_control_state_changes(
     players: Query<'_, '_, (&Name, Option<&ControlledEntityGuid>), With<PlayerTag>>,
     mut debug_state: ResMut<'_, PlayerControlDebugState>,
@@ -224,5 +117,25 @@ pub fn compute_controlled_entity_scanner_ranges(
             own_buff,
             scanner_modules.iter(),
         );
+    }
+}
+
+pub fn ensure_controlled_entity_scanner_range_component(
+    mut commands: Commands<'_, '_>,
+    controlled_entities_without_range: Query<
+        '_,
+        '_,
+        Entity,
+        (With<SimulatedControlledEntity>, Without<ScannerRangeM>),
+    >,
+    rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
+) {
+    if is_in_rollback(rollback_query) {
+        return;
+    }
+    for entity in &controlled_entities_without_range {
+        commands
+            .entity(entity)
+            .insert(ScannerRangeM(DEFAULT_VIEW_RANGE_M));
     }
 }

@@ -89,6 +89,7 @@ Integration points:
 
 - `bins/sidereal-gateway`: account-registration-time script hooks (starter bundle selection, world init config).
 - `bins/sidereal-replication`: authoritative host boot world orchestration, and (future) runtime event-driven script execution.
+- Script-driven runtime shader binding for 2D visuals is planned via generic client material types and streamed shader assets (see `docs/features/dynamic_runtime_shader_material_plan.md`).
 
 ### 2.3 Content Model
 

@@ -161,6 +161,29 @@ impl PredictionBootstrapTuning {
 pub(crate) struct PredictionCorrectionTuning {
     pub max_rollback_ticks: u16,
     pub instant_correction: bool,
+    pub rollback_state: PredictionRollbackStateTuning,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PredictionRollbackStateTuning {
+    Always,
+    Check,
+    Disabled,
+}
+
+impl PredictionRollbackStateTuning {
+    fn from_env() -> Self {
+        match std::env::var("SIDEREAL_CLIENT_ROLLBACK_STATE")
+            .ok()
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("always") => Self::Always,
+            Some("disabled") => Self::Disabled,
+            _ => Self::Check,
+        }
+    }
 }
 
 impl PredictionCorrectionTuning {
@@ -175,6 +198,7 @@ impl PredictionCorrectionTuning {
         Self {
             max_rollback_ticks,
             instant_correction,
+            rollback_state: PredictionRollbackStateTuning::from_env(),
         }
     }
 }
@@ -196,7 +220,7 @@ impl NearbyCollisionProxyTuning {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v > 0)
-            .unwrap_or(24);
+            .unwrap_or(0);
         Self {
             radius_m,
             max_proxies,
@@ -289,6 +313,11 @@ impl Default for ClientInputSendState {
 /// When set, the client will send ClientDisconnectNotifyMessage and then disconnect (logout or window close).
 #[derive(Debug, Resource, Default)]
 pub(crate) struct PendingDisconnectNotify(pub Option<String>);
+
+/// Tracks whether a pending disconnect notify has already been sent once.
+/// We delay transport Disconnect by one frame to improve notify delivery reliability.
+#[derive(Debug, Resource, Default, PartialEq, Eq)]
+pub(crate) struct PendingDisconnectNotifySent(pub bool);
 
 /// When true, logout cleanup (clear state, transition to Auth) should run.
 #[derive(Debug, Resource, Default, PartialEq, Eq)]

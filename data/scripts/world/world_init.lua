@@ -151,6 +151,11 @@ function WorldInit.build_graph_records(_ctx)
           points = corvette_collision_outline_points(_ctx),
         }),
         component(patrol_ship_id, "collision_aabb_m", { half_extents = { 7.2, 10.6, 4.0 } }),
+        component(patrol_ship_id, "scanner_range_m", 300.0),
+        component(patrol_ship_id, "scanner_component", {
+          base_range_m = 400.0,
+          level = 1,
+        }),
         component(patrol_ship_id, "action_capabilities", {
           supported = {
             "Forward",

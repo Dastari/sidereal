@@ -99,6 +99,38 @@ pub fn recompute_total_mass(
         .iter()
         .any(|(total_mass, mass_dirty)| mass_dirty.is_some() || total_mass.0 <= 0.0);
     if !needs_recompute {
+        // Even on clean ticks, keep Avian mass/inertia aligned with persisted gameplay mass.
+        // This preserves server/client parity when loading older persisted values.
+        for (
+            _entity,
+            _guid,
+            _mass,
+            _base_mass,
+            _inventory,
+            _cargo_mass,
+            _module_mass,
+            total_mass,
+            _mass_dirty,
+            maybe_avian_mass,
+            maybe_size,
+            maybe_avian_inertia,
+        ) in &mut roots.p0()
+        {
+            if total_mass.0 <= 0.0 {
+                continue;
+            }
+            if let Some(mut avian_mass) = maybe_avian_mass
+                && avian_mass.0 != total_mass.0
+            {
+                *avian_mass = Mass(total_mass.0);
+            }
+            if let (Some(mut avian_inertia), Some(size)) = (maybe_avian_inertia, maybe_size) {
+                let expected_inertia = angular_inertia_from_size(total_mass.0, size);
+                if avian_inertia.0 != expected_inertia.0 {
+                    *avian_inertia = expected_inertia;
+                }
+            }
+        }
         return;
     }
 
@@ -152,6 +184,19 @@ pub fn recompute_total_mass(
     ) in &mut roots.p0()
     {
         if mass_dirty.is_none() && total_mass.0 > 0.0 {
+            // Keep Avian mass/inertia synchronized even when aggregate totals are not dirty.
+            // Persisted worlds can carry stale Avian inertia values from older formulas.
+            if let Some(mut avian_mass) = maybe_avian_mass
+                && avian_mass.0 != total_mass.0
+            {
+                *avian_mass = Mass(total_mass.0);
+            }
+            if let (Some(mut avian_inertia), Some(size)) = (maybe_avian_inertia, maybe_size) {
+                let expected_inertia = angular_inertia_from_size(total_mass.0, size);
+                if avian_inertia.0 != expected_inertia.0 {
+                    *avian_inertia = expected_inertia;
+                }
+            }
             continue;
         }
 

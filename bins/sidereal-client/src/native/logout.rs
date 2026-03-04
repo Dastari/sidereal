@@ -1,9 +1,9 @@
 //! Logout: disconnect client and return to auth state.
 //!
 //! Flow: request (Escape or window close) sets PendingDisconnectNotify; a separate system
-//! sends ClientDisconnectNotifyMessage on ControlChannel and triggers Disconnect; then
-//! logout_cleanup clears state and transitions to Auth. Splitting allows sending the notify
-//! without exceeding Bevy system arity in the cleanup system.
+//! sends ClientDisconnectNotifyMessage on ControlChannel, waits one frame, then triggers
+//! Disconnect; logout_cleanup clears state and transitions to Auth. The one-frame delay
+//! avoids dropping the notify in same-frame disconnect races.
 
 use bevy::prelude::*;
 use bevy::window::WindowCloseRequested;
@@ -15,7 +15,7 @@ use super::app_state::*;
 use super::assets::LocalAssetManager;
 use super::resources::{
     BootstrapWatchdogState, ClientAuthSyncState, ClientControlRequestState, ClientInputAckTracker,
-    LogoutCleanupRequested, PendingDisconnectNotify,
+    LogoutCleanupRequested, PendingDisconnectNotify, PendingDisconnectNotifySent,
 };
 
 /// Requests logout on window close (native only). Sets PendingDisconnectNotify so the
@@ -24,6 +24,7 @@ use super::resources::{
 pub fn request_logout_on_window_close_system(
     session: Res<'_, ClientSession>,
     mut pending: ResMut<'_, PendingDisconnectNotify>,
+    mut pending_sent: ResMut<'_, PendingDisconnectNotifySent>,
     mut close_reader: MessageReader<'_, '_, WindowCloseRequested>,
 ) {
     if pending.0.is_some() {
@@ -34,6 +35,7 @@ pub fn request_logout_on_window_close_system(
     };
     if close_reader.read().next().is_some() {
         pending.0 = Some(player_entity_id.clone());
+        pending_sent.0 = false;
     }
 }
 
@@ -43,6 +45,7 @@ pub fn request_logout_system(
     input: Res<'_, ButtonInput<KeyCode>>,
     session: Res<'_, ClientSession>,
     mut pending: ResMut<'_, PendingDisconnectNotify>,
+    mut pending_sent: ResMut<'_, PendingDisconnectNotifySent>,
 ) {
     if pending.0.is_some() {
         return;
@@ -52,6 +55,7 @@ pub fn request_logout_system(
     };
     if input.just_pressed(KeyCode::Escape) {
         pending.0 = Some(player_entity_id.clone());
+        pending_sent.0 = false;
     }
 }
 
@@ -60,6 +64,7 @@ pub fn request_logout_system(
 /// exceeding system arity in the cleanup system.
 pub fn send_disconnect_notify_and_trigger_system(
     mut pending: ResMut<'_, PendingDisconnectNotify>,
+    mut pending_sent: ResMut<'_, PendingDisconnectNotifySent>,
     mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
     mut senders: Query<
         '_,
@@ -70,15 +75,23 @@ pub fn send_disconnect_notify_and_trigger_system(
     client_entities: Query<'_, '_, Entity, With<RawClient>>,
     mut commands: Commands<'_, '_>,
 ) {
-    let Some(player_entity_id) = pending.0.take() else {
+    let Some(player_entity_id) = pending.0.as_ref().cloned() else {
         return;
     };
-    let msg = ClientDisconnectNotifyMessage {
-        player_entity_id: player_entity_id.clone(),
-    };
-    for mut sender in &mut senders {
-        sender.send::<ControlChannel>(msg.clone());
+
+    if !pending_sent.0 {
+        let msg = ClientDisconnectNotifyMessage {
+            player_entity_id: player_entity_id.clone(),
+        };
+        for mut sender in &mut senders {
+            sender.send::<ControlChannel>(msg.clone());
+        }
+        pending_sent.0 = true;
+        return;
     }
+
+    pending.0 = None;
+    pending_sent.0 = false;
     for entity in &client_entities {
         commands.trigger(Disconnect { entity });
     }
@@ -101,6 +114,8 @@ pub fn logout_cleanup_system(
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
     mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
+    mut pending: ResMut<'_, PendingDisconnectNotify>,
+    mut pending_sent: ResMut<'_, PendingDisconnectNotifySent>,
 ) {
     if !cleanup_requested.0 {
         return;
@@ -132,6 +147,8 @@ pub fn logout_cleanup_system(
     *free_camera = FreeCameraState::default();
     *watchdog = BootstrapWatchdogState::default();
     *ack_tracker = ClientInputAckTracker::default();
+    *pending = PendingDisconnectNotify::default();
+    *pending_sent = PendingDisconnectNotifySent::default();
 }
 
 pub fn purge_stale_world_and_transport_on_enter_auth_system(

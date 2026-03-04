@@ -13,6 +13,8 @@ use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
+use lightyear::avian2d::plugin::AvianReplicationMode;
+use lightyear::avian2d::prelude::LightyearAvianPlugin;
 use lightyear::prelude::server::ServerPlugins;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{HierarchyRebuildEnabled, SiderealGamePlugin};
@@ -30,6 +32,7 @@ fn main() {
     };
 
     let mut app = App::new();
+    app.init_resource::<bevy::transform::StaticTransformOptimizations>();
     // Cap main loop at ~100 Hz so Update (message drain, transport) doesn't spin at full CPU.
     // FixedUpdate remains time-based at 30 Hz. See docs/features/replication_server_cpu_report.md.
     let update_cap_hz = std::env::var("REPLICATION_UPDATE_CAP_HZ")
@@ -60,6 +63,12 @@ fn main() {
     app.insert_resource(Gravity(Vec2::ZERO));
     app.add_plugins(ServerPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / 30.0),
+    });
+    app.add_plugins(LightyearAvianPlugin {
+        replication_mode: AvianReplicationMode::PositionButInterpolateTransform,
+        update_syncs_manually: false,
+        rollback_resources: false,
+        rollback_islands: false,
     });
     register_lightyear_protocol(&mut app);
     lifecycle::configure_remote(&mut app, &remote_cfg);

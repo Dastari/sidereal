@@ -20,6 +20,11 @@ type JsonRpcResponse = {
   error?: JsonRpcError
 }
 
+type BrpCallResult = {
+  response: JsonRpcResponse
+  resolvedUrl: string
+}
+
 type BrpQueryRow = {
   entity: number | string
   components?: Record<string, unknown>
@@ -102,7 +107,7 @@ function getTargetBrpDefaults(target: BrpTarget): Array<string> {
   }
   if (target === 'hostClient') {
     const host = getDefaultGateway()
-    return [`http://${host}:15714/`]
+    return [`http://${host}:15715/`]
   }
   return [
     'http://127.0.0.1:15713/',
@@ -191,10 +196,6 @@ function getBrpCandidates(target: BrpTarget): Array<string> {
   if (target === 'server') {
     candidates.push('http://sidereal-shard:15712/', 'http://shard:15712/')
   }
-  if (target === 'hostClient') {
-    // Add client fallbacks in case gateway host runs client on same port
-    candidates.push('http://127.0.0.1:15714/', 'http://host.docker.internal:15714/')
-  }
   return Array.from(new Set(candidates.map(normalizeUrl)))
 }
 
@@ -217,6 +218,14 @@ export async function callBrp(
   request: JsonRpcRequest,
   target: BrpTarget = 'server',
 ): Promise<JsonRpcResponse> {
+  const { response } = await callBrpWithMeta(request, target)
+  return response
+}
+
+export async function callBrpWithMeta(
+  request: JsonRpcRequest,
+  target: BrpTarget = 'server',
+): Promise<BrpCallResult> {
   const payload = JSON.stringify({
     jsonrpc: '2.0',
     id: request.id ?? makeId(),
@@ -247,7 +256,10 @@ export async function callBrp(
         errors.push(`${url} -> invalid JSON`)
         continue
       }
-      return parsed
+      return {
+        response: parsed,
+        resolvedUrl: url,
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       errors.push(`${url} -> ${message}`)
@@ -661,7 +673,7 @@ function getVelocityFromComponents(
 export async function getLiveWorldSnapshot(
   target: BrpTarget = 'server',
 ): Promise<LiveWorldSnapshot> {
-  const queryRes = await callBrp(
+  const { response: queryRes, resolvedUrl } = await callBrpWithMeta(
     {
       method: 'world.query',
       params: {
@@ -789,7 +801,7 @@ export async function getLiveWorldSnapshot(
   return {
     source: 'bevy_remote',
     target,
-    brpUrl: getBrpUrl(target),
+    brpUrl: resolvedUrl,
     graph: getBrpGraphName(target),
     entities,
     nodes,

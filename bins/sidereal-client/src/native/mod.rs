@@ -52,8 +52,9 @@ use lightyear::prelude::client::ClientPlugins;
 use lightyear::prelude::client::{Client, Connected};
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
-    SiderealGameCorePlugin, apply_engine_thrust, process_character_movement_actions,
-    process_flight_actions, sync_mounted_hierarchy,
+    SiderealGameCorePlugin, apply_engine_thrust, clamp_angular_velocity,
+    process_character_movement_actions, process_flight_actions, stabilize_idle_motion,
+    sync_mounted_hierarchy,
 };
 use sidereal_net::register_lightyear_protocol;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
@@ -144,7 +145,7 @@ pub(crate) fn run() {
         tick_duration: Duration::from_secs_f64(1.0 / 30.0),
     });
     app.add_plugins(LightyearAvianPlugin {
-        replication_mode: AvianReplicationMode::Position,
+        replication_mode: AvianReplicationMode::PositionButInterpolateTransform,
         update_syncs_manually: false,
         rollback_resources: false,
         rollback_islands: false,
@@ -159,6 +160,7 @@ pub(crate) fn run() {
     app.insert_resource(MotionOwnershipAuditState::default());
     app.insert_resource(ClientSession::default());
     app.insert_resource(PendingDisconnectNotify::default());
+    app.insert_resource(PendingDisconnectNotifySent::default());
     app.insert_resource(LogoutCleanupRequested::default());
     app.insert_resource(ClientNetworkTick::default());
     app.insert_resource(ClientInputAckTracker::default());
@@ -195,9 +197,12 @@ pub(crate) fn run() {
         (
             motion::enforce_motion_ownership_for_world_entities,
             motion::audit_motion_ownership_system
-                .after(motion::enforce_motion_ownership_for_world_entities),
-            process_character_movement_actions,
+                .after(motion::enforce_motion_ownership_for_world_entities)
+                .run_if(bevy::ecs::schedule::common_conditions::not(
+                    lightyear::prelude::is_in_rollback,
+                )),
             motion::sync_controlled_mass_from_total_mass,
+            process_character_movement_actions,
             process_flight_actions,
             apply_engine_thrust,
         )
@@ -206,11 +211,7 @@ pub(crate) fn run() {
     );
     app.add_systems(
         FixedUpdate,
-        (
-            motion::reconcile_controlled_prediction_with_confirmed,
-            motion::stabilize_controlled_idle_motion,
-            motion::clamp_controlled_angular_velocity,
-        )
+        (stabilize_idle_motion, clamp_angular_velocity)
             .chain()
             .after(avian2d::prelude::PhysicsSystems::StepSimulation),
     );

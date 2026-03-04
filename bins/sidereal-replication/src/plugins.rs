@@ -71,8 +71,8 @@ impl Plugin for ReplicationVisibilityPlugin {
             FixedUpdate,
             (
                 simulation_entities::sync_controlled_entity_transforms,
-                runtime_state::sync_player_anchor_to_controlled_entity,
                 runtime_state::update_client_observer_anchor_positions,
+                runtime_state::ensure_controlled_entity_scanner_range_component,
                 runtime_state::compute_controlled_entity_scanner_ranges,
                 visibility::update_network_visibility,
             )

@@ -6,9 +6,9 @@ use bevy::prelude::*;
 use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::input::native::{ActionState, InputMarker};
-use sidereal_game::EntityAction;
+use sidereal_game::{EntityAction, EntityGuid};
 use sidereal_net::{ClientRealtimeInputMessage, InputChannel, PlayerEntityId, PlayerInput};
-use sidereal_runtime_sync::RuntimeEntityHierarchy;
+use sidereal_runtime_sync::{RuntimeEntityHierarchy, parse_guid_from_entity_id};
 use std::sync::OnceLock;
 
 use super::app_state::{
@@ -106,6 +106,50 @@ pub fn client_input_debug_logging_enabled() -> bool {
     })
 }
 
+#[allow(clippy::type_complexity)]
+fn resolve_entity_by_guid_prefer_predicted(
+    guid_candidates: &Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+    >,
+    guid_like: &str,
+) -> Option<Entity> {
+    let target_guid =
+        parse_guid_from_entity_id(guid_like).or_else(|| uuid::Uuid::parse_str(guid_like).ok())?;
+    let mut winner: Option<(Entity, i32)> = None;
+    for (entity, guid, is_predicted, is_interpolated) in guid_candidates {
+        if guid.is_none_or(|guid| guid.0 != target_guid) {
+            continue;
+        }
+        let score = if is_predicted {
+            3
+        } else if is_interpolated {
+            2
+        } else {
+            1
+        };
+        if winner.is_none_or(|(_, best_score)| score > best_score) {
+            winner = Some((entity, score));
+        }
+    }
+    winner.map(|(entity, _)| entity)
+}
+
+fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    parse_guid_from_entity_id(left)
+        .zip(parse_guid_from_entity_id(right))
+        .is_some_and(|(l, r)| l == r)
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn send_lightyear_input_messages(
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
@@ -123,6 +167,16 @@ pub fn send_lightyear_input_messages(
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    guid_candidates: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+    >,
     mut tick: ResMut<'_, ClientNetworkTick>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
     mut input_log_state: ResMut<'_, ClientInputLogState>,
@@ -132,16 +186,25 @@ pub fn send_lightyear_input_messages(
     let in_world_state = is_active_world_state(&app_state, &headless_mode);
     let window_focused = windows.single().map(|w| w.focused).unwrap_or(true);
 
-    let (player_entity_id, player_input) = if in_world_state {
+    let (player_entity_id, target_entity_id, player_input) = if in_world_state {
         let Some(player_entity_id) = session.player_entity_id.clone() else {
             return;
         };
-        let (player_input, _axes) = if player_view_state.detached_free_camera || !window_focused {
+        let target_entity_id = player_view_state
+            .controlled_entity_id
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| player_entity_id.clone());
+        let controlling_player_anchor =
+            ids_refer_to_same_guid(target_entity_id.as_str(), player_entity_id.as_str());
+        let suppress_input_for_camera_only =
+            player_view_state.detached_free_camera && !controlling_player_anchor;
+        let (player_input, _axes) = if suppress_input_for_camera_only || !window_focused {
             neutral_player_input()
         } else {
             player_input_from_keyboard(input.as_deref())
         };
-        (player_entity_id, player_input)
+        (player_entity_id, target_entity_id, player_input)
     } else {
         return;
     };
@@ -156,16 +219,13 @@ pub fn send_lightyear_input_messages(
                 | EntityAction::LateralNeutral
         )
     });
-    let target_entity_id = player_view_state
-        .controlled_entity_id
-        .as_ref()
-        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
-        .cloned()
-        .unwrap_or_else(|| player_entity_id.clone());
-    let target_entity = entity_registry
-        .by_entity_id
-        .get(target_entity_id.as_str())
-        .copied();
+    let target_entity = resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
+        .or_else(|| {
+        entity_registry
+            .by_entity_id
+            .get(target_entity_id.as_str())
+            .copied()
+        });
 
     // Canonical ids for network message so server lookup matches (same form used for target_changed).
     let message_player_id = canonical_player_entity_id(&player_entity_id);
@@ -185,6 +245,9 @@ pub fn send_lightyear_input_messages(
         input_changed,
         target_changed,
     );
+    // While movement/fire input is active, send every fixed tick so authoritative
+    // server routing cannot stall on sparse heartbeats.
+    let should_send_network = should_send_network || has_active_input;
 
     if client_input_debug_logging_enabled() {
         let actions_changed = input_log_state.last_logged_actions != player_input.actions;
@@ -279,6 +342,16 @@ pub fn enforce_single_input_marker_owner(
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    guid_candidates: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+    >,
     input_marked_entities: Query<
         '_,
         '_,
@@ -292,13 +365,15 @@ pub fn enforce_single_input_marker_owner(
     let target_entity_id = player_view_state
         .controlled_entity_id
         .as_ref()
-        .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))
         .cloned()
         .unwrap_or_else(|| player_entity_id.clone());
-    let target_entity = entity_registry
-        .by_entity_id
-        .get(target_entity_id.as_str())
-        .copied();
+    let target_entity = resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
+        .or_else(|| {
+            entity_registry
+                .by_entity_id
+                .get(target_entity_id.as_str())
+                .copied()
+        });
 
     for (entity, controlled) in &input_marked_entities {
         let keep = Some(entity) == target_entity

@@ -9,6 +9,7 @@ use sidereal_net::{
     ServerControlRejectMessage,
 };
 use std::sync::OnceLock;
+use sidereal_runtime_sync::parse_guid_from_entity_id;
 
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, is_active_world_state,
@@ -21,6 +22,15 @@ pub fn client_control_debug_logging_enabled() -> bool {
         std::env::var("SIDEREAL_DEBUG_CONTROL_LOGS")
             .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     })
+}
+
+fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    parse_guid_from_entity_id(left)
+        .zip(parse_guid_from_entity_id(right))
+        .is_some_and(|(l, r)| l == r)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -60,7 +70,11 @@ pub fn send_lightyear_control_requests(
             .clone()
             .or_else(|| player_view_state.controlled_entity_id.clone())
             .or_else(|| session.player_entity_id.clone());
-        if desired != player_view_state.controlled_entity_id {
+        let control_changed = desired
+            .as_deref()
+            .zip(player_view_state.controlled_entity_id.as_deref())
+            .is_none_or(|(d, c)| !ids_refer_to_same_guid(d, c));
+        if control_changed {
             request_state.next_request_seq = request_state.next_request_seq.saturating_add(1);
             request_state.pending_controlled_entity_id = desired;
             request_state.pending_request_seq = Some(request_state.next_request_seq);

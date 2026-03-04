@@ -3,8 +3,7 @@ use bevy::prelude::*;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use lightyear::prelude::server::{ClientOf, RawServer};
 use lightyear::prelude::{
-    MessageReceiver, NetworkTarget, RemoteId, Replicate, ReplicationState, Server,
-    ServerMultiMessageSender, Unlink,
+    MessageReceiver, NetworkTarget, RemoteId, Replicate, Server, ServerMultiMessageSender, Unlink,
 };
 use serde::Deserialize;
 use sidereal_game::{AccountId, PlayerTag};
@@ -216,12 +215,12 @@ pub fn receive_client_auth_messages(
     >,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
+    player_entities: Query<'_, '_, (Entity, &'_ sidereal_game::EntityGuid), With<PlayerTag>>,
     player_accounts: Query<'_, '_, &'_ AccountId, With<PlayerTag>>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
-    mut replication_states: Query<'_, '_, &'_ mut ReplicationState, With<Replicate>>,
 ) {
     let now_s = time.elapsed_secs_f64();
     let jwt_secret = match std::env::var("GATEWAY_JWT_SECRET") {
@@ -286,13 +285,23 @@ pub fn receive_client_auth_messages(
                     claims.player_entity_id, message.player_entity_id, message_player_wire
                 );
             }
+            let player_entity = player_entity_map
+                .by_player_entity_id
+                .get(&message_player_wire)
+                .copied()
+                .or_else(|| {
+                    sidereal_runtime_sync::parse_guid_from_entity_id(message_player_wire.as_str())
+                        .and_then(|target_guid| {
+                            player_entities.iter().find_map(|(entity, guid)| {
+                                (guid.0 == target_guid).then_some(entity)
+                            })
+                        })
+                });
             if !claims.sub.is_empty()
-                && let Some(player_entity) = player_entity_map
-                    .by_player_entity_id
-                    .get(&message_player_wire)
+                && let Some(player_entity) = player_entity
             {
                 let account_id_value = if let Ok(account_id_component) =
-                    player_accounts.get(*player_entity)
+                    player_accounts.get(player_entity)
                 {
                     account_id_component.0.clone()
                 } else {
@@ -303,7 +312,7 @@ pub fn receive_client_auth_messages(
                         message.player_entity_id
                     );
                     commands
-                        .entity(*player_entity)
+                        .entity(player_entity)
                         .insert(AccountId(claims.sub.clone()));
                     claims.sub.clone()
                 };
@@ -314,6 +323,18 @@ pub fn receive_client_auth_messages(
                     );
                     continue;
                 }
+            }
+            if let Some(player_entity) = player_entity {
+                // Player anchor entities are owner-only replication targets.
+                commands
+                    .entity(player_entity)
+                    .remove::<lightyear::prelude::InterpolationTarget>()
+                    .insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
+            } else {
+                warn!(
+                    "replication auth: player entity not found for {}; owner-only player replication target not applied",
+                    message_player_wire
+                );
             }
 
             let already_bound_same_player = bindings
@@ -399,14 +420,6 @@ pub fn receive_client_auth_messages(
                 .remove(&message_player_wire);
 
             visibility_registry.register_client(client_entity, message_player_wire.clone());
-            // Force a clean visibility handshake for this authenticated client.
-            // This guarantees reconnects receive fresh spawn baseline even if the
-            // underlying remote link entity was reused across quick logout/login.
-            for mut replication_state in &mut replication_states {
-                if replication_state.is_visible(client_entity) {
-                    replication_state.lose_visibility(client_entity);
-                }
-            }
 
             if !player_entity_map
                 .by_player_entity_id

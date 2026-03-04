@@ -15,15 +15,9 @@ use super::debug_overlay::{
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
-use super::transforms::{
-    lock_camera_to_player_entity_end_of_frame,
-    lock_player_entity_to_controlled_entity_end_of_frame,
-    sync_remote_controlled_ship_roots_from_player_anchors,
-    sync_world_entity_transforms_from_physics,
-};
 use super::{
     assets, audio, auth_net, auth_ui, bootstrap, control, dialog_ui, input, logout, replication,
-    scene, scene_world, transport, ui, visuals,
+    scene, scene_world, transforms, transport, ui, visuals,
 };
 
 pub(super) struct ClientBootstrapPlugin {
@@ -33,7 +27,6 @@ pub(super) struct ClientBootstrapPlugin {
 impl Plugin for ClientBootstrapPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(replication::ensure_parent_spatial_components_on_children_added);
-        app.add_systems(Update, replication::ensure_ui_node_spatial_components);
         if self.headless {
             app.add_systems(Startup, auth_net::configure_headless_session_from_env);
             app.add_systems(Startup, transport::start_lightyear_client_transport);
@@ -97,6 +90,7 @@ impl Plugin for ClientTransportPlugin {
                 Update,
                 (
                     transport::ensure_client_transport_channels,
+                    transport::handle_unexpected_server_disconnect_system,
                     auth_net::send_lightyear_auth_messages,
                     auth_net::receive_lightyear_session_ready_messages,
                     auth_net::receive_lightyear_session_denied_messages,
@@ -130,59 +124,60 @@ impl Plugin for ClientReplicationPlugin {
             app.add_systems(
                 Update,
                 (
+                    replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
+                    replication::prune_runtime_entity_registry_system,
                     assets::receive_lightyear_asset_stream_messages,
                     assets::ensure_critical_assets_available_system
                         .after(assets::receive_lightyear_asset_stream_messages),
-                    replication::adopt_native_lightyear_replicated_entities,
-                    sync_remote_controlled_ship_roots_from_player_anchors
+                    replication::adopt_native_lightyear_replicated_entities
+                        .after(replication::prune_runtime_entity_registry_system),
+                    transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
-                    sync_world_entity_transforms_from_physics
-                        .after(sync_remote_controlled_ship_roots_from_player_anchors),
                     replication::sync_local_player_view_state_system
-                        .after(replication::adopt_native_lightyear_replicated_entities),
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_controlled_entity_tags_system
                         .after(replication::sync_local_player_view_state_system),
-                    replication::converge_local_prediction_markers_system
-                        .after(replication::sync_controlled_entity_tags_system),
                     control::send_lightyear_control_requests
-                        .after(replication::converge_local_prediction_markers_system),
+                        .after(replication::sync_controlled_entity_tags_system),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
                     control::log_client_control_state_changes
                         .after(control::receive_lightyear_control_results),
-                    log_prediction_runtime_state,
                 ),
             );
+            app.add_systems(Update, log_prediction_runtime_state);
         } else {
             app.add_systems(
                 Update,
                 (
+                    replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
+                    replication::prune_runtime_entity_registry_system,
                     assets::receive_lightyear_asset_stream_messages,
                     assets::ensure_critical_assets_available_system
                         .after(assets::receive_lightyear_asset_stream_messages),
-                    replication::adopt_native_lightyear_replicated_entities,
-                    sync_remote_controlled_ship_roots_from_player_anchors
+                    replication::adopt_native_lightyear_replicated_entities
+                        .after(replication::prune_runtime_entity_registry_system),
+                    transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
-                    sync_world_entity_transforms_from_physics
-                        .after(sync_remote_controlled_ship_roots_from_player_anchors),
                     replication::transition_world_loading_to_in_world
-                        .after(replication::adopt_native_lightyear_replicated_entities),
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_local_player_view_state_system
-                        .after(replication::adopt_native_lightyear_replicated_entities),
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_controlled_entity_tags_system
                         .after(replication::sync_local_player_view_state_system),
-                    replication::converge_local_prediction_markers_system
-                        .after(replication::sync_controlled_entity_tags_system),
                     control::send_lightyear_control_requests
-                        .after(replication::converge_local_prediction_markers_system),
+                        .after(replication::sync_controlled_entity_tags_system),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
                     control::log_client_control_state_changes
                         .after(control::receive_lightyear_control_results),
-                    log_prediction_runtime_state,
                 ),
+            );
+            app.add_systems(
+                Update,
+                log_prediction_runtime_state.run_if(in_state(ClientAppState::InWorld)),
             );
         }
     }
@@ -195,7 +190,7 @@ pub(super) struct ClientPredictionPlugin {
 impl Plugin for ClientPredictionPlugin {
     fn build(&self, app: &mut App) {
         let send_input = (
-            input::enforce_single_input_marker_owner.before(input::send_lightyear_input_messages),
+            input::enforce_single_input_marker_owner,
             input::send_lightyear_input_messages,
             bevy::ecs::schedule::ApplyDeferred,
         )
@@ -310,11 +305,7 @@ impl Plugin for ClientUiPlugin {
         app.add_systems(
             Last,
             (
-                lock_player_entity_to_controlled_entity_end_of_frame,
-                lock_camera_to_player_entity_end_of_frame
-                    .after(lock_player_entity_to_controlled_entity_end_of_frame),
-                super::backdrop::compute_fullscreen_external_world_system
-                    .after(lock_camera_to_player_entity_end_of_frame),
+                super::backdrop::compute_fullscreen_external_world_system,
                 super::backdrop::update_starfield_material_system
                     .after(super::backdrop::compute_fullscreen_external_world_system),
                 super::backdrop::update_space_background_material_system

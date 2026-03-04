@@ -411,6 +411,16 @@ mod tests {
                 .required_component_kinds
                 .contains(&"display_name".to_string())
         );
+        assert!(
+            starter_corvette
+                .required_component_kinds
+                .contains(&"scanner_range_m".to_string())
+        );
+        assert!(
+            starter_corvette
+                .required_component_kinds
+                .contains(&"scanner_component".to_string())
+        );
     }
 
     #[test]
@@ -435,6 +445,37 @@ mod tests {
     }
 
     #[test]
+    fn starter_corvette_bundle_includes_scanner_components() {
+        let root = scripts_root_dir();
+        let registry = load_bundle_registry(&root).expect("load bundle registry");
+        let starter_bundle = registry
+            .bundles
+            .get("starter_corvette")
+            .expect("starter bundle");
+        let records = load_graph_records_for_bundle(
+            &root,
+            starter_bundle,
+            ScriptContext {
+                account_id: Uuid::new_v4(),
+                player_entity_id: &Uuid::new_v4().to_string(),
+                email: "pilot@example.com",
+            },
+        )
+        .expect("load graph records for starter bundle");
+        let component_kinds = records
+            .iter()
+            .flat_map(|record| {
+                record
+                    .components
+                    .iter()
+                    .map(|component| component.component_kind.as_str())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert!(component_kinds.contains("scanner_range_m"));
+        assert!(component_kinds.contains("scanner_component"));
+    }
+
+    #[test]
     fn default_world_init_graph_records_script_loads() {
         let root = scripts_root_dir();
         let records = load_world_init_graph_records(&root).expect("load world init graph records");
@@ -444,5 +485,16 @@ mod tests {
                 .iter()
                 .any(|record| record.entity_id == "0012ebad-0000-0000-0000-000000000001")
         );
+        let component_kinds = records
+            .iter()
+            .flat_map(|record| {
+                record
+                    .components
+                    .iter()
+                    .map(|component| component.component_kind.as_str())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert!(component_kinds.contains("scanner_range_m"));
+        assert!(component_kinds.contains("scanner_component"));
     }
 }

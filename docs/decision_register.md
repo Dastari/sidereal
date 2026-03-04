@@ -525,3 +525,39 @@ For each decision:
 - References:
   - `crates/sidereal-game/src/hierarchy.rs`
   - `AGENTS.md` (non-negotiable: clients never authoritatively set world transforms)
+
+## DR-0016: Data-Driven Runtime Shader Bindings via Generic Material Types
+- Status: Proposed
+- Date: 2026-03-04
+- Owners: Scripting + replication + client rendering + asset streaming
+- Context:
+  - Content scripting needs to support large numbers of shader-driven 2D visuals (sprites/polygons) without adding Rust boilerplate per shader.
+  - Bevy can load/compile shader assets at runtime but cannot create/register brand-new Rust `Material2d` schemas from network/script payloads at runtime.
+  - Current startup material plugin registrations are type-level wiring; this does not scale as a per-shader authoring model.
+- Decision:
+  - Use a small fixed set of generic runtime 2D material schemas on the client, registered at startup.
+  - Drive per-entity shader selection and parameters through replicated gameplay components and script intent APIs.
+  - Stream shader assets through the existing asset-delivery contract and compile/swap at runtime with deterministic fallback on failure.
+- Alternatives considered:
+  - Add one Rust `Material2d` type per shader: rejected (high boilerplate and poor scaling).
+  - Runtime-generate new material schemas from Lua/network payloads: rejected (not compatible with Bevy material type model).
+  - Client-only unsanctioned shader mutation bypassing server policy: rejected (authority/security contract violation).
+- Consequences:
+  - Positive:
+    - Supports hundreds of shader assets without per-shader client type additions.
+    - Keeps scripting flexibility while preserving authority, persistence, and replication boundaries.
+    - Works with existing stream/cache invalidation model.
+  - Negative:
+    - Requires robust schema validation, fallback handling, and compile-thrash guardrails.
+    - Some advanced shader binding patterns may need planned extensions to generic material schemas.
+- Follow-up:
+  - Implement phased plan in `docs/features/dynamic_runtime_shader_material_plan.md`.
+  - Add tests for authorization, fallback behavior, cache invalidation, and native/WASM parity.
+  - Promote to Accepted after end-to-end runtime path is implemented and validated.
+- Decision doc:
+  - `docs/features/dynamic_runtime_shader_material_plan.md`
+- References:
+  - `docs/features/scripting_support.md`
+  - `docs/features/asset_delivery_contract.md`
+  - `docs/sidereal_design_document.md`
+  - `bins/sidereal-client/src/native/mod.rs`

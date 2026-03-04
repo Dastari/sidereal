@@ -5,6 +5,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::ecs::query::Has;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+use sidereal_game::EntityGuid;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::app_state::{ClientSession, FreeCameraState, LocalPlayerViewState};
@@ -18,13 +19,54 @@ use avian2d::prelude::Position;
 
 pub(crate) fn resolve_camera_anchor_entity(
     session: &ClientSession,
-    player_view_state: &LocalPlayerViewState,
+    _player_view_state: &LocalPlayerViewState,
     entity_registry: &RuntimeEntityHierarchy,
+    anchor_candidates: &Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+        (Without<Camera>, Without<GameplayCamera>),
+    >,
 ) -> Option<Entity> {
-    let preferred_runtime_id = player_view_state
-        .controlled_entity_id
+    let Some(player_id) = session.player_entity_id.as_deref() else {
+        return None;
+    };
+    let player_guid = sidereal_runtime_sync::parse_guid_from_entity_id(player_id)
+        .or_else(|| uuid::Uuid::parse_str(player_id).ok());
+    if let Some(player_guid) = player_guid {
+        // Lightyear can host multiple runtime entities with the same GUID
+        // (predicted / interpolated / confirmed clones). Always prefer predicted
+        // for camera follow to keep local motion responsive in free-roam.
+        let mut winner: Option<(Entity, i32)> = None;
+        for (entity, guid, is_predicted, is_interpolated) in anchor_candidates {
+            if guid.is_none_or(|guid| guid.0 != player_guid) {
+                continue;
+            }
+            let score = if is_predicted {
+                3
+            } else if is_interpolated {
+                2
+            } else {
+                1
+            };
+            if winner.is_none_or(|(_, best_score)| score > best_score) {
+                winner = Some((entity, score));
+            }
+        }
+        if let Some((entity, _)) = winner {
+            return Some(entity);
+        }
+    }
+
+    // Camera contract: always follow the local player entity.
+    let preferred_runtime_id = session
+        .player_entity_id
         .as_ref()
-        .or(session.player_entity_id.as_ref())
         .filter(|id| entity_registry.by_entity_id.contains_key(id.as_str()))?;
     entity_registry
         .by_entity_id
@@ -45,6 +87,17 @@ pub(crate) fn update_topdown_camera_system(
         '_,
         '_,
         (&Transform, Option<&Position>),
+        (Without<Camera>, Without<GameplayCamera>),
+    >,
+    anchor_candidates: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
         (Without<Camera>, Without<GameplayCamera>),
     >,
     mut free_camera: ResMut<'_, FreeCameraState>,
@@ -80,14 +133,18 @@ pub(crate) fn update_topdown_camera_system(
         ortho.scale = (camera.distance * ORTHO_SCALE_PER_DISTANCE).max(0.01);
     }
 
-    let follow_anchor =
-        resolve_camera_anchor_entity(&session, &player_view_state, &entity_registry)
-            .and_then(|entity| anchor_query.get(entity).ok())
-            .map(|(anchor_transform, anchor_position)| {
-                anchor_position
-                    .map(|p| p.0)
-                    .unwrap_or_else(|| anchor_transform.translation.truncate())
-            });
+    let follow_anchor = resolve_camera_anchor_entity(
+        &session,
+        &player_view_state,
+        &entity_registry,
+        &anchor_candidates,
+    )
+    .and_then(|entity| anchor_query.get(entity).ok())
+    .map(|(anchor_transform, anchor_position)| {
+        anchor_position
+            .map(|p| p.0)
+            .unwrap_or_else(|| anchor_transform.translation.truncate())
+    });
 
     let (focus_xy, snap_focus) = if player_view_state.detached_free_camera {
         if !free_camera.initialized {
