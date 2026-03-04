@@ -5,14 +5,15 @@ use serde::Serialize;
 use sidereal_game::{
     AccountId, ActionQueue, AfterburnerState, AmmoCount, BallisticWeapon, BaseMassKg, CargoMassKg,
     CharacterMovementController, CollisionProfile, ControlledEntityGuid, CorvetteModuleKind,
-    DisplayName, EntityLabels, MassDirty, ModuleMassKg, MountedOn, OwnerId, ParentGuid, PlayerTag,
-    ShipTag, ThrusterPlumeShaderSettings, TotalMassKg, VisualAssetId, WeaponTag,
-    default_character_movement_action_capabilities, default_corvette_afterburner_capability,
-    default_corvette_asset_id, default_corvette_collision_aabb, default_corvette_collision_outline,
-    default_corvette_engine, default_corvette_flight_computer, default_corvette_flight_tuning,
-    default_corvette_fuel_tank, default_corvette_hardpoint_specs, default_corvette_health_pool,
-    default_corvette_mass_kg, default_corvette_max_velocity_mps, default_corvette_module_specs,
-    default_corvette_size, default_flight_action_capabilities,
+    DisplayName, EntityLabels, FullscreenLayer, MassDirty, ModuleMassKg, MountedOn, OwnerId,
+    ParentGuid, PlayerTag, ShipTag, ThrusterPlumeShaderSettings, TotalMassKg, VisualAssetId,
+    WeaponTag, default_character_movement_action_capabilities,
+    default_corvette_afterburner_capability, default_corvette_asset_id,
+    default_corvette_collision_aabb, default_corvette_collision_outline, default_corvette_engine,
+    default_corvette_flight_computer, default_corvette_flight_tuning, default_corvette_fuel_tank,
+    default_corvette_hardpoint_specs, default_corvette_health_pool, default_corvette_mass_kg,
+    default_corvette_max_velocity_mps, default_corvette_module_specs, default_corvette_size,
+    default_flight_action_capabilities,
 };
 use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
 use std::collections::HashMap;
@@ -384,4 +385,118 @@ pub fn new_player_starter_graph_records(
     }
 
     records
+}
+
+/// Builds deterministic graph records for global fullscreen backdrop layers.
+///
+/// The entity IDs are fixed GUID strings so this can be applied idempotently by
+/// callers that check for pre-existing records before persist.
+pub fn world_init_fullscreen_layer_graph_records(
+    space_background_shader_asset_id: &str,
+    starfield_shader_asset_id: &str,
+) -> Vec<GraphEntityRecord> {
+    use sidereal_game::entities::{
+        SPACE_BACKGROUND_BACKDROP_ENTITY_GUID, SPACE_BACKGROUND_LAYER_KIND,
+        SPACE_BACKGROUND_LAYER_ORDER, STARFIELD_BACKDROP_ENTITY_GUID, STARFIELD_LAYER_KIND,
+        STARFIELD_LAYER_ORDER,
+    };
+
+    let space_background_id = SPACE_BACKGROUND_BACKDROP_ENTITY_GUID.to_string();
+    let starfield_id = STARFIELD_BACKDROP_ENTITY_GUID.to_string();
+
+    vec![
+        GraphEntityRecord {
+            entity_id: space_background_id.clone(),
+            labels: vec!["Entity".to_string(), "FullscreenLayer".to_string()],
+            properties: serde_json::json!({}),
+            components: vec![
+                component_record(
+                    &space_background_id,
+                    "display_name",
+                    &DisplayName("SpaceBackground".to_string()),
+                ),
+                component_record(
+                    &space_background_id,
+                    "fullscreen_layer",
+                    &FullscreenLayer {
+                        layer_kind: SPACE_BACKGROUND_LAYER_KIND.to_string(),
+                        shader_asset_id: space_background_shader_asset_id.to_string(),
+                        layer_order: SPACE_BACKGROUND_LAYER_ORDER,
+                    },
+                ),
+            ],
+        },
+        GraphEntityRecord {
+            entity_id: starfield_id.clone(),
+            labels: vec!["Entity".to_string(), "FullscreenLayer".to_string()],
+            properties: serde_json::json!({}),
+            components: vec![
+                component_record(
+                    &starfield_id,
+                    "display_name",
+                    &DisplayName("StarField".to_string()),
+                ),
+                component_record(
+                    &starfield_id,
+                    "fullscreen_layer",
+                    &FullscreenLayer {
+                        layer_kind: STARFIELD_LAYER_KIND.to_string(),
+                        shader_asset_id: starfield_shader_asset_id.to_string(),
+                        layer_order: STARFIELD_LAYER_ORDER,
+                    },
+                ),
+            ],
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::world_init_fullscreen_layer_graph_records;
+
+    #[test]
+    fn world_init_fullscreen_records_include_requested_shader_asset_ids() {
+        let records = world_init_fullscreen_layer_graph_records(
+            "space_background_custom",
+            "starfield_custom",
+        );
+        assert_eq!(records.len(), 2);
+
+        let mut saw_space_background = false;
+        let mut saw_starfield = false;
+        for record in records {
+            let Some(fullscreen_layer) = record
+                .components
+                .iter()
+                .find(|component| component.component_kind == "fullscreen_layer")
+            else {
+                continue;
+            };
+            let Some(layer_kind) = fullscreen_layer
+                .properties
+                .get("layer_kind")
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            let Some(shader_asset_id) = fullscreen_layer
+                .properties
+                .get("shader_asset_id")
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+
+            if layer_kind == "space_background" {
+                saw_space_background = true;
+                assert_eq!(shader_asset_id, "space_background_custom");
+            } else if layer_kind == "starfield" {
+                saw_starfield = true;
+                assert_eq!(shader_asset_id, "starfield_custom");
+            }
+        }
+
+        assert!(saw_space_background);
+        assert!(saw_starfield);
+    }
 }

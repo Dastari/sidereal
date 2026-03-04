@@ -13,7 +13,7 @@ use std::time::Instant;
 use crate::replication::debug_env;
 
 pub const DEFAULT_VIEW_RANGE_M: f32 = 300.0;
-const VISIBILITY_CELL_SIZE_M: f32 = 300.0;
+const DEFAULT_VISIBILITY_CELL_SIZE_M: f32 = 2000.0;
 
 fn canonical_player_entity_id(id: &str) -> String {
     sidereal_net::PlayerEntityId::parse(id)
@@ -21,12 +21,32 @@ fn canonical_player_entity_id(id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-fn delivery_range_m_from_env() -> f32 {
-    std::env::var("SIDEREAL_VISIBILITY_DELIVERY_RANGE_M")
-        .ok()
-        .and_then(|raw| raw.parse::<f32>().ok())
+fn parse_delivery_range_m(raw: Option<&str>) -> Option<f32> {
+    raw.and_then(|value| value.parse::<f32>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(DEFAULT_VIEW_RANGE_M)
+}
+
+fn delivery_range_m_from_env() -> f32 {
+    parse_delivery_range_m(
+        std::env::var("SIDEREAL_VISIBILITY_DELIVERY_RANGE_M")
+            .ok()
+            .as_deref(),
+    )
+    .unwrap_or(DEFAULT_VIEW_RANGE_M)
+}
+
+fn parse_cell_size_m(raw: Option<&str>) -> Option<f32> {
+    raw.and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value >= 50.0)
+}
+
+fn cell_size_m_from_env() -> f32 {
+    parse_cell_size_m(
+        std::env::var("SIDEREAL_VISIBILITY_CELL_SIZE_M")
+            .ok()
+            .as_deref(),
+    )
+    .unwrap_or(DEFAULT_VISIBILITY_CELL_SIZE_M)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,17 +56,24 @@ enum VisibilityCandidateMode {
 }
 
 impl VisibilityCandidateMode {
-    fn from_env() -> Self {
-        match std::env::var("SIDEREAL_VISIBILITY_CANDIDATE_MODE")
-            .ok()
-            .unwrap_or_else(|| "full_scan".to_string())
+    fn from_raw(raw: Option<&str>) -> Self {
+        match raw
+            .unwrap_or("spatial_grid")
             .trim()
             .to_ascii_lowercase()
             .as_str()
         {
-            "spatial" | "spatial_grid" | "grid" => Self::SpatialGrid,
-            _ => Self::FullScan,
+            "full" | "full_scan" => Self::FullScan,
+            _ => Self::SpatialGrid,
         }
+    }
+
+    fn from_env() -> Self {
+        Self::from_raw(
+            std::env::var("SIDEREAL_VISIBILITY_CANDIDATE_MODE")
+                .ok()
+                .as_deref(),
+        )
     }
 
     fn as_str(self) -> &'static str {
@@ -120,7 +147,7 @@ pub struct VisibilityScratch {
     scanner_sources_by_owner: HashMap<String, Vec<(Vec3, f32)>>,
     player_faction_by_owner: HashMap<String, String>,
     context_by_client: HashMap<Entity, PlayerVisibilityContext>,
-    entities_by_cell: HashMap<(i32, i32), Vec<Entity>>,
+    entities_by_cell: HashMap<(i64, i64), Vec<Entity>>,
     owned_entities_by_player: HashMap<String, Vec<Entity>>,
     candidate_entities_by_client: HashMap<Entity, HashSet<Entity>>,
 }
@@ -129,6 +156,7 @@ pub struct VisibilityScratch {
 pub(crate) struct VisibilityRuntimeConfig {
     candidate_mode: VisibilityCandidateMode,
     delivery_range_m: f32,
+    cell_size_m: f32,
 }
 
 #[derive(Resource, Default)]
@@ -137,12 +165,25 @@ pub struct VisibilityTelemetryLogState {
 }
 
 pub fn init_resources(app: &mut App) {
+    let candidate_mode = VisibilityCandidateMode::from_env();
+    let delivery_range_m = delivery_range_m_from_env();
+    let cell_size_m = cell_size_m_from_env();
+    if delivery_range_m > cell_size_m * 4.0 {
+        let cell_radius = (delivery_range_m / cell_size_m).ceil() as i64;
+        let cells_per_axis = cell_radius * 2 + 1;
+        warn!(
+            "delivery_range_m ({:.0}) is large relative to cell_size_m ({:.0}); grid queries will iterate {} cells per axis per query. Consider increasing SIDEREAL_VISIBILITY_CELL_SIZE_M.",
+            delivery_range_m, cell_size_m, cells_per_axis
+        );
+    }
+
     app.insert_resource(ClientVisibilityRegistry::default());
     app.insert_resource(VisibilityScratch::default());
     app.insert_resource(ClientObserverAnchorPositionMap::default());
     app.insert_resource(VisibilityRuntimeConfig {
-        candidate_mode: VisibilityCandidateMode::from_env(),
-        delivery_range_m: delivery_range_m_from_env(),
+        candidate_mode,
+        delivery_range_m,
+        cell_size_m,
     });
     app.insert_resource(VisibilityTelemetryLogState::default());
 }
@@ -182,22 +223,23 @@ fn debug_visibility_entity_guid() -> Option<uuid::Uuid> {
     })
 }
 
-fn cell_key(position: Vec3) -> (i32, i32) {
+fn cell_key(position: Vec3, cell_size_m: f32) -> (i64, i64) {
     (
-        (position.x / VISIBILITY_CELL_SIZE_M).floor() as i32,
-        (position.y / VISIBILITY_CELL_SIZE_M).floor() as i32,
+        (position.x / cell_size_m).floor() as i64,
+        (position.y / cell_size_m).floor() as i64,
     )
 }
 
 fn add_entities_in_radius(
     center: Vec3,
     radius_m: f32,
-    entities_by_cell: &HashMap<(i32, i32), Vec<Entity>>,
+    cell_size_m: f32,
+    entities_by_cell: &HashMap<(i64, i64), Vec<Entity>>,
     out: &mut HashSet<Entity>,
 ) {
     let radius = radius_m.max(0.0);
-    let cell_radius = (radius / VISIBILITY_CELL_SIZE_M).ceil() as i32;
-    let (cx, cy) = cell_key(center);
+    let cell_radius = (radius / cell_size_m).ceil() as i64;
+    let (cx, cy) = cell_key(center, cell_size_m);
     for dx in -cell_radius..=cell_radius {
         for dy in -cell_radius..=cell_radius {
             if let Some(entities) = entities_by_cell.get(&(cx + dx, cy + dy)) {
@@ -212,6 +254,7 @@ fn build_candidate_set_for_client(
     player_entity_id: &str,
     observer_anchor_position: Option<Vec3>,
     scanner_sources: &[(Vec3, f32)],
+    cell_size_m: f32,
     scratch: &VisibilityScratch,
 ) -> HashSet<Entity> {
     match candidate_mode {
@@ -229,6 +272,7 @@ fn build_candidate_set_for_client(
                 add_entities_in_radius(
                     observer_anchor,
                     DEFAULT_VIEW_RANGE_M,
+                    cell_size_m,
                     &scratch.entities_by_cell,
                     &mut candidates,
                 );
@@ -237,6 +281,7 @@ fn build_candidate_set_for_client(
                 add_entities_in_radius(
                     *scanner_pos,
                     *scanner_range,
+                    cell_size_m,
                     &scratch.entities_by_cell,
                     &mut candidates,
                 );
@@ -367,7 +412,7 @@ pub fn update_network_visibility(
         scratch.world_position_by_entity.insert(entity, world_pos);
         scratch
             .entities_by_cell
-            .entry(cell_key(world_pos))
+            .entry(cell_key(world_pos, runtime_cfg.cell_size_m))
             .or_default()
             .push(entity);
         if let Some(guid) = entity_guid {
@@ -456,6 +501,7 @@ pub fn update_network_visibility(
             canonical_player_id.as_str(),
             observer_anchor_position,
             &scanner_sources,
+            runtime_cfg.cell_size_m,
             &scratch,
         );
         scratch
@@ -748,4 +794,71 @@ fn passes_delivery_scope(
         return false;
     };
     (target_position - observer_anchor_position).length() <= delivery_range_m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_mode_defaults_to_spatial_grid() {
+        assert_eq!(
+            VisibilityCandidateMode::from_raw(None),
+            VisibilityCandidateMode::SpatialGrid
+        );
+    }
+
+    #[test]
+    fn candidate_mode_parses_full_aliases() {
+        assert_eq!(
+            VisibilityCandidateMode::from_raw(Some("full_scan")),
+            VisibilityCandidateMode::FullScan
+        );
+        assert_eq!(
+            VisibilityCandidateMode::from_raw(Some("full")),
+            VisibilityCandidateMode::FullScan
+        );
+    }
+
+    #[test]
+    fn candidate_mode_unknown_values_fall_back_to_spatial_grid() {
+        assert_eq!(
+            VisibilityCandidateMode::from_raw(Some("grid")),
+            VisibilityCandidateMode::SpatialGrid
+        );
+        assert_eq!(
+            VisibilityCandidateMode::from_raw(Some("random")),
+            VisibilityCandidateMode::SpatialGrid
+        );
+    }
+
+    #[test]
+    fn parse_cell_size_requires_minimum_and_finite_value() {
+        assert_eq!(parse_cell_size_m(Some("49.9")), None);
+        assert_eq!(parse_cell_size_m(Some("2000")), Some(2000.0));
+        assert_eq!(parse_cell_size_m(Some("NaN")), None);
+    }
+
+    #[test]
+    fn cell_key_uses_i64_for_large_coordinates() {
+        let position = Vec3::new(5.0e12, -5.0e12, 0.0);
+        let key = cell_key(position, 2000.0);
+        assert!(key.0 > i64::from(i32::MAX));
+        assert!(key.1 < i64::from(i32::MIN));
+    }
+
+    #[test]
+    fn add_entities_in_radius_uses_configured_cell_size() {
+        let center = Vec3::new(0.0, 0.0, 0.0);
+        let near = Entity::from_raw_u32(1).expect("valid entity id");
+        let far = Entity::from_raw_u32(2).expect("valid entity id");
+        let mut grid = HashMap::new();
+        grid.insert((0_i64, 0_i64), vec![near]);
+        grid.insert((2_i64, 0_i64), vec![far]);
+
+        let mut out = HashSet::new();
+        add_entities_in_radius(center, 500.0, 1000.0, &grid, &mut out);
+        assert!(out.contains(&near));
+        assert!(!out.contains(&far));
+    }
 }

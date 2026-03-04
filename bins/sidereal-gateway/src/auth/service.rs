@@ -3,6 +3,7 @@ use sidereal_core::auth::AuthClaims;
 use sidereal_core::bootstrap_wire::BootstrapCommand;
 use sidereal_core::gateway_dtos::AuthTokens;
 use std::sync::Arc;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::auth::bootstrap_dispatch::BootstrapDispatcher;
@@ -77,21 +78,29 @@ impl AuthService {
             .create_account_atomic(&normalized_email, &password_hash)
             .await?
         {
+            info!(
+                "gateway register used atomic account creation path account_id={} player_entity_id={}",
+                account.account_id, account.player_entity_id
+            );
             account
         } else {
             let account = self
                 .store
                 .create_account(&normalized_email, &password_hash)
                 .await?;
-            self.starter_world_persister
-                .persist_starter_world(
-                    account.account_id,
-                    &account.player_entity_id,
-                    &normalized_email,
-                )
-                .await?;
+            info!(
+                "gateway register used fallback account creation path account_id={} player_entity_id={}",
+                account.account_id, account.player_entity_id
+            );
             account
         };
+        self.starter_world_persister
+            .persist_starter_world(
+                account.account_id,
+                &account.player_entity_id,
+                &normalized_email,
+            )
+            .await?;
 
         self.issue_tokens(account.account_id).await
     }

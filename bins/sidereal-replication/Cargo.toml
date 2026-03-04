@@ -23,3 +23,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 jsonwebtoken.workspace = true
+mlua.workspace = true
+sidereal-scripting = { path = "../../crates/sidereal-scripting" }

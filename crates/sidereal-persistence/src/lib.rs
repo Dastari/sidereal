@@ -125,7 +125,45 @@ impl GraphPersistence {
                 ",
             )
             .map_err(db_err("create snapshot marker table"))?;
+        self.client
+            .batch_execute(
+                "
+                CREATE TABLE IF NOT EXISTS script_world_init_state (
+                    init_key TEXT PRIMARY KEY,
+                    script_path TEXT NOT NULL,
+                    applied_at_epoch_s BIGINT NOT NULL
+                );
+                ",
+            )
+            .map_err(db_err("create script world init state table"))?;
 
+        Ok(())
+    }
+
+    pub fn script_world_init_state_exists(&mut self, init_key: &str) -> Result<bool> {
+        self.client
+            .query_opt(
+                "SELECT 1 FROM script_world_init_state WHERE init_key = $1 LIMIT 1",
+                &[&init_key],
+            )
+            .map_err(db_err("query script world init state"))
+            .map(|row| row.is_some())
+    }
+
+    pub fn insert_script_world_init_state(
+        &mut self,
+        init_key: &str,
+        script_path: &str,
+        applied_at_epoch_s: i64,
+    ) -> Result<()> {
+        self.client
+            .execute(
+                "INSERT INTO script_world_init_state (init_key, script_path, applied_at_epoch_s)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (init_key) DO NOTHING",
+                &[&init_key, &script_path, &applied_at_epoch_s],
+            )
+            .map_err(db_err("insert script world init state"))?;
         Ok(())
     }
 
@@ -458,6 +496,16 @@ pub fn ensure_schema_in_transaction(tx: &mut Transaction<'_>, graph_name: &str) 
         ",
     )
     .map_err(db_err("create snapshot marker table"))?;
+    tx.batch_execute(
+        "
+        CREATE TABLE IF NOT EXISTS script_world_init_state (
+            init_key TEXT PRIMARY KEY,
+            script_path TEXT NOT NULL,
+            applied_at_epoch_s BIGINT NOT NULL
+        );
+        ",
+    )
+    .map_err(db_err("create script world init state table"))?;
 
     Ok(())
 }

@@ -41,8 +41,9 @@ Implemented now:
 - owner/public/faction visibility allowances,
 - scanner range fallback with default floor,
 - candidate-generation stage is explicit and pluggable:
-  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=full_scan` (default),
-  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=spatial_grid` (uniform-grid candidate preselection),
+  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=spatial_grid` (default; uniform-grid candidate preselection),
+  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=full_scan` (debug/validation fallback),
+  - `SIDEREAL_VISIBILITY_CELL_SIZE_M` controls grid cell size (default `2000.0`, minimum `50.0`),
 - **global world position**: all range/delivery checks use `GlobalTransform` (world position). Roots and mounted children are included; mounted entities' visibility uses their world position so components on children are correctly in scope.
 - mount-root resolution by traversing `MountedOn` parent chain for owner/public/faction inheritance; no `Without<MountedOn>` filter.
 - observer anchor from player entity **GlobalTransform** (world position), with scanner-source union over owned entities (also world positions).

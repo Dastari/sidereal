@@ -6,8 +6,8 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    assets, auth, combat, input, lifecycle, persistence, runtime_state, simulation_entities,
-    visibility,
+    assets, auth, combat, input, lifecycle, persistence, runtime_scripting, runtime_state,
+    simulation_entities, visibility,
 };
 
 pub(crate) struct ReplicationLifecyclePlugin;
@@ -99,6 +99,24 @@ impl Plugin for ReplicationPersistencePlugin {
             FixedUpdate,
             persistence::flush_simulation_state_persistence
                 .after(visibility::update_network_visibility),
+        );
+    }
+}
+
+pub(crate) struct ReplicationRuntimeScriptingPlugin;
+
+impl Plugin for ReplicationRuntimeScriptingPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            FixedUpdate,
+            (
+                runtime_scripting::refresh_script_world_snapshot,
+                runtime_scripting::run_script_intervals,
+                runtime_scripting::apply_script_intents
+                    .before(sidereal_game::process_flight_actions),
+            )
+                .chain()
+                .before(PhysicsSystems::Prepare),
         );
     }
 }

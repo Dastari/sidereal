@@ -24,6 +24,7 @@ use sidereal_net::{
 
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::lifecycle::ClientLastActivity;
+use crate::replication::scripting::{load_world_init_config, scripts_root_dir};
 
 /// Chunk queued for paced sending to avoid UDP send-buffer overflow (EAGAIN).
 pub(crate) struct PendingAssetChunk {
@@ -84,12 +85,41 @@ pub struct StreamableAssetCache {
     always_required_asset_ids: HashSet<String>,
 }
 
-fn always_required_stream_asset_ids() -> [&'static str; 3] {
-    [
-        default_corvette_asset_id(),
-        default_starfield_shader_asset_id(),
-        default_space_background_shader_asset_id(),
-    ]
+fn always_required_stream_asset_ids() -> Vec<String> {
+    let mut required = vec![default_corvette_asset_id().to_string()];
+    let mut include_default_space = true;
+    let mut include_default_starfield = true;
+
+    let scripts_root = scripts_root_dir();
+    match load_world_init_config(&scripts_root) {
+        Ok(config) => {
+            if config.space_background_shader_asset_id == default_space_background_shader_asset_id()
+            {
+                include_default_space = false;
+            }
+            if config.starfield_shader_asset_id == default_starfield_shader_asset_id() {
+                include_default_starfield = false;
+            }
+            required.push(config.space_background_shader_asset_id);
+            required.push(config.starfield_shader_asset_id);
+        }
+        Err(err) => {
+            warn!(
+                "replication asset cache init could not load world init script config; using default shader asset ids: {}",
+                err
+            );
+        }
+    }
+
+    if include_default_space {
+        required.push(default_space_background_shader_asset_id().to_string());
+    }
+    if include_default_starfield {
+        required.push(default_starfield_shader_asset_id().to_string());
+    }
+    required.sort();
+    required.dedup();
+    required
 }
 
 fn asset_root_dir() -> PathBuf {
@@ -120,8 +150,7 @@ pub fn initialize_asset_stream_cache(
 ) {
     cache.assets_by_id.clear();
     cache.always_required_asset_ids = always_required_stream_asset_ids()
-        .iter()
-        .map(|asset_id| (*asset_id).to_string())
+        .into_iter()
         .collect::<HashSet<_>>();
 
     let streamable_sources = default_streamable_asset_sources();

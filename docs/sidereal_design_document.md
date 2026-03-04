@@ -360,8 +360,8 @@ Implementation note:
 **Visibility and scale**
 
 - **Current runtime modes:** `update_network_visibility` has a pluggable candidate stage:
-  - default: `full_scan` (O(clients × entities)),
-  - opt-in: `spatial_grid` (uniform-grid candidate preselection + policy exception bypass paths).
+  - default: `spatial_grid` (uniform-grid candidate preselection + policy exception bypass paths),
+  - fallback: `full_scan` (O(clients × entities), useful for debug/validation).
 - **Safety rule:** candidate preselection is optimization-only; ownership/public/faction/scanner exceptions must still be considered even if an entity misses candidate preselection.
 - **Target (see 7.7):** move production/default operation to spatial indexing (and later LOD/culling tiers) with telemetry-backed tuning.
 

@@ -11,7 +11,7 @@ use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
 use lightyear::prelude::{ControlledBy, Lifetime, NetworkTarget, Replicate};
 use sidereal_game::{
-    ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
+    ActionQueue, ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
 };
 use sidereal_net::PlayerEntityId;
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
@@ -20,11 +20,15 @@ use sidereal_runtime_sync::{
     insert_registered_components_from_graph_records, parse_guid_from_entity_id,
 };
 use std::collections::{HashMap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bootstrap_runtime::{self, BootstrapEntityReceiver};
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::lifecycle::{HydratedEntityCount, HydratedGraphEntity};
 use crate::replication::persistence::PersistenceSchemaInitState;
+use crate::replication::scripting::{load_world_init_graph_records, scripts_root_dir};
+
+const WORLD_INIT_STATE_KEY: &str = "world/world_init.lua:phase2";
 
 #[derive(Resource, Default)]
 pub struct PlayerControlledEntityMap {
@@ -166,6 +170,16 @@ pub fn hydrate_records_into_world(
             &type_paths,
             app_type_registry,
         );
+        let has_action_queue = component_record(&record.components, "action_queue").is_some();
+        let is_player_anchor = component_record(&record.components, "player_tag").is_some();
+        let has_flight_control = component_record(&record.components, "flight_computer").is_some();
+        if !has_action_queue && (is_player_anchor || has_flight_control) {
+            bevy::log::warn!(
+                "hydration inserted default action_queue for entity_id={} (script payload missing or invalid action_queue)",
+                record.entity_id
+            );
+            commands.entity(entity).insert(ActionQueue::default());
+        }
 
         spawned_entity_by_id.insert(record.entity_id.clone(), entity);
         let guid_key = entity_guid.to_string();
@@ -212,6 +226,12 @@ pub fn hydrate_simulation_entities(
         return;
     }
     schema_init_state.0 = true;
+
+    if let Err(err) = apply_scripted_world_init_once(&mut persistence) {
+        eprintln!("replication simulation hydration skipped; scripted world init failed: {err}");
+        return;
+    }
+
     let records = match persistence.load_graph_records() {
         Ok(v) => v,
         Err(err) => {
@@ -410,6 +430,42 @@ fn filter_records_for_player(
 fn replication_database_url() -> String {
     std::env::var("REPLICATION_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string())
+}
+
+fn apply_scripted_world_init_once(persistence: &mut GraphPersistence) -> Result<(), String> {
+    if persistence
+        .script_world_init_state_exists(WORLD_INIT_STATE_KEY)
+        .map_err(|err| format!("query world init state failed: {err}"))?
+    {
+        bevy::log::info!(
+            "replication scripted world init skipped (marker exists) key={}",
+            WORLD_INIT_STATE_KEY
+        );
+        return Ok(());
+    }
+
+    let scripts_root = scripts_root_dir();
+    let records = load_world_init_graph_records(&scripts_root)?;
+    bevy::log::info!(
+        "replication applying scripted world init records count={} key={}",
+        records.len(),
+        WORLD_INIT_STATE_KEY
+    );
+    persistence
+        .persist_graph_records(&records, 0)
+        .map_err(|err| format!("persist scripted world init records failed: {err}"))?;
+
+    let now_epoch_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    persistence
+        .insert_script_world_init_state(WORLD_INIT_STATE_KEY, "world/world_init.lua", now_epoch_s)
+        .map_err(|err| format!("insert world init state failed: {err}"))?;
+    bevy::log::info!(
+        "replication applied scripted world init from data/scripts/world/world_init.lua"
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

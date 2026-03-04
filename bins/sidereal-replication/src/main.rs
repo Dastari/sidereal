@@ -2,8 +2,8 @@ mod bootstrap_runtime;
 mod plugins;
 mod replication;
 use crate::replication::{
-    assets, auth, control, input, lifecycle, persistence, runtime_state, simulation_entities,
-    visibility,
+    assets, auth, control, input, lifecycle, persistence, runtime_scripting, runtime_state,
+    simulation_entities, visibility,
 };
 use avian2d::prelude::{
     Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems, PhysicsTransformPlugin,
@@ -80,6 +80,7 @@ fn init_resources(app: &mut App) {
     persistence::init_resources(app);
     control::init_resources(app);
     runtime_state::init_resources(app);
+    runtime_scripting::init_resources(app);
     lifecycle::init_resources(app);
 }
 
@@ -88,6 +89,7 @@ fn register_plugins(app: &mut App) {
     app.add_plugins(plugins::ReplicationAuthPlugin);
     app.add_plugins(plugins::ReplicationInputPlugin);
     app.add_plugins(plugins::ReplicationControlPlugin);
+    app.add_plugins(plugins::ReplicationRuntimeScriptingPlugin);
     app.add_plugins(plugins::ReplicationVisibilityPlugin);
     app.add_plugins(plugins::ReplicationPersistencePlugin);
     app.add_plugins(plugins::ReplicationAssetsPlugin);

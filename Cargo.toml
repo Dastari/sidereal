@@ -8,6 +8,7 @@ members = [
   "crates/sidereal-persistence",
   "crates/sidereal-runtime-sync",
   "crates/sidereal-asset-runtime",
+  "crates/sidereal-scripting",
   "bins/sidereal-replication",
   "bins/sidereal-gateway",
   "bins/sidereal-client",
@@ -42,6 +43,7 @@ postgres = { version = "0.19", features = ["with-uuid-1"] }
 uuid = { version = "1.8", features = ["serde", "v4"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
 
 [patch.crates-io]
 parry2d = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", package = "parry2d" }

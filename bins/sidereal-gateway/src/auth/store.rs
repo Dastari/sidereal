@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use sidereal_core::bootstrap_wire::AUTH_CHARACTERS_TABLE;
-use sidereal_persistence::{ensure_schema_in_transaction, persist_graph_records_in_transaction};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tokio_postgres::error::SqlState;
@@ -171,21 +170,6 @@ impl AuthStore for PostgresAuthStore {
                     return Err(AuthError::Internal(format!("create account failed: {err}")));
                 }
             };
-
-            ensure_schema_in_transaction(&mut tx, "sidereal").map_err(|err| {
-                AuthError::Internal(format!("starter world schema ensure failed: {err}"))
-            })?;
-            let position = sidereal_game::corvette_random_spawn_position(account_id);
-            let graph_records =
-                sidereal_runtime_sync::entity_templates::new_player_starter_graph_records(
-                    account_id,
-                    &player_entity_id,
-                    &email,
-                    position,
-                );
-            persist_graph_records_in_transaction(&mut tx, "sidereal", &graph_records, 0).map_err(
-                |err| AuthError::Internal(format!("persist starter world failed: {err}")),
-            )?;
 
             tx.commit()
                 .map_err(|err| AuthError::Internal(format!("transaction commit failed: {err}")))?;
