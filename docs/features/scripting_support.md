@@ -572,6 +572,7 @@ AGE graph persistence remains canonical for entity/component state. Script table
 `world_init.lua` now provides both:
 - `world_defaults` (shader asset IDs), and
 - `build_graph_records(ctx)` returning authoritative fullscreen-layer graph records (including `space_background_shader_settings` and `starfield_shader_settings` payloads).
+- `world_defaults.additional_required_asset_ids` may optionally list extra runtime asset IDs (for example shader IDs) that should be pre-streamed during bootstrap.
 
 The replication host reads and applies these records at boot with idempotent guard key `script_world_init_state`, and the gateway uses the same script payload for first-time persistence when records are missing.
 
@@ -873,7 +874,7 @@ Mission state persists via graph records attached to the mission entity. It surv
    - Loads `world/world_init.lua` at authoritative host boot.
    - Executes `build_graph_records(ctx)` and applies fullscreen backdrop layer graph records once, guarded by `script_world_init_state` DB marker.
    - World-init guard uses existing `GraphPersistence` connection (no extra DB clients).
-   - Asset bootstrap reads `world_defaults` so script-selected backdrop shader asset IDs are included in always-required stream assets.
+  - Asset bootstrap reads `world_defaults` so script-selected backdrop shader asset IDs and optional `additional_required_asset_ids` are included in always-required stream assets.
 
 5. **Replication runtime scripting slice** (`bins/sidereal-replication/src/replication/runtime_scripting.rs`):
    - Persistent sandboxed Lua VM is initialized at host boot (non-send Bevy resource).

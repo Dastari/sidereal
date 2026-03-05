@@ -7,12 +7,14 @@ use bevy::sprite_render::{ColorMaterial, MeshMaterial2d};
 use bevy::state::state_scoped::DespawnOnExit;
 
 use super::app_state::{ClientAppState, ClientSession};
+use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, GameplayCamera, GameplayHud, HudFpsText,
     HudFuelBarFill, HudHealthBarFill, HudManifestText, HudPositionValueText, HudSpeedValueText,
     HudTacticalText, LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill,
     RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
-    SpaceBackdropFallback, TacticalMapOverlayRoot, TacticalMapTitle, TopDownCamera, UiOverlayLayer,
+    SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot, TacticalMapScreenFxOverlay,
+    TacticalMapTitle, TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{BACKDROP_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
@@ -28,6 +30,7 @@ pub(super) fn spawn_world_scene(
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
     mut color_materials: ResMut<'_, Assets<ColorMaterial>>,
+    mut tactical_map_materials: ResMut<'_, Assets<TacticalMapOverlayMaterial>>,
     mut starfield_motion: ResMut<'_, StarfieldMotionState>,
     mut camera_motion: ResMut<'_, CameraMotionState>,
     asset_root: Res<'_, AssetRootPath>,
@@ -431,6 +434,18 @@ pub(super) fn spawn_world_scene(
         RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
         DespawnOnExit(ClientAppState::InWorld),
     ));
+    let tactical_overlay_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+    let tactical_overlay_material = tactical_map_materials.add(TacticalMapOverlayMaterial::default());
+    commands.spawn((
+        Mesh2d(tactical_overlay_mesh),
+        MeshMaterial2d(tactical_overlay_material),
+        Transform::from_xyz(0.0, 0.0, -10.0),
+        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        Visibility::Hidden,
+        TacticalMapScreenFxOverlay,
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
     commands
         .spawn((
             Node {
@@ -464,6 +479,22 @@ pub(super) fn spawn_world_scene(
                 },
                 TextColor(Color::srgba(0.68, 0.92, 1.0, 0.0)),
                 TacticalMapTitle,
+            ));
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: px(16.0),
+                    top: px(12.0),
+                    ..default()
+                },
+                Text::new("0.00, 0.00"),
+                TextFont {
+                    font: fonts.regular.clone(),
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.85, 0.92, 1.0, 0.0)),
+                TacticalMapCursorText,
             ));
         });
     if debug_blue_overlay.0 {

@@ -7,6 +7,7 @@ import {
   COMPONENT_TYPE_MAX_VELOCITY_MPS,
   COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
+  COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS,
   COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
   getComponentTypeKey,
   isEditableComponent,
@@ -52,6 +53,11 @@ const ThrusterPlumeShaderSettingsEditor = React.lazy(() =>
     default: m.ThrusterPlumeShaderSettingsEditor,
   })),
 )
+const TacticalMapUiSettingsEditor = React.lazy(() =>
+  import('./TacticalMapUiSettingsEditor').then((m) => ({
+    default: m.TacticalMapUiSettingsEditor,
+  })),
+)
 
 const EDITOR_MAP: Record<
   string,
@@ -68,6 +74,7 @@ const EDITOR_MAP: Record<
     SpaceBackgroundShaderSettingsEditor,
   [COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS]:
     ThrusterPlumeShaderSettingsEditor,
+  [COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS]: TacticalMapUiSettingsEditor,
 }
 
 export { isEditableComponent, getComponentTypeKey }

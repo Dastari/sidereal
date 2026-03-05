@@ -75,7 +75,13 @@ pub(crate) struct TacticalMapOverlayRoot;
 pub(crate) struct TacticalMapTitle;
 
 #[derive(Component)]
+pub(crate) struct TacticalMapCursorText;
+
+#[derive(Component)]
 pub(crate) struct TacticalMapMarkerDynamic;
+
+#[derive(Component)]
+pub(crate) struct TacticalMapScreenFxOverlay;
 
 #[derive(Component)]
 pub(crate) struct GameplayCamera;

@@ -257,6 +257,7 @@ Client MUST:
 1. Detect missing or stale assets for any entity/layer requiring them.
 2. Request missing assets without blocking simulation tick or crashing renderer.
 3. Continue to render fallback representation until streamed asset validates and is mounted.
+4. Continuously evaluate runtime shader dependencies (replicated shader IDs + known runtime shader materials) and request missing shader assets without requiring hardcoded per-feature critical lists.
 
 Server MUST:
 

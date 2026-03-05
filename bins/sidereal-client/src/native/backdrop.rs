@@ -69,9 +69,6 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         let Ok(mut entity_commands) = commands.get_entity(entity) else {
             continue;
         };
-        // Fullscreen layers are screen-space overlays and must not inherit hidden
-        // visibility from unrelated world hierarchy parents.
-        entity_commands.remove_parent_in_place();
         let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
             &asset_root.0,
             &asset_manager,
@@ -148,6 +145,15 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         } else {
             entity_commands.try_insert(Transform::from_xyz(0.0, 0.0, layer.layer_order as f32));
         }
+    }
+}
+
+pub(super) fn detach_fullscreen_layer_hierarchy_links_system(
+    mut commands: Commands<'_, '_>,
+    fullscreen_layers: Query<'_, '_, (Entity, &'_ ChildOf), With<FullscreenLayer>>,
+) {
+    for (entity, _) in &fullscreen_layers {
+        commands.entity(entity).remove::<ChildOf>();
     }
 }
 
@@ -274,6 +280,13 @@ pub struct SpaceBackgroundUniforms {
     pub space_bg_nebula_color_c: Vec4,
     pub space_bg_star_color: Vec4,
     pub space_bg_flare_tint: Vec4,
+    pub space_bg_depth_a: Vec4,
+    pub space_bg_light_a: Vec4,
+    pub space_bg_light_b: Vec4,
+    pub space_bg_light_flags: Vec4,
+    pub space_bg_shafts_a: Vec4,
+    pub space_bg_shafts_b: Vec4,
+    pub space_bg_backlight_color: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone, Default)]
@@ -291,22 +304,29 @@ impl Default for SpaceBackgroundUniforms {
             viewport_time: Vec4::new(1920.0, 1080.0, 0.0, 0.0),
             drift_intensity: Vec4::new(0.0, 0.0, 1.0, 1.0),
             velocity_dir: Vec4::new(0.0, 1.0, 1.0, 0.0),
-            space_bg_params: Vec4::new(1.0, 1.0, 1.0, 1.0),
-            space_bg_tint: Vec4::ONE,
-            space_bg_background: Vec4::new(0.004, 0.007, 0.018, 1.0),
-            space_bg_flare: Vec4::new(1.0, 0.2, 0.85, 0.0),
+            space_bg_params: Vec4::new(0.35, 2.0, 1.0, 0.85),
+            space_bg_tint: Vec4::new(1.0, 1.77, 1.24, 0.0),
+            space_bg_background: Vec4::new(0.0, 0.0, 0.0, 1.0),
+            space_bg_flare: Vec4::new(1.0, 4.0, 0.54, 0.0),
             space_bg_noise_a: Vec4::new(0.0, 5.0, 0.52, 2.0),
             space_bg_noise_b: Vec4::new(1.0, 0.42, 1.0, 0.0),
-            space_bg_star_mask_a: Vec4::new(0.0, 0.0, 4.0, 1.4),
-            space_bg_star_mask_b: Vec4::new(0.35, 1.2, 0.55, 2.0),
-            space_bg_star_mask_c: Vec4::new(1.0, 0.0, 0.0, 0.0),
-            space_bg_blend_a: Vec4::new(1.0, 1.0, 0.0, 1.0),
-            space_bg_blend_b: Vec4::new(1.0, 1.0, 0.0, 0.0),
-            space_bg_nebula_color_a: Vec4::new(0.07, 0.13, 0.28, 0.0),
-            space_bg_nebula_color_b: Vec4::new(0.12, 0.24, 0.40, 0.0),
-            space_bg_nebula_color_c: Vec4::new(0.18, 0.16, 0.36, 0.0),
-            space_bg_star_color: Vec4::ONE,
-            space_bg_flare_tint: Vec4::ONE,
+            space_bg_star_mask_a: Vec4::new(1.0, 0.0, 4.0, 3.1),
+            space_bg_star_mask_b: Vec4::new(0.35, 1.25, 0.42, 1.75),
+            space_bg_star_mask_c: Vec4::new(0.83, 5.0, 0.019, 0.022),
+            space_bg_blend_a: Vec4::new(1.0, 0.5, 2.0, 1.0),
+            space_bg_blend_b: Vec4::new(1.0, 1.0, 1.0, 0.0),
+            space_bg_nebula_color_a: Vec4::new(0.0, 0.0, 0.196, 0.0),
+            space_bg_nebula_color_b: Vec4::new(0.0, 0.073, 0.082, 0.0),
+            space_bg_nebula_color_c: Vec4::new(0.187, 0.16, 0.539, 0.0),
+            space_bg_star_color: Vec4::new(0.698, 0.682, 2.0, 1.0),
+            space_bg_flare_tint: Vec4::new(1.0, 1.0, 2.0, 1.0),
+            space_bg_depth_a: Vec4::new(1.03, 0.83, 1.69, 1.08),
+            space_bg_light_a: Vec4::new(-0.3, 0.10, 4.0, 0.49),
+            space_bg_light_b: Vec4::new(2.2, 1.35, 0.14, 0.0),
+            space_bg_light_flags: Vec4::new(1.0, 1.0, 0.0, 1.0),
+            space_bg_shafts_a: Vec4::new(1.76, 0.47, 2.65, 16.0),
+            space_bg_shafts_b: Vec4::new(1.15, 1.0, 1.45, 0.85),
+            space_bg_backlight_color: Vec4::new(1.15, 1.0, 1.45, 1.0),
         }
     }
 }
@@ -370,6 +390,51 @@ impl Default for ThrusterPlumeMaterial {
 impl Material2d for ThrusterPlumeMaterial {
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Handle(super::shaders::THRUSTER_PLUME_SHADER_HANDLE)
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub(crate) struct TacticalMapOverlayMaterial {
+    #[uniform(0)]
+    pub viewport_time: Vec4, // x=width, y=height, z=time_s, w=alpha
+    #[uniform(1)]
+    pub map_center_zoom_mode: Vec4, // x=center_x, y=center_y, z=zoom_px_per_world, w=fx_mode
+    #[uniform(2)]
+    pub grid_major: Vec4, // rgb + alpha
+    #[uniform(3)]
+    pub grid_minor: Vec4, // rgb + alpha
+    #[uniform(4)]
+    pub grid_micro: Vec4, // rgb + alpha
+    #[uniform(5)]
+    pub grid_glow_alpha: Vec4, // x=major, y=minor, z=micro, w=unused
+    #[uniform(6)]
+    pub fx_params: Vec4, // x=fx_opacity, y=noise_amount, z=scanline_density, w=scanline_speed
+    #[uniform(7)]
+    pub fx_params_b: Vec4, // x=crt_distortion, y=vignette_strength, z=green_tint_mix, w=unused
+}
+
+impl Default for TacticalMapOverlayMaterial {
+    fn default() -> Self {
+        Self {
+            viewport_time: Vec4::new(1920.0, 1080.0, 0.0, 0.0),
+            map_center_zoom_mode: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            grid_major: Vec4::new(0.22, 0.34, 0.48, 0.14),
+            grid_minor: Vec4::new(0.22, 0.34, 0.48, 0.126),
+            grid_micro: Vec4::new(0.22, 0.34, 0.48, 0.113),
+            grid_glow_alpha: Vec4::new(0.02, 0.018, 0.016, 0.0),
+            fx_params: Vec4::new(0.45, 0.12, 360.0, 0.65),
+            fx_params_b: Vec4::new(0.02, 0.24, 0.0, 0.0),
+        }
+    }
+}
+
+impl Material2d for TacticalMapOverlayMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(super::shaders::TACTICAL_MAP_OVERLAY_SHADER_HANDLE)
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -633,6 +698,44 @@ pub fn update_space_background_material_system(
             material.params.space_bg_flare_tint = settings
                 .flare_tint_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(2.0))
+                .extend(1.0);
+            material.params.space_bg_depth_a = Vec4::new(
+                settings.depth_layer_separation.clamp(0.0, 2.0),
+                settings.depth_parallax_scale.clamp(0.0, 2.0),
+                settings.depth_haze_strength.clamp(0.0, 2.0),
+                settings.depth_occlusion_strength.clamp(0.0, 3.0),
+            );
+            material.params.space_bg_light_a = Vec4::new(
+                settings.backlight_screen_x.clamp(-1.5, 1.5),
+                settings.backlight_screen_y.clamp(-1.5, 1.5),
+                settings.backlight_intensity.clamp(0.0, 20.0),
+                settings.backlight_wrap.clamp(0.0, 2.0),
+            );
+            material.params.space_bg_light_b = Vec4::new(
+                settings.backlight_edge_boost.clamp(0.0, 6.0),
+                settings.backlight_bloom_scale.clamp(0.0, 2.0),
+                settings.backlight_bloom_threshold.clamp(0.0, 1.0),
+                0.0,
+            );
+            material.params.space_bg_light_flags = Vec4::new(
+                if settings.enable_backlight { 1.0 } else { 0.0 },
+                if settings.enable_light_shafts { 1.0 } else { 0.0 },
+                if settings.shafts_debug_view { 1.0 } else { 0.0 },
+                settings.shaft_blend_mode.clamp(0, 2) as f32,
+            );
+            material.params.space_bg_shafts_a = Vec4::new(
+                settings.shaft_intensity.clamp(0.0, 40.0),
+                settings.shaft_length.clamp(0.05, 0.95),
+                settings.shaft_falloff.clamp(0.2, 8.0),
+                settings.shaft_samples.clamp(4, 24) as f32,
+            );
+            material.params.space_bg_shafts_b = settings
+                .shaft_color_rgb
+                .clamp(Vec3::ZERO, Vec3::splat(3.0))
+                .extend(settings.shaft_opacity.clamp(0.0, 1.0));
+            material.params.space_bg_backlight_color = settings
+                .backlight_color_rgb
+                .clamp(Vec3::ZERO, Vec3::splat(3.0))
                 .extend(1.0);
         }
     }

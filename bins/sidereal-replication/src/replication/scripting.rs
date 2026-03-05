@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub struct WorldInitScriptConfig {
     pub space_background_shader_asset_id: String,
     pub starfield_shader_asset_id: String,
+    pub additional_required_asset_ids: Vec<String>,
 }
 
 pub fn scripts_root_dir() -> PathBuf {
@@ -43,15 +44,41 @@ pub fn load_world_init_config(root: &Path) -> Result<WorldInitScriptConfig, Stri
         "world_defaults",
     )
     .map_err(map_script_err)?;
+    let additional_required_asset_ids = match world_defaults
+        .get::<Value>("additional_required_asset_ids")
+        .map_err(|err| format!("{}: {err}", module.script_path().display()))?
+    {
+        Value::Nil => Vec::new(),
+        Value::Table(values_table) => {
+            let mut out = Vec::new();
+            for value in values_table.sequence_values::<String>() {
+                out.push(value.map_err(|err| {
+                    format!(
+                        "{}: world_defaults.additional_required_asset_ids entry decode failed: {err}",
+                        module.script_path().display()
+                    )
+                })?);
+            }
+            out
+        }
+        _ => {
+            return Err(format!(
+                "{}: world_defaults.additional_required_asset_ids must be an array of strings when present",
+                module.script_path().display()
+            ));
+        }
+    };
     Ok(WorldInitScriptConfig {
         space_background_shader_asset_id,
         starfield_shader_asset_id,
+        additional_required_asset_ids,
     })
     .inspect(|config| {
         bevy::log::info!(
-            "replication loaded world init config: space_background_shader_asset_id={} starfield_shader_asset_id={}",
+            "replication loaded world init config: space_background_shader_asset_id={} starfield_shader_asset_id={} additional_required_asset_ids={}",
             config.space_background_shader_asset_id,
-            config.starfield_shader_asset_id
+            config.starfield_shader_asset_id,
+            config.additional_required_asset_ids.len()
         );
     })
 }

@@ -37,8 +37,8 @@ pub const DEFAULT_STARFIELD_SHADER_SETTINGS_JSON: &str = r#"{
 #[sidereal_component_macros::sidereal_component(
     kind = "starfield_shader_settings",
     persist = false,
-    replicate = false,
-    visibility = [OwnerOnly]
+    replicate = true,
+    visibility = [Public]
 )]
 #[derive(Debug, Clone, Component, Reflect, Serialize, Deserialize, PartialEq)]
 #[reflect(Component, Serialize, Deserialize)]

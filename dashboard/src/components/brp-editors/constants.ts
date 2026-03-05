@@ -18,6 +18,8 @@ export const COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS =
   'sidereal_game::components::space_background_shader_settings::SpaceBackgroundShaderSettings'
 export const COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS =
   'sidereal_game::components::thruster_plume_shader_settings::ThrusterPlumeShaderSettings'
+export const COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS =
+  'sidereal_game::components::tactical_map_ui_settings::TacticalMapUiSettings'
 
 /** Type paths that have an editable UI in the BRP detail panel. */
 export const EDITABLE_COMPONENT_TYPE_PATHS: ReadonlySet<string> = new Set([
@@ -29,6 +31,7 @@ export const EDITABLE_COMPONENT_TYPE_PATHS: ReadonlySet<string> = new Set([
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
   COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
   COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
+  COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS,
 ])
 
 /**
@@ -92,6 +95,12 @@ export function getComponentTypeKey(node: {
     node.label === 'ThrusterPlumeShaderSettings'
   ) {
     return COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS
+  }
+  if (
+    node.kind.toLowerCase() === 'component' &&
+    node.label === 'TacticalMapUiSettings'
+  ) {
+    return COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS
   }
   return null
 }

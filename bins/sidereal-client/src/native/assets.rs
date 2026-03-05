@@ -9,7 +9,8 @@ use sidereal_asset_runtime::{
     sha256_hex,
 };
 use sidereal_game::{
-    SizeM, default_space_background_shader_asset_id, default_starfield_shader_asset_id,
+    FullscreenLayer, SizeM, SpriteShaderAssetId, default_space_background_shader_asset_id,
+    default_starfield_shader_asset_id,
 };
 use sidereal_net::{
     AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
@@ -18,6 +19,7 @@ use sidereal_net::{
 use std::collections::HashMap;
 
 use super::app_state::ClientSession;
+use super::components::StreamedSpriteShaderAssetId;
 use super::resources::{AssetRootPath, BootstrapWatchdogState};
 use super::shaders;
 
@@ -372,6 +374,9 @@ pub(super) fn receive_lightyear_asset_stream_messages(
                         chunk.asset_id.as_str(),
                         id if id == default_starfield_shader_asset_id()
                             || id == default_space_background_shader_asset_id()
+                            || id == "sprite_pixel_effect_wgsl"
+                            || id == "thruster_plume_wgsl"
+                            || id == "tactical_map_overlay_wgsl"
                     )
                 {
                     shaders::reload_streamed_shaders(&mut shaders_assets, &asset_root.0);
@@ -405,14 +410,36 @@ pub(super) fn ensure_critical_assets_available_system(
     mut request_state: ResMut<'_, CriticalAssetRequestState>,
     asset_manager: Res<'_, LocalAssetManager>,
     asset_root: Res<'_, AssetRootPath>,
+    fullscreen_layers: Query<'_, '_, &'_ FullscreenLayer>,
+    sprite_shader_asset_ids: Query<'_, '_, &'_ SpriteShaderAssetId>,
+    streamed_sprite_shader_asset_ids: Query<'_, '_, &'_ StreamedSpriteShaderAssetId>,
 ) {
     if request_senders.is_empty() {
         return;
     }
-    let critical_asset_ids = [
-        default_starfield_shader_asset_id(),
-        default_space_background_shader_asset_id(),
-    ];
+    let mut critical_asset_ids = std::collections::HashSet::<String>::new();
+    critical_asset_ids.insert(default_starfield_shader_asset_id().to_string());
+    critical_asset_ids.insert(default_space_background_shader_asset_id().to_string());
+    for asset_id in KNOWN_RUNTIME_SHADER_ASSET_IDS {
+        critical_asset_ids.insert((*asset_id).to_string());
+    }
+    for layer in &fullscreen_layers {
+        if !layer.shader_asset_id.trim().is_empty() {
+            critical_asset_ids.insert(layer.shader_asset_id.clone());
+        }
+    }
+    for sprite_shader_asset_id in &sprite_shader_asset_ids {
+        if let Some(asset_id) = sprite_shader_asset_id.0.as_ref()
+            && !asset_id.trim().is_empty()
+        {
+            critical_asset_ids.insert(asset_id.clone());
+        }
+    }
+    for streamed in &streamed_sprite_shader_asset_ids {
+        if !streamed.0.trim().is_empty() {
+            critical_asset_ids.insert(streamed.0.clone());
+        }
+    }
     let now = time.elapsed_secs_f64();
     let mut requests = Vec::new();
 
@@ -429,8 +456,8 @@ pub(super) fn ensure_critical_assets_available_system(
 
     let mut missing_critical = Vec::new();
     for asset_id in critical_asset_ids {
-        if !asset_present_on_disk(asset_id, &asset_manager, &asset_root.0) {
-            missing_critical.push(asset_id.to_string());
+        if !asset_present_on_disk(&asset_id, &asset_manager, &asset_root.0) {
+            missing_critical.push(asset_id);
         }
     }
     if requests.is_empty() && missing_critical.is_empty() {
@@ -470,6 +497,10 @@ pub(super) fn asset_present_on_disk(
             id if id == default_space_background_shader_asset_id() => {
                 Some("shaders/space_background.wgsl")
             }
+            "sprite_pixel_effect_wgsl" => Some("shaders/sprite_pixel_effect.wgsl"),
+            "thruster_plume_wgsl" => Some("shaders/thruster_plume.wgsl"),
+            "weapon_impact_spark_wgsl" => Some("shaders/weapon_impact_spark.wgsl"),
+            "tactical_map_overlay_wgsl" => Some("shaders/tactical_map_overlay.wgsl"),
             _ => None,
         })
     else {
@@ -485,3 +516,9 @@ pub(super) fn asset_present_on_disk(
         .join(relative_cache_path)
         .exists()
 }
+const KNOWN_RUNTIME_SHADER_ASSET_IDS: &[&str] = &[
+    "sprite_pixel_effect_wgsl",
+    "thruster_plume_wgsl",
+    "weapon_impact_spark_wgsl",
+    "tactical_map_overlay_wgsl",
+];

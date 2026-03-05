@@ -18,6 +18,7 @@ use uuid::Uuid;
 pub struct WorldInitScriptConfig {
     pub space_background_shader_asset_id: String,
     pub starfield_shader_asset_id: String,
+    pub additional_required_asset_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,14 +71,39 @@ pub fn load_world_init_config(root: &Path) -> Result<WorldInitScriptConfig, Auth
         "world_defaults",
     )
     .map_err(map_script_error)?;
+    let additional_required_asset_ids = match world_defaults
+        .get::<Value>("additional_required_asset_ids")
+        .map_err(|err| AuthError::Internal(format!("world/world_init.lua: {err}")))?
+    {
+        Value::Nil => Vec::new(),
+        Value::Table(values_table) => {
+            let mut out = Vec::new();
+            for value in values_table.sequence_values::<String>() {
+                out.push(value.map_err(|err| {
+                    AuthError::Internal(format!(
+                        "world/world_init.lua: world_defaults.additional_required_asset_ids entry decode failed: {err}"
+                    ))
+                })?);
+            }
+            out
+        }
+        _ => {
+            return Err(AuthError::Internal(
+                "world/world_init.lua: world_defaults.additional_required_asset_ids must be an array of strings when present".to_string(),
+            ));
+        }
+    };
     Ok(WorldInitScriptConfig {
         space_background_shader_asset_id,
         starfield_shader_asset_id,
+        additional_required_asset_ids,
     })
     .inspect(|config| {
         info!(
-            "gateway loaded world init config: space_background_shader_asset_id={} starfield_shader_asset_id={}",
-            config.space_background_shader_asset_id, config.starfield_shader_asset_id
+            "gateway loaded world init config: space_background_shader_asset_id={} starfield_shader_asset_id={} additional_required_asset_ids={}",
+            config.space_background_shader_asset_id,
+            config.starfield_shader_asset_id,
+            config.additional_required_asset_ids.len()
         );
     })
 }

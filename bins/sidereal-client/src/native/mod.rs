@@ -34,7 +34,8 @@ mod visuals;
 pub(crate) use app_state::*;
 pub(crate) use auth_net::submit_auth_request;
 pub(crate) use backdrop::{
-    SpaceBackgroundMaterial, StarfieldMaterial, StreamedSpriteShaderMaterial, ThrusterPlumeMaterial,
+    SpaceBackgroundMaterial, StarfieldMaterial, StreamedSpriteShaderMaterial,
+    TacticalMapOverlayMaterial, ThrusterPlumeMaterial,
 };
 pub(crate) use platform::*;
 pub(crate) use remote::*;
@@ -66,6 +67,7 @@ use sidereal_runtime_sync::RuntimeEntityHierarchy;
 use std::time::Duration;
 
 pub(crate) fn run() {
+    dev_console::install_panic_file_hook();
     let env_flag = |name: &str| {
         std::env::var(name)
             .ok()
@@ -130,6 +132,7 @@ pub(crate) fn run() {
                 })
                 .set(LogPlugin {
                     custom_layer: dev_console::build_log_capture_layer,
+                    fmt_layer: dev_console::build_file_fmt_layer,
                     ..default()
                 })
                 .set(RenderPlugin {
@@ -141,6 +144,7 @@ pub(crate) fn run() {
         app.add_plugins(Material2dPlugin::<SpaceBackgroundMaterial>::default());
         app.add_plugins(Material2dPlugin::<StreamedSpriteShaderMaterial>::default());
         app.add_plugins(Material2dPlugin::<ThrusterPlumeMaterial>::default());
+        app.add_plugins(Material2dPlugin::<TacticalMapOverlayMaterial>::default());
         app.add_plugins(Material2dPlugin::<visuals::WeaponImpactSparkMaterial>::default());
         app.add_plugins(FrameTimeDiagnosticsPlugin::default());
         audio::insert_embedded_menu_loop_audio(&mut app);

@@ -95,9 +95,15 @@ pub(crate) struct TacticalMapUiState {
     pub enabled: bool,
     pub was_enabled: bool,
     pub alpha: f32,
+    pub transition_start_distance: f32,
     pub last_non_map_target_distance: f32,
+    pub last_non_map_max_distance: f32,
+    pub transition_map_zoom_start: f32,
+    pub transition_map_zoom_end: f32,
     pub map_zoom: f32,
     pub target_map_zoom: f32,
+    pub pan_offset_world: Vec2,
+    pub last_pan_cursor_px: Option<Vec2>,
 }
 
 impl Default for TacticalMapUiState {
@@ -106,9 +112,15 @@ impl Default for TacticalMapUiState {
             enabled: false,
             was_enabled: false,
             alpha: 0.0,
+            transition_start_distance: 30.0,
             last_non_map_target_distance: 30.0,
-            map_zoom: 0.04,
-            target_map_zoom: 0.04,
+            last_non_map_max_distance: 30.0,
+            transition_map_zoom_start: 1.6666666,
+            transition_map_zoom_end: 0.22727273,
+            map_zoom: 1.6666666,
+            target_map_zoom: 0.22727273,
+            pan_offset_world: Vec2::ZERO,
+            last_pan_cursor_px: None,
         }
     }
 }

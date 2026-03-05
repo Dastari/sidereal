@@ -1,7 +1,7 @@
 import * as React from 'react'
+import { DebouncedNumberField } from './DebouncedNumberField'
 import type { ComponentEditorProps } from './types'
 import { Switch } from '@/components/ui/switch'
-import { DebouncedNumberField } from './DebouncedNumberField'
 
 type SpaceBackgroundShaderSettings = {
   enabled: boolean
@@ -47,6 +47,28 @@ type SpaceBackgroundShaderSettings = {
   star_color_rgb: { x: number; y: number; z: number }
   flares_blend_mode: number
   flares_opacity: number
+  depth_layer_separation: number
+  depth_parallax_scale: number
+  depth_haze_strength: number
+  depth_occlusion_strength: number
+  backlight_screen_x: number
+  backlight_screen_y: number
+  backlight_intensity: number
+  backlight_wrap: number
+  backlight_edge_boost: number
+  backlight_bloom_scale: number
+  backlight_bloom_threshold: number
+  enable_backlight: boolean
+  enable_light_shafts: boolean
+  shafts_debug_view: boolean
+  shaft_intensity: number
+  shaft_length: number
+  shaft_falloff: number
+  shaft_samples: number
+  shaft_blend_mode: number
+  shaft_opacity: number
+  shaft_color_rgb: { x: number; y: number; z: number }
+  backlight_color_rgb: { x: number; y: number; z: number }
   tint_rgb: { x: number; y: number; z: number }
 }
 
@@ -94,6 +116,28 @@ type SpaceBackgroundShaderSettingsPayload = {
   star_color_rgb: [number, number, number]
   flares_blend_mode: number
   flares_opacity: number
+  depth_layer_separation: number
+  depth_parallax_scale: number
+  depth_haze_strength: number
+  depth_occlusion_strength: number
+  backlight_screen_x: number
+  backlight_screen_y: number
+  backlight_intensity: number
+  backlight_wrap: number
+  backlight_edge_boost: number
+  backlight_bloom_scale: number
+  backlight_bloom_threshold: number
+  enable_backlight: boolean
+  enable_light_shafts: boolean
+  shafts_debug_view: boolean
+  shaft_intensity: number
+  shaft_length: number
+  shaft_falloff: number
+  shaft_samples: number
+  shaft_blend_mode: number
+  shaft_opacity: number
+  shaft_color_rgb: [number, number, number]
+  backlight_color_rgb: [number, number, number]
   tint_rgb: [number, number, number]
 }
 
@@ -186,6 +230,28 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
       star_color_rgb: { x: 1, y: 1, z: 1 },
       flares_blend_mode: 1,
       flares_opacity: 0.85,
+      depth_layer_separation: 1.03,
+      depth_parallax_scale: 0.83,
+      depth_haze_strength: 1.69,
+      depth_occlusion_strength: 1.08,
+      backlight_screen_x: -0.3,
+      backlight_screen_y: 0.1,
+      backlight_intensity: 4,
+      backlight_wrap: 0.49,
+      backlight_edge_boost: 2.2,
+      backlight_bloom_scale: 1.35,
+      backlight_bloom_threshold: 0.14,
+      enable_backlight: true,
+      enable_light_shafts: true,
+      shafts_debug_view: false,
+      shaft_intensity: 1.76,
+      shaft_length: 0.47,
+      shaft_falloff: 2.65,
+      shaft_samples: 16,
+      shaft_blend_mode: 1,
+      shaft_opacity: 0.85,
+      shaft_color_rgb: { x: 1.15, y: 1.0, z: 1.45 },
+      backlight_color_rgb: { x: 1.15, y: 1.0, z: 1.45 },
       tint_rgb: { x: 1, y: 1, z: 1 },
     }
   }
@@ -230,6 +296,25 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
   const starColorRgb = parseVec3(obj.star_color_rgb)
   const flaresBlendMode = Number(obj.flares_blend_mode ?? 1)
   const flaresOpacity = Number(obj.flares_opacity ?? 0.85)
+  const depthLayerSeparation = Number(obj.depth_layer_separation ?? 1.03)
+  const depthParallaxScale = Number(obj.depth_parallax_scale ?? 0.83)
+  const depthHazeStrength = Number(obj.depth_haze_strength ?? 1.69)
+  const depthOcclusionStrength = Number(obj.depth_occlusion_strength ?? 1.08)
+  const backlightScreenX = Number(obj.backlight_screen_x ?? -0.3)
+  const backlightScreenY = Number(obj.backlight_screen_y ?? 0.1)
+  const backlightIntensity = Number(obj.backlight_intensity ?? 4)
+  const backlightWrap = Number(obj.backlight_wrap ?? 0.49)
+  const backlightEdgeBoost = Number(obj.backlight_edge_boost ?? 2.2)
+  const backlightBloomScale = Number(obj.backlight_bloom_scale ?? 1.35)
+  const backlightBloomThreshold = Number(obj.backlight_bloom_threshold ?? 0.14)
+  const shaftIntensity = Number(obj.shaft_intensity ?? 1.76)
+  const shaftLength = Number(obj.shaft_length ?? 0.47)
+  const shaftFalloff = Number(obj.shaft_falloff ?? 2.65)
+  const shaftSamples = Number(obj.shaft_samples ?? 16)
+  const shaftBlendMode = Number(obj.shaft_blend_mode ?? 1)
+  const shaftOpacity = Number(obj.shaft_opacity ?? 0.85)
+  const shaftColorRgb = parseVec3(obj.shaft_color_rgb)
+  const backlightColorRgb = parseVec3(obj.backlight_color_rgb)
   return {
     enabled: Boolean(obj.enabled ?? true),
     intensity: Number.isFinite(intensity) ? intensity : 1,
@@ -282,6 +367,44 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
     star_color_rgb: starColorRgb,
     flares_blend_mode: Number.isFinite(flaresBlendMode) ? flaresBlendMode : 1,
     flares_opacity: Number.isFinite(flaresOpacity) ? flaresOpacity : 0.85,
+    depth_layer_separation: Number.isFinite(depthLayerSeparation)
+      ? depthLayerSeparation
+      : 1.03,
+    depth_parallax_scale: Number.isFinite(depthParallaxScale)
+      ? depthParallaxScale
+      : 0.83,
+    depth_haze_strength: Number.isFinite(depthHazeStrength)
+      ? depthHazeStrength
+      : 1.69,
+    depth_occlusion_strength: Number.isFinite(depthOcclusionStrength)
+      ? depthOcclusionStrength
+      : 1.08,
+    backlight_screen_x: Number.isFinite(backlightScreenX) ? backlightScreenX : -0.3,
+    backlight_screen_y: Number.isFinite(backlightScreenY) ? backlightScreenY : 0.1,
+    backlight_intensity: Number.isFinite(backlightIntensity)
+      ? backlightIntensity
+      : 4,
+    backlight_wrap: Number.isFinite(backlightWrap) ? backlightWrap : 0.49,
+    backlight_edge_boost: Number.isFinite(backlightEdgeBoost)
+      ? backlightEdgeBoost
+      : 2.2,
+    backlight_bloom_scale: Number.isFinite(backlightBloomScale)
+      ? backlightBloomScale
+      : 1.35,
+    backlight_bloom_threshold: Number.isFinite(backlightBloomThreshold)
+      ? backlightBloomThreshold
+      : 0.14,
+    enable_backlight: Boolean(obj.enable_backlight ?? true),
+    enable_light_shafts: Boolean(obj.enable_light_shafts ?? true),
+    shafts_debug_view: Boolean(obj.shafts_debug_view ?? false),
+    shaft_intensity: Number.isFinite(shaftIntensity) ? shaftIntensity : 1.76,
+    shaft_length: Number.isFinite(shaftLength) ? shaftLength : 0.47,
+    shaft_falloff: Number.isFinite(shaftFalloff) ? shaftFalloff : 2.65,
+    shaft_samples: Number.isFinite(shaftSamples) ? shaftSamples : 16,
+    shaft_blend_mode: Number.isFinite(shaftBlendMode) ? shaftBlendMode : 1,
+    shaft_opacity: Number.isFinite(shaftOpacity) ? shaftOpacity : 0.85,
+    shaft_color_rgb: shaftColorRgb,
+    backlight_color_rgb: backlightColorRgb,
     tint_rgb: parseVec3(obj.tint_rgb),
   }
 }
@@ -367,6 +490,52 @@ export function SpaceBackgroundShaderSettingsEditor({
       ],
       flares_blend_mode: clamp(Math.round(next.flares_blend_mode), 0, 2),
       flares_opacity: clamp(roundToStep(next.flares_opacity, 0.01), 0, 1),
+      depth_layer_separation: clamp(
+        roundToStep(next.depth_layer_separation, 0.01),
+        0,
+        2,
+      ),
+      depth_parallax_scale: clamp(roundToStep(next.depth_parallax_scale, 0.01), 0, 2),
+      depth_haze_strength: clamp(roundToStep(next.depth_haze_strength, 0.01), 0, 2),
+      depth_occlusion_strength: clamp(
+        roundToStep(next.depth_occlusion_strength, 0.01),
+        0,
+        3,
+      ),
+      backlight_screen_x: clamp(roundToStep(next.backlight_screen_x, 0.01), -1.5, 1.5),
+      backlight_screen_y: clamp(roundToStep(next.backlight_screen_y, 0.01), -1.5, 1.5),
+      backlight_intensity: clamp(roundToStep(next.backlight_intensity, 0.01), 0, 20),
+      backlight_wrap: clamp(roundToStep(next.backlight_wrap, 0.01), 0, 2),
+      backlight_edge_boost: clamp(roundToStep(next.backlight_edge_boost, 0.01), 0, 6),
+      backlight_bloom_scale: clamp(
+        roundToStep(next.backlight_bloom_scale, 0.01),
+        0,
+        2,
+      ),
+      backlight_bloom_threshold: clamp(
+        roundToStep(next.backlight_bloom_threshold, 0.01),
+        0,
+        1,
+      ),
+      enable_backlight: next.enable_backlight,
+      enable_light_shafts: next.enable_light_shafts,
+      shafts_debug_view: next.shafts_debug_view,
+      shaft_intensity: clamp(roundToStep(next.shaft_intensity, 0.01), 0, 40),
+      shaft_length: clamp(roundToStep(next.shaft_length, 0.01), 0.05, 0.95),
+      shaft_falloff: clamp(roundToStep(next.shaft_falloff, 0.01), 0.2, 8),
+      shaft_samples: clamp(Math.round(next.shaft_samples), 4, 24),
+      shaft_blend_mode: clamp(Math.round(next.shaft_blend_mode), 0, 2),
+      shaft_opacity: clamp(roundToStep(next.shaft_opacity, 0.01), 0, 1),
+      shaft_color_rgb: [
+        clamp(roundToStep(next.shaft_color_rgb.x, 0.001), 0, 3),
+        clamp(roundToStep(next.shaft_color_rgb.y, 0.001), 0, 3),
+        clamp(roundToStep(next.shaft_color_rgb.z, 0.001), 0, 3),
+      ],
+      backlight_color_rgb: [
+        clamp(roundToStep(next.backlight_color_rgb.x, 0.001), 0, 3),
+        clamp(roundToStep(next.backlight_color_rgb.y, 0.001), 0, 3),
+        clamp(roundToStep(next.backlight_color_rgb.z, 0.001), 0, 3),
+      ],
       tint_rgb: [
         clamp(roundToStep(next.tint_rgb.x, 0.01), 0, 2),
         clamp(roundToStep(next.tint_rgb.y, 0.01), 0, 2),
@@ -447,6 +616,26 @@ export function SpaceBackgroundShaderSettingsEditor({
       ...parsed,
       star_color_rgb: {
         ...parsed.star_color_rgb,
+        [axis]: next,
+      },
+    })
+  }
+
+  const updateBacklightColor = (axis: 'x' | 'y' | 'z', next: number) => {
+    emit({
+      ...parsed,
+      backlight_color_rgb: {
+        ...parsed.backlight_color_rgb,
+        [axis]: next,
+      },
+    })
+  }
+
+  const updateShaftColor = (axis: 'x' | 'y' | 'z', next: number) => {
+    emit({
+      ...parsed,
+      shaft_color_rgb: {
+        ...parsed.shaft_color_rgb,
         [axis]: next,
       },
     })
@@ -1095,6 +1284,233 @@ export function SpaceBackgroundShaderSettingsEditor({
         step={0.01}
         readOnly={readOnly}
         onChange={(next) => updateField('flares_opacity', next)}
+      />
+      <Field
+        label="Depth Layer Separation"
+        value={parsed.depth_layer_separation}
+        min={0}
+        max={2}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('depth_layer_separation', next)}
+      />
+      <Field
+        label="Depth Parallax Scale"
+        value={parsed.depth_parallax_scale}
+        min={0}
+        max={2}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('depth_parallax_scale', next)}
+      />
+      <Field
+        label="Depth Haze Strength"
+        value={parsed.depth_haze_strength}
+        min={0}
+        max={2}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('depth_haze_strength', next)}
+      />
+      <Field
+        label="Depth Occlusion Strength"
+        value={parsed.depth_occlusion_strength}
+        min={0}
+        max={3}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('depth_occlusion_strength', next)}
+      />
+      <Field
+        label="Backlight Screen X"
+        value={parsed.backlight_screen_x}
+        min={-1.5}
+        max={1.5}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('backlight_screen_x', next)}
+      />
+      <Field
+        label="Backlight Screen Y"
+        value={parsed.backlight_screen_y}
+        min={-1.5}
+        max={1.5}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('backlight_screen_y', next)}
+      />
+      <Field
+        label="Backlight Intensity"
+        value={parsed.backlight_intensity}
+        min={0}
+        max={20}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('backlight_intensity', next)}
+      />
+      <Field
+        label="Backlight Wrap"
+        value={parsed.backlight_wrap}
+        min={0}
+        max={2}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('backlight_wrap', next)}
+      />
+      <Field
+        label="Backlight Edge Boost"
+        value={parsed.backlight_edge_boost}
+        min={0}
+        max={6}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('backlight_edge_boost', next)}
+      />
+      <Field
+        label="Backlight Bloom Scale"
+        value={parsed.backlight_bloom_scale}
+        min={0}
+        max={2}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('backlight_bloom_scale', next)}
+      />
+      <Field
+        label="Backlight Bloom Threshold"
+        value={parsed.backlight_bloom_threshold}
+        min={0}
+        max={1}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('backlight_bloom_threshold', next)}
+      />
+      <ToggleField
+        label="Enable Backlight"
+        checked={parsed.enable_backlight}
+        readOnly={readOnly}
+        onChange={(next) => updateField('enable_backlight', next)}
+      />
+      <ToggleField
+        label="Enable Light Shafts"
+        checked={parsed.enable_light_shafts}
+        readOnly={readOnly}
+        onChange={(next) => updateField('enable_light_shafts', next)}
+      />
+      <ToggleField
+        label="Shafts Debug View"
+        checked={parsed.shafts_debug_view}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shafts_debug_view', next)}
+      />
+      <Field
+        label="Shaft Intensity"
+        value={parsed.shaft_intensity}
+        min={0}
+        max={40}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shaft_intensity', next)}
+      />
+      <Field
+        label="Shaft Length"
+        value={parsed.shaft_length}
+        min={0.05}
+        max={0.95}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shaft_length', next)}
+      />
+      <Field
+        label="Shaft Falloff"
+        value={parsed.shaft_falloff}
+        min={0.2}
+        max={8}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shaft_falloff', next)}
+      />
+      <Field
+        label="Shaft Samples"
+        value={parsed.shaft_samples}
+        min={4}
+        max={24}
+        step={1}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shaft_samples', next)}
+      />
+      <SelectField
+        label="Shaft Blend Mode"
+        value={String(parsed.shaft_blend_mode)}
+        options={[
+          { value: '0', label: 'Add' },
+          { value: '1', label: 'Screen' },
+          { value: '2', label: 'Lighten' },
+        ]}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shaft_blend_mode', Number.parseInt(next, 10) || 0)}
+      />
+      <Field
+        label="Shaft Opacity"
+        value={parsed.shaft_opacity}
+        min={0}
+        max={1}
+        step={0.01}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shaft_opacity', next)}
+      />
+      <Field
+        label="Shaft Color R"
+        value={parsed.shaft_color_rgb.x}
+        min={0}
+        max={3}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateShaftColor('x', next)}
+      />
+      <Field
+        label="Shaft Color G"
+        value={parsed.shaft_color_rgb.y}
+        min={0}
+        max={3}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateShaftColor('y', next)}
+      />
+      <Field
+        label="Shaft Color B"
+        value={parsed.shaft_color_rgb.z}
+        min={0}
+        max={3}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateShaftColor('z', next)}
+      />
+      <Field
+        label="Backlight Color R"
+        value={parsed.backlight_color_rgb.x}
+        min={0}
+        max={3}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateBacklightColor('x', next)}
+      />
+      <Field
+        label="Backlight Color G"
+        value={parsed.backlight_color_rgb.y}
+        min={0}
+        max={3}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateBacklightColor('y', next)}
+      />
+      <Field
+        label="Backlight Color B"
+        value={parsed.backlight_color_rgb.z}
+        min={0}
+        max={3}
+        step={0.001}
+        readOnly={readOnly}
+        onChange={(next) => updateBacklightColor('z', next)}
       />
       <Field
         label="Tint R"

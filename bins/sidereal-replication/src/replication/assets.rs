@@ -85,6 +85,13 @@ pub struct StreamableAssetCache {
     always_required_asset_ids: HashSet<String>,
 }
 
+const CORE_RUNTIME_SHADER_ASSET_IDS: &[&str] = &[
+    "sprite_pixel_effect_wgsl",
+    "thruster_plume_wgsl",
+    "weapon_impact_spark_wgsl",
+    "tactical_map_overlay_wgsl",
+];
+
 fn always_required_stream_asset_ids() -> Vec<String> {
     let mut required = vec![default_corvette_asset_id().to_string()];
     let mut include_default_space = true;
@@ -102,6 +109,7 @@ fn always_required_stream_asset_ids() -> Vec<String> {
             }
             required.push(config.space_background_shader_asset_id);
             required.push(config.starfield_shader_asset_id);
+            required.extend(config.additional_required_asset_ids);
         }
         Err(err) => {
             warn!(
@@ -117,6 +125,11 @@ fn always_required_stream_asset_ids() -> Vec<String> {
     if include_default_starfield {
         required.push(default_starfield_shader_asset_id().to_string());
     }
+    required.extend(
+        CORE_RUNTIME_SHADER_ASSET_IDS
+            .iter()
+            .map(|asset_id| (*asset_id).to_string()),
+    );
     required.sort();
     required.dedup();
     required

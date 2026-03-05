@@ -5,7 +5,10 @@ fn resolve_asset_stream_path_knows_corvette_and_starfield() {
     assert!(resolve_asset_stream_path("corvette_01").is_some());
     assert!(resolve_asset_stream_path("starfield_wgsl").is_some());
     assert!(resolve_asset_stream_path("space_background_wgsl").is_some());
+    assert!(resolve_asset_stream_path("tactical_map_overlay_wgsl").is_some());
     assert!(resolve_asset_stream_path("sprite_pixel_effect_wgsl").is_some());
+    assert!(resolve_asset_stream_path("thruster_plume_wgsl").is_some());
+    assert!(resolve_asset_stream_path("weapon_impact_spark_wgsl").is_some());
     assert!(resolve_asset_stream_path("unknown").is_none());
 }
 

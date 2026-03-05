@@ -17,6 +17,7 @@ Current docs:
 - `prediction_runtime_tuning_and_validation.md`
 - `robust_weapons_combat_audio_system_plan.md`
 - `shader_editor_dashboard_plan.md`
+- `shader_editor_dashboard_implementation_spec.md`
 - `quickstart_first_solar_system.md`
 - `visibility_replication_contract.md`
 - `asset_delivery_contract.md`

@@ -139,8 +139,10 @@ impl Plugin for ClientReplicationPlugin {
             (
                 replication::ensure_hierarchy_parent_spatial_components
                     .after(sidereal_game::sync_mounted_hierarchy),
-                replication::sanitize_invalid_childof_hierarchy_links
+                backdrop::detach_fullscreen_layer_hierarchy_links_system
                     .after(replication::ensure_hierarchy_parent_spatial_components),
+                replication::sanitize_invalid_childof_hierarchy_links
+                    .after(backdrop::detach_fullscreen_layer_hierarchy_links_system),
             )
                 .before(bevy::transform::TransformSystems::Propagate),
         );
@@ -349,7 +351,8 @@ impl Plugin for ClientUiPlugin {
                     .after(owner_manifest::receive_owner_asset_manifest_messages),
                 ui::handle_owned_entities_panel_buttons,
                 ui::update_tactical_map_overlay_system
-                    .after(tactical::receive_tactical_snapshot_messages),
+                    .after(tactical::receive_tactical_snapshot_messages)
+                    .after(update_camera_motion_state),
                 ui::update_loading_overlay_system,
                 ui::update_runtime_stream_icon_system,
                 bootstrap::watch_in_world_bootstrap_failures,
@@ -367,6 +370,12 @@ impl Plugin for ClientUiPlugin {
                 update_debug_manifest_text_system.after(update_debug_fps_text_system),
                 update_debug_tactical_text_system.after(update_debug_manifest_text_system),
             )
+                .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            ui::update_tactical_map_fx_overlay_system
+                .after(ui::update_tactical_map_overlay_system)
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(

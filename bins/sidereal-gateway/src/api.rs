@@ -293,8 +293,20 @@ pub fn resolve_asset_stream_path(asset_id: &str) -> Option<(&'static FsPath, &'s
             FsPath::new("shaders/space_background.wgsl"),
             "text/plain; charset=utf-8",
         )),
+        "tactical_map_overlay_wgsl" => Some((
+            FsPath::new("shaders/tactical_map_overlay.wgsl"),
+            "text/plain; charset=utf-8",
+        )),
         "sprite_pixel_effect_wgsl" => Some((
             FsPath::new("shaders/sprite_pixel_effect.wgsl"),
+            "text/plain; charset=utf-8",
+        )),
+        "thruster_plume_wgsl" => Some((
+            FsPath::new("shaders/thruster_plume.wgsl"),
+            "text/plain; charset=utf-8",
+        )),
+        "weapon_impact_spark_wgsl" => Some((
+            FsPath::new("shaders/weapon_impact_spark.wgsl"),
             "text/plain; charset=utf-8",
         )),
         _ => None,

@@ -20,13 +20,6 @@ struct SpaceBackgroundParams {
     space_bg_nebula_color_c: vec4<f32>,
     space_bg_star_color: vec4<f32>,
     space_bg_flare_tint: vec4<f32>,
-    space_bg_depth_a: vec4<f32>,      // .x layer separation, .y parallax scale, .z haze strength, .w occlusion strength
-    space_bg_light_a: vec4<f32>,      // .x backlight screen x, .y backlight screen y, .z backlight intensity, .w wrap
-    space_bg_light_b: vec4<f32>,      // .x edge boost, .y bloom scale, .z bloom threshold
-    space_bg_light_flags: vec4<f32>,  // .x enable backlight, .y enable shafts, .z shafts debug view, .w shaft blend mode
-    space_bg_shafts_a: vec4<f32>,     // .x shaft intensity, .y shaft length, .z shaft falloff, .w shaft samples
-    space_bg_shafts_b: vec4<f32>,     // .rgb shaft color, .w shaft opacity
-    space_bg_backlight_color: vec4<f32>,
 }
 
 @group(2) @binding(0) var<uniform> params: SpaceBackgroundParams;
@@ -205,82 +198,6 @@ fn subtle_flare_layer(
     return sample_col * radial * color_jitter;
 }
 
-fn nebula_mask_at(
-    sample_uv: vec2<f32>,
-    background_zoom: f32,
-    seed: f32,
-    subtle_motion: vec2<f32>,
-    depth_parallax_scale: f32,
-    ridged_mode: bool,
-    nebula_octaves: u32,
-    nebula_gain: f32,
-    nebula_lacunarity: f32,
-    nebula_power: f32,
-    nebula_shelf: f32,
-    nebula_ridge_offset: f32
-) -> f32 {
-    let base = sample_uv * background_zoom * 1.35
-        + vec2<f32>(seed * 0.17, seed * 0.29)
-        + subtle_motion * (0.55 + depth_parallax_scale * 0.45);
-    let field_a = select(
-        fbm2d_config(
-            base + subtle_motion * 0.60,
-            seed,
-            nebula_octaves,
-            nebula_gain,
-            nebula_lacunarity
-        ),
-        ridged_fbm2d_config(
-            base + subtle_motion * 0.60,
-            seed,
-            nebula_octaves,
-            nebula_gain,
-            nebula_lacunarity,
-            nebula_ridge_offset
-        ),
-        ridged_mode
-    );
-    let field_b = select(
-        fbm2d_config(
-            base * 1.9 + vec2<f32>(11.3, -7.1),
-            seed + 19.0,
-            nebula_octaves,
-            nebula_gain,
-            nebula_lacunarity
-        ),
-        ridged_fbm2d_config(
-            base * 1.9 + vec2<f32>(11.3, -7.1),
-            seed + 19.0,
-            nebula_octaves,
-            nebula_gain,
-            nebula_lacunarity,
-            nebula_ridge_offset
-        ),
-        ridged_mode
-    );
-    let field_c = select(
-        fbm2d_config(
-            base * 0.72 + vec2<f32>(-3.7, 5.4),
-            seed + 47.0,
-            nebula_octaves,
-            nebula_gain,
-            nebula_lacunarity
-        ),
-        ridged_fbm2d_config(
-            base * 0.72 + vec2<f32>(-3.7, 5.4),
-            seed + 47.0,
-            nebula_octaves,
-            nebula_gain,
-            nebula_lacunarity,
-            nebula_ridge_offset
-        ),
-        ridged_mode
-    );
-    let composite = clamp(field_a * 0.66 + field_b * 0.24 + field_c * 0.10, 0.0, 1.0);
-    let shaped = pow(composite, nebula_power);
-    return smoothstep(nebula_shelf, min(nebula_shelf + 0.45, 0.99), shaped);
-}
-
 fn apply_layer_blend(base: vec3<f32>, layer: vec3<f32>, mode: f32, opacity: f32) -> vec3<f32> {
     let op = clamp(opacity, 0.0, 1.0);
     let add_col = base + layer * op;
@@ -339,27 +256,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let nebula_color_b = max(params.space_bg_nebula_color_b.rgb, vec3<f32>(0.0));
     let nebula_color_c = max(params.space_bg_nebula_color_c.rgb, vec3<f32>(0.0));
     let flare_tint = max(params.space_bg_flare_tint.rgb, vec3<f32>(0.0));
-    let depth_layer_separation = clamp(params.space_bg_depth_a.x, 0.0, 2.0);
-    let depth_parallax_scale = clamp(params.space_bg_depth_a.y, 0.0, 2.0);
-    let depth_haze_strength = clamp(params.space_bg_depth_a.z, 0.0, 2.0);
-    let depth_occlusion_strength = clamp(params.space_bg_depth_a.w, 0.0, 3.0);
-    let backlight_screen = params.space_bg_light_a.xy;
-    let backlight_intensity = clamp(params.space_bg_light_a.z, 0.0, 20.0);
-    let backlight_wrap = clamp(params.space_bg_light_a.w, 0.0, 2.0);
-    let backlight_edge_boost = clamp(params.space_bg_light_b.x, 0.0, 6.0);
-    let backlight_bloom_scale = clamp(params.space_bg_light_b.y, 0.0, 2.0);
-    let backlight_bloom_threshold = clamp(params.space_bg_light_b.z, 0.0, 1.0);
-    let enable_backlight = params.space_bg_light_flags.x >= 0.5;
-    let enable_shafts = params.space_bg_light_flags.y >= 0.5;
-    let shafts_debug_view = params.space_bg_light_flags.z >= 0.5;
-    let shaft_blend_mode = clamp(params.space_bg_light_flags.w, 0.0, 2.0);
-    let shaft_intensity = clamp(params.space_bg_shafts_a.x, 0.0, 40.0);
-    let shaft_length = clamp(params.space_bg_shafts_a.y, 0.05, 0.95);
-    let shaft_falloff = clamp(params.space_bg_shafts_a.z, 0.2, 8.0);
-    let shaft_samples = u32(clamp(params.space_bg_shafts_a.w, 4.0, 24.0));
-    let shaft_color = max(params.space_bg_shafts_b.rgb, vec3<f32>(0.0));
-    let shaft_opacity = clamp(params.space_bg_shafts_b.w, 0.0, 1.0);
-    let backlight_color = max(params.space_bg_backlight_color.rgb, vec3<f32>(0.0));
     let aspect = res.x / res.y;
 
     let uv_n = in.uv * 2.0 - 1.0;
@@ -391,7 +287,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let vignette = clamp(1.08 - length(uv_n) * 0.17, 0.80, 1.0);
 
     // Deterministic seeded nebula with almost no temporal movement.
-    let base = zoomed_uv * 1.35 + vec2<f32>(seed * 0.17, seed * 0.29) + subtle_motion * (0.55 + depth_parallax_scale * 0.45);
+    let base = zoomed_uv * 1.35 + vec2<f32>(seed * 0.17, seed * 0.29);
     let nebula_field_a = select(
         fbm2d_config(
             base + subtle_motion * 0.60,
@@ -462,192 +358,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var nebula = mix(nebula_color_a, nebula_color_b, nebula_field_b);
     nebula = mix(nebula, nebula_color_c, nebula_field_c * 0.55);
 
-    // Keep nebula generation as single source-of-truth, then derive depth proxies
-    // from the same density/mask for lighting/shafts.
+    // Soft cloud body + subtle emissive ridges.
     let cloud_body = nebula * nebula_mask * (0.58 * nebula_strength);
-    let ridge_mask = smoothstep(0.58, 0.91, nebula_field_a) * nebula_mask;
-    let cloud_ridge = nebula * ridge_mask * (0.22 * nebula_strength);
-    let nebula_haze = nebula * nebula_mask * (0.14 * depth_haze_strength);
-    let nebula_layer = (cloud_body + cloud_ridge + nebula_haze) * intensity * vignette;
-
-    let near_depth = smoothstep(
-        max(nebula_shelf - 0.12 * depth_layer_separation, 0.0),
-        min(nebula_shelf + 0.30, 0.995),
-        clamp(shaped_nebula + nebula_field_b * 0.10, 0.0, 1.0)
-    );
-    let mid_depth = nebula_mask;
-    let far_depth = smoothstep(
-        min(nebula_shelf + 0.07 * depth_layer_separation, 0.99),
-        min(nebula_shelf + 0.52, 0.999),
-        clamp(shaped_nebula * 0.82 + nebula_field_c * 0.22, 0.0, 1.0)
-    );
-    let nebula_presence = clamp(mid_depth * 0.68 + far_depth * 0.22 + near_depth * 0.10, 0.0, 1.0);
-    let lit_presence = smoothstep(0.14, 0.92, nebula_presence);
-
-    // Backlight derived from same nebula depth proxies.
-    let backlight_pos = vec2<f32>(backlight_screen.x * aspect, backlight_screen.y);
-    let dist_to_light = length(uv - backlight_pos);
-    let radial_light = pow(clamp(1.0 - dist_to_light * 0.55, 0.0, 1.0), 1.85);
-    let trans_far = clamp(1.0 - far_depth * depth_occlusion_strength * 0.55, 0.0, 1.0);
-    let trans_mid = clamp(1.0 - mid_depth * depth_occlusion_strength * 0.82, 0.0, 1.0);
-    let trans_near = clamp(1.0 - near_depth * depth_occlusion_strength, 0.0, 1.0);
-    let transmission = pow(trans_far * trans_mid * trans_near, max(0.2, 1.6 - backlight_wrap));
-    let edge_strength = clamp(
-        length(vec2<f32>(dpdx(shaped_nebula), dpdy(shaped_nebula))) * backlight_edge_boost,
-        0.0,
-        1.0
-    );
-    let bloom = smoothstep(backlight_bloom_threshold, 1.0, mid_depth) * backlight_bloom_scale * 0.35 * lit_presence;
-
-    // Crepuscular shafts from backlight passing through the same nebula mask field.
-    let light_vec = backlight_pos - uv;
-    let light_vec_len = max(length(light_vec), 0.0001);
-    let light_dir = light_vec / light_vec_len;
-    let light_perp = vec2<f32>(-light_dir.y, light_dir.x);
-    let shaft_jitter = hash21(floor(in.uv * res), seed + time * 0.37);
-    let ray_fan = smoothstep(0.01, 0.16, dist_to_light) * (1.0 - smoothstep(1.1, 3.0, dist_to_light));
-    let source_mask_center = nebula_mask_at(
-        backlight_pos,
-        background_zoom,
-        seed,
-        subtle_motion,
-        depth_parallax_scale,
-        ridged_mode,
-        nebula_octaves,
-        nebula_gain,
-        nebula_lacunarity,
-        nebula_power,
-        nebula_shelf,
-        nebula_ridge_offset
-    );
-    let source_mask_x = nebula_mask_at(
-        backlight_pos + vec2<f32>(0.055, 0.0),
-        background_zoom,
-        seed,
-        subtle_motion,
-        depth_parallax_scale,
-        ridged_mode,
-        nebula_octaves,
-        nebula_gain,
-        nebula_lacunarity,
-        nebula_power,
-        nebula_shelf,
-        nebula_ridge_offset
-    );
-    let source_mask_y = nebula_mask_at(
-        backlight_pos + vec2<f32>(0.0, 0.055),
-        background_zoom,
-        seed,
-        subtle_motion,
-        depth_parallax_scale,
-        ridged_mode,
-        nebula_octaves,
-        nebula_gain,
-        nebula_lacunarity,
-        nebula_power,
-        nebula_shelf,
-        nebula_ridge_offset
-    );
-    let source_aperture = clamp(
-        abs(source_mask_center - source_mask_x) + abs(source_mask_center - source_mask_y),
-        0.0,
-        1.5
-    );
-    var shaft_trans = 1.0;
-    var shaft_aperture_accum = 0.0;
-    var shaft_bloom_accum = 0.0;
-    var prev_mask = source_mask_center;
-    let shaft_span = clamp(shaft_length, 0.05, 0.95);
-    let sample_count_f = f32(shaft_samples);
-    for (var i = 0u; i < 24u; i = i + 1u) {
-        if (i >= shaft_samples) {
-            break;
-        }
-        let t = (f32(i) + shaft_jitter) / sample_count_f;
-        let march_uv = uv + light_dir * light_vec_len * t * shaft_span;
-        let jitter_width = (0.0015 + (1.0 - t) * 0.0065) / max(aspect, 0.001);
-        let sample_uv = march_uv + light_perp * ((shaft_jitter - 0.5) * jitter_width);
-        let sample_mask = nebula_mask_at(
-            sample_uv,
-            background_zoom,
-            seed,
-            subtle_motion,
-            depth_parallax_scale,
-            ridged_mode,
-            nebula_octaves,
-            nebula_gain,
-            nebula_lacunarity,
-            nebula_power,
-            nebula_shelf,
-            nebula_ridge_offset
-        );
-        let sample_block = smoothstep(0.10, 0.94, sample_mask);
-        let occ = clamp(sample_block * depth_occlusion_strength * 0.95, 0.0, 3.2);
-        let aperture = clamp(abs(sample_mask - prev_mask) * 2.8 + (1.0 - sample_block) * 0.45, 0.0, 1.6);
-        prev_mask = sample_mask;
-        let sample_bloom = smoothstep(backlight_bloom_threshold, 1.0, sample_mask);
-        let falloff = pow(1.0 - t, shaft_falloff);
-        shaft_trans *= exp(-occ * 0.20);
-        shaft_aperture_accum += aperture * shaft_trans * falloff;
-        shaft_bloom_accum += sample_bloom * falloff;
-    }
-    let source_lit = smoothstep(backlight_bloom_threshold, 1.0, source_mask_center);
-    let shaft_visibility = clamp(
-        (0.35 + source_lit * 0.65) * (0.45 + source_aperture * 0.55) * (0.45 + edge_strength * 0.55),
-        0.0,
-        2.0
-    );
-    let shaft_bloom_drive = clamp(
-        (shaft_bloom_accum / sample_count_f) * backlight_bloom_scale,
-        0.0,
-        4.0
-    );
-    let shafts = select(
-        0.0,
-        (shaft_aperture_accum / sample_count_f)
-        * ray_fan
-        * radial_light
-        * shaft_intensity
-        * shaft_bloom_drive
-        * (0.55 + backlight_intensity * 0.32)
-        * shaft_visibility
-        * (0.35 + lit_presence * 0.65),
-        enable_shafts
-    );
-    let shaft_visual = clamp(
-        (1.0 - exp(-shafts * 1.45)) * (0.55 + backlight_bloom_scale * 0.65),
-        0.0,
-        2.0
-    );
-
-    let backlight_layer = backlight_color
-        * backlight_intensity
-        * radial_light
-        * (transmission + edge_strength * 0.65 + bloom)
-        * lit_presence
-        * intensity
-        * vignette
-        * select(0.0, 1.0, enable_backlight);
-    let local_density = clamp(far_depth * 0.28 + mid_depth * 0.46 + near_depth * 0.72, 0.0, 1.0);
-    let scattering_weight = (1.0 - exp(-local_density * 3.4)) * (0.55 + edge_strength * 0.45);
-    let shaft_layer = shaft_color
-        * shaft_visual
-        * (0.45 + lit_presence * 0.55)
-        * vignette
-        * select(0.0, 1.0, enable_shafts);
-    let lit_nebula_base = nebula_layer + backlight_layer * scattering_weight;
-    let lit_nebula_layer = apply_layer_blend(
-        lit_nebula_base,
-        shaft_layer,
-        shaft_blend_mode,
-        shaft_opacity
-    );
-    if shafts_debug_view {
-        let debug_shafts = clamp(shaft_visual, 0.0, 1.0);
-        let debug_bloom = clamp(shaft_bloom_drive * 0.6, 0.0, 1.0);
-        let debug_density = clamp(nebula_presence, 0.0, 1.0);
-        return vec4<f32>(vec3<f32>(debug_shafts, debug_bloom, debug_density), 1.0);
-    }
+    let ridge = smoothstep(0.58, 0.91, nebula_field_a) * nebula_mask;
+    let cloud_ridge = nebula * ridge * (0.22 * nebula_strength);
+    let nebula_layer = (cloud_body + cloud_ridge) * intensity * vignette;
 
     // Very subtle stars with tiny drift only.
     let stars_far = subtle_star_layer(
@@ -723,7 +438,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let background_col = deep_space * vignette;
     var composed = background_col;
-    composed = apply_layer_blend(composed, lit_nebula_layer, nebula_blend_mode, nebula_opacity);
+    composed = apply_layer_blend(composed, nebula_layer, nebula_blend_mode, nebula_opacity);
     composed = apply_layer_blend(composed, stars_layer, stars_blend_mode, stars_opacity);
     composed = apply_layer_blend(composed, flares_layer, flares_blend_mode, flares_opacity);
     composed += vec3<f32>(0.05, 0.08, 0.14) * clamp(warp_factor * velocity_glow * 0.045, 0.0, 0.06);

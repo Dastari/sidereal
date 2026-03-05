@@ -4,9 +4,12 @@ use avian2d::prelude::{LinearVelocity, Rotation};
 use bevy::camera::visibility::RenderLayers;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
+use bevy::sprite_render::MeshMaterial2d;
 use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::PrimaryWindow;
-use sidereal_game::{EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, SizeM};
+use sidereal_game::{
+    EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, SizeM, TacticalMapUiSettings,
+};
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::{HashMap, HashSet};
 
@@ -14,17 +17,18 @@ use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, OwnedEntitiesPanelState,
 };
 use super::assets::{LocalAssetManager, RuntimeAssetStreamIndicatorState};
+use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     ControlledEntity, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
     HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
     LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
     OwnedEntitiesPanelRoot, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
     ShipNameplateHealthBar, ShipNameplateRoot, SuppressedPredictedDuplicateVisual,
-    TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle, UiOverlayCamera,
-    UiOverlayLayer, WorldEntity,
+    TacticalMapCursorText, TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle,
+    TacticalMapScreenFxOverlay, UiOverlayCamera, UiOverlayLayer, WorldEntity,
 };
 use super::ecs_util::queue_despawn_if_exists;
-use super::platform::UI_OVERLAY_RENDER_LAYER;
+use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
     CameraMotionState, ClientControlRequestState, EmbeddedFonts, OwnedAssetManifestCache,
     TacticalContactsCache, TacticalMapUiState,
@@ -118,7 +122,13 @@ pub(super) fn sync_tactical_map_camera_zoom_system(
     mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
     mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
     mut camera_query: Query<'_, '_, &mut super::components::TopDownCamera, With<GameplayCamera>>,
+    map_settings_query: Query<'_, '_, &'_ TacticalMapUiSettings>,
 ) {
+    let map_settings = map_settings_query
+        .iter()
+        .next()
+        .copied()
+        .unwrap_or_default();
     let mut wheel_delta_y = 0.0f32;
     for event in mouse_wheel_events.read() {
         let normalized = match event.unit {
@@ -128,7 +138,7 @@ pub(super) fn sync_tactical_map_camera_zoom_system(
         wheel_delta_y += normalized.clamp(-4.0, 4.0);
     }
     if tactical_map_state.enabled && wheel_delta_y != 0.0 {
-        let zoom_factor = (wheel_delta_y * 0.12).exp();
+        let zoom_factor = (wheel_delta_y * map_settings.map_zoom_wheel_sensitivity).exp();
         tactical_map_state.target_map_zoom =
             (tactical_map_state.target_map_zoom * zoom_factor).clamp(0.005, 4.0);
     }
@@ -136,14 +146,26 @@ pub(super) fn sync_tactical_map_camera_zoom_system(
     let Ok(mut camera) = camera_query.single_mut() else {
         return;
     };
-    const MAP_DISTANCE_M: f32 = 220.0;
+    let map_distance_m = map_settings.map_distance_m.max(camera.min_distance);
     let entering_map_mode = tactical_map_state.enabled && !tactical_map_state.was_enabled;
     let exiting_map_mode = !tactical_map_state.enabled && tactical_map_state.was_enabled;
 
     if entering_map_mode {
         tactical_map_state.last_non_map_target_distance = camera.target_distance;
-        camera.target_distance = MAP_DISTANCE_M.clamp(camera.min_distance, camera.max_distance);
+        tactical_map_state.last_non_map_max_distance = camera.max_distance;
+        tactical_map_state.transition_start_distance = camera.max_distance.max(camera.min_distance);
+        tactical_map_state.transition_map_zoom_start =
+            map_zoom_from_camera_distance(tactical_map_state.transition_start_distance);
+        tactical_map_state.transition_map_zoom_end = map_zoom_from_camera_distance(map_distance_m);
+        tactical_map_state.pan_offset_world = Vec2::ZERO;
+        tactical_map_state.last_pan_cursor_px = None;
+        tactical_map_state.map_zoom = tactical_map_state.transition_map_zoom_start;
+        tactical_map_state.target_map_zoom = tactical_map_state.transition_map_zoom_end;
+        camera.max_distance = camera.max_distance.max(map_distance_m);
+        camera.target_distance = map_distance_m.clamp(camera.min_distance, camera.max_distance);
     } else if exiting_map_mode {
+        tactical_map_state.last_pan_cursor_px = None;
+        camera.max_distance = tactical_map_state.last_non_map_max_distance.max(camera.min_distance);
         camera.target_distance = tactical_map_state
             .last_non_map_target_distance
             .clamp(camera.min_distance, camera.max_distance);
@@ -152,20 +174,17 @@ pub(super) fn sync_tactical_map_camera_zoom_system(
     tactical_map_state.was_enabled = tactical_map_state.enabled;
 }
 
-fn tactical_major_spacing_world(zoom_px_per_world: f32) -> f32 {
-    let safe_zoom = zoom_px_per_world.max(1e-6);
-    let target_major_px = 140.0;
-    let target_major_world = target_major_px / safe_zoom;
-    let decade = 10.0_f32.powf(target_major_world.max(1e-12).log10().floor());
-    let scaled = target_major_world / decade;
-    let major_step = if scaled < 2.0 {
-        1.0
-    } else if scaled < 5.0 {
-        2.0
-    } else {
-        5.0
-    };
-    major_step * decade
+fn map_zoom_from_camera_distance(distance: f32) -> f32 {
+    let ortho_scale = (distance * ORTHO_SCALE_PER_DISTANCE).max(0.0001);
+    1.0 / ortho_scale
+}
+
+fn normalized_transition_progress(value: f32, start: f32, end: f32) -> f32 {
+    let span = end - start;
+    if span.abs() <= f32::EPSILON {
+        return 1.0;
+    }
+    ((value - start) / span).clamp(0.0, 1.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -173,63 +192,116 @@ pub(super) fn update_tactical_map_overlay_system(
     time: Res<'_, Time>,
     mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
     contacts_cache: Res<'_, TacticalContactsCache>,
+    mouse_buttons: Res<'_, ButtonInput<MouseButton>>,
     camera_motion: Res<'_, CameraMotionState>,
     windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
     mut commands: Commands<'_, '_>,
-    mut gameplay_cameras: Query<'_, '_, &mut Camera, With<GameplayCamera>>,
-    mut gameplay_hud: Query<'_, '_, &mut Visibility, With<GameplayHud>>,
-    mut ui_cameras: Query<'_, '_, &mut Camera, (With<UiOverlayCamera>, Without<GameplayCamera>)>,
-    mut roots: Query<
+    mut map_queries: ParamSet<
         '_,
         '_,
-        (Entity, &'_ mut BackgroundColor, &'_ mut Visibility, &'_ Children),
-        With<TacticalMapOverlayRoot>,
+        (
+            Query<
+                '_,
+                '_,
+                (&'_ mut Camera, &'_ super::components::TopDownCamera),
+                (With<GameplayCamera>, Without<UiOverlayCamera>),
+            >,
+            Query<'_, '_, &'_ mut Visibility, (With<GameplayHud>, Without<TacticalMapOverlayRoot>)>,
+            Query<'_, '_, &'_ mut Camera, (With<UiOverlayCamera>, Without<GameplayCamera>)>,
+            Query<
+                '_,
+                '_,
+                (
+                    Entity,
+                    &'_ mut BackgroundColor,
+                    &'_ mut Visibility,
+                    &'_ Children,
+                ),
+                With<TacticalMapOverlayRoot>,
+            >,
+            Query<'_, '_, &'_ mut TextColor, (With<TacticalMapTitle>, Without<TacticalMapCursorText>)>,
+            Query<'_, '_, (&'_ mut Text, &'_ mut TextColor), (With<TacticalMapCursorText>, Without<TacticalMapTitle>)>,
+            Query<'_, '_, &'_ Transform, (With<ControlledEntity>, Without<TacticalMapScreenFxOverlay>)>,
+        ),
     >,
-    mut title_colors: Query<'_, '_, &'_ mut TextColor, With<TacticalMapTitle>>,
+    map_settings_query: Query<'_, '_, &'_ TacticalMapUiSettings>,
     dynamic_markers: Query<'_, '_, Entity, With<TacticalMapMarkerDynamic>>,
 ) {
+    let map_settings = map_settings_query
+        .iter()
+        .next()
+        .copied()
+        .unwrap_or_default();
     let Ok(window) = windows.single() else {
         return;
     };
-    let Ok((root_entity, mut root_bg, mut visibility, _children)) = roots.single_mut() else {
-        return;
-    };
-    for mut camera in &mut gameplay_cameras {
-        camera.is_active = !tactical_map_state.enabled;
+    let mut camera_distance = tactical_map_state.transition_start_distance;
+    {
+        let mut gameplay_cameras = map_queries.p0();
+        for (mut camera, topdown) in &mut gameplay_cameras {
+            camera_distance = topdown.distance;
+            camera.is_active = !tactical_map_state.enabled || tactical_map_state.alpha < 0.995;
+        }
     }
-    for mut hud_visibility in &mut gameplay_hud {
-        *hud_visibility = if tactical_map_state.enabled {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
-        };
+    {
+        let mut gameplay_hud = map_queries.p1();
+        for mut hud_visibility in &mut gameplay_hud {
+            *hud_visibility = if tactical_map_state.enabled {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            };
+        }
     }
-    for mut camera in &mut ui_cameras {
-        camera.clear_color = if tactical_map_state.enabled {
-            ClearColorConfig::Custom(Color::srgb(0.03, 0.04, 0.08))
-        } else {
-            ClearColorConfig::None
-        };
+    {
+        let mut ui_cameras = map_queries.p2();
+        for mut camera in &mut ui_cameras {
+            camera.clear_color = if tactical_map_state.enabled
+                && tactical_map_state.alpha >= map_settings.overlay_takeover_alpha
+            {
+                ClearColorConfig::Custom(Color::srgb(0.005, 0.008, 0.02))
+            } else {
+                ClearColorConfig::None
+            };
+        }
     }
 
-    let target_alpha = if tactical_map_state.enabled { 1.0 } else { 0.0 };
-    let fade_speed = 6.0;
-    let alpha = tactical_map_state
-        .alpha
-        .lerp(target_alpha, 1.0 - (-fade_speed * time.delta_secs()).exp());
+    let map_distance_m = map_settings.map_distance_m.max(1.0);
+    let computed_alpha = normalized_transition_progress(
+        camera_distance,
+        tactical_map_state.transition_start_distance,
+        map_distance_m,
+    );
+    let mut alpha = if tactical_map_state.enabled {
+        computed_alpha.max(tactical_map_state.alpha)
+    } else {
+        computed_alpha.min(tactical_map_state.alpha)
+    };
+    if tactical_map_state.enabled && alpha >= 0.995 {
+        alpha = 1.0;
+    } else if !tactical_map_state.enabled && alpha <= 0.005 {
+        alpha = 0.0;
+    }
     tactical_map_state.alpha = alpha;
 
-    if alpha < 0.01 && !tactical_map_state.enabled {
-        *visibility = Visibility::Hidden;
-        for marker in &dynamic_markers {
-            queue_despawn_if_exists(&mut commands, marker);
+    let root_entity = {
+        let mut roots = map_queries.p3();
+        let Ok((root_entity, mut root_bg, mut visibility, _children)) = roots.single_mut() else {
+            return;
+        };
+        if alpha < 0.01 && !tactical_map_state.enabled {
+            *visibility = Visibility::Hidden;
+            for marker in &dynamic_markers {
+                queue_despawn_if_exists(&mut commands, marker);
+            }
+            return;
         }
-        return;
-    }
-    *visibility = Visibility::Visible;
-
-    root_bg.0 = Color::srgba(0.03, 0.04, 0.08, alpha);
-    for mut color in &mut title_colors {
+        *visibility = Visibility::Visible;
+        // Keep root node transparent so the shader-backed map grid remains visible.
+        root_bg.0 = Color::srgba(0.03, 0.04, 0.08, 0.0);
+        root_entity
+    };
+    for mut color in &mut map_queries.p4() {
         color.0 = Color::srgba(0.85, 0.92, 1.0, 0.95 * alpha);
     }
 
@@ -237,122 +309,50 @@ pub(super) fn update_tactical_map_overlay_system(
         queue_despawn_if_exists(&mut commands, marker);
     }
 
-    tactical_map_state.map_zoom = tactical_map_state.map_zoom.lerp(
-        tactical_map_state.target_map_zoom,
-        1.0 - (-10.0 * time.delta_secs()).exp(),
+    let transition_t = alpha * alpha * (3.0 - 2.0 * alpha);
+    let transition_zoom = tactical_map_state.transition_map_zoom_start.lerp(
+        tactical_map_state.transition_map_zoom_end,
+        transition_t,
     );
+    tactical_map_state.map_zoom = if tactical_map_state.enabled && alpha >= 0.995 {
+        tactical_map_state.map_zoom.lerp(
+            tactical_map_state.target_map_zoom,
+            1.0 - (-10.0 * time.delta_secs()).exp(),
+        )
+    } else {
+        // During open/close transition, map zoom follows camera transition progress exactly.
+        transition_zoom
+    };
     let map_zoom = tactical_map_state.map_zoom.max(1e-6);
-    let width = window.physical_width() as f32;
-    let height = window.physical_height() as f32;
+    // UI node absolute positions and cursor coordinates are in logical window space.
+    let width = window.width();
+    let height = window.height();
     let screen_center = Vec2::new(width * 0.5, height * 0.5);
 
-    let major_spacing = tactical_major_spacing_world(map_zoom);
-    let minor_spacing = major_spacing / 10.0;
-    let micro_spacing = major_spacing / 100.0;
-
-    let spawn_vertical = |parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands<'_>,
-                          x_px: f32,
-                          width_px: f32,
-                          color: Color| {
-        parent.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(x_px - width_px * 0.5),
-                top: px(0.0),
-                width: px(width_px),
-                height: percent(100.0),
-                ..default()
-            },
-            BackgroundColor(color),
-            TacticalMapMarkerDynamic,
-        ));
-    };
-    let spawn_horizontal = |parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands<'_>,
-                            y_px: f32,
-                            height_px: f32,
-                            color: Color| {
-        parent.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(0.0),
-                top: px(y_px - height_px * 0.5),
-                width: percent(100.0),
-                height: px(height_px),
-                ..default()
-            },
-            BackgroundColor(color),
-            TacticalMapMarkerDynamic,
-        ));
-    };
-
-    let mut spawn_grid_family =
-        |spacing_world: f32, width_px: f32, color: Color, max_lines_per_axis: i32| {
-            let x_first = ((camera_motion.world_position_xy.x - (screen_center.x / map_zoom))
-                / spacing_world)
-                .floor() as i64
-                - 1;
-            let x_last = ((camera_motion.world_position_xy.x + (screen_center.x / map_zoom))
-                / spacing_world)
-                .ceil() as i64
-                + 1;
-            let y_first = ((camera_motion.world_position_xy.y - (screen_center.y / map_zoom))
-                / spacing_world)
-                .floor() as i64
-                - 1;
-            let y_last = ((camera_motion.world_position_xy.y + (screen_center.y / map_zoom))
-                / spacing_world)
-                .ceil() as i64
-                + 1;
-
-            if (x_last - x_first) as i32 > max_lines_per_axis
-                || (y_last - y_first) as i32 > max_lines_per_axis
-            {
-                return;
+    if tactical_map_state.enabled {
+        if mouse_buttons.pressed(MouseButton::Left) {
+            if let Some(cursor_px) = window.cursor_position() {
+                if let Some(last_px) = tactical_map_state.last_pan_cursor_px {
+                    let delta_px = cursor_px - last_px;
+                    tactical_map_state.pan_offset_world +=
+                        Vec2::new(-delta_px.x, delta_px.y) / map_zoom;
+                }
+                tactical_map_state.last_pan_cursor_px = Some(cursor_px);
             }
+        } else {
+            tactical_map_state.last_pan_cursor_px = None;
+        }
+    } else {
+        tactical_map_state.last_pan_cursor_px = None;
+    }
+    let controlled_world_xy = map_queries
+        .p6()
+        .iter()
+        .next()
+        .map(|transform| transform.translation.truncate());
+    let world_center_base = controlled_world_xy.unwrap_or(camera_motion.world_position_xy);
+    let world_center = world_center_base + tactical_map_state.pan_offset_world;
 
-            commands.entity(root_entity).with_children(|parent| {
-                for ix in x_first..=x_last {
-                    let world_x = ix as f32 * spacing_world;
-                    let x_px = screen_center.x + (world_x - camera_motion.world_position_xy.x) * map_zoom;
-                    spawn_vertical(parent, x_px, width_px, color);
-                }
-                for iy in y_first..=y_last {
-                    let world_y = iy as f32 * spacing_world;
-                    let y_px = screen_center.y - (world_y - camera_motion.world_position_xy.y) * map_zoom;
-                    spawn_horizontal(parent, y_px, width_px, color);
-                }
-            });
-        };
-
-    // Same family as dashboard grid: 1/10/100 subdivisions with adaptive major spacing.
-    spawn_grid_family(
-        micro_spacing,
-        1.0,
-        Color::srgba(0.2, 0.3, 0.45, 0.12 * alpha),
-        140,
-    );
-    spawn_grid_family(
-        minor_spacing,
-        1.0,
-        Color::srgba(0.2, 0.3, 0.45, 0.22 * alpha),
-        140,
-    );
-    spawn_grid_family(
-        major_spacing,
-        1.8,
-        Color::srgba(0.3, 0.4, 0.55, 0.48 * alpha),
-        120,
-    );
-
-    commands.entity(root_entity).with_children(|parent| {
-        let axis_color = Color::srgba(0.3, 0.4, 0.55, 0.8 * alpha);
-        let axis_x_px = screen_center.x + (0.0 - camera_motion.world_position_xy.x) * map_zoom;
-        let axis_y_px = screen_center.y - (0.0 - camera_motion.world_position_xy.y) * map_zoom;
-        spawn_vertical(parent, axis_x_px, 2.4, axis_color);
-        spawn_horizontal(parent, axis_y_px, 2.4, axis_color);
-    });
-
-    let world_center = camera_motion.world_position_xy;
     let world_to_screen = |xy: Vec2| -> Option<Vec2> {
         let px = screen_center.x + (xy.x - world_center.x) * map_zoom;
         let py = screen_center.y - (xy.y - world_center.y) * map_zoom;
@@ -361,6 +361,39 @@ pub(super) fn update_tactical_map_overlay_system(
         }
         Some(Vec2::new(px, py))
     };
+
+    if let Ok((mut cursor_text_value, mut cursor_text_color)) = map_queries.p5().single_mut() {
+        if let Some(cursor_px) = window.cursor_position() {
+            let world_x = world_center.x + (cursor_px.x - screen_center.x) / map_zoom;
+            let world_y = world_center.y - (cursor_px.y - screen_center.y) / map_zoom;
+            cursor_text_value.0 = format!("{world_x:.2}, {world_y:.2}");
+        } else {
+            cursor_text_value.0 = "--, --".to_string();
+        }
+        cursor_text_color.0 = Color::srgba(0.85, 0.92, 1.0, 0.95 * alpha);
+    }
+
+    if let Some(controlled_world_xy) = controlled_world_xy
+        && let Some(screen_xy) = world_to_screen(controlled_world_xy)
+    {
+        commands.entity(root_entity).with_children(|parent| {
+            parent.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(screen_xy.x - 6.0),
+                    top: px(screen_xy.y - 6.0),
+                    width: px(12.0),
+                    height: px(12.0),
+                    border_radius: BorderRadius::all(px(6.0)),
+                    border: UiRect::all(px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.16, 0.38, 0.74, 0.95 * alpha)),
+                BorderColor::all(Color::srgba(0.85, 0.92, 1.0, 0.95 * alpha)),
+                TacticalMapMarkerDynamic,
+            ));
+        });
+    }
 
     for contact in contacts_cache.contacts_by_entity_id.values() {
         let world = Vec2::new(contact.position_xy[0], contact.position_xy[1]);
@@ -401,6 +434,111 @@ pub(super) fn update_tactical_map_overlay_system(
                 TacticalMapMarkerDynamic,
             ));
         });
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn update_tactical_map_fx_overlay_system(
+    time: Res<'_, Time>,
+    tactical_map_state: Res<'_, TacticalMapUiState>,
+    camera_motion: Res<'_, CameraMotionState>,
+    windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
+    mut map_queries: ParamSet<
+        '_,
+        '_,
+        (
+            Query<'_, '_, &'_ Transform, With<ControlledEntity>>,
+            Query<
+                '_,
+                '_,
+                (
+                    &'_ mut Visibility,
+                    &'_ mut Transform,
+                    &'_ MeshMaterial2d<TacticalMapOverlayMaterial>,
+                ),
+                (With<TacticalMapScreenFxOverlay>, Without<ControlledEntity>),
+            >,
+        ),
+    >,
+    map_settings_query: Query<'_, '_, &'_ TacticalMapUiSettings>,
+    mut fx_materials: ResMut<'_, Assets<TacticalMapOverlayMaterial>>,
+) {
+    let map_settings = map_settings_query
+        .iter()
+        .next()
+        .copied()
+        .unwrap_or_default();
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let controlled_world_xy = map_queries
+        .p0()
+        .iter()
+        .next()
+        .map(|transform| transform.translation.truncate());
+    let alpha = tactical_map_state.alpha;
+    let width = window.width();
+    let height = window.height();
+    let world_center_base = controlled_world_xy.unwrap_or(camera_motion.world_position_xy);
+    let world_center = world_center_base + tactical_map_state.pan_offset_world;
+    let map_zoom = tactical_map_state.map_zoom.max(1e-6);
+    {
+        let mut fx_overlay = map_queries.p1();
+        let Ok((mut fx_visibility, mut fx_transform, fx_material_handle)) = fx_overlay.single_mut()
+        else {
+            return;
+        };
+        *fx_visibility = if alpha > 0.001 {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        fx_transform.translation.x = 0.0;
+        fx_transform.translation.y = 0.0;
+        fx_transform.translation.z = -10.0;
+        fx_transform.scale = Vec3::new(width, height, 1.0);
+
+        if let Some(material) = fx_materials.get_mut(&fx_material_handle.0) {
+            material.viewport_time = Vec4::new(width, height, time.elapsed_secs(), alpha);
+            material.map_center_zoom_mode =
+                Vec4::new(world_center.x, world_center.y, map_zoom, map_settings.fx_mode as f32);
+            material.grid_major = Vec4::new(
+                map_settings.grid_major_color_rgb.x,
+                map_settings.grid_major_color_rgb.y,
+                map_settings.grid_major_color_rgb.z,
+                map_settings.grid_major_alpha * alpha,
+            );
+            material.grid_minor = Vec4::new(
+                map_settings.grid_minor_color_rgb.x,
+                map_settings.grid_minor_color_rgb.y,
+                map_settings.grid_minor_color_rgb.z,
+                map_settings.grid_minor_alpha * alpha,
+            );
+            material.grid_micro = Vec4::new(
+                map_settings.grid_micro_color_rgb.x,
+                map_settings.grid_micro_color_rgb.y,
+                map_settings.grid_micro_color_rgb.z,
+                map_settings.grid_micro_alpha * alpha,
+            );
+            material.grid_glow_alpha = Vec4::new(
+                map_settings.grid_major_glow_alpha * alpha,
+                map_settings.grid_minor_glow_alpha * alpha,
+                map_settings.grid_micro_glow_alpha * alpha,
+                0.0,
+            );
+            material.fx_params = Vec4::new(
+                map_settings.fx_opacity,
+                map_settings.fx_noise_amount,
+                map_settings.fx_scanline_density,
+                map_settings.fx_scanline_speed,
+            );
+            material.fx_params_b = Vec4::new(
+                map_settings.fx_crt_distortion,
+                map_settings.fx_vignette_strength,
+                map_settings.fx_green_tint_mix,
+                0.0,
+            );
+        }
     }
 }
 

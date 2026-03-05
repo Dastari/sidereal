@@ -51,6 +51,11 @@ pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
             content_type: "text/plain; charset=utf-8",
         },
         StreamableAssetSource {
+            asset_id: "tactical_map_overlay_wgsl",
+            relative_cache_path: "shaders/tactical_map_overlay.wgsl",
+            content_type: "text/plain; charset=utf-8",
+        },
+        StreamableAssetSource {
             asset_id: "sprite_pixel_effect_wgsl",
             relative_cache_path: "shaders/sprite_pixel_effect.wgsl",
             content_type: "text/plain; charset=utf-8",
@@ -58,6 +63,11 @@ pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
         StreamableAssetSource {
             asset_id: "thruster_plume_wgsl",
             relative_cache_path: "shaders/thruster_plume.wgsl",
+            content_type: "text/plain; charset=utf-8",
+        },
+        StreamableAssetSource {
+            asset_id: "weapon_impact_spark_wgsl",
+            relative_cache_path: "shaders/weapon_impact_spark.wgsl",
             content_type: "text/plain; charset=utf-8",
         },
         StreamableAssetSource {

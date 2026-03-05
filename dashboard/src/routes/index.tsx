@@ -83,6 +83,7 @@ const DEFAULT_OWNER_TYPE_PATH = 'sidereal_game::components::owner_id::OwnerId'
 const SPAWN_TEMPLATES = [{ templateId: 'corvette', label: 'Corvette' }] as const
 
 const CAMERA_HIDE_SUBSTRING = 'bevy_camera::camera::Camera'
+const UI_TRANSFORM_TYPE_NAME = 'UiTransform'
 
 /** True if this entity should be hidden from the map (tree still shows it). */
 function isCameraEntity(
@@ -103,6 +104,25 @@ function isCameraEntity(
       graphNodes.get(edge.to)?.label === 'Camera',
   )
   return hasCameraComponent
+}
+
+function hasUiTransformComponent(
+  entityId: string,
+  graphNodes: Map<string, GraphNode>,
+  graphEdges: Array<GraphEdge>,
+): boolean {
+  return graphEdges.some((edge) => {
+    if (edge.from !== entityId || edge.label !== 'HAS_COMPONENT') {
+      return false
+    }
+    const componentNode = graphNodes.get(edge.to)
+    if (!componentNode) return false
+    const typePath = componentNode.properties.typePath
+    if (typeof typePath === 'string' && typePath.endsWith(`::${UI_TRANSFORM_TYPE_NAME}`)) {
+      return true
+    }
+    return componentNode.label === UI_TRANSFORM_TYPE_NAME
+  })
 }
 
 function asFiniteNumber(value: unknown): number | null {
@@ -232,7 +252,7 @@ function resolveOwnerTypePath(
     .map((edge) => edge.to)
   for (const componentNodeId of componentNodeIds) {
     const node = graphNodes.get(componentNodeId)
-    const typePath = node?.properties?.typePath
+    const typePath = node?.properties.typePath
     if (typeof typePath !== 'string') continue
     if (typePath.endsWith('::OwnerId')) return typePath
   }
@@ -322,12 +342,20 @@ function DashboardPage() {
     [entities, filterMapInvisible],
   )
 
+  const entitiesWithoutUiTransform = useMemo(
+    () =>
+      filteredEntities.filter(
+        (entity) => !hasUiTransformComponent(entity.id, graphNodes, graphEdges),
+      ),
+    [filteredEntities, graphNodes, graphEdges],
+  )
+
   const centerOnPosition = centerRequest.position
 
   // Map-only: exclude camera entities (id/name contains bevy_camera::camera::Camera, or has Camera component). Tree still shows all.
   const { entitiesForMap, cameraEntityIds } = useMemo(() => {
     const cameraIds = new Set<string>()
-    const forMap = filteredEntities.filter((entity) => {
+    const forMap = entitiesWithoutUiTransform.filter((entity) => {
       // Never render entities without source position on the map.
       if (entity.hasPosition === false) {
         return false
@@ -337,7 +365,7 @@ function DashboardPage() {
       return !hide
     })
     return { entitiesForMap: forMap, cameraEntityIds: cameraIds }
-  }, [filteredEntities, graphNodes, graphEdges])
+  }, [entitiesWithoutUiTransform, graphNodes, graphEdges])
 
   const selectedPlayerVisibilityOverlay = useMemo(
     () => parseSelectedPlayerVisibilityOverlay(selectedId, graphNodes, graphEdges),
@@ -508,11 +536,11 @@ function DashboardPage() {
 
   useEffect(() => {
     if (!selectedId) return
-    const selectedVisible = filteredEntities.some((e) => e.id === selectedId)
+    const selectedVisible = entitiesWithoutUiTransform.some((e) => e.id === selectedId)
     if (!selectedVisible) {
       setSelectedId(null)
     }
-  }, [filteredEntities, selectedId])
+  }, [entitiesWithoutUiTransform, selectedId])
 
   useEffect(() => {
     if (!contextMenu.open) return
@@ -554,13 +582,13 @@ function DashboardPage() {
         const next = new Map(prev)
 
         // Find the base entity or existing node position
-        const baseEntity = filteredEntities.find((e) => e.id === id)
+        const baseEntity = entitiesWithoutUiTransform.find((e) => e.id === id)
         const existingNode = prev.get(id)
         const centerX = baseEntity?.x || existingNode?.x || 0
         const centerY = baseEntity?.y || existingNode?.y || 0
 
         // Only explode child entities in the map graph view.
-        const childEntities = filteredEntities.filter(
+        const childEntities = entitiesWithoutUiTransform.filter(
           (entity) => entity.parentEntityId === id,
         )
         const hiddenChildren = childEntities.filter(
@@ -603,7 +631,7 @@ function DashboardPage() {
         return next
       })
     },
-    [filteredEntities],
+    [entitiesWithoutUiTransform],
   )
 
   // Update a component value via BRP (Server BRP or Client BRP only)
@@ -684,7 +712,7 @@ function DashboardPage() {
   // Handle entity selection from tree
   const handleSelectFromTree = useCallback((id: string) => {
     setSelectedId(id)
-    const entity = filteredEntities.find((e) => e.id === id)
+    const entity = entitiesWithoutUiTransform.find((e) => e.id === id)
     if (
       entity &&
       entity.hasPosition !== false &&
@@ -696,12 +724,12 @@ function DashboardPage() {
         seq: prev.seq + 1,
       }))
     }
-  }, [filteredEntities])
+  }, [entitiesWithoutUiTransform])
 
   const handleSelectFromGrid = useCallback((id: string | null) => {
     setSelectedId(id)
     if (id) {
-      const entity = filteredEntities.find((e) => e.id === id)
+      const entity = entitiesWithoutUiTransform.find((e) => e.id === id)
       if (
         entity &&
         entity.hasPosition !== false &&
@@ -714,7 +742,7 @@ function DashboardPage() {
         }))
       }
     }
-  }, [filteredEntities])
+  }, [entitiesWithoutUiTransform])
 
   // Placeholder zoom controls (would be connected to GridCanvas camera)
   const handleZoomIn = useCallback(() => {
@@ -926,7 +954,7 @@ function DashboardPage() {
               </PanelHeader>
               <PanelContent>
                 <EntityTree
-                  entities={filteredEntities}
+                  entities={entitiesWithoutUiTransform}
                   selectedId={selectedId}
                   onSelect={handleSelectFromTree}
                   sourceMode={sourceMode}
@@ -954,7 +982,7 @@ function DashboardPage() {
             <Panel>
               <DetailPanel
                 selectedId={selectedId}
-                entities={filteredEntities}
+                entities={entitiesWithoutUiTransform}
                 expandedNodes={expandedNodes}
                 graphNodes={graphNodes}
                 graphEdges={graphEdges}

@@ -4,6 +4,9 @@ Status: Proposed implementation plan
 Date: 2026-03-05
 Owners: scripting + replication + client rendering + asset streaming
 
+Implementation note (2026-03-05):
+- Tactical map now uses a fullscreen shader-material path (`TacticalMapOverlayMaterial`) driven by replicated `TacticalMapUiSettings` component data (owner-visible), with shader source parity in both `data/shaders/` and `data/cache_stream/shaders/`. This is an incremental step toward Phase 2/4 generic fullscreen/post-process runtime paths.
+
 Primary references:
 - `docs/features/scripting_support.md`
 - `docs/features/asset_delivery_contract.md`

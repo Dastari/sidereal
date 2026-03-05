@@ -46,6 +46,7 @@ local C = {
   FuelTank = "fuel_tank",
   AfterburnerCapability = "afterburner_capability",
   ThrusterPlumeShaderSettings = "thruster_plume_shader_settings",
+  TacticalMapUiSettings = "tactical_map_ui_settings",
   WeaponTag = "weapon_tag",
   BallisticWeapon = "ballistic_weapon",
   AmmoCount = "ammo_count",
@@ -102,6 +103,7 @@ BundleRegistry.bundles = {
       C.WeaponTag,
       C.BallisticWeapon,
       C.AmmoCount,
+      C.TacticalMapUiSettings,
     },
   },
   corvette = {
