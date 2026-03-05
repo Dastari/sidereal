@@ -366,3 +366,47 @@ pub fn receive_client_control_requests(
         }
     }
 }
+
+#[allow(clippy::type_complexity)]
+pub fn sync_player_anchor_replication_mode(
+    mut commands: Commands<'_, '_>,
+    players: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Option<&'_ ControlledEntityGuid>,
+            Option<&'_ ControlledBy>,
+        ),
+        With<PlayerTag>,
+    >,
+    client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
+) {
+    for (entity, player_guid, controlled_guid, controlled_by) in &players {
+        let Some(controlled_by) = controlled_by else {
+            continue;
+        };
+        let Ok(remote_id) = client_remote_ids.get(controlled_by.owner) else {
+            continue;
+        };
+
+        let controls_self = controlled_guid
+            .and_then(|guid| guid.0.as_deref())
+            .and_then(guid_from_entity_id_like)
+            .is_none_or(|guid| guid == player_guid.0.to_string());
+        let mut entity_commands = commands.entity(entity);
+        entity_commands.insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
+        if controls_self {
+            entity_commands.insert(PredictionTarget::to_clients(NetworkTarget::Single(
+                remote_id.0,
+            )));
+            entity_commands.remove::<InterpolationTarget>();
+        } else {
+            entity_commands.remove::<PredictionTarget>();
+            entity_commands.insert(InterpolationTarget::to_clients(NetworkTarget::Single(
+                remote_id.0,
+            )));
+        }
+    }
+}

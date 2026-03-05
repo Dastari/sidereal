@@ -34,7 +34,7 @@ fn main() {
     let mut app = App::new();
     app.init_resource::<bevy::transform::StaticTransformOptimizations>();
     // Cap main loop at ~100 Hz so Update (message drain, transport) doesn't spin at full CPU.
-    // FixedUpdate remains time-based at 30 Hz. See docs/features/replication_server_cpu_report.md.
+    // FixedUpdate remains time-based at 60 Hz. See docs/features/replication_server_cpu_report.md.
     let update_cap_hz = std::env::var("REPLICATION_UPDATE_CAP_HZ")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
@@ -62,7 +62,7 @@ fn main() {
     app.init_asset::<Mesh>();
     app.insert_resource(Gravity(Vec2::ZERO));
     app.add_plugins(ServerPlugins {
-        tick_duration: Duration::from_secs_f64(1.0 / 30.0),
+        tick_duration: Duration::from_secs_f64(1.0 / 60.0),
     });
     app.add_plugins(LightyearAvianPlugin {
         replication_mode: AvianReplicationMode::PositionButInterpolateTransform,
@@ -73,8 +73,8 @@ fn main() {
     register_lightyear_protocol(&mut app);
     lifecycle::configure_remote(&mut app, &remote_cfg);
 
-    // Lightyear/Bevy plugins can initialize Fixed time; enforce authoritative 30 Hz after plugin wiring.
-    app.insert_resource(Time::<Fixed>::from_hz(30.0));
+    // Lightyear/Bevy plugins can initialize Fixed time; enforce authoritative 60 Hz after plugin wiring.
+    app.insert_resource(Time::<Fixed>::from_hz(60.0));
     init_resources(&mut app);
     register_plugins(&mut app);
     app.run();
@@ -112,6 +112,7 @@ fn register_plugins(app: &mut App) {
             auth::cleanup_client_auth_bindings,
             input::receive_latest_realtime_input_messages,
             control::receive_client_control_requests,
+            visibility::receive_client_local_view_mode_messages,
             assets::receive_client_asset_requests,
             assets::receive_client_asset_acks,
             input::report_input_drop_metrics,

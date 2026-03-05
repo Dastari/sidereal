@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     ActionQueue, AfterburnerCapability, AfterburnerState, Engine, EntityAction, EntityGuid,
     FlightComputer, FlightControlAuthority, FlightTuning, FuelTank, MaxVelocityMps, MountedOn,
-    SizeM, TotalMassKg,
+    PlayerTag, SimulationMotionWriter, SizeM, TotalMassKg,
 };
 
 const PASSIVE_ANGULAR_DAMP_RATE: f32 = 4.0;
@@ -132,7 +132,7 @@ pub fn process_flight_actions(
             &mut FlightComputer,
             Option<&mut AfterburnerState>,
         ),
-        With<FlightControlAuthority>,
+        (With<FlightControlAuthority>, With<SimulationMotionWriter>),
     >,
 ) {
     for (mut queue, mut computer, afterburner_state) in &mut query {
@@ -162,7 +162,7 @@ pub fn apply_engine_thrust(
     // Hull entities with flight computers (by GUID)
     computers: Query<
         (&EntityGuid, &FlightComputer, Option<&AfterburnerState>),
-        With<FlightControlAuthority>,
+        (With<FlightControlAuthority>, With<SimulationMotionWriter>),
     >,
     // Parent entities that can receive forces (Avian Forces query helper)
     mut body_queries: ParamSet<(BodyForceQuery<'_, '_>, BodyKinematicsQuery<'_, '_>)>,
@@ -576,7 +576,11 @@ fn sanitize_finite_scalar(value: f32) -> f32 {
 pub fn clamp_angular_velocity(
     mut bodies: Query<
         (&mut AngularVelocity, Option<&MountedOn>),
-        (With<FlightComputer>, With<FlightControlAuthority>),
+        (
+            With<FlightComputer>,
+            With<FlightControlAuthority>,
+            With<SimulationMotionWriter>,
+        ),
     >,
 ) {
     for (mut angular_velocity, mounted_on) in &mut bodies {
@@ -601,7 +605,7 @@ pub fn stabilize_idle_motion(
             &mut AngularVelocity,
             Option<&MountedOn>,
         ),
-        With<FlightControlAuthority>,
+        (With<FlightControlAuthority>, With<SimulationMotionWriter>),
     >,
 ) {
     for (computer, mut linear_velocity, mut angular_velocity, mounted_on) in &mut bodies {
@@ -645,6 +649,39 @@ pub fn grant_flight_control_authority_system(
 ) {
     for entity in &entities {
         commands.entity(entity).insert(FlightControlAuthority);
+    }
+}
+
+/// Runtime helper: entities with movement-authoritative roles gain write marker.
+pub fn grant_simulation_motion_writer_system(
+    mut commands: Commands<'_, '_>,
+    entities: Query<
+        Entity,
+        (
+            Or<(With<FlightComputer>, With<PlayerTag>)>,
+            Without<SimulationMotionWriter>,
+        ),
+    >,
+) {
+    for entity in &entities {
+        commands.entity(entity).insert(SimulationMotionWriter);
+    }
+}
+
+/// Cleanup helper for entities that no longer expose movement-authoritative roles.
+pub fn revoke_stale_simulation_motion_writer_system(
+    mut commands: Commands<'_, '_>,
+    entities: Query<
+        Entity,
+        (
+            With<SimulationMotionWriter>,
+            Without<FlightComputer>,
+            Without<PlayerTag>,
+        ),
+    >,
+) {
+    for entity in &entities {
+        commands.entity(entity).remove::<SimulationMotionWriter>();
     }
 }
 

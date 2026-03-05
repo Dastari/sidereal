@@ -6,6 +6,7 @@ use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::sprite_render::MeshMaterial2d;
 use bevy::state::state_scoped::DespawnOnExit;
+use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::MessageReceiver;
 use lightyear::prelude::input::native::ActionState;
 use sidereal_game::{
@@ -238,6 +239,8 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
             Has<ControlledEntity>,
             Has<lightyear::prelude::Interpolated>,
             Has<lightyear::prelude::Predicted>,
+            Option<&'_ ConfirmedHistory<avian2d::prelude::Position>>,
+            Option<&'_ ConfirmedHistory<avian2d::prelude::Rotation>>,
             Has<SuppressedPredictedDuplicateVisual>,
         ),
         With<WorldEntity>,
@@ -252,18 +255,25 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
         is_controlled,
         is_interpolated,
         is_predicted,
+        position_history,
+        rotation_history,
         is_suppressed,
     ) in &world_entities
     {
         let Some(guid) = guid else { continue };
+        let interpolated_ready = !is_interpolated
+            || (position_history.and_then(|h| h.end()).is_some()
+                && rotation_history.and_then(|h| h.end()).is_some());
         let score = if has_controlled_entity_guid || has_player_tag {
             -100
         } else if is_controlled {
             3
-        } else if is_interpolated {
+        } else if is_interpolated && interpolated_ready {
             2
         } else if is_predicted {
             1
+        } else if is_interpolated {
+            -1
         } else {
             0
         };
@@ -297,6 +307,8 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
         _is_controlled,
         _is_interpolated,
         _is_predicted,
+        _position_history,
+        _rotation_history,
         is_suppressed,
     ) in &world_entities
     {

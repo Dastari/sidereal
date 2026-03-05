@@ -10,6 +10,8 @@ use sidereal_scripting::{
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::rc::Rc;
 use uuid::Uuid;
 
@@ -52,12 +54,23 @@ pub struct ScriptWorldSnapshot {
     entities_by_guid: HashMap<String, ScriptEntitySnapshot>,
 }
 
-struct ScriptIntervalCallback {
+struct ScriptHandler {
     name: String,
-    function_key: RegistryKey,
-    interval_s: f64,
-    next_run_s: f64,
-    event_payload: JsonValue,
+    on_tick_function_key: Option<RegistryKey>,
+    default_tick_interval_s: f64,
+    on_event_function_keys: HashMap<String, RegistryKey>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScriptEvent {
+    pub event_name: String,
+    pub payload: JsonValue,
+    pub target_entity_id: Option<String>,
+}
+
+#[derive(Resource, Default)]
+pub struct ScriptEventQueue {
+    pub pending: Vec<ScriptEvent>,
 }
 
 enum ScriptIntent {
@@ -77,7 +90,8 @@ enum ScriptIntent {
 
 pub struct ScriptRuntime {
     lua: Lua,
-    callbacks: Vec<ScriptIntervalCallback>,
+    handlers: HashMap<String, ScriptHandler>,
+    next_tick_run_by_entity_handler: HashMap<String, f64>,
     pending_intents: Vec<ScriptIntent>,
 }
 
@@ -85,45 +99,70 @@ impl ScriptRuntime {
     fn from_scripts_root(scripts_root: &std::path::Path) -> Result<Self, ScriptError> {
         let policy = LuaSandboxPolicy::from_env();
         let lua = create_sandboxed_lua_vm(&policy)?;
-        let mut callbacks = Vec::new();
+        let mut handlers = HashMap::new();
 
-        let (module, module_path) =
-            load_lua_module_into_lua_from_root(&lua, scripts_root, "ai/pirate_patrol.lua")?;
-        let handler = module
-            .get::<Function>("on_ai_patrol_tick")
-            .map_err(|err| ScriptError::Contract(format!("{}: {err}", module_path.display())))?;
-        let interval_s = module
-            .get::<f64>("interval_seconds")
-            .map_err(|err| ScriptError::Contract(format!("{}: {err}", module_path.display())))?;
-        if interval_s <= 0.0 {
-            return Err(ScriptError::Contract(format!(
-                "{}: interval_seconds must be > 0",
-                module_path.display()
-            )));
-        }
-        let entity_id = module
-            .get::<String>("entity_id")
-            .map_err(|err| ScriptError::Contract(format!("{}: {err}", module_path.display())))?;
-        if Uuid::parse_str(&entity_id).is_err() {
-            return Err(ScriptError::Contract(format!(
-                "{}: entity_id must be a UUID string",
-                module_path.display()
-            )));
-        }
+        for script_rel_path in discover_ai_script_paths(scripts_root)? {
+            let (module, module_path) =
+                load_lua_module_into_lua_from_root(&lua, scripts_root, &script_rel_path)?;
+            let default_handler_name = Path::new(&script_rel_path)
+                .file_stem()
+                .and_then(|v| v.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let handler_name = module
+                .get::<Option<String>>("handler_name")
+                .map_err(|err| ScriptError::Contract(format!("{}: {err}", module_path.display())))?
+                .unwrap_or(default_handler_name);
 
-        callbacks.push(ScriptIntervalCallback {
-            name: "ai_patrol_tick".to_string(),
-            function_key: lua
-                .create_registry_value(handler)
-                .map_err(|err| ScriptError::Runtime(format!("{}: {err}", module_path.display())))?,
-            interval_s,
-            next_run_s: 0.0,
-            event_payload: serde_json::json!({ "entity_id": entity_id }),
-        });
+            let mut on_tick_function_key = None;
+            if let Ok(on_tick) = module.get::<Function>("on_tick") {
+                on_tick_function_key = Some(lua.create_registry_value(on_tick).map_err(|err| {
+                    ScriptError::Runtime(format!("{}: {err}", module_path.display()))
+                })?);
+            }
+            let default_tick_interval_s = module
+                .get::<Option<f64>>("tick_interval_seconds")
+                .map_err(|err| ScriptError::Contract(format!("{}: {err}", module_path.display())))?
+                .unwrap_or(2.0);
+            if default_tick_interval_s <= 0.0 {
+                return Err(ScriptError::Contract(format!(
+                    "{}: tick_interval_seconds must be > 0",
+                    module_path.display()
+                )));
+            }
+
+            let mut on_event_function_keys = HashMap::new();
+            for pair in module.clone().pairs::<String, Value>() {
+                let (key, value) = pair.map_err(|err| {
+                    ScriptError::Contract(format!("{}: {err}", module_path.display()))
+                })?;
+                if !key.starts_with("on_") || key == "on_tick" {
+                    continue;
+                }
+                if let Value::Function(func) = value {
+                    let event_name = key.trim_start_matches("on_").to_string();
+                    let key = lua.create_registry_value(func).map_err(|err| {
+                        ScriptError::Runtime(format!("{}: {err}", module_path.display()))
+                    })?;
+                    on_event_function_keys.insert(event_name, key);
+                }
+            }
+
+            handlers.insert(
+                handler_name.clone(),
+                ScriptHandler {
+                    name: handler_name,
+                    on_tick_function_key,
+                    default_tick_interval_s,
+                    on_event_function_keys,
+                },
+            );
+        }
 
         Ok(Self {
             lua,
-            callbacks,
+            handlers,
+            next_tick_run_by_entity_handler: HashMap::new(),
             pending_intents: Vec::new(),
         })
     }
@@ -131,13 +170,14 @@ impl ScriptRuntime {
 
 pub fn init_resources(app: &mut App) {
     app.insert_resource(ScriptWorldSnapshot::default());
+    app.insert_resource(ScriptEventQueue::default());
     let scripts_root = scripts_root_dir();
     match ScriptRuntime::from_scripts_root(&scripts_root) {
         Ok(runtime) => {
             info!(
-                "replication runtime scripting initialized root={} callbacks={}",
+                "replication runtime scripting initialized root={} handlers={}",
                 scripts_root.display(),
-                runtime.callbacks.len()
+                runtime.handlers.len()
             );
             app.insert_non_send_resource(runtime);
         }
@@ -188,26 +228,46 @@ pub fn run_script_intervals(
 ) {
     let Some(mut runtime) = runtime else { return };
     let now_s = time.elapsed_secs_f64();
-    if runtime.callbacks.is_empty() {
+    if runtime.handlers.is_empty() {
         return;
     }
     let snapshot_map = Rc::new(snapshot.entities_by_guid.clone());
-    for idx in 0..runtime.callbacks.len() {
-        let due = {
-            let callback = &mut runtime.callbacks[idx];
-            if now_s < callback.next_run_s {
-                false
-            } else {
-                callback.next_run_s = now_s + callback.interval_s;
-                true
-            }
+    for (entity_guid, entity) in &*snapshot_map {
+        let Some((handler_name, interval_s)) = parse_tick_handler_config(entity) else {
+            continue;
         };
-        if !due {
+        let Some((handler_log_name, default_tick_interval_s, has_on_tick)) =
+            runtime.handlers.get(&handler_name).map(|handler| {
+                (
+                    handler.name.clone(),
+                    handler.default_tick_interval_s,
+                    handler.on_tick_function_key.is_some(),
+                )
+            })
+        else {
+            warn!(
+                "replication runtime scripting entity={} references unknown on_tick_handler={}",
+                entity_guid, handler_name
+            );
+            continue;
+        };
+        if !has_on_tick {
             continue;
         }
+        let interval_s = interval_s.unwrap_or(default_tick_interval_s);
+        if interval_s <= 0.0 {
+            continue;
+        }
+        let schedule_key = format!("{}::{}", handler_log_name, entity_guid);
+        if let Some(next_run_s) = runtime.next_tick_run_by_entity_handler.get(&schedule_key)
+            && now_s < *next_run_s
+        {
+            continue;
+        }
+        runtime
+            .next_tick_run_by_entity_handler
+            .insert(schedule_key, now_s + interval_s);
 
-        let callback_name = runtime.callbacks[idx].name.clone();
-        let callback_payload = runtime.callbacks[idx].event_payload.clone();
         let pending_intents = Rc::new(RefCell::new(Vec::<ScriptIntent>::new()));
         let ctx = match build_script_context(
             &runtime.lua,
@@ -217,45 +277,146 @@ pub fn run_script_intervals(
             Ok(v) => v,
             Err(err) => {
                 warn!(
-                    "replication runtime script interval={} context build failed: {}",
-                    callback_name, err
+                    "replication runtime script on_tick handler={} entity={} context build failed: {}",
+                    handler_log_name, entity_guid, err
                 );
                 continue;
             }
         };
-        let event = match json_to_lua_value(&runtime.lua, &callback_payload) {
+        let event_payload = serde_json::json!({ "entity_id": entity_guid });
+        let event = match json_to_lua_value(&runtime.lua, &event_payload) {
             Ok(v) => v,
             Err(err) => {
                 warn!(
-                    "replication runtime script interval={} event encode failed: {}",
-                    callback_name, err
+                    "replication runtime script on_tick handler={} entity={} event encode failed: {}",
+                    handler_log_name, entity_guid, err
                 );
                 continue;
             }
         };
-        let function = match runtime
-            .lua
-            .registry_value::<Function>(&runtime.callbacks[idx].function_key)
-        {
+        let Some(function_key) = runtime
+            .handlers
+            .get(&handler_name)
+            .and_then(|handler| handler.on_tick_function_key.as_ref())
+        else {
+            continue;
+        };
+        let function = match runtime.lua.registry_value::<Function>(function_key) {
             Ok(v) => v,
             Err(err) => {
                 warn!(
-                    "replication runtime script interval={} registry decode failed: {}",
-                    callback_name, err
+                    "replication runtime script on_tick handler={} entity={} registry decode failed: {}",
+                    handler_log_name, entity_guid, err
                 );
                 continue;
             }
         };
         if let Err(err) = function.call::<()>((ctx, event)) {
             warn!(
-                "replication runtime script interval={} execution failed: {}",
-                callback_name, err
+                "replication runtime script on_tick handler={} entity={} execution failed: {}",
+                handler_log_name, entity_guid, err
             );
             continue;
         }
         runtime
             .pending_intents
             .extend(pending_intents.borrow_mut().drain(..));
+    }
+}
+
+pub fn run_script_events(
+    runtime: Option<NonSendMut<'_, ScriptRuntime>>,
+    snapshot: Res<'_, ScriptWorldSnapshot>,
+    mut event_queue: ResMut<'_, ScriptEventQueue>,
+) {
+    let Some(mut runtime) = runtime else { return };
+    if runtime.handlers.is_empty() || event_queue.pending.is_empty() {
+        return;
+    }
+    let snapshot_map = Rc::new(snapshot.entities_by_guid.clone());
+    let events = std::mem::take(&mut event_queue.pending);
+    for event in events {
+        let target_entities = if let Some(entity_id) = &event.target_entity_id {
+            vec![entity_id.clone()]
+        } else {
+            snapshot_map.keys().cloned().collect::<Vec<_>>()
+        };
+        for entity_guid in target_entities {
+            let Some(entity) = snapshot_map.get(&entity_guid) else {
+                continue;
+            };
+            let Some(handler_name) = parse_event_handler_config(entity, &event.event_name) else {
+                continue;
+            };
+            let Some(handler) = runtime.handlers.get(&handler_name) else {
+                warn!(
+                    "replication runtime scripting entity={} event={} references unknown handler={}",
+                    entity_guid, event.event_name, handler_name
+                );
+                continue;
+            };
+            let Some(function_key) = handler.on_event_function_keys.get(&event.event_name) else {
+                continue;
+            };
+
+            let pending_intents = Rc::new(RefCell::new(Vec::<ScriptIntent>::new()));
+            let ctx = match build_script_context(
+                &runtime.lua,
+                Rc::clone(&snapshot_map),
+                pending_intents.clone(),
+            ) {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!(
+                        "replication runtime script on_{} handler={} entity={} context build failed: {}",
+                        event.event_name, handler.name, entity_guid, err
+                    );
+                    continue;
+                }
+            };
+            let mut event_payload = event.payload.clone();
+            let has_entity_id = event_payload
+                .as_object()
+                .is_some_and(|obj| obj.contains_key("entity_id"));
+            if !has_entity_id {
+                let mut payload_map = event_payload.as_object().cloned().unwrap_or_default();
+                payload_map.insert(
+                    "entity_id".to_string(),
+                    JsonValue::String(entity_guid.clone()),
+                );
+                event_payload = JsonValue::Object(payload_map);
+            }
+            let event_lua = match json_to_lua_value(&runtime.lua, &event_payload) {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!(
+                        "replication runtime script on_{} handler={} entity={} event encode failed: {}",
+                        event.event_name, handler.name, entity_guid, err
+                    );
+                    continue;
+                }
+            };
+            let function = match runtime.lua.registry_value::<Function>(function_key) {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!(
+                        "replication runtime script on_{} handler={} entity={} registry decode failed: {}",
+                        event.event_name, handler.name, entity_guid, err
+                    );
+                    continue;
+                }
+            };
+            if let Err(err) = function.call::<()>((ctx, event_lua)) {
+                warn!(
+                    "replication runtime script on_{} handler={} entity={} execution failed: {}",
+                    event.event_name, handler.name, entity_guid, err
+                );
+                continue;
+            }
+            runtime
+                .pending_intents
+                .extend(pending_intents.borrow_mut().drain(..));
+        }
     }
 }
 
@@ -460,8 +621,42 @@ fn parse_intent(action: &str, payload: &JsonValue) -> Result<ScriptIntent, Strin
     }
 }
 
+fn parse_tick_handler_config(entity: &ScriptEntitySnapshot) -> Option<(String, Option<f64>)> {
+    let data = entity.script_state.as_ref()?.get("data")?.as_object()?;
+    let handler = data.get("on_tick_handler")?.as_str()?.to_string();
+    let interval_s = data.get("tick_interval_s").and_then(|v| v.as_f64());
+    Some((handler, interval_s))
+}
+
+fn parse_event_handler_config(entity: &ScriptEntitySnapshot, event_name: &str) -> Option<String> {
+    let data = entity.script_state.as_ref()?.get("data")?.as_object()?;
+    let hooks = data.get("event_hooks")?.as_object()?;
+    hooks.get(event_name)?.as_str().map(|v| v.to_string())
+}
+
 fn parse_uuid(raw: &str) -> Result<Uuid, String> {
     Uuid::parse_str(raw).map_err(|err| format!("invalid uuid {raw}: {err}"))
+}
+
+fn discover_ai_script_paths(scripts_root: &Path) -> Result<Vec<String>, ScriptError> {
+    let ai_dir = scripts_root.join("ai");
+    let entries = fs::read_dir(&ai_dir)
+        .map_err(|err| ScriptError::Io(format!("read {} failed: {err}", ai_dir.display())))?;
+    let mut rel_paths = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|err| ScriptError::Io(format!("read {} failed: {err}", ai_dir.display())))?;
+        let path = entry.path();
+        if path.extension().and_then(|v| v.to_str()) != Some("lua") {
+            continue;
+        }
+        let Some(filename) = path.file_name().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        rel_paths.push(format!("ai/{filename}"));
+    }
+    rel_paths.sort();
+    Ok(rel_paths)
 }
 
 fn json_to_lua_value(lua: &Lua, value: &JsonValue) -> Result<Value, ScriptError> {

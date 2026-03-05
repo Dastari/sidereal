@@ -68,3 +68,21 @@ export interface GridState {
   hoveredId: string | null
   camera: Camera
 }
+
+export interface VisibilityGridCellOverlay {
+  x: number
+  y: number
+}
+
+export interface VisibilityScannerSourceOverlay {
+  x: number
+  y: number
+  z?: number
+  range_m: number
+}
+
+export interface PlayerVisibilityOverlay {
+  cell_size_m: number
+  queried_cells: Array<VisibilityGridCellOverlay>
+  scanner_sources: Array<VisibilityScannerSourceOverlay>
+}

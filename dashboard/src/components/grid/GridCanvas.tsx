@@ -1,7 +1,13 @@
 import * as React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useGridRenderer } from './useGridRenderer'
-import type { Camera, ExpandedNode, GraphEdge, WorldEntity } from './types'
+import type {
+  Camera,
+  ExpandedNode,
+  GraphEdge,
+  PlayerVisibilityOverlay,
+  WorldEntity,
+} from './types'
 import type { DataSourceMode } from '@/components/sidebar/Toolbar'
 import { useGridThemeColors } from '@/hooks/use-grid-theme-colors'
 import { useTheme } from '@/hooks/use-theme'
@@ -24,6 +30,8 @@ interface GridCanvasProps {
   excludedFromMapIds?: Set<string>
   /** When set, center the grid camera on this world position (e.g. when selecting an entity from the tree). */
   centerOnPosition?: { x: number; y: number } | null
+  /** Visibility overlay data for selected player entity. */
+  selectedPlayerVisibilityOverlay?: PlayerVisibilityOverlay | null
 }
 
 // graphNodes is used indirectly via expandedNodes
@@ -40,6 +48,7 @@ export function GridCanvas({
   sourceMode,
   excludedFromMapIds,
   centerOnPosition,
+  selectedPlayerVisibilityOverlay,
 }: GridCanvasProps) {
   void _graphNodes // Used indirectly via expandedNodes
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -243,7 +252,65 @@ export function GridCanvas({
         screenPos.y - offset * dpr,
       )
     }
-  }, [worldToScreen, selectedId, hoveredId, themeColors])
+
+    if (
+      selectedPlayerVisibilityOverlay &&
+      Number.isFinite(selectedPlayerVisibilityOverlay.cell_size_m) &&
+      selectedPlayerVisibilityOverlay.cell_size_m > 0
+    ) {
+      const cellSizeM = selectedPlayerVisibilityOverlay.cell_size_m
+      const cam = cameraRef.current
+
+      ctx.save()
+
+      // Draw candidate grid cells as stroked rectangles.
+      ctx.strokeStyle = 'rgba(80, 190, 255, 0.7)'
+      ctx.lineWidth = Math.max(1, 1.5 * dpr)
+      for (const cell of selectedPlayerVisibilityOverlay.queried_cells) {
+        if (!Number.isFinite(cell.x) || !Number.isFinite(cell.y)) continue
+        const minX = cell.x * cellSizeM
+        const minY = cell.y * cellSizeM
+        const cornerA = worldToScreen(minX, minY)
+        const cornerB = worldToScreen(minX + cellSizeM, minY + cellSizeM)
+        const rectX = Math.min(cornerA.x, cornerB.x)
+        const rectY = Math.min(cornerA.y, cornerB.y)
+        const widthPx = Math.abs(cornerB.x - cornerA.x)
+        const heightPx = Math.abs(cornerB.y - cornerA.y)
+        if (!Number.isFinite(widthPx) || !Number.isFinite(heightPx)) continue
+        ctx.strokeRect(rectX, rectY, widthPx, heightPx)
+      }
+
+      // Draw scanner sources as circles + center point.
+      ctx.strokeStyle = 'rgba(255, 166, 77, 0.8)'
+      ctx.fillStyle = 'rgba(255, 166, 77, 0.95)'
+      for (const source of selectedPlayerVisibilityOverlay.scanner_sources) {
+        if (
+          !Number.isFinite(source.x) ||
+          !Number.isFinite(source.y) ||
+          !Number.isFinite(source.range_m)
+        ) {
+          continue
+        }
+        const center = worldToScreen(source.x, source.y)
+        const radiusPx = Math.max(0, source.range_m * cam.zoom)
+        if (!Number.isFinite(radiusPx)) continue
+        ctx.beginPath()
+        ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.arc(center.x, center.y, Math.max(2, 2.5 * dpr), 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      ctx.restore()
+    }
+  }, [
+    worldToScreen,
+    selectedId,
+    hoveredId,
+    themeColors,
+    selectedPlayerVisibilityOverlay,
+  ])
 
   // Main render loop
   const frame = useCallback(() => {

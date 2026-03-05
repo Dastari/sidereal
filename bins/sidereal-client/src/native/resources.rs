@@ -45,6 +45,12 @@ pub(crate) struct ClientControlDebugState {
 }
 
 #[derive(Debug, Resource, Default)]
+pub(crate) struct ClientViewModeState {
+    pub last_sent_mode: Option<sidereal_net::ClientLocalViewMode>,
+    pub last_sent_at_s: f64,
+}
+
+#[derive(Debug, Resource, Default)]
 pub(crate) struct DebugBlueOverlayEnabled(pub bool);
 
 /// When true, F3 debug overlay is active: collision AABB wireframes, ship AABB + velocity arrow, hardpoint markers.
@@ -207,6 +213,7 @@ impl PredictionCorrectionTuning {
 pub(crate) struct NearbyCollisionProxyTuning {
     pub radius_m: f32,
     pub max_proxies: usize,
+    pub reconcile_interval_s: f64,
 }
 
 impl NearbyCollisionProxyTuning {
@@ -221,11 +228,26 @@ impl NearbyCollisionProxyTuning {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v > 0)
             .unwrap_or(0);
+        let reconcile_interval_s =
+            std::env::var("SIDEREAL_CLIENT_MOTION_OWNERSHIP_RECONCILE_INTERVAL_S")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .unwrap_or(0.1);
         Self {
             radius_m,
             max_proxies,
+            reconcile_interval_s,
         }
     }
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct MotionOwnershipReconcileState {
+    pub last_target_guid: Option<uuid::Uuid>,
+    pub last_target_entity: Option<Entity>,
+    pub last_reconcile_at_s: f64,
+    pub dirty: bool,
 }
 
 #[derive(Resource, Debug, Clone, Copy)]

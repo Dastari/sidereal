@@ -6,9 +6,9 @@ use bevy::prelude::*;
 use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::input::native::{ActionState, InputMarker};
-use sidereal_game::{EntityAction, EntityGuid};
+use sidereal_game::{EntityAction, EntityGuid, SimulationMotionWriter};
 use sidereal_net::{ClientRealtimeInputMessage, InputChannel, PlayerEntityId, PlayerInput};
-use sidereal_runtime_sync::{RuntimeEntityHierarchy, parse_guid_from_entity_id};
+use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::sync::OnceLock;
 
 use super::app_state::{
@@ -119,7 +119,7 @@ fn resolve_entity_by_guid_prefer_predicted(
         ),
     >,
     guid_like: &str,
-) -> Option<Entity> {
+) -> Option<(Entity, bool)> {
     let target_guid =
         parse_guid_from_entity_id(guid_like).or_else(|| uuid::Uuid::parse_str(guid_like).ok())?;
     let mut winner: Option<(Entity, i32)> = None;
@@ -138,7 +138,7 @@ fn resolve_entity_by_guid_prefer_predicted(
             winner = Some((entity, score));
         }
     }
-    winner.map(|(entity, _)| entity)
+    winner.map(|(entity, score)| (entity, score >= 3))
 }
 
 fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
@@ -166,7 +166,6 @@ pub fn send_lightyear_input_messages(
     >,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
     guid_candidates: Query<
         '_,
         '_,
@@ -219,13 +218,9 @@ pub fn send_lightyear_input_messages(
                 | EntityAction::LateralNeutral
         )
     });
-    let target_entity = resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
-        .or_else(|| {
-        entity_registry
-            .by_entity_id
-            .get(target_entity_id.as_str())
-            .copied()
-        });
+    let target_entity =
+        resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
+            .map(|(entity, _)| entity);
 
     // Canonical ids for network message so server lookup matches (same form used for target_changed).
     let message_player_id = canonical_player_entity_id(&player_entity_id);
@@ -279,10 +274,7 @@ pub fn send_lightyear_input_messages(
     }
     if let Some(target_entity) = target_entity {
         commands.entity(target_entity).insert((
-            ControlledEntity {
-                entity_id: target_entity_id.clone(),
-                player_entity_id: player_entity_id.clone(),
-            },
+            SimulationMotionWriter,
             InputMarker::<PlayerInput>::default(),
             ActionState(player_input.clone()),
         ));
@@ -341,7 +333,6 @@ pub fn enforce_single_input_marker_owner(
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
     guid_candidates: Query<
         '_,
         '_,
@@ -367,13 +358,9 @@ pub fn enforce_single_input_marker_owner(
         .as_ref()
         .cloned()
         .unwrap_or_else(|| player_entity_id.clone());
-    let target_entity = resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
-        .or_else(|| {
-            entity_registry
-                .by_entity_id
-                .get(target_entity_id.as_str())
-                .copied()
-        });
+    let target_entity =
+        resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
+            .map(|(entity, _)| entity);
 
     for (entity, controlled) in &input_marked_entities {
         let keep = Some(entity) == target_entity

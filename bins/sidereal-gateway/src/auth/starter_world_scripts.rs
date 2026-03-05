@@ -1,11 +1,13 @@
 use crate::auth::error::AuthError;
 use mlua::{Function, Table, Value};
-use sidereal_game::{default_corvette_collision_outline, generated_component_registry};
+use sidereal_game::generated_component_registry;
 use sidereal_persistence::GraphEntityRecord;
+#[cfg(test)]
+use sidereal_scripting::load_lua_module_into_lua_from_root;
 use sidereal_scripting::{
     LuaSandboxPolicy, ScriptError, load_lua_module_from_root, lua_value_to_json,
-    resolve_scripts_root, table_get_optional_string, table_get_required_string,
-    table_get_required_string_list, validate_component_kinds,
+    resolve_scripts_root, table_get_required_string, table_get_required_string_list,
+    validate_component_kinds,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -19,15 +21,14 @@ pub struct WorldInitScriptConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewAccountScriptConfig {
+pub struct PlayerInitScriptConfig {
     pub starter_bundle_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptBundleDefinition {
     pub bundle_id: String,
-    pub spawn_template: Option<String>,
-    pub graph_records_script: Option<String>,
+    pub graph_records_script: String,
     pub required_component_kinds: Vec<String>,
 }
 
@@ -81,6 +82,7 @@ pub fn load_world_init_config(root: &Path) -> Result<WorldInitScriptConfig, Auth
     })
 }
 
+#[cfg(test)]
 pub fn load_world_init_graph_records(root: &Path) -> Result<Vec<GraphEntityRecord>, AuthError> {
     let policy = LuaSandboxPolicy::from_env();
     let module = load_lua_module_from_root(root, "world/world_init.lua", &policy)
@@ -99,6 +101,7 @@ pub fn load_world_init_graph_records(root: &Path) -> Result<Vec<GraphEntityRecor
         .get::<Table>("context")
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     inject_script_context(ctx.clone(), &module, None)?;
+    inject_bundle_registry_spawn_fn(ctx.clone(), &module, root)?;
 
     let lua_value = build_graph_records
         .call::<Value>(ctx)
@@ -119,40 +122,39 @@ pub fn load_world_init_graph_records(root: &Path) -> Result<Vec<GraphEntityRecor
     Ok(records)
 }
 
-pub fn load_new_account_config(
+pub fn load_player_init_config(
     root: &Path,
     context: ScriptContext<'_>,
-) -> Result<NewAccountScriptConfig, AuthError> {
+) -> Result<PlayerInitScriptConfig, AuthError> {
     let policy = LuaSandboxPolicy::from_env();
-    let module = load_lua_module_from_root(root, "accounts/on_new_account.lua", &policy)
+    let module = load_lua_module_from_root(root, "accounts/player_init.lua", &policy)
         .map_err(map_script_error)?;
     let ctx = module
         .root()
         .get::<Table>("context")
-        .map_err(|err| AuthError::Internal(format!("accounts/on_new_account.lua: {err}")))?;
+        .map_err(|err| AuthError::Internal(format!("accounts/player_init.lua: {err}")))?;
     inject_script_context(ctx.clone(), &module, Some(&context))?;
 
-    let on_new_account = module
+    let player_init = module
         .root()
-        .get::<Function>("on_new_account")
-        .map_err(|err| AuthError::Internal(format!("accounts/on_new_account.lua: {err}")))?;
-    let response = on_new_account
+        .get::<Function>("player_init")
+        .map_err(|err| AuthError::Internal(format!("accounts/player_init.lua: {err}")))?;
+    let response = player_init
         .call::<Value>(ctx)
-        .map_err(|err| AuthError::Internal(format!("accounts/on_new_account.lua: {err}")))?;
+        .map_err(|err| AuthError::Internal(format!("accounts/player_init.lua: {err}")))?;
     let table = match response {
         Value::Table(table) => table,
         _ => {
             return Err(AuthError::Internal(
-                "accounts/on_new_account.lua: on_new_account(ctx) must return a table".to_string(),
+                "accounts/player_init.lua: player_init(ctx) must return a table".to_string(),
             ));
         }
     };
-    let starter_bundle_id =
-        table_get_required_string(&table, "starter_bundle_id", "on_new_account")
-            .map_err(map_script_error)?;
-    Ok(NewAccountScriptConfig { starter_bundle_id }).inspect(|config| {
+    let starter_bundle_id = table_get_required_string(&table, "starter_bundle_id", "player_init")
+        .map_err(map_script_error)?;
+    Ok(PlayerInitScriptConfig { starter_bundle_id }).inspect(|config| {
         info!(
-            "gateway new-account script selected starter_bundle_id={} for account_id={} player_entity_id={}",
+            "gateway player-init script selected starter_bundle_id={} for account_id={} player_entity_id={}",
             config.starter_bundle_id, context.account_id, context.player_entity_id
         );
     })
@@ -171,31 +173,16 @@ pub fn load_bundle_registry(root: &Path) -> Result<ScriptBundleRegistry, AuthErr
     for pair in bundles_table.pairs::<String, Table>() {
         let (bundle_id, bundle_table) =
             pair.map_err(|err| AuthError::Internal(format!("bundle registry read failed: {err}")))?;
-        let spawn_template = table_get_optional_string(&bundle_table, "spawn_template", &bundle_id)
-            .map_err(map_script_error)?;
         let graph_records_script =
-            table_get_optional_string(&bundle_table, "graph_records_script", &bundle_id)
+            table_get_required_string(&bundle_table, "graph_records_script", &bundle_id)
                 .map_err(map_script_error)?;
         let required_component_kinds =
             table_get_required_string_list(&bundle_table, "required_component_kinds", &bundle_id)
                 .map_err(map_script_error)?;
-        if spawn_template.is_none() && graph_records_script.is_none() {
-            return Err(AuthError::Internal(format!(
-                "bundles/bundle_registry.lua: bundle={} must define either spawn_template or graph_records_script",
-                bundle_id
-            )));
-        }
-        if spawn_template.is_some() && graph_records_script.is_some() {
-            return Err(AuthError::Internal(format!(
-                "bundles/bundle_registry.lua: bundle={} must not define both spawn_template and graph_records_script",
-                bundle_id
-            )));
-        }
         bundles.insert(
             bundle_id.clone(),
             ScriptBundleDefinition {
                 bundle_id,
-                spawn_template,
                 graph_records_script,
                 required_component_kinds,
             },
@@ -221,12 +208,7 @@ pub fn load_graph_records_for_bundle(
     bundle: &ScriptBundleDefinition,
     context: ScriptContext<'_>,
 ) -> Result<Vec<GraphEntityRecord>, AuthError> {
-    let Some(script_rel_path) = bundle.graph_records_script.as_ref() else {
-        return Err(AuthError::Internal(format!(
-            "bundle {} has no graph_records_script",
-            bundle.bundle_id
-        )));
-    };
+    let script_rel_path = &bundle.graph_records_script;
     info!(
         "gateway loading graph records script={} for bundle_id={} account_id={} player_entity_id={}",
         script_rel_path, bundle.bundle_id, context.account_id, context.player_entity_id
@@ -249,6 +231,8 @@ pub fn load_graph_records_for_bundle(
         .get::<Table>("context")
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     inject_script_context(ctx.clone(), &module, Some(&context))?;
+    ctx.set("bundle_id", bundle.bundle_id.as_str())
+        .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
 
     let lua_value = build_graph_records
         .call::<Value>(ctx)
@@ -335,25 +319,50 @@ fn inject_script_context(
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     ctx.set("new_uuid", new_uuid)
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
-    let default_corvette_outline_points = module
+    Ok(())
+}
+
+#[cfg(test)]
+fn inject_bundle_registry_spawn_fn(
+    ctx: Table,
+    module: &sidereal_scripting::LoadedLuaModule,
+    scripts_root: &Path,
+) -> Result<(), AuthError> {
+    let (entity_registry, entity_registry_path) = load_lua_module_into_lua_from_root(
+        module.lua(),
+        scripts_root,
+        "bundles/entity_registry.lua",
+    )
+    .map_err(map_script_error)?;
+    let build_graph_records = entity_registry
+        .get::<Function>("build_graph_records")
+        .map_err(|err| AuthError::Internal(format!("{}: {err}", entity_registry_path.display())))?;
+    let spawn_bundle_graph_records = module
         .lua()
-        .create_function(|lua, ()| {
-            let points = default_corvette_collision_outline().points;
-            let out = lua.create_table()?;
-            for (idx, point) in points.iter().enumerate() {
-                let pair = lua.create_table()?;
-                pair.set(1, point.x)?;
-                pair.set(2, point.y)?;
-                out.set(idx + 1, pair)?;
+        .create_function(move |lua, (bundle_id, overrides): (String, Value)| {
+            let bundle_ctx = lua.create_table()?;
+            bundle_ctx.set("bundle_id", bundle_id)?;
+            match overrides {
+                Value::Table(overrides_table) => {
+                    for pair in overrides_table.pairs::<Value, Value>() {
+                        let (key, value) = pair?;
+                        bundle_ctx.set(key, value)?;
+                    }
+                }
+                Value::Nil => {}
+                _ => {
+                    return Err(mlua::Error::runtime(
+                        "spawn_bundle_graph_records override payload must be a table or nil",
+                    ));
+                }
             }
-            Ok(out)
+            let new_uuid = lua.create_function(|_, ()| Ok(Uuid::new_v4().to_string()))?;
+            bundle_ctx.set("new_uuid", new_uuid)?;
+            build_graph_records.call::<Value>(bundle_ctx)
         })
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
-    ctx.set(
-        "default_corvette_collision_outline_points",
-        default_corvette_outline_points,
-    )
-    .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
+    ctx.set("spawn_bundle_graph_records", spawn_bundle_graph_records)
+        .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     Ok(())
 }
 
@@ -365,7 +374,7 @@ fn map_script_error(err: ScriptError) -> AuthError {
 mod tests {
     use super::{
         ScriptContext, load_bundle_registry, load_graph_records_for_bundle,
-        load_new_account_config, load_world_init_config, load_world_init_graph_records,
+        load_player_init_config, load_world_init_config, load_world_init_graph_records,
         scripts_root_dir,
     };
     use uuid::Uuid;
@@ -379,9 +388,9 @@ mod tests {
     }
 
     #[test]
-    fn default_new_account_script_loads() {
+    fn default_player_init_script_loads() {
         let root = scripts_root_dir();
-        let config = load_new_account_config(
+        let config = load_player_init_config(
             &root,
             ScriptContext {
                 account_id: Uuid::new_v4(),
@@ -389,7 +398,7 @@ mod tests {
                 email: "pilot@example.com",
             },
         )
-        .expect("load new account");
+        .expect("load player init");
         assert_eq!(config.starter_bundle_id, "starter_corvette");
     }
 
@@ -401,20 +410,14 @@ mod tests {
             .bundles
             .get("starter_corvette")
             .expect("starter_corvette bundle");
-        assert!(starter_corvette.spawn_template.is_none());
         assert_eq!(
-            starter_corvette.graph_records_script.as_deref(),
-            Some("bundles/starter_corvette.lua")
+            starter_corvette.graph_records_script,
+            "bundles/entity_registry.lua"
         );
         assert!(
             starter_corvette
                 .required_component_kinds
                 .contains(&"display_name".to_string())
-        );
-        assert!(
-            starter_corvette
-                .required_component_kinds
-                .contains(&"scanner_range_m".to_string())
         );
         assert!(
             starter_corvette
@@ -471,7 +474,6 @@ mod tests {
                     .map(|component| component.component_kind.as_str())
             })
             .collect::<std::collections::HashSet<_>>();
-        assert!(component_kinds.contains("scanner_range_m"));
         assert!(component_kinds.contains("scanner_component"));
     }
 
@@ -494,7 +496,6 @@ mod tests {
                     .map(|component| component.component_kind.as_str())
             })
             .collect::<std::collections::HashSet<_>>();
-        assert!(component_kinds.contains("scanner_range_m"));
         assert!(component_kinds.contains("scanner_component"));
     }
 }

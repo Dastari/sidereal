@@ -36,9 +36,10 @@ pub use scanner::{apply_range_buff, compute_scanner_contribution, total_scanner_
 // Re-export flight systems (not components, those come from generated)
 pub use flight::{
     angular_inertia_from_size, apply_engine_thrust, clamp_angular_velocity,
-    compute_brake_decel_accel_mps2, grant_flight_control_authority_system, process_flight_actions,
-    revoke_stale_flight_control_authority_system, sanitize_planar_angular_velocity,
-    stabilize_idle_motion,
+    compute_brake_decel_accel_mps2, grant_flight_control_authority_system,
+    grant_simulation_motion_writer_system, process_flight_actions,
+    revoke_stale_flight_control_authority_system, revoke_stale_simulation_motion_writer_system,
+    sanitize_planar_angular_velocity, stabilize_idle_motion,
 };
 
 /// Controls whether local Bevy hierarchy reconstruction runs in this runtime.
@@ -68,7 +69,8 @@ impl Plugin for SiderealGameCorePlugin {
         app.register_type::<EntityAction>()
             .register_type::<ActionQueue>()
             .register_type::<ActionCapabilities>()
-            .register_type::<FlightControlAuthority>();
+            .register_type::<FlightControlAuthority>()
+            .register_type::<SimulationMotionWriter>();
     }
 }
 
@@ -100,6 +102,8 @@ impl Plugin for SiderealGamePlugin {
             (
                 grant_flight_control_authority_system,
                 revoke_stale_flight_control_authority_system,
+                grant_simulation_motion_writer_system,
+                revoke_stale_simulation_motion_writer_system,
                 validate_action_capabilities,
                 process_character_movement_actions,
                 process_flight_actions,
@@ -114,7 +118,11 @@ impl Plugin for SiderealGamePlugin {
         );
         app.add_systems(
             FixedUpdate,
-            (stabilize_idle_motion, clamp_angular_velocity)
+            (
+                stabilize_idle_motion,
+                clamp_angular_velocity,
+                sync_player_to_controlled_entity,
+            )
                 .chain()
                 .after(avian2d::prelude::PhysicsSystems::StepSimulation),
         );

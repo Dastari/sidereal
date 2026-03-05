@@ -79,32 +79,21 @@ function EntityTree({
   const { rootsByGroupKey, childrenByParent, useEntityRoot } =
     React.useMemo(() => {
     const byId = new Map<string, WorldEntity>()
+    const byGuid = new Map<string, WorldEntity>()
     for (const entity of entities) {
       byId.set(entity.id, entity)
+      if (entity.entityGuid) {
+        byGuid.set(entity.entityGuid, entity)
+      }
     }
 
     const useBrpNamePrefixGrouping =
-      sourceMode === 'liveServer' ||
-      sourceMode === 'liveClient' ||
-      sourceMode === 'liveHostClient'
-    // BRP: parentEntityId is often a UUID while entity id is Bevy numeric; index by name suffix (e.g. "ship:uuid" -> uuid) so we can resolve parent
-    const byNameSuffix = new Map<string, WorldEntity>()
-    if (useBrpNamePrefixGrouping) {
-      for (const entity of entities) {
-        const colonIndex = entity.name.indexOf(':')
-        if (colonIndex >= 0) {
-          const suffix = entity.name.slice(colonIndex + 1).trim()
-          if (suffix && !byNameSuffix.has(suffix)) {
-            byNameSuffix.set(suffix, entity)
-          }
-        }
-      }
-    }
+      sourceMode === 'liveServer' || sourceMode === 'liveClient'
 
     function resolveParent(parentId: string): WorldEntity | null {
       const byIdParent = byId.get(parentId)
       if (byIdParent) return byIdParent
-      return byNameSuffix.get(parentId) ?? null
+      return byGuid.get(parentId) ?? null
     }
 
     const children = new Map<string, Array<WorldEntity>>()
@@ -128,7 +117,7 @@ function EntityTree({
         const colonIndex = entity.name.indexOf(':')
         return colonIndex >= 0
           ? entity.name.slice(0, colonIndex).trim() || DEFAULT_GROUP_KEY
-          : (entity.kind ?? DEFAULT_GROUP_KEY)
+          : entity.kind || DEFAULT_GROUP_KEY
       }
       return entity.kind || DEFAULT_GROUP_KEY
     }
@@ -406,7 +395,7 @@ function EntityTreeNode({
           </span>
         </button>
 
-        {sourceMode !== 'liveClient' && sourceMode !== 'liveHostClient' && (
+        {sourceMode !== 'liveClient' && (
           <button
             onClick={handleDeleteClick}
             disabled={isDeleting}

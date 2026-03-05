@@ -466,7 +466,7 @@ The script-driven bundle registry needs new archetype entries for galaxy entitie
 ```lua
 bundles = {
   solar_system = {
-    spawn_template = "solar_system_graph_records",
+    graph_records_script = "bundles/solar_system.lua",
     required_component_kinds = {
       C.entity_guid, C.display_name, C.solar_system_tag,
       C.solar_system_radius, C.solar_system_visuals,
@@ -474,7 +474,7 @@ bundles = {
     },
   },
   star = {
-    spawn_template = "star_graph_records",
+    graph_records_script = "bundles/star.lua",
     required_component_kinds = {
       C.entity_guid, C.display_name, C.solar_system_id,
       C.celestial_body_kind, C.visual_asset_id, C.size_m,
@@ -482,7 +482,7 @@ bundles = {
     },
   },
   planet = {
-    spawn_template = "planet_graph_records",
+    graph_records_script = "bundles/planet.lua",
     required_component_kinds = {
       C.entity_guid, C.display_name, C.solar_system_id,
       C.celestial_body_kind, C.visual_asset_id, C.size_m,
@@ -492,8 +492,7 @@ bundles = {
   -- ...
 }
 ```
-
-Alternatively, these bundles may use the `graph_records_script` dynamic payload path, allowing Lua to return complete `GraphEntityRecord`-compatible payloads for each entity. This is more flexible for procedural galaxy generation but requires component-kind validation against the bundle's allowlist before persistence, which is already implemented.
+Bundles use `graph_records_script` payloads so Lua returns complete `GraphEntityRecord`-compatible data for each entity. This supports procedural generation while preserving component-kind validation against each bundle's allowlist before persistence.
 
 #### 7.3.3 Procedural Galaxy Generation
 
@@ -680,7 +679,7 @@ Entity shard handoff at system boundaries is a future concern and is orthogonal 
 
 - `crates/sidereal-game/src/flight.rs` -- flight physics (f32 constants, will need f64 position interaction).
 - `bins/sidereal-replication/src/replication/visibility.rs` -- spatial grid and visibility pipeline.
-- `crates/sidereal-runtime-sync/src/entity_templates.rs` -- entity graph record generation.
+- `data/scripts/bundles/*.lua` -- script-authored entity graph record generation.
 - `crates/sidereal-runtime-sync/src/lib.rs` -- position hydration (f64 truncation site).
 - `crates/sidereal-game/src/entities/fullscreen_layers.rs` -- backdrop entity bundles.
 - `bins/sidereal-client/src/native/backdrop.rs` -- client backdrop rendering and shader materials.

@@ -29,7 +29,6 @@ pub fn compute_scanner_contribution(
 
 pub fn total_scanner_range_for_parent<'a>(
     parent_guid: Uuid,
-    default_range_m: f32,
     own_scanner: Option<&ScannerComponent>,
     own_buff: Option<&ScannerRangeBuff>,
     mounted_scanners: impl Iterator<
@@ -40,16 +39,16 @@ pub fn total_scanner_range_for_parent<'a>(
         ),
     >,
 ) -> f32 {
-    let mut total_range = default_range_m.max(0.0);
-    if let Some(scanner) = own_scanner {
-        total_range += compute_scanner_contribution(scanner, own_buff);
-    } else if let Some(buff) = own_buff {
-        total_range = apply_range_buff(total_range, buff);
-    }
+    let Some(scanner) = own_scanner else {
+        // Scanner-capable roots must provide the base scanner component.
+        // Mounted children can modify total range only when a root base exists.
+        return 0.0;
+    };
+    let mut total_range = compute_scanner_contribution(scanner, own_buff);
     for (mounted_on, scanner, buff) in mounted_scanners {
         if mounted_on.parent_entity_id == parent_guid {
             total_range += compute_scanner_contribution(scanner, buff);
         }
     }
-    total_range.max(default_range_m)
+    total_range.max(0.0)
 }

@@ -32,13 +32,17 @@ type BrpQueryRow = {
 }
 
 export type BrpTarget = 'server' | 'client' | 'hostClient'
+export type BrpCallOptions = {
+  target?: BrpTarget
+  port?: number
+}
 
 export type LiveWorldEntity = {
   id: string
   name: string
   kind: string
   parentEntityId?: string
-  entity_labels?: string[]
+  entity_labels?: Array<string>
   mapVisible?: boolean
   hasPosition?: boolean
   shardId: number
@@ -101,19 +105,35 @@ function getDefaultGateway(): string {
   return cachedGateway
 }
 
-function getTargetBrpDefaults(target: BrpTarget): Array<string> {
+function normalizePort(port: number | undefined): number | null {
+  if (port === undefined) return null
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+  return port
+}
+
+function defaultPortForTarget(target: BrpTarget): number {
+  if (target === 'client') return 15714
+  if (target === 'hostClient') return 15715
+  return 15713
+}
+
+function getTargetBrpDefaults(target: BrpTarget, port?: number): Array<string> {
+  const resolvedPort = normalizePort(port) ?? defaultPortForTarget(target)
   if (target === 'client') {
-    return ['http://127.0.0.1:15714/', 'http://host.docker.internal:15714/']
+    return [
+      `http://127.0.0.1:${resolvedPort}/`,
+      `http://host.docker.internal:${resolvedPort}/`,
+    ]
   }
   if (target === 'hostClient') {
     const host = getDefaultGateway()
-    return [`http://${host}:15715/`]
+    return [`http://${host}:${resolvedPort}/`]
   }
   return [
-    'http://127.0.0.1:15713/',
-    'http://host.docker.internal:15713/',
-    'http://sidereal-replication:15713/',
-    'http://replication:15713/',
+    `http://127.0.0.1:${resolvedPort}/`,
+    `http://host.docker.internal:${resolvedPort}/`,
+    `http://sidereal-replication:${resolvedPort}/`,
+    `http://replication:${resolvedPort}/`,
   ]
 }
 
@@ -149,11 +169,15 @@ function getLegacyBrpUrlFromEnv(): string | null {
   return normalizeUrl(raw)
 }
 
-export function getBrpUrl(target: BrpTarget = 'server'): string {
+export function getBrpUrl(options: BrpCallOptions | BrpTarget = {}): string {
+  const resolvedOptions: BrpCallOptions =
+    typeof options === 'string' ? { target: options } : options
+  const target = resolvedOptions.target ?? 'server'
+  const resolvedPort = normalizePort(resolvedOptions.port)
   return (
     getBrpUrlFromEnv(target) ??
     getLegacyBrpUrlFromEnv() ??
-    getTargetBrpDefaults(target)[0]
+    getTargetBrpDefaults(target, resolvedPort ?? undefined)[0]
   )
 }
 
@@ -190,10 +214,11 @@ function getBrpHeaders(target: BrpTarget): Record<string, string> {
   }
 }
 
-function getBrpCandidates(target: BrpTarget): Array<string> {
-  const preferred = getBrpUrl(target)
-  const candidates = [preferred, ...getTargetBrpDefaults(target)]
-  if (target === 'server') {
+function getBrpCandidates(target: BrpTarget, port?: number): Array<string> {
+  const resolvedPort = normalizePort(port) ?? undefined
+  const preferred = getBrpUrl({ target, port: resolvedPort })
+  const candidates = [preferred, ...getTargetBrpDefaults(target, resolvedPort)]
+  if (target === 'server' && resolvedPort === undefined) {
     candidates.push('http://sidereal-shard:15712/', 'http://shard:15712/')
   }
   return Array.from(new Set(candidates.map(normalizeUrl)))
@@ -216,16 +241,19 @@ function makeId(): string {
 
 export async function callBrp(
   request: JsonRpcRequest,
-  target: BrpTarget = 'server',
+  options: BrpCallOptions | BrpTarget = {},
 ): Promise<JsonRpcResponse> {
-  const { response } = await callBrpWithMeta(request, target)
+  const { response } = await callBrpWithMeta(request, options)
   return response
 }
 
 export async function callBrpWithMeta(
   request: JsonRpcRequest,
-  target: BrpTarget = 'server',
+  options: BrpCallOptions | BrpTarget = {},
 ): Promise<BrpCallResult> {
+  const resolvedOptions: BrpCallOptions =
+    typeof options === 'string' ? { target: options } : options
+  const target = resolvedOptions.target ?? 'server'
   const payload = JSON.stringify({
     jsonrpc: '2.0',
     id: request.id ?? makeId(),
@@ -233,7 +261,7 @@ export async function callBrpWithMeta(
   })
   const errors: Array<string> = []
 
-  for (const url of getBrpCandidates(target)) {
+  for (const url of getBrpCandidates(target, resolvedOptions.port)) {
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -436,7 +464,7 @@ function getParentEntityIdFromComponents(
   return null
 }
 
-function findStringArrayDeep(value: unknown): string[] | null {
+function findStringArrayDeep(value: unknown): Array<string> | null {
   if (Array.isArray(value)) {
     const strings = value
       .filter((entry): entry is string => typeof entry === 'string')
@@ -467,7 +495,7 @@ function findStringArrayDeep(value: unknown): string[] | null {
 
 function getEntityLabelsFromComponents(
   components: Record<string, unknown>,
-): string[] | null {
+): Array<string> | null {
   for (const [componentPath, value] of Object.entries(components)) {
     if (
       !(
@@ -498,9 +526,8 @@ function getEntityGuidFromComponents(
   for (const [componentPath, value] of Object.entries(components)) {
     if (
       !(
-        componentPath.endsWith('::EntityGuid') ||
-        componentPath.includes('::entity_guid::') ||
-        componentPath.toLowerCase().includes('entityguid')
+        componentPath.endsWith('::EntityGuid') &&
+        componentPath.includes('::entity_guid::')
       )
     ) {
       continue
@@ -671,8 +698,11 @@ function getVelocityFromComponents(
 }
 
 export async function getLiveWorldSnapshot(
-  target: BrpTarget = 'server',
+  options: BrpCallOptions | BrpTarget = {},
 ): Promise<LiveWorldSnapshot> {
+  const resolvedOptions: BrpCallOptions =
+    typeof options === 'string' ? { target: options } : options
+  const target = resolvedOptions.target ?? 'server'
   const { response: queryRes, resolvedUrl } = await callBrpWithMeta(
     {
       method: 'world.query',
@@ -689,7 +719,7 @@ export async function getLiveWorldSnapshot(
         strict: false,
       },
     },
-    target,
+    resolvedOptions,
   )
 
   if (queryRes.error) {
@@ -704,7 +734,6 @@ export async function getLiveWorldSnapshot(
   const entities: Array<LiveWorldEntity> = []
   const nodes: Array<LiveGraphNode> = []
   const edges: Array<LiveGraphEdge> = []
-  const guidToEntityId = new Map<string, string>()
 
   const sampledAtMs = Date.now()
   rows.forEach((row) => {
@@ -733,9 +762,6 @@ export async function getLiveWorldSnapshot(
       getParentEntityIdFromComponents(components) ?? undefined
     const entityLabels = getEntityLabelsFromComponents(components) ?? undefined
     const entityGuid = getEntityGuidFromComponents(components)
-    if (entityGuid) {
-      guidToEntityId.set(entityGuid, entityId)
-    }
 
     entities.push({
       id: entityId,
@@ -784,19 +810,6 @@ export async function getLiveWorldSnapshot(
       })
     }
   })
-
-  // BRP often exposes parent refs as UUIDs while row.entity is numeric.
-  // Normalize parentEntityId to the corresponding BRP entity id when possible
-  // so tree grouping can reliably attach children under their parents.
-  for (const entity of entities) {
-    if (!entity.parentEntityId) continue
-    const normalizedParentGuid = normalizeGuidLike(entity.parentEntityId)
-    if (!normalizedParentGuid) continue
-    const mappedParentId = guidToEntityId.get(normalizedParentGuid)
-    if (mappedParentId) {
-      entity.parentEntityId = mappedParentId
-    }
-  }
 
   return {
     source: 'bevy_remote',

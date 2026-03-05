@@ -5,15 +5,17 @@ use bevy::prelude::*;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::{MessageReceiver, MessageSender};
 use sidereal_net::{
-    ClientControlRequestMessage, ControlChannel, PlayerEntityId, ServerControlAckMessage,
-    ServerControlRejectMessage,
+    ClientControlRequestMessage, ClientLocalViewMode, ClientLocalViewModeMessage, ControlChannel,
+    PlayerEntityId, ServerControlAckMessage, ServerControlRejectMessage,
 };
-use std::sync::OnceLock;
 use sidereal_runtime_sync::parse_guid_from_entity_id;
+use std::sync::OnceLock;
 
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, is_active_world_state,
 };
+use super::components::TopDownCamera;
+use super::resources::ClientViewModeState;
 use super::resources::{ClientControlDebugState, ClientControlRequestState, HeadlessTransportMode};
 
 pub fn client_control_debug_logging_enabled() -> bool {
@@ -105,6 +107,65 @@ pub fn send_lightyear_control_requests(
     }
     request_state.last_sent_request_seq = Some(request_seq);
     request_state.last_sent_at_s = now_s;
+}
+
+#[allow(clippy::type_complexity)]
+pub fn send_local_view_mode_updates(
+    app_state: Option<Res<'_, State<ClientAppState>>>,
+    headless_mode: Res<'_, HeadlessTransportMode>,
+    time: Res<'_, Time>,
+    session: Res<'_, ClientSession>,
+    mut state: ResMut<'_, ClientViewModeState>,
+    camera: Query<'_, '_, &'_ TopDownCamera>,
+    mut senders: Query<
+        '_,
+        '_,
+        &mut MessageSender<ClientLocalViewModeMessage>,
+        (With<Client>, With<Connected>),
+    >,
+) {
+    if !is_active_world_state(&app_state, &headless_mode) || senders.is_empty() {
+        return;
+    }
+    let Some(player_entity_id) = session.player_entity_id.as_ref() else {
+        return;
+    };
+    let Some(canonical_player_entity_id) =
+        PlayerEntityId::parse(player_entity_id.as_str()).map(PlayerEntityId::canonical_wire_id)
+    else {
+        return;
+    };
+
+    // Current camera ranges are tactical-only; map mode engages once strategic zoom range
+    // is implemented (distance threshold intentionally above current max_distance).
+    const MAP_MODE_DISTANCE_THRESHOLD_M: f32 = 120.0;
+    let current_mode = camera
+        .single()
+        .ok()
+        .map(|camera| {
+            if camera.distance >= MAP_MODE_DISTANCE_THRESHOLD_M {
+                ClientLocalViewMode::Map
+            } else {
+                ClientLocalViewMode::Tactical
+            }
+        })
+        .unwrap_or(ClientLocalViewMode::Tactical);
+    let now_s = time.elapsed_secs_f64();
+    let mode_changed = state.last_sent_mode != Some(current_mode);
+    let heartbeat_due = now_s - state.last_sent_at_s >= 1.0;
+    if !mode_changed && !heartbeat_due {
+        return;
+    }
+
+    let message = ClientLocalViewModeMessage {
+        player_entity_id: canonical_player_entity_id,
+        view_mode: current_mode,
+    };
+    for mut sender in &mut senders {
+        sender.send::<ControlChannel>(message.clone());
+    }
+    state.last_sent_mode = Some(current_mode);
+    state.last_sent_at_s = now_s;
 }
 
 pub fn receive_lightyear_control_results(

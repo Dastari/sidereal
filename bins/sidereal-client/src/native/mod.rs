@@ -142,7 +142,7 @@ pub(crate) fn run() {
     // anchoring/movement writers from full server plugin.
     app.add_plugins(SiderealGameCorePlugin);
     app.add_plugins(ClientPlugins {
-        tick_duration: Duration::from_secs_f64(1.0 / 30.0),
+        tick_duration: Duration::from_secs_f64(1.0 / 60.0),
     });
     app.add_plugins(LightyearAvianPlugin {
         replication_mode: AvianReplicationMode::PositionButInterpolateTransform,
@@ -152,12 +152,16 @@ pub(crate) fn run() {
     });
     register_lightyear_protocol(&mut app);
     configure_remote(&mut app, &remote_cfg);
-    // Lightyear/Bevy plugins can initialize Fixed time; set project-authoritative 30 Hz after plugin wiring.
-    app.insert_resource(Time::<Fixed>::from_hz(30.0));
+    // Lightyear/Bevy plugins can initialize Fixed time; set project-authoritative 60 Hz after plugin wiring.
+    app.insert_resource(Time::<Fixed>::from_hz(60.0));
     app.insert_resource(AssetRootPath(asset_root));
     app.insert_resource(LocalSimulationDebugMode::from_env());
     app.insert_resource(MotionOwnershipAuditEnabled::from_env());
     app.insert_resource(MotionOwnershipAuditState::default());
+    app.insert_resource(MotionOwnershipReconcileState {
+        dirty: true,
+        ..default()
+    });
     app.insert_resource(ClientSession::default());
     app.insert_resource(PendingDisconnectNotify::default());
     app.insert_resource(PendingDisconnectNotifySent::default());
@@ -169,6 +173,7 @@ pub(crate) fn run() {
     app.insert_resource(ClientAuthSyncState::default());
     app.insert_resource(ClientControlRequestState::default());
     app.insert_resource(ClientControlDebugState::default());
+    app.insert_resource(ClientViewModeState::default());
     app.insert_resource(SessionReadyState::default());
     app.insert_resource(assets::LocalAssetManager::default());
     app.insert_resource(assets::RuntimeAssetStreamIndicatorState::default());
@@ -209,6 +214,7 @@ pub(crate) fn run() {
             .chain()
             .before(avian2d::prelude::PhysicsSystems::StepSimulation),
     );
+    app.add_systems(FixedPreUpdate, motion::mark_motion_ownership_dirty_signals);
     app.add_systems(
         FixedUpdate,
         (stabilize_idle_motion, clamp_angular_velocity)

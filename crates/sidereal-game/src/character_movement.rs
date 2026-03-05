@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     ActionQueue, CharacterMovementController, ControlledEntityGuid, EntityAction, EntityGuid,
-    PlayerTag,
+    PlayerTag, SimulationMotionWriter,
 };
 
 const DEFAULT_PLAYER_SPEED_MPS: f32 = 220.0;
@@ -79,7 +79,7 @@ pub fn process_character_movement_actions(
             Option<&mut Position>,
             Option<&ControlledEntityGuid>,
         ),
-        With<PlayerTag>,
+        (With<PlayerTag>, With<SimulationMotionWriter>),
     >,
 ) {
     let dt_s = time.delta_secs();

@@ -8,7 +8,8 @@ import {
 } from '@/components/ui/tooltip'
 
 interface StatusBarProps {
-  sourceMode: 'database' | 'liveServer' | 'liveClient' | 'liveHostClient'
+  sourceMode: 'database' | 'liveServer' | 'liveClient'
+  liveSourceLabel?: string
   graphStatus: {
     connected: boolean
     nodeCount: number
@@ -25,21 +26,18 @@ interface StatusBarProps {
 
 export function StatusBar({
   sourceMode,
+  liveSourceLabel,
   graphStatus,
   worldStatus,
   isRefreshing,
   onRefresh,
 }: StatusBarProps) {
-  const liveMode =
-    sourceMode === 'liveServer' ||
-    sourceMode === 'liveClient' ||
-    sourceMode === 'liveHostClient'
+  const liveMode = sourceMode === 'liveServer' || sourceMode === 'liveClient'
   const sourceLabel =
-    sourceMode === 'liveHostClient'
-      ? 'Host Client Bevy Remote'
-      : sourceMode === 'liveClient'
+    sourceMode === 'liveClient'
         ? 'Client Bevy Remote'
         : 'Server Bevy Remote'
+  const resolvedLiveSourceLabel = liveSourceLabel ?? sourceLabel
 
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border-subtle text-xs">
@@ -64,7 +62,7 @@ export function StatusBar({
           </TooltipTrigger>
           <TooltipContent>
             <p>
-              {liveMode ? sourceLabel : 'AGE Graph'}:{' '}
+              {liveMode ? resolvedLiveSourceLabel : 'AGE Graph'}:{' '}
               {graphStatus.nodeCount} nodes, {graphStatus.edgeCount} edges
             </p>
           </TooltipContent>
@@ -88,7 +86,7 @@ export function StatusBar({
           <TooltipContent>
             <p>
               {liveMode
-                ? `Live entities from ${sourceLabel.toLowerCase()}`
+                ? `Live entities from ${resolvedLiveSourceLabel.toLowerCase()}`
                 : 'Entities from AGE graph'}
             </p>
           </TooltipContent>

@@ -3,11 +3,13 @@
 use avian2d::prelude::*;
 use bevy::ecs::query::Has;
 use bevy::prelude::*;
-use lightyear::prelude::input::native::ActionState;
+use lightyear::prelude::input::native::{ActionState, InputMarker};
+use lightyear::prelude::is_in_rollback;
 use sidereal_game::{
     ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, ControlledEntityGuid,
-    EntityGuid, FlightControlAuthority, Hardpoint, MountedOn, PlayerTag, SizeM, TotalMassKg,
-    angular_inertia_from_size, collider_from_collision_shape, default_flight_action_capabilities,
+    EntityGuid, FlightControlAuthority, Hardpoint, MountedOn, PlayerTag, SimulationMotionWriter,
+    SizeM, TotalMassKg, angular_inertia_from_size, collider_from_collision_shape,
+    default_flight_action_capabilities,
 };
 use sidereal_net::PlayerInput;
 use sidereal_runtime_sync::{RuntimeEntityHierarchy, parse_guid_from_entity_id};
@@ -19,8 +21,19 @@ use super::components::{
 };
 use super::resources::{
     LocalSimulationDebugMode, MotionOwnershipAuditEnabled, MotionOwnershipAuditState,
-    NearbyCollisionProxyTuning,
+    MotionOwnershipReconcileState, NearbyCollisionProxyTuning,
 };
+
+pub(crate) fn mark_motion_ownership_dirty_signals(
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    added_world_entities: Query<'_, '_, Entity, Added<WorldEntity>>,
+    mut reconcile_state: ResMut<'_, MotionOwnershipReconcileState>,
+) {
+    if session.is_changed() || player_view_state.is_changed() || !added_world_entities.is_empty() {
+        reconcile_state.dirty = true;
+    }
+}
 
 /// Translates the Lightyear-managed `ActionState<PlayerInput>` into `ActionQueue`
 /// entries each `FixedUpdate` tick. This runs during normal simulation and during
@@ -32,7 +45,7 @@ pub(crate) fn apply_predicted_input_to_action_queue(
         '_,
         '_,
         (Entity, &ActionState<PlayerInput>, Option<&mut ActionQueue>),
-        With<ControlledEntity>,
+        (With<SimulationMotionWriter>, With<InputMarker<PlayerInput>>),
     >,
 ) {
     for (entity, action_state, maybe_queue) in &mut query {
@@ -58,12 +71,14 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
     mut commands: Commands<'_, '_>,
     _local_mode: Res<'_, LocalSimulationDebugMode>,
     proxy_tuning: Res<'_, NearbyCollisionProxyTuning>,
+    time: Res<'_, Time>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    mut reconcile_state: ResMut<'_, MotionOwnershipReconcileState>,
+    rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
     collision_aabbs: Query<'_, '_, &'_ CollisionAabbM>,
     collision_outlines: Query<'_, '_, &'_ CollisionOutlineM>,
     rigidbody_markers: Query<'_, '_, (), With<RigidBody>>,
-    flight_control_authority_markers: Query<'_, '_, (), With<FlightControlAuthority>>,
     root_world_entities: Query<
         '_,
         '_,
@@ -86,6 +101,16 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         (With<EntityGuid>, Without<Camera>),
     >,
 ) {
+    if is_in_rollback(rollback_query) {
+        return;
+    }
+    let now_s = time.elapsed_secs_f64();
+    let proxy_refresh_due = proxy_tuning.max_proxies > 0
+        && (now_s - reconcile_state.last_reconcile_at_s)
+            >= proxy_tuning.reconcile_interval_s.max(0.01);
+    if !reconcile_state.dirty && !proxy_refresh_due {
+        return;
+    }
     let target_control_id = player_view_state
         .controlled_entity_id
         .as_ref()
@@ -246,7 +271,6 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
                 // Free-roam routes input to the local player anchor (non-physics).
                 // Keep ActionQueue on this entity so character prediction can run.
                 entity_commands.remove::<NearbyCollisionProxy>();
-                entity_commands.remove::<FlightControlAuthority>();
                 entity_commands.remove::<(
                     RigidBody,
                     Collider,
@@ -290,20 +314,12 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
                     AngularDamping,
                 )>();
             }
-            let has_flight_control_authority = flight_control_authority_markers.get(entity).is_ok();
-            if !has_flight_control_authority {
-                entity_commands.insert(FlightControlAuthority);
-            }
             entity_commands.remove::<NearbyCollisionProxy>();
             continue;
         }
 
         if controlled.is_some() {
             commands.entity(entity).remove::<ControlledEntity>();
-        }
-        if player_tag.is_some() {
-            // Non-controlled player anchors are receive-only on client.
-            commands.entity(entity).remove::<ActionQueue>();
         }
 
         let is_root_entity = mounted_on.is_none()
@@ -312,13 +328,11 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             && _guid.is_some()
             && !has_controlled_entity_guid;
         if !is_root_entity {
-            commands.entity(entity).remove::<FlightControlAuthority>();
             continue;
         }
         if is_suppressed {
             commands.entity(entity).remove::<NearbyCollisionProxy>();
             commands.entity(entity).remove::<(
-                ActionQueue,
                 RigidBody,
                 Collider,
                 Mass,
@@ -327,7 +341,6 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
                 LinearDamping,
                 AngularDamping,
             )>();
-            commands.entity(entity).remove::<FlightControlAuthority>();
             continue;
         }
 
@@ -370,9 +383,11 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
                 AngularDamping,
             )>();
         }
-        commands.entity(entity).remove::<ActionQueue>();
-        commands.entity(entity).remove::<FlightControlAuthority>();
     }
+    reconcile_state.last_target_guid = Some(target_guid);
+    reconcile_state.last_target_entity = Some(target_entity);
+    reconcile_state.last_reconcile_at_s = now_s;
+    reconcile_state.dirty = false;
 }
 
 #[allow(clippy::type_complexity)]
@@ -557,33 +572,16 @@ pub(crate) fn enforce_controlled_planar_motion(
         if !transform.translation.is_finite() {
             transform.translation = Vec3::ZERO;
         }
-        let mut heading = if let Some(rot) = rotation.as_ref() {
-            if rot.is_finite() {
-                rot.as_radians()
-            } else {
-                0.0
-            }
-        } else if transform.rotation.is_finite() {
-            transform.rotation.to_euler(EulerRot::ZYX).2
-        } else {
-            0.0
-        };
-        if !heading.is_finite() {
-            heading = 0.0;
-        }
-        let planar_rot = Quat::from_rotation_z(heading);
         if let Some(mut rot) = rotation {
-            let target = Rotation::radians(heading);
-            if *rot != target {
-                *rot = target;
+            if !rot.is_finite() {
+                *rot = Rotation::IDENTITY;
             }
         }
         if transform.translation.z != 0.0 {
             transform.translation.z = 0.0;
         }
-        let rot_dot = transform.rotation.dot(planar_rot).abs();
-        if rot_dot < 0.999_999 {
-            transform.rotation = planar_rot;
+        if !transform.rotation.is_finite() {
+            transform.rotation = Quat::IDENTITY;
         }
     }
 }

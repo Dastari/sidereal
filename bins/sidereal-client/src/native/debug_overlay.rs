@@ -100,7 +100,7 @@ pub(crate) fn draw_debug_overlay_system(
         '_,
         (
             Entity,
-            &'_ Transform,
+            &'_ GlobalTransform,
             Option<&'_ SizeM>,
             Option<&'_ CollisionAabbM>,
             Option<&'_ CollisionOutlineM>,
@@ -142,7 +142,7 @@ pub(crate) fn draw_debug_overlay_system(
 
     for (
         entity,
-        transform,
+        global_transform,
         size_m,
         collision_aabb,
         collision_outline,
@@ -156,8 +156,9 @@ pub(crate) fn draw_debug_overlay_system(
         confirmed_rotation,
     ) in &entities
     {
-        let pos = transform.translation;
-        let rot = transform.rotation;
+        let world = global_transform.compute_transform();
+        let pos = world.translation;
+        let rot = world.rotation;
         let half_extents = collision_aabb.map(|aabb| aabb.half_extents).or_else(|| {
             size_m.map(|size| Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5))
         });

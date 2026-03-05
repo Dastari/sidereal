@@ -6,7 +6,7 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    assets, auth, combat, input, lifecycle, persistence, runtime_scripting, runtime_state,
+    assets, auth, combat, control, input, lifecycle, persistence, runtime_scripting, runtime_state,
     simulation_entities, visibility,
 };
 
@@ -57,8 +57,13 @@ impl Plugin for ReplicationControlPlugin {
         combat::init_resources(app);
         app.add_systems(
             FixedUpdate,
-            combat::broadcast_weapon_fired_messages
-                .after(sidereal_game::process_weapon_fire_actions),
+            (
+                control::sync_player_anchor_replication_mode,
+                combat::broadcast_weapon_fired_messages
+                    .after(sidereal_game::process_weapon_fire_actions),
+            )
+                .chain()
+                .after(PhysicsSystems::Writeback),
         );
     }
 }
@@ -72,8 +77,8 @@ impl Plugin for ReplicationVisibilityPlugin {
             (
                 simulation_entities::sync_controlled_entity_transforms,
                 runtime_state::update_client_observer_anchor_positions,
-                runtime_state::ensure_controlled_entity_scanner_range_component,
                 runtime_state::compute_controlled_entity_scanner_ranges,
+                visibility::ensure_network_visibility_for_replicated_entities,
                 visibility::update_network_visibility,
             )
                 .chain()
@@ -112,6 +117,7 @@ impl Plugin for ReplicationRuntimeScriptingPlugin {
             (
                 runtime_scripting::refresh_script_world_snapshot,
                 runtime_scripting::run_script_intervals,
+                runtime_scripting::run_script_events,
                 runtime_scripting::apply_script_intents
                     .before(sidereal_game::process_flight_actions),
             )

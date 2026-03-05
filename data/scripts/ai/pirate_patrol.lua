@@ -1,7 +1,7 @@
 local PiratePatrol = {}
 
-PiratePatrol.interval_seconds = 2.0
-PiratePatrol.entity_id = "0012ebad-0000-0000-0000-000000000101"
+PiratePatrol.handler_name = "pirate_patrol"
+PiratePatrol.tick_interval_seconds = 2.0
 
 local function read_state_value(state, key, default_value)
   if state == nil then
@@ -18,7 +18,7 @@ local function read_state_value(state, key, default_value)
   return value
 end
 
-function PiratePatrol.on_ai_patrol_tick(ctx, event)
+function PiratePatrol.on_tick(ctx, event)
   local npc = ctx.world:find_entity(event.entity_id)
   if npc == nil then
     return

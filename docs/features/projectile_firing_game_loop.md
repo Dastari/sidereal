@@ -139,7 +139,7 @@ Files:
 
 1. `crates/sidereal-game/src/entities/hardpoint.rs`
 2. `crates/sidereal-game/src/entities/ship/corvette.rs`
-3. `crates/sidereal-runtime-sync/src/entity_templates.rs`
+3. `data/scripts/bundles/entity_registry.lua`
 
 ### 6.2 Corvette module specs
 

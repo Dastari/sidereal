@@ -5,7 +5,8 @@ use uuid::Uuid;
 
 use crate::{
     ActionQueue, AmmoCount, BallisticWeapon, DamageType, EntityAction, EntityGuid,
-    FlightControlAuthority, Hardpoint, HealthPool, MountedOn, ParentGuid, WeaponCooldownState,
+    FlightControlAuthority, Hardpoint, HealthPool, MountedOn, ParentGuid, SimulationMotionWriter,
+    WeaponCooldownState,
 };
 
 #[derive(Debug, Clone)]
@@ -70,7 +71,7 @@ pub fn process_weapon_fire_actions(
         '_,
         '_,
         (Entity, &EntityGuid, &Position, &Rotation, &mut ActionQueue),
-        With<FlightControlAuthority>,
+        (With<FlightControlAuthority>, With<SimulationMotionWriter>),
     >,
     hardpoints: Query<'_, '_, (&'_ ParentGuid, &'_ Hardpoint)>,
     mut weapons: Query<

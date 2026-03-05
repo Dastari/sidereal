@@ -157,7 +157,7 @@ These are directional planning notes and do not override phase gating or enforce
 
 ### 5.1 Timing Contract
 
-- Fixed simulation tick: 30 Hz.
+- Fixed simulation tick: 60 Hz.
 - Gameplay physics and prediction logic run in fixed schedules.
 - Frame-time deltas are render/UI only, never authoritative simulation math.
 

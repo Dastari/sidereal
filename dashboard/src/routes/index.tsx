@@ -4,9 +4,10 @@ import type {
   ExpandedNode,
   GraphEdge,
   GraphNode,
+  PlayerVisibilityOverlay,
   WorldEntity,
 } from '@/components/grid/types'
-import type { DataSourceMode } from '@/components/sidebar/Toolbar'
+import type { BrpTab, DataSourceMode } from '@/components/sidebar/Toolbar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import {
@@ -50,7 +51,7 @@ type ApiWorld = {
 
 type ApiLiveWorld = {
   source: 'bevy_remote'
-  target: 'server' | 'client' | 'hostClient'
+  target: 'server' | 'client'
   brpUrl: string
   graph: string
   entities: Array<WorldEntity>
@@ -93,8 +94,112 @@ function isCameraEntity(
   return hasCameraComponent
 }
 
+function asFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function parseSelectedPlayerVisibilityOverlay(
+  selectedId: string | null,
+  graphNodes: Map<string, GraphNode>,
+  graphEdges: Array<GraphEdge>,
+): PlayerVisibilityOverlay | null {
+  if (!selectedId) return null
+  const componentNodeIds = graphEdges
+    .filter((edge) => edge.from === selectedId && edge.label === 'HAS_COMPONENT')
+    .map((edge) => edge.to)
+
+  let spatialGridValue: Record<string, unknown> | null = null
+  let disclosureValue: Record<string, unknown> | null = null
+
+  for (const componentId of componentNodeIds) {
+    const node = graphNodes.get(componentId)
+    if (!node || !isObjectRecord(node.properties)) continue
+    const typePathRaw = node.properties.typePath
+    const componentValue = node.properties.value
+    if (typeof typePathRaw !== 'string' || !isObjectRecord(componentValue)) continue
+    if (typePathRaw.endsWith('::VisibilitySpatialGrid')) {
+      spatialGridValue = componentValue
+    } else if (typePathRaw.endsWith('::VisibilityDisclosure')) {
+      disclosureValue = componentValue
+    }
+  }
+
+  if (!spatialGridValue || !disclosureValue) return null
+
+  const cellSizeM =
+    asFiniteNumber(spatialGridValue.cell_size_m) ??
+    asFiniteNumber(spatialGridValue.cellSizeM) ??
+    asFiniteNumber(spatialGridValue.cellSize)
+  if (cellSizeM === null || cellSizeM <= 0) return null
+
+  const queriedCellsRaw = Array.isArray(spatialGridValue.queried_cells)
+    ? spatialGridValue.queried_cells
+    : Array.isArray(spatialGridValue.queriedCells)
+      ? spatialGridValue.queriedCells
+      : []
+  const queriedCells = queriedCellsRaw
+    .map((entry) => {
+      if (!isObjectRecord(entry)) return null
+      const x = asFiniteNumber(entry.x)
+      const y = asFiniteNumber(entry.y)
+      if (x === null || y === null) return null
+      return { x, y }
+    })
+    .filter((entry): entry is { x: number; y: number } => entry !== null)
+
+  const scannerSourcesRaw = Array.isArray(disclosureValue.scanner_sources)
+    ? disclosureValue.scanner_sources
+    : Array.isArray(disclosureValue.scannerSources)
+      ? disclosureValue.scannerSources
+      : []
+  const scannerSources = scannerSourcesRaw
+    .map((entry) => {
+      if (!isObjectRecord(entry)) return null
+      const x = asFiniteNumber(entry.x)
+      const y = asFiniteNumber(entry.y)
+      const z = asFiniteNumber(entry.z)
+      const rangeM =
+        asFiniteNumber(entry.range_m) ??
+        asFiniteNumber(entry.rangeM) ??
+        asFiniteNumber(entry.range)
+      if (x === null || y === null || rangeM === null) return null
+      return {
+        x,
+        y,
+        ...(z === null ? {} : { z }),
+        range_m: rangeM,
+      }
+    })
+    .filter(
+      (
+        entry,
+      ): entry is { x: number; y: number; z?: number; range_m: number } =>
+        entry !== null,
+    )
+
+  return {
+    cell_size_m: cellSizeM,
+    queried_cells: queriedCells,
+    scanner_sources: scannerSources,
+  }
+}
+
 function DashboardPage() {
   const [sourceMode, setSourceMode] = useState<DataSourceMode>('database')
+  const [brpTabs, setBrpTabs] = useState<Array<BrpTab>>([
+    { id: 'server', label: 'Server BRP', port: 15713, kind: 'server' },
+    { id: 'client-1', label: 'Client 1 BRP', port: 15714, kind: 'client' },
+  ])
+  const [activeBrpTabId, setActiveBrpTabId] = useState<string>('server')
 
   // Data state
   const [entities, setEntities] = useState<Array<WorldEntity>>([])
@@ -124,6 +229,18 @@ function DashboardPage() {
     loaded: false,
     entityCount: 0,
   })
+
+  const activeBrpTab = useMemo(() => {
+    const found = brpTabs.find((tab) => tab.id === activeBrpTabId)
+    if (found) return found
+    if (brpTabs.length > 0) return brpTabs[0]
+    return {
+      id: 'server',
+      label: 'Server BRP',
+      port: 15713,
+      kind: 'server' as const,
+    }
+  }, [brpTabs, activeBrpTabId])
 
   const filteredEntities = useMemo(
     () =>
@@ -164,6 +281,11 @@ function DashboardPage() {
     })
     return { entitiesForMap: forMap, cameraEntityIds: cameraIds }
   }, [filteredEntities, graphNodes, graphEdges])
+
+  const selectedPlayerVisibilityOverlay = useMemo(
+    () => parseSelectedPlayerVisibilityOverlay(selectedId, graphNodes, graphEdges),
+    [selectedId, graphNodes, graphEdges],
+  )
 
   // Load data
   const loadData = useCallback(async () => {
@@ -231,13 +353,12 @@ function DashboardPage() {
           })
         }
       } else {
-        const liveEndpoint =
-          sourceMode === 'liveHostClient'
-            ? '/api/live-host-client-world'
-            : sourceMode === 'liveClient'
-              ? '/api/live-client-world'
-              : '/api/live-world'
-        const liveRes = await fetch(liveEndpoint).then(
+        const query = new URLSearchParams({
+          snapshot: '1',
+          port: String(activeBrpTab.port),
+          target: activeBrpTab.kind,
+        })
+        const liveRes = await fetch(`/api/brp?${query.toString()}`).then(
           (r) => r.json() as Promise<ApiLiveWorld>,
         )
 
@@ -253,13 +374,7 @@ function DashboardPage() {
             connected: false,
             nodeCount: 0,
             edgeCount: 0,
-            graphName: `${
-              sourceMode === 'liveHostClient'
-                ? 'Host Client'
-                : sourceMode === 'liveClient'
-                  ? 'Client'
-                  : 'Server'
-            } BRP error: ${errorMsg}`,
+            graphName: `${activeBrpTab.label} error: ${errorMsg}`,
           })
           setWorldStatus({
             loaded: false,
@@ -305,13 +420,7 @@ function DashboardPage() {
           connected: true,
           nodeCount: liveRes.nodes.length,
           edgeCount: liveRes.edges.length,
-          graphName: `${
-            liveRes.target === 'hostClient'
-              ? 'Host Client'
-              : liveRes.target === 'client'
-                ? 'Client'
-                : 'Server'
-          } BRP @ ${liveRes.brpUrl}`,
+          graphName: `${activeBrpTab.label} @ ${liveRes.brpUrl}`,
         })
         setWorldStatus({
           loaded: true,
@@ -333,7 +442,7 @@ function DashboardPage() {
     } finally {
       setIsRefreshing(false)
     }
-  }, [sourceMode])
+  }, [sourceMode, activeBrpTab])
 
   useEffect(() => {
     setExpandedNodes(new Map())
@@ -421,24 +530,32 @@ function DashboardPage() {
     async (entityId: string, typePath: string, value: unknown) => {
       if (
         sourceMode !== 'liveServer' &&
-        sourceMode !== 'liveClient' &&
-        sourceMode !== 'liveHostClient'
+        sourceMode !== 'liveClient'
       )
         return
-      const target =
-        sourceMode === 'liveHostClient'
-          ? 'hostClient'
-          : sourceMode === 'liveClient'
-            ? 'client'
-            : 'server'
-      const url = `/api/live-entity/${entityId}?target=${target}`
+      const numericEntityId = Number(entityId)
+      if (!Number.isFinite(numericEntityId)) {
+        console.error('Component update failed: entity ID must be numeric for BRP')
+        return
+      }
+      const url = `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`
       try {
         const res = await fetch(url, {
-          method: 'PATCH',
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ typePath, value }),
+          body: JSON.stringify({
+            method: 'world.insert_components',
+            params: {
+              entity: numericEntityId,
+              components: { [typePath]: value },
+            },
+          }),
         })
-        const data = (await res.json()) as { error?: string; ok?: boolean }
+        const data = (await res.json()) as {
+          error?: string
+          ok?: boolean
+          result?: unknown
+        }
         if (!res.ok || data.error) {
           console.error('Component update failed:', data.error ?? res.statusText)
           return
@@ -448,7 +565,7 @@ function DashboardPage() {
         console.error('Component update request failed:', err)
       }
     },
-    [sourceMode, loadData],
+    [sourceMode, loadData, activeBrpTab],
   )
 
   // Handle node collapse
@@ -515,19 +632,43 @@ function DashboardPage() {
       const endpoint =
         sourceMode === 'database'
           ? `/api/delete-entity/${entityId}`
-          : sourceMode === 'liveServer'
-            ? `/api/delete-live-entity/${entityId}?target=server`
-            : null
+          : null
 
-      if (!endpoint) {
-        throw new Error('Delete is disabled for client / host client BRP mode')
-      }
+      if (endpoint) {
+        const response = await fetch(endpoint, { method: 'DELETE' })
+        const result = await response.json()
 
-      const response = await fetch(endpoint, { method: 'DELETE' })
-      const result = await response.json()
-
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to delete entity')
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to delete entity')
+        }
+      } else {
+        if (sourceMode !== 'liveServer' || activeBrpTab.kind !== 'server') {
+          throw new Error('Delete is disabled for client BRP mode')
+        }
+        const numericEntityId = Number(entityId)
+        if (!Number.isFinite(numericEntityId)) {
+          throw new Error('Entity ID must be numeric for BRP delete')
+        }
+        const response = await fetch(
+          `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              method: 'world.despawn_entity',
+              params: {
+                entity: numericEntityId,
+              },
+            }),
+          },
+        )
+        const result = (await response.json()) as {
+          error?: string
+          success?: boolean
+        }
+        if (!response.ok || result.error) {
+          throw new Error(result.error || 'Failed to delete live entity')
+        }
       }
 
       // Refresh data after deletion
@@ -538,8 +679,25 @@ function DashboardPage() {
         setSelectedId(null)
       }
     },
-    [sourceMode, selectedId, loadData],
+    [sourceMode, selectedId, loadData, activeBrpTab],
   )
+
+  const handleAddClientTab = useCallback(() => {
+    setBrpTabs((prev) => {
+      const clientCount = prev.filter((tab) => tab.kind === 'client').length
+      const maxPort = prev.reduce((max, tab) => Math.max(max, tab.port), 0)
+      const nextClientIndex = clientCount + 1
+      const newTab: BrpTab = {
+        id: `client-${nextClientIndex}`,
+        label: `Client ${nextClientIndex} BRP`,
+        port: maxPort + 1,
+        kind: 'client',
+      }
+      setActiveBrpTabId(newTab.id)
+      setSourceMode('liveClient')
+      return [...prev, newTab]
+    })
+  }, [])
 
   return (
     <ThemeProvider defaultTheme="dark">
@@ -554,6 +712,10 @@ function DashboardPage() {
               onCollapseAll={handleCollapseAll}
               sourceMode={sourceMode}
               onSourceModeChange={setSourceMode}
+              brpTabs={brpTabs}
+              activeBrpTabId={activeBrpTab.id}
+              onActiveBrpTabIdChange={setActiveBrpTabId}
+              onAddClientTab={handleAddClientTab}
             />
           }
           sidebar={
@@ -584,6 +746,7 @@ function DashboardPage() {
               </PanelContent>
               <StatusBar
                 sourceMode={sourceMode}
+                liveSourceLabel={activeBrpTab.label}
                 graphStatus={graphStatus}
                 worldStatus={worldStatus}
                 isRefreshing={isRefreshing}
@@ -625,6 +788,7 @@ function DashboardPage() {
             sourceMode={sourceMode}
             excludedFromMapIds={cameraEntityIds}
             centerOnPosition={centerOnPosition}
+            selectedPlayerVisibilityOverlay={selectedPlayerVisibilityOverlay}
           />
         </AppLayout>
       </TooltipProvider>

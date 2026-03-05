@@ -15,9 +15,9 @@ use sidereal_game::component_meta::SiderealComponentRegistration;
 use super::{
     AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
     AssetStreamManifestMessage, ClientAuthMessage, ClientControlRequestMessage,
-    ClientDisconnectNotifyMessage, ClientRealtimeInputMessage, ControlChannel, InputChannel,
-    PlayerInput, ServerControlAckMessage, ServerControlRejectMessage, ServerSessionDeniedMessage,
-    ServerSessionReadyMessage, ServerWeaponFiredMessage,
+    ClientDisconnectNotifyMessage, ClientLocalViewModeMessage, ClientRealtimeInputMessage,
+    ControlChannel, InputChannel, PlayerInput, ServerControlAckMessage, ServerControlRejectMessage,
+    ServerSessionDeniedMessage, ServerSessionReadyMessage, ServerWeaponFiredMessage,
 };
 
 fn lerp_position(start: Position, other: Position, t: f32) -> Position {
@@ -40,12 +40,30 @@ fn lerp_angular_velocity(
     lightyear::avian2d::types::angular_velocity::lerp(&start, &other, t)
 }
 
+fn position_should_rollback(this: &Position, that: &Position) -> bool {
+    (this.0 - that.0).length() >= 0.03
+}
+
+fn rotation_should_rollback(this: &Rotation, that: &Rotation) -> bool {
+    this.angle_between(*that).abs() >= 0.003
+}
+
+fn linear_velocity_should_rollback(this: &LinearVelocity, that: &LinearVelocity) -> bool {
+    (this.0 - that.0).length() >= 0.05
+}
+
+fn angular_velocity_should_rollback(this: &AngularVelocity, that: &AngularVelocity) -> bool {
+    (this.0 - that.0).abs() >= 0.01
+}
+
 pub fn register_lightyear_protocol(app: &mut App) {
     app.register_message::<ClientAuthMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ClientControlRequestMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ClientRealtimeInputMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ClientLocalViewModeMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerWeaponFiredMessage>()
         .add_direction(NetworkDirection::Bidirectional);
@@ -97,17 +115,21 @@ fn register_lightyear_replication_components(app: &mut App) {
     // registered manually with prediction for client-side rollback/resimulation.
     app.register_component::<Position>()
         .add_prediction()
+        .add_should_rollback(position_should_rollback)
         .add_correction_fn(lerp_position)
         .add_interpolation_with(lerp_position);
     app.register_component::<Rotation>()
         .add_prediction()
+        .add_should_rollback(rotation_should_rollback)
         .add_correction_fn(lerp_rotation)
         .add_interpolation_with(lerp_rotation);
     app.register_component::<LinearVelocity>()
         .add_prediction()
+        .add_should_rollback(linear_velocity_should_rollback)
         .add_interpolation_with(lerp_linear_velocity);
     app.register_component::<AngularVelocity>()
         .add_prediction()
+        .add_should_rollback(angular_velocity_should_rollback)
         .add_interpolation_with(lerp_angular_velocity);
     app.register_component::<LinearDamping>().add_prediction();
     app.register_component::<AngularDamping>().add_prediction();

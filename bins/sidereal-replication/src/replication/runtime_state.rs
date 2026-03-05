@@ -2,11 +2,13 @@ use bevy::prelude::*;
 use lightyear::prelude::is_in_rollback;
 use sidereal_game::{
     ControlledEntityGuid, EntityGuid, MountedOn, PlayerTag, ScannerComponent, ScannerRangeBuff,
-    ScannerRangeM, total_scanner_range_for_parent,
+    ScannerRangeM, ShipTag, total_scanner_range_for_parent,
 };
 
-use crate::replication::visibility::{ClientObserverAnchorPositionMap, DEFAULT_VIEW_RANGE_M};
+use crate::replication::visibility::ClientObserverAnchorPositionMap;
 use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity, debug_env};
+
+const SHIP_BASE_SCANNER_RANGE_M: f32 = 300.0;
 
 #[derive(Resource, Default)]
 pub struct PlayerControlDebugState {
@@ -64,10 +66,11 @@ pub fn update_client_observer_anchor_positions(
 ) {
     for (player_entity_id, player_entity) in &player_entities.by_player_entity_id {
         if let Ok((position, global, transform)) = anchor_positions.get(*player_entity) {
-            let world = position
-                .map(|p| p.0.extend(0.0))
-                .or_else(|| global.map(GlobalTransform::translation))
+            // Contract: observer anchor uses world-space transform; prefer GlobalTransform.
+            let world = global
+                .map(GlobalTransform::translation)
                 .or_else(|| transform.map(|t| t.translation))
+                .or_else(|| position.map(|p| p.0.extend(0.0)))
                 .unwrap_or(Vec3::ZERO);
             let canonical_player_entity_id =
                 sidereal_net::PlayerEntityId::parse(player_entity_id.as_str())
@@ -83,12 +86,15 @@ pub fn update_client_observer_anchor_positions(
 
 #[allow(clippy::type_complexity)]
 pub fn compute_controlled_entity_scanner_ranges(
+    mut commands: Commands<'_, '_>,
     mut controlled_entities: Query<
         '_,
         '_,
         (
+            Entity,
             &'_ EntityGuid,
-            &'_ mut ScannerRangeM,
+            Option<&'_ mut ScannerRangeM>,
+            Option<&'_ ShipTag>,
             Option<&'_ ScannerComponent>,
             Option<&'_ ScannerRangeBuff>,
         ),
@@ -109,33 +115,26 @@ pub fn compute_controlled_entity_scanner_ranges(
     if is_in_rollback(rollback_query) {
         return;
     }
-    for (entity_guid, mut scanner_range, own_scanner, own_buff) in &mut controlled_entities {
-        scanner_range.0 = total_scanner_range_for_parent(
+    for (entity, entity_guid, scanner_range, ship_tag, own_scanner, own_buff) in
+        &mut controlled_entities
+    {
+        let mut total_range = total_scanner_range_for_parent(
             entity_guid.0,
-            DEFAULT_VIEW_RANGE_M,
             own_scanner,
             own_buff,
             scanner_modules.iter(),
         );
-    }
-}
-
-pub fn ensure_controlled_entity_scanner_range_component(
-    mut commands: Commands<'_, '_>,
-    controlled_entities_without_range: Query<
-        '_,
-        '_,
-        Entity,
-        (With<SimulatedControlledEntity>, Without<ScannerRangeM>),
-    >,
-    rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
-) {
-    if is_in_rollback(rollback_query) {
-        return;
-    }
-    for entity in &controlled_entities_without_range {
-        commands
-            .entity(entity)
-            .insert(ScannerRangeM(DEFAULT_VIEW_RANGE_M));
+        if ship_tag.is_some() {
+            total_range += SHIP_BASE_SCANNER_RANGE_M;
+        }
+        if total_range > 0.0 {
+            if let Some(mut scanner_range) = scanner_range {
+                scanner_range.0 = total_range;
+            } else {
+                commands.entity(entity).insert(ScannerRangeM(total_range));
+            }
+        } else if scanner_range.is_some() {
+            commands.entity(entity).remove::<ScannerRangeM>();
+        }
     }
 }

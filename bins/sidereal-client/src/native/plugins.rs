@@ -134,12 +134,17 @@ impl Plugin for ClientReplicationPlugin {
                         .after(replication::prune_runtime_entity_registry_system),
                     transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
+                    transforms::sync_interpolated_world_entity_transforms_without_history
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_local_player_view_state_system
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_controlled_entity_tags_system
                         .after(replication::sync_local_player_view_state_system),
+                    control::send_local_view_mode_updates
+                        .after(replication::sync_local_player_view_state_system),
                     control::send_lightyear_control_requests
-                        .after(replication::sync_controlled_entity_tags_system),
+                        .after(replication::sync_controlled_entity_tags_system)
+                        .after(control::send_local_view_mode_updates),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
                     control::log_client_control_state_changes
@@ -161,14 +166,19 @@ impl Plugin for ClientReplicationPlugin {
                         .after(replication::prune_runtime_entity_registry_system),
                     transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
+                    transforms::sync_interpolated_world_entity_transforms_without_history
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::transition_world_loading_to_in_world
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_local_player_view_state_system
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_controlled_entity_tags_system
                         .after(replication::sync_local_player_view_state_system),
+                    control::send_local_view_mode_updates
+                        .after(replication::sync_local_player_view_state_system),
                     control::send_lightyear_control_requests
-                        .after(replication::sync_controlled_entity_tags_system),
+                        .after(replication::sync_controlled_entity_tags_system)
+                        .after(control::send_local_view_mode_updates),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
                     control::log_client_control_state_changes

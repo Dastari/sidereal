@@ -24,7 +24,7 @@ pub use starter_world::{
     persist_starter_world_for_new_account,
 };
 pub use starter_world_scripts::{
-    ScriptBundleRegistry, load_bundle_registry, load_new_account_config, load_world_init_config,
+    ScriptBundleRegistry, load_bundle_registry, load_player_init_config, load_world_init_config,
     scripts_root_dir,
 };
 pub use store::{AuthStore, InMemoryAuthStore, PostgresAuthStore};

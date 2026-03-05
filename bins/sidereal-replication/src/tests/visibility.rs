@@ -4,6 +4,7 @@ use crate::replication::visibility::{
     DEFAULT_VIEW_RANGE_M, PlayerVisibilityContext, VisibilityAuthorization, authorize_visibility,
     is_entity_visible_to_player, should_bypass_candidate_filter,
 };
+use sidereal_net::ClientLocalViewMode;
 
 fn visibility_context(
     player_entity_id: &str,
@@ -16,25 +17,27 @@ fn visibility_context(
         observer_anchor_position,
         scanner_sources,
         player_faction_id: player_faction_id.map(ToString::to_string),
+        view_mode: ClientLocalViewMode::Tactical,
     }
 }
 
 #[test]
-fn owner_authorization_bypasses_delivery_scope() {
+fn owner_authorization_still_requires_delivery_scope() {
     let ctx = visibility_context("player-a", None, None, vec![]);
     assert_eq!(
         authorize_visibility("player-a", Some("player-a"), false, false, None, None, &ctx),
         Some(VisibilityAuthorization::Owner)
     );
-    assert!(is_entity_visible_to_player(
+    assert!(!is_entity_visible_to_player(
         "player-a",
         Some("player-a"),
         false,
         false,
         None,
-        None,
+        Some(Vec3::new(10.0, 0.0, 0.0)),
         &ctx,
-        DEFAULT_VIEW_RANGE_M
+        DEFAULT_VIEW_RANGE_M,
+        false,
     ));
 }
 
@@ -53,7 +56,8 @@ fn public_authorization_is_independent_of_delivery_scope() {
         None,
         Some(Vec3::new(10.0, 0.0, 0.0)),
         &ctx,
-        DEFAULT_VIEW_RANGE_M
+        DEFAULT_VIEW_RANGE_M,
+        false,
     ));
 }
 
@@ -72,7 +76,8 @@ fn faction_authorization_is_independent_of_delivery_scope() {
         Some("faction-1"),
         Some(Vec3::ZERO),
         &ctx,
-        DEFAULT_VIEW_RANGE_M
+        DEFAULT_VIEW_RANGE_M,
+        false,
     ));
 }
 
@@ -127,7 +132,8 @@ fn scanner_authorization_still_requires_delivery_scope() {
         None,
         Some(target_position),
         &ctx,
-        DEFAULT_VIEW_RANGE_M
+        DEFAULT_VIEW_RANGE_M,
+        false,
     ));
 }
 
@@ -160,7 +166,8 @@ fn scanner_authorization_with_missing_observer_anchor_is_culled() {
         None,
         Some(target_position),
         &ctx,
-        DEFAULT_VIEW_RANGE_M
+        DEFAULT_VIEW_RANGE_M,
+        false,
     ));
 }
 
@@ -181,7 +188,8 @@ fn scanner_authorization_with_player_anchor_in_range_is_visible() {
         None,
         Some(target_position),
         &ctx,
-        DEFAULT_VIEW_RANGE_M
+        DEFAULT_VIEW_RANGE_M,
+        false,
     ));
 }
 

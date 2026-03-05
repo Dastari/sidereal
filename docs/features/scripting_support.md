@@ -863,8 +863,7 @@ Mission state persists via graph records attached to the mission entity. It surv
 2. **Script source root**: `data/scripts` (override via `SIDEREAL_SCRIPTS_ROOT`).
 
 3. **Gateway script hooks** (`bins/sidereal-gateway/src/auth/starter_world_scripts.rs`):
-   - `world/world_init.lua`: reads `world_defaults` and executes `build_graph_records(ctx)` for world layer records.
-   - `accounts/on_new_account.lua`: calls `on_new_account(ctx)` for starter bundle selection.
+   - `accounts/player_init.lua`: calls `player_init(ctx)` for starter bundle selection.
    - `bundles/bundle_registry.lua`: loads bundle definitions and validates `required_component_kinds` against `generated_component_registry()`.
    - Starter/player records are now script-authored through bundle `graph_records_script` payloads (`starter_corvette` moved off Rust template path).
    - Script `context` includes `new_uuid()` for dynamic entity/module graph ID generation in Lua.
@@ -878,9 +877,10 @@ Mission state persists via graph records attached to the mission entity. It surv
 
 5. **Replication runtime scripting slice** (`bins/sidereal-replication/src/replication/runtime_scripting.rs`):
    - Persistent sandboxed Lua VM is initialized at host boot (non-send Bevy resource).
-   - Interval scheduler runs fixed-tick Lua callbacks (current prototype: `ai/pirate_patrol.lua`).
+   - Generic per-entity interval scheduler runs Lua `on_tick(ctx, event)` handlers selected via `ScriptState.data.on_tick_handler`.
    - Read-only `ctx.world:find_entity(uuid)` + `ScriptEntity` wrapper (`guid`, `position`, `has`, `get` for `script_state`).
    - Intent bridge prototype: `ctx:emit_intent("fly_towards" | "stop" | "set_script_state", payload)`.
+   - Event queue path supports per-entity `on_<event>` handler dispatch via `ScriptState.data.event_hooks`.
    - Rust validates script control authority (requires `ScriptState` and non-player owner) and applies intents to `FlightComputer` / `ScriptState`.
 
 6. **Registration flow**:
@@ -897,10 +897,9 @@ Mission state persists via graph records attached to the mission entity. It surv
 | File | Purpose |
 |---|---|
 | `data/scripts/world/world_init.lua` | World defaults + scripted world-init graph records for backdrop layers/settings |
-| `data/scripts/accounts/on_new_account.lua` | Starter bundle selection for new accounts |
+| `data/scripts/accounts/player_init.lua` | Starter bundle selection for new accounts |
 | `data/scripts/bundles/bundle_registry.lua` | Bundle definitions with component-kind allowlists |
-| `data/scripts/bundles/starter_corvette.lua` | Script-authored player + starter corvette + module/hardpoint graph records |
-| `data/scripts/bundles/debug_minimal_dynamic.lua` | Debug/test dynamic graph-records-script bundle |
+| `data/scripts/bundles/entity_registry.lua` | Lua bundle entity registry and predefined graph-record builders (`corvette`, `starter_corvette`, `debug_minimal_dynamic`) |
 | `data/scripts/ai/pirate_patrol.lua` | Runtime interval-driven patrol AI prototype |
 
 ### 11.3 Current Runtime Model
@@ -912,7 +911,7 @@ Mission state persists via graph records attached to the mission entity. It surv
 
 ### 11.4 Current Compromises
 
-1. `world_init` runs at replication startup, but gateway registration also reads script files for new-account bundle selection. Both hosts independently resolve the scripts root.
+1. `world_init` is replication-startup-only (one-time marker guarded), while gateway registration only evaluates `player_init` + bundle scripts. Both hosts independently resolve the scripts root.
 2. Script storage is filesystem-only; DB publish/version workflow is deferred.
 3. World init now seeds one patrol NPC prototype for runtime scripting validation; broader world population orchestration remains pending.
 4. Event bridge is still interval-first prototype (single script module); full declarative multi-module event routing from section 5 is pending.

@@ -1,11 +1,11 @@
 use mlua::{Function, Table, Value};
-use sidereal_game::default_corvette_collision_outline;
 use sidereal_persistence::GraphEntityRecord;
 use sidereal_scripting::{
-    LuaSandboxPolicy, ScriptError, load_lua_module_from_root, lua_value_to_json,
-    resolve_scripts_root, table_get_required_string,
+    LuaSandboxPolicy, ScriptError, load_lua_module_from_root, load_lua_module_into_lua_from_root,
+    lua_value_to_json, resolve_scripts_root, table_get_required_string,
 };
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldInitScriptConfig {
@@ -72,25 +72,7 @@ pub fn load_world_init_graph_records(root: &Path) -> Result<Vec<GraphEntityRecor
         .root()
         .get::<Table>("context")
         .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
-    let default_corvette_outline_points = module
-        .lua()
-        .create_function(|lua, ()| {
-            let points = default_corvette_collision_outline().points;
-            let out = lua.create_table()?;
-            for (idx, point) in points.iter().enumerate() {
-                let pair = lua.create_table()?;
-                pair.set(1, point.x)?;
-                pair.set(2, point.y)?;
-                out.set(idx + 1, pair)?;
-            }
-            Ok(out)
-        })
-        .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
-    ctx.set(
-        "default_corvette_collision_outline_points",
-        default_corvette_outline_points,
-    )
-    .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
+    inject_world_init_context(ctx.clone(), &module, root)?;
 
     let lua_value = build_graph_records
         .call::<Value>(ctx)
@@ -113,6 +95,56 @@ pub fn load_world_init_graph_records(root: &Path) -> Result<Vec<GraphEntityRecor
 
 fn map_script_err(err: ScriptError) -> String {
     err.to_string()
+}
+
+fn inject_world_init_context(
+    ctx: Table,
+    module: &sidereal_scripting::LoadedLuaModule,
+    scripts_root: &Path,
+) -> Result<(), String> {
+    let new_uuid = module
+        .lua()
+        .create_function(|_, ()| Ok(Uuid::new_v4().to_string()))
+        .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
+    ctx.set("new_uuid", new_uuid)
+        .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
+
+    let (entity_registry, entity_registry_path) = load_lua_module_into_lua_from_root(
+        module.lua(),
+        scripts_root,
+        "bundles/entity_registry.lua",
+    )
+    .map_err(map_script_err)?;
+    let build_graph_records = entity_registry
+        .get::<Function>("build_graph_records")
+        .map_err(|err| format!("{}: {err}", entity_registry_path.display()))?;
+    let spawn_bundle_graph_records = module
+        .lua()
+        .create_function(move |lua, (bundle_id, overrides): (String, Value)| {
+            let bundle_ctx = lua.create_table()?;
+            bundle_ctx.set("bundle_id", bundle_id)?;
+            match overrides {
+                Value::Table(overrides_table) => {
+                    for pair in overrides_table.pairs::<Value, Value>() {
+                        let (key, value) = pair?;
+                        bundle_ctx.set(key, value)?;
+                    }
+                }
+                Value::Nil => {}
+                _ => {
+                    return Err(mlua::Error::runtime(
+                        "spawn_bundle_graph_records override payload must be a table or nil",
+                    ));
+                }
+            }
+            let new_uuid = lua.create_function(|_, ()| Ok(Uuid::new_v4().to_string()))?;
+            bundle_ctx.set("new_uuid", new_uuid)?;
+            build_graph_records.call::<Value>(bundle_ctx)
+        })
+        .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
+    ctx.set("spawn_bundle_graph_records", spawn_bundle_graph_records)
+        .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
+    Ok(())
 }
 
 #[cfg(test)]

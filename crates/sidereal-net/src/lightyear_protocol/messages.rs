@@ -63,6 +63,21 @@ pub struct ClientRealtimeInputMessage {
     pub tick: u64,
 }
 
+/// Client local view mode used by replication relevance policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ClientLocalViewMode {
+    #[default]
+    Tactical,
+    Map,
+}
+
+/// Client informs server which view mode should drive delivery culling.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientLocalViewModeMessage {
+    pub player_entity_id: String,
+    pub view_mode: ClientLocalViewMode,
+}
+
 /// Server authoritative weapon fire notification for client-side tracer visuals.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerWeaponFiredMessage {

@@ -9,8 +9,7 @@ use lightyear::prediction::prelude::{PredictionManager, RollbackMode};
 use lightyear::prelude::client::Client;
 use sidereal_game::{
     ActionQueue, CollisionOutlineM, ControlledEntityGuid, EntityGuid, Hardpoint, MountedOn,
-    PlayerTag, SizeM, SpriteShaderAssetId,
-    VisualAssetId,
+    PlayerTag, SimulationMotionWriter, SizeM, SpriteShaderAssetId, VisualAssetId,
 };
 use sidereal_runtime_sync::{
     RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
@@ -402,7 +401,8 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
         }
 
         if is_replicated
-            && let Some(&existing_entity) = entity_registry.by_entity_id.get(runtime_entity_id.as_str())
+            && let Some(&existing_entity) =
+                entity_registry.by_entity_id.get(runtime_entity_id.as_str())
             && existing_entity != entity
         {
             if live_entities.get(existing_entity).is_ok() {
@@ -419,7 +419,9 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             }
 
             // Stale map entry (entity was despawned/recycled); allow re-adoption.
-            entity_registry.by_entity_id.remove(runtime_entity_id.as_str());
+            entity_registry
+                .by_entity_id
+                .remove(runtime_entity_id.as_str());
         }
 
         if adoption_state.waiting_entity_id.as_deref() == Some(runtime_entity_id.as_str()) {
@@ -564,10 +566,13 @@ pub(crate) fn sync_local_player_view_state_system(
         local_player_entity_id,
         controlled,
     ) {
-        player_view_state.controlled_entity_id = Some(authoritative_controlled_id);
+        if player_view_state.controlled_entity_id.as_deref()
+            != Some(authoritative_controlled_id.as_str())
+        {
+            player_view_state.controlled_entity_id = Some(authoritative_controlled_id.clone());
+        }
         if player_view_state.desired_controlled_entity_id.is_none() {
-            player_view_state.desired_controlled_entity_id =
-                player_view_state.controlled_entity_id.clone();
+            player_view_state.desired_controlled_entity_id = Some(authoritative_controlled_id);
         }
     }
 }
@@ -578,6 +583,7 @@ pub(crate) fn sync_controlled_entity_tags_system(
     player_view_state: ResMut<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
     controlled_query: Query<'_, '_, (Entity, &'_ ControlledEntity)>,
+    writer_query: Query<'_, '_, Entity, With<SimulationMotionWriter>>,
     guid_candidates: Query<
         '_,
         '_,
@@ -646,11 +652,19 @@ pub(crate) fn sync_controlled_entity_tags_system(
             });
         }
     }
+    for entity in &writer_query {
+        if Some(entity) != target_entity {
+            commands.entity(entity).remove::<SimulationMotionWriter>();
+        }
+    }
 
     if let Some(entity) = target_entity {
-        commands.entity(entity).insert(ControlledEntity {
-            entity_id: target_entity_id.clone().unwrap_or_default(),
-            player_entity_id: local_player_runtime_id,
-        });
+        commands.entity(entity).insert((
+            ControlledEntity {
+                entity_id: target_entity_id.clone().unwrap_or_default(),
+                player_entity_id: local_player_runtime_id,
+            },
+            SimulationMotionWriter,
+        ));
     }
 }

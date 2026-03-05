@@ -39,14 +39,14 @@ Performance note:
 Implemented now:
 - per-client entity visibility updates in replication fixed tick,
 - owner/public/faction visibility allowances,
-- scanner range fallback with default floor,
+- scanner range sourced only from entities with positive `ScannerRangeM`, with a `300m` baseline applied to `ShipTag` roots only,
 - candidate-generation stage is explicit and pluggable:
   - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=spatial_grid` (default; uniform-grid candidate preselection),
   - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=full_scan` (debug/validation fallback),
   - `SIDEREAL_VISIBILITY_CELL_SIZE_M` controls grid cell size (default `2000.0`, minimum `50.0`),
 - **global world position**: all range/delivery checks use `GlobalTransform` (world position). Roots and mounted children are included; mounted entities' visibility uses their world position so components on children are correctly in scope.
 - mount-root resolution by traversing `MountedOn` parent chain for owner/public/faction inheritance; no `Without<MountedOn>` filter.
-- observer anchor from player entity **GlobalTransform** (world position), with scanner-source union over owned entities (also world positions).
+- observer anchor from player entity **GlobalTransform** (world position), with scanner-source union over owned scanner-capable roots (also world positions).
 - control semantics align to `camera <- player <- controlled(optional)`; observer/player anchor is the delivery-center source-of-truth.
 - candidate filtering is fail-closed:
   - ownership/public/faction/scanner policy exceptions bypass candidate-miss culling,
@@ -56,6 +56,9 @@ Implemented now:
   - `clients`,
   - `entities`,
   - `candidates_per_client`.
+- player visibility state is mirrored onto authoritative player entities for owner inspection/debug:
+  - `VisibilitySpatialGrid` (candidate mode/cell size/delivery range + queried grid cells),
+  - `VisibilityDisclosure` (scanner source world positions + ranges actually used by server policy).
 
 Known gap:
 - `#[sidereal_component(..., visibility = [...])]` metadata is recorded but not yet used as a strict per-component outbound redaction gate.
