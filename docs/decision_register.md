@@ -260,6 +260,70 @@ For each decision:
   - `docs/features/dr-0007_entity_variant_framework.md`
 - References:
   - `docs/features/dr-0007_entity_variant_framework.md`
+
+## DR-0017: Dual-Lane Replication and Owner Asset Manifest
+- Status: Proposed
+- Date: 2026-03-05
+- Owners: Replication + client runtime + gameplay UI
+- Context:
+  - Tactical zoom/map needs broad low-detail awareness while local in-world simulation needs high-detail local updates.
+  - Owned-asset UI currently depends on local bubble presence, causing owned entities to disappear from UI when out of scope.
+- Decision:
+  - Introduce three explicit server-authored delivery models:
+    - `LocalBubbleLane` for high-rate nearby simulation state.
+    - `TacticalLane` for lower-rate wide-area reduced contact state.
+    - `OwnerAssetManifestLane` for owner-only, relevance-independent asset list/state.
+  - Client stores owner-manifest data in a dedicated cache resource and UI reads from this cache (not world-entity presence).
+- Alternatives considered:
+  - Keep owned-asset UI bound to world entities: rejected (visibility-coupled disappearing UX).
+  - Expand one global relevance radius: rejected (bandwidth/scaling regressions).
+  - Client-side polling side channel: rejected (authority-flow and coupling violations).
+- Consequences:
+  - Positive:
+    - Tactical map and owned-asset UX become robust and mode-appropriate.
+    - Preserves server authority while reducing unnecessary high-frequency replication.
+  - Negative:
+    - Adds protocol/channel complexity and client cache maintenance.
+- Follow-up:
+  - Define message schemas and pacing for tactical and owner-manifest lanes.
+  - Add sequence/staleness telemetry and tests for lane behavior and ownership isolation.
+- Decision doc:
+  - `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+- References:
+  - `docs/features/visibility_replication_contract.md`
+  - `docs/features/scan_intel_minimap_spatial_plan.md`
+  - `docs/features/tactical_and_owner_lane_protocol_contract.md`
+  - `docs/sidereal_design_document.md`
+
+## DR-0018: Fog of War and Intel Memory Model
+- Status: Proposed
+- Date: 2026-03-05
+- Owners: Replication + gameplay visibility + tactical UI
+- Context:
+  - Tactical map needs persistent exploration and stale-vs-live intel behavior.
+  - Local bubble relevance cannot be the source-of-truth for long-term discovery memory.
+- Decision:
+  - Persist player-scoped explored coverage and intel memory on server/player data.
+  - Keep live scanner visibility runtime-derived per tick.
+  - Deliver fog/contact tactical products via lane payloads (snapshot+delta), with explicit live/stale state.
+- Alternatives considered:
+  - Infer all fog/intel client-side from live world entities: rejected (relevance-coupled and authority-weak).
+  - Store global per-shard discovery only: rejected (not player-specific).
+- Consequences:
+  - Positive:
+    - Correct MMO fog semantics with server authority.
+    - UI can render unexplored/explored-stale/live states deterministically.
+  - Negative:
+    - Adds persisted player data and tactical lane complexity.
+- Follow-up:
+  - Define message schemas + sequence semantics.
+  - Add tests for exploration growth, stale/live transitions, and disclosure safety.
+- Decision doc:
+  - `docs/features/dr-0018_fog_of_war_and_intel_memory_model.md`
+- References:
+  - `docs/features/visibility_replication_contract.md`
+  - `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+  - `docs/features/tactical_and_owner_lane_protocol_contract.md`
   - `docs/sidereal_design_document.md`
 
 ## DR-0008: Character Ownership Is Enforced at Every Runtime Boundary

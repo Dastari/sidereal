@@ -12,6 +12,7 @@
     "check": "prettier --write . && eslint --fix"
   },
   "dependencies": {
+    "@faker-js/faker": "^10.3.0",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-dialog": "^1.1.15",

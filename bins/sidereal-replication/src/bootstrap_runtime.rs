@@ -5,10 +5,13 @@
 
 use bevy::log::info;
 use bevy::prelude::{Commands, Resource};
-use sidereal_replication::bootstrap::{BootstrapProcessor, PostgresBootstrapStore};
+use sidereal_replication::bootstrap::{
+    BootstrapProcessor, ControlHandleResult, PostgresBootstrapStore,
+};
 use std::net::UdpSocket;
 use std::sync::{Mutex, mpsc};
 use std::thread;
+use uuid::Uuid;
 
 /// Channel for bootstrap thread to request entity binding in the Bevy world.
 #[derive(Resource)]
@@ -16,7 +19,23 @@ pub struct BootstrapEntityReceiver(pub Mutex<mpsc::Receiver<BootstrapEntityComma
 
 #[derive(Debug, Clone)]
 pub struct BootstrapEntityCommand {
-    pub player_entity_id: String,
+    pub payload: BootstrapEntityCommandPayload,
+}
+
+#[derive(Debug, Clone)]
+pub enum BootstrapEntityCommandPayload {
+    BootstrapPlayer {
+        player_entity_id: String,
+    },
+    AdminSpawnEntity {
+        actor_account_id: Uuid,
+        actor_player_entity_id: String,
+        request_id: Uuid,
+        player_entity_id: String,
+        bundle_id: String,
+        requested_entity_id: String,
+        overrides: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
@@ -63,13 +82,36 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
             };
             let payload = &buf[..size];
             match processor.handle_payload(payload) {
-                Ok(result) => {
+                Ok(ControlHandleResult::Bootstrap(result)) => {
                     println!(
                         "replication bootstrap processed from {from}: account_id={}, player_entity_id={}, applied={}",
                         result.account_id, result.player_entity_id, result.applied
                     );
                     let _ = tx.send(BootstrapEntityCommand {
-                        player_entity_id: result.player_entity_id,
+                        payload: BootstrapEntityCommandPayload::BootstrapPlayer {
+                            player_entity_id: result.player_entity_id,
+                        },
+                    });
+                }
+                Ok(ControlHandleResult::AdminSpawn(result)) => {
+                    println!(
+                        "replication admin spawn command accepted from {from}: request_id={} actor_account_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}",
+                        result.request_id,
+                        result.actor_account_id,
+                        result.player_entity_id,
+                        result.bundle_id,
+                        result.requested_entity_id
+                    );
+                    let _ = tx.send(BootstrapEntityCommand {
+                        payload: BootstrapEntityCommandPayload::AdminSpawnEntity {
+                            actor_account_id: result.actor_account_id,
+                            actor_player_entity_id: result.actor_player_entity_id,
+                            request_id: result.request_id,
+                            player_entity_id: result.player_entity_id,
+                            bundle_id: result.bundle_id,
+                            requested_entity_id: result.requested_entity_id,
+                            overrides: result.overrides,
+                        },
                     });
                 }
                 Err(err) => {

@@ -6,8 +6,8 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    assets, auth, combat, control, input, lifecycle, persistence, runtime_scripting, runtime_state,
-    simulation_entities, visibility,
+    assets, auth, combat, control, input, lifecycle, owner_manifest, persistence,
+    runtime_scripting, runtime_state, simulation_entities, tactical, visibility,
 };
 
 pub(crate) struct ReplicationLifecyclePlugin;
@@ -59,8 +59,9 @@ impl Plugin for ReplicationControlPlugin {
             FixedUpdate,
             (
                 control::sync_player_anchor_replication_mode,
-                combat::broadcast_weapon_fired_messages
-                    .after(sidereal_game::process_weapon_fire_actions),
+                combat::broadcast_weapon_fired_messages.after(sidereal_game::resolve_shot_impacts),
+                combat::enqueue_runtime_script_events_from_combat_messages
+                    .after(sidereal_game::apply_damage_from_shot_impacts),
             )
                 .chain()
                 .after(PhysicsSystems::Writeback),
@@ -80,6 +81,9 @@ impl Plugin for ReplicationVisibilityPlugin {
                 runtime_state::compute_controlled_entity_scanner_ranges,
                 visibility::ensure_network_visibility_for_replicated_entities,
                 visibility::update_network_visibility,
+                owner_manifest::stream_owner_asset_manifest_messages,
+                tactical::receive_tactical_resnapshot_requests,
+                tactical::stream_tactical_snapshot_messages,
             )
                 .chain()
                 .after(PhysicsSystems::Writeback),

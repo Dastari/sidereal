@@ -427,27 +427,6 @@ mod tests {
     }
 
     #[test]
-    fn graph_records_script_bundle_payload_decodes_when_present() {
-        let root = scripts_root_dir();
-        let registry = load_bundle_registry(&root).expect("load bundle registry");
-        let dynamic_bundle = registry
-            .bundles
-            .get("debug_minimal_dynamic")
-            .expect("dynamic bundle");
-        let records = load_graph_records_for_bundle(
-            &root,
-            dynamic_bundle,
-            ScriptContext {
-                account_id: Uuid::new_v4(),
-                player_entity_id: &Uuid::new_v4().to_string(),
-                email: "pilot@example.com",
-            },
-        )
-        .expect("load graph records for dynamic bundle");
-        assert!(!records.is_empty());
-    }
-
-    #[test]
     fn starter_corvette_bundle_includes_scanner_components() {
         let root = scripts_root_dir();
         let registry = load_bundle_registry(&root).expect("load bundle registry");
@@ -475,6 +454,67 @@ mod tests {
             })
             .collect::<std::collections::HashSet<_>>();
         assert!(component_kinds.contains("scanner_component"));
+    }
+
+    #[test]
+    fn starter_corvette_bundle_action_capabilities_use_canonical_actions_only() {
+        let root = scripts_root_dir();
+        let registry = load_bundle_registry(&root).expect("load bundle registry");
+        let starter_bundle = registry
+            .bundles
+            .get("starter_corvette")
+            .expect("starter bundle");
+        let records = load_graph_records_for_bundle(
+            &root,
+            starter_bundle,
+            ScriptContext {
+                account_id: Uuid::new_v4(),
+                player_entity_id: &Uuid::new_v4().to_string(),
+                email: "pilot@example.com",
+            },
+        )
+        .expect("load graph records for starter bundle");
+
+        let allowed = [
+            "Forward",
+            "Backward",
+            "LongitudinalNeutral",
+            "Left",
+            "Right",
+            "LateralNeutral",
+            "Brake",
+            "AfterburnerOn",
+            "AfterburnerOff",
+            "FirePrimary",
+            "FireSecondary",
+        ]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+
+        for record in &records {
+            for component in &record.components {
+                if component.component_kind != "action_capabilities" {
+                    continue;
+                }
+                let Some(supported) = component
+                    .properties
+                    .get("supported")
+                    .and_then(serde_json::Value::as_array)
+                else {
+                    panic!("action_capabilities.supported missing or not an array");
+                };
+                for action in supported {
+                    let Some(name) = action.as_str() else {
+                        panic!("action_capabilities.supported contains non-string value");
+                    };
+                    assert!(
+                        allowed.contains(name),
+                        "unexpected non-canonical action capability: {}",
+                        name
+                    );
+                }
+            }
+        }
     }
 
     #[test]

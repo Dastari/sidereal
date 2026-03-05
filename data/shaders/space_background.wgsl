@@ -14,7 +14,7 @@ struct SpaceBackgroundParams {
     space_bg_star_mask_b: vec4<f32>,
     space_bg_star_mask_c: vec4<f32>,
     space_bg_blend_a: vec4<f32>,
-    space_bg_blend_b: vec4<f32>,
+    space_bg_blend_b: vec4<f32>,  // .x flares blend mode, .y flares opacity, .z zoom rate
     space_bg_nebula_color_a: vec4<f32>,
     space_bg_nebula_color_b: vec4<f32>,
     space_bg_nebula_color_c: vec4<f32>,
@@ -251,6 +251,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let stars_opacity = clamp(params.space_bg_blend_a.w, 0.0, 1.0);
     let flares_blend_mode = clamp(params.space_bg_blend_b.x, 0.0, 2.0);
     let flares_opacity = clamp(params.space_bg_blend_b.y, 0.0, 1.0);
+    let zoom_rate = max(params.space_bg_blend_b.z, 0.0);
     let nebula_color_a = max(params.space_bg_nebula_color_a.rgb, vec3<f32>(0.0));
     let nebula_color_b = max(params.space_bg_nebula_color_b.rgb, vec3<f32>(0.0));
     let nebula_color_c = max(params.space_bg_nebula_color_c.rgb, vec3<f32>(0.0));
@@ -259,6 +260,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let uv_n = in.uv * 2.0 - 1.0;
     let uv = vec2<f32>(uv_n.x * aspect, uv_n.y);
+    // Inverted zoom response: when camera zooms in, background zooms out (and vice versa).
+    // Also damp by 1/5 so the effect is much subtler.
+    let camera_zoom = 1.0 / max(params.velocity_dir.z, 0.01);
+    let inverted_zoom = 1.0 / max(camera_zoom, 0.01);
+    let background_zoom = max(0.05, 1.0 + (inverted_zoom - 1.0) * zoom_rate * 0.2);
+    let zoomed_uv = uv * background_zoom;
 
     let heading_raw = params.velocity_dir.xy;
     var heading = vec2<f32>(0.0, 1.0); // for drift direction only
@@ -280,7 +287,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let vignette = clamp(1.08 - length(uv_n) * 0.17, 0.80, 1.0);
 
     // Deterministic seeded nebula with almost no temporal movement.
-    let base = uv * 1.35 + vec2<f32>(seed * 0.17, seed * 0.29);
+    let base = zoomed_uv * 1.35 + vec2<f32>(seed * 0.17, seed * 0.29);
     let nebula_field_a = select(
         fbm2d_config(
             base + subtle_motion * 0.60,
@@ -359,7 +366,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Very subtle stars with tiny drift only.
     let stars_far = subtle_star_layer(
-        uv + subtle_motion * 0.22,
+        zoomed_uv + subtle_motion * 0.22,
         34.0,
         0.090,
         star_size_min,
@@ -370,7 +377,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         star_color
     ) * 0.20;
     let stars_mid = subtle_star_layer(
-        uv + subtle_motion * 0.35,
+        zoomed_uv + subtle_motion * 0.35,
         22.0,
         0.070,
         mix(star_size_min, star_size_max, 0.5),
@@ -381,7 +388,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         star_color
     ) * 0.30;
     let stars_near = subtle_star_layer(
-        uv + subtle_motion * 0.50,
+        zoomed_uv + subtle_motion * 0.50,
         14.0,
         0.050,
         star_size_max,
@@ -392,7 +399,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         star_color
     ) * 0.40;
 
-    let star_mask_base = uv * star_mask_scale + subtle_motion * 0.45 + vec2<f32>(seed * 0.07, seed * 0.11);
+    let star_mask_base = zoomed_uv * star_mask_scale + subtle_motion * 0.45 + vec2<f32>(seed * 0.07, seed * 0.11);
     let star_mask_noise = select(
         fbm2d_config(
             star_mask_base,
@@ -422,7 +429,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     let stars_layer = (stars_far + stars_mid + stars_near) * star_mask * intensity * vignette;
     let flares_layer = subtle_flare_layer(
-        uv,
+        zoomed_uv,
         subtle_motion * 0.75,
         flare_density,
         flare_size,

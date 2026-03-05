@@ -26,6 +26,7 @@ interface EntityTreeProps {
   onSelect: (id: string) => void
   sourceMode: DataSourceMode
   onDelete: (entityId: string) => Promise<void>
+  onContextMenuRequest?: (entityId: string, point: { x: number; y: number }) => void
 }
 
 const ENTITY_ROOT_GROUP_KEY = '__entity_root__'
@@ -70,6 +71,7 @@ function EntityTree({
   onSelect,
   sourceMode,
   onDelete,
+  onContextMenuRequest,
 }: EntityTreeProps) {
   const [openGroups, setOpenGroups] = React.useState<Record<string, boolean>>(
     {},
@@ -195,6 +197,7 @@ function EntityTree({
           onSelect={onSelect}
           sourceMode={sourceMode}
           onDelete={onDelete}
+          onContextMenuRequest={onContextMenuRequest}
           childrenByParent={childrenByParent}
           isOpen={isGroupOpen(groupKey)}
           onToggleOpen={() => toggleGroup(groupKey)}
@@ -254,6 +257,7 @@ interface EntityGroupProps {
   onSelect: (id: string) => void
   sourceMode: DataSourceMode
   onDelete: (entityId: string) => Promise<void>
+  onContextMenuRequest?: (entityId: string, point: { x: number; y: number }) => void
   childrenByParent: Map<string, Array<WorldEntity>>
   isOpen: boolean
   onToggleOpen: () => void
@@ -268,6 +272,7 @@ function EntityGroup({
   onSelect,
   sourceMode,
   onDelete,
+  onContextMenuRequest,
   childrenByParent,
   isOpen,
   onToggleOpen,
@@ -299,6 +304,7 @@ function EntityGroup({
               depth={0}
               sourceMode={sourceMode}
               onDelete={onDelete}
+              onContextMenuRequest={onContextMenuRequest}
               childrenByParent={childrenByParent}
               isNodeOpen={isNodeOpen}
               onToggleNode={onToggleNode}
@@ -318,6 +324,7 @@ interface EntityTreeNodeProps {
   depth: number
   sourceMode: DataSourceMode
   onDelete: (entityId: string) => Promise<void>
+  onContextMenuRequest?: (entityId: string, point: { x: number; y: number }) => void
   childrenByParent: Map<string, Array<WorldEntity>>
   isNodeOpen: (id: string) => boolean
   onToggleNode: (id: string) => void
@@ -331,6 +338,7 @@ function EntityTreeNode({
   depth,
   sourceMode,
   onDelete,
+  onContextMenuRequest,
   childrenByParent,
   isNodeOpen,
   onToggleNode,
@@ -356,6 +364,12 @@ function EntityTreeNode({
     }
   }
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    if (!onContextMenuRequest) return
+    e.preventDefault()
+    onContextMenuRequest(entity.id, { x: e.clientX, y: e.clientY })
+  }
+
   return (
     <div>
       <div className="flex items-center gap-1 group">
@@ -377,6 +391,7 @@ function EntityTreeNode({
 
         <button
           onClick={() => onSelect(entity.id)}
+          onContextMenu={handleContextMenu}
           className={cn(
             'flex items-center gap-2 flex-1 px-2 py-1 rounded-md text-sm transition-colors text-left min-w-0',
             isSelected
@@ -423,6 +438,7 @@ function EntityTreeNode({
               depth={depth + 1}
               sourceMode={sourceMode}
               onDelete={onDelete}
+              onContextMenuRequest={onContextMenuRequest}
               childrenByParent={childrenByParent}
               isNodeOpen={isNodeOpen}
               onToggleNode={onToggleNode}

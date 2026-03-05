@@ -15,7 +15,7 @@ use lightyear::prelude::{
     Replicate,
 };
 use sidereal_game::{
-    ActionQueue, ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
+    ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
 };
 use sidereal_net::PlayerEntityId;
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
@@ -26,11 +26,19 @@ use sidereal_runtime_sync::{
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::bootstrap_runtime::BootstrapEntityCommandPayload;
 use crate::bootstrap_runtime::{self, BootstrapEntityReceiver};
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::lifecycle::{HydratedEntityCount, HydratedGraphEntity};
 use crate::replication::persistence::PersistenceSchemaInitState;
-use crate::replication::scripting::{load_world_init_graph_records, scripts_root_dir};
+use crate::replication::scripting::{
+    emit_bundle_spawned_event, load_known_bundle_ids, load_world_init_graph_records,
+    scripts_root_dir, spawn_bundle_graph_records,
+};
+
+const ADMIN_ALLOWED_OVERRIDE_KEYS: &[&str] = &["display_name"];
+const ADMIN_MAX_OVERRIDE_FIELDS: usize = 8;
+const ADMIN_MAX_OVERRIDE_JSON_BYTES: usize = 2048;
 
 const WORLD_INIT_STATE_KEY: &str = "world/world_init.lua:phase2";
 
@@ -192,10 +200,9 @@ pub fn hydrate_records_into_world(
         let has_flight_control = component_record(&record.components, "flight_computer").is_some();
         if !has_action_queue && (is_player_anchor || has_flight_control) {
             bevy::log::warn!(
-                "hydration inserted default action_queue for entity_id={} (script payload missing or invalid action_queue)",
+                "hydration missing action_queue for entity_id={} (player/flight entity must provide canonical action_queue payload)",
                 record.entity_id
             );
-            commands.entity(entity).insert(ActionQueue::default());
         }
 
         spawned_entity_by_id.insert(record.entity_id.clone(), entity);
@@ -212,6 +219,13 @@ pub fn hydrate_records_into_world(
         records,
         &type_paths,
         controlled_entity_map,
+        player_entity_map,
+    );
+    ensure_simulated_controlled_entities(
+        commands,
+        &spawned_entity_by_id,
+        records,
+        &type_paths,
         player_entity_map,
     );
 
@@ -350,7 +364,6 @@ fn derive_control_bindings(
             .and_then(|payload| serde_json::from_value::<OwnerId>(payload.clone()).ok());
         let Some(owner) = owner_id else { continue };
 
-        // The owner_id value might be a bare UUID or a legacy "player:uuid".
         let Some(player_id) = PlayerEntityId::parse(owner.0.as_str()) else {
             continue;
         };
@@ -399,6 +412,43 @@ fn derive_control_bindings(
                 .by_player_entity_id
                 .insert(*player_id, player_entity);
         }
+    }
+}
+
+fn ensure_simulated_controlled_entities(
+    commands: &mut Commands<'_, '_>,
+    spawned: &HashMap<String, Entity>,
+    records: &[GraphEntityRecord],
+    type_paths: &HashMap<String, String>,
+    player_map: &PlayerRuntimeEntityMap,
+) {
+    for record in records {
+        if component_record(&record.components, "player_tag").is_some() {
+            continue;
+        }
+        let owner_id = component_record(&record.components, "owner_id")
+            .and_then(|c| decode_graph_component_payload(c, type_paths))
+            .and_then(|payload| serde_json::from_value::<OwnerId>(payload.clone()).ok());
+        let Some(owner_id) = owner_id else { continue };
+        let Some(player_id) = PlayerEntityId::parse(owner_id.0.as_str()) else {
+            continue;
+        };
+        let owner_key = player_id.canonical_wire_id();
+        if !player_map
+            .by_player_entity_id
+            .contains_key(owner_key.as_str())
+        {
+            continue;
+        }
+        let Some(&entity) = spawned.get(&record.entity_id) else {
+            continue;
+        };
+        if entity == Entity::PLACEHOLDER {
+            continue;
+        }
+        commands.entity(entity).insert(SimulatedControlledEntity {
+            player_entity_id: player_id,
+        });
     }
 }
 
@@ -501,131 +551,476 @@ pub fn process_bootstrap_entity_commands(
         (Entity, &'_ EntityGuid, &'_ OwnerId),
         With<SimulatedControlledEntity>,
     >,
+    mut cached_scripts_root: Local<'_, Option<std::path::PathBuf>>,
+    mut cached_known_bundle_ids: Local<'_, Option<Option<HashSet<String>>>>,
     receiver: Option<Res<'_, BootstrapEntityReceiver>>,
 ) {
     let Some(receiver) = receiver else { return };
     let mut processed_players = HashSet::new();
+    let scripts_root = cached_scripts_root
+        .get_or_insert_with(scripts_root_dir)
+        .clone();
+    let known_bundle_ids = cached_known_bundle_ids
+        .get_or_insert_with(|| match load_known_bundle_ids(&scripts_root) {
+            Ok(v) => Some(v),
+            Err(err) => {
+                bevy::log::error!("admin spawn disabled: failed loading bundle registry: {err}");
+                None
+            }
+        })
+        .as_ref();
+
     for cmd in bootstrap_runtime::drain_bootstrap_entity_commands(receiver.as_ref()) {
-        if !processed_players.insert(cmd.player_entity_id.clone()) {
-            continue;
-        }
-        let Some(player_id) = PlayerEntityId::parse(cmd.player_entity_id.as_str()) else {
-            bevy::log::warn!(
-                "bootstrap: invalid player_entity_id={}, skipping",
-                cmd.player_entity_id
-            );
-            continue;
-        };
-
-        // If the player entity isn't in the world yet, attempt deferred hydration.
-        if !player_entity_map
-            .by_player_entity_id
-            .contains_key(&cmd.player_entity_id)
-        {
-            bevy::log::info!(
-                "bootstrap: player {} not in world; attempting deferred hydration",
-                cmd.player_entity_id
-            );
-            let database_url = replication_database_url();
-            let mut persistence = match GraphPersistence::connect(&database_url) {
-                Ok(v) => v,
-                Err(err) => {
-                    bevy::log::error!("bootstrap deferred hydration failed (connect): {err}");
-                    continue;
-                }
-            };
-            let all_records = match persistence.load_graph_records() {
-                Ok(v) => v,
-                Err(err) => {
-                    bevy::log::error!("bootstrap deferred hydration failed (load): {err}");
-                    continue;
-                }
-            };
-            let type_paths = component_type_path_map(&component_registry);
-            let player_records =
-                filter_records_for_player(&all_records, &cmd.player_entity_id, &type_paths);
-            if player_records.is_empty() {
-                bevy::log::warn!(
-                    "bootstrap: player {} has no records in graph DB; skipping",
-                    cmd.player_entity_id
+        match cmd.payload {
+            BootstrapEntityCommandPayload::BootstrapPlayer { player_entity_id } => {
+                process_bootstrap_player_entity_command(
+                    &mut commands,
+                    &mut controlled_entity_map,
+                    &mut player_entity_map,
+                    &mut pending_controlled_by,
+                    &bindings,
+                    &component_registry,
+                    &app_type_registry,
+                    &all_guids,
+                    &simulated_entities,
+                    &mut processed_players,
+                    &player_entity_id,
                 );
-                continue;
             }
-            let existing_guids = collect_existing_guids(&all_guids);
-            hydrate_records_into_world(
-                &mut commands,
-                &player_records,
-                &component_registry,
-                &app_type_registry,
-                &existing_guids,
-                &mut player_entity_map,
-                &mut controlled_entity_map,
-            );
-            bevy::log::info!(
-                "bootstrap: deferred hydration complete for player {} ({} records)",
-                cmd.player_entity_id,
-                player_records.len()
-            );
-        }
-
-        let Some(&player_entity) = player_entity_map
-            .by_player_entity_id
-            .get(&cmd.player_entity_id)
-        else {
-            bevy::log::warn!(
-                "bootstrap: player entity {} still not found after deferred hydration; skipping",
-                cmd.player_entity_id
-            );
-            continue;
-        };
-
-        let has_live_controlled_entity = controlled_entity_map
-            .by_player_entity_id
-            .get(&player_id)
-            .is_some_and(|entity| all_guids.get(*entity).is_ok());
-
-        if !has_live_controlled_entity {
-            let mut existing_matches = simulated_entities
-                .iter()
-                .filter(|(_, _, owner)| {
-                    PlayerEntityId::parse(owner.0.as_str()).is_some_and(|id| id == player_id)
-                })
-                .collect::<Vec<_>>();
-            if let Some((existing_entity, existing_guid, _)) = existing_matches.pop() {
-                if !existing_matches.is_empty() {
-                    bevy::log::warn!(
-                        "bootstrap found duplicate controlled entities for player={}; using latest match",
-                        cmd.player_entity_id
-                    );
-                }
-                controlled_entity_map
-                    .by_player_entity_id
-                    .insert(player_id, existing_entity);
-                commands
-                    .entity(player_entity)
-                    .insert(ControlledEntityGuid(Some(existing_guid.0.to_string())));
-            }
-        }
-
-        if let Some(&controlled_entity) = controlled_entity_map.by_player_entity_id.get(&player_id)
-        {
-            if let Ok(control_guid) = all_guids.get(controlled_entity) {
-                commands
-                    .entity(player_entity)
-                    .insert(ControlledEntityGuid(Some(control_guid.0.to_string())));
-            }
-            let client_entity = bindings
-                .by_client_entity
-                .iter()
-                .find(|(_, player_id)| *player_id == &cmd.player_entity_id)
-                .map(|(entity, _)| *entity);
-            if let Some(client_entity) = client_entity {
-                pending_controlled_by
-                    .bindings
-                    .push((client_entity, controlled_entity));
+            BootstrapEntityCommandPayload::AdminSpawnEntity {
+                actor_account_id,
+                actor_player_entity_id,
+                request_id,
+                player_entity_id,
+                bundle_id,
+                requested_entity_id,
+                overrides,
+            } => {
+                let actor_account_id_wire = actor_account_id.to_string();
+                let request_id_wire = request_id.to_string();
+                process_admin_spawn_command(
+                    &mut commands,
+                    &mut controlled_entity_map,
+                    &mut player_entity_map,
+                    &component_registry,
+                    &app_type_registry,
+                    &all_guids,
+                    &scripts_root,
+                    known_bundle_ids,
+                    actor_account_id_wire.as_str(),
+                    actor_player_entity_id.as_str(),
+                    request_id_wire.as_str(),
+                    player_entity_id.as_str(),
+                    bundle_id.as_str(),
+                    requested_entity_id.as_str(),
+                    overrides,
+                );
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_bootstrap_player_entity_command(
+    commands: &mut Commands<'_, '_>,
+    controlled_entity_map: &mut ResMut<'_, PlayerControlledEntityMap>,
+    player_entity_map: &mut ResMut<'_, PlayerRuntimeEntityMap>,
+    pending_controlled_by: &mut ResMut<'_, PendingControlledByBindings>,
+    bindings: &Res<'_, AuthenticatedClientBindings>,
+    component_registry: &Res<'_, GeneratedComponentRegistry>,
+    app_type_registry: &Res<'_, AppTypeRegistry>,
+    all_guids: &Query<'_, '_, &'_ EntityGuid>,
+    simulated_entities: &Query<
+        '_,
+        '_,
+        (Entity, &'_ EntityGuid, &'_ OwnerId),
+        With<SimulatedControlledEntity>,
+    >,
+    processed_players: &mut HashSet<String>,
+    player_entity_id: &str,
+) {
+    if !processed_players.insert(player_entity_id.to_string()) {
+        return;
+    }
+    let Some(player_id) = PlayerEntityId::parse(player_entity_id) else {
+        bevy::log::warn!(
+            "bootstrap: invalid player_entity_id={}, skipping",
+            player_entity_id
+        );
+        return;
+    };
+
+    // If the player entity isn't in the world yet, attempt deferred hydration.
+    if !player_entity_map
+        .by_player_entity_id
+        .contains_key(player_entity_id)
+    {
+        bevy::log::info!(
+            "bootstrap: player {} not in world; attempting deferred hydration",
+            player_entity_id
+        );
+        let database_url = replication_database_url();
+        let mut persistence = match GraphPersistence::connect(&database_url) {
+            Ok(v) => v,
+            Err(err) => {
+                bevy::log::error!("bootstrap deferred hydration failed (connect): {err}");
+                return;
+            }
+        };
+        let all_records = match persistence.load_graph_records() {
+            Ok(v) => v,
+            Err(err) => {
+                bevy::log::error!("bootstrap deferred hydration failed (load): {err}");
+                return;
+            }
+        };
+        let type_paths = component_type_path_map(component_registry);
+        let player_records = filter_records_for_player(&all_records, player_entity_id, &type_paths);
+        if player_records.is_empty() {
+            bevy::log::warn!(
+                "bootstrap: player {} has no records in graph DB; skipping",
+                player_entity_id
+            );
+            return;
+        }
+        let existing_guids = collect_existing_guids(all_guids);
+        hydrate_records_into_world(
+            commands,
+            &player_records,
+            component_registry,
+            app_type_registry,
+            &existing_guids,
+            player_entity_map,
+            controlled_entity_map,
+        );
+        bevy::log::info!(
+            "bootstrap: deferred hydration complete for player {} ({} records)",
+            player_entity_id,
+            player_records.len()
+        );
+    }
+
+    let Some(&player_entity) = player_entity_map.by_player_entity_id.get(player_entity_id) else {
+        bevy::log::warn!(
+            "bootstrap: player entity {} still not found after deferred hydration; skipping",
+            player_entity_id
+        );
+        return;
+    };
+
+    let has_live_controlled_entity = controlled_entity_map
+        .by_player_entity_id
+        .get(&player_id)
+        .is_some_and(|entity| all_guids.get(*entity).is_ok());
+
+    if !has_live_controlled_entity {
+        let mut existing_matches = simulated_entities
+            .iter()
+            .filter(|(_, _, owner)| {
+                PlayerEntityId::parse(owner.0.as_str()).is_some_and(|id| id == player_id)
+            })
+            .collect::<Vec<_>>();
+        if let Some((existing_entity, existing_guid, _)) = existing_matches.pop() {
+            if !existing_matches.is_empty() {
+                bevy::log::warn!(
+                    "bootstrap found duplicate controlled entities for player={}; using latest match",
+                    player_entity_id
+                );
+            }
+            controlled_entity_map
+                .by_player_entity_id
+                .insert(player_id, existing_entity);
+            commands
+                .entity(player_entity)
+                .insert(ControlledEntityGuid(Some(existing_guid.0.to_string())));
+        }
+    }
+
+    if let Some(&controlled_entity) = controlled_entity_map.by_player_entity_id.get(&player_id) {
+        if let Ok(control_guid) = all_guids.get(controlled_entity) {
+            commands
+                .entity(player_entity)
+                .insert(ControlledEntityGuid(Some(control_guid.0.to_string())));
+        }
+        let client_entity = bindings
+            .by_client_entity
+            .iter()
+            .find(|(_, bound_player_id)| *bound_player_id == player_entity_id)
+            .map(|(entity, _)| *entity);
+        if let Some(client_entity) = client_entity {
+            pending_controlled_by
+                .bindings
+                .push((client_entity, controlled_entity));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_admin_spawn_command(
+    commands: &mut Commands<'_, '_>,
+    controlled_entity_map: &mut ResMut<'_, PlayerControlledEntityMap>,
+    player_entity_map: &mut ResMut<'_, PlayerRuntimeEntityMap>,
+    component_registry: &Res<'_, GeneratedComponentRegistry>,
+    app_type_registry: &Res<'_, AppTypeRegistry>,
+    all_guids: &Query<'_, '_, &'_ EntityGuid>,
+    scripts_root: &std::path::Path,
+    known_bundle_ids: Option<&HashSet<String>>,
+    actor_account_id: &str,
+    actor_player_entity_id: &str,
+    request_id: &str,
+    player_entity_id: &str,
+    bundle_id: &str,
+    requested_entity_id: &str,
+    mut overrides: serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(player_uuid) = PlayerEntityId::parse(player_entity_id) else {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: invalid player_entity_id={}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            player_entity_id
+        );
+        return;
+    };
+    let Ok(requested_uuid) = uuid::Uuid::parse_str(requested_entity_id) else {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: invalid requested_entity_id={}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            requested_entity_id
+        );
+        return;
+    };
+    let canonical_player_id = player_uuid.canonical_wire_id();
+    if !player_entity_map
+        .by_player_entity_id
+        .contains_key(canonical_player_id.as_str())
+    {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: unknown player_entity_id={}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            canonical_player_id
+        );
+        return;
+    }
+    if let Some(known_bundle_ids) = known_bundle_ids
+        && !known_bundle_ids.contains(bundle_id)
+    {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: unknown bundle_id={}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            bundle_id
+        );
+        return;
+    }
+    if overrides.len() > ADMIN_MAX_OVERRIDE_FIELDS {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: too many overrides fields={}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            overrides.len()
+        );
+        return;
+    }
+    let Ok(override_payload_len) = serde_json::to_vec(&overrides).map(|bytes| bytes.len()) else {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: failed serializing overrides",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id
+        );
+        return;
+    };
+    if override_payload_len > ADMIN_MAX_OVERRIDE_JSON_BYTES {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: override payload too large bytes={}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            override_payload_len
+        );
+        return;
+    }
+    if let Some((key, _)) = overrides
+        .iter()
+        .find(|(key, _)| !ADMIN_ALLOWED_OVERRIDE_KEYS.contains(&key.as_str()))
+    {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: override key not allowed key={}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            key
+        );
+        return;
+    }
+    if let Some(value) = overrides.get("display_name")
+        && !value.is_string()
+    {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: display_name must be a string",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id
+        );
+        return;
+    }
+
+    overrides.insert(
+        "owner_id".to_string(),
+        serde_json::Value::String(canonical_player_id.clone()),
+    );
+    overrides.insert(
+        "entity_id".to_string(),
+        serde_json::Value::String(requested_uuid.to_string()),
+    );
+
+    let graph_records = match spawn_bundle_graph_records(scripts_root, bundle_id, &overrides) {
+        Ok(records) => records,
+        Err(err) => {
+            bevy::log::error!(
+                "admin spawn failed request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={}: bundle spawn failed: {}",
+                request_id,
+                actor_account_id,
+                actor_player_entity_id,
+                canonical_player_id,
+                bundle_id,
+                err
+            );
+            return;
+        }
+    };
+    if graph_records
+        .first()
+        .is_none_or(|record| record.entity_id != requested_entity_id)
+    {
+        bevy::log::error!(
+            "admin spawn failed request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={}: root entity_id mismatch requested={} actual_first={:?}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            canonical_player_id,
+            bundle_id,
+            requested_entity_id,
+            graph_records.first().map(|r| r.entity_id.as_str())
+        );
+        return;
+    }
+
+    let database_url = replication_database_url();
+    let mut persistence = match GraphPersistence::connect(&database_url) {
+        Ok(v) => v,
+        Err(err) => {
+            bevy::log::error!(
+                "admin spawn failed request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}: db connect failed: {}",
+                request_id,
+                actor_account_id,
+                actor_player_entity_id,
+                canonical_player_id,
+                bundle_id,
+                requested_entity_id,
+                err
+            );
+            return;
+        }
+    };
+    if let Err(err) = persistence.ensure_schema() {
+        bevy::log::error!(
+            "admin spawn failed request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}: ensure schema failed: {}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            canonical_player_id,
+            bundle_id,
+            requested_entity_id,
+            err
+        );
+        return;
+    }
+    if let Err(err) = persistence.persist_graph_records(&graph_records, 0) {
+        bevy::log::error!(
+            "admin spawn failed request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}: persist failed: {}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            canonical_player_id,
+            bundle_id,
+            requested_entity_id,
+            err
+        );
+        return;
+    }
+
+    let existing_guids = collect_existing_guids(all_guids);
+    hydrate_records_into_world(
+        commands,
+        &graph_records,
+        component_registry,
+        app_type_registry,
+        &existing_guids,
+        player_entity_map,
+        controlled_entity_map,
+    );
+
+    let mut event_payload = serde_json::Map::new();
+    event_payload.insert(
+        "request_id".to_string(),
+        serde_json::Value::String(request_id.to_string()),
+    );
+    event_payload.insert(
+        "actor_account_id".to_string(),
+        serde_json::Value::String(actor_account_id.to_string()),
+    );
+    event_payload.insert(
+        "actor_player_entity_id".to_string(),
+        serde_json::Value::String(actor_player_entity_id.to_string()),
+    );
+    event_payload.insert(
+        "owner_player_entity_id".to_string(),
+        serde_json::Value::String(canonical_player_id.clone()),
+    );
+    event_payload.insert(
+        "bundle_id".to_string(),
+        serde_json::Value::String(bundle_id.to_string()),
+    );
+    event_payload.insert(
+        "spawned_entity_id".to_string(),
+        serde_json::Value::String(requested_entity_id.to_string()),
+    );
+    if let Err(err) = emit_bundle_spawned_event(scripts_root, &event_payload) {
+        bevy::log::warn!(
+            "admin spawn post-hook failed request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}: {}",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id,
+            canonical_player_id,
+            bundle_id,
+            requested_entity_id,
+            err
+        );
+    }
+
+    let display_name = overrides
+        .get("display_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Corvette");
+    bevy::log::info!(
+        "audit spawn command actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={} spawned_entity_id={} display_name={} request_id={}",
+        actor_account_id,
+        actor_player_entity_id,
+        canonical_player_id,
+        bundle_id,
+        requested_entity_id,
+        display_name,
+        request_id
+    );
 }
 
 pub fn apply_pending_controlled_by_bindings(

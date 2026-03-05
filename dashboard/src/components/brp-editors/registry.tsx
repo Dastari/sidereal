@@ -3,6 +3,8 @@ import {
   COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER,
   COMPONENT_TYPE_DENSITY,
   COMPONENT_TYPE_ENGINE,
+  COMPONENT_TYPE_FLIGHT_TUNING,
+  COMPONENT_TYPE_MAX_VELOCITY_MPS,
   COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
   COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
@@ -23,6 +25,16 @@ const CharacterMovementControllerEditor = React.lazy(() =>
 const EngineEditor = React.lazy(() =>
   import('./EngineEditor').then((m) => ({
     default: m.EngineEditor,
+  })),
+)
+const FlightTuningEditor = React.lazy(() =>
+  import('./FlightTuningEditor').then((m) => ({
+    default: m.FlightTuningEditor,
+  })),
+)
+const MaxVelocityMpsEditor = React.lazy(() =>
+  import('./MaxVelocityMpsEditor').then((m) => ({
+    default: m.MaxVelocityMpsEditor,
   })),
 )
 const StarfieldShaderSettingsEditor = React.lazy(() =>
@@ -49,6 +61,8 @@ const EDITOR_MAP: Record<
   [COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER]:
     CharacterMovementControllerEditor,
   [COMPONENT_TYPE_ENGINE]: EngineEditor,
+  [COMPONENT_TYPE_FLIGHT_TUNING]: FlightTuningEditor,
+  [COMPONENT_TYPE_MAX_VELOCITY_MPS]: MaxVelocityMpsEditor,
   [COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS]: StarfieldShaderSettingsEditor,
   [COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS]:
     SpaceBackgroundShaderSettingsEditor,

@@ -36,19 +36,25 @@ float gridLine(float coord, float spacing, float lineWidth) {
 }
 
 void main() {
-  // Calculate appropriate grid spacing based on zoom level
-  // Major grid at 1000m, 100m subdivisions, 10m micro
-  float majorSpacing = 1000.0;
-  float minorSpacing = 100.0;
-  float microSpacing = 10.0;
-  
-  // Line widths in world units (adjusted by zoom)
-  float invZoom = 1.0 / u_zoom;
-  float majorWidth = 2.0 * invZoom;
-  float minorWidth = 1.0 * invZoom;
-  float microWidth = 0.5 * invZoom;
-  
-  // Calculate grid lines
+  // Keep major lines around a target pixel spacing by changing world spacing
+  // in decade/2x/5x steps. This keeps the grid readable across huge zoom ranges.
+  float safeZoom = max(u_zoom, 1e-6);
+  float worldPerPixel = 1.0 / safeZoom;
+  float targetMajorPixels = 140.0;
+  float targetMajorWorld = worldPerPixel * targetMajorPixels;
+  float decade = pow(10.0, floor(log(max(targetMajorWorld, 1e-12)) / log(10.0)));
+  float scaled = targetMajorWorld / decade;
+  float majorStep = scaled < 2.0 ? 1.0 : (scaled < 5.0 ? 2.0 : 5.0);
+  float majorSpacing = majorStep * decade;
+  float minorSpacing = majorSpacing / 10.0;
+  float microSpacing = majorSpacing / 100.0;
+
+  // Widths in world units so lines keep roughly constant on-screen thickness.
+  float majorWidth = 1.8 * worldPerPixel;
+  float minorWidth = 1.1 * worldPerPixel;
+  float microWidth = 0.8 * worldPerPixel;
+
+  // Calculate grid lines.
   float majorX = gridLine(v_worldPos.x, majorSpacing, majorWidth);
   float majorY = gridLine(v_worldPos.y, majorSpacing, majorWidth);
   float major = max(majorX, majorY);
@@ -57,22 +63,24 @@ void main() {
   float minorY = gridLine(v_worldPos.y, minorSpacing, minorWidth);
   float minor = max(minorX, minorY);
   
-  // Only show micro grid when zoomed in enough
-  float microFade = smoothstep(0.5, 2.0, u_zoom);
+  float minorPixelSpacing = minorSpacing * safeZoom;
+  float microPixelSpacing = microSpacing * safeZoom;
+  float minorFade = smoothstep(6.0, 16.0, minorPixelSpacing);
+  float microFade = smoothstep(8.0, 18.0, microPixelSpacing);
   float microX = gridLine(v_worldPos.x, microSpacing, microWidth);
   float microY = gridLine(v_worldPos.y, microSpacing, microWidth);
   float micro = max(microX, microY) * microFade;
-  
-  // Composite colors
+
+  // Composite colors.
   vec3 color = u_background;
   color = mix(color, u_gridMicro, micro * 0.6);
-  color = mix(color, u_gridMinor, minor * 0.8);
+  color = mix(color, u_gridMinor, minor * 0.8 * minorFade);
   color = mix(color, u_gridMajor, major);
-  
-  // Origin lines (thicker, different color)
-  float originWidth = 3.0 * invZoom;
-  float originX = gridLine(v_worldPos.x, 100000.0, originWidth);
-  float originY = gridLine(v_worldPos.y, 100000.0, originWidth);
+
+  // Origin axis lines.
+  float originWidth = 3.0 * worldPerPixel;
+  float originX = smoothstep(originWidth, 0.0, abs(v_worldPos.x));
+  float originY = smoothstep(originWidth, 0.0, abs(v_worldPos.y));
   float origin = max(originX, originY);
   color = mix(color, u_originLine, origin * 0.8);
   

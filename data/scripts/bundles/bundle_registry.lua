@@ -150,15 +150,6 @@ BundleRegistry.bundles = {
       C.AmmoCount,
     },
   },
-  debug_minimal_dynamic = {
-    graph_records_script = "bundles/entity_registry.lua",
-    required_component_kinds = {
-      C.DisplayName,
-      C.EntityLabels,
-      C.PlayerTag,
-      C.AccountId,
-    },
-  },
 }
 
 return BundleRegistry

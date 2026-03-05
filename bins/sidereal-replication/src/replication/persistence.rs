@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
 use sidereal_game::{EntityGuid, EntityLabels, GeneratedComponentRegistry, MountedOn};

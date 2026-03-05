@@ -83,7 +83,7 @@ const MAX_TICKS_AHEAD: u64 = 6;
 const SKIP_AHEAD_ON_FUTURE_TICK: bool = true;
 pub(crate) const MAX_MESSAGES_PER_SECOND: u32 = 120;
 
-/// Canonical form for player entity id so legacy encodings converge on bare UUID wire format.
+/// Canonical form for player entity id (bare UUID wire format).
 pub(crate) fn canonical_player_entity_id(id: &str) -> String {
     PlayerEntityId::parse(id)
         .map(PlayerEntityId::canonical_wire_id)
@@ -115,10 +115,6 @@ pub(crate) fn canonical_controlled_entity_id(
         return Some(RuntimeEntityId(player_entity_id.0));
     }
     parse_runtime_entity_id(id)
-}
-
-fn authoritative_fallback_to_action_state_enabled() -> bool {
-    debug_env("SIDEREAL_ALLOW_ACTION_STATE_FALLBACK")
 }
 
 impl ClientInputDropMetrics {
@@ -237,7 +233,6 @@ pub fn receive_latest_realtime_input_messages(
         last_activity.0.insert(client_entity, now_s);
 
         // Keep only messages claiming this client's bound player; count spoofed.
-        // Use canonical form so "249c313e-..." and "player:249c313e-..." both match.
         let mut valid_claims: Vec<ClientRealtimeInputMessage> = Vec::with_capacity(messages.len());
         for message in messages {
             let Some(claimed_player_id) = parse_player_entity_id(message.player_entity_id.as_str())
@@ -359,7 +354,6 @@ pub fn drain_native_player_inputs_to_action_queue(
             Option<&'_ SimulatedControlledEntity>,
             Option<&'_ PlayerTag>,
             Option<&'_ ControlledEntityGuid>,
-            &'_ ActionState<PlayerInput>,
             &'_ mut ActionQueue,
         ),
         Without<lightyear::prelude::Confirmed<ActionState<PlayerInput>>>,
@@ -371,8 +365,7 @@ pub fn drain_native_player_inputs_to_action_queue(
     mut input_log_state: ResMut<'_, InputActivityLogState>,
 ) {
     const ACTIVE_INPUT_LOG_INTERVAL_S: f64 = 0.15;
-    for (entity, guid, simulated, player_tag, controlled_entity_guid, state, mut queue) in entities
-    {
+    for (entity, guid, simulated, player_tag, controlled_entity_guid, mut queue) in entities {
         if simulated.is_none() && player_tag.is_some() {
             let own_guid = guid.0.to_string();
             let controls_other_entity = controlled_entity_guid
@@ -424,10 +417,7 @@ pub fn drain_native_player_inputs_to_action_queue(
                     .saturating_add(1);
                 (&[][..], "mismatch")
             }
-            None if simulated.is_some() && !authoritative_fallback_to_action_state_enabled() => {
-                (&[][..], "no_realtime")
-            }
-            None => (state.0.actions.as_slice(), "action_state"),
+            None => (&[][..], "no_realtime"),
         };
         if actions.is_empty() {
             // Latest snapshot has no actions; clear stale queue state.
@@ -442,8 +432,7 @@ pub fn drain_native_player_inputs_to_action_queue(
                 info!(
                     player = %player_entity_id,
                     controlled = %controlled_entity_id,
-                    action_state_actions = ?state.0.actions,
-                    "server input route has no actions after realtime/action-state selection"
+                    "server input route has no actions after realtime selection"
                 );
             }
             continue;

@@ -1,7 +1,7 @@
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use sidereal_core::auth::AuthClaims;
-use sidereal_core::bootstrap_wire::BootstrapCommand;
-use sidereal_core::gateway_dtos::AuthTokens;
+use sidereal_core::bootstrap_wire::{AdminSpawnEntityCommand, BootstrapCommand};
+use sidereal_core::gateway_dtos::{AdminSpawnEntityRequest, AdminSpawnEntityResponse, AuthTokens};
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
@@ -25,11 +25,7 @@ pub struct AuthService {
 }
 
 fn parse_player_entity_uuid(raw: &str) -> Option<Uuid> {
-    Uuid::parse_str(raw).ok().or_else(|| {
-        raw.split(':')
-            .nth(1)
-            .and_then(|candidate| Uuid::parse_str(candidate).ok())
-    })
+    Uuid::parse_str(raw).ok()
 }
 
 fn canonical_player_entity_id(raw: &str) -> Option<String> {
@@ -38,6 +34,14 @@ fn canonical_player_entity_id(raw: &str) -> Option<String> {
 
 fn bare_player_entity_id(raw: &str) -> Option<String> {
     parse_player_entity_uuid(raw).map(|uuid| uuid.to_string())
+}
+
+fn has_admin_or_dev_role(claims: &AuthClaims) -> bool {
+    claims.roles.iter().any(|role| {
+        role.eq_ignore_ascii_case("admin")
+            || role.eq_ignore_ascii_case("dev_tool")
+            || role.eq_ignore_ascii_case("developer")
+    })
 }
 
 impl AuthService {
@@ -73,27 +77,14 @@ impl AuthService {
         validate_password(password)?;
 
         let password_hash = hash_password(password)?;
-        let account = if let Some(account) = self
+        let account = self
             .store
             .create_account_atomic(&normalized_email, &password_hash)
-            .await?
-        {
-            info!(
-                "gateway register used atomic account creation path account_id={} player_entity_id={}",
-                account.account_id, account.player_entity_id
-            );
-            account
-        } else {
-            let account = self
-                .store
-                .create_account(&normalized_email, &password_hash)
-                .await?;
-            info!(
-                "gateway register used fallback account creation path account_id={} player_entity_id={}",
-                account.account_id, account.player_entity_id
-            );
-            account
-        };
+            .await?;
+        info!(
+            "gateway register used atomic account creation path account_id={} player_entity_id={}",
+            account.account_id, account.player_entity_id
+        );
         self.starter_world_persister
             .persist_starter_world(
                 account.account_id,
@@ -191,6 +182,64 @@ impl AuthService {
             .await
     }
 
+    pub async fn admin_spawn_entity(
+        &self,
+        access_token: &str,
+        req: &AdminSpawnEntityRequest,
+    ) -> Result<AdminSpawnEntityResponse, AuthError> {
+        let claims = self.decode_access_token(access_token)?;
+        if !has_admin_or_dev_role(&claims) {
+            return Err(AuthError::Unauthorized(
+                "admin spawn requires admin or dev_tool role".to_string(),
+            ));
+        }
+        let Some(actor_player_entity_id) = bare_player_entity_id(&claims.player_entity_id) else {
+            return Err(AuthError::Unauthorized(
+                "invalid actor player_entity_id in access token".to_string(),
+            ));
+        };
+        let Some(owner_player_entity_id) = bare_player_entity_id(&req.player_entity_id) else {
+            return Err(AuthError::Validation(
+                "player_entity_id is required".to_string(),
+            ));
+        };
+        if req.bundle_id.trim().is_empty() {
+            return Err(AuthError::Validation("bundle_id is required".to_string()));
+        }
+        let actor_account_id = Uuid::parse_str(&claims.sub)
+            .map_err(|_| AuthError::Unauthorized("invalid access token subject".to_string()))?;
+
+        let spawned_entity_id = Uuid::new_v4().to_string();
+        let request_id = Uuid::new_v4();
+        let command = AdminSpawnEntityCommand {
+            actor_account_id,
+            actor_player_entity_id,
+            request_id,
+            player_entity_id: owner_player_entity_id.clone(),
+            bundle_id: req.bundle_id.trim().to_string(),
+            requested_entity_id: spawned_entity_id.clone(),
+            overrides: req.overrides.clone(),
+        };
+        self.bootstrap_dispatcher
+            .dispatch_admin_spawn(&command)
+            .await?;
+        info!(
+            "gateway admin spawn enqueued request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}",
+            request_id,
+            command.actor_account_id,
+            command.actor_player_entity_id,
+            owner_player_entity_id,
+            command.bundle_id,
+            spawned_entity_id
+        );
+        Ok(AdminSpawnEntityResponse {
+            ok: true,
+            spawned_entity_id,
+            bundle_id: command.bundle_id,
+            owner_player_entity_id,
+        })
+    }
+
     pub async fn password_reset_request(
         &self,
         email: &str,
@@ -274,6 +323,7 @@ impl AuthService {
             sub: account.account_id.to_string(),
             player_entity_id: canonical_player_entity_id(&account.player_entity_id)
                 .unwrap_or(account.player_entity_id),
+            roles: Vec::new(),
             iat,
             exp,
             jti: Uuid::new_v4().to_string(),

@@ -5,7 +5,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::ecs::query::Has;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
-use sidereal_game::EntityGuid;
+use sidereal_game::{EntityGuid, PlayerTag};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::app_state::{ClientSession, FreeCameraState, LocalPlayerViewState};
@@ -14,12 +14,109 @@ use super::components::{
     UiOverlayCamera,
 };
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
-use super::resources::CameraMotionState;
-use avian2d::prelude::Position;
+use super::resources::{CameraMotionState, TacticalMapUiState};
 
+fn resolve_guid_entity_prefer_predicted(
+    guid: uuid::Uuid,
+    candidates: &Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+    >,
+) -> Option<Entity> {
+    let mut winner: Option<(Entity, i32)> = None;
+    for (entity, entity_guid, is_predicted, is_interpolated) in candidates {
+        if entity_guid.0 != guid {
+            continue;
+        }
+        let score = if is_predicted {
+            3
+        } else if is_interpolated {
+            2
+        } else {
+            1
+        };
+        if winner.is_none_or(|(_, best_score)| score > best_score) {
+            winner = Some((entity, score));
+        }
+    }
+    winner.map(|(entity, _)| entity)
+}
+
+fn parse_entity_id_guid(raw: &str) -> Option<uuid::Uuid> {
+    sidereal_runtime_sync::parse_guid_from_entity_id(raw)
+        .or_else(|| uuid::Uuid::parse_str(raw).ok())
+}
+
+/// Client-side visual smoothing helper:
+/// when the player controls another entity, keep the local player anchor Transform
+/// aligned to the controlled entity's rendered Transform, without writing Position.
+///
+/// This preserves server-authoritative player Position for visibility/culling while
+/// avoiding camera lurch from interpolated player-anchor network updates.
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_player_anchor_render_transform_to_controlled_entity(
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    guid_candidates: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+    >,
+    source_transforms: Query<'_, '_, &'_ Transform, (Without<PlayerTag>, Without<Camera>)>,
+    mut player_transforms: Query<'_, '_, &'_ mut Transform, (With<PlayerTag>, Without<Camera>)>,
+) {
+    let Some(player_entity_id) = session.player_entity_id.as_deref() else {
+        return;
+    };
+    let Some(player_guid) = parse_entity_id_guid(player_entity_id) else {
+        return;
+    };
+    let Some(controlled_id) = player_view_state.controlled_entity_id.as_deref() else {
+        return;
+    };
+    let Some(controlled_guid) = parse_entity_id_guid(controlled_id) else {
+        return;
+    };
+    if controlled_guid == player_guid {
+        return;
+    }
+
+    let Some(player_anchor_entity) =
+        resolve_guid_entity_prefer_predicted(player_guid, &guid_candidates)
+    else {
+        return;
+    };
+    let Some(controlled_entity) =
+        resolve_guid_entity_prefer_predicted(controlled_guid, &guid_candidates)
+    else {
+        return;
+    };
+    let Ok(controlled_transform) = source_transforms.get(controlled_entity) else {
+        return;
+    };
+    let Ok(mut player_transform) = player_transforms.get_mut(player_anchor_entity) else {
+        return;
+    };
+
+    player_transform.translation = controlled_transform.translation;
+    player_transform.rotation = controlled_transform.rotation;
+}
+
+#[allow(clippy::type_complexity)]
 pub(crate) fn resolve_camera_anchor_entity(
     session: &ClientSession,
-    _player_view_state: &LocalPlayerViewState,
+    player_view_state: &LocalPlayerViewState,
     entity_registry: &RuntimeEntityHierarchy,
     anchor_candidates: &Query<
         '_,
@@ -33,18 +130,10 @@ pub(crate) fn resolve_camera_anchor_entity(
         (Without<Camera>, Without<GameplayCamera>),
     >,
 ) -> Option<Entity> {
-    let Some(player_id) = session.player_entity_id.as_deref() else {
-        return None;
-    };
-    let player_guid = sidereal_runtime_sync::parse_guid_from_entity_id(player_id)
-        .or_else(|| uuid::Uuid::parse_str(player_id).ok());
-    if let Some(player_guid) = player_guid {
-        // Lightyear can host multiple runtime entities with the same GUID
-        // (predicted / interpolated / confirmed clones). Always prefer predicted
-        // for camera follow to keep local motion responsive in free-roam.
+    let find_best_runtime_by_guid = |target_guid: uuid::Uuid| {
         let mut winner: Option<(Entity, i32)> = None;
         for (entity, guid, is_predicted, is_interpolated) in anchor_candidates {
-            if guid.is_none_or(|guid| guid.0 != player_guid) {
+            if guid.is_none_or(|guid| guid.0 != target_guid) {
                 continue;
             }
             let score = if is_predicted {
@@ -58,7 +147,27 @@ pub(crate) fn resolve_camera_anchor_entity(
                 winner = Some((entity, score));
             }
         }
-        if let Some((entity, _)) = winner {
+        winner.map(|(entity, _)| entity)
+    };
+
+    let player_id = session.player_entity_id.as_deref()?;
+    let player_guid = sidereal_runtime_sync::parse_guid_from_entity_id(player_id)
+        .or_else(|| uuid::Uuid::parse_str(player_id).ok());
+
+    // When controlling another entity, follow that entity directly to avoid
+    // dual-follow rubber-banding (controlled -> player -> camera).
+    if let (Some(player_guid), Some(controlled_id)) = (
+        player_guid,
+        player_view_state.controlled_entity_id.as_deref(),
+    ) && let Some(controlled_guid) = parse_entity_id_guid(controlled_id)
+        && controlled_guid != player_guid
+        && let Some(controlled_entity) = find_best_runtime_by_guid(controlled_guid)
+    {
+        return Some(controlled_entity);
+    }
+
+    if let Some(player_guid) = player_guid {
+        if let Some(entity) = find_best_runtime_by_guid(player_guid) {
             return Some(entity);
         }
     }
@@ -79,16 +188,12 @@ pub(crate) fn resolve_camera_anchor_entity(
 pub(crate) fn update_topdown_camera_system(
     time: Res<'_, Time>,
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
+    tactical_map_state: Res<'_, TacticalMapUiState>,
     mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    anchor_query: Query<
-        '_,
-        '_,
-        (&Transform, Option<&Position>),
-        (Without<Camera>, Without<GameplayCamera>),
-    >,
+    anchor_query: Query<'_, '_, &'_ Transform, (Without<Camera>, Without<GameplayCamera>)>,
     anchor_candidates: Query<
         '_,
         '_,
@@ -121,7 +226,7 @@ pub(crate) fn update_topdown_camera_system(
         };
         wheel_delta_y += normalized.clamp(-4.0, 4.0);
     }
-    if wheel_delta_y != 0.0 {
+    if wheel_delta_y != 0.0 && !tactical_map_state.enabled {
         camera.target_distance = (camera.target_distance
             - wheel_delta_y * camera.zoom_units_per_wheel)
             .clamp(camera.min_distance, camera.max_distance);
@@ -140,13 +245,9 @@ pub(crate) fn update_topdown_camera_system(
         &anchor_candidates,
     )
     .and_then(|entity| anchor_query.get(entity).ok())
-    .map(|(anchor_transform, anchor_position)| {
-        anchor_position
-            .map(|p| p.0)
-            .unwrap_or_else(|| anchor_transform.translation.truncate())
-    });
+    .map(|anchor_transform| anchor_transform.translation.truncate());
 
-    let (focus_xy, snap_focus) = if player_view_state.detached_free_camera {
+    let focus_xy = if player_view_state.detached_free_camera {
         if !free_camera.initialized {
             free_camera.position_xy = camera_transform.translation.truncate();
             free_camera.initialized = true;
@@ -171,24 +272,44 @@ pub(crate) fn update_topdown_camera_system(
         if axis != Vec2::ZERO {
             free_camera.position_xy += axis.normalize() * speed * dt;
         }
-        (free_camera.position_xy, false)
+        free_camera.position_xy
     } else if let Some(anchor_xy) = follow_anchor {
         free_camera.position_xy = anchor_xy;
         free_camera.initialized = true;
-        (anchor_xy, true)
+        anchor_xy
     } else {
         let fallback_xy = camera_transform.translation.truncate();
         free_camera.position_xy = fallback_xy;
         free_camera.initialized = true;
-        (fallback_xy, true)
+        fallback_xy
     };
-    if !camera.focus_initialized {
+    let is_controlling_other = session
+        .player_entity_id
+        .as_deref()
+        .and_then(parse_entity_id_guid)
+        .zip(
+            player_view_state
+                .controlled_entity_id
+                .as_deref()
+                .and_then(parse_entity_id_guid),
+        )
+        .is_some_and(|(player_guid, controlled_guid)| controlled_guid != player_guid);
+
+    if player_view_state.detached_free_camera {
+        // Free camera should be direct and stable, not spring-filtered.
         camera.filtered_focus_xy = focus_xy;
         camera.focus_initialized = true;
-    } else if snap_focus {
+    } else if is_controlling_other {
+        // When controlling another entity, keep camera hard-locked to avoid
+        // visible rubber-banding from follow smoothing.
         camera.filtered_focus_xy = focus_xy;
+        camera.focus_initialized = true;
+    } else if !camera.focus_initialized {
+        camera.filtered_focus_xy = focus_xy;
+        camera.focus_initialized = true;
     } else {
-        let follow_smoothness = 60.0;
+        // Keep attached follow simple and deterministic to avoid oscillation/lurch.
+        let follow_smoothness = 18.0;
         let alpha = 1.0 - (-follow_smoothness * dt).exp();
         camera.filtered_focus_xy = camera.filtered_focus_xy.lerp(focus_xy, alpha);
     }

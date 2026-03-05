@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { faker } from '@faker-js/faker'
 import type {
   ExpandedNode,
   GraphEdge,
@@ -71,6 +72,16 @@ type ApiLiveWorld = {
   error?: string
 }
 
+type ContextMenuState = {
+  open: boolean
+  x: number
+  y: number
+  entityId: string | null
+}
+
+const DEFAULT_OWNER_TYPE_PATH = 'sidereal_game::components::owner_id::OwnerId'
+const SPAWN_TEMPLATES = [{ templateId: 'corvette', label: 'Corvette' }] as const
+
 const CAMERA_HIDE_SUBSTRING = 'bevy_camera::camera::Camera'
 
 /** True if this entity should be hidden from the map (tree still shows it). */
@@ -133,13 +144,18 @@ function parseSelectedPlayerVisibilityOverlay(
     }
   }
 
-  if (!spatialGridValue || !disclosureValue) return null
+  if (!spatialGridValue) return null
 
   const cellSizeM =
     asFiniteNumber(spatialGridValue.cell_size_m) ??
     asFiniteNumber(spatialGridValue.cellSizeM) ??
     asFiniteNumber(spatialGridValue.cellSize)
   if (cellSizeM === null || cellSizeM <= 0) return null
+  const deliveryRangeM =
+    asFiniteNumber(spatialGridValue.delivery_range_m) ??
+    asFiniteNumber(spatialGridValue.deliveryRangeM) ??
+    asFiniteNumber(spatialGridValue.deliveryRange) ??
+    0
 
   const queriedCellsRaw = Array.isArray(spatialGridValue.queried_cells)
     ? spatialGridValue.queried_cells
@@ -156,11 +172,13 @@ function parseSelectedPlayerVisibilityOverlay(
     })
     .filter((entry): entry is { x: number; y: number } => entry !== null)
 
-  const scannerSourcesRaw = Array.isArray(disclosureValue.scanner_sources)
-    ? disclosureValue.scanner_sources
-    : Array.isArray(disclosureValue.scannerSources)
-      ? disclosureValue.scannerSources
-      : []
+  const scannerSourcesRaw = disclosureValue
+    ? Array.isArray(disclosureValue.scanner_sources)
+      ? disclosureValue.scanner_sources
+      : Array.isArray(disclosureValue.scannerSources)
+        ? disclosureValue.scannerSources
+        : []
+    : []
   const scannerSources = scannerSourcesRaw
     .map((entry) => {
       if (!isObjectRecord(entry)) return null
@@ -188,9 +206,37 @@ function parseSelectedPlayerVisibilityOverlay(
 
   return {
     cell_size_m: cellSizeM,
+    delivery_range_m: Math.max(0, deliveryRangeM),
     queried_cells: queriedCells,
     scanner_sources: scannerSources,
   }
+}
+
+function isPlayerEntity(entity: WorldEntity): boolean {
+  if (entity.kind.toLowerCase().includes('player')) return true
+  return entity.entity_labels?.some((label) => label.toLowerCase() === 'player') ?? false
+}
+
+function playerLabel(entity: WorldEntity): string {
+  const guid = entity.entityGuid ?? entity.id
+  return `${entity.name} (${guid.slice(0, 8)})`
+}
+
+function resolveOwnerTypePath(
+  entityId: string,
+  graphNodes: Map<string, GraphNode>,
+  graphEdges: Array<GraphEdge>,
+): string {
+  const componentNodeIds = graphEdges
+    .filter((edge) => edge.from === entityId && edge.label === 'HAS_COMPONENT')
+    .map((edge) => edge.to)
+  for (const componentNodeId of componentNodeIds) {
+    const node = graphNodes.get(componentNodeId)
+    const typePath = node?.properties?.typePath
+    if (typeof typePath !== 'string') continue
+    if (typePath.endsWith('::OwnerId')) return typePath
+  }
+  return DEFAULT_OWNER_TYPE_PATH
 }
 
 function DashboardPage() {
@@ -213,10 +259,24 @@ function DashboardPage() {
 
   // UI state
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [centerRequest, setCenterRequest] = useState<{
+    position: { x: number; y: number } | null
+    seq: number
+  }>({
+    position: null,
+    seq: 0,
+  })
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(280)
   const [detailPanelWidth, setDetailPanelWidth] = useState(320)
   const [filterMapInvisible, setFilterMapInvisible] = useState(true)
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>({
+    open: false,
+    x: 0,
+    y: 0,
+    entityId: null,
+  })
+  const [contextStatusText, setContextStatusText] = useState<string | null>(null)
 
   // Status
   const [graphStatus, setGraphStatus] = useState({
@@ -241,6 +301,15 @@ function DashboardPage() {
       kind: 'server' as const,
     }
   }, [brpTabs, activeBrpTabId])
+  const isServerBrpMode =
+    sourceMode === 'liveServer' && activeBrpTab.kind === 'server'
+  const playerEntities = useMemo(
+    () =>
+      entities
+        .filter((entity) => isPlayerEntity(entity) && Boolean(entity.entityGuid))
+        .sort((a, b) => playerLabel(a).localeCompare(playerLabel(b))),
+    [entities],
+  )
 
   const filteredEntities = useMemo(
     () =>
@@ -253,19 +322,7 @@ function DashboardPage() {
     [entities, filterMapInvisible],
   )
 
-  // When an entity is selected from the tree and has a position, center the grid camera on it.
-  const centerOnPosition = useMemo(() => {
-    if (!selectedId) return null
-    const entity = filteredEntities.find((e) => e.id === selectedId)
-    if (
-      !entity ||
-      entity.hasPosition === false ||
-      !Number.isFinite(entity.x) ||
-      !Number.isFinite(entity.y)
-    )
-      return null
-    return { x: entity.x, y: entity.y }
-  }, [selectedId, filteredEntities])
+  const centerOnPosition = centerRequest.position
 
   // Map-only: exclude camera entities (id/name contains bevy_camera::camera::Camera, or has Camera component). Tree still shows all.
   const { entitiesForMap, cameraEntityIds } = useMemo(() => {
@@ -457,6 +514,30 @@ function DashboardPage() {
     }
   }, [filteredEntities, selectedId])
 
+  useEffect(() => {
+    if (!contextMenu.open) return
+    const handlePointerDown = () => {
+      setContextMenu((prev) => ({ ...prev, open: false }))
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setContextMenu((prev) => ({ ...prev, open: false }))
+      }
+    }
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [contextMenu.open])
+
+  useEffect(() => {
+    if (!contextStatusText) return
+    const timer = window.setTimeout(() => setContextStatusText(null), 4500)
+    return () => window.clearTimeout(timer)
+  }, [contextStatusText])
+
   // Initial load and polling
   useEffect(() => {
     void loadData()
@@ -603,7 +684,37 @@ function DashboardPage() {
   // Handle entity selection from tree
   const handleSelectFromTree = useCallback((id: string) => {
     setSelectedId(id)
-  }, [])
+    const entity = filteredEntities.find((e) => e.id === id)
+    if (
+      entity &&
+      entity.hasPosition !== false &&
+      Number.isFinite(entity.x) &&
+      Number.isFinite(entity.y)
+    ) {
+      setCenterRequest((prev) => ({
+        position: { x: entity.x, y: entity.y },
+        seq: prev.seq + 1,
+      }))
+    }
+  }, [filteredEntities])
+
+  const handleSelectFromGrid = useCallback((id: string | null) => {
+    setSelectedId(id)
+    if (id) {
+      const entity = filteredEntities.find((e) => e.id === id)
+      if (
+        entity &&
+        entity.hasPosition !== false &&
+        Number.isFinite(entity.x) &&
+        Number.isFinite(entity.y)
+      ) {
+        setCenterRequest((prev) => ({
+          position: { x: entity.x, y: entity.y },
+          seq: prev.seq + 1,
+        }))
+      }
+    }
+  }, [filteredEntities])
 
   // Placeholder zoom controls (would be connected to GridCanvas camera)
   const handleZoomIn = useCallback(() => {
@@ -699,6 +810,84 @@ function DashboardPage() {
     })
   }, [])
 
+  const handleOpenContextMenu = useCallback(
+    (entityId: string | null, point: { x: number; y: number }) => {
+      if (!isServerBrpMode) return
+      setContextMenu({
+        open: true,
+        x: point.x,
+        y: point.y,
+        entityId,
+      })
+    },
+    [isServerBrpMode],
+  )
+
+  const handleSpawnTemplate = useCallback(
+    async (templateId: string) => {
+      const fallbackOwner = playerEntities[0]?.entityGuid
+      if (!fallbackOwner) {
+        setContextStatusText('Spawn failed: no player entity available to own new entity')
+        return
+      }
+      const generatedName = `${faker.word.adjective()} ${templateId}`.replace(
+        /\b\w/g,
+        (part) => part.toUpperCase(),
+      )
+      const response = await fetch('/api/admin/spawn-entity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          player_entity_id: fallbackOwner,
+          bundle_id: templateId,
+          overrides: { display_name: generatedName },
+        }),
+      })
+      const payload = (await response.json()) as { error?: string; spawned_entity_id?: string }
+      if (!response.ok) {
+        throw new Error(payload.error ?? 'spawn request failed')
+      }
+      setContextStatusText(`Spawned ${templateId}: ${payload.spawned_entity_id ?? 'unknown'}`)
+      await loadData()
+    },
+    [loadData, playerEntities],
+  )
+
+  const handleAssignOwner = useCallback(
+    async (targetEntityId: string, ownerPlayerEntityId: string) => {
+      const numericEntityId = Number(targetEntityId)
+      if (!Number.isFinite(numericEntityId)) {
+        throw new Error('Assign owner requires server BRP numeric entity ID')
+      }
+      const ownerTypePath = resolveOwnerTypePath(targetEntityId, graphNodes, graphEdges)
+      const response = await fetch(
+        `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            method: 'world.insert_components',
+            params: {
+              entity: numericEntityId,
+              components: {
+                [ownerTypePath]: ownerPlayerEntityId,
+              },
+            },
+          }),
+        },
+      )
+      const payload = (await response.json()) as { error?: string }
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error ?? 'owner assignment failed')
+      }
+      setContextStatusText(
+        `Assigned owner ${ownerPlayerEntityId.slice(0, 8)} to entity ${targetEntityId}`,
+      )
+      await loadData()
+    },
+    [activeBrpTab.kind, activeBrpTab.port, graphEdges, graphNodes, loadData],
+  )
+
   return (
     <ThemeProvider defaultTheme="dark">
       <TooltipProvider delayDuration={200}>
@@ -742,6 +931,9 @@ function DashboardPage() {
                   onSelect={handleSelectFromTree}
                   sourceMode={sourceMode}
                   onDelete={handleDeleteEntity}
+                  onContextMenuRequest={(entityId, point) =>
+                    handleOpenContextMenu(entityId, point)
+                  }
                 />
               </PanelContent>
               <StatusBar
@@ -781,15 +973,114 @@ function DashboardPage() {
             graphNodes={graphNodes}
             graphEdges={graphEdges}
             selectedId={selectedId}
-            onSelect={setSelectedId}
+            onSelect={handleSelectFromGrid}
             onExpand={handleExpand}
             expandedNodes={expandedNodes}
             filterMapInvisible={filterMapInvisible}
             sourceMode={sourceMode}
             excludedFromMapIds={cameraEntityIds}
             centerOnPosition={centerOnPosition}
+            centerOnRequestSeq={centerRequest.seq}
             selectedPlayerVisibilityOverlay={selectedPlayerVisibilityOverlay}
+            onContextMenuRequest={handleOpenContextMenu}
           />
+          {contextMenu.open && isServerBrpMode && (
+            <div
+              className="fixed z-[300] min-w-56 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Actions
+              </div>
+              <div className="space-y-1">
+                {SPAWN_TEMPLATES.map((template) => (
+                  <button
+                    key={template.templateId}
+                    type="button"
+                    className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                    onClick={() => {
+                      setContextMenu((prev) => ({ ...prev, open: false }))
+                      void handleSpawnTemplate(template.templateId).catch((error) => {
+                        setContextStatusText(
+                          error instanceof Error ? error.message : 'spawn failed',
+                        )
+                      })
+                    }}
+                  >
+                    Spawn {template.label}
+                  </button>
+                ))}
+                {contextMenu.entityId ? (
+                  <>
+                    <div className="border-t border-border-subtle my-1" />
+                    <div className="relative group/owner">
+                      <button
+                        type="button"
+                        className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                      >
+                        Assign Owner ▸
+                      </button>
+                      <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/owner:block">
+                        {playerEntities.length === 0 ? (
+                          <div className="px-2 py-1 text-xs text-muted-foreground">
+                            No players available
+                          </div>
+                        ) : (
+                          playerEntities.map((player) => (
+                            <button
+                              key={player.id}
+                              type="button"
+                              className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                              onClick={() => {
+                                setContextMenu((prev) => ({ ...prev, open: false }))
+                                if (!player.entityGuid || !contextMenu.entityId) return
+                                void handleAssignOwner(
+                                  contextMenu.entityId,
+                                  player.entityGuid,
+                                ).catch((error) => {
+                                  setContextStatusText(
+                                    error instanceof Error
+                                      ? error.message
+                                      : 'owner assignment failed',
+                                  )
+                                })
+                              }}
+                            >
+                              {playerLabel(player)}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                    <div className="border-t border-border-subtle my-1" />
+                    <button
+                      type="button"
+                      className="block w-full rounded px-2 py-1 text-left text-sm text-destructive hover:bg-destructive/10"
+                      onClick={() => {
+                        setContextMenu((prev) => ({ ...prev, open: false }))
+                        const targetEntityId = contextMenu.entityId
+                        if (!targetEntityId) return
+                        void handleDeleteEntity(targetEntityId).catch((error) => {
+                          setContextStatusText(
+                            error instanceof Error ? error.message : 'delete failed',
+                          )
+                        })
+                      }}
+                    >
+                      Delete Entity
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          )}
+          {contextStatusText ? (
+            <div className="absolute left-4 top-4 z-[250] rounded border border-border bg-card/90 px-3 py-1 text-xs text-muted-foreground backdrop-blur">
+              {contextStatusText}
+            </div>
+          ) : null}
         </AppLayout>
       </TooltipProvider>
     </ThemeProvider>

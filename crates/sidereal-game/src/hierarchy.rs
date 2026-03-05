@@ -9,20 +9,43 @@
 //! and client) so Bevy's transform propagation produces correct
 //! GlobalTransform for mounted/rendered entities.
 
+use bevy::log::warn;
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::{EntityGuid, Hardpoint, MountedOn, ParentGuid};
+use crate::{EntityGuid, Hardpoint, ParentGuid};
 
-/// Establishes Bevy parent-child hierarchy from `ParentGuid` (preferred)
-/// and `MountedOn` (fallback for legacy/module-only links).
+const MAX_PARENT_CHAIN_DEPTH: usize = 256;
+
+fn would_create_parent_cycle(
+    child_guid: Uuid,
+    parent_guid: Uuid,
+    parent_by_guid: &HashMap<Uuid, Uuid>,
+) -> bool {
+    if child_guid == parent_guid {
+        return true;
+    }
+    let mut cursor = parent_guid;
+    for _ in 0..MAX_PARENT_CHAIN_DEPTH {
+        let Some(next) = parent_by_guid.get(&cursor).copied() else {
+            return false;
+        };
+        if next == child_guid {
+            return true;
+        }
+        if next == cursor {
+            return true;
+        }
+        cursor = next;
+    }
+    true
+}
+
+/// Establishes Bevy parent-child hierarchy from `ParentGuid`.
 ///
 /// For each entity without a Bevy parent (no `ChildOf`), looks up a parent
 /// by stable GUID and calls `add_child`.
-///
-/// When only legacy `MountedOn` is available and the child is attached
-/// directly under ship root, a hardpoint offset fallback is applied.
 ///
 /// Entities whose parents have not yet spawned are silently skipped and
 /// retried on subsequent frames (the `Without<ChildOf>` filter re-includes
@@ -33,71 +56,80 @@ pub fn sync_mounted_hierarchy(
     unmounted: Query<
         '_,
         '_,
-        (
-            Entity,
-            Option<&'_ ParentGuid>,
-            Option<&'_ MountedOn>,
-            Option<&'_ Hardpoint>,
-        ),
-        (Without<ChildOf>, Or<(With<ParentGuid>, With<MountedOn>)>),
+        (Entity, &'_ ParentGuid, Option<&'_ Hardpoint>),
+        (Without<ChildOf>, With<ParentGuid>),
     >,
-    guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid)>,
-    hardpoints: Query<'_, '_, (&'_ EntityGuid, &'_ Hardpoint, Option<&'_ ParentGuid>)>,
+    guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid, Option<&'_ ParentGuid>)>,
 ) {
     if unmounted.is_empty() {
         return;
     }
 
-    let entity_by_guid: HashMap<Uuid, Entity> = guid_entities
-        .iter()
-        .map(|(entity, guid)| (guid.0, entity))
-        .collect();
-
-    let mut hardpoint_transforms: HashMap<(Uuid, &str), (Vec3, Quat)> = HashMap::new();
-    for (_hardpoint_guid, hp, parent_guid) in &hardpoints {
-        let Some(parent_guid) = parent_guid else {
-            continue;
-        };
-        hardpoint_transforms.insert(
-            (parent_guid.0, hp.hardpoint_id.as_str()),
-            (hp.offset_m, hp.local_rotation),
-        );
+    let mut entity_by_guid = HashMap::<Uuid, Entity>::new();
+    let mut parent_by_guid = HashMap::<Uuid, Uuid>::new();
+    for (entity, guid, maybe_parent) in guid_entities.iter() {
+        entity_by_guid.insert(guid.0, entity);
+        if let Some(parent) = maybe_parent {
+            parent_by_guid.insert(guid.0, parent.0);
+        }
     }
 
-    for (child_entity, parent_guid, mounted_on, hardpoint) in &unmounted {
-        let parent_guid = parent_guid
-            .map(|v| v.0)
-            .or_else(|| mounted_on.map(|v| v.parent_entity_id));
-        let Some(parent_guid) = parent_guid else {
+    for (child_entity, parent_guid, hardpoint) in &unmounted {
+        let Ok((_, child_entity_guid, _)) = guid_entities.get(child_entity) else {
             continue;
         };
-        let Some(&parent_entity) = entity_by_guid.get(&parent_guid) else {
+        let child_guid = child_entity_guid.0;
+        let target_parent_guid = parent_guid.0;
+        if would_create_parent_cycle(child_guid, target_parent_guid, &parent_by_guid) {
+            warn!(
+                "skipping hierarchy link to avoid cycle child_guid={} parent_guid={}",
+                child_guid, target_parent_guid
+            );
+            continue;
+        }
+
+        let Some(&parent_entity) = entity_by_guid.get(&target_parent_guid) else {
             continue;
         };
 
         commands.entity(parent_entity).add_child(child_entity);
+
+        // Track accepted links in this frame so subsequent checks are safe
+        // even when multiple links are pending in the same command buffer.
+        parent_by_guid.insert(child_guid, target_parent_guid);
 
         if let Some(hardpoint) = hardpoint {
             commands.entity(child_entity).insert(
                 Transform::from_translation(hardpoint.offset_m)
                     .with_rotation(hardpoint.local_rotation),
             );
-            continue;
         }
+    }
+}
 
-        // Legacy fallback: if entity is attached by MountedOn directly to root ship
-        // and not to a dedicated hardpoint entity, apply hardpoint offset manually.
-        if mounted_on.is_some()
-            && mounted_on.is_some_and(|v| parent_guid == v.parent_entity_id)
-            && let Some(mounted_on) = mounted_on
-            && let Some(&(offset, rotation)) = hardpoint_transforms.get(&(
-                mounted_on.parent_entity_id,
-                mounted_on.hardpoint_id.as_str(),
-            ))
-        {
-            commands
-                .entity(child_entity)
-                .insert(Transform::from_translation(offset).with_rotation(rotation));
-        }
+#[cfg(test)]
+mod tests {
+    use super::would_create_parent_cycle;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    #[test]
+    fn detects_simple_cycle() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let mut parents = HashMap::new();
+        parents.insert(b, a);
+        assert!(would_create_parent_cycle(a, b, &parents));
+    }
+
+    #[test]
+    fn allows_acyclic_parent_link() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let mut parents = HashMap::new();
+        parents.insert(c, b);
+        parents.insert(b, a);
+        assert!(!would_create_parent_cycle(c, a, &parents));
     }
 }

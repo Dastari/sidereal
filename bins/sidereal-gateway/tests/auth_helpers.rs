@@ -158,8 +158,18 @@ async fn gateway_udp_bootstrap_message_roundtrips_with_replication_processor() {
         .handle_payload(&buf[..size])
         .expect("second apply should succeed");
 
-    assert_eq!(first.account_id, account_id);
-    assert_eq!(first.player_entity_id, account_id.to_string());
-    assert!(first.applied);
-    assert!(!second.applied);
+    match first {
+        sidereal_replication::bootstrap::ControlHandleResult::Bootstrap(result) => {
+            assert_eq!(result.account_id, account_id);
+            assert_eq!(result.player_entity_id, account_id.to_string());
+            assert!(result.applied);
+        }
+        _ => panic!("expected bootstrap result"),
+    }
+    match second {
+        sidereal_replication::bootstrap::ControlHandleResult::Bootstrap(result) => {
+            assert!(!result.applied);
+        }
+        _ => panic!("expected bootstrap result"),
+    }
 }

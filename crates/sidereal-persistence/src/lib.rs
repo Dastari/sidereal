@@ -1,11 +1,7 @@
-mod legacy_envelope;
-
-pub use legacy_envelope::{ChannelClass, NetEnvelope, decode_envelope_json, encode_envelope_json};
-
 use postgres::{Client, NoTls, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use thiserror::Error;
 
 const DEFAULT_GRAPH_NAME: &str = "sidereal";
@@ -819,9 +815,8 @@ fn escape_cypher_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
-fn parse_runtime_guid_suffix(entity_id: &str) -> Option<&str> {
-    let (_, suffix) = entity_id.split_once(':')?;
-    is_uuid_like(suffix).then_some(suffix)
+fn parse_runtime_guid(entity_id: &str) -> Option<&str> {
+    is_uuid_like(entity_id).then_some(entity_id)
 }
 
 fn is_uuid_like(raw: &str) -> bool {
@@ -844,23 +839,22 @@ fn is_uuid_like(raw: &str) -> bool {
 
 #[doc(hidden)]
 pub fn validate_runtime_guid_uniqueness(records: &[GraphEntityRecord]) -> Result<()> {
-    let mut entity_ids_by_guid = HashMap::<String, HashSet<String>>::new();
+    let mut entity_ids_by_guid = HashMap::<String, Vec<String>>::new();
     for record in records {
-        let Some(guid) = parse_runtime_guid_suffix(&record.entity_id) else {
+        let Some(guid) = parse_runtime_guid(&record.entity_id) else {
             continue;
         };
         entity_ids_by_guid
             .entry(guid.to_string())
             .or_default()
-            .insert(record.entity_id.clone());
+            .push(record.entity_id.clone());
     }
     let collisions = entity_ids_by_guid
         .into_iter()
-        .filter_map(|(guid, entity_ids)| {
+        .filter_map(|(guid, mut entity_ids)| {
             (entity_ids.len() > 1).then(|| {
-                let mut ids = entity_ids.into_iter().collect::<Vec<_>>();
-                ids.sort();
-                format!("guid {guid} reused by {:?}", ids)
+                entity_ids.sort();
+                format!("guid {guid} reused by {:?}", entity_ids)
             })
         })
         .collect::<Vec<_>>();

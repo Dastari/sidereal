@@ -190,7 +190,7 @@ pub(super) fn receive_lightyear_asset_stream_messages(
     mut session: ResMut<'_, ClientSession>,
     asset_root: Res<'_, AssetRootPath>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
-    asset_server: Res<'_, AssetServer>,
+    _asset_server: Res<'_, AssetServer>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
 ) {
     for mut receiver in &mut manifest_receivers {
@@ -367,16 +367,14 @@ pub(super) fn receive_lightyear_asset_stream_messages(
                         .saturating_add(pending.byte_len);
                 }
                 asset_manager.requested_asset_ids.remove(&chunk.asset_id);
-                if matches!(
-                    chunk.asset_id.as_str(),
-                    id if id == default_starfield_shader_asset_id()
-                        || id == default_space_background_shader_asset_id()
-                ) {
-                    shaders::reload_streamed_shaders(
-                        &asset_server,
-                        &mut shaders_assets,
-                        &asset_root.0,
-                    );
+                if shaders::shader_materials_enabled()
+                    && matches!(
+                        chunk.asset_id.as_str(),
+                        id if id == default_starfield_shader_asset_id()
+                            || id == default_space_background_shader_asset_id()
+                    )
+                {
+                    shaders::reload_streamed_shaders(&mut shaders_assets, &asset_root.0);
                 }
             }
         }
@@ -408,35 +406,50 @@ pub(super) fn ensure_critical_assets_available_system(
     asset_manager: Res<'_, LocalAssetManager>,
     asset_root: Res<'_, AssetRootPath>,
 ) {
+    if request_senders.is_empty() {
+        return;
+    }
     let critical_asset_ids = [
         default_starfield_shader_asset_id(),
         default_space_background_shader_asset_id(),
     ];
     let now = time.elapsed_secs_f64();
-    let mut missing = Vec::new();
+    let mut requests = Vec::new();
+
+    // Retry any manifest-pending assets periodically. This covers startup races where
+    // the manifest arrives before transport message senders are fully wired.
+    for asset_id in asset_manager.pending_assets.keys() {
+        let known = asset_manager.cache_index.by_asset_id.get(asset_id);
+        requests.push(RequestedAsset {
+            asset_id: asset_id.clone(),
+            known_asset_version: known.map(|entry| entry.asset_version),
+            known_sha256_hex: known.map(|entry| entry.sha256_hex.clone()),
+        });
+    }
+
+    let mut missing_critical = Vec::new();
     for asset_id in critical_asset_ids {
         if !asset_present_on_disk(asset_id, &asset_manager, &asset_root.0) {
-            missing.push(asset_id.to_string());
+            missing_critical.push(asset_id.to_string());
         }
     }
-    if missing.is_empty() {
+    if requests.is_empty() && missing_critical.is_empty() {
         return;
     }
     if now - request_state.last_request_at_s < 2.0 {
         return;
     }
     request_state.last_request_at_s = now;
-    let requests = missing
-        .into_iter()
-        .map(|asset_id| {
-            let known = asset_manager.cache_index.by_asset_id.get(&asset_id);
-            RequestedAsset {
-                asset_id,
-                known_asset_version: known.map(|entry| entry.asset_version),
-                known_sha256_hex: known.map(|entry| entry.sha256_hex.clone()),
-            }
-        })
-        .collect::<Vec<_>>();
+    for asset_id in missing_critical {
+        let known = asset_manager.cache_index.by_asset_id.get(&asset_id);
+        requests.push(RequestedAsset {
+            asset_id,
+            known_asset_version: known.map(|entry| entry.asset_version),
+            known_sha256_hex: known.map(|entry| entry.sha256_hex.clone()),
+        });
+    }
+    requests.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
+    requests.dedup_by(|a, b| a.asset_id == b.asset_id);
     let request_message = AssetRequestMessage { requests };
     for mut sender in &mut request_senders {
         sender.send::<AssetChannel>(request_message.clone());

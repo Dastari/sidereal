@@ -72,10 +72,21 @@ pub enum ClientLocalViewMode {
 }
 
 /// Client informs server which view mode should drive delivery culling.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClientLocalViewModeMessage {
     pub player_entity_id: String,
     pub view_mode: ClientLocalViewMode,
+    /// Client-observed delivery radius (meters) derived from current viewport/zoom.
+    pub delivery_range_m: f32,
+}
+
+/// Client asks server to resend tactical snapshots when delta apply base mismatches
+/// or when snapshots have timed out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientTacticalResnapshotRequestMessage {
+    pub player_entity_id: String,
+    pub request_fog_snapshot: bool,
+    pub request_contacts_snapshot: bool,
 }
 
 /// Server authoritative weapon fire notification for client-side tracer visuals.
@@ -84,7 +95,98 @@ pub struct ServerWeaponFiredMessage {
     pub shooter_entity_id: String,
     pub origin_xy: [f32; 2],
     pub velocity_xy: [f32; 2],
+    pub impact_xy: Option<[f32; 2]>,
     pub ttl_s: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct GridCell {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TacticalContact {
+    pub entity_id: String,
+    pub kind: String,
+    pub faction_id: Option<String>,
+    pub position_xy: [f32; 2],
+    pub heading_rad: f32,
+    pub velocity_xy: Option<[f32; 2]>,
+    pub is_live_now: bool,
+    pub last_seen_tick: u64,
+    pub classification: Option<String>,
+    pub contact_quality: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OwnedAssetEntry {
+    pub entity_id: String,
+    pub display_name: String,
+    pub kind: String,
+    pub status: String,
+    pub controlled_by_owner: bool,
+    pub last_known_position_xy: Option<[f32; 2]>,
+    pub health_ratio: Option<f32>,
+    pub fuel_ratio: Option<f32>,
+    pub updated_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerTacticalFogSnapshotMessage {
+    pub player_entity_id: String,
+    pub sequence: u64,
+    pub cell_size_m: f32,
+    pub explored_cells: Vec<GridCell>,
+    pub live_cells: Vec<GridCell>,
+    pub generated_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerTacticalFogDeltaMessage {
+    pub player_entity_id: String,
+    pub sequence: u64,
+    pub base_sequence: u64,
+    pub explored_cells_added: Vec<GridCell>,
+    pub live_cells_added: Vec<GridCell>,
+    pub live_cells_removed: Vec<GridCell>,
+    pub generated_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerTacticalContactsSnapshotMessage {
+    pub player_entity_id: String,
+    pub sequence: u64,
+    pub contacts: Vec<TacticalContact>,
+    pub generated_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerTacticalContactsDeltaMessage {
+    pub player_entity_id: String,
+    pub sequence: u64,
+    pub base_sequence: u64,
+    pub upserts: Vec<TacticalContact>,
+    pub removals: Vec<String>,
+    pub generated_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerOwnerAssetManifestSnapshotMessage {
+    pub player_entity_id: String,
+    pub sequence: u64,
+    pub assets: Vec<OwnedAssetEntry>,
+    pub generated_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerOwnerAssetManifestDeltaMessage {
+    pub player_entity_id: String,
+    pub sequence: u64,
+    pub base_sequence: u64,
+    pub upserts: Vec<OwnedAssetEntry>,
+    pub removals: Vec<String>,
+    pub generated_at_tick: u64,
 }
 
 /// Client requests one or more assets by known version/checksum.

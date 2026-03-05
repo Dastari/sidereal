@@ -14,12 +14,13 @@ use sidereal_game::{
 use sidereal_runtime_sync::{
     RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::app_state::{ClientAppState, ClientSession, LocalPlayerViewState, SessionReadyState};
 use super::components::{
-    ControlledEntity, RemoteEntity, RemoteVisibleEntity, ReplicatedAdoptionHandled,
-    StreamedSpriteShaderAssetId, StreamedVisualAssetId, StreamedVisualAttached, WorldEntity,
+    ControlledEntity, PendingInitialVisualReady, RemoteEntity, RemoteVisibleEntity,
+    ReplicatedAdoptionHandled, StreamedSpriteShaderAssetId, StreamedVisualAssetId,
+    StreamedVisualAttached, WorldEntity,
 };
 use super::resources::{
     BootstrapWatchdogState, DeferredPredictedAdoptionState, LocalSimulationDebugMode,
@@ -112,6 +113,62 @@ pub(crate) fn ensure_parent_spatial_components_on_children_added(
     }
 }
 
+/// Defensive guard against malformed replicated hierarchy links.
+///
+/// Server should not replicate cyclic Bevy hierarchy links, but if bad data slips
+/// through (for example from migration/script bugs), transform propagation can stack-overflow.
+/// This system breaks invalid `ChildOf` links before `TransformSystems::Propagate`.
+pub(crate) fn sanitize_invalid_childof_hierarchy_links(
+    mut commands: Commands<'_, '_>,
+    child_of_query: Query<'_, '_, (Entity, &'_ ChildOf)>,
+) {
+    if child_of_query.is_empty() {
+        return;
+    }
+
+    let mut parent_by_child = HashMap::<Entity, Entity>::new();
+    for (child, child_of) in &child_of_query {
+        parent_by_child.insert(child, child_of.parent());
+    }
+
+    const MAX_DEPTH: usize = 256;
+    for (child, parent) in parent_by_child.clone() {
+        if child == parent {
+            bevy::log::warn!(
+                "detected self-parent hierarchy link; removing ChildOf child={:?} parent={:?}",
+                child,
+                parent
+            );
+            commands.entity(child).remove::<ChildOf>();
+            continue;
+        }
+        let mut seen = HashSet::<Entity>::new();
+        let mut cursor = parent;
+        let mut cycle = false;
+        for _ in 0..MAX_DEPTH {
+            if !seen.insert(cursor) {
+                cycle = true;
+                break;
+            }
+            let Some(next) = parent_by_child.get(&cursor).copied() else {
+                break;
+            };
+            if next == child {
+                cycle = true;
+                break;
+            }
+            cursor = next;
+        }
+        if cycle {
+            bevy::log::warn!(
+                "detected cyclic replicated hierarchy; removing ChildOf for child={:?}",
+                child
+            );
+            commands.entity(child).remove::<ChildOf>();
+        }
+    }
+}
+
 pub(crate) fn should_defer_controlled_predicted_adoption(
     is_local_controlled: bool,
     has_position: bool,
@@ -129,13 +186,6 @@ pub(crate) fn runtime_entity_id_from_guid(
     // Bare UUID is the canonical entity ID.
     if entity_registry.by_entity_id.contains_key(guid) {
         return Some(guid.to_string());
-    }
-    // Legacy prefixed lookup for backwards compatibility.
-    for prefix in ["ship", "player", "module", "hardpoint"] {
-        let candidate = format!("{prefix}:{guid}");
-        if entity_registry.by_entity_id.contains_key(&candidate) {
-            return Some(candidate);
-        }
     }
     if parse_guid_from_entity_id(local_player_entity_id)
         .is_some_and(|player_guid| player_guid.to_string() == guid)
@@ -455,9 +505,10 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
         entity_commands.insert((
             Name::new(runtime_entity_id.clone()),
             ReplicatedAdoptionHandled,
+            PendingInitialVisualReady,
             WorldEntity,
             DespawnOnExit(ClientAppState::InWorld),
-            Visibility::Visible,
+            Visibility::Hidden,
         ));
 
         if player_tag.is_none() {

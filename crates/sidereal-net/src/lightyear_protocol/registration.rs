@@ -16,8 +16,13 @@ use super::{
     AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
     AssetStreamManifestMessage, ClientAuthMessage, ClientControlRequestMessage,
     ClientDisconnectNotifyMessage, ClientLocalViewModeMessage, ClientRealtimeInputMessage,
-    ControlChannel, InputChannel, PlayerInput, ServerControlAckMessage, ServerControlRejectMessage,
-    ServerSessionDeniedMessage, ServerSessionReadyMessage, ServerWeaponFiredMessage,
+    ClientTacticalResnapshotRequestMessage, ControlChannel, InputChannel, ManifestChannel,
+    PlayerInput, ServerControlAckMessage, ServerControlRejectMessage,
+    ServerOwnerAssetManifestDeltaMessage,
+    ServerOwnerAssetManifestSnapshotMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
+    ServerTacticalContactsDeltaMessage, ServerTacticalContactsSnapshotMessage,
+    ServerTacticalFogDeltaMessage, ServerTacticalFogSnapshotMessage, ServerWeaponFiredMessage,
+    TacticalDeltaChannel, TacticalSnapshotChannel,
 };
 
 fn lerp_position(start: Position, other: Position, t: f32) -> Position {
@@ -65,7 +70,21 @@ pub fn register_lightyear_protocol(app: &mut App) {
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ClientLocalViewModeMessage>()
         .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ClientTacticalResnapshotRequestMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerWeaponFiredMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerTacticalFogSnapshotMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerTacticalFogDeltaMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerTacticalContactsSnapshotMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerTacticalContactsDeltaMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerOwnerAssetManifestSnapshotMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerOwnerAssetManifestDeltaMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerSessionReadyMessage>()
         .add_direction(NetworkDirection::Bidirectional);
@@ -106,6 +125,27 @@ pub fn register_lightyear_protocol(app: &mut App) {
         mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
         send_frequency: Duration::default(),
         priority: 4.0,
+    })
+    .add_direction(NetworkDirection::Bidirectional);
+
+    app.add_channel::<TacticalSnapshotChannel>(ChannelSettings {
+        mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
+        send_frequency: Duration::default(),
+        priority: 5.0,
+    })
+    .add_direction(NetworkDirection::Bidirectional);
+
+    app.add_channel::<TacticalDeltaChannel>(ChannelSettings {
+        mode: ChannelMode::SequencedUnreliable,
+        send_frequency: Duration::default(),
+        priority: 5.0,
+    })
+    .add_direction(NetworkDirection::Bidirectional);
+
+    app.add_channel::<ManifestChannel>(ChannelSettings {
+        mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
+        send_frequency: Duration::default(),
+        priority: 6.0,
     })
     .add_direction(NetworkDirection::Bidirectional);
 }

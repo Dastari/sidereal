@@ -14,6 +14,7 @@ import { Route as ApiWorldRouteImport } from './routes/api.world'
 import { Route as ApiGraphRouteImport } from './routes/api.graph'
 import { Route as ApiBrpRouteImport } from './routes/api.brp'
 import { Route as ApiDeleteEntityEntityIdRouteImport } from './routes/api.delete-entity.$entityId'
+import { Route as ApiAdminSpawnEntityRouteImport } from './routes/api.admin.spawn-entity'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -40,12 +41,18 @@ const ApiDeleteEntityEntityIdRoute = ApiDeleteEntityEntityIdRouteImport.update({
   path: '/api/delete-entity/$entityId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminSpawnEntityRoute = ApiAdminSpawnEntityRouteImport.update({
+  id: '/api/admin/spawn-entity',
+  path: '/api/admin/spawn-entity',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/brp': typeof ApiBrpRoute
   '/api/graph': typeof ApiGraphRoute
   '/api/world': typeof ApiWorldRoute
+  '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/api/brp': typeof ApiBrpRoute
   '/api/graph': typeof ApiGraphRoute
   '/api/world': typeof ApiWorldRoute
+  '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
 }
 export interface FileRoutesById {
@@ -61,6 +69,7 @@ export interface FileRoutesById {
   '/api/brp': typeof ApiBrpRoute
   '/api/graph': typeof ApiGraphRoute
   '/api/world': typeof ApiWorldRoute
+  '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
 }
 export interface FileRouteTypes {
@@ -70,6 +79,7 @@ export interface FileRouteTypes {
     | '/api/brp'
     | '/api/graph'
     | '/api/world'
+    | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -77,6 +87,7 @@ export interface FileRouteTypes {
     | '/api/brp'
     | '/api/graph'
     | '/api/world'
+    | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
   id:
     | '__root__'
@@ -84,6 +95,7 @@ export interface FileRouteTypes {
     | '/api/brp'
     | '/api/graph'
     | '/api/world'
+    | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
   fileRoutesById: FileRoutesById
 }
@@ -92,6 +104,7 @@ export interface RootRouteChildren {
   ApiBrpRoute: typeof ApiBrpRoute
   ApiGraphRoute: typeof ApiGraphRoute
   ApiWorldRoute: typeof ApiWorldRoute
+  ApiAdminSpawnEntityRoute: typeof ApiAdminSpawnEntityRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
 }
 
@@ -132,6 +145,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDeleteEntityEntityIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/admin/spawn-entity': {
+      id: '/api/admin/spawn-entity'
+      path: '/api/admin/spawn-entity'
+      fullPath: '/api/admin/spawn-entity'
+      preLoaderRoute: typeof ApiAdminSpawnEntityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -140,6 +160,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiBrpRoute: ApiBrpRoute,
   ApiGraphRoute: ApiGraphRoute,
   ApiWorldRoute: ApiWorldRoute,
+  ApiAdminSpawnEntityRoute: ApiAdminSpawnEntityRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,
 }
 export const routeTree = rootRouteImport

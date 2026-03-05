@@ -18,8 +18,9 @@ pub use character_movement::{
     process_character_movement_actions, sync_player_to_controlled_entity,
 };
 pub use combat::{
-    ShotFiredEvent, ShotHitEvent, bootstrap_legacy_ballistic_weapon_ranges,
-    bootstrap_weapon_cooldown_state, process_weapon_fire_actions, tick_weapon_cooldowns,
+    ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent, apply_damage_from_shot_impacts,
+    bootstrap_weapon_cooldown_state, process_weapon_fire_actions, resolve_shot_impacts,
+    tick_weapon_cooldowns,
 };
 pub use component_meta::*;
 pub use components::*;
@@ -27,8 +28,7 @@ pub use entities::*;
 pub use generated::components::*;
 pub use hierarchy::sync_mounted_hierarchy;
 pub use mass::{
-    bootstrap_collision_profiles_from_aabb, bootstrap_legacy_corvette_collision_aabb,
-    bootstrap_legacy_corvette_collision_outline, bootstrap_root_dynamic_entity_colliders,
+    bootstrap_collision_profiles_from_aabb, bootstrap_root_dynamic_entity_colliders,
     bootstrap_ship_mass_components, collider_from_collision_shape, recompute_total_mass,
 };
 pub use scanner::{apply_range_buff, compute_scanner_contribution, total_scanner_range_for_parent};
@@ -82,15 +82,15 @@ impl Plugin for SiderealGamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(SiderealGameCorePlugin);
         app.insert_resource(HierarchyRebuildEnabled::default());
+        app.add_message::<ShotFiredEvent>();
+        app.add_message::<ShotImpactResolvedEvent>();
+        app.add_message::<ShotHitEvent>();
 
         app.add_systems(
             PostUpdate,
             (
                 bootstrap_ship_mass_components,
                 bootstrap_collision_profiles_from_aabb,
-                bootstrap_legacy_corvette_collision_aabb,
-                bootstrap_legacy_corvette_collision_outline,
-                bootstrap_legacy_ballistic_weapon_ranges,
                 bootstrap_root_dynamic_entity_colliders,
                 sync_mounted_hierarchy
                     .before(bevy::transform::TransformSystems::Propagate)
@@ -110,6 +110,8 @@ impl Plugin for SiderealGamePlugin {
                 bootstrap_weapon_cooldown_state,
                 tick_weapon_cooldowns,
                 process_weapon_fire_actions,
+                resolve_shot_impacts,
+                apply_damage_from_shot_impacts,
                 recompute_total_mass,
                 apply_engine_thrust,
             )

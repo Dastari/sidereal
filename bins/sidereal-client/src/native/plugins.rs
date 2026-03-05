@@ -5,20 +5,30 @@ use sidereal_game::process_character_movement_actions;
 use super::app_state::ClientAppState;
 use super::camera::{
     audit_active_world_cameras_system, gate_gameplay_camera_system, gate_menu_camera_system,
+    sync_player_anchor_render_transform_to_controlled_entity,
     sync_ui_overlay_camera_to_gameplay_camera_system, update_camera_motion_state,
     update_topdown_camera_system,
 };
 use super::components::{WeaponTracerCooldowns, WeaponTracerPool};
 use super::debug_overlay::{
     draw_debug_overlay_system, log_prediction_runtime_state, toggle_debug_overlay_system,
-    update_debug_fps_text_system,
+    update_debug_fps_text_system, update_debug_manifest_text_system,
+    update_debug_tactical_text_system,
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
 use super::{
-    assets, audio, auth_net, auth_ui, bootstrap, control, dialog_ui, input, logout, replication,
-    scene, scene_world, transforms, transport, ui, visuals,
+    assets, audio, auth_net, auth_ui, backdrop, bootstrap, control, dialog_ui, input, logout,
+    dev_console, owner_manifest, replication, scene, scene_world, tactical, transforms, transport,
+    ui, visuals,
 };
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
 
 pub(super) struct ClientBootstrapPlugin {
     pub(super) headless: bool,
@@ -106,6 +116,16 @@ pub(super) struct ClientReplicationPlugin {
 
 impl Plugin for ClientReplicationPlugin {
     fn build(&self, app: &mut App) {
+        let disable_asset_stream = env_flag("SIDEREAL_CLIENT_DISABLE_ASSET_STREAM");
+        let disable_adoption = env_flag("SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION");
+        if disable_asset_stream {
+            info!("client asset stream systems disabled via SIDEREAL_CLIENT_DISABLE_ASSET_STREAM");
+        }
+        if disable_adoption {
+            info!(
+                "client replication adoption disabled via SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION"
+            );
+        }
         app.add_systems(
             PreUpdate,
             (
@@ -116,8 +136,12 @@ impl Plugin for ClientReplicationPlugin {
         );
         app.add_systems(
             PostUpdate,
-            replication::ensure_hierarchy_parent_spatial_components
-                .after(sidereal_game::sync_mounted_hierarchy)
+            (
+                replication::ensure_hierarchy_parent_spatial_components
+                    .after(sidereal_game::sync_mounted_hierarchy),
+                replication::sanitize_invalid_childof_hierarchy_links
+                    .after(replication::ensure_hierarchy_parent_spatial_components),
+            )
                 .before(bevy::transform::TransformSystems::Propagate),
         );
         if self.headless {
@@ -127,15 +151,21 @@ impl Plugin for ClientReplicationPlugin {
                     replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
                     replication::prune_runtime_entity_registry_system,
-                    assets::receive_lightyear_asset_stream_messages,
+                    assets::receive_lightyear_asset_stream_messages
+                        .run_if(move || !disable_asset_stream),
                     assets::ensure_critical_assets_available_system
-                        .after(assets::receive_lightyear_asset_stream_messages),
+                        .after(assets::receive_lightyear_asset_stream_messages)
+                        .run_if(move || !disable_asset_stream),
                     replication::adopt_native_lightyear_replicated_entities
-                        .after(replication::prune_runtime_entity_registry_system),
+                        .after(replication::prune_runtime_entity_registry_system)
+                        .run_if(move || !disable_adoption),
                     transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
                     transforms::sync_interpolated_world_entity_transforms_without_history
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+                    transforms::reveal_world_entities_when_initial_transform_ready.after(
+                        transforms::sync_interpolated_world_entity_transforms_without_history,
+                    ),
                     replication::sync_local_player_view_state_system
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_controlled_entity_tags_system
@@ -147,8 +177,12 @@ impl Plugin for ClientReplicationPlugin {
                         .after(control::send_local_view_mode_updates),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
-                    control::log_client_control_state_changes
+                    owner_manifest::receive_owner_asset_manifest_messages
                         .after(control::receive_lightyear_control_results),
+                    tactical::receive_tactical_snapshot_messages
+                        .after(owner_manifest::receive_owner_asset_manifest_messages),
+                    control::log_client_control_state_changes
+                        .after(tactical::receive_tactical_snapshot_messages),
                 ),
             );
             app.add_systems(Update, log_prediction_runtime_state);
@@ -159,15 +193,21 @@ impl Plugin for ClientReplicationPlugin {
                     replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
                     replication::prune_runtime_entity_registry_system,
-                    assets::receive_lightyear_asset_stream_messages,
+                    assets::receive_lightyear_asset_stream_messages
+                        .run_if(move || !disable_asset_stream),
                     assets::ensure_critical_assets_available_system
-                        .after(assets::receive_lightyear_asset_stream_messages),
+                        .after(assets::receive_lightyear_asset_stream_messages)
+                        .run_if(move || !disable_asset_stream),
                     replication::adopt_native_lightyear_replicated_entities
-                        .after(replication::prune_runtime_entity_registry_system),
+                        .after(replication::prune_runtime_entity_registry_system)
+                        .run_if(move || !disable_adoption),
                     transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
                     transforms::sync_interpolated_world_entity_transforms_without_history
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+                    transforms::reveal_world_entities_when_initial_transform_ready.after(
+                        transforms::sync_interpolated_world_entity_transforms_without_history,
+                    ),
                     replication::transition_world_loading_to_in_world
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     replication::sync_local_player_view_state_system
@@ -181,8 +221,12 @@ impl Plugin for ClientReplicationPlugin {
                         .after(control::send_local_view_mode_updates),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
-                    control::log_client_control_state_changes
+                    owner_manifest::receive_owner_asset_manifest_messages
                         .after(control::receive_lightyear_control_results),
+                    tactical::receive_tactical_snapshot_messages
+                        .after(owner_manifest::receive_owner_asset_manifest_messages),
+                    control::log_client_control_state_changes
+                        .after(tactical::receive_tactical_snapshot_messages),
                 ),
             );
             app.add_systems(
@@ -236,8 +280,6 @@ impl Plugin for ClientVisualsPlugin {
         app.add_systems(
             Update,
             (
-                visuals::ensure_fullscreen_layer_fallback_system
-                    .after(replication::adopt_native_lightyear_replicated_entities),
                 visuals::suppress_duplicate_predicted_interpolated_visuals_system
                     .after(replication::adopt_native_lightyear_replicated_entities),
                 visuals::cleanup_streamed_visual_children_system
@@ -259,10 +301,14 @@ impl Plugin for ClientVisualsPlugin {
                     .after(visuals::update_weapon_tracer_visuals_system),
                 visuals::attach_streamed_visual_assets_system
                     .after(assets::receive_lightyear_asset_stream_messages),
-                visuals::sync_fullscreen_layer_renderables_system
+                visuals::update_entity_visibility_fade_in_system
+                    .after(visuals::attach_streamed_visual_assets_system),
+                backdrop::sync_fullscreen_layer_renderables_system
                     .after(replication::adopt_native_lightyear_replicated_entities),
-                visuals::sync_backdrop_fullscreen_system
-                    .after(visuals::sync_fullscreen_layer_renderables_system),
+                backdrop::sync_backdrop_camera_system
+                    .after(backdrop::sync_fullscreen_layer_renderables_system),
+                backdrop::sync_backdrop_fullscreen_system
+                    .after(backdrop::sync_backdrop_camera_system),
             )
                 .run_if(in_state(ClientAppState::InWorld)),
         );
@@ -273,6 +319,7 @@ pub(super) struct ClientUiPlugin;
 
 impl Plugin for ClientUiPlugin {
     fn build(&self, app: &mut App) {
+        dev_console::register_console(app);
         app.add_systems(
             OnEnter(ClientAppState::Auth),
             audio::start_menu_loop_music_system,
@@ -295,12 +342,20 @@ impl Plugin for ClientUiPlugin {
             Update,
             (
                 gate_gameplay_camera_system,
-                ui::update_owned_entities_panel_system,
+                ui::toggle_tactical_map_mode_system,
+                ui::sync_tactical_map_camera_zoom_system
+                    .after(ui::toggle_tactical_map_mode_system),
+                ui::update_owned_entities_panel_system
+                    .after(owner_manifest::receive_owner_asset_manifest_messages),
                 ui::handle_owned_entities_panel_buttons,
+                ui::update_tactical_map_overlay_system
+                    .after(tactical::receive_tactical_snapshot_messages),
                 ui::update_loading_overlay_system,
                 ui::update_runtime_stream_icon_system,
                 bootstrap::watch_in_world_bootstrap_failures,
-                update_topdown_camera_system,
+                sync_player_anchor_render_transform_to_controlled_entity,
+                update_topdown_camera_system
+                    .after(sync_player_anchor_render_transform_to_controlled_entity),
                 sync_ui_overlay_camera_to_gameplay_camera_system
                     .after(update_topdown_camera_system),
                 update_camera_motion_state.after(update_topdown_camera_system),
@@ -309,6 +364,8 @@ impl Plugin for ClientUiPlugin {
                 ui::sync_ship_nameplates_system,
                 toggle_debug_overlay_system,
                 update_debug_fps_text_system,
+                update_debug_manifest_text_system.after(update_debug_fps_text_system),
+                update_debug_tactical_text_system.after(update_debug_manifest_text_system),
             )
                 .run_if(in_state(ClientAppState::InWorld)),
         );

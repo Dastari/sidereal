@@ -5,7 +5,8 @@
 
 use postgres::{Client, NoTls};
 use sidereal_core::bootstrap_wire::{
-    AUTH_CHARACTERS_TABLE, BootstrapCommand, BootstrapWireError, BootstrapWireMessage,
+    AUTH_CHARACTERS_TABLE, AdminSpawnEntityCommand, BootstrapCommand, BootstrapWireError,
+    BootstrapWireMessage,
 };
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +18,23 @@ pub struct BootstrapHandleResult {
     pub account_id: Uuid,
     pub player_entity_id: String,
     pub applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminSpawnHandleResult {
+    pub actor_account_id: Uuid,
+    pub actor_player_entity_id: String,
+    pub request_id: Uuid,
+    pub player_entity_id: String,
+    pub bundle_id: String,
+    pub requested_entity_id: String,
+    pub overrides: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlHandleResult {
+    Bootstrap(BootstrapHandleResult),
+    AdminSpawn(AdminSpawnHandleResult),
 }
 
 pub trait BootstrapStore {
@@ -40,17 +58,57 @@ impl<S: BootstrapStore> BootstrapProcessor<S> {
     pub fn handle_payload(
         &mut self,
         payload: &[u8],
-    ) -> Result<BootstrapHandleResult, BootstrapError> {
+    ) -> Result<ControlHandleResult, BootstrapError> {
         let message: BootstrapWireMessage = serde_json::from_slice(payload)
             .map_err(|err| BootstrapError::Serialization(err.to_string()))?;
-        let command = BootstrapCommand::try_from(message)
-            .map_err(|err| BootstrapError::Validation(err.to_string()))?;
-        let applied = self.store.apply_bootstrap_if_absent(&command)?;
-        Ok(BootstrapHandleResult {
-            account_id: command.account_id,
-            player_entity_id: command.player_entity_id,
-            applied,
-        })
+        match message {
+            BootstrapWireMessage::BootstrapPlayer {
+                account_id,
+                player_entity_id,
+            } => {
+                let command = BootstrapCommand::try_from(BootstrapWireMessage::BootstrapPlayer {
+                    account_id,
+                    player_entity_id,
+                })
+                .map_err(|err| BootstrapError::Validation(err.to_string()))?;
+                let applied = self.store.apply_bootstrap_if_absent(&command)?;
+                Ok(ControlHandleResult::Bootstrap(BootstrapHandleResult {
+                    account_id: command.account_id,
+                    player_entity_id: command.player_entity_id,
+                    applied,
+                }))
+            }
+            BootstrapWireMessage::AdminSpawnEntity {
+                actor_account_id,
+                actor_player_entity_id,
+                request_id,
+                player_entity_id,
+                bundle_id,
+                requested_entity_id,
+                overrides,
+            } => {
+                let command =
+                    AdminSpawnEntityCommand::try_from(BootstrapWireMessage::AdminSpawnEntity {
+                        actor_account_id,
+                        actor_player_entity_id,
+                        request_id,
+                        player_entity_id,
+                        bundle_id,
+                        requested_entity_id,
+                        overrides,
+                    })
+                    .map_err(|err| BootstrapError::Validation(err.to_string()))?;
+                Ok(ControlHandleResult::AdminSpawn(AdminSpawnHandleResult {
+                    actor_account_id: command.actor_account_id,
+                    actor_player_entity_id: command.actor_player_entity_id,
+                    request_id: command.request_id,
+                    player_entity_id: command.player_entity_id,
+                    bundle_id: command.bundle_id,
+                    requested_entity_id: command.requested_entity_id,
+                    overrides: command.overrides,
+                }))
+            }
+        }
     }
 }
 

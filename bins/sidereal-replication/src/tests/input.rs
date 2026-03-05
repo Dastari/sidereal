@@ -9,8 +9,8 @@ use crate::replication::input::{
 fn message_with(tick: u64, actions: usize) -> ClientRealtimeInputMessage {
     ClientRealtimeInputMessage {
         player_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
-        controlled_entity_id: "ship:test".to_string(),
-        actions: vec![EntityAction::ThrustNeutral; actions],
+        controlled_entity_id: "22222222-2222-2222-2222-222222222222".to_string(),
+        actions: vec![EntityAction::LongitudinalNeutral; actions],
         tick,
     }
 }
@@ -51,20 +51,16 @@ fn validation_rejects_oversized_and_rate_limited() {
 }
 
 #[test]
-fn canonical_controlled_entity_id_normalizes_player_and_prefixed_guids() {
-    let player_id = PlayerEntityId::parse("player:11111111-1111-1111-1111-111111111111").unwrap();
+fn canonical_controlled_entity_id_accepts_only_canonical_uuids() {
+    let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
     assert_eq!(
         canonical_controlled_entity_id("11111111-1111-1111-1111-111111111111", player_id),
-        Some(RuntimeEntityId(player_id.0))
-    );
-    assert_eq!(
-        canonical_controlled_entity_id("player:11111111-1111-1111-1111-111111111111", player_id),
         Some(RuntimeEntityId(player_id.0))
     );
 
     assert_eq!(
         canonical_controlled_entity_id("ship:22222222-2222-2222-2222-222222222222", player_id),
-        RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222")
+        None
     );
     assert_eq!(
         canonical_controlled_entity_id("22222222-2222-2222-2222-222222222222", player_id),

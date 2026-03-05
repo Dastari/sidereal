@@ -74,7 +74,7 @@ pub fn cleanup_client_auth_bindings(
         .values()
         .cloned()
         .collect::<HashSet<_>>();
-    // Input resources use canonical "player:uuid" keys; retain if key's canonical form is live.
+    // Input resources use canonical UUID keys; retain if key's canonical form is live.
     let live_canonical: HashSet<String> = live_player_entity_ids
         .iter()
         .map(|id| canonical_player_entity_id(id))
@@ -494,6 +494,7 @@ fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AuthClaims> {
         Ok(decoded) => Some(AuthClaims {
             sub: decoded.claims.sub.unwrap_or_default(),
             player_entity_id: decoded.claims.player_entity_id,
+            roles: decoded.claims.roles,
             iat: decoded.claims.iat.unwrap_or_default(),
             exp: decoded.claims.exp,
             jti: decoded.claims.jti.unwrap_or_default(),
@@ -510,6 +511,8 @@ struct CompatAuthClaims {
     #[serde(default)]
     sub: Option<String>,
     player_entity_id: String,
+    #[serde(default)]
+    roles: Vec<String>,
     #[serde(default)]
     iat: Option<u64>,
     exp: u64,

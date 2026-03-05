@@ -2,11 +2,11 @@
 
 use avian2d::prelude::{LinearVelocity, Rotation};
 use bevy::camera::visibility::RenderLayers;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use sidereal_game::{
-    DisplayName, EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, OwnerId, SizeM,
-};
+use bevy::window::PrimaryWindow;
+use sidereal_game::{EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, SizeM};
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::{HashMap, HashSet};
 
@@ -19,11 +19,16 @@ use super::components::{
     HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
     LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
     OwnedEntitiesPanelRoot, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
-    ShipNameplateHealthBar, ShipNameplateRoot, SuppressedPredictedDuplicateVisual, UiOverlayLayer,
-    WorldEntity,
+    ShipNameplateHealthBar, ShipNameplateRoot, SuppressedPredictedDuplicateVisual,
+    TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle, UiOverlayCamera,
+    UiOverlayLayer, WorldEntity,
 };
+use super::ecs_util::queue_despawn_if_exists;
 use super::platform::UI_OVERLAY_RENDER_LAYER;
-use super::resources::{ClientControlRequestState, EmbeddedFonts};
+use super::resources::{
+    CameraMotionState, ClientControlRequestState, EmbeddedFonts, OwnedAssetManifestCache,
+    TacticalContactsCache, TacticalMapUiState,
+};
 
 /// Propagates the UI overlay render layer to all descendants of HUD roots so they are drawn
 /// by the UI overlay camera (fixed scale) instead of the gameplay camera.
@@ -100,6 +105,305 @@ pub(super) fn update_runtime_stream_icon_system(
     color.0 = Color::srgba(0.3 + pulse * 0.7, 0.85, 1.0, 0.5 + pulse * 0.5);
 }
 
+pub(super) fn toggle_tactical_map_mode_system(
+    input: Res<'_, ButtonInput<KeyCode>>,
+    mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
+) {
+    if input.just_pressed(KeyCode::KeyM) {
+        tactical_map_state.enabled = !tactical_map_state.enabled;
+    }
+}
+
+pub(super) fn sync_tactical_map_camera_zoom_system(
+    mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
+    mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
+    mut camera_query: Query<'_, '_, &mut super::components::TopDownCamera, With<GameplayCamera>>,
+) {
+    let mut wheel_delta_y = 0.0f32;
+    for event in mouse_wheel_events.read() {
+        let normalized = match event.unit {
+            MouseScrollUnit::Line => event.y,
+            MouseScrollUnit::Pixel => event.y / 32.0,
+        };
+        wheel_delta_y += normalized.clamp(-4.0, 4.0);
+    }
+    if tactical_map_state.enabled && wheel_delta_y != 0.0 {
+        let zoom_factor = (wheel_delta_y * 0.12).exp();
+        tactical_map_state.target_map_zoom =
+            (tactical_map_state.target_map_zoom * zoom_factor).clamp(0.005, 4.0);
+    }
+
+    let Ok(mut camera) = camera_query.single_mut() else {
+        return;
+    };
+    const MAP_DISTANCE_M: f32 = 220.0;
+    let entering_map_mode = tactical_map_state.enabled && !tactical_map_state.was_enabled;
+    let exiting_map_mode = !tactical_map_state.enabled && tactical_map_state.was_enabled;
+
+    if entering_map_mode {
+        tactical_map_state.last_non_map_target_distance = camera.target_distance;
+        camera.target_distance = MAP_DISTANCE_M.clamp(camera.min_distance, camera.max_distance);
+    } else if exiting_map_mode {
+        camera.target_distance = tactical_map_state
+            .last_non_map_target_distance
+            .clamp(camera.min_distance, camera.max_distance);
+    }
+
+    tactical_map_state.was_enabled = tactical_map_state.enabled;
+}
+
+fn tactical_major_spacing_world(zoom_px_per_world: f32) -> f32 {
+    let safe_zoom = zoom_px_per_world.max(1e-6);
+    let target_major_px = 140.0;
+    let target_major_world = target_major_px / safe_zoom;
+    let decade = 10.0_f32.powf(target_major_world.max(1e-12).log10().floor());
+    let scaled = target_major_world / decade;
+    let major_step = if scaled < 2.0 {
+        1.0
+    } else if scaled < 5.0 {
+        2.0
+    } else {
+        5.0
+    };
+    major_step * decade
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_tactical_map_overlay_system(
+    time: Res<'_, Time>,
+    mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
+    contacts_cache: Res<'_, TacticalContactsCache>,
+    camera_motion: Res<'_, CameraMotionState>,
+    windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
+    mut commands: Commands<'_, '_>,
+    mut gameplay_cameras: Query<'_, '_, &mut Camera, With<GameplayCamera>>,
+    mut gameplay_hud: Query<'_, '_, &mut Visibility, With<GameplayHud>>,
+    mut ui_cameras: Query<'_, '_, &mut Camera, (With<UiOverlayCamera>, Without<GameplayCamera>)>,
+    mut roots: Query<
+        '_,
+        '_,
+        (Entity, &'_ mut BackgroundColor, &'_ mut Visibility, &'_ Children),
+        With<TacticalMapOverlayRoot>,
+    >,
+    mut title_colors: Query<'_, '_, &'_ mut TextColor, With<TacticalMapTitle>>,
+    dynamic_markers: Query<'_, '_, Entity, With<TacticalMapMarkerDynamic>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Ok((root_entity, mut root_bg, mut visibility, _children)) = roots.single_mut() else {
+        return;
+    };
+    for mut camera in &mut gameplay_cameras {
+        camera.is_active = !tactical_map_state.enabled;
+    }
+    for mut hud_visibility in &mut gameplay_hud {
+        *hud_visibility = if tactical_map_state.enabled {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+    }
+    for mut camera in &mut ui_cameras {
+        camera.clear_color = if tactical_map_state.enabled {
+            ClearColorConfig::Custom(Color::srgb(0.03, 0.04, 0.08))
+        } else {
+            ClearColorConfig::None
+        };
+    }
+
+    let target_alpha = if tactical_map_state.enabled { 1.0 } else { 0.0 };
+    let fade_speed = 6.0;
+    let alpha = tactical_map_state
+        .alpha
+        .lerp(target_alpha, 1.0 - (-fade_speed * time.delta_secs()).exp());
+    tactical_map_state.alpha = alpha;
+
+    if alpha < 0.01 && !tactical_map_state.enabled {
+        *visibility = Visibility::Hidden;
+        for marker in &dynamic_markers {
+            queue_despawn_if_exists(&mut commands, marker);
+        }
+        return;
+    }
+    *visibility = Visibility::Visible;
+
+    root_bg.0 = Color::srgba(0.03, 0.04, 0.08, alpha);
+    for mut color in &mut title_colors {
+        color.0 = Color::srgba(0.85, 0.92, 1.0, 0.95 * alpha);
+    }
+
+    for marker in &dynamic_markers {
+        queue_despawn_if_exists(&mut commands, marker);
+    }
+
+    tactical_map_state.map_zoom = tactical_map_state.map_zoom.lerp(
+        tactical_map_state.target_map_zoom,
+        1.0 - (-10.0 * time.delta_secs()).exp(),
+    );
+    let map_zoom = tactical_map_state.map_zoom.max(1e-6);
+    let width = window.physical_width() as f32;
+    let height = window.physical_height() as f32;
+    let screen_center = Vec2::new(width * 0.5, height * 0.5);
+
+    let major_spacing = tactical_major_spacing_world(map_zoom);
+    let minor_spacing = major_spacing / 10.0;
+    let micro_spacing = major_spacing / 100.0;
+
+    let spawn_vertical = |parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands<'_>,
+                          x_px: f32,
+                          width_px: f32,
+                          color: Color| {
+        parent.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(x_px - width_px * 0.5),
+                top: px(0.0),
+                width: px(width_px),
+                height: percent(100.0),
+                ..default()
+            },
+            BackgroundColor(color),
+            TacticalMapMarkerDynamic,
+        ));
+    };
+    let spawn_horizontal = |parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands<'_>,
+                            y_px: f32,
+                            height_px: f32,
+                            color: Color| {
+        parent.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0.0),
+                top: px(y_px - height_px * 0.5),
+                width: percent(100.0),
+                height: px(height_px),
+                ..default()
+            },
+            BackgroundColor(color),
+            TacticalMapMarkerDynamic,
+        ));
+    };
+
+    let mut spawn_grid_family =
+        |spacing_world: f32, width_px: f32, color: Color, max_lines_per_axis: i32| {
+            let x_first = ((camera_motion.world_position_xy.x - (screen_center.x / map_zoom))
+                / spacing_world)
+                .floor() as i64
+                - 1;
+            let x_last = ((camera_motion.world_position_xy.x + (screen_center.x / map_zoom))
+                / spacing_world)
+                .ceil() as i64
+                + 1;
+            let y_first = ((camera_motion.world_position_xy.y - (screen_center.y / map_zoom))
+                / spacing_world)
+                .floor() as i64
+                - 1;
+            let y_last = ((camera_motion.world_position_xy.y + (screen_center.y / map_zoom))
+                / spacing_world)
+                .ceil() as i64
+                + 1;
+
+            if (x_last - x_first) as i32 > max_lines_per_axis
+                || (y_last - y_first) as i32 > max_lines_per_axis
+            {
+                return;
+            }
+
+            commands.entity(root_entity).with_children(|parent| {
+                for ix in x_first..=x_last {
+                    let world_x = ix as f32 * spacing_world;
+                    let x_px = screen_center.x + (world_x - camera_motion.world_position_xy.x) * map_zoom;
+                    spawn_vertical(parent, x_px, width_px, color);
+                }
+                for iy in y_first..=y_last {
+                    let world_y = iy as f32 * spacing_world;
+                    let y_px = screen_center.y - (world_y - camera_motion.world_position_xy.y) * map_zoom;
+                    spawn_horizontal(parent, y_px, width_px, color);
+                }
+            });
+        };
+
+    // Same family as dashboard grid: 1/10/100 subdivisions with adaptive major spacing.
+    spawn_grid_family(
+        micro_spacing,
+        1.0,
+        Color::srgba(0.2, 0.3, 0.45, 0.12 * alpha),
+        140,
+    );
+    spawn_grid_family(
+        minor_spacing,
+        1.0,
+        Color::srgba(0.2, 0.3, 0.45, 0.22 * alpha),
+        140,
+    );
+    spawn_grid_family(
+        major_spacing,
+        1.8,
+        Color::srgba(0.3, 0.4, 0.55, 0.48 * alpha),
+        120,
+    );
+
+    commands.entity(root_entity).with_children(|parent| {
+        let axis_color = Color::srgba(0.3, 0.4, 0.55, 0.8 * alpha);
+        let axis_x_px = screen_center.x + (0.0 - camera_motion.world_position_xy.x) * map_zoom;
+        let axis_y_px = screen_center.y - (0.0 - camera_motion.world_position_xy.y) * map_zoom;
+        spawn_vertical(parent, axis_x_px, 2.4, axis_color);
+        spawn_horizontal(parent, axis_y_px, 2.4, axis_color);
+    });
+
+    let world_center = camera_motion.world_position_xy;
+    let world_to_screen = |xy: Vec2| -> Option<Vec2> {
+        let px = screen_center.x + (xy.x - world_center.x) * map_zoom;
+        let py = screen_center.y - (xy.y - world_center.y) * map_zoom;
+        if px < -16.0 || py < -16.0 || px > width + 16.0 || py > height + 16.0 {
+            return None;
+        }
+        Some(Vec2::new(px, py))
+    };
+
+    for contact in contacts_cache.contacts_by_entity_id.values() {
+        let world = Vec2::new(contact.position_xy[0], contact.position_xy[1]);
+        let Some(screen_xy) = world_to_screen(world) else {
+            continue;
+        };
+        let marker_color = if contact.is_live_now {
+            Color::srgba(0.95, 0.96, 0.55, 0.9 * alpha)
+        } else {
+            Color::srgba(0.6, 0.62, 0.72, 0.68 * alpha)
+        };
+        commands.entity(root_entity).with_children(|parent| {
+            parent.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(screen_xy.x - 4.0),
+                    top: px(screen_xy.y - 4.0),
+                    width: px(8.0),
+                    height: px(8.0),
+                    border_radius: BorderRadius::all(px(4.0)),
+                    border: UiRect::all(px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(marker_color),
+                BorderColor::all(Color::srgba(0.85, 0.92, 1.0, 0.7 * alpha)),
+                TacticalMapMarkerDynamic,
+            ));
+            parent.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(screen_xy.x - 1.0),
+                    top: px(screen_xy.y - 10.0),
+                    width: px(6.0),
+                    height: px(20.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.85, 0.92, 1.0, 0.12 * alpha)),
+                TacticalMapMarkerDynamic,
+            ));
+        });
+    }
+}
+
 fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
     if left == right {
         return true;
@@ -115,41 +419,25 @@ pub(super) fn update_owned_entities_panel_system(
     fonts: Res<'_, EmbeddedFonts>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    manifest_cache: Res<'_, OwnedAssetManifestCache>,
     mut panel_state: ResMut<'_, OwnedEntitiesPanelState>,
     existing_panels: Query<'_, '_, Entity, With<OwnedEntitiesPanelRoot>>,
-    ships: Query<
-        '_,
-        '_,
-        (
-            &EntityGuid,
-            Option<&OwnerId>,
-            Option<&EntityLabels>,
-            Option<&DisplayName>,
-        ),
-        With<WorldEntity>,
-    >,
 ) {
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
-    let mut owned_ship_rows = ships
-        .iter()
-        .filter_map(|(guid, owner, labels, display_name)| {
-            let is_ship = labels.is_some_and(|l| l.0.iter().any(|s| s == "Ship"));
-            if !is_ship {
-                return None;
-            }
-            if owner.is_none_or(|owner| {
-                !ids_refer_to_same_guid(owner.0.as_str(), local_player_entity_id)
-            }) {
-                return None;
-            }
-            let entity_id = guid.0.to_string();
-            let label = display_name
-                .map(|name| name.0.clone())
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| entity_id.clone());
-            Some((entity_id, label))
+    let mut owned_ship_rows = manifest_cache
+        .assets_by_entity_id
+        .values()
+        .filter(|asset| asset.kind.eq_ignore_ascii_case("ship"))
+        .map(|asset| {
+            let entity_id = asset.entity_id.clone();
+            let label = if asset.display_name.trim().is_empty() {
+                entity_id.clone()
+            } else {
+                asset.display_name.clone()
+            };
+            (entity_id, label)
         })
         .collect::<Vec<_>>();
     owned_ship_rows.sort_by(|a, b| {
@@ -179,7 +467,7 @@ pub(super) fn update_owned_entities_panel_system(
     panel_state.last_detached_mode = player_view_state.detached_free_camera;
 
     for panel in &existing_panels {
-        commands.entity(panel).try_despawn();
+        queue_despawn_if_exists(&mut commands, panel);
     }
 
     commands
@@ -264,7 +552,9 @@ pub(super) fn update_owned_entities_panel_system(
                 ));
             } else {
                 for (entity_id, display_label) in owned_ship_rows {
-                    let is_selected = selected_id.as_deref() == Some(entity_id.as_str());
+                    let is_selected = selected_id.as_deref().is_some_and(|selected| {
+                        ids_refer_to_same_guid(selected, entity_id.as_str())
+                    });
                     panel
                         .spawn((
                             Button,
@@ -636,7 +926,7 @@ pub(super) fn sync_ship_nameplates_system(
 
     for (nameplate_entity, root) in &existing {
         if !winner_entities.contains(&root.target) {
-            commands.entity(nameplate_entity).try_despawn();
+            queue_despawn_if_exists(&mut commands, nameplate_entity);
         }
     }
 }

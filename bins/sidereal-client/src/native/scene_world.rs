@@ -5,15 +5,14 @@ use bevy::log::info;
 use bevy::prelude::*;
 use bevy::sprite_render::{ColorMaterial, MeshMaterial2d};
 use bevy::state::state_scoped::DespawnOnExit;
-use sidereal_game::{SpaceBackgroundFullscreenLayerBundle, StarfieldFullscreenLayerBundle};
 
 use super::app_state::{ClientAppState, ClientSession};
 use super::components::{
-    ClientSceneEntity, DebugBlueBackdrop, FallbackFullscreenLayer, GameplayCamera, GameplayHud,
-    HudFpsText, HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText,
-    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, RuntimeStreamingIconText,
-    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SpaceBackdropFallback,
-    TopDownCamera, UiOverlayLayer,
+    BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, GameplayCamera, GameplayHud, HudFpsText,
+    HudFuelBarFill, HudHealthBarFill, HudManifestText, HudPositionValueText, HudSpeedValueText,
+    HudTacticalText, LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill,
+    RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
+    SpaceBackdropFallback, TacticalMapOverlayRoot, TacticalMapTitle, TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{BACKDROP_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
@@ -24,7 +23,6 @@ use super::shaders;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_world_scene(
     mut commands: Commands<'_, '_>,
-    asset_server: Res<'_, AssetServer>,
     fonts: Res<'_, EmbeddedFonts>,
     mut session: ResMut<'_, ClientSession>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
@@ -37,7 +35,7 @@ pub(super) fn spawn_world_scene(
 ) {
     *starfield_motion = StarfieldMotionState::default();
     *camera_motion = CameraMotionState::default();
-    shaders::reload_streamed_shaders(&asset_server, &mut shaders_assets, &asset_root.0);
+    shaders::reload_streamed_shaders(&mut shaders_assets, &asset_root.0);
     commands.spawn((
         Camera2d,
         Camera {
@@ -45,6 +43,7 @@ pub(super) fn spawn_world_scene(
             clear_color: ClearColorConfig::Custom(Color::BLACK),
             ..default()
         },
+        BackdropCamera,
         RenderLayers::layer(BACKDROP_RENDER_LAYER),
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
@@ -113,6 +112,50 @@ pub(super) fn spawn_world_scene(
         TextColor(Color::srgb(0.85, 0.92, 1.0)),
         Visibility::Hidden,
         HudFpsText,
+        GameplayHud,
+        UiOverlayLayer,
+        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(12),
+            top: px(54),
+            ..default()
+        },
+        Text::new(""),
+        TextFont {
+            font: fonts.regular.clone(),
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.67, 0.79, 0.93)),
+        Visibility::Hidden,
+        HudTacticalText,
+        GameplayHud,
+        UiOverlayLayer,
+        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(12),
+            top: px(34),
+            ..default()
+        },
+        Text::new(""),
+        TextFont {
+            font: fonts.regular.clone(),
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.72, 0.84, 0.97)),
+        Visibility::Hidden,
+        HudManifestText,
         GameplayHud,
         UiOverlayLayer,
         RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
@@ -388,6 +431,41 @@ pub(super) fn spawn_world_scene(
         RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
         DespawnOnExit(ClientAppState::InWorld),
     ));
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0.0),
+                top: px(0.0),
+                width: percent(100.0),
+                height: percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.03, 0.04, 0.08, 0.0)),
+            Visibility::Hidden,
+            TacticalMapOverlayRoot,
+            UiOverlayLayer,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+            DespawnOnExit(ClientAppState::InWorld),
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(16.0),
+                    top: px(12.0),
+                    ..default()
+                },
+                Text::new("TACTICAL MAP"),
+                TextFont {
+                    font: fonts.bold.clone(),
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.68, 0.92, 1.0, 0.0)),
+                TacticalMapTitle,
+            ));
+        });
     if debug_blue_overlay.0 {
         let mesh = meshes.add(Rectangle::new(1.0, 1.0));
         let material = color_materials.add(ColorMaterial::from(Color::srgb(0.1, 0.35, 1.0)));
@@ -402,17 +480,5 @@ pub(super) fn spawn_world_scene(
         ));
         info!("client debug blue fullscreen overlay enabled");
     }
-    commands.spawn((
-        SpaceBackgroundFullscreenLayerBundle::default(),
-        FallbackFullscreenLayer,
-        ClientSceneEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
-    commands.spawn((
-        StarfieldFullscreenLayerBundle::default(),
-        FallbackFullscreenLayer,
-        ClientSceneEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
     session.status = "Scene ready. Waiting for replicated entities...".to_string();
 }

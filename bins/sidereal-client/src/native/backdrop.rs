@@ -1,6 +1,9 @@
 //! Fullscreen backdrop materials (starfield, space background, streamed sprite) and their update systems.
 
 use avian2d::prelude::*;
+use bevy::camera::ScalingMode;
+use bevy::camera::visibility::RenderLayers;
+use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
@@ -9,16 +12,19 @@ use bevy::sprite_render::{AlphaMode2d, Material2d, MeshMaterial2d};
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use sidereal_game::{
-    SpaceBackgroundShaderSettings, StarfieldShaderSettings, default_space_bg_flare_blue_asset_id,
+    FullscreenLayer, SPACE_BACKGROUND_LAYER_KIND, SpaceBackgroundShaderSettings,
+    STARFIELD_LAYER_KIND, StarfieldShaderSettings, default_space_bg_flare_blue_asset_id,
     default_space_bg_flare_red_asset_id, default_space_bg_flare_sun_asset_id,
     default_space_bg_flare_white_asset_id,
 };
 
 use super::assets;
 use super::components::{
-    ControlledEntity, GameplayCamera, SpaceBackgroundBackdrop, StarfieldBackdrop,
+    BackdropCamera, ControlledEntity, DebugBlueBackdrop, FullscreenLayerRenderable, GameplayCamera,
+    PendingInitialVisualReady, SpaceBackdropFallback, SpaceBackgroundBackdrop, StarfieldBackdrop,
 };
-use super::platform::{self};
+use super::platform::{self, BACKDROP_RENDER_LAYER};
+use super::resources::AssetRootPath;
 use super::resources::{FullscreenExternalWorldData, StarfieldMotionState};
 
 fn flare_texture_asset_id_for_set(set: u32) -> &'static str {
@@ -27,6 +33,173 @@ fn flare_texture_asset_id_for_set(set: u32) -> &'static str {
         2 => default_space_bg_flare_red_asset_id(),
         3 => default_space_bg_flare_sun_asset_id(),
         _ => default_space_bg_flare_white_asset_id(),
+    }
+}
+
+pub(super) fn sync_fullscreen_layer_renderables_system(
+    mut commands: Commands<'_, '_>,
+    layers: Query<'_, '_, (Entity, &FullscreenLayer, Option<&FullscreenLayerRenderable>)>,
+    mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut starfield_materials: ResMut<'_, Assets<StarfieldMaterial>>,
+    mut space_background_materials: ResMut<'_, Assets<SpaceBackgroundMaterial>>,
+    asset_root: Res<'_, AssetRootPath>,
+    asset_manager: Res<'_, assets::LocalAssetManager>,
+) {
+    let shader_materials_enabled = super::shaders::shader_materials_enabled();
+    if !shader_materials_enabled {
+        for (entity, _, rendered) in &layers {
+            if rendered.is_none() {
+                continue;
+            }
+            let Ok(mut entity_commands) = commands.get_entity(entity) else {
+                continue;
+            };
+            entity_commands
+                .remove::<FullscreenLayerRenderable>()
+                .remove::<StarfieldBackdrop>()
+                .remove::<SpaceBackgroundBackdrop>()
+                .remove::<Mesh2d>()
+                .remove::<MeshMaterial2d<StarfieldMaterial>>()
+                .remove::<MeshMaterial2d<SpaceBackgroundMaterial>>();
+        }
+        return;
+    }
+
+    for (entity, layer, rendered) in &layers {
+        let Ok(mut entity_commands) = commands.get_entity(entity) else {
+            continue;
+        };
+        // Fullscreen layers are screen-space overlays and must not inherit hidden
+        // visibility from unrelated world hierarchy parents.
+        entity_commands.remove_parent_in_place();
+        let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
+            &asset_root.0,
+            &asset_manager,
+            &layer.shader_asset_id,
+        );
+        let is_supported_kind = layer.layer_kind == STARFIELD_LAYER_KIND
+            || layer.layer_kind == SPACE_BACKGROUND_LAYER_KIND;
+        let needs_rebuild = rendered.is_none_or(|existing| {
+            existing.layer_kind != layer.layer_kind || existing.layer_order != layer.layer_order
+        });
+
+        if !is_supported_kind || !has_streamed_shader {
+            if !is_supported_kind {
+                warn!(
+                    "unsupported fullscreen layer kind={} shader_asset_id={}",
+                    layer.layer_kind, layer.shader_asset_id
+                );
+            } else {
+                warn!(
+                    "fullscreen layer waiting for shader readiness layer_kind={} shader_asset_id={}",
+                    layer.layer_kind, layer.shader_asset_id
+                );
+            }
+            if rendered.is_some() {
+                entity_commands
+                    .remove::<FullscreenLayerRenderable>()
+                    .remove::<StarfieldBackdrop>()
+                    .remove::<SpaceBackgroundBackdrop>()
+                    .remove::<Mesh2d>()
+                    .remove::<MeshMaterial2d<StarfieldMaterial>>()
+                    .remove::<MeshMaterial2d<SpaceBackgroundMaterial>>();
+            }
+            continue;
+        }
+
+        if needs_rebuild {
+            let mesh = meshes.add(Rectangle::new(1.0, 1.0));
+            entity_commands
+                .try_insert((
+                    Mesh2d(mesh),
+                    Transform::from_xyz(0.0, 0.0, layer.layer_order as f32),
+                    RenderLayers::layer(BACKDROP_RENDER_LAYER),
+                    Visibility::Visible,
+                    FullscreenLayerRenderable {
+                        layer_kind: layer.layer_kind.clone(),
+                        layer_order: layer.layer_order,
+                    },
+                ))
+                .remove::<PendingInitialVisualReady>()
+                .remove::<StarfieldBackdrop>()
+                .remove::<SpaceBackgroundBackdrop>()
+                .remove::<MeshMaterial2d<StarfieldMaterial>>()
+                .remove::<MeshMaterial2d<SpaceBackgroundMaterial>>();
+
+            if layer.layer_kind == STARFIELD_LAYER_KIND {
+                let material = starfield_materials.add(StarfieldMaterial::default());
+                entity_commands.try_insert((
+                    StarfieldBackdrop,
+                    MeshMaterial2d(material),
+                    StarfieldShaderSettings::default(),
+                ));
+            } else {
+                let material = space_background_materials.add(SpaceBackgroundMaterial::default());
+                entity_commands.try_insert((
+                    SpaceBackgroundBackdrop,
+                    MeshMaterial2d(material),
+                    SpaceBackgroundShaderSettings::default(),
+                ));
+            }
+            info!(
+                "fullscreen layer renderable ready layer_kind={} order={} shader_asset_id={}",
+                layer.layer_kind, layer.layer_order, layer.shader_asset_id
+            );
+        } else {
+            entity_commands.try_insert(Transform::from_xyz(0.0, 0.0, layer.layer_order as f32));
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn sync_backdrop_fullscreen_system(
+    window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
+    mut backdrop_query: Query<
+        '_,
+        '_,
+        &mut Transform,
+        (
+            Or<(
+                With<StarfieldBackdrop>,
+                With<SpaceBackgroundBackdrop>,
+                With<DebugBlueBackdrop>,
+                With<SpaceBackdropFallback>,
+            )>,
+        ),
+    >,
+) {
+    let Ok(window) = window_query.single() else {
+        return;
+    };
+    let Some(viewport_size) = platform::safe_viewport_size(window) else {
+        return;
+    };
+    let width = viewport_size.x;
+    let height = viewport_size.y;
+    for mut transform in &mut backdrop_query {
+        transform.translation.x = 0.0;
+        transform.translation.y = 0.0;
+        transform.scale = Vec3::new(width, height, 1.0);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn sync_backdrop_camera_system(
+    mut cameras: Query<
+        '_,
+        '_,
+        (&'_ mut Camera, &'_ mut Transform, &'_ mut Projection),
+        With<BackdropCamera>,
+    >,
+) {
+    for (mut camera, mut transform, mut projection) in &mut cameras {
+        camera.is_active = true;
+        transform.translation = Vec3::ZERO;
+        transform.rotation = Quat::IDENTITY;
+        if let Projection::Orthographic(ortho) = &mut *projection {
+            ortho.scaling_mode = ScalingMode::WindowSize;
+            ortho.scale = 1.0;
+        }
     }
 }
 
@@ -42,6 +215,14 @@ pub struct StarfieldMaterial {
     pub starfield_params: Vec4,
     #[uniform(4)]
     pub starfield_tint: Vec4,
+    #[uniform(5)]
+    pub star_core_params: Vec4,
+    #[uniform(6)]
+    pub star_core_color: Vec4,
+    #[uniform(7)]
+    pub corona_params: Vec4,
+    #[uniform(8)]
+    pub corona_color: Vec4,
 }
 
 impl Default for StarfieldMaterial {
@@ -52,13 +233,17 @@ impl Default for StarfieldMaterial {
             velocity_dir: Vec4::new(0.0, 1.0, 1.0, 0.0),
             starfield_params: Vec4::new(0.05, 3.0, 0.35, 1.0),
             starfield_tint: Vec4::new(1.0, 1.0, 1.0, 1.0),
+            star_core_params: Vec4::new(1.0, 1.0, 1.0, 0.0),
+            star_core_color: Vec4::new(0.72, 0.83, 1.0, 1.0),
+            corona_params: Vec4::new(1.0, 1.0, 1.0, 0.0),
+            corona_color: Vec4::new(0.44, 0.64, 1.0, 1.0),
         }
     }
 }
 
 impl Material2d for StarfieldMaterial {
     fn fragment_shader() -> ShaderRef {
-        "data/cache_stream/shaders/starfield.wgsl".into()
+        ShaderRef::Handle(super::shaders::STARFIELD_SHADER_HANDLE)
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -128,7 +313,7 @@ impl Default for SpaceBackgroundUniforms {
 
 impl Material2d for SpaceBackgroundMaterial {
     fn fragment_shader() -> ShaderRef {
-        "data/cache_stream/shaders/space_background.wgsl".into()
+        ShaderRef::Handle(super::shaders::SPACE_BACKGROUND_SHADER_HANDLE)
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -145,7 +330,7 @@ pub struct StreamedSpriteShaderMaterial {
 
 impl Material2d for StreamedSpriteShaderMaterial {
     fn fragment_shader() -> ShaderRef {
-        platform::STREAMED_SPRITE_PIXEL_SHADER_PATH.into()
+        ShaderRef::Handle(super::shaders::SPRITE_PIXEL_SHADER_HANDLE)
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -184,7 +369,7 @@ impl Default for ThrusterPlumeMaterial {
 
 impl Material2d for ThrusterPlumeMaterial {
     fn fragment_shader() -> ShaderRef {
-        "data/cache_stream/shaders/thruster_plume.wgsl".into()
+        ShaderRef::Handle(super::shaders::THRUSTER_PLUME_SHADER_HANDLE)
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -318,6 +503,20 @@ pub fn update_starfield_material_system(
                 settings.alpha.clamp(0.0, 1.0),
             );
             material.starfield_tint = settings.tint_rgb.extend(settings.intensity.max(0.0));
+            material.star_core_params = Vec4::new(
+                settings.star_size.clamp(0.1, 10.0),
+                settings.star_intensity.clamp(0.0, 10.0),
+                settings.star_alpha.clamp(0.0, 1.0),
+                0.0,
+            );
+            material.star_core_color = settings.star_color_rgb.extend(1.0);
+            material.corona_params = Vec4::new(
+                settings.corona_size.clamp(0.1, 10.0),
+                settings.corona_intensity.clamp(0.0, 10.0),
+                settings.corona_alpha.clamp(0.0, 1.0),
+                0.0,
+            );
+            material.corona_color = settings.corona_color_rgb.extend(1.0);
         }
     }
 }
@@ -412,7 +611,7 @@ pub fn update_space_background_material_system(
             material.params.space_bg_blend_b = Vec4::new(
                 settings.flares_blend_mode.clamp(0, 2) as f32,
                 settings.flares_opacity.clamp(0.0, 1.0),
-                0.0,
+                settings.zoom_rate.clamp(0.0, 4.0),
                 0.0,
             );
             material.params.space_bg_nebula_color_a = settings

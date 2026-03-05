@@ -11,10 +11,13 @@ use sidereal_game::{
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
-use super::components::{ControlledEntity, HudFpsText, WorldEntity};
+use super::components::{
+    ControlledEntity, HudFpsText, HudManifestText, HudTacticalText, WorldEntity,
+};
 use super::resources::{
     BootstrapWatchdogState, DebugOverlayEnabled, DeferredPredictedAdoptionState,
-    LocalSimulationDebugMode, PredictionBootstrapTuning,
+    LocalSimulationDebugMode, OwnedAssetManifestCache, PredictionBootstrapTuning,
+    TacticalContactsCache, TacticalFogCache,
 };
 
 #[derive(Default)]
@@ -88,6 +91,80 @@ pub(crate) fn update_debug_fps_text_system(
     }
 }
 
+pub(crate) fn update_debug_manifest_text_system(
+    debug_overlay: Res<'_, DebugOverlayEnabled>,
+    manifest_cache: Res<'_, OwnedAssetManifestCache>,
+    mut manifest_query: Query<
+        '_,
+        '_,
+        (&'_ mut Text, &'_ mut TextColor, &'_ mut Visibility),
+        With<HudManifestText>,
+    >,
+) {
+    if manifest_query.is_empty() {
+        return;
+    }
+
+    if !debug_overlay.enabled {
+        for (mut text, mut text_color, mut visibility) in &mut manifest_query {
+            text.0.clear();
+            text_color.0.set_alpha(0.0);
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let display = format!(
+        "Manifest seq {} assets {} tick {}",
+        manifest_cache.sequence,
+        manifest_cache.assets_by_entity_id.len(),
+        manifest_cache.generated_at_tick
+    );
+    for (mut text, mut text_color, mut visibility) in &mut manifest_query {
+        text.0 = display.clone();
+        text_color.0.set_alpha(1.0);
+        *visibility = Visibility::Visible;
+    }
+}
+
+pub(crate) fn update_debug_tactical_text_system(
+    debug_overlay: Res<'_, DebugOverlayEnabled>,
+    fog_cache: Res<'_, TacticalFogCache>,
+    contacts_cache: Res<'_, TacticalContactsCache>,
+    mut tactical_query: Query<
+        '_,
+        '_,
+        (&'_ mut Text, &'_ mut TextColor, &'_ mut Visibility),
+        With<HudTacticalText>,
+    >,
+) {
+    if tactical_query.is_empty() {
+        return;
+    }
+    if !debug_overlay.enabled {
+        for (mut text, mut text_color, mut visibility) in &mut tactical_query {
+            text.0.clear();
+            text_color.0.set_alpha(0.0);
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let display = format!(
+        "Tactical fog seq {} live {} explored {} contacts seq {} count {}",
+        fog_cache.sequence,
+        fog_cache.live_cells.len(),
+        fog_cache.explored_cells.len(),
+        contacts_cache.sequence,
+        contacts_cache.contacts_by_entity_id.len()
+    );
+    for (mut text, mut text_color, mut visibility) in &mut tactical_query {
+        text.0 = display.clone();
+        text_color.0.set_alpha(1.0);
+        *visibility = Visibility::Visible;
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) fn draw_debug_overlay_system(
     debug_overlay: Res<'_, DebugOverlayEnabled>,
@@ -137,8 +214,6 @@ pub(crate) fn draw_debug_overlay_system(
     let controlled_predicted_color = Color::srgb(0.2, 1.0, 1.0);
     let controlled_confirmed_color = Color::srgb(1.0, 0.2, 1.0);
     let prediction_error_color = Color::srgb(1.0, 0.2, 0.2);
-    let visibility_range_color = Color::srgb(0.9, 0.9, 0.15);
-    let mut controlled_visibility_circle: Option<(Vec3, f32)> = None;
 
     for (
         entity,
@@ -227,13 +302,7 @@ pub(crate) fn draw_debug_overlay_system(
             }
         }
 
-        if mounted_on.is_none() && hardpoint.is_none() && is_local_controlled {
-            let range_m = scanner_range
-                .map(|r| r.0.max(0.0))
-                .unwrap_or(300.0)
-                .max(1.0);
-            controlled_visibility_circle = Some((pos, range_m));
-        }
+        let _ = scanner_range;
 
         if mounted_on.is_none()
             && is_local_controlled
@@ -249,17 +318,6 @@ pub(crate) fn draw_debug_overlay_system(
         if hardpoint.is_some() {
             let isometry = bevy::math::Isometry3d::new(pos, rot);
             gizmos.cross(isometry, HARDPOINT_CROSS_HALF_SIZE, hardpoint_color);
-        }
-    }
-
-    if let Some((center, radius)) = controlled_visibility_circle {
-        const CIRCLE_SEGMENTS: usize = 96;
-        let mut prev = center + Vec3::new(radius, 0.0, 0.0);
-        for i in 1..=CIRCLE_SEGMENTS {
-            let t = (i as f32 / CIRCLE_SEGMENTS as f32) * std::f32::consts::TAU;
-            let next = center + Vec3::new(radius * t.cos(), radius * t.sin(), 0.0);
-            gizmos.line(prev, next, visibility_range_color);
-            prev = next;
         }
     }
 }

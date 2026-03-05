@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterRequest {
@@ -72,4 +73,20 @@ pub struct EnterWorldRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnterWorldResponse {
     pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminSpawnEntityRequest {
+    pub player_entity_id: String,
+    pub bundle_id: String,
+    #[serde(default)]
+    pub overrides: JsonMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminSpawnEntityResponse {
+    pub ok: bool,
+    pub spawned_entity_id: String,
+    pub bundle_id: String,
+    pub owner_player_entity_id: String,
 }

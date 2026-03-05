@@ -15,12 +15,7 @@ const MIN_PLAYER_SPEED_MPS: f32 = 1.0;
 const STOP_EPSILON_MPS: f32 = 0.05;
 
 fn parse_guid_like(value: &str) -> Option<Uuid> {
-    Uuid::parse_str(value).ok().or_else(|| {
-        value
-            .split(':')
-            .nth(1)
-            .and_then(|raw| Uuid::parse_str(raw).ok())
-    })
+    Uuid::parse_str(value).ok()
 }
 
 fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
@@ -34,27 +29,27 @@ fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
 
 fn apply_character_action(longitudinal: &mut f32, lateral: &mut f32, action: EntityAction) -> bool {
     match action {
-        EntityAction::Forward | EntityAction::ThrustForward => {
+        EntityAction::Forward => {
             *longitudinal = 1.0;
             true
         }
-        EntityAction::Backward | EntityAction::ThrustReverse => {
+        EntityAction::Backward => {
             *longitudinal = -1.0;
             true
         }
-        EntityAction::LongitudinalNeutral | EntityAction::ThrustNeutral => {
+        EntityAction::LongitudinalNeutral => {
             *longitudinal = 0.0;
             true
         }
-        EntityAction::Left | EntityAction::YawLeft => {
+        EntityAction::Left => {
             *lateral = -1.0;
             true
         }
-        EntityAction::Right | EntityAction::YawRight => {
+        EntityAction::Right => {
             *lateral = 1.0;
             true
         }
-        EntityAction::LateralNeutral | EntityAction::YawNeutral => {
+        EntityAction::LateralNeutral => {
             *lateral = 0.0;
             true
         }

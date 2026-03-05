@@ -30,8 +30,14 @@ interface GridCanvasProps {
   excludedFromMapIds?: Set<string>
   /** When set, center the grid camera on this world position (e.g. when selecting an entity from the tree). */
   centerOnPosition?: { x: number; y: number } | null
+  /** Monotonic token for one-shot center requests; position updates alone should not retrigger centering. */
+  centerOnRequestSeq?: number
   /** Visibility overlay data for selected player entity. */
   selectedPlayerVisibilityOverlay?: PlayerVisibilityOverlay | null
+  onContextMenuRequest?: (
+    entityId: string | null,
+    point: { x: number; y: number },
+  ) => void
 }
 
 // graphNodes is used indirectly via expandedNodes
@@ -48,8 +54,12 @@ export function GridCanvas({
   sourceMode,
   excludedFromMapIds,
   centerOnPosition,
+  centerOnRequestSeq,
   selectedPlayerVisibilityOverlay,
+  onContextMenuRequest,
 }: GridCanvasProps) {
+  const MIN_ZOOM = 1e-6
+  const MAX_ZOOM = 1e6
   void _graphNodes // Used indirectly via expandedNodes
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const labelsCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -263,6 +273,26 @@ export function GridCanvas({
 
       ctx.save()
 
+      // Draw selected player's BRP delivery range as a yellow circle.
+      if (
+        selectedId &&
+        Number.isFinite(selectedPlayerVisibilityOverlay.delivery_range_m) &&
+        selectedPlayerVisibilityOverlay.delivery_range_m > 0
+      ) {
+        const selectedNode = renderNodesRef.current.get(selectedId)
+        if (selectedNode) {
+          const center = worldToScreen(selectedNode.x, selectedNode.y)
+          const deliveryRadiusPx = selectedPlayerVisibilityOverlay.delivery_range_m * cam.zoom
+          if (Number.isFinite(deliveryRadiusPx) && deliveryRadiusPx > 0) {
+            ctx.strokeStyle = 'rgba(255, 230, 90, 0.9)'
+            ctx.lineWidth = Math.max(1, 2 * dpr)
+            ctx.beginPath()
+            ctx.arc(center.x, center.y, deliveryRadiusPx, 0, Math.PI * 2)
+            ctx.stroke()
+          }
+        }
+      }
+
       // Draw candidate grid cells as stroked rectangles.
       ctx.strokeStyle = 'rgba(80, 190, 255, 0.7)'
       ctx.lineWidth = Math.max(1, 1.5 * dpr)
@@ -321,13 +351,17 @@ export function GridCanvas({
     rafRef.current = requestAnimationFrame(frame)
   }, [render, getRenderNodes, graphEdges, selectedId, hoveredId, drawLabels])
 
-  // Center camera when parent requests (e.g. entity selected from tree)
+  // Center camera only on explicit center requests, not on live position updates.
   useEffect(() => {
-    if (centerOnPosition && Number.isFinite(centerOnPosition.x) && Number.isFinite(centerOnPosition.y)) {
+    if (
+      centerOnPosition &&
+      Number.isFinite(centerOnPosition.x) &&
+      Number.isFinite(centerOnPosition.y)
+    ) {
       cameraRef.current.x = centerOnPosition.x
       cameraRef.current.y = centerOnPosition.y
     }
-  }, [centerOnPosition])
+  }, [centerOnRequestSeq, centerOnPosition])
 
   // Initialize and start render loop
   useEffect(() => {
@@ -417,7 +451,7 @@ export function GridCanvas({
 
     const oldZoom = cameraRef.current.zoom
     const zoomFactor = Math.exp(-e.deltaY * 0.001)
-    const newZoom = Math.min(10, Math.max(0.05, oldZoom * zoomFactor))
+    const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * zoomFactor))
 
     // Zoom towards cursor position
     const worldX = (sx - canvas.width * 0.5) / oldZoom + cameraRef.current.x
@@ -428,6 +462,16 @@ export function GridCanvas({
     cameraRef.current.y = worldY - (canvas.height * 0.5 - sy) / newZoom
     setZoomPercent(Math.round(newZoom * 100))
   }, [])
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      if (!onContextMenuRequest) return
+      const hit = pickNode(e.clientX, e.clientY)
+      onContextMenuRequest(hit, { x: e.clientX, y: e.clientY })
+    },
+    [onContextMenuRequest, pickNode],
+  )
 
   return (
     <div className="relative w-full h-full overflow-hidden">
@@ -446,6 +490,7 @@ export function GridCanvas({
         }}
         onDoubleClick={handleDoubleClick}
         onWheel={handleWheel}
+        onContextMenu={handleContextMenu}
       />
       <canvas
         ref={labelsCanvasRef}

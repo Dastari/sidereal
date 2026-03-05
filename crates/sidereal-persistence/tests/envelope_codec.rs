@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use sidereal_persistence::{ChannelClass, NetEnvelope, decode_envelope_json, encode_envelope_json};
+use sidereal_core::net_envelope::{
+    ChannelClass, NetEnvelope, decode_envelope_json, encode_envelope_json,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PayloadV1 {
@@ -19,7 +21,7 @@ fn envelope_json_roundtrip_preserves_fields() {
         seq: 42,
         tick: 99,
         payload: PayloadV1 {
-            player_id: "player:abc".to_string(),
+            player_id: "11111111-1111-1111-1111-111111111111".to_string(),
             thrust_forward: true,
             stop_requested: false,
         },
@@ -45,7 +47,7 @@ fn backward_compatible_decode_missing_new_payload_field_uses_default() {
         "seq":4,
         "tick":5,
         "payload":{
-            "player_id":"player:legacy",
+            "player_id":"11111111-1111-1111-1111-111111111111",
             "thrust_forward":true
         }
     }"#;
@@ -53,7 +55,10 @@ fn backward_compatible_decode_missing_new_payload_field_uses_default() {
     let decoded: NetEnvelope<PayloadV1> =
         decode_envelope_json(legacy_json.as_bytes()).expect("legacy payload should decode");
 
-    assert_eq!(decoded.payload.player_id, "player:legacy");
+    assert_eq!(
+        decoded.payload.player_id,
+        "11111111-1111-1111-1111-111111111111"
+    );
     assert!(decoded.payload.thrust_forward);
     assert!(!decoded.payload.stop_requested);
 }

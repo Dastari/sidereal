@@ -33,15 +33,7 @@ pub fn init_resources(app: &mut App) {
 
 #[doc(hidden)]
 pub fn guid_from_entity_id_like(raw: &str) -> Option<String> {
-    if let Some(candidate) = raw.split(':').nth(1)
-        && uuid::Uuid::parse_str(candidate).is_ok()
-    {
-        return Some(candidate.to_string());
-    }
-    if uuid::Uuid::parse_str(raw).is_ok() {
-        return Some(raw.to_string());
-    }
-    None
+    uuid::Uuid::parse_str(raw).ok().map(|guid| guid.to_string())
 }
 
 fn control_debug_logging_enabled() -> bool {

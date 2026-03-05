@@ -6,6 +6,81 @@ use serde::{Deserialize, Serialize};
 /// The JSON must match `SpaceBackgroundShaderSettings` and use arrays for `Vec3` fields.
 pub const DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: &str = r#"{
   "enabled": true,
+  "intensity": 0.35000000000000003,
+  "drift_scale": 2,
+  "zoom_rate": 1,
+  "velocity_glow": 1,
+  "nebula_strength": 0.8500000000000001,
+  "seed": 0,
+  "background_rgb": [
+    0,
+    0,
+    0
+  ],
+  "nebula_color_primary_rgb": [
+    0,
+    0,
+    0.196
+  ],
+  "nebula_color_secondary_rgb": [
+    0,
+    0.073,
+    0.082
+  ],
+  "nebula_color_accent_rgb": [
+    0.187,
+    0.16,
+    0.539
+  ],
+  "flare_enabled": true,
+  "flare_tint_rgb": [
+    1,
+    1,
+    2
+  ],
+  "flare_intensity": 4,
+  "flare_density": 0.54,
+  "flare_size": 2.29,
+  "flare_texture_set": 0,
+  "nebula_noise_mode": 0,
+  "nebula_octaves": 5,
+  "nebula_gain": 0.52,
+  "nebula_lacunarity": 2,
+  "nebula_power": 1,
+  "nebula_shelf": 0.42,
+  "nebula_ridge_offset": 1,
+  "star_mask_enabled": true,
+  "star_mask_mode": 0,
+  "star_mask_octaves": 4,
+  "star_mask_gain": 0.42,
+  "star_mask_lacunarity": 1.75,
+  "star_mask_threshold": 0.35000000000000003,
+  "star_mask_power": 1.25,
+  "star_mask_ridge_offset": 0.8300000000000001,
+  "star_mask_scale": 3.1,
+  "nebula_blend_mode": 1,
+  "nebula_opacity": 0.5,
+  "stars_blend_mode": 2,
+  "stars_opacity": 1,
+  "star_count": 5,
+  "star_size_min": 0.019,
+  "star_size_max": 0.022,
+  "star_color_rgb": [
+    0.6980000000000001,
+    0.682,
+    2
+  ],
+  "flares_blend_mode": 1,
+  "flares_opacity": 1,
+  "tint_rgb": [
+    1,
+    1.77,
+    1.24
+  ]
+}"#;
+
+/*{
+  "enabled": true,
   "intensity": 1.3,
   "drift_scale": 1,
   "velocity_glow": 1,
@@ -77,6 +152,7 @@ pub const DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: &str = r#"{
     1
   ]
 }"#;
+*/
 
 #[sidereal_component_macros::sidereal_component(
     kind = "space_background_shader_settings",
@@ -90,6 +166,7 @@ pub struct SpaceBackgroundShaderSettings {
     pub enabled: bool,
     pub intensity: f32,
     pub drift_scale: f32,
+    pub zoom_rate: f32,
     pub velocity_glow: f32,
     pub nebula_strength: f32,
     pub seed: f32,
@@ -137,6 +214,7 @@ fn builtin_space_background_defaults() -> SpaceBackgroundShaderSettings {
         enabled: true,
         intensity: 1.0,
         drift_scale: 1.0,
+        zoom_rate: 1.0,
         velocity_glow: 1.0,
         nebula_strength: 1.0,
         seed: 73.421,
@@ -194,5 +272,16 @@ impl Default for SpaceBackgroundShaderSettings {
                 builtin_space_background_defaults()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SpaceBackgroundShaderSettings;
+
+    #[test]
+    fn default_space_background_settings_builds_without_recursive_default() {
+        let settings = SpaceBackgroundShaderSettings::default();
+        assert!(settings.intensity.is_finite());
     }
 }

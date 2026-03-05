@@ -1,13 +1,17 @@
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
+use jsonwebtoken::{EncodingKey, Header, encode};
 use serde_json::Value;
+use sidereal_core::auth::AuthClaims;
 use sidereal_gateway::api::app_with_service;
 use sidereal_gateway::auth::{
     AuthConfig, AuthService, InMemoryAuthStore, NoopStarterWorldPersister,
     RecordingBootstrapDispatcher,
 };
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn register_login_refresh_me_happy_path() {
@@ -245,6 +249,176 @@ async fn password_reset_request_confirm_allows_new_login() {
     assert_eq!(new_login.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn admin_spawn_entity_rejects_non_admin_caller() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+
+    let register_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/register",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("register response");
+    assert_eq!(register_response.status(), StatusCode::OK);
+    let register_json = response_json(register_response).await;
+    let access_token = register_json["access_token"]
+        .as_str()
+        .expect("access_token")
+        .to_string();
+
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/spawn-entity",
+            r#"{"player_entity_id":"11111111-1111-1111-1111-111111111111","bundle_id":"corvette","overrides":{"display_name":"Test Corvette"}}"#,
+            Some(&access_token),
+        ))
+        .await
+        .expect("admin spawn response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_spawn_entity_rejects_invalid_player_id() {
+    let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        dispatcher,
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+    let admin_token = signed_token_with_roles(
+        &AuthConfig::for_tests().jwt_secret,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        vec!["admin".to_string()],
+    );
+
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/spawn-entity",
+            r#"{"player_entity_id":"not-a-uuid","bundle_id":"corvette","overrides":{"display_name":"Test Corvette"}}"#,
+            Some(&admin_token),
+        ))
+        .await
+        .expect("admin spawn response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_spawn_entity_dispatches_for_admin_role() {
+    let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        dispatcher.clone(),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+    let admin_token = signed_token_with_roles(
+        &AuthConfig::for_tests().jwt_secret,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        vec!["dev_tool".to_string()],
+    );
+    let target_player_id = Uuid::new_v4().to_string();
+
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/spawn-entity",
+            &format!(
+                r#"{{"player_entity_id":"{target_player_id}","bundle_id":"corvette","overrides":{{"display_name":"Dashboard Corvette"}}}}"#
+            ),
+            Some(&admin_token),
+        ))
+        .await
+        .expect("admin spawn response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = response_json(response).await;
+    let spawned_entity_id = json["spawned_entity_id"]
+        .as_str()
+        .expect("spawned_entity_id");
+    assert!(Uuid::parse_str(spawned_entity_id).is_ok());
+    assert_eq!(
+        json["owner_player_entity_id"]
+            .as_str()
+            .expect("owner_player_entity_id"),
+        target_player_id
+    );
+
+    let spawn_commands = dispatcher.spawn_commands().await;
+    assert_eq!(spawn_commands.len(), 1);
+    assert_eq!(spawn_commands[0].bundle_id, "corvette");
+    assert_eq!(spawn_commands[0].player_entity_id, target_player_id);
+    assert_eq!(spawn_commands[0].requested_entity_id, spawned_entity_id);
+}
+
+#[tokio::test]
+async fn admin_spawn_entity_returns_nondeterministic_entity_ids() {
+    let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        dispatcher,
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+    let admin_token = signed_token_with_roles(
+        &AuthConfig::for_tests().jwt_secret,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        vec!["admin".to_string()],
+    );
+    let target_player_id = Uuid::new_v4().to_string();
+    let request_body = format!(
+        r#"{{"player_entity_id":"{target_player_id}","bundle_id":"corvette","overrides":{{}}}}"#
+    );
+
+    let first = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/spawn-entity",
+            &request_body,
+            Some(&admin_token),
+        ))
+        .await
+        .expect("first spawn");
+    let second = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/spawn-entity",
+            &request_body,
+            Some(&admin_token),
+        ))
+        .await
+        .expect("second spawn");
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(second.status(), StatusCode::OK);
+    let first_json = response_json(first).await;
+    let second_json = response_json(second).await;
+    let first_id = first_json["spawned_entity_id"]
+        .as_str()
+        .expect("first spawned_entity_id");
+    let second_id = second_json["spawned_entity_id"]
+        .as_str()
+        .expect("second spawned_entity_id");
+    assert_ne!(first_id, second_id);
+}
+
 fn json_request(
     method: Method,
     uri: &str,
@@ -266,4 +440,30 @@ async fn response_json(response: axum::response::Response) -> Value {
         .await
         .expect("body bytes");
     serde_json::from_slice(&bytes).expect("json body")
+}
+
+fn signed_token_with_roles(
+    jwt_secret: &str,
+    account_id: Uuid,
+    player_entity_id: Uuid,
+    roles: Vec<String>,
+) -> String {
+    let now_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs();
+    let claims = AuthClaims {
+        sub: account_id.to_string(),
+        player_entity_id: player_entity_id.to_string(),
+        roles,
+        iat: now_s,
+        exp: now_s + 3600,
+        jti: Uuid::new_v4().to_string(),
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(jwt_secret.as_bytes()),
+    )
+    .expect("token encode")
 }

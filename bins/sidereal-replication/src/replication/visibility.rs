@@ -5,8 +5,8 @@ use lightyear::prelude::{
     ControlledBy, MessageReceiver, NetworkVisibility, Replicate, ReplicationState,
 };
 use sidereal_game::{
-    EntityGuid, FactionId, FactionVisibility, MountedOn, OwnerId, ParentGuid, PlayerTag,
-    PublicVisibility, ScannerComponent, ScannerRangeM, ShipTag, VisibilityDisclosure,
+    EntityGuid, FactionId, FactionVisibility, FullscreenLayer, MountedOn, OwnerId, ParentGuid,
+    PlayerTag, PublicVisibility, ScannerComponent, ScannerRangeM, ShipTag, VisibilityDisclosure,
     VisibilityGridCell, VisibilityScannerSource, VisibilitySpatialGrid,
 };
 use sidereal_net::{ClientLocalViewMode, ClientLocalViewModeMessage, PlayerEntityId};
@@ -70,6 +70,9 @@ fn cell_size_m_from_env() -> f32 {
 }
 
 fn bypass_all_visibility_filters_from_env() -> bool {
+    if !cfg!(test) {
+        return false;
+    }
     std::env::var("SIDEREAL_VISIBILITY_BYPASS_ALL")
         .ok()
         .is_some_and(|raw| {
@@ -201,7 +204,13 @@ pub struct VisibilityTelemetryLogState {
 
 #[derive(Resource, Default)]
 pub struct ClientLocalViewModeRegistry {
-    pub by_client_entity: HashMap<Entity, ClientLocalViewMode>,
+    pub by_client_entity: HashMap<Entity, ClientLocalViewSettings>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ClientLocalViewSettings {
+    pub view_mode: ClientLocalViewMode,
+    pub delivery_range_m: f32,
 }
 
 pub fn init_resources(app: &mut App) {
@@ -256,9 +265,13 @@ pub fn receive_client_local_view_mode_messages(
             if bound_player_id != message_player_id {
                 continue;
             }
-            registry
-                .by_client_entity
-                .insert(client_entity, message.view_mode);
+            registry.by_client_entity.insert(
+                client_entity,
+                ClientLocalViewSettings {
+                    view_mode: message.view_mode,
+                    delivery_range_m: message.delivery_range_m.max(1.0),
+                },
+            );
         }
     }
 }
@@ -381,6 +394,7 @@ fn build_candidate_cells_for_client(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_candidate_set_for_client(
     candidate_mode: VisibilityCandidateMode,
     player_entity_id: &str,
@@ -520,6 +534,7 @@ pub fn update_network_visibility(
             Option<&'_ ControlledBy>,
             Option<&'_ EntityGuid>,
             Option<&'_ PlayerTag>,
+            Option<&'_ FullscreenLayer>,
             Option<&'_ OwnerId>,
             Option<&'_ PublicVisibility>,
             Option<&'_ FactionVisibility>,
@@ -728,11 +743,16 @@ pub fn update_network_visibility(
             .player_faction_by_owner
             .get(canonical_player_id.as_str())
             .cloned();
-        let local_view_mode = view_mode_registry
+        let local_view_settings = view_mode_registry
             .by_client_entity
             .get(client_entity)
             .copied()
-            .unwrap_or(ClientLocalViewMode::Tactical);
+            .unwrap_or(ClientLocalViewSettings {
+                view_mode: ClientLocalViewMode::Tactical,
+                delivery_range_m: runtime_cfg.delivery_range_m,
+            });
+        let local_view_mode = local_view_settings.view_mode;
+        let client_delivery_range_m = local_view_settings.delivery_range_m;
         scratch.context_by_client.insert(
             *client_entity,
             PlayerVisibilityContext {
@@ -748,7 +768,7 @@ pub fn update_network_visibility(
             runtime_cfg.candidate_mode,
             canonical_player_id.as_str(),
             observer_anchor_position,
-            runtime_cfg.delivery_range_m,
+            client_delivery_range_m,
             &scanner_sources,
             local_view_mode,
             runtime_cfg.cell_size_m,
@@ -757,7 +777,7 @@ pub fn update_network_visibility(
         let candidate_cells = build_candidate_cells_for_client(
             runtime_cfg.candidate_mode,
             observer_anchor_position,
-            runtime_cfg.delivery_range_m,
+            client_delivery_range_m,
             &scanner_sources,
             local_view_mode,
             runtime_cfg.cell_size_m,
@@ -772,6 +792,11 @@ pub fn update_network_visibility(
 
     for (client_entity, player_entity_id) in &registered_clients {
         let canonical_player_id = canonical_player_entity_id(player_entity_id.as_str());
+        let client_delivery_range_m = view_mode_registry
+            .by_client_entity
+            .get(client_entity)
+            .map(|settings| settings.delivery_range_m)
+            .unwrap_or(runtime_cfg.delivery_range_m);
         let Some(&player_entity) = player_entities
             .by_player_entity_id
             .get(canonical_player_id.as_str())
@@ -809,7 +834,7 @@ pub fn update_network_visibility(
         let next_grid = VisibilitySpatialGrid {
             candidate_mode: runtime_cfg.candidate_mode.as_str().to_string(),
             cell_size_m: runtime_cfg.cell_size_m,
-            delivery_range_m: runtime_cfg.delivery_range_m,
+            delivery_range_m: client_delivery_range_m,
             queried_cells,
         };
         let next_disclosure = VisibilityDisclosure { scanner_sources };
@@ -833,6 +858,7 @@ pub fn update_network_visibility(
         controlled_by,
         entity_guid,
         player_tag,
+        fullscreen_layer,
         owner_id,
         public_visibility,
         faction_visibility,
@@ -899,6 +925,19 @@ pub fn update_network_visibility(
             continue;
         }
 
+        // Fullscreen layers are global non-spatial overlays and must not be culled by
+        // delivery range / scanner candidate logic as players move through the world.
+        if fullscreen_layer.is_some() {
+            for client_entity in &scratch.live_clients {
+                if scratch.context_by_client.contains_key(client_entity) {
+                    replication_state.gain_visibility(*client_entity);
+                } else if replication_state.is_visible(*client_entity) {
+                    replication_state.lose_visibility(*client_entity);
+                }
+            }
+            continue;
+        }
+
         if runtime_cfg.bypass_all_filters {
             for client_entity in &scratch.live_clients {
                 replication_state.gain_visibility(*client_entity);
@@ -919,6 +958,11 @@ pub fn update_network_visibility(
             let Some(visibility_context) = scratch.context_by_client.get(client_entity) else {
                 continue;
             };
+            let client_delivery_range_m = view_mode_registry
+                .by_client_entity
+                .get(client_entity)
+                .map(|settings| settings.delivery_range_m)
+                .unwrap_or(runtime_cfg.delivery_range_m);
             let in_candidates = candidates.contains(&entity);
             let bypass_candidate = should_bypass_candidate_filter(
                 visibility_context.player_entity_id.as_str(),
@@ -962,12 +1006,9 @@ pub fn update_network_visibility(
                 visibility_context,
             );
             let delivery_ok =
-                passes_delivery_scope(
-                    entity_position,
-                    visibility_context,
-                    runtime_cfg.delivery_range_m,
-                ) || (matches!(visibility_context.view_mode, ClientLocalViewMode::Map)
-                    && matches!(authorization, Some(VisibilityAuthorization::Owner)));
+                passes_delivery_scope(entity_position, visibility_context, client_delivery_range_m)
+                    || (matches!(visibility_context.view_mode, ClientLocalViewMode::Map)
+                        && matches!(authorization, Some(VisibilityAuthorization::Owner)));
             let should_be_visible = is_entity_visible_to_player(
                 visibility_context.player_entity_id.as_str(),
                 owner_player_id,
@@ -976,7 +1017,7 @@ pub fn update_network_visibility(
                 entity_faction_id,
                 entity_position,
                 visibility_context,
-                runtime_cfg.delivery_range_m,
+                client_delivery_range_m,
                 matches!(visibility_context.view_mode, ClientLocalViewMode::Map),
             );
             if should_be_visible {
@@ -1029,11 +1070,41 @@ pub fn update_network_visibility(
             } else {
                 0.0
             };
+            let (delivery_min, delivery_avg, delivery_max) = if scratch.live_clients.is_empty() {
+                (
+                    runtime_cfg.delivery_range_m as f64,
+                    runtime_cfg.delivery_range_m as f64,
+                    runtime_cfg.delivery_range_m as f64,
+                )
+            } else {
+                let mut values = scratch
+                    .live_clients
+                    .iter()
+                    .map(|client| {
+                        view_mode_registry
+                            .by_client_entity
+                            .get(client)
+                            .map(|settings| settings.delivery_range_m)
+                            .unwrap_or(runtime_cfg.delivery_range_m) as f64
+                    })
+                    .collect::<Vec<_>>();
+                values.sort_by(|a, b| a.total_cmp(b));
+                let min = *values
+                    .first()
+                    .unwrap_or(&(runtime_cfg.delivery_range_m as f64));
+                let max = *values
+                    .last()
+                    .unwrap_or(&(runtime_cfg.delivery_range_m as f64));
+                let avg = values.iter().sum::<f64>() / values.len() as f64;
+                (min, avg, max)
+            };
             info!(
-                "replication visibility summary mode={} bypass_all={} delivery_range_m={:.1} query_ms={:.2} clients={} entities={} candidates_per_client={:.1}",
+                "replication visibility summary mode={} bypass_all={} delivery_range_m[min/avg/max]={:.1}/{:.1}/{:.1} query_ms={:.2} clients={} entities={} candidates_per_client={:.1}",
                 runtime_cfg.candidate_mode.as_str(),
                 runtime_cfg.bypass_all_filters,
-                runtime_cfg.delivery_range_m,
+                delivery_min,
+                delivery_avg,
+                delivery_max,
                 started_at.elapsed().as_secs_f64() * 1000.0,
                 clients_count,
                 entities_count,

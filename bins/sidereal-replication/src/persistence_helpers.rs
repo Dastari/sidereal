@@ -1,4 +1,5 @@
-use sidereal_persistence::{GraphEntityRecord, GraphPersistence, NetEnvelope, PersistenceError};
+use sidereal_core::net_envelope::NetEnvelope;
+use sidereal_persistence::{GraphEntityRecord, GraphPersistence, PersistenceError};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]

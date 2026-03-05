@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct AuthClaims {
     pub sub: String,
     pub player_entity_id: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
     pub iat: u64,
     pub exp: u64,
     pub jti: String,

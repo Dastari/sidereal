@@ -1,5 +1,7 @@
 mod auth_ui;
+mod dev_console;
 mod dialog_ui;
+mod ecs_util;
 
 mod app_state;
 mod assets;
@@ -14,6 +16,7 @@ mod debug_overlay;
 mod input;
 mod logout;
 mod motion;
+mod owner_manifest;
 mod platform;
 mod plugins;
 mod remote;
@@ -22,6 +25,7 @@ mod resources;
 mod scene;
 mod scene_world;
 mod shaders;
+mod tactical;
 mod transforms;
 mod transport;
 mod ui;
@@ -39,6 +43,7 @@ pub(crate) use resources::*;
 use avian2d::prelude::*;
 use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy::render::RenderPlugin;
 use bevy::render::settings::RenderCreation;
@@ -61,13 +66,26 @@ use sidereal_runtime_sync::RuntimeEntityHierarchy;
 use std::time::Duration;
 
 pub(crate) fn run() {
+    let env_flag = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    };
+    eprintln!(
+        "client startup env flags: disable_asset_stream={} disable_repl_adoption={} disable_hierarchy_rebuild={} disable_world_visuals={} disable_motion_ownership={} shader_materials_enabled={} streamed_shader_overrides={}",
+        env_flag("SIDEREAL_CLIENT_DISABLE_ASSET_STREAM"),
+        env_flag("SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION"),
+        env_flag("SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD"),
+        env_flag("SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS"),
+        env_flag("SIDEREAL_CLIENT_DISABLE_MOTION_OWNERSHIP"),
+        shaders::shader_materials_enabled(),
+        shaders::streamed_shader_overrides_enabled(),
+    );
+
     let headless_transport = std::env::var("SIDEREAL_CLIENT_HEADLESS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let _multi_instance_guard = (!headless_transport)
-        .then(platform::acquire_multi_instance_guard)
-        .flatten();
-    let _is_secondary_instance = !headless_transport && _multi_instance_guard.is_none();
     let remote_cfg = match RemoteInspectConfig::from_env("CLIENT", 15714) {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -77,7 +95,6 @@ pub(crate) fn run() {
     };
 
     let asset_root = std::env::var("SIDEREAL_ASSET_ROOT").unwrap_or_else(|_| ".".to_string());
-
     let mut app = App::new();
     if headless_transport {
         app.add_plugins(MinimalPlugins);
@@ -111,16 +128,20 @@ pub(crate) fn run() {
                     file_path: asset_root.clone(),
                     ..Default::default()
                 })
+                .set(LogPlugin {
+                    custom_layer: dev_console::build_log_capture_layer,
+                    ..default()
+                })
                 .set(RenderPlugin {
                     render_creation: RenderCreation::Automatic(platform::configured_wgpu_settings()),
                     ..Default::default()
                 }),
         );
-        shaders::ensure_shader_placeholders(&asset_root);
         app.add_plugins(Material2dPlugin::<StarfieldMaterial>::default());
         app.add_plugins(Material2dPlugin::<SpaceBackgroundMaterial>::default());
         app.add_plugins(Material2dPlugin::<StreamedSpriteShaderMaterial>::default());
         app.add_plugins(Material2dPlugin::<ThrusterPlumeMaterial>::default());
+        app.add_plugins(Material2dPlugin::<visuals::WeaponImpactSparkMaterial>::default());
         app.add_plugins(FrameTimeDiagnosticsPlugin::default());
         audio::insert_embedded_menu_loop_audio(&mut app);
         // FPS cap: SIDEREAL_CLIENT_MAX_FPS (default 60). Set to 0 to disable (uncapped).
@@ -151,6 +172,14 @@ pub(crate) fn run() {
         rollback_islands: false,
     });
     register_lightyear_protocol(&mut app);
+    let shader_materials_enabled = shaders::shader_materials_enabled();
+    if shader_materials_enabled
+        && let Some(mut shaders_assets) = app
+            .world_mut()
+            .get_resource_mut::<Assets<bevy::shader::Shader>>()
+    {
+        shaders::install_runtime_shaders(&mut shaders_assets, &asset_root);
+    }
     configure_remote(&mut app, &remote_cfg);
     // Lightyear/Bevy plugins can initialize Fixed time; set project-authoritative 60 Hz after plugin wiring.
     app.insert_resource(Time::<Fixed>::from_hz(60.0));
@@ -186,6 +215,11 @@ pub(crate) fn run() {
     app.insert_resource(CharacterSelectionState::default());
     app.insert_resource(FreeCameraState::default());
     app.insert_resource(OwnedEntitiesPanelState::default());
+    app.insert_resource(OwnedAssetManifestCache::default());
+    app.insert_resource(TacticalFogCache::default());
+    app.insert_resource(TacticalContactsCache::default());
+    app.insert_resource(TacticalResnapshotRequestState::default());
+    app.insert_resource(TacticalMapUiState::default());
     app.insert_resource(RuntimeEntityHierarchy::default());
     app.insert_resource(FullscreenExternalWorldData::default());
     app.insert_resource(StarfieldMotionState::default());
@@ -197,24 +231,42 @@ pub(crate) fn run() {
     app.insert_resource(NearbyCollisionProxyTuning::from_env());
     app.insert_resource(RemoteEntityRegistry::default());
     app.insert_resource(HeadlessTransportMode(headless_transport));
-    app.add_systems(
-        FixedUpdate,
-        (
-            motion::enforce_motion_ownership_for_world_entities,
-            motion::audit_motion_ownership_system
-                .after(motion::enforce_motion_ownership_for_world_entities)
-                .run_if(bevy::ecs::schedule::common_conditions::not(
-                    lightyear::prelude::is_in_rollback,
-                )),
-            motion::sync_controlled_mass_from_total_mass,
-            process_character_movement_actions,
-            process_flight_actions,
-            apply_engine_thrust,
-        )
-            .chain()
-            .before(avian2d::prelude::PhysicsSystems::StepSimulation),
-    );
-    app.add_systems(FixedPreUpdate, motion::mark_motion_ownership_dirty_signals);
+    let disable_motion_ownership = env_flag("SIDEREAL_CLIENT_DISABLE_MOTION_OWNERSHIP");
+    if disable_motion_ownership {
+        eprintln!(
+            "WARN sidereal_client::native: client motion-ownership systems disabled via SIDEREAL_CLIENT_DISABLE_MOTION_OWNERSHIP"
+        );
+        app.add_systems(
+            FixedUpdate,
+            (
+                motion::sync_controlled_mass_from_total_mass,
+                process_character_movement_actions,
+                process_flight_actions,
+                apply_engine_thrust,
+            )
+                .chain()
+                .before(avian2d::prelude::PhysicsSystems::StepSimulation),
+        );
+    } else {
+        app.add_systems(
+            FixedUpdate,
+            (
+                motion::enforce_motion_ownership_for_world_entities,
+                motion::audit_motion_ownership_system
+                    .after(motion::enforce_motion_ownership_for_world_entities)
+                    .run_if(bevy::ecs::schedule::common_conditions::not(
+                        lightyear::prelude::is_in_rollback,
+                    )),
+                motion::sync_controlled_mass_from_total_mass,
+                process_character_movement_actions,
+                process_flight_actions,
+                apply_engine_thrust,
+            )
+                .chain()
+                .before(avian2d::prelude::PhysicsSystems::StepSimulation),
+        );
+        app.add_systems(FixedPreUpdate, motion::mark_motion_ownership_dirty_signals);
+    }
     app.add_systems(
         FixedUpdate,
         (stabilize_idle_motion, clamp_angular_velocity)
@@ -224,10 +276,17 @@ pub(crate) fn run() {
     if headless_transport {
         app.init_resource::<dialog_ui::DialogQueue>();
     }
-    app.add_systems(
-        PostUpdate,
-        sync_mounted_hierarchy.before(bevy::transform::TransformSystems::Propagate),
-    );
+    let disable_hierarchy_rebuild = env_flag("SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD");
+    if disable_hierarchy_rebuild {
+        eprintln!(
+            "WARN sidereal_client::native: client hierarchy rebuild disabled via SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD"
+        );
+    } else {
+        app.add_systems(
+            PostUpdate,
+            sync_mounted_hierarchy.before(bevy::transform::TransformSystems::Propagate),
+        );
+    }
     app.add_observer(log_native_client_connected);
     app.add_plugins(plugins::ClientBootstrapPlugin {
         headless: headless_transport,
@@ -242,7 +301,14 @@ pub(crate) fn run() {
         headless: headless_transport,
     });
     if !headless_transport {
-        app.add_plugins(plugins::ClientVisualsPlugin);
+        let disable_world_visuals = env_flag("SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS");
+        if disable_world_visuals {
+            eprintln!(
+                "WARN sidereal_client::native: client world visuals disabled via SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS"
+            );
+        } else {
+            app.add_plugins(plugins::ClientVisualsPlugin);
+        }
         app.add_plugins(plugins::ClientUiPlugin);
         app.add_plugins(plugins::ClientDiagnosticsPlugin);
     }

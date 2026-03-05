@@ -64,12 +64,6 @@ local function flight_actions_supported()
     "Brake",
     "AfterburnerOn",
     "AfterburnerOff",
-    "ThrustForward",
-    "ThrustReverse",
-    "ThrustNeutral",
-    "YawLeft",
-    "YawRight",
-    "YawNeutral",
     "FirePrimary",
     "FireSecondary",
   }
@@ -94,7 +88,7 @@ local function build_corvette_bundle(ctx)
   local owner_id = ctx.owner_id or "npc:unowned"
   local display_name = ctx.display_name or "Corvette"
   local ship_entity_labels = ctx.ship_entity_labels or { "Ship", "Corvette" }
-  local scanner_base_range_m = ctx.scanner_base_range_m or 300.0
+  local scanner_base_range_m = ctx.scanner_base_range_m or 1000.0
   local spawn_position = ctx.spawn_position or { 0.0, 0.0 }
 
   local hardpoint_computer_core_id = ctx.new_uuid()
@@ -254,13 +248,6 @@ local function build_corvette_bundle(ctx)
       {
         component(module_flight_computer_id, "display_name", "Flight Computer MK1"),
         component(module_flight_computer_id, "entity_labels", { "Module" }),
-        component(module_flight_computer_id, "flight_computer", {
-          profile = "basic_fly_by_wire",
-          throttle = 0.0,
-          yaw_input = 0.0,
-          brake_active = false,
-          turn_rate_deg_s = 90.0,
-        }),
         component(module_flight_computer_id, "mass_kg", 50.0),
         component(module_flight_computer_id, "parent_guid", hardpoint_computer_core_id),
         component(module_flight_computer_id, "mounted_on", {
@@ -363,7 +350,7 @@ local function build_corvette_bundle(ctx)
         }),
         component(module_weapon_gatling_fore_id, "ammo_count", {
           current = 500,
-          maximum = 500,
+          capacity = 500,
         }),
         component(module_weapon_gatling_fore_id, "mass_kg", 120.0),
         component(module_weapon_gatling_fore_id, "parent_guid", hardpoint_weapon_fore_center_id),
@@ -418,32 +405,15 @@ local function build_starter_corvette(ctx)
     display_name = "Corvette",
     ship_entity_labels = { "Ship", "Corvette" },
     spawn_position = { spawn_x, spawn_y },
-    scanner_base_range_m = 300.0,
+    scanner_base_range_m = 1000.0,
   }))
 
   return records
 end
 
-local function build_debug_minimal_dynamic(ctx)
-  return {
-    {
-      entity_id = ctx.player_entity_id,
-      labels = { "Entity", "Player" },
-      properties = {},
-      components = {
-        component(ctx.player_entity_id, "display_name", "Dynamic Player"),
-        component(ctx.player_entity_id, "player_tag", {}),
-        component(ctx.player_entity_id, "account_id", ctx.account_id),
-        component(ctx.player_entity_id, "entity_labels", { "Player" }),
-      },
-    },
-  }
-end
-
 local BUNDLE_BUILDERS = {
   corvette = build_corvette_bundle,
   starter_corvette = build_starter_corvette,
-  debug_minimal_dynamic = build_debug_minimal_dynamic,
 }
 
 function EntityRegistry.build_graph_records(ctx)

@@ -8,7 +8,7 @@ fn ingest_graph_batch_tracks_add_remove() {
     let mut pending = HashMap::<String, GraphEntityRecord>::new();
     let mut removals = HashSet::<String>::new();
     let add = GraphEntityRecord {
-        entity_id: "ship:1".to_string(),
+        entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
         labels: vec!["Entity".to_string()],
         properties: serde_json::json!({}),
         components: Vec::new(),
@@ -23,8 +23,8 @@ fn ingest_graph_batch_tracks_add_remove() {
         },
     );
     assert!(!has_removals);
-    assert!(cache.contains("ship:1"));
-    assert!(pending.contains_key("ship:1"));
+    assert!(cache.contains("11111111-1111-1111-1111-111111111111"));
+    assert!(pending.contains_key("11111111-1111-1111-1111-111111111111"));
     assert!(removals.is_empty());
 
     let has_removals = ingest_graph_batch(
@@ -33,11 +33,11 @@ fn ingest_graph_batch_tracks_add_remove() {
         &mut removals,
         GraphDeltaBatch {
             upserts: Vec::new(),
-            removals: vec!["ship:1".to_string()],
+            removals: vec!["11111111-1111-1111-1111-111111111111".to_string()],
         },
     );
     assert!(has_removals);
-    assert!(!cache.contains("ship:1"));
-    assert!(!pending.contains_key("ship:1"));
-    assert!(removals.contains("ship:1"));
+    assert!(!cache.contains("11111111-1111-1111-1111-111111111111"));
+    assert!(!pending.contains_key("11111111-1111-1111-1111-111111111111"));
+    assert!(removals.contains("11111111-1111-1111-1111-111111111111"));
 }

@@ -15,6 +15,7 @@ use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, is_active_world_state,
 };
 use super::components::ControlledEntity;
+use super::dev_console::DevConsoleState;
 use super::resources::{
     ClientControlRequestState, ClientInputAckTracker, ClientInputLogState, ClientInputSendState,
     ClientNetworkTick, HeadlessTransportMode,
@@ -153,6 +154,7 @@ fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn send_lightyear_input_messages(
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
+    dev_console_state: Option<Res<'_, DevConsoleState>>,
     windows: Query<'_, '_, &'_ Window, With<bevy::window::PrimaryWindow>>,
     app_state: Option<Res<'_, State<ClientAppState>>>,
     headless_mode: Res<'_, HeadlessTransportMode>,
@@ -182,6 +184,7 @@ pub fn send_lightyear_input_messages(
     mut input_send_state: ResMut<'_, ClientInputSendState>,
     request_state: Res<'_, ClientControlRequestState>,
 ) {
+    let suppress_for_console = super::dev_console::is_console_open(dev_console_state.as_deref());
     let in_world_state = is_active_world_state(&app_state, &headless_mode);
     let window_focused = windows.single().map(|w| w.focused).unwrap_or(true);
 
@@ -198,7 +201,8 @@ pub fn send_lightyear_input_messages(
             ids_refer_to_same_guid(target_entity_id.as_str(), player_entity_id.as_str());
         let suppress_input_for_camera_only =
             player_view_state.detached_free_camera && !controlling_player_anchor;
-        let (player_input, _axes) = if suppress_input_for_camera_only || !window_focused {
+        let (player_input, _axes) =
+            if suppress_input_for_camera_only || !window_focused || suppress_for_console {
             neutral_player_input()
         } else {
             player_input_from_keyboard(input.as_deref())
@@ -212,10 +216,7 @@ pub fn send_lightyear_input_messages(
     let has_active_input = player_input.actions.iter().any(|a| {
         !matches!(
             a,
-            EntityAction::ThrustNeutral
-                | EntityAction::YawNeutral
-                | EntityAction::LongitudinalNeutral
-                | EntityAction::LateralNeutral
+            EntityAction::LongitudinalNeutral | EntityAction::LateralNeutral
         )
     });
     let target_entity =
@@ -318,9 +319,7 @@ mod tests {
         assert!(input.actions.iter().all(|action| {
             matches!(
                 action,
-                sidereal_game::EntityAction::ThrustNeutral
-                    | sidereal_game::EntityAction::YawNeutral
-                    | sidereal_game::EntityAction::LongitudinalNeutral
+                sidereal_game::EntityAction::LongitudinalNeutral
                     | sidereal_game::EntityAction::LateralNeutral
                     | sidereal_game::EntityAction::AfterburnerOff
             )

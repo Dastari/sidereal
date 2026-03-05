@@ -3,10 +3,7 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::entities::ship::corvette::{
-    default_corvette_asset_id, default_corvette_collision_aabb, default_corvette_collision_outline,
-    default_corvette_size,
-};
+use crate::entities::ship::corvette::default_corvette_asset_id;
 use crate::flight::angular_inertia_from_size;
 use crate::generated::components::{
     BaseMassKg, CargoMassKg, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid,
@@ -294,87 +291,6 @@ pub fn bootstrap_collision_profiles_from_aabb(
         commands
             .entity(entity)
             .insert(CollisionProfile::solid_aabb());
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub fn bootstrap_legacy_corvette_collision_aabb(
-    mut commands: Commands<'_, '_>,
-    entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ VisualAssetId,
-            &'_ CollisionAabbM,
-            Option<&'_ MountedOn>,
-            Option<&'_ ShipTag>,
-        ),
-    >,
-) {
-    let legacy_size = default_corvette_size();
-    let legacy_half_extents = Vec3::new(
-        legacy_size.length * 0.5,
-        legacy_size.width * 0.5,
-        legacy_size.height * 0.5,
-    );
-    let upgraded = default_corvette_collision_aabb();
-    for (entity, visual_asset_id, collision_aabb, mounted_on, ship_tag) in &entities {
-        if mounted_on.is_some() || ship_tag.is_none() {
-            continue;
-        }
-        if visual_asset_id.0 != default_corvette_asset_id() {
-            continue;
-        }
-        if collision_aabb.half_extents.distance(legacy_half_extents) > 0.01 {
-            continue;
-        }
-        commands.entity(entity).insert(upgraded);
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub fn bootstrap_legacy_corvette_collision_outline(
-    mut commands: Commands<'_, '_>,
-    entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ VisualAssetId,
-            Option<&'_ MountedOn>,
-            Option<&'_ ShipTag>,
-            Option<&'_ CollisionOutlineM>,
-        ),
-    >,
-) {
-    let default_outline = default_corvette_collision_outline();
-    let target = default_corvette_collision_aabb().half_extents;
-    for (entity, visual_asset_id, mounted_on, ship_tag, current_outline) in &entities {
-        if mounted_on.is_some() || ship_tag.is_none() {
-            continue;
-        }
-        if visual_asset_id.0 != default_corvette_asset_id() {
-            continue;
-        }
-        let needs_insert_or_upgrade = match current_outline {
-            None => true,
-            Some(outline) => {
-                let (max_x, max_y) = outline
-                    .points
-                    .iter()
-                    .fold((0.0_f32, 0.0_f32), |(mx, my), p| {
-                        (mx.max(p.x.abs()), my.max(p.y.abs()))
-                    });
-                max_x > target.x * 1.2
-                    || max_y > target.y * 1.2
-                    || max_x < target.x * 0.75
-                    || max_y < target.y * 0.75
-            }
-        };
-        if needs_insert_or_upgrade {
-            commands.entity(entity).insert(default_outline.clone());
-        }
     }
 }
 

@@ -572,10 +572,10 @@ pub(crate) fn enforce_controlled_planar_motion(
         if !transform.translation.is_finite() {
             transform.translation = Vec3::ZERO;
         }
-        if let Some(mut rot) = rotation {
-            if !rot.is_finite() {
-                *rot = Rotation::IDENTITY;
-            }
+        if let Some(mut rot) = rotation
+            && !rot.is_finite()
+        {
+            *rot = Rotation::IDENTITY;
         }
         if transform.translation.z != 0.0 {
             transform.translation.z = 0.0;

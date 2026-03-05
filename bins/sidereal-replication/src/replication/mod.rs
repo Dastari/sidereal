@@ -4,11 +4,13 @@ pub mod combat;
 pub mod control;
 pub mod input;
 pub mod lifecycle;
+pub mod owner_manifest;
 pub mod persistence;
 pub mod runtime_scripting;
 pub mod runtime_state;
 pub mod scripting;
 pub mod simulation_entities;
+pub mod tactical;
 pub mod visibility;
 
 pub use simulation_entities::{

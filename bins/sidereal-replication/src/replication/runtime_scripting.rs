@@ -191,6 +191,7 @@ pub fn init_resources(app: &mut App) {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn refresh_script_world_snapshot(
     mut snapshot: ResMut<'_, ScriptWorldSnapshot>,
     query: Query<
@@ -215,7 +216,7 @@ pub fn refresh_script_world_snapshot(
             ScriptEntitySnapshot {
                 guid: guid.0.to_string(),
                 position: pos,
-                script_state: script_state.map(|state| script_state_to_json(state)),
+                script_state: script_state.map(script_state_to_json),
             },
         );
     }
@@ -420,6 +421,7 @@ pub fn run_script_events(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn apply_script_intents(
     runtime: Option<NonSendMut<'_, ScriptRuntime>>,
     mut query: Query<

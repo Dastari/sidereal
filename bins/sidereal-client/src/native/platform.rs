@@ -3,7 +3,6 @@
 use bevy::prelude::*;
 use bevy::render::settings::{Backends, WgpuSettings};
 use std::fs;
-use std::net::TcpListener;
 use std::time::Instant;
 
 use super::resources::FrameRateCap;
@@ -16,8 +15,7 @@ pub const ORTHO_SCALE_PER_DISTANCE: f32 = 0.02;
 pub const UI_OVERLAY_ORTHO_SCALE: f32 = 0.6;
 pub const MIN_WINDOW_WIDTH: f32 = 960.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 540.0;
-pub const STREAMED_SPRITE_PIXEL_SHADER_PATH: &str =
-    "data/cache_stream/shaders/sprite_pixel_effect.wgsl";
+pub const STREAMED_SPRITE_PIXEL_SHADER_PATH: &str = "data/shaders/sprite_pixel_effect.wgsl";
 
 pub fn safe_viewport_size(window: &bevy::window::Window) -> Option<Vec2> {
     let width = window.resolution.width();
@@ -76,21 +74,6 @@ pub fn configured_wgpu_settings() -> WgpuSettings {
         backends: Some(backends),
         force_fallback_adapter,
         ..Default::default()
-    }
-}
-
-pub fn acquire_multi_instance_guard() -> Option<TcpListener> {
-    const MULTI_INSTANCE_GUARD_ADDR: &str = "127.0.0.1:62173";
-    match TcpListener::bind(MULTI_INSTANCE_GUARD_ADDR) {
-        Ok(listener) => Some(listener),
-        Err(err) => {
-            bevy::log::warn!(
-                "sidereal-client multi-instance guard lock unavailable at {} ({}). Assuming secondary instance.",
-                MULTI_INSTANCE_GUARD_ADDR,
-                err
-            );
-            None
-        }
     }
 }
 

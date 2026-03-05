@@ -8,6 +8,7 @@ use bevy::state::state_scoped::DespawnOnExit;
 use super::{
     AuthAction, ClientAppState, ClientSession, EmbeddedFonts, FocusField, submit_auth_request,
 };
+use super::dev_console::DevConsoleState;
 
 #[derive(Component)]
 struct AuthUiRoot;
@@ -379,9 +380,13 @@ fn tick_cursor_blink(time: Res<'_, Time>, mut blink: ResMut<'_, CursorBlink>) {
 fn handle_auth_keyboard_input(
     mut keyboard_input_reader: MessageReader<'_, '_, KeyboardInput>,
     keys: Res<'_, ButtonInput<KeyCode>>,
+    dev_console_state: Option<Res<'_, DevConsoleState>>,
     mut session: ResMut<'_, ClientSession>,
     mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
 ) {
+    if super::dev_console::is_console_open(dev_console_state.as_deref()) {
+        return;
+    }
     let mut submit = false;
     for event in keyboard_input_reader.read() {
         if event.state != ButtonState::Pressed {

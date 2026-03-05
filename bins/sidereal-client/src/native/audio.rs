@@ -1,6 +1,8 @@
 use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use bevy::prelude::*;
 
+use super::ecs_util::queue_despawn_if_exists;
+
 #[derive(Resource, Clone)]
 pub(super) struct MenuLoopAudioHandle {
     pub handle: Handle<AudioSource>,
@@ -45,9 +47,7 @@ pub(super) fn stop_menu_loop_music_system(
     mut commands: Commands<'_, '_>,
     mut playback_state: ResMut<'_, MenuLoopPlaybackState>,
 ) {
-    if let Some(player_entity) = playback_state.player_entity.take()
-        && let Ok(mut entity_commands) = commands.get_entity(player_entity)
-    {
-        entity_commands.try_despawn();
+    if let Some(player_entity) = playback_state.player_entity.take() {
+        queue_despawn_if_exists(&mut commands, player_entity);
     }
 }

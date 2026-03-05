@@ -12,9 +12,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use sidereal_core::gateway_dtos::{
-    AuthTokens, CharacterSummary, CharactersResponse, EnterWorldRequest, EnterWorldResponse,
-    LoginRequest, MeResponse, PasswordResetConfirmRequest, PasswordResetConfirmResponse,
-    PasswordResetRequest, PasswordResetResponse, RefreshRequest, RegisterRequest,
+    AdminSpawnEntityRequest, AdminSpawnEntityResponse, AuthTokens, CharacterSummary,
+    CharactersResponse, EnterWorldRequest, EnterWorldResponse, LoginRequest, MeResponse,
+    PasswordResetConfirmRequest, PasswordResetConfirmResponse, PasswordResetRequest,
+    PasswordResetResponse, RefreshRequest, RegisterRequest,
 };
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -44,6 +45,7 @@ pub fn app_with_service(service: SharedAuthService) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/characters", get(characters))
         .route("/world/enter", post(enter_world))
+        .route("/admin/spawn-entity", post(admin_spawn_entity))
         .route("/assets/stream/{asset_id}", get(stream_asset))
         .with_state(service)
 }
@@ -143,6 +145,16 @@ async fn enter_world(
         .enter_world(access_token, &req.player_entity_id)
         .await?;
     Ok(Json(EnterWorldResponse { accepted: true }))
+}
+
+async fn admin_spawn_entity(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+    Json(req): Json<AdminSpawnEntityRequest>,
+) -> Result<Json<AdminSpawnEntityResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    let response = service.admin_spawn_entity(access_token, &req).await?;
+    Ok(Json(response))
 }
 
 async fn stream_asset(

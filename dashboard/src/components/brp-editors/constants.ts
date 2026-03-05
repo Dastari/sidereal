@@ -8,6 +8,10 @@ export const COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER =
   'sidereal_game::components::character_movement_controller::CharacterMovementController'
 export const COMPONENT_TYPE_ENGINE =
   'sidereal_game::components::engine::Engine'
+export const COMPONENT_TYPE_FLIGHT_TUNING =
+  'sidereal_game::components::flight_tuning::FlightTuning'
+export const COMPONENT_TYPE_MAX_VELOCITY_MPS =
+  'sidereal_game::components::max_velocity_mps::MaxVelocityMps'
 export const COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS =
   'sidereal_game::components::starfield_shader_settings::StarfieldShaderSettings'
 export const COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS =
@@ -20,6 +24,8 @@ export const EDITABLE_COMPONENT_TYPE_PATHS: ReadonlySet<string> = new Set([
   COMPONENT_TYPE_DENSITY,
   COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER,
   COMPONENT_TYPE_ENGINE,
+  COMPONENT_TYPE_FLIGHT_TUNING,
+  COMPONENT_TYPE_MAX_VELOCITY_MPS,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
   COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
   COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
@@ -56,6 +62,18 @@ export function getComponentTypeKey(node: {
     node.label === 'Engine'
   ) {
     return COMPONENT_TYPE_ENGINE
+  }
+  if (
+    node.kind.toLowerCase() === 'component' &&
+    node.label === 'FlightTuning'
+  ) {
+    return COMPONENT_TYPE_FLIGHT_TUNING
+  }
+  if (
+    node.kind.toLowerCase() === 'component' &&
+    node.label === 'MaxVelocityMps'
+  ) {
+    return COMPONENT_TYPE_MAX_VELOCITY_MPS
   }
   if (
     node.kind.toLowerCase() === 'component' &&

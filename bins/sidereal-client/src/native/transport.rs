@@ -6,11 +6,15 @@ use lightyear::prelude::client::{Client, Connect, Connected, RawClient};
 use lightyear::prelude::{
     ChannelRegistry, LocalAddr, MessageManager, PeerAddr, ReplicationReceiver, Transport, UdpIo,
 };
-use sidereal_net::{AssetChannel, ControlChannel, InputChannel};
+use sidereal_net::{
+    AssetChannel, ControlChannel, InputChannel, ManifestChannel, TacticalDeltaChannel,
+    TacticalSnapshotChannel,
+};
 use std::net::SocketAddr;
 
 use super::app_state::ClientAppState;
 use super::dialog_ui::DialogQueue;
+use super::ecs_util::queue_despawn_if_exists;
 use super::resources::{LogoutCleanupRequested, PendingDisconnectNotify};
 
 /// Spawns the Lightyear client and triggers Connect if no client entity exists.
@@ -36,7 +40,7 @@ pub fn ensure_lightyear_client_system(
         if !connected && !connecting {
             // Recreate transport entity instead of reconnecting in-place to avoid
             // stale transport/message state across repeated logout/login cycles.
-            commands.entity(entity).try_despawn();
+            queue_despawn_if_exists(&mut commands, entity);
             start_lightyear_client_transport_inner(&mut commands);
             info!(
                 "native client lightyear UDP replacing stale client entity={:?}",
@@ -113,6 +117,24 @@ pub fn ensure_client_transport_channels(
         }
         if !transport.has_receiver::<AssetChannel>() {
             transport.add_receiver_from_registry::<AssetChannel>(&registry);
+        }
+        if !transport.has_sender::<TacticalSnapshotChannel>() {
+            transport.add_sender_from_registry::<TacticalSnapshotChannel>(&registry);
+        }
+        if !transport.has_receiver::<TacticalSnapshotChannel>() {
+            transport.add_receiver_from_registry::<TacticalSnapshotChannel>(&registry);
+        }
+        if !transport.has_sender::<TacticalDeltaChannel>() {
+            transport.add_sender_from_registry::<TacticalDeltaChannel>(&registry);
+        }
+        if !transport.has_receiver::<TacticalDeltaChannel>() {
+            transport.add_receiver_from_registry::<TacticalDeltaChannel>(&registry);
+        }
+        if !transport.has_sender::<ManifestChannel>() {
+            transport.add_sender_from_registry::<ManifestChannel>(&registry);
+        }
+        if !transport.has_receiver::<ManifestChannel>() {
+            transport.add_receiver_from_registry::<ManifestChannel>(&registry);
         }
     }
 }

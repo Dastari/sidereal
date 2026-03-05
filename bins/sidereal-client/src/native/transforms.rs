@@ -4,8 +4,9 @@ use avian2d::prelude::{Position, Rotation};
 use bevy::prelude::*;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::Confirmed;
+use sidereal_game::FullscreenLayer;
 
-use super::components::WorldEntity;
+use super::components::{PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity};
 
 /// Fallback sync for Confirmed-only world entities.
 ///
@@ -80,7 +81,7 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
             continue;
         }
         let source_position = confirmed_position
-            .map(|p| p.0 .0)
+            .map(|p| p.0.0)
             .or_else(|| position.map(|p| p.0));
         let source_heading = confirmed_rotation
             .map(|r| r.0.as_radians())
@@ -99,5 +100,95 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         transform.translation.y = planar_position.y;
         transform.translation.z = 0.0;
         transform.rotation = Quat::from_rotation_z(heading);
+    }
+}
+
+/// Keep newly adopted entities hidden until we can render an authoritative pose.
+///
+/// This prevents transient origin flashes when relevance is gained but interpolation
+/// history is not yet ready on the first render frame.
+#[allow(clippy::type_complexity)]
+pub(crate) fn reveal_world_entities_when_initial_transform_ready(
+    mut commands: Commands<'_, '_>,
+    mut entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Has<lightyear::prelude::Interpolated>,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ Confirmed<Position>>,
+            Option<&'_ Confirmed<Rotation>>,
+            Option<&'_ ConfirmedHistory<Position>>,
+            Option<&'_ ConfirmedHistory<Rotation>>,
+            Option<&'_ FullscreenLayer>,
+            &'_ mut Transform,
+            &'_ mut Visibility,
+        ),
+        (With<WorldEntity>, With<PendingInitialVisualReady>),
+    >,
+) {
+    for (
+        entity,
+        is_interpolated,
+        position,
+        rotation,
+        confirmed_position,
+        confirmed_rotation,
+        position_history,
+        rotation_history,
+        fullscreen_layer,
+        mut transform,
+        mut visibility,
+    ) in &mut entities
+    {
+        let mut ready = false;
+        let mut source_position: Option<Vec2> = None;
+        let mut source_heading: Option<f32> = None;
+
+        if fullscreen_layer.is_some() {
+            // Fullscreen layers are non-spatial overlay entities: they have no physics
+            // transform history but should render as soon as adopted.
+            ready = true;
+        } else if is_interpolated {
+            let history_ready = position_history.and_then(|h| h.end()).is_some()
+                && rotation_history.and_then(|h| h.end()).is_some();
+            if history_ready {
+                ready = true;
+            } else if let (Some(cp), Some(cr)) = (confirmed_position, confirmed_rotation) {
+                source_position = Some(cp.0.0);
+                source_heading = Some(cr.0.as_radians());
+                ready = true;
+            }
+        } else if let (Some(p), Some(r)) = (position, rotation) {
+            source_position = Some(p.0);
+            source_heading = Some(r.as_radians());
+            ready = true;
+        }
+
+        if !ready {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+
+        if let (Some(planar_position), Some(heading)) = (source_position, source_heading)
+            && planar_position.is_finite()
+            && heading.is_finite()
+        {
+            transform.translation.x = planar_position.x;
+            transform.translation.y = planar_position.y;
+            transform.translation.z = 0.0;
+            transform.rotation = Quat::from_rotation_z(heading);
+        }
+
+        *visibility = Visibility::Visible;
+        commands
+            .entity(entity)
+            .remove::<PendingInitialVisualReady>()
+            .insert(PendingVisibilityFadeIn {
+                elapsed_s: 0.0,
+                duration_s: 0.16,
+            });
     }
 }

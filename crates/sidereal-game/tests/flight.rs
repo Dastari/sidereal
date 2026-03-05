@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use sidereal_game::flight::compute_flight_forces;
 use sidereal_game::{
     ActionQueue, AfterburnerState, EntityAction, FlightComputer, FlightControlAuthority, MountedOn,
+    SimulationMotionWriter,
 };
 use sidereal_game::{
     clamp_angular_velocity, compute_brake_decel_accel_mps2, process_flight_actions,
@@ -19,8 +20,8 @@ fn process_flight_actions_only_updates_flight_intents() {
         .spawn((
             ActionQueue {
                 pending: vec![
-                    EntityAction::ThrustForward,
-                    EntityAction::YawRight,
+                    EntityAction::Forward,
+                    EntityAction::Right,
                     EntityAction::FirePrimary,
                 ],
             },
@@ -32,6 +33,7 @@ fn process_flight_actions_only_updates_flight_intents() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
         ))
         .id();
     app.update();
@@ -61,6 +63,7 @@ fn process_flight_actions_handles_brake_as_intent_only() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
         ))
         .id();
     app.update();
@@ -89,6 +92,7 @@ fn process_flight_actions_ignores_non_flight_actions() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
         ))
         .id();
     app.update();
@@ -119,6 +123,7 @@ fn process_flight_actions_toggles_afterburner_state() {
             },
             AfterburnerState::default(),
             FlightControlAuthority,
+            SimulationMotionWriter,
         ))
         .id();
     app.update();
@@ -145,6 +150,7 @@ fn stabilize_idle_motion_zeros_small_residual_velocity_and_spin() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
             LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03)),
             AngularVelocity(0.01),
         ))
@@ -173,6 +179,7 @@ fn stabilize_idle_motion_preserves_active_control_state() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
             LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03)),
             AngularVelocity(0.01),
         ))
@@ -201,6 +208,7 @@ fn stabilize_idle_motion_honors_brake_stop_window() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
             LinearVelocity(bevy::prelude::Vec2::new(3.0, -1.0)),
             AngularVelocity(0.01),
         ))
@@ -259,6 +267,7 @@ fn clamp_angular_velocity_skips_mounted_modules() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
             AngularVelocity(6.0),
         ))
         .id();
@@ -273,6 +282,7 @@ fn clamp_angular_velocity_skips_mounted_modules() {
                 turn_rate_deg_s: 45.0,
             },
             FlightControlAuthority,
+            SimulationMotionWriter,
             MountedOn {
                 parent_entity_id: parent,
                 hardpoint_id: "test".to_string(),

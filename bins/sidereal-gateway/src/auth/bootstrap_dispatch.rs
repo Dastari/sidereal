@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use sidereal_core::bootstrap_wire::{BOOTSTRAP_KIND, BootstrapCommand, BootstrapWireMessage};
+use sidereal_core::bootstrap_wire::{
+    AdminSpawnEntityCommand, BootstrapCommand, BootstrapWireMessage,
+};
 use sidereal_persistence::GraphPersistence;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
@@ -10,6 +12,10 @@ use crate::auth::error::AuthError;
 #[async_trait]
 pub trait BootstrapDispatcher: Send + Sync {
     async fn dispatch(&self, command: &BootstrapCommand) -> Result<(), AuthError>;
+    async fn dispatch_admin_spawn(
+        &self,
+        command: &AdminSpawnEntityCommand,
+    ) -> Result<(), AuthError>;
 }
 
 #[derive(Debug)]
@@ -59,8 +65,7 @@ impl DirectBootstrapDispatcher {
 #[async_trait]
 impl BootstrapDispatcher for UdpBootstrapDispatcher {
     async fn dispatch(&self, command: &BootstrapCommand) -> Result<(), AuthError> {
-        let payload = BootstrapWireMessage {
-            kind: BOOTSTRAP_KIND.to_string(),
+        let payload = BootstrapWireMessage::BootstrapPlayer {
             account_id: command.account_id.to_string(),
             player_entity_id: command.player_entity_id.clone(),
         };
@@ -70,6 +75,28 @@ impl BootstrapDispatcher for UdpBootstrapDispatcher {
             .send_to(&bytes, self.target)
             .await
             .map_err(|err| AuthError::Internal(format!("bootstrap send failed: {err}")))?;
+        Ok(())
+    }
+
+    async fn dispatch_admin_spawn(
+        &self,
+        command: &AdminSpawnEntityCommand,
+    ) -> Result<(), AuthError> {
+        let payload = BootstrapWireMessage::AdminSpawnEntity {
+            actor_account_id: command.actor_account_id.to_string(),
+            actor_player_entity_id: command.actor_player_entity_id.clone(),
+            request_id: command.request_id.to_string(),
+            player_entity_id: command.player_entity_id.clone(),
+            bundle_id: command.bundle_id.clone(),
+            requested_entity_id: command.requested_entity_id.clone(),
+            overrides: command.overrides.clone(),
+        };
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|err| AuthError::Internal(format!("admin spawn serialize failed: {err}")))?;
+        self.socket
+            .send_to(&bytes, self.target)
+            .await
+            .map_err(|err| AuthError::Internal(format!("admin spawn send failed: {err}")))?;
         Ok(())
     }
 }
@@ -102,6 +129,36 @@ impl BootstrapDispatcher for DirectBootstrapDispatcher {
         .await
         .map_err(|err| AuthError::Internal(format!("bootstrap dispatch task failed: {err}")))?
     }
+
+    async fn dispatch_admin_spawn(
+        &self,
+        command: &AdminSpawnEntityCommand,
+    ) -> Result<(), AuthError> {
+        let database_url = self.database_url.clone();
+        let command = command.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut persistence = GraphPersistence::connect(&database_url)
+                .map_err(|err| AuthError::Internal(format!("persistence connect failed: {err}")))?;
+            persistence.ensure_schema().map_err(|err| {
+                AuthError::Internal(format!("persistence ensure schema failed: {err}"))
+            })?;
+            let records = persistence
+                .load_graph_records()
+                .map_err(|err| AuthError::Internal(format!("load graph records failed: {err}")))?;
+            if !records
+                .iter()
+                .any(|record| record.entity_id == command.player_entity_id)
+            {
+                return Err(AuthError::Internal(format!(
+                    "admin spawn rejected: player entity {} not found in graph persistence",
+                    command.player_entity_id
+                )));
+            }
+            Ok::<_, AuthError>(())
+        })
+        .await
+        .map_err(|err| AuthError::Internal(format!("admin spawn dispatch task failed: {err}")))?
+    }
 }
 
 #[derive(Debug, Default)]
@@ -112,16 +169,28 @@ impl BootstrapDispatcher for NoopBootstrapDispatcher {
     async fn dispatch(&self, _command: &BootstrapCommand) -> Result<(), AuthError> {
         Ok(())
     }
+
+    async fn dispatch_admin_spawn(
+        &self,
+        _command: &AdminSpawnEntityCommand,
+    ) -> Result<(), AuthError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct RecordingBootstrapDispatcher {
     commands: Mutex<Vec<BootstrapCommand>>,
+    spawn_commands: Mutex<Vec<AdminSpawnEntityCommand>>,
 }
 
 impl RecordingBootstrapDispatcher {
     pub async fn commands(&self) -> Vec<BootstrapCommand> {
         self.commands.lock().await.clone()
+    }
+
+    pub async fn spawn_commands(&self) -> Vec<AdminSpawnEntityCommand> {
+        self.spawn_commands.lock().await.clone()
     }
 }
 
@@ -129,6 +198,14 @@ impl RecordingBootstrapDispatcher {
 impl BootstrapDispatcher for RecordingBootstrapDispatcher {
     async fn dispatch(&self, command: &BootstrapCommand) -> Result<(), AuthError> {
         self.commands.lock().await.push(command.clone());
+        Ok(())
+    }
+
+    async fn dispatch_admin_spawn(
+        &self,
+        command: &AdminSpawnEntityCommand,
+    ) -> Result<(), AuthError> {
+        self.spawn_commands.lock().await.push(command.clone());
         Ok(())
     }
 }

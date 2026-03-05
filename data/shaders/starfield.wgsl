@@ -7,6 +7,10 @@ const MAX_LAYERS: i32 = 8;
 @group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;      // .xy = heading (unit vector), .z = camera zoom scale, .w reserved
 @group(2) @binding(3) var<uniform> starfield_params: vec4<f32>;  // .x = density, .y = layer count, .z = initial z offset, .w = alpha
 @group(2) @binding(4) var<uniform> starfield_tint: vec4<f32>;    // .rgb = color tint, .w = intensity
+@group(2) @binding(5) var<uniform> star_core_params: vec4<f32>;   // .x = size, .y = intensity, .z = alpha, .w reserved
+@group(2) @binding(6) var<uniform> star_core_color: vec4<f32>;    // .rgb = star color, .w reserved
+@group(2) @binding(7) var<uniform> corona_params: vec4<f32>;      // .x = size, .y = intensity, .z = alpha, .w reserved
+@group(2) @binding(8) var<uniform> corona_color: vec4<f32>;       // .rgb = corona color, .w reserved
 
 fn hash21(p_in: vec2<f32>) -> f32 {
     var p = fract(p_in * vec2<f32>(123.23, 456.34));
@@ -58,17 +62,24 @@ fn star_layer(uv: vec2<f32>, depth: f32, vel_dir: vec2<f32>, warp: f32, density_
             let pos_hash = hash22(cell_id * 2.13);
             let local = gv - offset - (pos_hash - 0.5);
 
-            let radius = mix(0.045, 0.12, depth * depth);
+            let star_size = clamp(star_core_params.x, 0.1, 10.0);
+            let star_intensity = max(star_core_params.y, 0.0);
+            let star_alpha = clamp(star_core_params.z, 0.0, 1.0);
+            let corona_size = clamp(corona_params.x, 0.1, 10.0);
+            let corona_intensity = max(corona_params.y, 0.0);
+            let corona_alpha = clamp(corona_params.z, 0.0, 1.0);
+
+            let radius = mix(0.045, 0.12, depth * depth) * star_size;
             let elongation = warp * mix(0.45, 1.45, depth);
 
             let s = star(local, radius, vel_dir, elongation);
             let d = length(local);
-            let soft_halo = smoothstep(radius * 2.9, radius * 0.35, d) * 0.28;
+            let soft_halo = smoothstep(radius * (2.9 * corona_size), radius * 0.35, d) * (0.28 * corona_alpha);
             let brightness = mix(0.7, 2.0, depth * depth) * (1.0 + warp * depth * 0.55);
-            let star_tint = mix(vec3<f32>(0.72, 0.83, 1.0), vec3<f32>(0.6, 0.76, 1.0), depth);
-            let glow_tint = vec3<f32>(0.44, 0.64, 1.0);
+            let star_tint = star_core_color.rgb;
+            let glow_tint = corona_color.rgb;
 
-            col += (s * star_tint + soft_halo * glow_tint) * brightness;
+            col += ((s * star_tint * star_alpha * star_intensity) + (soft_halo * glow_tint * corona_intensity)) * brightness;
         }
     }
     return col;

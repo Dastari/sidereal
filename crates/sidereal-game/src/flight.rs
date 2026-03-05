@@ -83,15 +83,15 @@ pub fn apply_flight_action_to_computer(
     action: EntityAction,
 ) -> bool {
     match action {
-        EntityAction::Forward | EntityAction::ThrustForward => {
+        EntityAction::Forward => {
             computer.throttle = 1.0;
             computer.brake_active = false;
         }
-        EntityAction::Backward | EntityAction::ThrustReverse => {
+        EntityAction::Backward => {
             computer.throttle = -0.7;
             computer.brake_active = false;
         }
-        EntityAction::LongitudinalNeutral | EntityAction::ThrustNeutral => {
+        EntityAction::LongitudinalNeutral => {
             computer.throttle = 0.0;
             computer.brake_active = false;
         }
@@ -100,15 +100,15 @@ pub fn apply_flight_action_to_computer(
             computer.brake_active = true;
             computer.yaw_input = 0.0;
         }
-        EntityAction::Left | EntityAction::YawLeft => {
+        EntityAction::Left => {
             computer.yaw_input = 1.0;
             computer.brake_active = false;
         }
-        EntityAction::Right | EntityAction::YawRight => {
+        EntityAction::Right => {
             computer.yaw_input = -1.0;
             computer.brake_active = false;
         }
-        EntityAction::LateralNeutral | EntityAction::YawNeutral => computer.yaw_input = 0.0,
+        EntityAction::LateralNeutral => computer.yaw_input = 0.0,
         EntityAction::AfterburnerOn => {
             if let Some(state) = afterburner_state.as_mut() {
                 state.active = true;
@@ -125,6 +125,7 @@ pub fn apply_flight_action_to_computer(
 }
 
 /// System that processes actions and updates FlightComputer state
+#[allow(clippy::type_complexity)]
 pub fn process_flight_actions(
     mut query: Query<
         (
@@ -157,6 +158,7 @@ pub fn process_flight_actions(
 
 /// System that applies engine thrust based on FlightComputer state
 /// Uses Avian's Forces query helper for proper force integration
+#[allow(clippy::type_complexity)]
 pub fn apply_engine_thrust(
     time: Res<Time>,
     // Hull entities with flight computers (by GUID)
@@ -597,6 +599,7 @@ pub fn sanitize_planar_angular_velocity(angular_velocity: f32, max_abs_z_rad_s: 
 }
 
 /// Clamp tiny residual drift/spin while controls are neutral.
+#[allow(clippy::type_complexity)]
 pub fn stabilize_idle_motion(
     mut bodies: Query<
         (
@@ -653,6 +656,7 @@ pub fn grant_flight_control_authority_system(
 }
 
 /// Runtime helper: entities with movement-authoritative roles gain write marker.
+#[allow(clippy::type_complexity)]
 pub fn grant_simulation_motion_writer_system(
     mut commands: Commands<'_, '_>,
     entities: Query<
@@ -669,6 +673,7 @@ pub fn grant_simulation_motion_writer_system(
 }
 
 /// Cleanup helper for entities that no longer expose movement-authoritative roles.
+#[allow(clippy::type_complexity)]
 pub fn revoke_stale_simulation_motion_writer_system(
     mut commands: Commands<'_, '_>,
     entities: Query<

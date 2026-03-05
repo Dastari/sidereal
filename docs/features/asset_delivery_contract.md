@@ -1,7 +1,7 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract  
-Last updated: February 24, 2026  
+Last updated: March 5, 2026  
 Primary architecture reference: `docs/sidereal_design_document.md`  
 Related contract: `docs/features/visibility_replication_contract.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`
@@ -61,6 +61,17 @@ This document focuses on runtime behavior and protocol contracts, not DCC/conten
 5. Runtime gameplay path must not depend on standalone HTTP asset file serving.
 6. Native and WASM must implement the same gameplay-facing asset behavior and protocol.
 7. Cache validity decisions must be deterministic (`asset_version` + checksum/hash).
+8. Runtime-critical shaders must always have a built-in fallback source in the client binary; streamed/cache shader files are overrides, never hard requirements.
+9. Missing streamed shader/audio/texture/sprite content must never crash the client process.
+10. Runtime asset swap-in must be atomic: keep current fallback/live asset active until replacement validates and loads successfully.
+
+### 4.1 Runtime Shader Safety Contract
+
+1. Core materials (starfield/background/sprite effects/thruster plume) must bind to stable built-in shader handles.
+2. At startup, client seeds shader assets from embedded defaults.
+3. When streamed shader cache files arrive, client replaces the same shader handles with streamed content.
+4. If streamed shader read/compile fails, client keeps the existing shader handle content and logs recoverable errors only.
+5. Renderer startup must not depend on local `data/cache_stream/**` existence.
 
 ## 5. Terminology
 

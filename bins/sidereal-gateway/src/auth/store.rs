@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use sidereal_core::bootstrap_wire::AUTH_CHARACTERS_TABLE;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tokio_postgres::error::SqlState;
 use tokio_postgres::{Client, NoTls};
 use tracing::error;
 use uuid::Uuid;
@@ -19,12 +18,9 @@ const PASSWORD_RESET_TOKENS_TABLE: &str = "auth_password_reset_tokens";
 pub trait AuthStore: Send + Sync {
     async fn create_account_atomic(
         &self,
-        _email: &str,
-        _password_hash: &str,
-    ) -> Result<Option<Account>, AuthError> {
-        Ok(None)
-    }
-    async fn create_account(&self, email: &str, password_hash: &str) -> Result<Account, AuthError>;
+        email: &str,
+        password_hash: &str,
+    ) -> Result<Account, AuthError>;
     async fn get_account_by_email(&self, email: &str) -> Result<Option<Account>, AuthError>;
     async fn get_account_by_id(&self, account_id: Uuid) -> Result<Option<Account>, AuthError>;
     async fn insert_refresh_token(
@@ -130,7 +126,7 @@ impl AuthStore for PostgresAuthStore {
         &self,
         email: &str,
         password_hash: &str,
-    ) -> Result<Option<Account>, AuthError> {
+    ) -> Result<Account, AuthError> {
         let email = email.to_string();
         let password_hash = password_hash.to_string();
         let database_url = self.database_url.clone();
@@ -183,46 +179,7 @@ impl AuthStore for PostgresAuthStore {
         })
         .await
         .map_err(|err| AuthError::Internal(format!("register task failed: {err}")))??;
-        Ok(Some(account))
-    }
-
-    async fn create_account(&self, email: &str, password_hash: &str) -> Result<Account, AuthError> {
-        let now = now_epoch_s() as i64;
-        let account_id = Uuid::new_v4();
-        let player_entity_id = account_id.to_string();
-        let row = self
-            .client
-            .query_one(
-                &format!(
-                    "
-                WITH inserted_account AS (
-                    INSERT INTO {ACCOUNTS_TABLE} (account_id, email, password_hash, player_entity_id, created_at_epoch_s)
-                    VALUES ($1, $2, $3, $4, $5)
-                    RETURNING account_id, email, password_hash, player_entity_id
-                ),
-                inserted_character AS (
-                    INSERT INTO {AUTH_CHARACTERS_TABLE} (account_id, player_entity_id, created_at_epoch_s)
-                    SELECT account_id, player_entity_id, $5 FROM inserted_account
-                )
-                SELECT account_id, email, password_hash, player_entity_id FROM inserted_account
-                "
-                ),
-                &[&account_id, &email, &password_hash, &player_entity_id, &now],
-            )
-            .await;
-
-        match row {
-            Ok(row) => Ok(Account {
-                account_id: row.get(0),
-                email: row.get(1),
-                password_hash: row.get(2),
-                player_entity_id: row.get(3),
-            }),
-            Err(err) if err.code() == Some(&SqlState::UNIQUE_VIOLATION) => {
-                Err(AuthError::Conflict("account already exists".to_string()))
-            }
-            Err(err) => Err(AuthError::Internal(format!("create account failed: {err}"))),
-        }
+        Ok(account)
     }
 
     async fn get_account_by_email(&self, email: &str) -> Result<Option<Account>, AuthError> {
@@ -426,7 +383,11 @@ struct InMemoryAuthState {
 
 #[async_trait]
 impl AuthStore for InMemoryAuthStore {
-    async fn create_account(&self, email: &str, password_hash: &str) -> Result<Account, AuthError> {
+    async fn create_account_atomic(
+        &self,
+        email: &str,
+        password_hash: &str,
+    ) -> Result<Account, AuthError> {
         let mut state = self.state.write().await;
         if state.accounts_by_email.contains_key(email) {
             return Err(AuthError::Conflict("account already exists".to_string()));

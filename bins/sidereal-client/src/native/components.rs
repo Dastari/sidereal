@@ -12,6 +12,12 @@ pub(crate) struct ClientSceneEntity;
 pub(crate) struct HudFpsText;
 
 #[derive(Component)]
+pub(crate) struct HudManifestText;
+
+#[derive(Component)]
+pub(crate) struct HudTacticalText;
+
+#[derive(Component)]
 pub(crate) struct HudSpeedValueText;
 
 #[derive(Component)]
@@ -63,7 +69,19 @@ pub(crate) struct LoadingOverlayRoot;
 pub(crate) struct RuntimeStreamingIconText;
 
 #[derive(Component)]
+pub(crate) struct TacticalMapOverlayRoot;
+
+#[derive(Component)]
+pub(crate) struct TacticalMapTitle;
+
+#[derive(Component)]
+pub(crate) struct TacticalMapMarkerDynamic;
+
+#[derive(Component)]
 pub(crate) struct GameplayCamera;
+
+#[derive(Component)]
+pub(crate) struct BackdropCamera;
 
 #[derive(Component)]
 pub(crate) struct GameplayHud;
@@ -142,6 +160,7 @@ pub(crate) struct ThrusterPlumeChild;
 pub(crate) struct WeaponTracerBolt {
     pub excluded_entity: Option<Entity>,
     pub velocity: Vec2,
+    pub impact_xy: Option<Vec2>,
     pub ttl_s: f32,
     pub lateral_normal: Vec2,
     pub wiggle_phase_rad: f32,
@@ -176,6 +195,15 @@ pub(crate) struct SuppressedPredictedDuplicateVisual;
 pub(crate) struct ReplicatedAdoptionHandled;
 
 #[derive(Component)]
+pub(crate) struct PendingInitialVisualReady;
+
+#[derive(Component)]
+pub(crate) struct PendingVisibilityFadeIn {
+    pub elapsed_s: f32,
+    pub duration_s: f32,
+}
+
+#[derive(Component)]
 pub(crate) struct StarfieldBackdrop;
 
 #[derive(Component)]
@@ -192,9 +220,6 @@ pub(crate) struct FullscreenLayerRenderable {
     pub layer_kind: String,
     pub layer_order: i32,
 }
-
-#[derive(Component)]
-pub(crate) struct FallbackFullscreenLayer;
 
 #[derive(Component)]
 pub(crate) struct TopDownCamera {

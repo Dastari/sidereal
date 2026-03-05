@@ -86,15 +86,9 @@ pub fn parse_vec3_value(value: &serde_json::Value) -> Option<Vec3> {
     ))
 }
 
-/// Extracts a UUID from an entity_id string. Supports bare UUIDs and legacy
-/// prefixed formats (e.g. "ship:uuid", "player:uuid").
+/// Extracts a UUID from a canonical entity_id string (bare UUID only).
 pub fn parse_guid_from_entity_id(entity_id: &str) -> Option<uuid::Uuid> {
-    uuid::Uuid::parse_str(entity_id).ok().or_else(|| {
-        entity_id
-            .split(':')
-            .nth(1)
-            .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
-    })
+    uuid::Uuid::parse_str(entity_id).ok()
 }
 
 pub fn value_as_vec3_recursive(value: &serde_json::Value) -> Option<Vec3> {

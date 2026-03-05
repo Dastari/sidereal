@@ -13,6 +13,7 @@ use sidereal_net::{ClientDisconnectNotifyMessage, ControlChannel};
 
 use super::app_state::*;
 use super::assets::LocalAssetManager;
+use super::ecs_util::queue_despawn_if_exists;
 use super::resources::{
     BootstrapWatchdogState, ClientAuthSyncState, ClientControlRequestState, ClientInputAckTracker,
     LogoutCleanupRequested, PendingDisconnectNotify, PendingDisconnectNotifySent,
@@ -156,6 +157,6 @@ pub fn purge_stale_world_and_transport_on_enter_auth_system(
     raw_clients: Query<'_, '_, Entity, With<RawClient>>,
 ) {
     for entity in &raw_clients {
-        commands.entity(entity).try_despawn();
+        queue_despawn_if_exists(&mut commands, entity);
     }
 }

@@ -53,6 +53,25 @@ Core player loop:
 - Production native runtime transport is currently UDP (`UdpIo` / `ServerUdpIo`).
 - Browser/WASM transport is not yet implemented end-to-end; WebRTC-first remains the accepted target direction.
 
+### 3.2.1 Server-Only Admin Spawn Control Path (Current)
+
+Server-authoritative entity spawning for dashboard/dev tooling uses a dedicated gateway-admin path:
+
+1. Gateway endpoint: `POST /admin/spawn-entity`.
+2. Caller must present a valid access token with role `admin` or `dev_tool`.
+3. Gateway forwards a control command to replication over the replication control channel.
+4. Replication validates:
+   - canonical `player_entity_id` UUID,
+   - allowed `bundle_id` from Lua bundle registry,
+   - allowed override keys/shape/size.
+5. Replication executes Lua bundle spawn via `bundles/entity_registry.lua` (`build_graph_records` path), enforces `owner_id` server-side, persists graph records, hydrates runtime entities, and lets normal replication/owner-manifest flows publish results.
+
+Security rules:
+
+1. Game client transport is never allowed to issue spawn commands.
+2. Caller-supplied owner overrides are ignored/replaced by server-authoritative target player id.
+3. Spawn requests are audit-logged with actor, target player, bundle, and spawned entity id.
+
 ### 3.3 WASM Transport Direction (Future)
 
 WASM client direction remains WebRTC-first:
@@ -422,8 +441,8 @@ Implementation note:
 - Platform branching is `cfg(target_arch = "wasm32")` only.
 - Native and WASM gameplay behavior stay in lockstep; transport adapters are platform-specific boundary code.
 - Native renderer backend selection uses `SIDEREAL_CLIENT_WGPU_BACKENDS` first, then `WGPU_BACKEND`, then defaults to `PRIMARY` backends (`VULKAN | METAL | DX12 | BROWSER_WEBGPU`) when unset.
-- Native multi-instance safety: non-headless clients use a local process guard; if another client instance is already active, the new instance forces `WgpuSettings.force_fallback_adapter = true` to reduce multi-instance GPU-driver crash risk on low-end/older adapters.
-- `SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER` explicitly overrides multi-instance fallback behavior (`1`/`true` forces software adapter; `0`/`false` disables software fallback and uses hardware adapter selection).
+- Native client startup does not perform multi-instance lock/tracking; separate local client processes are treated identically.
+- `SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER` is explicit opt-in only (`1`/`true` forces software adapter; unset or `0`/`false` keeps hardware adapter selection).
 - Native primary window is user-resizable with enforced minimum logical size `960x540`; resize/minimize transitions treat non-positive viewport dimensions as non-renderable for fullscreen backdrop/material uniform updates.
 
 ## 11. Engineering Boundaries

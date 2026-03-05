@@ -1,3 +1,4 @@
+use super::ecs_util::queue_despawn_if_exists;
 use bevy::log::info;
 use bevy::prelude::*;
 
@@ -274,7 +275,7 @@ fn handle_dialog_interactions(
                 info!("client dialog dismissed via button");
                 dialog_queue.current = None;
                 for entity in &dialog_root {
-                    commands.entity(entity).try_despawn();
+                    queue_despawn_if_exists(&mut commands, entity);
                 }
             }
             Interaction::Hovered => {
@@ -294,7 +295,7 @@ fn handle_dialog_interactions(
         info!("client dialog dismissed via keyboard");
         dialog_queue.current = None;
         for entity in &dialog_root {
-            commands.entity(entity).try_despawn();
+            queue_despawn_if_exists(&mut commands, entity);
         }
     }
 }

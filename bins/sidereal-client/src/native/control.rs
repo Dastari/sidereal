@@ -14,7 +14,8 @@ use std::sync::OnceLock;
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, is_active_world_state,
 };
-use super::components::TopDownCamera;
+use super::components::{GameplayCamera, TopDownCamera};
+use super::platform::safe_viewport_size;
 use super::resources::ClientViewModeState;
 use super::resources::{ClientControlDebugState, ClientControlRequestState, HeadlessTransportMode};
 
@@ -117,6 +118,8 @@ pub fn send_local_view_mode_updates(
     session: Res<'_, ClientSession>,
     mut state: ResMut<'_, ClientViewModeState>,
     camera: Query<'_, '_, &'_ TopDownCamera>,
+    gameplay_camera_projection: Query<'_, '_, &'_ Projection, With<GameplayCamera>>,
+    windows: Query<'_, '_, &'_ Window, With<bevy::window::PrimaryWindow>>,
     mut senders: Query<
         '_,
         '_,
@@ -150,21 +153,45 @@ pub fn send_local_view_mode_updates(
             }
         })
         .unwrap_or(ClientLocalViewMode::Tactical);
+    // Derive delivery radius from visible world half-diagonal + buffer.
+    // This keeps culling aligned with what the player can actually see.
+    const DELIVERY_RADIUS_BUFFER_M: f32 = 120.0;
+    const DELIVERY_RADIUS_MIN_M: f32 = 300.0;
+    const DELIVERY_RADIUS_MAX_M: f32 = 5000.0;
+    let dynamic_delivery_range_m = gameplay_camera_projection
+        .single()
+        .ok()
+        .and_then(|projection| match projection {
+            Projection::Orthographic(ortho) => Some(ortho.scale),
+            _ => None,
+        })
+        .zip(windows.single().ok().and_then(safe_viewport_size))
+        .map(|(ortho_scale, viewport_size)| {
+            let half_extents = viewport_size * 0.5 * ortho_scale.max(0.0001);
+            (half_extents.length() + DELIVERY_RADIUS_BUFFER_M)
+                .clamp(DELIVERY_RADIUS_MIN_M, DELIVERY_RADIUS_MAX_M)
+        })
+        .unwrap_or(DELIVERY_RADIUS_MIN_M);
     let now_s = time.elapsed_secs_f64();
     let mode_changed = state.last_sent_mode != Some(current_mode);
+    let range_changed = state
+        .last_sent_delivery_range_m
+        .is_none_or(|last| (last - dynamic_delivery_range_m).abs() >= 5.0);
     let heartbeat_due = now_s - state.last_sent_at_s >= 1.0;
-    if !mode_changed && !heartbeat_due {
+    if !mode_changed && !range_changed && !heartbeat_due {
         return;
     }
 
     let message = ClientLocalViewModeMessage {
         player_entity_id: canonical_player_entity_id,
         view_mode: current_mode,
+        delivery_range_m: dynamic_delivery_range_m,
     };
     for mut sender in &mut senders {
         sender.send::<ControlChannel>(message.clone());
     }
     state.last_sent_mode = Some(current_mode);
+    state.last_sent_delivery_range_m = Some(dynamic_delivery_range_m);
     state.last_sent_at_s = now_s;
 }
 

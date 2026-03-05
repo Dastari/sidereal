@@ -1,8 +1,8 @@
-use sidereal_persistence::GraphPersistence;
-use sidereal_persistence::{
-    ChannelClass, GraphComponentRecord, GraphEntityRecord, NetEnvelope, decode_envelope_json,
-    encode_envelope_json,
+use sidereal_core::net_envelope::{
+    ChannelClass, NetEnvelope, decode_envelope_json, encode_envelope_json,
 };
+use sidereal_persistence::GraphPersistence;
+use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
 use sidereal_replication::persistence_helpers::{
     GraphDeltaBatch, flush_pending_updates, hydrate_known_entity_ids, ingest_graph_envelope,
 };
@@ -47,9 +47,9 @@ fn replication_ingest_persist_hydrate_lifecycle() {
         return;
     }
 
-    let ship_id = format!("ship:{}", Uuid::new_v4());
-    let hardpoint_id = format!("hardpoint:{}", Uuid::new_v4());
-    let engine_id = format!("engine:{}", Uuid::new_v4());
+    let ship_id = Uuid::new_v4().to_string();
+    let hardpoint_id = Uuid::new_v4().to_string();
+    let engine_id = Uuid::new_v4().to_string();
 
     let updates = vec![
         GraphEntityRecord {

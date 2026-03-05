@@ -151,6 +151,25 @@ pub fn ensure_server_transport_channels(
         if !transport.has_sender::<sidereal_net::AssetChannel>() {
             transport.add_sender_from_registry::<sidereal_net::AssetChannel>(&registry);
         }
+        if !transport.has_receiver::<sidereal_net::TacticalSnapshotChannel>() {
+            transport
+                .add_receiver_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
+        }
+        if !transport.has_sender::<sidereal_net::TacticalSnapshotChannel>() {
+            transport.add_sender_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
+        }
+        if !transport.has_receiver::<sidereal_net::TacticalDeltaChannel>() {
+            transport.add_receiver_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
+        }
+        if !transport.has_sender::<sidereal_net::TacticalDeltaChannel>() {
+            transport.add_sender_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
+        }
+        if !transport.has_receiver::<sidereal_net::ManifestChannel>() {
+            transport.add_receiver_from_registry::<sidereal_net::ManifestChannel>(&registry);
+        }
+        if !transport.has_sender::<sidereal_net::ManifestChannel>() {
+            transport.add_sender_from_registry::<sidereal_net::ManifestChannel>(&registry);
+        }
     }
 }
 

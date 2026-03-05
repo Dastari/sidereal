@@ -7,7 +7,7 @@
 //! - Handlers implement capability-specific logic (e.g., FlightComputer → Engine → fuel check → apply force)
 //!
 //! Design principles:
-//! - Actions are high-level intent (ThrustForward, FireWeapon, ActivateShield)
+//! - Actions are high-level intent (Forward, FireWeapon, ActivateShield)
 //! - No direct force/velocity manipulation from input layer
 //! - Components declare which actions they handle
 //! - Fuel, power, cooldown, and other constraints are checked at handler level
@@ -38,23 +38,8 @@ pub enum EntityAction {
     LateralNeutral,
 
     // === Flight control ===
-    /// Legacy alias for `Forward`.
-    /// Thrust forward (throttle positive)
-    ThrustForward,
-    /// Legacy alias for `Backward`.
-    /// Thrust reverse (throttle negative)
-    ThrustReverse,
-    /// Legacy alias for `LongitudinalNeutral`.
-    /// Stop all thrust (throttle zero)
-    ThrustNeutral,
     /// Active flight-computer braking to drive linear velocity toward zero
     Brake,
-    /// Yaw left (turn counterclockwise)
-    YawLeft,
-    /// Yaw right (turn clockwise)
-    YawRight,
-    /// Stop yaw input
-    YawNeutral,
     /// Enable afterburner while held/active.
     AfterburnerOn,
     /// Disable afterburner when released/inactive.
@@ -123,23 +108,12 @@ pub const FLIGHT_CONTROL_ACTIONS: [EntityAction; 9] = [
 pub const WEAPON_ACTIONS: [EntityAction; 2] =
     [EntityAction::FirePrimary, EntityAction::FireSecondary];
 
-pub const LEGACY_FLIGHT_CONTROL_ACTIONS: [EntityAction; 7] = [
-    EntityAction::ThrustForward,
-    EntityAction::ThrustReverse,
-    EntityAction::ThrustNeutral,
-    EntityAction::Brake,
-    EntityAction::YawLeft,
-    EntityAction::YawRight,
-    EntityAction::YawNeutral,
-];
-
 pub fn is_flight_control_action(action: EntityAction) -> bool {
-    FLIGHT_CONTROL_ACTIONS.contains(&action) || LEGACY_FLIGHT_CONTROL_ACTIONS.contains(&action)
+    FLIGHT_CONTROL_ACTIONS.contains(&action)
 }
 
 pub fn default_flight_action_capabilities() -> ActionCapabilities {
     let mut supported = FLIGHT_CONTROL_ACTIONS.to_vec();
-    supported.extend(LEGACY_FLIGHT_CONTROL_ACTIONS);
     supported.extend(WEAPON_ACTIONS);
     ActionCapabilities { supported }
 }
@@ -156,32 +130,8 @@ impl ActionCapabilities {
     }
 }
 
-/// System to validate and log unsupported actions
+/// Legacy compatibility hook kept as a no-op: unsupported actions are ignored.
 pub fn validate_action_capabilities(
-    query: Query<(Entity, &ActionQueue, Option<&ActionCapabilities>)>,
+    _query: Query<(Entity, &ActionQueue, Option<&ActionCapabilities>)>,
 ) {
-    for (entity, queue, capabilities) in &query {
-        if queue.pending.is_empty() {
-            continue;
-        }
-
-        let Some(caps) = capabilities else {
-            warn!(
-                entity = ?entity,
-                actions = ?queue.pending,
-                "entity received actions but has no ActionCapabilities component"
-            );
-            continue;
-        };
-
-        for action in &queue.pending {
-            if !caps.can_handle(*action) {
-                warn!(
-                    entity = ?entity,
-                    action = ?action,
-                    "entity received unsupported action"
-                );
-            }
-        }
-    }
 }

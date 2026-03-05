@@ -1,13 +1,13 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChannelClass {
     Input,
     Control,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetEnvelope<T> {
     pub protocol_version: u16,
     pub channel: ChannelClass,

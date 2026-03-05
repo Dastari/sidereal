@@ -14,8 +14,9 @@ fn cypher_literal_renders_nested_maps_and_arrays() {
 
 #[test]
 fn parse_agtype_helpers_handle_suffix() {
-    let s = parse_agtype_string("\"player:1\"::agtype".to_string()).expect("string");
-    assert_eq!(s, "player:1");
+    let s = parse_agtype_string("\"11111111-1111-1111-1111-111111111111\"::agtype".to_string())
+        .expect("string");
+    assert_eq!(s, "11111111-1111-1111-1111-111111111111");
     let json = parse_agtype_json("{\"x\":1}::agtype".to_string()).expect("json");
     assert_eq!(json["x"], 1);
 }
@@ -25,13 +26,13 @@ fn validate_runtime_guid_uniqueness_rejects_collisions() {
     let guid = "316c04e7-a139-4b36-afdb-8a607b565fec";
     let records = vec![
         GraphEntityRecord {
-            entity_id: format!("player:{guid}"),
+            entity_id: guid.to_string(),
             labels: vec!["Entity".to_string()],
             properties: serde_json::json!({}),
             components: Vec::new(),
         },
         GraphEntityRecord {
-            entity_id: format!("ship:{guid}"),
+            entity_id: guid.to_string(),
             labels: vec!["Entity".to_string()],
             properties: serde_json::json!({}),
             components: Vec::new(),
@@ -45,13 +46,13 @@ fn validate_runtime_guid_uniqueness_rejects_collisions() {
 fn validate_runtime_guid_uniqueness_accepts_distinct_guids() {
     let records = vec![
         GraphEntityRecord {
-            entity_id: "player:316c04e7-a139-4b36-afdb-8a607b565fec".to_string(),
+            entity_id: "316c04e7-a139-4b36-afdb-8a607b565fec".to_string(),
             labels: vec!["Entity".to_string()],
             properties: serde_json::json!({}),
             components: Vec::new(),
         },
         GraphEntityRecord {
-            entity_id: "ship:199d6542-2603-4576-a510-7fa7eaddbe3d".to_string(),
+            entity_id: "199d6542-2603-4576-a510-7fa7eaddbe3d".to_string(),
             labels: vec!["Entity".to_string()],
             properties: serde_json::json!({}),
             components: Vec::new(),

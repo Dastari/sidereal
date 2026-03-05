@@ -13,7 +13,7 @@ fn lightyear_protocol_registration_registers_messages() {
 }
 
 #[test]
-fn player_input_matches_legacy_axis_mapping() {
+fn player_input_matches_axis_mapping() {
     let player_input = PlayerInput::from_axis_inputs(1.0, -1.0, false, false, false);
     assert_eq!(
         player_input.actions,

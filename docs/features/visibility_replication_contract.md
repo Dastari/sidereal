@@ -1,119 +1,113 @@
 # Visibility and Replication Contract
 
-Status: Active implementation guide for visibility-related changes.
+Status: Active source-of-truth (current runtime-aligned)  
+Date: 2026-03-05
 
-Primary architecture references:
-- `docs/sidereal_design_document.md` (Section 7)
-- `docs/sidereal_implementation_checklist.md` (Section 5)
-- `AGENTS.md` non-negotiable rules
+Primary references:
+- `docs/sidereal_design_document.md`
+- `AGENTS.md`
+- `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+- `docs/features/scan_intel_minimap_spatial_plan.md`
 
 ## 1. Goal
 
-Keep server-authoritative visibility correct, generic, and low-boilerplate:
-- entity visibility is server-decided,
-- component visibility/redaction is policy-driven,
-- new components do not require ad-hoc visibility plumbing.
+Keep visibility and replication server-authoritative, scalable, and disclosure-safe:
 
-## 2. Required Visibility Stages
+1. Server decides what each client can know.
+2. Delivery culling narrows authorized data only.
+3. Component/field disclosure is policy-driven.
+4. Tactical/fog/intel memory behavior is explicit and lane-based.
 
-All visibility-sensitive changes must preserve this order:
+## 2. Canonical Stage Order (Mandatory)
 
-1. Authorization scope:
-- ownership + faction/public policy + scanner/fog-of-war.
+All visibility-sensitive changes must preserve:
 
-2. Delivery scope:
-- stream/camera/range narrowing of already-authorized data.
-
-3. Payload scope:
-- component/field redaction before serialization.
+1. Authorization scope (security entitlement):
+   1. ownership/public/faction policy,
+   2. scanner/fog/intel grant policy.
+2. Delivery scope (performance narrowing):
+   1. local bubble/tactical lane range and mode.
+3. Payload scope (redaction):
+   1. component/field masking before serialization.
 
 Delivery must never widen authorization.
 
-Performance note:
-- Systems may build an early candidate set (for example spatial nearby-cell opt-in query) before full authorization.
-- That candidate step is an optimization input, not authorization.
-- Final outbound entity/component decisions must still be evaluated against full server policy and remain a strict narrowing of authorization.
+Spatial candidate generation is optimization input only, not authorization.
 
-## 3. Current Runtime Baseline
+## 3. Runtime Baseline (Implemented)
 
-Implemented now:
-- per-client entity visibility updates in replication fixed tick,
-- owner/public/faction visibility allowances,
-- scanner range sourced only from entities with positive `ScannerRangeM`, with a `300m` baseline applied to `ShipTag` roots only,
-- candidate-generation stage is explicit and pluggable:
-  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=spatial_grid` (default; uniform-grid candidate preselection),
-  - `SIDEREAL_VISIBILITY_CANDIDATE_MODE=full_scan` (debug/validation fallback),
-  - `SIDEREAL_VISIBILITY_CELL_SIZE_M` controls grid cell size (default `2000.0`, minimum `50.0`),
-- **global world position**: all range/delivery checks use `GlobalTransform` (world position). Roots and mounted children are included; mounted entities' visibility uses their world position so components on children are correctly in scope.
-- mount-root resolution by traversing `MountedOn` parent chain for owner/public/faction inheritance; no `Without<MountedOn>` filter.
-- observer anchor from player entity **GlobalTransform** (world position), with scanner-source union over owned scanner-capable roots (also world positions).
-- control semantics align to `camera <- player <- controlled(optional)`; observer/player anchor is the delivery-center source-of-truth.
-- candidate filtering is fail-closed:
-  - ownership/public/faction/scanner policy exceptions bypass candidate-miss culling,
-  - final visibility decision still runs full policy checks.
-- visibility telemetry is emitted in summary logs (`SIDEREAL_REPLICATION_SUMMARY_LOGS=1`):
-  - `query_ms`,
-  - `clients`,
-  - `entities`,
-  - `candidates_per_client`.
-- player visibility state is mirrored onto authoritative player entities for owner inspection/debug:
-  - `VisibilitySpatialGrid` (candidate mode/cell size/delivery range + queried grid cells),
-  - `VisibilityDisclosure` (scanner source world positions + ranges actually used by server policy).
+Current implementation baseline:
 
-Known gap:
-- `#[sidereal_component(..., visibility = [...])]` metadata is recorded but not yet used as a strict per-component outbound redaction gate.
+1. Per-client visibility updates are server-driven in replication fixed tick.
+2. Candidate preselection uses spatial grid by default (`SIDEREAL_VISIBILITY_CANDIDATE_MODE=spatial_grid`).
+3. Full policy checks run after candidates; policy exceptions (owner/public/faction/scanner) are fail-closed safe.
+4. World position checks use `GlobalTransform` semantics for range/visibility behavior.
+5. Observer anchor identity is player entity (`camera <- player <- controlled(optional)`).
+6. Scanner contributions come from owned scanner-capable roots; no global default scanner for non-ship entities.
+7. `VisibilitySpatialGrid` and `VisibilityDisclosure` are mirrored onto player entity for owner debug/inspection.
+8. Delivery range is dynamic per client view and reflected in runtime visibility telemetry.
+9. `FullscreenLayer` entities are treated as non-spatial overlays: once authorized client context exists, they bypass delivery-range/scanner candidate culling and remain replicated while connected.
 
-## 3.1 Observer and Control Semantics (Normative)
+## 4. Multi-Lane Contract (Current + Approved Direction)
 
-1. Observer anchor for delivery narrowing is player entity transform/state.
-1.1 Delivery narrowing must use player observer anchor only; scanner source positions must not be used as delivery-center fallback.
-2. Controlled entity state may influence player position (player follows controlled when control active), but does not replace player as observer anchor identity.
-3. Free-roam control is represented as `ControlledEntityGuid = player guid` (self-control); player movement remains authoritative for observer anchor updates in that mode.
-4. Camera behavior is a client presentation concern; delivery authorization remains server-authoritative and player-entity scoped.
+Lane model:
 
-## 3.2 Snapshot vs Stream Disclosure (Normative)
+1. `LocalBubbleLane`:
+   1. high-rate nearby simulation state,
+   2. authoritative world entities.
+2. `TacticalLane`:
+   1. lower-rate reduced contact/fog payload for zoomed-out map.
+3. `OwnerAssetManifestLane`:
+   1. owner-only asset list/state,
+   2. independent of local bubble relevance.
 
-1. Entity authorization and delivery do not automatically imply full component disclosure.
-2. Component/field disclosure must support:
-- continuous stream entitlement (ongoing updates while grant/policy active),
-- one-time snapshot entitlement (single disclosure event without future update rights).
-3. Snapshot entitlement must not silently upgrade to stream entitlement.
-4. Expiry/revocation must immediately restore redaction policy.
+Normative rules:
 
-## 4. Required Direction
+1. Owned-asset UI must not depend on local-bubble world-entity presence.
+2. Owner manifest is server-authored and client-cached as read model.
+3. Tactical lane never upgrades authorization; it is a reduced delivery/product lane.
 
-When touching visibility or replication payload behavior:
+## 5. Fog of War and Intel Memory Contract
 
-1. Keep entity-level visibility as coarse gate.
-2. Add/keep component-level visibility as fine gate using component metadata.
-3. Never rely on client-side filtering for sensitive data.
-4. Keep generic entity semantics (no ship-only assumptions in shared visibility code).
+Fog/intel behavior:
 
-## 5. Component Metadata Policy
+1. Players start with unexplored space (`0` explored coverage).
+2. Exploration permanently grows discovered map coverage (`ExploredCells`).
+3. Live intel is only from current scanner/live visibility.
+4. Outside live visibility, only server-stored last-known intel may be shown (stale memory).
 
-For custom gameplay components in `crates/sidereal-game/src/components/`:
-- use `#[sidereal_component(kind = \"...\", persist = bool, replicate = bool, visibility = [...])]`,
-- `replicate = false` means no network replication registration,
-- `visibility` must be treated as server policy input for outbound data scope.
+Authoritative placement:
 
-## 6. External Components (Bevy/Avian)
+1. Intel memory is server-authoritative and persisted on player-scoped data (player entity components).
+2. Raw intel-memory components are not required to be standard replicated world components.
+3. Client receives tactical projection products (snapshot/delta lane payloads), not unrestricted raw memory.
 
-- Runtime/prediction components (for example Avian motion state) may be replicated as transport/runtime requirements.
-- They are not automatically durable gameplay schema.
-- Durable gameplay state must live in sidereal gameplay components and pass persistence/hydration roundtrip coverage.
+## 6. Disclosure Policy (Pending Scope Preserved)
 
-## 7. Edit Checklist (Mandatory for Visibility Changes)
+Still required and explicitly preserved:
 
-For any PR touching visibility, replication delivery, or data redaction:
+1. Faction-based visibility scopes.
+2. Component/field-level visibility/redaction policy (for example inventory detail requiring scan-intel grant).
+3. Snapshot-vs-stream grant semantics for scan intel.
 
-1. Confirm ownership/faction/public rules remain server-enforced.
-2. Confirm scanner/range behavior remains server-enforced.
-3. Confirm unauthorized fields/components are never serialized.
-4. Confirm camera/delivery culling only narrows, never widens, authorization.
-5. Confirm player observer-anchor semantics remain consistent (`camera <- player <- controlled(optional)`).
-6. Confirm snapshot-vs-stream disclosure behavior is explicit for changed components/fields.
-7. Add/update tests for changed behavior (unit + integration when cross-service).
-8. Update:
-- `docs/sidereal_design_document.md` if contract changed,
-- this file (`docs/features/visibility_replication_contract.md`) if implementation policy changed,
-- `AGENTS.md` if contributor enforcement rules changed.
+Status:
+
+1. These are active contract requirements.
+2. Some parts remain implementation-in-progress and must not be removed from docs.
+
+## 7. Edit Checklist (Mandatory)
+
+For any PR touching visibility, tactical delivery, fog/intel memory, or redaction:
+
+1. Verify stage order remains `Authorization -> Delivery -> Payload`.
+2. Verify tactical/owner lanes do not bypass authorization.
+3. Verify unauthorized component/field data is never serialized.
+4. Verify player observer-anchor identity rules remain consistent.
+5. Verify fog/intel memory semantics:
+   1. unexplored vs explored,
+   2. live vs stale intel.
+6. Add/update tests for changed behavior.
+7. Update:
+   1. this contract,
+   2. any related DR under `docs/features/`,
+   3. `docs/decision_register.md` links when decisions change.

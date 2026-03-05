@@ -47,7 +47,70 @@ pub(crate) struct ClientControlDebugState {
 #[derive(Debug, Resource, Default)]
 pub(crate) struct ClientViewModeState {
     pub last_sent_mode: Option<sidereal_net::ClientLocalViewMode>,
+    pub last_sent_delivery_range_m: Option<f32>,
     pub last_sent_at_s: f64,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct OwnedAssetManifestCache {
+    pub player_entity_id: Option<String>,
+    pub sequence: u64,
+    pub generated_at_tick: u64,
+    pub last_sequence_mismatch_log_at_s: f64,
+    pub assets_by_entity_id: HashMap<String, sidereal_net::OwnedAssetEntry>,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct TacticalFogCache {
+    pub player_entity_id: Option<String>,
+    pub sequence: u64,
+    pub generated_at_tick: u64,
+    pub last_sequence_mismatch_log_at_s: f64,
+    pub cell_size_m: f32,
+    pub explored_cells: Vec<sidereal_net::GridCell>,
+    pub live_cells: Vec<sidereal_net::GridCell>,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct TacticalContactsCache {
+    pub player_entity_id: Option<String>,
+    pub sequence: u64,
+    pub generated_at_tick: u64,
+    pub last_sequence_mismatch_log_at_s: f64,
+    pub contacts_by_entity_id: HashMap<String, sidereal_net::TacticalContact>,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct TacticalResnapshotRequestState {
+    pub player_entity_id: Option<String>,
+    pub pending_fog: bool,
+    pub pending_contacts: bool,
+    pub last_request_at_s: f64,
+    pub last_fog_snapshot_received_at_s: f64,
+    pub last_contacts_snapshot_received_at_s: f64,
+}
+
+#[derive(Debug, Resource)]
+pub(crate) struct TacticalMapUiState {
+    pub enabled: bool,
+    pub was_enabled: bool,
+    pub alpha: f32,
+    pub last_non_map_target_distance: f32,
+    pub map_zoom: f32,
+    pub target_map_zoom: f32,
+}
+
+impl Default for TacticalMapUiState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            was_enabled: false,
+            alpha: 0.0,
+            last_non_map_target_distance: 30.0,
+            map_zoom: 0.04,
+            target_map_zoom: 0.04,
+        }
+    }
 }
 
 #[derive(Debug, Resource, Default)]

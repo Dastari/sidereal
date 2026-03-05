@@ -7,6 +7,7 @@ type SpaceBackgroundShaderSettings = {
   enabled: boolean
   intensity: number
   drift_scale: number
+  zoom_rate: number
   velocity_glow: number
   nebula_strength: number
   seed: number
@@ -53,6 +54,7 @@ type SpaceBackgroundShaderSettingsPayload = {
   enabled: boolean
   intensity: number
   drift_scale: number
+  zoom_rate: number
   velocity_glow: number
   nebula_strength: number
   seed: number
@@ -144,6 +146,7 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
       enabled: true,
       intensity: 1,
       drift_scale: 1,
+      zoom_rate: 1,
       velocity_glow: 1,
       nebula_strength: 1,
       seed: 73.421,
@@ -189,6 +192,7 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
   const obj = value as Record<string, unknown>
   const intensity = Number(obj.intensity ?? 1)
   const driftScale = Number(obj.drift_scale ?? 1)
+  const zoomRate = Number(obj.zoom_rate ?? 1)
   const velocityGlow = Number(obj.velocity_glow ?? 1)
   const nebulaStrength = Number(obj.nebula_strength ?? 1)
   const seed = Number(obj.seed ?? 73.421)
@@ -230,6 +234,7 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
     enabled: Boolean(obj.enabled ?? true),
     intensity: Number.isFinite(intensity) ? intensity : 1,
     drift_scale: Number.isFinite(driftScale) ? driftScale : 1,
+    zoom_rate: Number.isFinite(zoomRate) ? zoomRate : 1,
     velocity_glow: Number.isFinite(velocityGlow) ? velocityGlow : 1,
     nebula_strength: Number.isFinite(nebulaStrength) ? nebulaStrength : 1,
     seed: Number.isFinite(seed) ? seed : 73.421,
@@ -294,6 +299,7 @@ export function SpaceBackgroundShaderSettingsEditor({
       enabled: next.enabled,
       intensity: clamp(roundToStep(next.intensity, 0.05), 0, 4),
       drift_scale: clamp(roundToStep(next.drift_scale, 0.05), 0, 4),
+      zoom_rate: clamp(roundToStep(next.zoom_rate, 0.05), 0, 4),
       velocity_glow: clamp(roundToStep(next.velocity_glow, 0.05), 0, 4),
       nebula_strength: clamp(roundToStep(next.nebula_strength, 0.05), 0, 4),
       seed: clamp(roundToStep(next.seed, 0.001), 0, 100000),
@@ -612,6 +618,15 @@ export function SpaceBackgroundShaderSettingsEditor({
         step={0.05}
         readOnly={readOnly}
         onChange={(next) => updateField('drift_scale', next)}
+      />
+      <Field
+        label="Zoom Rate"
+        value={parsed.zoom_rate}
+        min={0}
+        max={4}
+        step={0.05}
+        readOnly={readOnly}
+        onChange={(next) => updateField('zoom_rate', next)}
       />
       <Field
         label="Velocity Glow"

@@ -96,9 +96,9 @@ fn graph_persistence_full_lifecycle_ship_hardpoint_engine() {
         return;
     }
 
-    let ship_id = format!("ship:{}", Uuid::new_v4());
-    let hardpoint_id = format!("hardpoint:{}", Uuid::new_v4());
-    let engine_id = format!("engine:{}", Uuid::new_v4());
+    let ship_id = Uuid::new_v4().to_string();
+    let hardpoint_id = Uuid::new_v4().to_string();
+    let engine_id = Uuid::new_v4().to_string();
 
     let mut updates = make_ship_batch(&ship_id, &hardpoint_id, &engine_id);
     persistence

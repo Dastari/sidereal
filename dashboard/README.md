@@ -63,6 +63,8 @@ pnpm build
 | `CLIENT_BRP_URL`                 | `http://127.0.0.1:15714/`       | Client BRP endpoint                          |
 | `SIDEREAL_REPLICATION_BRP_AUTH_TOKEN` | unset                    | Optional auth token for server BRP           |
 | `SIDEREAL_CLIENT_BRP_AUTH_TOKEN` | unset                           | Optional auth token for client BRP           |
+| `GATEWAY_API_URL`                 | `http://127.0.0.1:8080`         | Gateway base URL for admin spawn proxy       |
+| `SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN` | unset                    | Bearer token used by dashboard admin spawn API |
 
 ## API Endpoints
 
@@ -70,6 +72,7 @@ pnpm build
 - `GET /api/world` - Returns world entities with positions and component counts
 - `GET /api/live-world` - Returns live entities from server BRP
 - `GET /api/live-client-world` - Returns live entities from client BRP
+- `POST /api/admin/spawn-entity` - Proxies admin spawn requests to gateway
 
 ## Project Structure
 

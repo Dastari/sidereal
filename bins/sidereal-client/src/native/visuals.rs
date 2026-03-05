@@ -1,20 +1,20 @@
 //! Fullscreen/backdrop and streamed visual lifecycle systems.
 
 use avian2d::prelude::{SpatialQuery, SpatialQueryFilter};
-use bevy::camera::visibility::RenderLayers;
-use bevy::log::{info, warn};
+use bevy::log::warn;
 use bevy::prelude::*;
-use bevy::sprite_render::MeshMaterial2d;
+use bevy::reflect::TypePath;
+use bevy::render::render_resource::AsBindGroup;
+use bevy::shader::ShaderRef;
+use bevy::sprite_render::{AlphaMode2d, Material2d};
 use bevy::state::state_scoped::DespawnOnExit;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::MessageReceiver;
 use lightyear::prelude::input::native::ActionState;
 use sidereal_game::{
     AfterburnerCapability, AfterburnerState, AmmoCount, BallisticWeapon, ControlledEntityGuid,
-    Engine, EntityAction, EntityGuid, FlightComputer, FullscreenLayer, Hardpoint, MountedOn,
-    ParentGuid, PlayerTag, SPACE_BACKGROUND_LAYER_KIND, STARFIELD_LAYER_KIND, SizeM,
-    SpaceBackgroundFullscreenLayerBundle, SpaceBackgroundShaderSettings,
-    StarfieldFullscreenLayerBundle, StarfieldShaderSettings, ThrusterPlumeShaderSettings,
+    Engine, EntityAction, EntityGuid, FlightComputer, Hardpoint, MountedOn, ParentGuid, PlayerTag,
+    SizeM, ThrusterPlumeShaderSettings,
 };
 use sidereal_net::PlayerInput;
 use sidereal_net::ServerWeaponFiredMessage;
@@ -24,18 +24,16 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use super::app_state::ClientAppState;
 use super::assets;
 use super::assets::LocalAssetManager;
-use super::backdrop::{
-    SpaceBackgroundMaterial, StarfieldMaterial, StreamedSpriteShaderMaterial, ThrusterPlumeMaterial,
-};
+use super::backdrop::{StreamedSpriteShaderMaterial, ThrusterPlumeMaterial};
 use super::components::{
-    ControlledEntity, DebugBlueBackdrop, FallbackFullscreenLayer, FullscreenLayerRenderable,
-    SpaceBackdropFallback, SpaceBackgroundBackdrop, StarfieldBackdrop, StreamedSpriteShaderAssetId,
-    StreamedVisualAssetId, StreamedVisualAttached, StreamedVisualChild,
-    SuppressedPredictedDuplicateVisual, ThrusterPlumeAttached, ThrusterPlumeChild,
-    WeaponImpactSpark, WeaponTracerBolt, WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
+    ControlledEntity, PendingVisibilityFadeIn, StreamedSpriteShaderAssetId, StreamedVisualAssetId,
+    StreamedVisualAttached, StreamedVisualChild, SuppressedPredictedDuplicateVisual,
+    ThrusterPlumeAttached, ThrusterPlumeChild, WeaponImpactSpark, WeaponTracerBolt,
+    WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
 };
-use super::platform::{self, BACKDROP_RENDER_LAYER, STREAMED_SPRITE_PIXEL_SHADER_PATH};
-use super::resources::{AssetRootPath, BootstrapWatchdogState};
+use super::ecs_util::{queue_despawn_if_exists, queue_despawn_if_exists_force};
+use super::platform::STREAMED_SPRITE_PIXEL_SHADER_PATH;
+use super::resources::AssetRootPath;
 use super::shaders;
 
 const WEAPON_TRACER_POOL_SIZE: usize = 96;
@@ -49,179 +47,67 @@ const WEAPON_TRACER_WIGGLE_MAX_AMP_MPS: f32 = 120.0;
 const WEAPON_IMPACT_SPARK_TTL_S: f32 = 0.12;
 const WEAPON_TRACER_MIN_TTL_S: f32 = 0.01;
 
-#[allow(clippy::type_complexity)]
-pub(super) fn ensure_fullscreen_layer_fallback_system(
-    mut commands: Commands<'_, '_>,
-    layers: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Option<&FallbackFullscreenLayer>,
-            Option<&FullscreenLayerRenderable>,
-        ),
-        With<FullscreenLayer>,
-    >,
-    asset_manager: Res<'_, LocalAssetManager>,
-    watchdog: Res<'_, BootstrapWatchdogState>,
-) {
-    let mut fallback_entities = Vec::new();
-    let mut has_authoritative_renderable_layer = false;
-    for (entity, fallback_marker, renderable) in &layers {
-        if fallback_marker.is_some() {
-            fallback_entities.push(entity);
-        } else if renderable.is_some() {
-            has_authoritative_renderable_layer = true;
-        }
-    }
-    if has_authoritative_renderable_layer {
-        for entity in fallback_entities {
-            if let Ok(mut entity_commands) = commands.get_entity(entity) {
-                entity_commands.try_despawn();
-            }
-        }
-        return;
-    }
-    if !layers.is_empty()
-        || (!asset_manager.bootstrap_complete() && !watchdog.replication_state_seen)
-    {
-        return;
-    }
-    commands.spawn((
-        SpaceBackgroundFullscreenLayerBundle::default(),
-        FallbackFullscreenLayer,
-        WorldEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
-    commands.spawn((
-        StarfieldFullscreenLayerBundle::default(),
-        FallbackFullscreenLayer,
-        WorldEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
-    info!("client spawned fallback fullscreen layers (authoritative layers missing)");
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub(crate) struct WeaponImpactSparkMaterial {
+    #[uniform(0)]
+    pub params: Vec4, // x=age_norm, y=intensity, z=ray_density, w=alpha
+    #[uniform(1)]
+    pub color: Vec4,
 }
 
-pub(super) fn sync_fullscreen_layer_renderables_system(
-    mut commands: Commands<'_, '_>,
-    layers: Query<'_, '_, (Entity, &FullscreenLayer, Option<&FullscreenLayerRenderable>)>,
-    mut meshes: ResMut<'_, Assets<Mesh>>,
-    mut starfield_materials: ResMut<'_, Assets<StarfieldMaterial>>,
-    mut space_background_materials: ResMut<'_, Assets<SpaceBackgroundMaterial>>,
-    asset_root: Res<'_, AssetRootPath>,
-    asset_manager: Res<'_, LocalAssetManager>,
-) {
-    for (entity, layer, rendered) in &layers {
-        let Ok(mut entity_commands) = commands.get_entity(entity) else {
-            continue;
-        };
-        let has_streamed_shader = shaders::fullscreen_layer_shader_ready(
-            &asset_root.0,
-            &asset_manager,
-            &layer.shader_asset_id,
-        );
-        let is_supported_kind = layer.layer_kind == STARFIELD_LAYER_KIND
-            || layer.layer_kind == SPACE_BACKGROUND_LAYER_KIND;
-        let needs_rebuild = rendered.is_none_or(|existing| {
-            existing.layer_kind != layer.layer_kind || existing.layer_order != layer.layer_order
-        });
-
-        if !is_supported_kind || !has_streamed_shader {
-            if !is_supported_kind {
-                warn!(
-                    "unsupported fullscreen layer kind={} shader_asset_id={}",
-                    layer.layer_kind, layer.shader_asset_id
-                );
-            } else {
-                warn!(
-                    "fullscreen layer waiting for shader readiness layer_kind={} shader_asset_id={}",
-                    layer.layer_kind, layer.shader_asset_id
-                );
-            }
-            if rendered.is_some() {
-                entity_commands
-                    .remove::<FullscreenLayerRenderable>()
-                    .remove::<StarfieldBackdrop>()
-                    .remove::<SpaceBackgroundBackdrop>()
-                    .remove::<Mesh2d>()
-                    .remove::<MeshMaterial2d<StarfieldMaterial>>()
-                    .remove::<MeshMaterial2d<SpaceBackgroundMaterial>>();
-            }
-            continue;
+impl Default for WeaponImpactSparkMaterial {
+    fn default() -> Self {
+        Self {
+            params: Vec4::new(0.0, 1.0, 1.0, 1.0),
+            color: Vec4::new(1.0, 0.85, 0.5, 1.0),
         }
+    }
+}
 
-        if needs_rebuild {
-            let mesh = meshes.add(Rectangle::new(1.0, 1.0));
-            entity_commands
-                .try_insert((
-                    Mesh2d(mesh),
-                    Transform::from_xyz(0.0, 0.0, layer.layer_order as f32),
-                    RenderLayers::layer(BACKDROP_RENDER_LAYER),
-                    FullscreenLayerRenderable {
-                        layer_kind: layer.layer_kind.clone(),
-                        layer_order: layer.layer_order,
-                    },
-                ))
-                .remove::<FallbackFullscreenLayer>()
-                .remove::<StarfieldBackdrop>()
-                .remove::<SpaceBackgroundBackdrop>()
-                .remove::<MeshMaterial2d<StarfieldMaterial>>()
-                .remove::<MeshMaterial2d<SpaceBackgroundMaterial>>();
+impl Material2d for WeaponImpactSparkMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "data/cache_stream/shaders/weapon_impact_spark.wgsl".into()
+    }
 
-            if layer.layer_kind == STARFIELD_LAYER_KIND {
-                let material = starfield_materials.add(StarfieldMaterial::default());
-                entity_commands.try_insert((
-                    StarfieldBackdrop,
-                    MeshMaterial2d(material),
-                    StarfieldShaderSettings::default(),
-                ));
-            } else {
-                let material = space_background_materials.add(SpaceBackgroundMaterial::default());
-                entity_commands.try_insert((
-                    SpaceBackgroundBackdrop,
-                    MeshMaterial2d(material),
-                    SpaceBackgroundShaderSettings::default(),
-                ));
-            }
-            info!(
-                "fullscreen layer renderable ready layer_kind={} order={} shader_asset_id={}",
-                layer.layer_kind, layer.layer_order, layer.shader_asset_id
-            );
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
+fn shader_materials_enabled() -> bool {
+    shaders::shader_materials_enabled()
+}
+
+/// TODO: add symmetric fade-out on relevance loss via a short-lived visual ghost entity.
+#[allow(clippy::type_complexity)]
+pub(super) fn update_entity_visibility_fade_in_system(
+    time: Res<'_, Time>,
+    mut commands: Commands<'_, '_>,
+    mut parents: Query<'_, '_, (Entity, &'_ Children, &'_ mut PendingVisibilityFadeIn)>,
+    mut visual_children: Query<'_, '_, &'_ mut Sprite, With<StreamedVisualChild>>,
+) {
+    let dt_s = time.delta_secs().max(0.0);
+    for (entity, children, mut fade) in &mut parents {
+        fade.elapsed_s += dt_s;
+        let alpha = if fade.duration_s <= 0.0 {
+            1.0
         } else {
-            entity_commands.try_insert(Transform::from_xyz(0.0, 0.0, layer.layer_order as f32));
+            (fade.elapsed_s / fade.duration_s).clamp(0.0, 1.0)
+        };
+        let mut touched_any = false;
+        for child in children.iter() {
+            if let Ok(mut sprite) = visual_children.get_mut(child) {
+                touched_any = true;
+                let mut srgba = sprite.color.to_srgba();
+                srgba.alpha = alpha;
+                sprite.color = Color::Srgba(srgba);
+            }
         }
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn sync_backdrop_fullscreen_system(
-    window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
-    mut backdrop_query: Query<
-        '_,
-        '_,
-        &mut Transform,
-        (
-            Or<(
-                With<StarfieldBackdrop>,
-                With<SpaceBackgroundBackdrop>,
-                With<DebugBlueBackdrop>,
-                With<SpaceBackdropFallback>,
-            )>,
-        ),
-    >,
-) {
-    let Ok(window) = window_query.single() else {
-        return;
-    };
-    let Some(viewport_size) = platform::safe_viewport_size(window) else {
-        return;
-    };
-    let width = viewport_size.x;
-    let height = viewport_size.y;
-    for mut transform in &mut backdrop_query {
-        transform.translation.x = 0.0;
-        transform.translation.y = 0.0;
-        transform.scale = Vec3::new(width, height, 1.0);
+        if alpha >= 0.999 || !touched_any {
+            if let Ok(mut entity_commands) = commands.get_entity(entity) {
+                entity_commands.remove::<PendingVisibilityFadeIn>();
+            }
+        }
     }
 }
 
@@ -372,9 +258,7 @@ pub(super) fn cleanup_streamed_visual_children_system(
         let mut removed_any_child = false;
         for child in children.iter() {
             if visual_children.get(child).is_ok() {
-                if let Ok(mut entity_commands) = commands.get_entity(child) {
-                    entity_commands.try_despawn();
-                }
+                queue_despawn_if_exists(&mut commands, child);
                 removed_any_child = true;
             }
         }
@@ -403,6 +287,7 @@ pub(super) fn attach_streamed_visual_assets_system(
             &StreamedVisualAssetId,
             Option<&SizeM>,
             Option<&StreamedSpriteShaderAssetId>,
+            Option<&PendingVisibilityFadeIn>,
         ),
         (
             With<WorldEntity>,
@@ -413,7 +298,8 @@ pub(super) fn attach_streamed_visual_assets_system(
         ),
     >,
 ) {
-    for (entity, asset_id, size_m, sprite_shader) in &candidates {
+    let use_shader_materials = shader_materials_enabled();
+    for (entity, asset_id, size_m, sprite_shader, pending_fade_in) in &candidates {
         let Some(path) = assets::streamed_visual_asset_path(&asset_id.0, &asset_manager) else {
             continue;
         };
@@ -432,7 +318,8 @@ pub(super) fn attach_streamed_visual_assets_system(
             .map(|image| image.size())
             .or_else(|| assets::read_png_dimensions(&rooted_path));
         let custom_size = assets::resolved_world_sprite_size(texture_size_px, size_m);
-        if let Some(sprite_shader) = sprite_shader
+        if use_shader_materials
+            && let Some(sprite_shader) = sprite_shader
             && let Some(shader_path) =
                 assets::streamed_sprite_shader_path(&sprite_shader.0, &asset_manager)
         {
@@ -441,10 +328,7 @@ pub(super) fn attach_streamed_visual_assets_system(
                     "unsupported streamed sprite shader path={} (expected {}); falling back to plain sprite",
                     shader_path, STREAMED_SPRITE_PIXEL_SHADER_PATH
                 );
-            } else if std::path::PathBuf::from(&asset_root.0)
-                .join(STREAMED_SPRITE_PIXEL_SHADER_PATH)
-                .is_file()
-            {
+            } else {
                 let quad_mesh = meshes.add(Rectangle::new(1.0, 1.0));
                 let material = sprite_shader_materials.add(StreamedSpriteShaderMaterial {
                     image: image_handle.clone(),
@@ -471,6 +355,11 @@ pub(super) fn attach_streamed_visual_assets_system(
                 StreamedVisualChild,
                 Sprite {
                     image: image_handle,
+                    color: if pending_fade_in.is_some() {
+                        Color::srgba(1.0, 1.0, 1.0, 0.0)
+                    } else {
+                        Color::WHITE
+                    },
                     custom_size,
                     ..Default::default()
                 },
@@ -498,6 +387,9 @@ pub(super) fn attach_thruster_plume_visuals_system(
         ),
     >,
 ) {
+    if !shader_materials_enabled() {
+        return;
+    }
     for entity in &engines {
         let Ok(mut entity_commands) = commands.get_entity(entity) else {
             continue;
@@ -655,6 +547,7 @@ pub(super) fn ensure_weapon_tracer_pool_system(
                 WeaponTracerBolt {
                     excluded_entity: None,
                     velocity: Vec2::ZERO,
+                    impact_xy: None,
                     ttl_s: 0.0,
                     lateral_normal: Vec2::ZERO,
                     wiggle_phase_rad: 0.0,
@@ -679,6 +572,16 @@ pub(super) fn ensure_weapon_tracer_pool_system(
 #[allow(clippy::type_complexity)]
 pub(super) fn emit_weapon_tracer_visuals_system(
     time: Res<'_, Time>,
+    spatial_query: SpatialQuery<'_, '_>,
+    connected_clients: Query<
+        '_,
+        '_,
+        (),
+        (
+            With<lightyear::prelude::client::Client>,
+            With<lightyear::prelude::client::Connected>,
+        ),
+    >,
     mut pool: ResMut<'_, WeaponTracerPool>,
     mut cooldowns: ResMut<'_, WeaponTracerCooldowns>,
     controlled_roots: Query<
@@ -718,6 +621,12 @@ pub(super) fn emit_weapon_tracer_visuals_system(
         ),
     >,
 ) {
+    // Use authoritative server tracer messages for all online clients so
+    // impact-stop behavior is identical across shooter/observers.
+    if connected_clients.iter().next().is_some() {
+        return;
+    }
+
     if pool.bolts.is_empty() {
         return;
     }
@@ -739,7 +648,7 @@ pub(super) fn emit_weapon_tracer_visuals_system(
         ship_guid,
         ship_position,
         ship_rotation,
-        linear_velocity,
+        _linear_velocity,
         angular_velocity,
         action_state,
     ) in &controlled_roots
@@ -779,17 +688,23 @@ pub(super) fn emit_weapon_tracer_visuals_system(
             let direction = direction.normalize();
             let muzzle_offset_world = rotate_vec2(ship_quat, *hardpoint_offset);
             let origin = ship_position.0 + muzzle_offset_world;
-            let ship_linear_velocity = linear_velocity.map(|v| v.0).unwrap_or(Vec2::ZERO);
             let omega = angular_velocity.map(|v| v.0).unwrap_or(0.0);
-            let tangential_velocity = Vec2::new(
-                -omega * muzzle_offset_world.y,
-                omega * muzzle_offset_world.x,
-            );
             let lateral_normal = Vec2::new(-direction.y, direction.x);
             let spin_wiggle_amp_mps =
                 (omega.abs() * 18.0).clamp(0.0, WEAPON_TRACER_WIGGLE_MAX_AMP_MPS);
-            let initial_velocity =
-                direction * WEAPON_TRACER_SPEED_MPS + ship_linear_velocity + tangential_velocity;
+            let initial_velocity = direction * WEAPON_TRACER_SPEED_MPS;
+            let impact_xy = Dir2::new(direction).ok().and_then(|ray_direction| {
+                let filter = SpatialQueryFilter::from_excluded_entities([ship_entity]);
+                spatial_query
+                    .cast_ray(
+                        origin,
+                        ray_direction,
+                        weapon.max_range_m.max(1.0),
+                        true,
+                        &filter,
+                    )
+                    .map(|hit| origin + ray_direction.as_vec2() * hit.distance)
+            });
 
             let bolt_entity = pool.bolts[pool.next_index % pool.bolts.len()];
             pool.next_index = (pool.next_index + 1) % pool.bolts.len();
@@ -802,6 +717,7 @@ pub(super) fn emit_weapon_tracer_visuals_system(
                 );
                 bolt.excluded_entity = Some(ship_entity);
                 bolt.velocity = initial_velocity;
+                bolt.impact_xy = impact_xy;
                 let range_ttl_s = (weapon.max_range_m.max(1.0) / WEAPON_TRACER_SPEED_MPS)
                     .clamp(WEAPON_TRACER_MIN_TTL_S, WEAPON_TRACER_LIFETIME_S);
                 bolt.ttl_s = range_ttl_s;
@@ -845,7 +761,7 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
     if pool.bolts.is_empty() {
         return;
     }
-    let local_controlled_guids: std::collections::HashSet<uuid::Uuid> =
+    let _local_controlled_guids: std::collections::HashSet<uuid::Uuid> =
         controlled_roots.iter().map(|guid| guid.0).collect();
     let shooter_entity_by_guid: HashMap<uuid::Uuid, Entity> = world_entity_guids
         .iter()
@@ -859,10 +775,8 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
             else {
                 continue;
             };
-            if local_controlled_guids.contains(&shooter_runtime_id.as_uuid()) {
-                // Local player already renders immediate predicted tracers.
-                continue;
-            }
+            // Accept authoritative tracer messages even for locally controlled shooters.
+            // This guarantees impact stop/impact VFX parity with server-side hitscan.
 
             let bolt_entity = pool.bolts[pool.next_index % pool.bolts.len()];
             pool.next_index = (pool.next_index + 1) % pool.bolts.len();
@@ -881,6 +795,9 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
                     .get(&shooter_runtime_id.as_uuid())
                     .copied();
                 bolt.velocity = velocity;
+                bolt.impact_xy = message
+                    .impact_xy
+                    .map(|impact_xy| Vec2::new(impact_xy[0], impact_xy[1]));
                 bolt.ttl_s = message.ttl_s.max(0.01);
                 let speed = velocity.length();
                 let normal = if speed > f32::EPSILON {
@@ -904,6 +821,8 @@ pub(super) fn update_weapon_tracer_visuals_system(
     mut commands: Commands<'_, '_>,
     time: Res<'_, Time>,
     spatial_query: SpatialQuery<'_, '_>,
+    mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut spark_materials: ResMut<'_, Assets<WeaponImpactSparkMaterial>>,
     mut bolts: Query<
         '_,
         '_,
@@ -931,6 +850,39 @@ pub(super) fn update_weapon_tracer_visuals_system(
         let frame_distance = frame_step.length();
         let current_pos = transform.translation.truncate();
         let mut hit_this_frame = false;
+        if let Some(impact_pos) = bolt.impact_xy {
+            let to_impact = impact_pos - current_pos;
+            let impact_distance = to_impact.length();
+            if impact_distance <= frame_distance.max(0.001) {
+                transform.translation.x = impact_pos.x;
+                transform.translation.y = impact_pos.y;
+                transform.translation.z = 0.35;
+                bolt.ttl_s = bolt.ttl_s.min(0.03);
+                bolt.velocity = Vec2::ZERO;
+                bolt.wiggle_amp_mps = 0.0;
+                bolt.impact_xy = None;
+                *visibility = Visibility::Visible;
+                hit_this_frame = true;
+                commands.spawn((
+                    WeaponImpactSpark {
+                        ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
+                        max_ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
+                    },
+                    Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
+                    MeshMaterial2d(spark_materials.add(WeaponImpactSparkMaterial {
+                        params: Vec4::new(0.0, 1.0, 1.0, 0.95),
+                        color: Vec4::new(1.0, 0.9, 0.55, 1.0),
+                    })),
+                    Transform::from_xyz(impact_pos.x, impact_pos.y, 0.45),
+                    Visibility::Visible,
+                    WorldEntity,
+                    DespawnOnExit(ClientAppState::InWorld),
+                ));
+            }
+        }
+        if hit_this_frame {
+            continue;
+        }
         if frame_distance > f32::EPSILON
             && let Ok(ray_direction) = Dir2::new(frame_step / frame_distance)
         {
@@ -946,20 +898,24 @@ pub(super) fn update_weapon_tracer_visuals_system(
                 transform.translation.x = impact_pos.x;
                 transform.translation.y = impact_pos.y;
                 transform.translation.z = 0.35;
-                bolt.ttl_s = 0.0;
-                *visibility = Visibility::Hidden;
+                bolt.ttl_s = bolt.ttl_s.min(0.03);
+                bolt.velocity = Vec2::ZERO;
+                bolt.wiggle_amp_mps = 0.0;
+                bolt.impact_xy = None;
+                *visibility = Visibility::Visible;
                 hit_this_frame = true;
                 commands.spawn((
                     WeaponImpactSpark {
                         ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
                         max_ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
                     },
-                    Sprite {
-                        color: Color::srgba(1.0, 0.9, 0.55, 0.95),
-                        custom_size: Some(Vec2::splat(2.8)),
-                        ..Default::default()
-                    },
+                    Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
+                    MeshMaterial2d(spark_materials.add(WeaponImpactSparkMaterial {
+                        params: Vec4::new(0.0, 1.0, 1.0, 0.95),
+                        color: Vec4::new(1.0, 0.9, 0.55, 1.0),
+                    })),
                     Transform::from_xyz(impact_pos.x, impact_pos.y, 0.45),
+                    Visibility::Visible,
                     WorldEntity,
                     DespawnOnExit(ClientAppState::InWorld),
                 ));
@@ -989,30 +945,35 @@ pub(super) fn update_weapon_tracer_visuals_system(
 pub(super) fn update_weapon_impact_sparks_system(
     mut commands: Commands<'_, '_>,
     time: Res<'_, Time>,
+    mut spark_materials: ResMut<'_, Assets<WeaponImpactSparkMaterial>>,
     mut sparks: Query<
         '_,
         '_,
         (
             Entity,
             &'_ mut WeaponImpactSpark,
-            &'_ mut Sprite,
             &'_ mut Transform,
+            &'_ MeshMaterial2d<WeaponImpactSparkMaterial>,
+            &'_ mut Visibility,
         ),
     >,
 ) {
     let dt_s = time.delta_secs();
-    for (entity, mut spark, mut sprite, mut transform) in &mut sparks {
+    for (entity, mut spark, mut transform, material_handle, mut visibility) in &mut sparks {
         spark.ttl_s = (spark.ttl_s - dt_s).max(0.0);
         if spark.ttl_s <= 0.0 {
-            if let Ok(mut entity_commands) = commands.get_entity(entity) {
-                entity_commands.try_despawn();
-            }
+            queue_despawn_if_exists_force(&mut commands, entity);
             continue;
         }
         let t = (spark.ttl_s / spark.max_ttl_s).clamp(0.0, 1.0);
-        sprite.color = Color::srgba(1.0, 0.9, 0.55, t * 0.95);
-        let scale = 0.55 + (1.0 - t) * 1.4;
+        let age_norm = 1.0 - t;
+        if let Some(material) = spark_materials.get_mut(&material_handle.0) {
+            material.params = Vec4::new(age_norm, 1.0, 1.0, t * 0.95);
+            material.color = Vec4::new(1.0, 0.9, 0.55, 1.0);
+        }
+        let scale = 1.0 + age_norm * 7.0;
         transform.scale = Vec3::splat(scale);
+        *visibility = Visibility::Visible;
     }
 }
 
