@@ -384,8 +384,8 @@ fn hsl_to_rgb(hsl: vec3<f32>) -> vec3<f32> {
 
 fn apply_layer_blend(base: vec3<f32>, layer: vec3<f32>, mode: f32, opacity: f32, noise: f32) -> vec3<f32> {
     let op = clamp(opacity, 0.0, 1.0);
-    let b = clamp(base, 0.0, 1.0);
-    let l = clamp(layer, 0.0, 1.0);
+    let b = clamp(base, vec3<f32>(0.0), vec3<f32>(1.0));
+    let l = clamp(layer, vec3<f32>(0.0), vec3<f32>(1.0));
     let m = u32(clamp(round(mode), 0.0, 26.0));
 
     var blended = b + l; // default legacy add
