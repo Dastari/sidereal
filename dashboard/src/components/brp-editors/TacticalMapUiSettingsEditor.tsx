@@ -17,6 +17,13 @@ type TacticalMapUiSettings = {
   grid_major_glow_alpha: number
   grid_minor_glow_alpha: number
   grid_micro_glow_alpha: number
+  background_color_rgb: Vec3
+  line_width_major_px: number
+  line_width_minor_px: number
+  line_width_micro_px: number
+  glow_width_major_px: number
+  glow_width_minor_px: number
+  glow_width_micro_px: number
   fx_mode: number
   fx_opacity: number
   fx_noise_amount: number
@@ -43,6 +50,13 @@ const DEFAULTS: TacticalMapUiSettings = {
   grid_major_glow_alpha: 0.02,
   grid_minor_glow_alpha: 0.018,
   grid_micro_glow_alpha: 0.016,
+  background_color_rgb: { x: 0.005, y: 0.008, z: 0.02 },
+  line_width_major_px: 1.4,
+  line_width_minor_px: 0.95,
+  line_width_micro_px: 0.75,
+  glow_width_major_px: 2,
+  glow_width_minor_px: 1.5,
+  glow_width_micro_px: 1.2,
   fx_mode: 1,
   fx_opacity: 0.45,
   fx_noise_amount: 0.12,
@@ -69,6 +83,12 @@ const PRESETS: Record<PresetKey, Partial<TacticalMapUiSettings>> = {
     grid_major_glow_alpha: 0.015,
     grid_minor_glow_alpha: 0.013,
     grid_micro_glow_alpha: 0.012,
+    line_width_major_px: 1.2,
+    line_width_minor_px: 0.85,
+    line_width_micro_px: 0.65,
+    glow_width_major_px: 1.6,
+    glow_width_minor_px: 1.2,
+    glow_width_micro_px: 1.0,
   },
   noisy: {
     fx_mode: 1,
@@ -85,6 +105,12 @@ const PRESETS: Record<PresetKey, Partial<TacticalMapUiSettings>> = {
     grid_major_glow_alpha: 0.02,
     grid_minor_glow_alpha: 0.018,
     grid_micro_glow_alpha: 0.016,
+    line_width_major_px: 1.4,
+    line_width_minor_px: 0.95,
+    line_width_micro_px: 0.75,
+    glow_width_major_px: 2.0,
+    glow_width_minor_px: 1.5,
+    glow_width_micro_px: 1.2,
   },
   retro: {
     fx_mode: 2,
@@ -101,6 +127,12 @@ const PRESETS: Record<PresetKey, Partial<TacticalMapUiSettings>> = {
     grid_major_glow_alpha: 0.03,
     grid_minor_glow_alpha: 0.027,
     grid_micro_glow_alpha: 0.024,
+    line_width_major_px: 1.6,
+    line_width_minor_px: 1.05,
+    line_width_micro_px: 0.82,
+    glow_width_major_px: 2.2,
+    glow_width_minor_px: 1.7,
+    glow_width_micro_px: 1.3,
   },
 }
 
@@ -177,6 +209,34 @@ function parseSettings(value: unknown): TacticalMapUiSettings {
     grid_micro_glow_alpha: finiteOr(
       obj.grid_micro_glow_alpha,
       DEFAULTS.grid_micro_glow_alpha,
+    ),
+    background_color_rgb: parseVec3(
+      obj.background_color_rgb,
+      DEFAULTS.background_color_rgb,
+    ),
+    line_width_major_px: finiteOr(
+      obj.line_width_major_px,
+      DEFAULTS.line_width_major_px,
+    ),
+    line_width_minor_px: finiteOr(
+      obj.line_width_minor_px,
+      DEFAULTS.line_width_minor_px,
+    ),
+    line_width_micro_px: finiteOr(
+      obj.line_width_micro_px,
+      DEFAULTS.line_width_micro_px,
+    ),
+    glow_width_major_px: finiteOr(
+      obj.glow_width_major_px,
+      DEFAULTS.glow_width_major_px,
+    ),
+    glow_width_minor_px: finiteOr(
+      obj.glow_width_minor_px,
+      DEFAULTS.glow_width_minor_px,
+    ),
+    glow_width_micro_px: finiteOr(
+      obj.glow_width_micro_px,
+      DEFAULTS.glow_width_micro_px,
     ),
     fx_mode: finiteOr(obj.fx_mode, DEFAULTS.fx_mode),
     fx_opacity: finiteOr(obj.fx_opacity, DEFAULTS.fx_opacity),
@@ -255,6 +315,17 @@ export function TacticalMapUiSettingsEditor({
         grid_major_glow_alpha: clampAlpha(next.grid_major_glow_alpha),
         grid_minor_glow_alpha: clampAlpha(next.grid_minor_glow_alpha),
         grid_micro_glow_alpha: clampAlpha(next.grid_micro_glow_alpha),
+        background_color_rgb: [
+          clampColor(next.background_color_rgb.x),
+          clampColor(next.background_color_rgb.y),
+          clampColor(next.background_color_rgb.z),
+        ],
+        line_width_major_px: clamp(roundToStep(next.line_width_major_px, 0.01), 0.1, 8),
+        line_width_minor_px: clamp(roundToStep(next.line_width_minor_px, 0.01), 0.1, 8),
+        line_width_micro_px: clamp(roundToStep(next.line_width_micro_px, 0.01), 0.1, 8),
+        glow_width_major_px: clamp(roundToStep(next.glow_width_major_px, 0.01), 0.1, 8),
+        glow_width_minor_px: clamp(roundToStep(next.glow_width_minor_px, 0.01), 0.1, 8),
+        glow_width_micro_px: clamp(roundToStep(next.glow_width_micro_px, 0.01), 0.1, 8),
         fx_mode: clamp(Math.round(next.fx_mode), 0, 2),
         fx_opacity: clampAlpha(next.fx_opacity),
         fx_noise_amount: clamp(roundToStep(next.fx_noise_amount, 0.01), 0, 1),
@@ -378,6 +449,23 @@ export function TacticalMapUiSettingsEditor({
       <Field label="Major Glow Alpha" value={parsed.grid_major_glow_alpha} min={0} max={1} step={0.01} readOnly={readOnly} onChange={(next) => updateField('grid_major_glow_alpha', next)} />
       <Field label="Minor Glow Alpha" value={parsed.grid_minor_glow_alpha} min={0} max={1} step={0.01} readOnly={readOnly} onChange={(next) => updateField('grid_minor_glow_alpha', next)} />
       <Field label="Micro Glow Alpha" value={parsed.grid_micro_glow_alpha} min={0} max={1} step={0.01} readOnly={readOnly} onChange={(next) => updateField('grid_micro_glow_alpha', next)} />
+      <ColorRow
+        title="Background RGB"
+        value={parsed.background_color_rgb}
+        readOnly={readOnly}
+        onChange={(channel, next) =>
+          updateField('background_color_rgb', {
+            ...parsed.background_color_rgb,
+            [channel]: next,
+          })
+        }
+      />
+      <Field label="Line Width Major (px)" value={parsed.line_width_major_px} min={0.1} max={8} step={0.01} readOnly={readOnly} onChange={(next) => updateField('line_width_major_px', next)} />
+      <Field label="Line Width Minor (px)" value={parsed.line_width_minor_px} min={0.1} max={8} step={0.01} readOnly={readOnly} onChange={(next) => updateField('line_width_minor_px', next)} />
+      <Field label="Line Width Micro (px)" value={parsed.line_width_micro_px} min={0.1} max={8} step={0.01} readOnly={readOnly} onChange={(next) => updateField('line_width_micro_px', next)} />
+      <Field label="Glow Width Major (px)" value={parsed.glow_width_major_px} min={0.1} max={8} step={0.01} readOnly={readOnly} onChange={(next) => updateField('glow_width_major_px', next)} />
+      <Field label="Glow Width Minor (px)" value={parsed.glow_width_minor_px} min={0.1} max={8} step={0.01} readOnly={readOnly} onChange={(next) => updateField('glow_width_minor_px', next)} />
+      <Field label="Glow Width Micro (px)" value={parsed.glow_width_micro_px} min={0.1} max={8} step={0.01} readOnly={readOnly} onChange={(next) => updateField('glow_width_micro_px', next)} />
       <Field label="FX Mode (0 none, 1 noise, 2 CRT)" value={parsed.fx_mode} min={0} max={2} step={1} readOnly={readOnly} onChange={(next) => updateField('fx_mode', next)} />
       <Field label="FX Opacity" value={parsed.fx_opacity} min={0} max={1} step={0.01} readOnly={readOnly} onChange={(next) => updateField('fx_opacity', next)} />
       <Field label="Noise Amount" value={parsed.fx_noise_amount} min={0} max={1} step={0.01} readOnly={readOnly} onChange={(next) => updateField('fx_noise_amount', next)} />

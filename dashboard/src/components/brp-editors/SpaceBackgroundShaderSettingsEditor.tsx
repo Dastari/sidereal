@@ -5,6 +5,9 @@ import { Switch } from '@/components/ui/switch'
 
 type SpaceBackgroundShaderSettings = {
   enabled: boolean
+  enable_nebula_layer: boolean
+  enable_stars_layer: boolean
+  enable_flares_layer: boolean
   intensity: number
   drift_scale: number
   zoom_rate: number
@@ -65,6 +68,7 @@ type SpaceBackgroundShaderSettings = {
   shaft_length: number
   shaft_falloff: number
   shaft_samples: number
+  shaft_quality: number
   shaft_blend_mode: number
   shaft_opacity: number
   shaft_color_rgb: { x: number; y: number; z: number }
@@ -74,6 +78,9 @@ type SpaceBackgroundShaderSettings = {
 
 type SpaceBackgroundShaderSettingsPayload = {
   enabled: boolean
+  enable_nebula_layer: boolean
+  enable_stars_layer: boolean
+  enable_flares_layer: boolean
   intensity: number
   drift_scale: number
   zoom_rate: number
@@ -134,6 +141,7 @@ type SpaceBackgroundShaderSettingsPayload = {
   shaft_length: number
   shaft_falloff: number
   shaft_samples: number
+  shaft_quality: number
   shaft_blend_mode: number
   shaft_opacity: number
   shaft_color_rgb: [number, number, number]
@@ -147,6 +155,36 @@ const PRESET_OPTIONS = [
   { value: 'cinematic', label: 'Cinematic' },
   { value: 'dense-nebula', label: 'Dense Nebula' },
   { value: 'sparse-deep-space', label: 'Sparse Deep Space' },
+] as const
+
+const BLEND_MODE_OPTIONS = [
+  { value: '0', label: 'Linear Dodge (Add)' },
+  { value: '1', label: 'Screen' },
+  { value: '2', label: 'Lighten' },
+  { value: '3', label: 'Normal' },
+  { value: '4', label: 'Dissolve' },
+  { value: '5', label: 'Darken' },
+  { value: '6', label: 'Multiply' },
+  { value: '7', label: 'Color Burn' },
+  { value: '8', label: 'Linear Burn' },
+  { value: '9', label: 'Darker Color' },
+  { value: '10', label: 'Color Dodge' },
+  { value: '11', label: 'Lighter Color' },
+  { value: '12', label: 'Overlay' },
+  { value: '13', label: 'Soft Light' },
+  { value: '14', label: 'Hard Light' },
+  { value: '15', label: 'Vivid Light' },
+  { value: '16', label: 'Linear Light' },
+  { value: '17', label: 'Pin Light' },
+  { value: '18', label: 'Hard Mix' },
+  { value: '19', label: 'Difference' },
+  { value: '20', label: 'Exclusion' },
+  { value: '21', label: 'Subtract' },
+  { value: '22', label: 'Divide' },
+  { value: '23', label: 'Hue' },
+  { value: '24', label: 'Saturation' },
+  { value: '25', label: 'Color' },
+  { value: '26', label: 'Luminosity' },
 ] as const
 
 type PresetKey = (typeof PRESET_OPTIONS)[number]['value']
@@ -188,6 +226,9 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
   if (!value || typeof value !== 'object') {
     return {
       enabled: true,
+      enable_nebula_layer: true,
+      enable_stars_layer: true,
+      enable_flares_layer: true,
       intensity: 1,
       drift_scale: 1,
       zoom_rate: 1,
@@ -248,6 +289,7 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
       shaft_length: 0.47,
       shaft_falloff: 2.65,
       shaft_samples: 16,
+      shaft_quality: 1,
       shaft_blend_mode: 1,
       shaft_opacity: 0.85,
       shaft_color_rgb: { x: 1.15, y: 1.0, z: 1.45 },
@@ -311,12 +353,16 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
   const shaftLength = Number(obj.shaft_length ?? 0.47)
   const shaftFalloff = Number(obj.shaft_falloff ?? 2.65)
   const shaftSamples = Number(obj.shaft_samples ?? 16)
+  const shaftQuality = Number(obj.shaft_quality ?? 1)
   const shaftBlendMode = Number(obj.shaft_blend_mode ?? 1)
   const shaftOpacity = Number(obj.shaft_opacity ?? 0.85)
   const shaftColorRgb = parseVec3(obj.shaft_color_rgb)
   const backlightColorRgb = parseVec3(obj.backlight_color_rgb)
   return {
     enabled: Boolean(obj.enabled ?? true),
+    enable_nebula_layer: Boolean(obj.enable_nebula_layer ?? true),
+    enable_stars_layer: Boolean(obj.enable_stars_layer ?? true),
+    enable_flares_layer: Boolean(obj.enable_flares_layer ?? true),
     intensity: Number.isFinite(intensity) ? intensity : 1,
     drift_scale: Number.isFinite(driftScale) ? driftScale : 1,
     zoom_rate: Number.isFinite(zoomRate) ? zoomRate : 1,
@@ -401,6 +447,7 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
     shaft_length: Number.isFinite(shaftLength) ? shaftLength : 0.47,
     shaft_falloff: Number.isFinite(shaftFalloff) ? shaftFalloff : 2.65,
     shaft_samples: Number.isFinite(shaftSamples) ? shaftSamples : 16,
+    shaft_quality: Number.isFinite(shaftQuality) ? shaftQuality : 1,
     shaft_blend_mode: Number.isFinite(shaftBlendMode) ? shaftBlendMode : 1,
     shaft_opacity: Number.isFinite(shaftOpacity) ? shaftOpacity : 0.85,
     shaft_color_rgb: shaftColorRgb,
@@ -420,6 +467,9 @@ export function SpaceBackgroundShaderSettingsEditor({
   const toPayload = React.useCallback(
     (next: SpaceBackgroundShaderSettings): SpaceBackgroundShaderSettingsPayload => ({
       enabled: next.enabled,
+      enable_nebula_layer: next.enable_nebula_layer,
+      enable_stars_layer: next.enable_stars_layer,
+      enable_flares_layer: next.enable_flares_layer,
       intensity: clamp(roundToStep(next.intensity, 0.05), 0, 4),
       drift_scale: clamp(roundToStep(next.drift_scale, 0.05), 0, 4),
       zoom_rate: clamp(roundToStep(next.zoom_rate, 0.05), 0, 4),
@@ -476,9 +526,9 @@ export function SpaceBackgroundShaderSettingsEditor({
         2.5,
       ),
       star_mask_scale: clamp(roundToStep(next.star_mask_scale, 0.05), 0.2, 8),
-      nebula_blend_mode: clamp(Math.round(next.nebula_blend_mode), 0, 2),
+      nebula_blend_mode: clamp(Math.round(next.nebula_blend_mode), 0, 26),
       nebula_opacity: clamp(roundToStep(next.nebula_opacity, 0.01), 0, 1),
-      stars_blend_mode: clamp(Math.round(next.stars_blend_mode), 0, 2),
+      stars_blend_mode: clamp(Math.round(next.stars_blend_mode), 0, 26),
       stars_opacity: clamp(roundToStep(next.stars_opacity, 0.01), 0, 1),
       star_count: clamp(roundToStep(next.star_count, 0.05), 0, 5),
       star_size_min: clamp(roundToStep(next.star_size_min, 0.001), 0.01, 0.35),
@@ -488,7 +538,7 @@ export function SpaceBackgroundShaderSettingsEditor({
         clamp(roundToStep(next.star_color_rgb.y, 0.001), 0, 2),
         clamp(roundToStep(next.star_color_rgb.z, 0.001), 0, 2),
       ],
-      flares_blend_mode: clamp(Math.round(next.flares_blend_mode), 0, 2),
+      flares_blend_mode: clamp(Math.round(next.flares_blend_mode), 0, 26),
       flares_opacity: clamp(roundToStep(next.flares_opacity, 0.01), 0, 1),
       depth_layer_separation: clamp(
         roundToStep(next.depth_layer_separation, 0.01),
@@ -524,7 +574,8 @@ export function SpaceBackgroundShaderSettingsEditor({
       shaft_length: clamp(roundToStep(next.shaft_length, 0.01), 0.05, 0.95),
       shaft_falloff: clamp(roundToStep(next.shaft_falloff, 0.01), 0.2, 8),
       shaft_samples: clamp(Math.round(next.shaft_samples), 4, 24),
-      shaft_blend_mode: clamp(Math.round(next.shaft_blend_mode), 0, 2),
+      shaft_quality: clamp(Math.round(next.shaft_quality), 0, 2),
+      shaft_blend_mode: clamp(Math.round(next.shaft_blend_mode), 0, 26),
       shaft_opacity: clamp(roundToStep(next.shaft_opacity, 0.01), 0, 1),
       shaft_color_rgb: [
         clamp(roundToStep(next.shaft_color_rgb.x, 0.001), 0, 3),
@@ -789,6 +840,24 @@ export function SpaceBackgroundShaderSettingsEditor({
         checked={parsed.enabled}
         readOnly={readOnly}
         onChange={(next) => updateField('enabled', next)}
+      />
+      <ToggleField
+        label="Enable Nebula Layer"
+        checked={parsed.enable_nebula_layer}
+        readOnly={readOnly}
+        onChange={(next) => updateField('enable_nebula_layer', next)}
+      />
+      <ToggleField
+        label="Enable Stars Layer"
+        checked={parsed.enable_stars_layer}
+        readOnly={readOnly}
+        onChange={(next) => updateField('enable_stars_layer', next)}
+      />
+      <ToggleField
+        label="Enable Flares Layer"
+        checked={parsed.enable_flares_layer}
+        readOnly={readOnly}
+        onChange={(next) => updateField('enable_flares_layer', next)}
       />
       <Field
         label="Intensity"
@@ -1174,11 +1243,7 @@ export function SpaceBackgroundShaderSettingsEditor({
       <SelectField
         label="Nebula Blend Mode"
         value={String(parsed.nebula_blend_mode)}
-        options={[
-          { value: '0', label: 'Add' },
-          { value: '1', label: 'Screen' },
-          { value: '2', label: 'Lighten' },
-        ]}
+        options={BLEND_MODE_OPTIONS}
         readOnly={readOnly}
         onChange={(next) => updateField('nebula_blend_mode', Number.parseInt(next, 10) || 0)}
       />
@@ -1194,11 +1259,7 @@ export function SpaceBackgroundShaderSettingsEditor({
       <SelectField
         label="Stars Blend Mode"
         value={String(parsed.stars_blend_mode)}
-        options={[
-          { value: '0', label: 'Add' },
-          { value: '1', label: 'Screen' },
-          { value: '2', label: 'Lighten' },
-        ]}
+        options={BLEND_MODE_OPTIONS}
         readOnly={readOnly}
         onChange={(next) => updateField('stars_blend_mode', Number.parseInt(next, 10) || 0)}
       />
@@ -1268,11 +1329,7 @@ export function SpaceBackgroundShaderSettingsEditor({
       <SelectField
         label="Flares Blend Mode"
         value={String(parsed.flares_blend_mode)}
-        options={[
-          { value: '0', label: 'Add' },
-          { value: '1', label: 'Screen' },
-          { value: '2', label: 'Lighten' },
-        ]}
+        options={BLEND_MODE_OPTIONS}
         readOnly={readOnly}
         onChange={(next) => updateField('flares_blend_mode', Number.parseInt(next, 10) || 0)}
       />
@@ -1439,13 +1496,20 @@ export function SpaceBackgroundShaderSettingsEditor({
         onChange={(next) => updateField('shaft_samples', next)}
       />
       <SelectField
+        label="Shaft Quality"
+        value={String(parsed.shaft_quality)}
+        options={[
+          { value: '0', label: 'Low' },
+          { value: '1', label: 'Medium' },
+          { value: '2', label: 'High' },
+        ]}
+        readOnly={readOnly}
+        onChange={(next) => updateField('shaft_quality', Number.parseInt(next, 10) || 0)}
+      />
+      <SelectField
         label="Shaft Blend Mode"
         value={String(parsed.shaft_blend_mode)}
-        options={[
-          { value: '0', label: 'Add' },
-          { value: '1', label: 'Screen' },
-          { value: '2', label: 'Lighten' },
-        ]}
+        options={BLEND_MODE_OPTIONS}
         readOnly={readOnly}
         onChange={(next) => updateField('shaft_blend_mode', Number.parseInt(next, 10) || 0)}
       />

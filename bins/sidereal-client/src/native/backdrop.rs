@@ -65,10 +65,55 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         return;
     }
 
+    let mut selected_starfield: Option<Entity> = None;
+    let mut selected_space_background: Option<Entity> = None;
+    for (entity, layer, _) in &layers {
+        let is_supported_kind = layer.layer_kind == STARFIELD_LAYER_KIND
+            || layer.layer_kind == SPACE_BACKGROUND_LAYER_KIND;
+        if !is_supported_kind {
+            continue;
+        }
+        let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
+            &asset_root.0,
+            &asset_manager,
+            &layer.shader_asset_id,
+        );
+        if !has_streamed_shader {
+            continue;
+        }
+        if layer.layer_kind == STARFIELD_LAYER_KIND {
+            if selected_starfield.is_none_or(|current| entity.index() < current.index()) {
+                selected_starfield = Some(entity);
+            }
+        } else if selected_space_background.is_none_or(|current| entity.index() < current.index()) {
+            selected_space_background = Some(entity);
+        }
+    }
+
     for (entity, layer, rendered) in &layers {
         let Ok(mut entity_commands) = commands.get_entity(entity) else {
             continue;
         };
+        let selected_for_kind = if layer.layer_kind == STARFIELD_LAYER_KIND {
+            selected_starfield
+        } else if layer.layer_kind == SPACE_BACKGROUND_LAYER_KIND {
+            selected_space_background
+        } else {
+            None
+        };
+        if selected_for_kind != Some(entity) {
+            if rendered.is_some() {
+                entity_commands
+                    .remove::<FullscreenLayerRenderable>()
+                    .remove::<StarfieldBackdrop>()
+                    .remove::<SpaceBackgroundBackdrop>()
+                    .remove::<Mesh2d>()
+                    .remove::<MeshMaterial2d<StarfieldMaterial>>()
+                    .remove::<MeshMaterial2d<SpaceBackgroundMaterial>>();
+            }
+            continue;
+        }
+
         let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
             &asset_root.0,
             &asset_manager,
@@ -275,6 +320,7 @@ pub struct SpaceBackgroundUniforms {
     pub space_bg_star_mask_c: Vec4,
     pub space_bg_blend_a: Vec4,
     pub space_bg_blend_b: Vec4,
+    pub space_bg_section_flags: Vec4, // .x nebula, .y stars, .z flares
     pub space_bg_nebula_color_a: Vec4,
     pub space_bg_nebula_color_b: Vec4,
     pub space_bg_nebula_color_c: Vec4,
@@ -315,6 +361,7 @@ impl Default for SpaceBackgroundUniforms {
             space_bg_star_mask_c: Vec4::new(0.83, 5.0, 0.019, 0.022),
             space_bg_blend_a: Vec4::new(1.0, 0.5, 2.0, 1.0),
             space_bg_blend_b: Vec4::new(1.0, 1.0, 1.0, 0.0),
+            space_bg_section_flags: Vec4::new(1.0, 1.0, 1.0, 0.0),
             space_bg_nebula_color_a: Vec4::new(0.0, 0.0, 0.196, 0.0),
             space_bg_nebula_color_b: Vec4::new(0.0, 0.073, 0.082, 0.0),
             space_bg_nebula_color_c: Vec4::new(0.187, 0.16, 0.539, 0.0),
@@ -322,7 +369,7 @@ impl Default for SpaceBackgroundUniforms {
             space_bg_flare_tint: Vec4::new(1.0, 1.0, 2.0, 1.0),
             space_bg_depth_a: Vec4::new(1.03, 0.83, 1.69, 1.08),
             space_bg_light_a: Vec4::new(-0.3, 0.10, 4.0, 0.49),
-            space_bg_light_b: Vec4::new(2.2, 1.35, 0.14, 0.0),
+            space_bg_light_b: Vec4::new(2.2, 1.35, 0.14, 1.0),
             space_bg_light_flags: Vec4::new(1.0, 1.0, 0.0, 1.0),
             space_bg_shafts_a: Vec4::new(1.76, 0.47, 2.65, 16.0),
             space_bg_shafts_b: Vec4::new(1.15, 1.0, 1.45, 0.85),
@@ -415,6 +462,12 @@ pub(crate) struct TacticalMapOverlayMaterial {
     pub fx_params: Vec4, // x=fx_opacity, y=noise_amount, z=scanline_density, w=scanline_speed
     #[uniform(7)]
     pub fx_params_b: Vec4, // x=crt_distortion, y=vignette_strength, z=green_tint_mix, w=unused
+    #[uniform(8)]
+    pub background_color: Vec4, // rgb + unused
+    #[uniform(9)]
+    pub line_widths_px: Vec4, // x=major, y=minor, z=micro, w=unused
+    #[uniform(10)]
+    pub glow_widths_px: Vec4, // x=major, y=minor, z=micro, w=unused
 }
 
 impl Default for TacticalMapOverlayMaterial {
@@ -428,6 +481,9 @@ impl Default for TacticalMapOverlayMaterial {
             grid_glow_alpha: Vec4::new(0.02, 0.018, 0.016, 0.0),
             fx_params: Vec4::new(0.45, 0.12, 360.0, 0.65),
             fx_params_b: Vec4::new(0.02, 0.24, 0.0, 0.0),
+            background_color: Vec4::new(0.005, 0.008, 0.02, 0.0),
+            line_widths_px: Vec4::new(1.4, 0.95, 0.75, 0.0),
+            glow_widths_px: Vec4::new(2.0, 1.5, 1.2, 0.0),
         }
     }
 }
@@ -457,7 +513,7 @@ pub fn compute_fullscreen_external_world_system(
     let Ok(window) = window_query.single() else {
         return;
     };
-    let Some(viewport_size) = platform::safe_viewport_size(window) else {
+    let Some(render_size) = platform::safe_render_target_size(window) else {
         return;
     };
 
@@ -526,8 +582,7 @@ pub fn compute_fullscreen_external_world_system(
 
     let warp = motion.smoothed_warp;
 
-    world_data.viewport_time =
-        Vec4::new(viewport_size.x, viewport_size.y, time.elapsed_secs(), warp);
+    world_data.viewport_time = Vec4::new(render_size.x, render_size.y, time.elapsed_secs(), warp);
     // Y-flip so world Y-up matches screen: stars stream opposite travel (e.g. 223° -> 43°).
     world_data.drift_intensity = Vec4::new(travel_uv.x, -travel_uv.y, 1.0, 1.0);
     world_data.velocity_dir = Vec4::new(heading.x, heading.y, zoom_scale, 0.0);
@@ -541,7 +596,7 @@ pub fn update_starfield_material_system(
         '_,
         (
             &'_ MeshMaterial2d<StarfieldMaterial>,
-            Option<&'_ StarfieldShaderSettings>,
+            Option<Ref<'_, StarfieldShaderSettings>>,
             Option<&'_ mut Visibility>,
         ),
         With<StarfieldBackdrop>,
@@ -550,38 +605,45 @@ pub fn update_starfield_material_system(
 ) {
     for (material_handle, settings, maybe_visibility) in starfield_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
-            let settings = settings.cloned().unwrap_or_default();
-            if let Some(mut visibility) = maybe_visibility {
+            material.viewport_time = world_data.viewport_time;
+            material.drift_intensity = world_data.drift_intensity;
+            material.velocity_dir = world_data.velocity_dir;
+            let Some(settings) = settings else {
+                continue;
+            };
+            let settings_changed = settings.is_changed();
+            if let Some(mut visibility) = maybe_visibility
+                && settings_changed
+            {
                 *visibility = if settings.enabled {
                     Visibility::Visible
                 } else {
                     Visibility::Hidden
                 };
             }
-            material.viewport_time = world_data.viewport_time;
-            material.drift_intensity = world_data.drift_intensity;
-            material.velocity_dir = world_data.velocity_dir;
-            material.starfield_params = Vec4::new(
-                settings.density.clamp(0.0, 1.0),
-                settings.layer_count.clamp(1, 8) as f32,
-                settings.initial_z_offset.clamp(0.0, 1.0),
-                settings.alpha.clamp(0.0, 1.0),
-            );
-            material.starfield_tint = settings.tint_rgb.extend(settings.intensity.max(0.0));
-            material.star_core_params = Vec4::new(
-                settings.star_size.clamp(0.1, 10.0),
-                settings.star_intensity.clamp(0.0, 10.0),
-                settings.star_alpha.clamp(0.0, 1.0),
-                0.0,
-            );
-            material.star_core_color = settings.star_color_rgb.extend(1.0);
-            material.corona_params = Vec4::new(
-                settings.corona_size.clamp(0.1, 10.0),
-                settings.corona_intensity.clamp(0.0, 10.0),
-                settings.corona_alpha.clamp(0.0, 1.0),
-                0.0,
-            );
-            material.corona_color = settings.corona_color_rgb.extend(1.0);
+            if settings_changed {
+                material.starfield_params = Vec4::new(
+                    settings.density.clamp(0.0, 1.0),
+                    settings.layer_count.clamp(1, 8) as f32,
+                    settings.initial_z_offset.clamp(0.0, 1.0),
+                    settings.alpha.clamp(0.0, 1.0),
+                );
+                material.starfield_tint = settings.tint_rgb.extend(settings.intensity.max(0.0));
+                material.star_core_params = Vec4::new(
+                    settings.star_size.clamp(0.1, 10.0),
+                    settings.star_intensity.clamp(0.0, 10.0),
+                    settings.star_alpha.clamp(0.0, 1.0),
+                    0.0,
+                );
+                material.star_core_color = settings.star_color_rgb.extend(1.0);
+                material.corona_params = Vec4::new(
+                    settings.corona_size.clamp(0.1, 10.0),
+                    settings.corona_intensity.clamp(0.0, 10.0),
+                    settings.corona_alpha.clamp(0.0, 1.0),
+                    0.0,
+                );
+                material.corona_color = settings.corona_color_rgb.extend(1.0);
+            }
         }
     }
 }
@@ -596,7 +658,7 @@ pub fn update_space_background_material_system(
         '_,
         (
             &'_ MeshMaterial2d<SpaceBackgroundMaterial>,
-            Option<&'_ SpaceBackgroundShaderSettings>,
+            Option<Ref<'_, SpaceBackgroundShaderSettings>>,
             Option<&'_ mut Visibility>,
         ),
         With<SpaceBackgroundBackdrop>,
@@ -605,17 +667,25 @@ pub fn update_space_background_material_system(
 ) {
     for (material_handle, settings, maybe_visibility) in bg_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
-            let settings = settings.cloned().unwrap_or_default();
-            if let Some(mut visibility) = maybe_visibility {
+            material.params.viewport_time = world_data.viewport_time;
+            material.params.drift_intensity = world_data.drift_intensity;
+            material.params.velocity_dir = world_data.velocity_dir;
+            let Some(settings) = settings else {
+                continue;
+            };
+            let settings_changed = settings.is_changed();
+            if let Some(mut visibility) = maybe_visibility
+                && settings_changed
+            {
                 *visibility = if settings.enabled {
                     Visibility::Visible
                 } else {
                     Visibility::Hidden
                 };
             }
-            material.params.viewport_time = world_data.viewport_time;
-            material.params.drift_intensity = world_data.drift_intensity;
-            material.params.velocity_dir = world_data.velocity_dir;
+            if !settings_changed {
+                continue;
+            }
             material.params.space_bg_params = Vec4::new(
                 settings.intensity.max(0.0),
                 settings.drift_scale.max(0.0),
@@ -668,15 +738,21 @@ pub fn update_space_background_material_system(
                 settings.star_size_max.clamp(0.01, 0.35),
             );
             material.params.space_bg_blend_a = Vec4::new(
-                settings.nebula_blend_mode.clamp(0, 2) as f32,
+                settings.nebula_blend_mode.clamp(0, 26) as f32,
                 settings.nebula_opacity.clamp(0.0, 1.0),
-                settings.stars_blend_mode.clamp(0, 2) as f32,
+                settings.stars_blend_mode.clamp(0, 26) as f32,
                 settings.stars_opacity.clamp(0.0, 1.0),
             );
             material.params.space_bg_blend_b = Vec4::new(
-                settings.flares_blend_mode.clamp(0, 2) as f32,
+                settings.flares_blend_mode.clamp(0, 26) as f32,
                 settings.flares_opacity.clamp(0.0, 1.0),
                 settings.zoom_rate.clamp(0.0, 4.0),
+                0.0,
+            );
+            material.params.space_bg_section_flags = Vec4::new(
+                if settings.enable_nebula_layer { 1.0 } else { 0.0 },
+                if settings.enable_stars_layer { 1.0 } else { 0.0 },
+                if settings.enable_flares_layer { 1.0 } else { 0.0 },
                 0.0,
             );
             material.params.space_bg_nebula_color_a = settings
@@ -715,13 +791,13 @@ pub fn update_space_background_material_system(
                 settings.backlight_edge_boost.clamp(0.0, 6.0),
                 settings.backlight_bloom_scale.clamp(0.0, 2.0),
                 settings.backlight_bloom_threshold.clamp(0.0, 1.0),
-                0.0,
+                settings.shaft_quality.clamp(0, 2) as f32,
             );
             material.params.space_bg_light_flags = Vec4::new(
                 if settings.enable_backlight { 1.0 } else { 0.0 },
                 if settings.enable_light_shafts { 1.0 } else { 0.0 },
                 if settings.shafts_debug_view { 1.0 } else { 0.0 },
-                settings.shaft_blend_mode.clamp(0, 2) as f32,
+                settings.shaft_blend_mode.clamp(0, 26) as f32,
             );
             material.params.space_bg_shafts_a = Vec4::new(
                 settings.shaft_intensity.clamp(0.0, 40.0),

@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 /// The JSON must match `SpaceBackgroundShaderSettings` and use arrays for `Vec3` fields.
 pub const DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: &str = r#"{
   "enabled": true,
+  "enable_nebula_layer": true,
+  "enable_stars_layer": true,
+  "enable_flares_layer": true,
   "intensity": 0.35000000000000003,
   "drift_scale": 2,
   "zoom_rate": 1,
@@ -90,6 +93,7 @@ pub const DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: &str = r#"{
   "shaft_length": 0.47000000000000003,
   "shaft_falloff": 2.65,
   "shaft_samples": 16,
+  "shaft_quality": 1,
   "shaft_blend_mode": 1,
   "shaft_opacity": 0.85,
   "shaft_color_rgb": [
@@ -194,6 +198,12 @@ pub const DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: &str = r#"{
 #[reflect(Component, Serialize, Deserialize)]
 pub struct SpaceBackgroundShaderSettings {
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub enable_nebula_layer: bool,
+    #[serde(default = "default_true")]
+    pub enable_stars_layer: bool,
+    #[serde(default = "default_true")]
+    pub enable_flares_layer: bool,
     pub intensity: f32,
     pub drift_scale: f32,
     pub zoom_rate: f32,
@@ -254,6 +264,8 @@ pub struct SpaceBackgroundShaderSettings {
     pub shaft_length: f32,
     pub shaft_falloff: f32,
     pub shaft_samples: u32,
+    #[serde(default = "default_shaft_quality")]
+    pub shaft_quality: u32,
     pub shaft_blend_mode: u32,
     pub shaft_opacity: f32,
     pub shaft_color_rgb: Vec3,
@@ -264,6 +276,9 @@ pub struct SpaceBackgroundShaderSettings {
 fn builtin_space_background_defaults() -> SpaceBackgroundShaderSettings {
     SpaceBackgroundShaderSettings {
         enabled: true,
+        enable_nebula_layer: true,
+        enable_stars_layer: true,
+        enable_flares_layer: true,
         intensity: 0.35,
         drift_scale: 2.0,
         zoom_rate: 1.0,
@@ -324,12 +339,21 @@ fn builtin_space_background_defaults() -> SpaceBackgroundShaderSettings {
         shaft_length: 0.47,
         shaft_falloff: 2.65,
         shaft_samples: 16,
+        shaft_quality: 1,
         shaft_blend_mode: 1,
         shaft_opacity: 0.85,
         shaft_color_rgb: Vec3::new(1.15, 1.0, 1.45),
         backlight_color_rgb: Vec3::new(1.15, 1.0, 1.45),
         tint_rgb: Vec3::new(1.0, 1.77, 1.24),
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_shaft_quality() -> u32 {
+    1
 }
 
 impl Default for SpaceBackgroundShaderSettings {

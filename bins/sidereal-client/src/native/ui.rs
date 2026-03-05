@@ -259,7 +259,11 @@ pub(super) fn update_tactical_map_overlay_system(
             camera.clear_color = if tactical_map_state.enabled
                 && tactical_map_state.alpha >= map_settings.overlay_takeover_alpha
             {
-                ClearColorConfig::Custom(Color::srgb(0.005, 0.008, 0.02))
+                ClearColorConfig::Custom(Color::srgb(
+                    map_settings.background_color_rgb.x,
+                    map_settings.background_color_rgb.y,
+                    map_settings.background_color_rgb.z,
+                ))
             } else {
                 ClearColorConfig::None
             };
@@ -536,6 +540,24 @@ pub(super) fn update_tactical_map_fx_overlay_system(
                 map_settings.fx_crt_distortion,
                 map_settings.fx_vignette_strength,
                 map_settings.fx_green_tint_mix,
+                0.0,
+            );
+            material.background_color = Vec4::new(
+                map_settings.background_color_rgb.x,
+                map_settings.background_color_rgb.y,
+                map_settings.background_color_rgb.z,
+                0.0,
+            );
+            material.line_widths_px = Vec4::new(
+                map_settings.line_width_major_px,
+                map_settings.line_width_minor_px,
+                map_settings.line_width_micro_px,
+                0.0,
+            );
+            material.glow_widths_px = Vec4::new(
+                map_settings.glow_width_major_px,
+                map_settings.glow_width_minor_px,
+                map_settings.glow_width_micro_px,
                 0.0,
             );
         }

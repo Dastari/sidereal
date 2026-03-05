@@ -284,6 +284,7 @@ fn create_sandboxed_lua(policy: &LuaSandboxPolicy) -> Result<Lua, ScriptError> {
             ))
         })?;
     let instruction_counter = Arc::new(AtomicU64::new(0));
+    let _ = lua.set_app_data(Arc::clone(&instruction_counter));
     let instruction_limit = policy.instruction_limit;
     let hook_interval = policy.hook_instruction_interval as u64;
     let counter = Arc::clone(&instruction_counter);
@@ -301,6 +302,12 @@ fn create_sandboxed_lua(policy: &LuaSandboxPolicy) -> Result<Lua, ScriptError> {
     )
     .map_err(|err| ScriptError::Runtime(format!("set lua hook failed: {err}")))?;
     Ok(lua)
+}
+
+pub fn reset_lua_instruction_budget(lua: &Lua) {
+    if let Some(counter) = lua.app_data_ref::<Arc<AtomicU64>>() {
+        counter.store(0, Ordering::Relaxed);
+    }
 }
 
 pub fn create_sandboxed_lua_vm(policy: &LuaSandboxPolicy) -> Result<Lua, ScriptError> {

@@ -26,6 +26,15 @@ pub fn safe_viewport_size(window: &bevy::window::Window) -> Option<Vec2> {
     Some(Vec2::new(width, height))
 }
 
+pub fn safe_render_target_size(window: &bevy::window::Window) -> Option<Vec2> {
+    let width = window.physical_width() as f32;
+    let height = window.physical_height() as f32;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some(Vec2::new(width, height))
+}
+
 pub fn preferred_backends() -> Backends {
     if let Ok(raw_value) = std::env::var("SIDEREAL_CLIENT_WGPU_BACKENDS") {
         let parsed = Backends::from_comma_list(&raw_value);

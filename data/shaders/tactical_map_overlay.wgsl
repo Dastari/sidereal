@@ -8,6 +8,9 @@
 @group(2) @binding(5) var<uniform> grid_glow_alpha: vec4<f32>;      // x=major, y=minor, z=micro
 @group(2) @binding(6) var<uniform> fx_params: vec4<f32>;            // x=fx_opacity, y=noise_amount, z=scanline_density, w=scanline_speed
 @group(2) @binding(7) var<uniform> fx_params_b: vec4<f32>;          // x=crt_distortion, y=vignette_strength, z=green_tint_mix
+@group(2) @binding(8) var<uniform> background_color: vec4<f32>;     // rgb + unused
+@group(2) @binding(9) var<uniform> line_widths_px: vec4<f32>;       // x=major, y=minor, z=micro
+@group(2) @binding(10) var<uniform> glow_widths_px: vec4<f32>;      // x=major, y=minor, z=micro
 
 fn hash21(p: vec2<f32>) -> f32 {
     let h = dot(p, vec2<f32>(127.1, 311.7));
@@ -60,13 +63,13 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let minor_spacing = major_spacing / 10.0;
     let micro_spacing = major_spacing / 100.0;
 
-    let major_core_w = 1.4 * world_per_pixel;
-    let minor_core_w = 0.95 * world_per_pixel;
-    let micro_core_w = 0.75 * world_per_pixel;
+    let major_core_w = max(line_widths_px.x, 0.01) * world_per_pixel;
+    let minor_core_w = max(line_widths_px.y, 0.01) * world_per_pixel;
+    let micro_core_w = max(line_widths_px.z, 0.01) * world_per_pixel;
 
-    let major_glow_w = 2.0 * world_per_pixel;
-    let minor_glow_w = 1.5 * world_per_pixel;
-    let micro_glow_w = 1.2 * world_per_pixel;
+    let major_glow_w = max(glow_widths_px.x, 0.01) * world_per_pixel;
+    let minor_glow_w = max(glow_widths_px.y, 0.01) * world_per_pixel;
+    let micro_glow_w = max(glow_widths_px.z, 0.01) * world_per_pixel;
 
     let major = max(
         grid_line(world_pos.x, major_spacing, major_core_w),
@@ -98,7 +101,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let minor_fade = smoothstep(6.0, 16.0, minor_spacing * safe_zoom);
     let micro_fade = smoothstep(8.0, 18.0, micro_spacing * safe_zoom);
 
-    var color = vec3<f32>(0.005, 0.008, 0.02);
+    var color = background_color.rgb;
     color = mix(color, grid_micro.rgb, micro * grid_micro.a * micro_fade);
     color = mix(color, grid_minor.rgb, minor * grid_minor.a * minor_fade);
     color = mix(color, grid_major.rgb, major * grid_major.a);

@@ -6,7 +6,7 @@ use sidereal_game::{EntityGuid, FlightComputer, OwnerId, ScriptState, ScriptValu
 use sidereal_net::PlayerEntityId;
 use sidereal_scripting::{
     LuaSandboxPolicy, ScriptError, create_sandboxed_lua_vm, load_lua_module_into_lua_from_root,
-    lua_value_to_json,
+    lua_value_to_json, reset_lua_instruction_budget,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -312,6 +312,7 @@ pub fn run_script_intervals(
                 continue;
             }
         };
+        reset_lua_instruction_budget(&runtime.lua);
         if let Err(err) = function.call::<()>((ctx, event)) {
             warn!(
                 "replication runtime script on_tick handler={} entity={} execution failed: {}",
@@ -407,6 +408,7 @@ pub fn run_script_events(
                     continue;
                 }
             };
+            reset_lua_instruction_budget(&runtime.lua);
             if let Err(err) = function.call::<()>((ctx, event_lua)) {
                 warn!(
                     "replication runtime script on_{} handler={} entity={} execution failed: {}",

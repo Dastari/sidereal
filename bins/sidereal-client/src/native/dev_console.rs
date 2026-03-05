@@ -309,6 +309,7 @@ pub(crate) struct DevConsoleState {
     pub logs_dirty: bool,
     pub scrollback_lines: usize,
     pub visible_lines: usize,
+    pub visible_columns: usize,
 }
 
 impl Default for DevConsoleState {
@@ -325,6 +326,7 @@ impl Default for DevConsoleState {
             logs_dirty: true,
             scrollback_lines: 0,
             visible_lines: 40,
+            visible_columns: 120,
         }
     }
 }
@@ -543,6 +545,11 @@ fn handle_dev_console_input_system(
     keys: Res<'_, ButtonInput<KeyCode>>,
     mut state: ResMut<'_, DevConsoleState>,
 ) {
+    let toggled_this_frame = keys.just_pressed(KeyCode::Backquote);
+    if toggled_this_frame {
+        // Do not treat the toggle key as input text this frame.
+        return;
+    }
     if !state.is_open {
         return;
     }
@@ -612,6 +619,7 @@ fn handle_dev_console_input_system(
                 if let Some(text) = &event.text {
                     let append = text
                         .chars()
+                        .filter(|ch| *ch != '`' && *ch != '~')
                         .filter(|ch| !ch.is_control())
                         .collect::<String>();
                     if !append.is_empty() {
@@ -622,6 +630,7 @@ fn handle_dev_console_input_system(
                 if let Key::Character(chars) = &event.logical_key {
                     let append = chars
                         .chars()
+                        .filter(|ch| *ch != '`' && *ch != '~')
                         .filter(|ch| !ch.is_control())
                         .collect::<String>();
                     if !append.is_empty() {
@@ -666,8 +675,6 @@ fn handle_dev_console_input_system(
             "sidereal_client::dev_console",
             "not implemented yet".to_string(),
         );
-        bevy::log::info!(target: "sidereal_client::dev_console", "> {command}");
-        bevy::log::info!(target: "sidereal_client::dev_console", "not implemented yet");
         state.input_line.clear();
         state.scrollback_lines = 0;
         clamp_scrollback(&mut state);
@@ -776,12 +783,29 @@ fn spawn_message_spans(parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands, 
     }
 }
 
+fn truncate_with_ellipsis(input: &str, max_chars: usize) -> String {
+    let count = input.chars().count();
+    if count <= max_chars {
+        return input.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+    let head = input.chars().take(max_chars - 1).collect::<String>();
+    format!("{head}…")
+}
+
 fn spawn_log_line(
     parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
     line: &ConsoleLogLine,
+    max_columns: usize,
 ) {
     let dim = Color::srgba(0.74, 0.78, 0.86, 0.9);
     let ts_human = format_epoch_ms_utc(line.ts_epoch_ms);
+    let prefix = format!("[{ts_human}] {} {}: ", level_label(line.level), line.target);
+    let prefix_chars = prefix.chars().count();
+    let message_budget = max_columns.saturating_sub(prefix_chars).max(8);
+    let clipped_message = truncate_with_ellipsis(&line.message, message_budget);
     parent
         .spawn((
             Text::new(""),
@@ -821,7 +845,7 @@ fn spawn_log_line(
                     ..default()
                 },
             ));
-            spawn_message_spans(spans, &line.message);
+            spawn_message_spans(spans, &clipped_message);
         });
 }
 
@@ -925,6 +949,9 @@ fn update_dev_console_ui_system(
     state.visible_lines = measured_lines
         .saturating_sub(DEV_CONSOLE_VISIBLE_LINES_SAFETY_ROWS)
         .max(1);
+    let panel_inner_w = (win_w - 24.0).max(64.0);
+    let approx_char_px = (DEV_CONSOLE_LOG_FONT_SIZE * DEV_CONSOLE_CHAR_WIDTH_FACTOR).max(1.0);
+    state.visible_columns = ((panel_inner_w / approx_char_px).floor() as usize).clamp(24, 400);
     panel_node.height = Val::Px(panel_h.max(0.0));
     root_node.display = if state.anim_t > 0.0 || state.target_t > 0.0 {
         Display::Flex
@@ -943,7 +970,7 @@ fn update_dev_console_ui_system(
         if let Ok(list_entity) = log_list.single() {
             commands.entity(list_entity).with_children(|parent| {
                 for line in state.displayed_lines.iter().skip(start).take(end - start) {
-                    spawn_log_line(parent, line);
+                    spawn_log_line(parent, line, state.visible_columns);
                 }
             });
         }
