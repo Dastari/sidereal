@@ -6,8 +6,10 @@ use lightyear::prelude::{
 };
 use sidereal_game::{
     EntityGuid, FactionId, FactionVisibility, FullscreenLayer, MountedOn, OwnerId, ParentGuid,
-    PlayerTag, PublicVisibility, ScannerComponent, ScannerRangeM, ShipTag, VisibilityDisclosure,
-    VisibilityGridCell, VisibilityScannerSource, VisibilitySpatialGrid,
+    PlayerTag, PublicVisibility, RENDER_DOMAIN_FULLSCREEN,
+    RENDER_PHASE_FULLSCREEN_BACKGROUND, RENDER_PHASE_FULLSCREEN_FOREGROUND,
+    RuntimeRenderLayerDefinition, VisibilityDisclosure, VisibilityGridCell, VisibilityRangeM,
+    VisibilityRangeSource, VisibilitySpatialGrid,
 };
 use sidereal_net::{ClientLocalViewMode, ClientLocalViewModeMessage, PlayerEntityId};
 use std::collections::{HashMap, HashSet};
@@ -155,7 +157,7 @@ impl ClientObserverAnchorPositionMap {
 pub(crate) struct PlayerVisibilityContext {
     pub player_entity_id: String,
     pub observer_anchor_position: Option<Vec3>,
-    pub scanner_sources: Vec<(Vec3, f32)>,
+    pub visibility_sources: Vec<(Vec3, f32)>,
     pub player_faction_id: Option<String>,
     pub view_mode: ClientLocalViewMode,
 }
@@ -180,7 +182,7 @@ pub struct VisibilityScratch {
     root_public_by_entity: HashMap<Entity, bool>,
     root_owner_by_entity: HashMap<Entity, String>,
     root_faction_by_entity: HashMap<Entity, String>,
-    scanner_sources_by_owner: HashMap<String, Vec<(Vec3, f32)>>,
+    visibility_sources_by_owner: HashMap<String, Vec<(Vec3, f32)>>,
     player_faction_by_owner: HashMap<String, String>,
     context_by_client: HashMap<Entity, PlayerVisibilityContext>,
     entities_by_cell: HashMap<(i64, i64), Vec<Entity>>,
@@ -299,7 +301,7 @@ impl VisibilityScratch {
         self.root_public_by_entity.clear();
         self.root_owner_by_entity.clear();
         self.root_faction_by_entity.clear();
-        self.scanner_sources_by_owner.clear();
+        self.visibility_sources_by_owner.clear();
         self.player_faction_by_owner.clear();
         self.context_by_client.clear();
         self.entities_by_cell.clear();
@@ -368,7 +370,7 @@ fn build_candidate_cells_for_client(
     candidate_mode: VisibilityCandidateMode,
     observer_anchor_position: Option<Vec3>,
     observer_delivery_range_m: f32,
-    scanner_sources: &[(Vec3, f32)],
+    visibility_sources: &[(Vec3, f32)],
     view_mode: ClientLocalViewMode,
     cell_size_m: f32,
 ) -> HashSet<(i64, i64)> {
@@ -385,8 +387,13 @@ fn build_candidate_cells_for_client(
                 );
             }
             if matches!(view_mode, ClientLocalViewMode::Map) {
-                for (scanner_pos, scanner_range) in scanner_sources {
-                    add_cell_keys_in_radius(*scanner_pos, *scanner_range, cell_size_m, &mut cells);
+                for (visibility_pos, visibility_range) in visibility_sources {
+                    add_cell_keys_in_radius(
+                        *visibility_pos,
+                        *visibility_range,
+                        cell_size_m,
+                        &mut cells,
+                    );
                 }
             }
             cells
@@ -400,7 +407,7 @@ fn build_candidate_set_for_client(
     player_entity_id: &str,
     observer_anchor_position: Option<Vec3>,
     observer_delivery_range_m: f32,
-    scanner_sources: &[(Vec3, f32)],
+    visibility_sources: &[(Vec3, f32)],
     view_mode: ClientLocalViewMode,
     cell_size_m: f32,
     scratch: &VisibilityScratch,
@@ -428,10 +435,10 @@ fn build_candidate_set_for_client(
                 );
             }
             if matches!(view_mode, ClientLocalViewMode::Map) {
-                for (scanner_pos, scanner_range) in scanner_sources {
+                for (visibility_pos, visibility_range) in visibility_sources {
                     add_entities_in_radius(
-                        *scanner_pos,
-                        *scanner_range,
+                        *visibility_pos,
+                        *visibility_range,
                         cell_size_m,
                         &scratch.entities_by_cell,
                         &mut candidates,
@@ -471,10 +478,10 @@ pub(crate) fn should_bypass_candidate_filter(
         return false;
     };
     visibility_context
-        .scanner_sources
+        .visibility_sources
         .iter()
-        .any(|(scanner_pos, scanner_range_m)| {
-            (target_position - *scanner_pos).length() <= *scanner_range_m
+        .any(|(visibility_pos, visibility_range_m)| {
+            (target_position - *visibility_pos).length() <= *visibility_range_m
         })
 }
 
@@ -509,9 +516,7 @@ pub fn update_network_visibility(
             &'_ GlobalTransform,
             Option<&'_ EntityGuid>,
             Option<&'_ OwnerId>,
-            Option<&'_ ShipTag>,
-            Option<&'_ ScannerComponent>,
-            Option<&'_ ScannerRangeM>,
+            Option<&'_ VisibilityRangeM>,
             Option<&'_ PublicVisibility>,
             Option<&'_ FactionVisibility>,
             Option<&'_ FactionId>,
@@ -535,6 +540,7 @@ pub fn update_network_visibility(
             Option<&'_ EntityGuid>,
             Option<&'_ PlayerTag>,
             Option<&'_ FullscreenLayer>,
+            Option<&'_ RuntimeRenderLayerDefinition>,
             Option<&'_ OwnerId>,
             Option<&'_ PublicVisibility>,
             Option<&'_ FactionVisibility>,
@@ -575,9 +581,7 @@ pub fn update_network_visibility(
         global_transform,
         entity_guid,
         owner_id,
-        _ship_tag,
-        _scanner_component,
-        _scanner_range,
+        _visibility_range,
         public_visibility,
         _faction_visibility,
         faction_id,
@@ -651,7 +655,7 @@ pub fn update_network_visibility(
     }
 
     // 3) Resolve mount root for each entity (traverse parent chain).
-    for (entity, _, _, _, _, _, _, _, _, _, _, _) in &all_replicated {
+    for (entity, _, _, _, _, _, _, _, _, _) in &all_replicated {
         let root = resolve_mount_root(entity, &scratch.parent_entity_by_entity);
         scratch.root_entity_by_entity.insert(entity, root);
     }
@@ -660,7 +664,7 @@ pub fn update_network_visibility(
     // Mounted children inherit root world position for visibility checks to avoid
     // false positives from unhydrated child transforms at origin.
     scratch.entities_by_cell.clear();
-    for (entity, _, _, _, _, _, _, _, _, _, _, _) in &all_replicated {
+    for (entity, _, _, _, _, _, _, _, _, _) in &all_replicated {
         let root = scratch
             .root_entity_by_entity
             .get(&entity)
@@ -682,18 +686,15 @@ pub fn update_network_visibility(
             .push(entity);
     }
 
-    // 4) Build scanner sources from scanner-capable owned roots only.
-    // Scanner-capable = ShipTag baseline scanner or explicit ScannerComponent on the root.
-    // Child entities contribute via root ScannerRangeM aggregation; they are not sources.
+    // 4) Build visibility sources from owned roots with a resolved effective visibility range.
+    // Child entities contribute via root VisibilityRangeM aggregation; they are not sources.
     for (
         entity,
         _position,
         _global,
         _guid,
         owner_id,
-        ship_tag,
-        scanner_component,
-        scanner_range,
+        visibility_range,
         _public,
         _faction_vis,
         _faction_id,
@@ -707,11 +708,8 @@ pub fn update_network_visibility(
         if !is_root {
             continue;
         }
-        if ship_tag.is_none() && scanner_component.is_none() {
-            continue;
-        }
         let Some(owner) = owner_id else { continue };
-        let Some(range) = scanner_range.map(|r| r.0) else {
+        let Some(range) = visibility_range.map(|r| r.0) else {
             continue;
         };
         if range <= 0.0 {
@@ -722,7 +720,7 @@ pub fn update_network_visibility(
             continue;
         };
         scratch
-            .scanner_sources_by_owner
+            .visibility_sources_by_owner
             .entry(canonical_owner)
             .or_default()
             .push((position, range));
@@ -731,8 +729,8 @@ pub fn update_network_visibility(
     let registered_clients = scratch.registered_clients.clone();
     for (client_entity, player_entity_id) in &registered_clients {
         let canonical_player_id = canonical_player_entity_id(player_entity_id.as_str());
-        let scanner_sources = scratch
-            .scanner_sources_by_owner
+        let visibility_sources = scratch
+            .visibility_sources_by_owner
             .get(canonical_player_id.as_str())
             .cloned()
             .unwrap_or_default();
@@ -758,7 +756,7 @@ pub fn update_network_visibility(
             PlayerVisibilityContext {
                 player_entity_id: canonical_player_id.clone(),
                 observer_anchor_position,
-                scanner_sources: scanner_sources.clone(),
+                visibility_sources: visibility_sources.clone(),
                 player_faction_id,
                 view_mode: local_view_mode,
             },
@@ -769,7 +767,7 @@ pub fn update_network_visibility(
             canonical_player_id.as_str(),
             observer_anchor_position,
             client_delivery_range_m,
-            &scanner_sources,
+            &visibility_sources,
             local_view_mode,
             runtime_cfg.cell_size_m,
             &scratch,
@@ -778,7 +776,7 @@ pub fn update_network_visibility(
             runtime_cfg.candidate_mode,
             observer_anchor_position,
             client_delivery_range_m,
-            &scanner_sources,
+            &visibility_sources,
             local_view_mode,
             runtime_cfg.cell_size_m,
         );
@@ -808,10 +806,10 @@ pub fn update_network_visibility(
         else {
             continue;
         };
-        let Some(scanner_sources) = scratch.context_by_client.get(client_entity).map(|ctx| {
-            ctx.scanner_sources
+        let Some(visibility_sources) = scratch.context_by_client.get(client_entity).map(|ctx| {
+            ctx.visibility_sources
                 .iter()
-                .map(|(position, range_m)| VisibilityScannerSource {
+                .map(|(position, range_m)| VisibilityRangeSource {
                     x: position.x,
                     y: position.y,
                     z: position.z,
@@ -837,7 +835,7 @@ pub fn update_network_visibility(
             delivery_range_m: client_delivery_range_m,
             queried_cells,
         };
-        let next_disclosure = VisibilityDisclosure { scanner_sources };
+        let next_disclosure = VisibilityDisclosure { visibility_sources };
 
         let Ok((existing_grid, existing_disclosure)) = player_visibility_state.get(player_entity)
         else {
@@ -859,6 +857,7 @@ pub fn update_network_visibility(
         entity_guid,
         player_tag,
         fullscreen_layer,
+        runtime_render_layer,
         owner_id,
         public_visibility,
         faction_visibility,
@@ -925,9 +924,17 @@ pub fn update_network_visibility(
             continue;
         }
 
-        // Fullscreen layers are global non-spatial overlays and must not be culled by
-        // delivery range / scanner candidate logic as players move through the world.
-        if fullscreen_layer.is_some() {
+        // Fullscreen authored config entities are global non-spatial overlays and must not be
+        // culled by delivery-range / visibility-range candidate logic as players move through the world.
+        let is_global_fullscreen_config = fullscreen_layer.is_some()
+            || runtime_render_layer.is_some_and(|layer| {
+                layer.material_domain == RENDER_DOMAIN_FULLSCREEN
+                    && matches!(
+                        layer.phase.as_str(),
+                        RENDER_PHASE_FULLSCREEN_BACKGROUND | RENDER_PHASE_FULLSCREEN_FOREGROUND
+                    )
+            });
+        if is_global_fullscreen_config {
             for client_entity in &scratch.live_clients {
                 if scratch.context_by_client.contains_key(client_entity) {
                     replication_state.gain_visibility(*client_entity);
@@ -948,14 +955,20 @@ pub fn update_network_visibility(
         for client_entity in &scratch.live_clients {
             if controlled_by.is_some_and(|binding| binding.owner == *client_entity) {
                 // Hard guarantee: the owning client must always receive state for
-                // their currently controlled entity, independent of scanner/range.
+                // their currently controlled entity, independent of visibility/range.
                 replication_state.gain_visibility(*client_entity);
                 continue;
             }
             let Some(candidates) = scratch.candidate_entities_by_client.get(client_entity) else {
+                if replication_state.is_visible(*client_entity) {
+                    replication_state.lose_visibility(*client_entity);
+                }
                 continue;
             };
             let Some(visibility_context) = scratch.context_by_client.get(client_entity) else {
+                if replication_state.is_visible(*client_entity) {
+                    replication_state.lose_visibility(*client_entity);
+                }
                 continue;
             };
             let client_delivery_range_m = view_mode_registry
@@ -1173,7 +1186,7 @@ pub(crate) enum VisibilityAuthorization {
     Owner,
     Public,
     Faction,
-    Scanner,
+    Range,
 }
 
 pub(crate) fn authorize_visibility(
@@ -1204,12 +1217,12 @@ pub(crate) fn authorize_visibility(
     }
     let target_position = entity_position?;
     visibility_context
-        .scanner_sources
+        .visibility_sources
         .iter()
-        .find(|(scanner_pos, scanner_range_m)| {
-            (target_position - *scanner_pos).length() <= *scanner_range_m
+        .find(|(visibility_pos, visibility_range_m)| {
+            (target_position - *visibility_pos).length() <= *visibility_range_m
         })
-        .map(|_| VisibilityAuthorization::Scanner)
+        .map(|_| VisibilityAuthorization::Range)
 }
 
 fn passes_delivery_scope(

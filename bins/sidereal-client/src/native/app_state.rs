@@ -11,6 +11,7 @@ pub(crate) enum ClientAppState {
     Auth,
     CharacterSelect,
     WorldLoading,
+    AssetLoading,
     InWorld,
 }
 
@@ -86,7 +87,7 @@ pub(crate) fn is_active_world_state(
     app_state.as_ref().is_some_and(|state| {
         matches!(
             state.get(),
-            ClientAppState::InWorld | ClientAppState::WorldLoading
+            ClientAppState::InWorld | ClientAppState::WorldLoading | ClientAppState::AssetLoading
         )
     }) || headless_mode.0
 }

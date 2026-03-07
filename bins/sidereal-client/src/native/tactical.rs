@@ -1,8 +1,8 @@
 use bevy::log::warn;
 use bevy::prelude::*;
 use lightyear::prelude::MessageReceiver;
-use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::MessageSender;
+use lightyear::prelude::client::{Client, Connected};
 use sidereal_net::{
     ClientTacticalResnapshotRequestMessage, PlayerEntityId, ServerTacticalContactsDeltaMessage,
     ServerTacticalContactsSnapshotMessage, ServerTacticalFogDeltaMessage,
@@ -149,6 +149,7 @@ fn apply_tactical_contacts_delta(
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn receive_tactical_snapshot_messages(
     session: Res<'_, ClientSession>,
     time: Res<'_, Time<Real>>,
@@ -288,6 +289,7 @@ mod tests {
         TacticalContact {
             entity_id: entity_id.to_string(),
             kind: "ship".to_string(),
+            map_icon_asset_id: Some("map_icon_ship_svg".to_string()),
             faction_id: None,
             position_xy: pos,
             heading_rad: 0.0,

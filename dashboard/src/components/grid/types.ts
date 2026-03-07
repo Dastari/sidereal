@@ -12,7 +12,7 @@ export interface WorldEntity {
   kind: string
   parentEntityId?: string
   /** Labels from graph (e.g. ["Entity", "Ship"]); second value used for tree grouping. */
-  entity_labels?: string[]
+  entity_labels?: Array<string>
   mapVisible?: boolean
   /** True when source data provided an explicit world position. */
   hasPosition?: boolean
@@ -86,4 +86,6 @@ export interface PlayerVisibilityOverlay {
   delivery_range_m: number
   queried_cells: Array<VisibilityGridCellOverlay>
   scanner_sources: Array<VisibilityScannerSourceOverlay>
+  explored_cell_size_m: number | null
+  explored_cells: Array<VisibilityGridCellOverlay>
 }

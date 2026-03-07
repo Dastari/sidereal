@@ -145,12 +145,6 @@ pub fn ensure_server_transport_channels(
         if !transport.has_sender::<sidereal_net::InputChannel>() {
             transport.add_sender_from_registry::<sidereal_net::InputChannel>(&registry);
         }
-        if !transport.has_receiver::<sidereal_net::AssetChannel>() {
-            transport.add_receiver_from_registry::<sidereal_net::AssetChannel>(&registry);
-        }
-        if !transport.has_sender::<sidereal_net::AssetChannel>() {
-            transport.add_sender_from_registry::<sidereal_net::AssetChannel>(&registry);
-        }
         if !transport.has_receiver::<sidereal_net::TacticalSnapshotChannel>() {
             transport
                 .add_receiver_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);

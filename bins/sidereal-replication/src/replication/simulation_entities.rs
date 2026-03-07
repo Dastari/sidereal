@@ -16,6 +16,7 @@ use lightyear::prelude::{
 };
 use sidereal_game::{
     ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
+    WorldPosition, WorldRotation,
 };
 use sidereal_net::PlayerEntityId;
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
@@ -32,11 +33,12 @@ use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::lifecycle::{HydratedEntityCount, HydratedGraphEntity};
 use crate::replication::persistence::PersistenceSchemaInitState;
 use crate::replication::scripting::{
-    emit_bundle_spawned_event, load_known_bundle_ids, load_world_init_graph_records,
-    scripts_root_dir, spawn_bundle_graph_records,
+    AssetRegistryResource, EntityRegistryResource, ScriptCatalogResource,
+    emit_bundle_spawned_event_from_catalog, load_world_init_graph_records_from_catalog,
+    scripts_root_dir, spawn_bundle_graph_records_cached,
 };
 
-const ADMIN_ALLOWED_OVERRIDE_KEYS: &[&str] = &["display_name"];
+const ADMIN_ALLOWED_OVERRIDE_KEYS: &[&str] = &["display_name", "owner_id"];
 const ADMIN_MAX_OVERRIDE_FIELDS: usize = 8;
 const ADMIN_MAX_OVERRIDE_JSON_BYTES: usize = 2048;
 
@@ -237,11 +239,15 @@ pub fn hydrate_records_into_world(
 }
 
 /// Startup system: loads all entities from the graph database and hydrates them.
+#[allow(clippy::too_many_arguments)]
 pub fn hydrate_simulation_entities(
     mut commands: Commands<'_, '_>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
     mut player_entity_map: ResMut<'_, PlayerRuntimeEntityMap>,
     mut schema_init_state: ResMut<'_, PersistenceSchemaInitState>,
+    script_catalog: Res<'_, ScriptCatalogResource>,
+    entity_registry: Res<'_, EntityRegistryResource>,
+    asset_registry: Res<'_, AssetRegistryResource>,
     component_registry: Res<'_, GeneratedComponentRegistry>,
     app_type_registry: Res<'_, AppTypeRegistry>,
 ) {
@@ -258,7 +264,12 @@ pub fn hydrate_simulation_entities(
     }
     schema_init_state.0 = true;
 
-    if let Err(err) = apply_scripted_world_init_once(&mut persistence) {
+    if let Err(err) = apply_scripted_world_init_once(
+        &mut persistence,
+        script_catalog.as_ref(),
+        entity_registry.as_ref(),
+        asset_registry.as_ref(),
+    ) {
         eprintln!("replication simulation hydration skipped; scripted world init failed: {err}");
         return;
     }
@@ -499,7 +510,12 @@ fn replication_database_url() -> String {
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string())
 }
 
-fn apply_scripted_world_init_once(persistence: &mut GraphPersistence) -> Result<(), String> {
+fn apply_scripted_world_init_once(
+    persistence: &mut GraphPersistence,
+    script_catalog: &ScriptCatalogResource,
+    entity_registry: &EntityRegistryResource,
+    asset_registry: &AssetRegistryResource,
+) -> Result<(), String> {
     if persistence
         .script_world_init_state_exists(WORLD_INIT_STATE_KEY)
         .map_err(|err| format!("query world init state failed: {err}"))?
@@ -511,8 +527,11 @@ fn apply_scripted_world_init_once(persistence: &mut GraphPersistence) -> Result<
         return Ok(());
     }
 
-    let scripts_root = scripts_root_dir();
-    let records = load_world_init_graph_records(&scripts_root)?;
+    let records = load_world_init_graph_records_from_catalog(
+        script_catalog,
+        &entity_registry.entries,
+        &asset_registry.entries,
+    )?;
     bevy::log::info!(
         "replication applying scripted world init records count={} key={}",
         records.len(),
@@ -551,8 +570,10 @@ pub fn process_bootstrap_entity_commands(
         (Entity, &'_ EntityGuid, &'_ OwnerId),
         With<SimulatedControlledEntity>,
     >,
+    script_catalog: Res<'_, ScriptCatalogResource>,
+    entity_registry: Res<'_, EntityRegistryResource>,
+    asset_registry: Res<'_, AssetRegistryResource>,
     mut cached_scripts_root: Local<'_, Option<std::path::PathBuf>>,
-    mut cached_known_bundle_ids: Local<'_, Option<Option<HashSet<String>>>>,
     receiver: Option<Res<'_, BootstrapEntityReceiver>>,
 ) {
     let Some(receiver) = receiver else { return };
@@ -560,15 +581,13 @@ pub fn process_bootstrap_entity_commands(
     let scripts_root = cached_scripts_root
         .get_or_insert_with(scripts_root_dir)
         .clone();
-    let known_bundle_ids = cached_known_bundle_ids
-        .get_or_insert_with(|| match load_known_bundle_ids(&scripts_root) {
-            Ok(v) => Some(v),
-            Err(err) => {
-                bevy::log::error!("admin spawn disabled: failed loading bundle registry: {err}");
-                None
-            }
-        })
-        .as_ref();
+    let known_bundle_ids = (!entity_registry.entries.is_empty()).then(|| {
+        entity_registry
+            .entries
+            .iter()
+            .map(|entry| entry.entity_id.clone())
+            .collect::<HashSet<_>>()
+    });
 
     for cmd in bootstrap_runtime::drain_bootstrap_entity_commands(receiver.as_ref()) {
         match cmd.payload {
@@ -606,7 +625,10 @@ pub fn process_bootstrap_entity_commands(
                     &app_type_registry,
                     &all_guids,
                     &scripts_root,
-                    known_bundle_ids,
+                    known_bundle_ids.as_ref(),
+                    &script_catalog,
+                    &entity_registry,
+                    &asset_registry,
                     actor_account_id_wire.as_str(),
                     actor_player_entity_id.as_str(),
                     request_id_wire.as_str(),
@@ -765,6 +787,9 @@ fn process_admin_spawn_command(
     all_guids: &Query<'_, '_, &'_ EntityGuid>,
     scripts_root: &std::path::Path,
     known_bundle_ids: Option<&HashSet<String>>,
+    script_catalog: &Res<'_, ScriptCatalogResource>,
+    entity_registry: &Res<'_, EntityRegistryResource>,
+    asset_registry: &Res<'_, AssetRegistryResource>,
     actor_account_id: &str,
     actor_player_entity_id: &str,
     request_id: &str,
@@ -872,17 +897,37 @@ fn process_admin_spawn_command(
         );
         return;
     }
+    if let Some(owner_value) = overrides.get("owner_id")
+        && !(owner_value.is_null() || owner_value.is_string())
+    {
+        bevy::log::warn!(
+            "admin spawn rejected request_id={} actor_account_id={} actor_player_entity_id={}: owner_id override must be null or string",
+            request_id,
+            actor_account_id,
+            actor_player_entity_id
+        );
+        return;
+    }
 
-    overrides.insert(
-        "owner_id".to_string(),
-        serde_json::Value::String(canonical_player_id.clone()),
-    );
+    if !overrides.contains_key("owner_id") {
+        overrides.insert(
+            "owner_id".to_string(),
+            serde_json::Value::String(canonical_player_id.clone()),
+        );
+    }
     overrides.insert(
         "entity_id".to_string(),
         serde_json::Value::String(requested_uuid.to_string()),
     );
 
-    let graph_records = match spawn_bundle_graph_records(scripts_root, bundle_id, &overrides) {
+    let graph_records = match spawn_bundle_graph_records_cached(
+        scripts_root,
+        script_catalog.as_ref(),
+        entity_registry.as_ref(),
+        asset_registry.as_ref(),
+        bundle_id,
+        &overrides,
+    ) {
         Ok(records) => records,
         Err(err) => {
             bevy::log::error!(
@@ -994,7 +1039,9 @@ fn process_admin_spawn_command(
         "spawned_entity_id".to_string(),
         serde_json::Value::String(requested_entity_id.to_string()),
     );
-    if let Err(err) = emit_bundle_spawned_event(scripts_root, &event_payload) {
+    if let Err(err) =
+        emit_bundle_spawned_event_from_catalog(script_catalog.as_ref(), &event_payload)
+    {
         bevy::log::warn!(
             "admin spawn post-hook failed request_id={} actor_account_id={} actor_player_entity_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}: {}",
             request_id,
@@ -1082,6 +1129,36 @@ pub fn sync_controlled_entity_transforms(
         if !heading.is_finite() {
             heading = 0.0;
         }
+        transform.translation.x = planar_position.x;
+        transform.translation.y = planar_position.y;
+        transform.translation.z = 0.0;
+        transform.rotation = Quat::from_rotation_z(heading);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn sync_world_entity_transforms_from_world_space(
+    mut entities: Query<
+        '_,
+        '_,
+        (
+            &'_ WorldPosition,
+            Option<&'_ WorldRotation>,
+            &'_ mut Transform,
+        ),
+        Without<RigidBody>,
+    >,
+) {
+    for (position, rotation, mut transform) in &mut entities {
+        let planar_position = if position.0.is_finite() {
+            position.0
+        } else {
+            Vec2::ZERO
+        };
+        let heading = rotation
+            .map(|value| value.0)
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0);
         transform.translation.x = planar_position.x;
         transform.translation.y = planar_position.y;
         transform.translation.z = 0.0;

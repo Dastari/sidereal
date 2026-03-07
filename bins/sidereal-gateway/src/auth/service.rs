@@ -1,7 +1,10 @@
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use sidereal_core::auth::AuthClaims;
 use sidereal_core::bootstrap_wire::{AdminSpawnEntityCommand, BootstrapCommand};
-use sidereal_core::gateway_dtos::{AdminSpawnEntityRequest, AdminSpawnEntityResponse, AuthTokens};
+use sidereal_core::gateway_dtos::{
+    AdminSpawnEntityRequest, AdminSpawnEntityResponse, AuthTokens, ScriptCatalogDocumentDetailDto,
+    ScriptCatalogDocumentSummaryDto,
+};
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
@@ -14,6 +17,11 @@ use crate::auth::crypto::{
 };
 use crate::auth::error::AuthError;
 use crate::auth::starter_world::{GraphStarterWorldPersister, StarterWorldPersister};
+use crate::auth::starter_world_scripts::{
+    discard_persisted_script_catalog_draft, list_persisted_script_catalog_documents,
+    load_persisted_script_catalog_document, publish_persisted_script_catalog_draft,
+    reload_script_catalog_from_disk, save_script_catalog_draft, scripts_root_dir,
+};
 use crate::auth::store::AuthStore;
 use crate::auth::types::{AccountCharacter, AuthMe, PasswordResetRequestResult};
 
@@ -187,12 +195,7 @@ impl AuthService {
         access_token: &str,
         req: &AdminSpawnEntityRequest,
     ) -> Result<AdminSpawnEntityResponse, AuthError> {
-        let claims = self.decode_access_token(access_token)?;
-        if !has_admin_or_dev_role(&claims) {
-            return Err(AuthError::Unauthorized(
-                "admin spawn requires admin or dev_tool role".to_string(),
-            ));
-        }
+        let claims = self.require_admin_claims(access_token, "admin spawn")?;
         let Some(actor_player_entity_id) = bare_player_entity_id(&claims.player_entity_id) else {
             return Err(AuthError::Unauthorized(
                 "invalid actor player_entity_id in access token".to_string(),
@@ -238,6 +241,91 @@ impl AuthService {
             bundle_id: command.bundle_id,
             owner_player_entity_id,
         })
+    }
+
+    pub async fn list_scripts(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<ScriptCatalogDocumentSummaryDto>, AuthError> {
+        let _ = self.require_admin_claims(access_token, "list scripts")?;
+        let summaries = list_persisted_script_catalog_documents()?;
+        Ok(summaries
+            .into_iter()
+            .map(|entry| ScriptCatalogDocumentSummaryDto {
+                script_path: entry.script_path,
+                family: entry.family,
+                active_revision: entry.active_revision,
+                has_draft: entry.has_draft,
+            })
+            .collect())
+    }
+
+    pub async fn get_script(
+        &self,
+        access_token: &str,
+        script_path: &str,
+    ) -> Result<Option<ScriptCatalogDocumentDetailDto>, AuthError> {
+        let _ = self.require_admin_claims(access_token, "get script")?;
+        let detail = load_persisted_script_catalog_document(script_path)?;
+        Ok(detail.map(|entry| ScriptCatalogDocumentDetailDto {
+            script_path: entry.script_path,
+            family: entry.family,
+            active_revision: entry.active_revision,
+            active_source: entry.active_source,
+            active_origin: entry.active_origin,
+            draft_source: entry.draft_source,
+            draft_origin: entry.draft_origin,
+            draft_updated_at_epoch_s: entry.draft_updated_at_epoch_s,
+        }))
+    }
+
+    pub async fn save_script_draft(
+        &self,
+        access_token: &str,
+        script_path: &str,
+        source: &str,
+        origin: Option<&str>,
+        family: Option<&str>,
+    ) -> Result<(), AuthError> {
+        let _ = self.require_admin_claims(access_token, "save script draft")?;
+        if script_path.trim().is_empty() {
+            return Err(AuthError::Validation("script_path is required".to_string()));
+        }
+        if source.trim().is_empty() {
+            return Err(AuthError::Validation("source is required".to_string()));
+        }
+        save_script_catalog_draft(script_path.trim(), source, origin, family)
+    }
+
+    pub async fn publish_script_draft(
+        &self,
+        access_token: &str,
+        script_path: &str,
+    ) -> Result<Option<u64>, AuthError> {
+        let _ = self.require_admin_claims(access_token, "publish script draft")?;
+        if script_path.trim().is_empty() {
+            return Err(AuthError::Validation("script_path is required".to_string()));
+        }
+        publish_persisted_script_catalog_draft(script_path.trim())
+    }
+
+    pub async fn discard_script_draft(
+        &self,
+        access_token: &str,
+        script_path: &str,
+    ) -> Result<bool, AuthError> {
+        let _ = self.require_admin_claims(access_token, "discard script draft")?;
+        if script_path.trim().is_empty() {
+            return Err(AuthError::Validation("script_path is required".to_string()));
+        }
+        discard_persisted_script_catalog_draft(script_path.trim())
+    }
+
+    pub async fn reload_scripts_from_disk(&self, access_token: &str) -> Result<usize, AuthError> {
+        let _ = self.require_admin_claims(access_token, "reload scripts from disk")?;
+        let root = scripts_root_dir();
+        let catalog = reload_script_catalog_from_disk(&root)?;
+        Ok(catalog.entries.len())
     }
 
     pub async fn password_reset_request(
@@ -307,6 +395,20 @@ impl AuthService {
             canonical_player_entity_id(&claims.player_entity_id)
         {
             claims.player_entity_id = canonical_player_entity_id;
+        }
+        Ok(claims)
+    }
+
+    fn require_admin_claims(
+        &self,
+        access_token: &str,
+        action: &str,
+    ) -> Result<AuthClaims, AuthError> {
+        let claims = self.decode_access_token(access_token)?;
+        if !has_admin_or_dev_role(&claims) {
+            return Err(AuthError::Unauthorized(format!(
+                "{action} requires admin or dev_tool role"
+            )));
         }
         Ok(claims)
     }

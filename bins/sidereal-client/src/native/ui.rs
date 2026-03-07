@@ -1,14 +1,18 @@
 //! World HUD and owned-entity panel systems.
 
 use avian2d::prelude::{LinearVelocity, Rotation};
+use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite_render::MeshMaterial2d;
 use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::PrimaryWindow;
+use bevy_svg::prelude::{Svg, Svg2d};
 use sidereal_game::{
-    EntityGuid, EntityLabels, FuelTank, HealthPool, MountedOn, SizeM, TacticalMapUiSettings,
+    EntityGuid, FuelTank, HealthPool, MapIcon, MountedOn, SizeM, TacticalMapUiSettings,
+    TacticalPresentationDefaults,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::{HashMap, HashSet};
@@ -16,23 +20,32 @@ use std::collections::{HashMap, HashSet};
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, OwnedEntitiesPanelState,
 };
-use super::assets::{LocalAssetManager, RuntimeAssetStreamIndicatorState};
+use super::assets::{
+    LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetNetIndicatorState,
+    streamed_svg_asset_path,
+};
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    ControlledEntity, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
-    HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
-    LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
-    OwnedEntitiesPanelRoot, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
-    ShipNameplateHealthBar, ShipNameplateRoot, SuppressedPredictedDuplicateVisual,
+    ControlledEntity, EntityNameplateHealthBar, EntityNameplateRoot, GameplayCamera, GameplayHud,
+    HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
+    LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
+    OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind,
+    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SuppressedPredictedDuplicateVisual,
     TacticalMapCursorText, TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle,
-    TacticalMapScreenFxOverlay, UiOverlayCamera, UiOverlayLayer, WorldEntity,
+    UiOverlayCamera, UiOverlayLayer, WorldEntity,
 };
+use super::dev_console::{DevConsoleState, is_console_open};
 use super::ecs_util::queue_despawn_if_exists;
 use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
-    CameraMotionState, ClientControlRequestState, EmbeddedFonts, OwnedAssetManifestCache,
-    TacticalContactsCache, TacticalMapUiState,
+    CameraMotionState, ClientControlRequestState, EmbeddedFonts, NameplateUiState,
+    OwnedAssetManifestCache, TacticalContactsCache, TacticalFogCache, TacticalMapUiState,
 };
+
+const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
+const TACTICAL_ICON_WORLD_HEIGHT_M: f32 = 24.0;
+const TACTICAL_CONTACT_SMOOTHING_RATE: f32 = 8.0;
+const TACTICAL_CONTACT_PREDICTION_HORIZON_S: f32 = 0.25;
 
 /// Propagates the UI overlay render layer to all descendants of HUD roots so they are drawn
 /// by the UI overlay camera (fixed scale) instead of the gameplay camera.
@@ -87,8 +100,8 @@ pub(super) fn update_loading_overlay_system(
 
 pub(super) fn update_runtime_stream_icon_system(
     time: Res<'_, Time>,
-    asset_manager: Res<'_, LocalAssetManager>,
-    mut indicator_state: ResMut<'_, RuntimeAssetStreamIndicatorState>,
+    fetch_state: Res<'_, RuntimeAssetHttpFetchState>,
+    mut indicator_state: ResMut<'_, RuntimeAssetNetIndicatorState>,
     mut text_query: Query<
         '_,
         '_,
@@ -99,31 +112,55 @@ pub(super) fn update_runtime_stream_icon_system(
     let Ok(mut color) = text_query.single_mut() else {
         return;
     };
-    if !asset_manager.should_show_runtime_stream_indicator() {
+    if !fetch_state.has_in_flight_fetch() {
         color.0.set_alpha(0.0);
         indicator_state.blinking_phase_s = 0.0;
         return;
     }
     indicator_state.blinking_phase_s += time.delta_secs();
-    let pulse = (indicator_state.blinking_phase_s * 8.0).sin().abs();
-    color.0 = Color::srgba(0.3 + pulse * 0.7, 0.85, 1.0, 0.5 + pulse * 0.5);
+    let phase = (indicator_state.blinking_phase_s * 6.0).fract();
+    let on = phase < 0.5;
+    color.0 = if on {
+        Color::srgba(0.35, 0.9, 1.0, 1.0)
+    } else {
+        Color::srgba(0.35, 0.9, 1.0, 0.2)
+    };
 }
 
 pub(super) fn toggle_tactical_map_mode_system(
     input: Res<'_, ButtonInput<KeyCode>>,
+    dev_console_state: Option<Res<'_, DevConsoleState>>,
     mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
 ) {
+    if is_console_open(dev_console_state.as_deref()) {
+        return;
+    }
     if input.just_pressed(KeyCode::KeyM) {
         tactical_map_state.enabled = !tactical_map_state.enabled;
+    }
+}
+
+pub(super) fn toggle_nameplates_system(
+    input: Res<'_, ButtonInput<KeyCode>>,
+    dev_console_state: Option<Res<'_, DevConsoleState>>,
+    mut nameplate_state: ResMut<'_, NameplateUiState>,
+) {
+    if is_console_open(dev_console_state.as_deref()) {
+        return;
+    }
+    if input.just_pressed(KeyCode::KeyV) {
+        nameplate_state.enabled = !nameplate_state.enabled;
     }
 }
 
 pub(super) fn sync_tactical_map_camera_zoom_system(
     mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
     mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
+    dev_console_state: Option<Res<'_, DevConsoleState>>,
     mut camera_query: Query<'_, '_, &mut super::components::TopDownCamera, With<GameplayCamera>>,
     map_settings_query: Query<'_, '_, &'_ TacticalMapUiSettings>,
 ) {
+    let suppress_for_console = is_console_open(dev_console_state.as_deref());
     let map_settings = map_settings_query
         .iter()
         .next()
@@ -131,6 +168,9 @@ pub(super) fn sync_tactical_map_camera_zoom_system(
         .unwrap_or_default();
     let mut wheel_delta_y = 0.0f32;
     for event in mouse_wheel_events.read() {
+        if suppress_for_console {
+            continue;
+        }
         let normalized = match event.unit {
             MouseScrollUnit::Line => event.y,
             MouseScrollUnit::Pixel => event.y / 32.0,
@@ -165,7 +205,9 @@ pub(super) fn sync_tactical_map_camera_zoom_system(
         camera.target_distance = map_distance_m.clamp(camera.min_distance, camera.max_distance);
     } else if exiting_map_mode {
         tactical_map_state.last_pan_cursor_px = None;
-        camera.max_distance = tactical_map_state.last_non_map_max_distance.max(camera.min_distance);
+        camera.max_distance = tactical_map_state
+            .last_non_map_max_distance
+            .max(camera.min_distance);
         camera.target_distance = tactical_map_state
             .last_non_map_target_distance
             .clamp(camera.min_distance, camera.max_distance);
@@ -188,14 +230,21 @@ fn normalized_transition_progress(value: f32, start: f32, end: f32) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 pub(super) fn update_tactical_map_overlay_system(
     time: Res<'_, Time>,
     mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
     contacts_cache: Res<'_, TacticalContactsCache>,
+    asset_server: Res<'_, AssetServer>,
+    asset_manager: Res<'_, LocalAssetManager>,
     mouse_buttons: Res<'_, ButtonInput<MouseButton>>,
     camera_motion: Res<'_, CameraMotionState>,
     windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
     mut commands: Commands<'_, '_>,
+    mut svg_assets: ResMut<'_, Assets<Svg>>,
+    mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut icon_cache: Local<'_, TacticalMapIconSvgCache>,
+    mut smoothing_cache: Local<'_, TacticalContactSmoothingCache>,
     mut map_queries: ParamSet<
         '_,
         '_,
@@ -206,7 +255,16 @@ pub(super) fn update_tactical_map_overlay_system(
                 (&'_ mut Camera, &'_ super::components::TopDownCamera),
                 (With<GameplayCamera>, Without<UiOverlayCamera>),
             >,
-            Query<'_, '_, &'_ mut Visibility, (With<GameplayHud>, Without<TacticalMapOverlayRoot>)>,
+            Query<
+                '_,
+                '_,
+                &'_ mut Visibility,
+                (
+                    With<GameplayHud>,
+                    Without<TacticalMapOverlayRoot>,
+                    Without<EntityNameplateRoot>,
+                ),
+            >,
             Query<'_, '_, &'_ mut Camera, (With<UiOverlayCamera>, Without<GameplayCamera>)>,
             Query<
                 '_,
@@ -219,19 +277,52 @@ pub(super) fn update_tactical_map_overlay_system(
                 ),
                 With<TacticalMapOverlayRoot>,
             >,
-            Query<'_, '_, &'_ mut TextColor, (With<TacticalMapTitle>, Without<TacticalMapCursorText>)>,
-            Query<'_, '_, (&'_ mut Text, &'_ mut TextColor), (With<TacticalMapCursorText>, Without<TacticalMapTitle>)>,
-            Query<'_, '_, &'_ Transform, (With<ControlledEntity>, Without<TacticalMapScreenFxOverlay>)>,
+            Query<
+                '_,
+                '_,
+                &'_ mut TextColor,
+                (With<TacticalMapTitle>, Without<TacticalMapCursorText>),
+            >,
+            Query<
+                '_,
+                '_,
+                (&'_ mut Text, &'_ mut TextColor),
+                (With<TacticalMapCursorText>, Without<TacticalMapTitle>),
+            >,
+            Query<
+                '_,
+                '_,
+                (&'_ Transform, Option<&'_ MapIcon>, Option<&'_ EntityGuid>),
+                (
+                    With<ControlledEntity>,
+                    Without<RuntimeScreenOverlayPass>,
+                    Without<TacticalMapMarkerDynamic>,
+                ),
+            >,
+            Query<'_, '_, &'_ TacticalPresentationDefaults>,
         ),
     >,
     map_settings_query: Query<'_, '_, &'_ TacticalMapUiSettings>,
-    dynamic_markers: Query<'_, '_, Entity, With<TacticalMapMarkerDynamic>>,
+    mut dynamic_markers: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ TacticalMapMarkerDynamic,
+            &'_ mut Svg2d,
+            &'_ mut Transform,
+        ),
+    >,
 ) {
     let map_settings = map_settings_query
         .iter()
         .next()
         .copied()
         .unwrap_or_default();
+    let tactical_defaults = {
+        let defaults_query = map_queries.p7();
+        defaults_query.iter().next().cloned()
+    };
     let Ok(window) = windows.single() else {
         return;
     };
@@ -288,14 +379,14 @@ pub(super) fn update_tactical_map_overlay_system(
     }
     tactical_map_state.alpha = alpha;
 
-    let root_entity = {
+    {
         let mut roots = map_queries.p3();
-        let Ok((root_entity, mut root_bg, mut visibility, _children)) = roots.single_mut() else {
+        let Ok((_root_entity, mut root_bg, mut visibility, _children)) = roots.single_mut() else {
             return;
         };
         if alpha < 0.01 && !tactical_map_state.enabled {
             *visibility = Visibility::Hidden;
-            for marker in &dynamic_markers {
+            for (marker, _, _, _) in &mut dynamic_markers {
                 queue_despawn_if_exists(&mut commands, marker);
             }
             return;
@@ -303,21 +394,28 @@ pub(super) fn update_tactical_map_overlay_system(
         *visibility = Visibility::Visible;
         // Keep root node transparent so the shader-backed map grid remains visible.
         root_bg.0 = Color::srgba(0.03, 0.04, 0.08, 0.0);
-        root_entity
-    };
+    }
     for mut color in &mut map_queries.p4() {
         color.0 = Color::srgba(0.85, 0.92, 1.0, 0.95 * alpha);
     }
 
-    for marker in &dynamic_markers {
-        queue_despawn_if_exists(&mut commands, marker);
+    let mut existing_marker_entities = HashMap::new();
+    for (entity, marker, _, _) in &mut dynamic_markers {
+        existing_marker_entities.insert(marker.key.clone(), entity);
     }
+    let mut seen_marker_keys = HashSet::new();
+
+    // Tactical lane updates are low cadence; smooth contact motion/heading per-frame.
+    update_tactical_contact_smoothing_cache(
+        &mut smoothing_cache,
+        &contacts_cache,
+        time.delta_secs(),
+    );
 
     let transition_t = alpha * alpha * (3.0 - 2.0 * alpha);
-    let transition_zoom = tactical_map_state.transition_map_zoom_start.lerp(
-        tactical_map_state.transition_map_zoom_end,
-        transition_t,
-    );
+    let transition_zoom = tactical_map_state
+        .transition_map_zoom_start
+        .lerp(tactical_map_state.transition_map_zoom_end, transition_t);
     tactical_map_state.map_zoom = if tactical_map_state.enabled && alpha >= 0.995 {
         tactical_map_state.map_zoom.lerp(
             tactical_map_state.target_map_zoom,
@@ -353,7 +451,13 @@ pub(super) fn update_tactical_map_overlay_system(
         .p6()
         .iter()
         .next()
-        .map(|transform| transform.translation.truncate());
+        .map(|(transform, _, _)| transform.translation.truncate());
+    let controlled_entity_guid = map_queries
+        .p6()
+        .iter()
+        .next()
+        .and_then(|(_, _, guid)| guid)
+        .map(|guid| guid.0.to_string());
     let world_center_base = controlled_world_xy.unwrap_or(camera_motion.world_position_xy);
     let world_center = world_center_base + tactical_map_state.pan_offset_world;
 
@@ -377,95 +481,366 @@ pub(super) fn update_tactical_map_overlay_system(
         cursor_text_color.0 = Color::srgba(0.85, 0.92, 1.0, 0.95 * alpha);
     }
 
-    if let Some(controlled_world_xy) = controlled_world_xy
-        && let Some(screen_xy) = world_to_screen(controlled_world_xy)
+    if let Some((controlled_transform, controlled_map_icon, _)) = map_queries.p6().iter().next()
+        && let Some(screen_xy) = world_to_screen(controlled_transform.translation.truncate())
     {
-        commands.entity(root_entity).with_children(|parent| {
-            parent.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(screen_xy.x - 6.0),
-                    top: px(screen_xy.y - 6.0),
-                    width: px(12.0),
-                    height: px(12.0),
-                    border_radius: BorderRadius::all(px(6.0)),
-                    border: UiRect::all(px(2.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.16, 0.38, 0.74, 0.95 * alpha)),
-                BorderColor::all(Color::srgba(0.85, 0.92, 1.0, 0.95 * alpha)),
-                TacticalMapMarkerDynamic,
-            ));
-        });
+        let base_asset_id = controlled_map_icon
+            .map(|icon| icon.asset_id.as_str())
+            .or_else(|| {
+                tactical_defaults
+                    .as_ref()
+                    .and_then(|defaults| defaults.map_icon_asset_id_for_kind(Some("ship")))
+            });
+        if let Some(base_asset_id) = base_asset_id
+            && let Some(svg_handle) = resolve_tactical_marker_svg(
+                &asset_server,
+                &asset_manager,
+                &mut svg_assets,
+                &mut meshes,
+                &mut icon_cache,
+                base_asset_id,
+                TacticalMarkerColorRole::FriendlySelf,
+            )
+        {
+            let marker_key = "self".to_string();
+            seen_marker_keys.insert(marker_key.clone());
+            let (_, _, heading_rad) = controlled_transform.rotation.to_euler(EulerRot::XYZ);
+            let icon_scale = tactical_svg_marker_scale(&svg_assets, &svg_handle, map_zoom);
+            let base_translation = tactical_map_marker_translation(screen_xy, width, height, -8.5);
+            let marker_translation = tactical_icon_centered_translation(
+                &svg_assets,
+                &svg_handle,
+                icon_scale,
+                heading_rad,
+                base_translation,
+            );
+            upsert_tactical_map_marker(
+                &mut commands,
+                existing_marker_entities.remove(marker_key.as_str()),
+                marker_key,
+                svg_handle,
+                marker_translation,
+                icon_scale,
+                heading_rad,
+            );
+        }
     }
 
     for contact in contacts_cache.contacts_by_entity_id.values() {
-        let world = Vec2::new(contact.position_xy[0], contact.position_xy[1]);
+        if controlled_entity_guid
+            .as_deref()
+            .is_some_and(|guid| ids_refer_to_same_guid(guid, contact.entity_id.as_str()))
+        {
+            continue;
+        }
+        let (world, heading_rad) = smoothing_cache
+            .tracks_by_entity_id
+            .get(contact.entity_id.as_str())
+            .map(|track| (track.render_pos, track.render_heading_rad))
+            .unwrap_or((
+                Vec2::new(contact.position_xy[0], contact.position_xy[1]),
+                contact.heading_rad,
+            ));
         let Some(screen_xy) = world_to_screen(world) else {
             continue;
         };
-        let marker_color = if contact.is_live_now {
-            Color::srgba(0.95, 0.96, 0.55, 0.9 * alpha)
-        } else {
-            Color::srgba(0.6, 0.62, 0.72, 0.68 * alpha)
-        };
-        commands.entity(root_entity).with_children(|parent| {
-            parent.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(screen_xy.x - 4.0),
-                    top: px(screen_xy.y - 4.0),
-                    width: px(8.0),
-                    height: px(8.0),
-                    border_radius: BorderRadius::all(px(4.0)),
-                    border: UiRect::all(px(1.0)),
-                    ..default()
-                },
-                BackgroundColor(marker_color),
-                BorderColor::all(Color::srgba(0.85, 0.92, 1.0, 0.7 * alpha)),
-                TacticalMapMarkerDynamic,
-            ));
-            parent.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(screen_xy.x - 1.0),
-                    top: px(screen_xy.y - 10.0),
-                    width: px(6.0),
-                    height: px(20.0),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.85, 0.92, 1.0, 0.12 * alpha)),
-                TacticalMapMarkerDynamic,
-            ));
+        let base_asset_id = contact.map_icon_asset_id.as_deref().or_else(|| {
+            tactical_defaults.as_ref().and_then(|defaults| {
+                defaults.map_icon_asset_id_for_kind(Some(contact.kind.as_str()))
+            })
         });
+        let Some(base_asset_id) = base_asset_id else {
+            continue;
+        };
+        let color_role = TacticalMarkerColorRole::HostileContact;
+        let Some(svg_handle) = resolve_tactical_marker_svg(
+            &asset_server,
+            &asset_manager,
+            &mut svg_assets,
+            &mut meshes,
+            &mut icon_cache,
+            base_asset_id,
+            color_role,
+        ) else {
+            continue;
+        };
+        let icon_scale = tactical_svg_marker_scale(&svg_assets, &svg_handle, map_zoom);
+        let base_translation = tactical_map_marker_translation(screen_xy, width, height, -8.4);
+        let marker_translation = tactical_icon_centered_translation(
+            &svg_assets,
+            &svg_handle,
+            icon_scale,
+            heading_rad,
+            base_translation,
+        );
+        let marker_key = contact.entity_id.clone();
+        seen_marker_keys.insert(marker_key.clone());
+        upsert_tactical_map_marker(
+            &mut commands,
+            existing_marker_entities.remove(marker_key.as_str()),
+            marker_key,
+            svg_handle,
+            marker_translation,
+            icon_scale,
+            heading_rad,
+        );
+    }
+
+    for (stale_key, entity) in existing_marker_entities {
+        if !seen_marker_keys.contains(stale_key.as_str()) {
+            queue_despawn_if_exists(&mut commands, entity);
+        }
     }
 }
 
+fn upsert_tactical_map_marker(
+    commands: &mut Commands<'_, '_>,
+    existing: Option<Entity>,
+    key: String,
+    svg_handle: Handle<Svg>,
+    translation: Vec3,
+    icon_scale: f32,
+    heading_rad: f32,
+) {
+    let transform = Transform {
+        translation,
+        scale: Vec3::splat(icon_scale),
+        rotation: Quat::from_rotation_z(heading_rad),
+    };
+
+    if let Some(entity) = existing {
+        commands.entity(entity).insert((
+            Svg2d(svg_handle),
+            transform,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        ));
+        return;
+    }
+
+    commands.spawn((
+        Svg2d(svg_handle),
+        transform,
+        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        TacticalMapMarkerDynamic { key },
+    ));
+}
+
+#[derive(Default)]
+pub(super) struct TacticalContactSmoothingCache {
+    tracks_by_entity_id: HashMap<String, TacticalContactSmoothingTrack>,
+}
+
+struct TacticalContactSmoothingTrack {
+    render_pos: Vec2,
+    target_pos: Vec2,
+    velocity: Option<Vec2>,
+    render_heading_rad: f32,
+    target_heading_rad: f32,
+}
+
+fn update_tactical_contact_smoothing_cache(
+    cache: &mut TacticalContactSmoothingCache,
+    contacts_cache: &TacticalContactsCache,
+    delta_secs: f32,
+) {
+    let mut current_ids = HashSet::with_capacity(contacts_cache.contacts_by_entity_id.len());
+    for (entity_id, contact) in &contacts_cache.contacts_by_entity_id {
+        current_ids.insert(entity_id.clone());
+        let target_pos = Vec2::new(contact.position_xy[0], contact.position_xy[1]);
+        let velocity = contact.velocity_xy.map(|v| Vec2::new(v[0], v[1]));
+        if let Some(track) = cache.tracks_by_entity_id.get_mut(entity_id.as_str()) {
+            track.target_pos = target_pos;
+            track.velocity = velocity;
+            track.target_heading_rad = contact.heading_rad;
+        } else {
+            cache.tracks_by_entity_id.insert(
+                entity_id.clone(),
+                TacticalContactSmoothingTrack {
+                    render_pos: target_pos,
+                    target_pos,
+                    velocity,
+                    render_heading_rad: contact.heading_rad,
+                    target_heading_rad: contact.heading_rad,
+                },
+            );
+        }
+    }
+    cache
+        .tracks_by_entity_id
+        .retain(|entity_id, _| current_ids.contains(entity_id));
+
+    let dt = delta_secs.clamp(0.0, 0.25);
+    if dt <= 0.0 {
+        return;
+    }
+    let follow = 1.0 - (-TACTICAL_CONTACT_SMOOTHING_RATE * dt).exp();
+    for track in cache.tracks_by_entity_id.values_mut() {
+        let predicted_target = track
+            .velocity
+            .map(|v| track.target_pos + v * TACTICAL_CONTACT_PREDICTION_HORIZON_S)
+            .unwrap_or(track.target_pos);
+        track.render_pos = track.render_pos.lerp(predicted_target, follow);
+        let heading_delta =
+            shortest_angle_delta(track.render_heading_rad, track.target_heading_rad);
+        track.render_heading_rad += heading_delta * follow;
+    }
+}
+
+fn shortest_angle_delta(from: f32, to: f32) -> f32 {
+    let mut delta = to - from;
+    let two_pi = std::f32::consts::TAU;
+    while delta > std::f32::consts::PI {
+        delta -= two_pi;
+    }
+    while delta < -std::f32::consts::PI {
+        delta += two_pi;
+    }
+    delta
+}
+
+fn tactical_map_marker_translation(
+    screen_xy: Vec2,
+    viewport_width_px: f32,
+    viewport_height_px: f32,
+    z: f32,
+) -> Vec3 {
+    Vec3::new(
+        screen_xy.x - viewport_width_px * 0.5,
+        viewport_height_px * 0.5 - screen_xy.y,
+        z,
+    )
+}
+
+fn tactical_svg_marker_scale(
+    svg_assets: &Assets<Svg>,
+    svg_handle: &Handle<Svg>,
+    map_zoom_px_per_world: f32,
+) -> f32 {
+    let svg_height = svg_assets
+        .get(svg_handle)
+        .map(|svg| svg.size.y.max(1.0))
+        .unwrap_or(16.0);
+    let target_height_px = (TACTICAL_ICON_WORLD_HEIGHT_M * map_zoom_px_per_world).max(2.0);
+    (target_height_px / svg_height).clamp(0.08, 12.0)
+}
+
+fn tactical_icon_centered_translation(
+    svg_assets: &Assets<Svg>,
+    svg_handle: &Handle<Svg>,
+    icon_scale: f32,
+    heading_rad: f32,
+    desired_center_translation: Vec3,
+) -> Vec3 {
+    let (svg_width, svg_height) = svg_assets
+        .get(svg_handle)
+        .map(|svg| (svg.size.x.max(1.0), svg.size.y.max(1.0)))
+        .unwrap_or((16.0, 16.0));
+    let local_center_from_origin =
+        Vec2::new(svg_width * icon_scale * 0.5, -svg_height * icon_scale * 0.5);
+    let rotation = Mat2::from_angle(heading_rad);
+    let rotated_center_offset = rotation * local_center_from_origin;
+    desired_center_translation - rotated_center_offset.extend(0.0)
+}
+
+#[derive(Default)]
+pub(super) struct TacticalMapIconSvgCache {
+    base_by_asset_id: HashMap<String, Handle<Svg>>,
+    tinted_by_variant_key: HashMap<String, Handle<Svg>>,
+}
+
+#[derive(Clone, Copy)]
+enum TacticalMarkerColorRole {
+    FriendlySelf,
+    HostileContact,
+}
+
+fn tactical_marker_color(role: TacticalMarkerColorRole) -> Color {
+    match role {
+        TacticalMarkerColorRole::FriendlySelf => Color::srgb(0.22, 0.62, 1.0),
+        TacticalMarkerColorRole::HostileContact => Color::srgb(1.0, 0.9, 0.34),
+    }
+}
+
+fn resolve_tactical_marker_svg(
+    asset_server: &AssetServer,
+    asset_manager: &LocalAssetManager,
+    svg_assets: &mut Assets<Svg>,
+    meshes: &mut Assets<Mesh>,
+    cache: &mut TacticalMapIconSvgCache,
+    base_asset_id: &str,
+    role: TacticalMarkerColorRole,
+) -> Option<Handle<Svg>> {
+    let base_handle = if let Some(handle) = cache.base_by_asset_id.get(base_asset_id) {
+        handle.clone()
+    } else {
+        let path = streamed_svg_asset_path(base_asset_id, asset_manager)?;
+        let handle = asset_server.load(path);
+        cache
+            .base_by_asset_id
+            .insert(base_asset_id.to_string(), handle.clone());
+        handle
+    };
+
+    let variant_key = format!(
+        "{}:{}",
+        base_asset_id,
+        match role {
+            TacticalMarkerColorRole::FriendlySelf => "self",
+            TacticalMarkerColorRole::HostileContact => "contact",
+        }
+    );
+    if let Some(variant) = cache.tinted_by_variant_key.get(&variant_key) {
+        return Some(variant.clone());
+    }
+
+    let base_svg = svg_assets.get(&base_handle)?.clone();
+    let mut tinted_svg = base_svg;
+    let marker_color = tactical_marker_color(role);
+    for path in &mut tinted_svg.paths {
+        path.color = marker_color;
+    }
+    tinted_svg.mesh = meshes.add(tinted_svg.tessellate());
+    let tinted_handle = svg_assets.add(tinted_svg);
+    cache
+        .tinted_by_variant_key
+        .insert(variant_key, tinted_handle.clone());
+    Some(tinted_handle)
+}
+
 #[allow(clippy::type_complexity)]
-pub(super) fn update_tactical_map_fx_overlay_system(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_runtime_screen_overlay_passes_system(
     time: Res<'_, Time>,
     tactical_map_state: Res<'_, TacticalMapUiState>,
+    fog_cache: Res<'_, TacticalFogCache>,
     camera_motion: Res<'_, CameraMotionState>,
     windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
     mut map_queries: ParamSet<
         '_,
         '_,
         (
-            Query<'_, '_, &'_ Transform, With<ControlledEntity>>,
+            Query<
+                '_,
+                '_,
+                &'_ Transform,
+                (With<ControlledEntity>, Without<RuntimeScreenOverlayPass>),
+            >,
             Query<
                 '_,
                 '_,
                 (
                     &'_ mut Visibility,
                     &'_ mut Transform,
+                    &'_ RuntimeScreenOverlayPass,
                     &'_ MeshMaterial2d<TacticalMapOverlayMaterial>,
                 ),
-                (With<TacticalMapScreenFxOverlay>, Without<ControlledEntity>),
+                (With<RuntimeScreenOverlayPass>, Without<ControlledEntity>),
             >,
         ),
     >,
     map_settings_query: Query<'_, '_, &'_ TacticalMapUiSettings>,
     mut fx_materials: ResMut<'_, Assets<TacticalMapOverlayMaterial>>,
+    mut images: ResMut<'_, Assets<Image>>,
 ) {
     let map_settings = map_settings_query
         .iter()
@@ -486,80 +861,199 @@ pub(super) fn update_tactical_map_fx_overlay_system(
     let world_center_base = controlled_world_xy.unwrap_or(camera_motion.world_position_xy);
     let world_center = world_center_base + tactical_map_state.pan_offset_world;
     let map_zoom = tactical_map_state.map_zoom.max(1e-6);
-    {
-        let mut fx_overlay = map_queries.p1();
-        let Ok((mut fx_visibility, mut fx_transform, fx_material_handle)) = fx_overlay.single_mut()
-        else {
-            return;
-        };
-        *fx_visibility = if alpha > 0.001 {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
-        fx_transform.translation.x = 0.0;
-        fx_transform.translation.y = 0.0;
-        fx_transform.translation.z = -10.0;
-        fx_transform.scale = Vec3::new(width, height, 1.0);
+    let mut fx_overlay = map_queries.p1();
+    let Ok((mut fx_visibility, mut fx_transform, fx_pass, fx_material_handle)) =
+        fx_overlay.single_mut()
+    else {
+        return;
+    };
+    *fx_visibility = if alpha > 0.001 {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    fx_transform.translation.x = 0.0;
+    fx_transform.translation.y = 0.0;
+    fx_transform.translation.z = -10.0;
+    fx_transform.scale = Vec3::new(width, height, 1.0);
 
-        if let Some(material) = fx_materials.get_mut(&fx_material_handle.0) {
-            material.viewport_time = Vec4::new(width, height, time.elapsed_secs(), alpha);
-            material.map_center_zoom_mode =
-                Vec4::new(world_center.x, world_center.y, map_zoom, map_settings.fx_mode as f32);
-            material.grid_major = Vec4::new(
-                map_settings.grid_major_color_rgb.x,
-                map_settings.grid_major_color_rgb.y,
-                map_settings.grid_major_color_rgb.z,
-                map_settings.grid_major_alpha * alpha,
-            );
-            material.grid_minor = Vec4::new(
-                map_settings.grid_minor_color_rgb.x,
-                map_settings.grid_minor_color_rgb.y,
-                map_settings.grid_minor_color_rgb.z,
-                map_settings.grid_minor_alpha * alpha,
-            );
-            material.grid_micro = Vec4::new(
-                map_settings.grid_micro_color_rgb.x,
-                map_settings.grid_micro_color_rgb.y,
-                map_settings.grid_micro_color_rgb.z,
-                map_settings.grid_micro_alpha * alpha,
-            );
-            material.grid_glow_alpha = Vec4::new(
-                map_settings.grid_major_glow_alpha * alpha,
-                map_settings.grid_minor_glow_alpha * alpha,
-                map_settings.grid_micro_glow_alpha * alpha,
-                0.0,
-            );
-            material.fx_params = Vec4::new(
-                map_settings.fx_opacity,
-                map_settings.fx_noise_amount,
-                map_settings.fx_scanline_density,
-                map_settings.fx_scanline_speed,
-            );
-            material.fx_params_b = Vec4::new(
-                map_settings.fx_crt_distortion,
-                map_settings.fx_vignette_strength,
-                map_settings.fx_green_tint_mix,
-                0.0,
-            );
-            material.background_color = Vec4::new(
-                map_settings.background_color_rgb.x,
-                map_settings.background_color_rgb.y,
-                map_settings.background_color_rgb.z,
-                0.0,
-            );
-            material.line_widths_px = Vec4::new(
-                map_settings.line_width_major_px,
-                map_settings.line_width_minor_px,
-                map_settings.line_width_micro_px,
-                0.0,
-            );
-            material.glow_widths_px = Vec4::new(
-                map_settings.glow_width_major_px,
-                map_settings.glow_width_minor_px,
-                map_settings.glow_width_micro_px,
-                0.0,
-            );
+    if let Some(material) = fx_materials.get_mut(&fx_material_handle.0) {
+        match fx_pass.kind {
+            RuntimeScreenOverlayPassKind::TacticalMap => {
+                update_tactical_runtime_screen_overlay_material(
+                    material,
+                    &mut images,
+                    &fog_cache,
+                    &map_settings,
+                    width,
+                    height,
+                    time.elapsed_secs(),
+                    alpha,
+                    world_center,
+                    map_zoom,
+                );
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_tactical_runtime_screen_overlay_material(
+    material: &mut TacticalMapOverlayMaterial,
+    images: &mut Assets<Image>,
+    fog_cache: &TacticalFogCache,
+    map_settings: &TacticalMapUiSettings,
+    width: f32,
+    height: f32,
+    time_s: f32,
+    alpha: f32,
+    world_center: Vec2,
+    map_zoom: f32,
+) {
+    material.viewport_time = Vec4::new(width, height, time_s, alpha);
+    material.map_center_zoom_mode = Vec4::new(
+        world_center.x,
+        world_center.y,
+        map_zoom,
+        map_settings.fx_mode as f32,
+    );
+    material.grid_major = Vec4::new(
+        map_settings.grid_major_color_rgb.x,
+        map_settings.grid_major_color_rgb.y,
+        map_settings.grid_major_color_rgb.z,
+        map_settings.grid_major_alpha * alpha,
+    );
+    material.grid_minor = Vec4::new(
+        map_settings.grid_minor_color_rgb.x,
+        map_settings.grid_minor_color_rgb.y,
+        map_settings.grid_minor_color_rgb.z,
+        map_settings.grid_minor_alpha * alpha,
+    );
+    material.grid_micro = Vec4::new(
+        map_settings.grid_micro_color_rgb.x,
+        map_settings.grid_micro_color_rgb.y,
+        map_settings.grid_micro_color_rgb.z,
+        map_settings.grid_micro_alpha * alpha,
+    );
+    material.grid_glow_alpha = Vec4::new(
+        map_settings.grid_major_glow_alpha * alpha,
+        map_settings.grid_minor_glow_alpha * alpha,
+        map_settings.grid_micro_glow_alpha * alpha,
+        0.0,
+    );
+    material.fx_params = Vec4::new(
+        map_settings.fx_opacity,
+        map_settings.fx_noise_amount,
+        map_settings.fx_scanline_density,
+        map_settings.fx_scanline_speed,
+    );
+    material.fx_params_b = Vec4::new(
+        map_settings.fx_crt_distortion,
+        map_settings.fx_vignette_strength,
+        map_settings.fx_green_tint_mix,
+        0.0,
+    );
+    material.background_color = Vec4::new(
+        map_settings.background_color_rgb.x,
+        map_settings.background_color_rgb.y,
+        map_settings.background_color_rgb.z,
+        0.0,
+    );
+    material.line_widths_px = Vec4::new(
+        map_settings.line_width_major_px,
+        map_settings.line_width_minor_px,
+        map_settings.line_width_micro_px,
+        0.0,
+    );
+    material.glow_widths_px = Vec4::new(
+        map_settings.glow_width_major_px,
+        map_settings.glow_width_minor_px,
+        map_settings.glow_width_micro_px,
+        0.0,
+    );
+    update_tactical_fog_mask_texture(
+        images,
+        material,
+        fog_cache,
+        width,
+        height,
+        world_center,
+        map_zoom,
+    );
+}
+
+fn update_tactical_fog_mask_texture(
+    images: &mut Assets<Image>,
+    material: &TacticalMapOverlayMaterial,
+    fog_cache: &TacticalFogCache,
+    viewport_width_px: f32,
+    viewport_height_px: f32,
+    world_center: Vec2,
+    map_zoom_px_per_world: f32,
+) {
+    let Some(image) = images.get_mut(&material.fog_mask) else {
+        return;
+    };
+    let expected_len = (TACTICAL_FOG_MASK_RESOLUTION * TACTICAL_FOG_MASK_RESOLUTION) as usize;
+    let needs_rebuild = image.texture_descriptor.size.width != TACTICAL_FOG_MASK_RESOLUTION
+        || image.texture_descriptor.size.height != TACTICAL_FOG_MASK_RESOLUTION
+        || image.texture_descriptor.format != TextureFormat::R8Unorm
+        || image.data.as_ref().map_or(0, Vec::len) != expected_len;
+    if needs_rebuild {
+        *image = Image::new_fill(
+            Extent3d {
+                width: TACTICAL_FOG_MASK_RESOLUTION,
+                height: TACTICAL_FOG_MASK_RESOLUTION,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[255],
+            TextureFormat::R8Unorm,
+            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+        );
+    }
+    let Some(mask) = image.data.as_mut() else {
+        return;
+    };
+    let cell_size_m = fog_cache.cell_size_m;
+    if cell_size_m <= 0.0
+        || map_zoom_px_per_world <= 0.0
+        || viewport_width_px <= 0.0
+        || viewport_height_px <= 0.0
+    {
+        mask.fill(255);
+        return;
+    }
+
+    let mut explored_cells =
+        HashSet::with_capacity(fog_cache.explored_cells.len() + fog_cache.live_cells.len());
+    explored_cells.extend(fog_cache.explored_cells.iter().copied());
+    explored_cells.extend(fog_cache.live_cells.iter().copied());
+
+    let width = TACTICAL_FOG_MASK_RESOLUTION as usize;
+    let height = TACTICAL_FOG_MASK_RESOLUTION as usize;
+    let width_f = TACTICAL_FOG_MASK_RESOLUTION as f32;
+    let height_f = TACTICAL_FOG_MASK_RESOLUTION as f32;
+
+    for y in 0..height {
+        let sample_screen_y = ((y as f32 + 0.5) / height_f) * viewport_height_px;
+        let world_y =
+            world_center.y + (viewport_height_px * 0.5 - sample_screen_y) / map_zoom_px_per_world;
+        let cell_y = (world_y / cell_size_m).floor() as i32;
+        for x in 0..width {
+            let sample_screen_x = ((x as f32 + 0.5) / width_f) * viewport_width_px;
+            let world_x = world_center.x
+                + (sample_screen_x - viewport_width_px * 0.5) / map_zoom_px_per_world;
+            let cell_x = (world_x / cell_size_m).floor() as i32;
+            let index = y * width + x;
+            mask[index] = if explored_cells.contains(&sidereal_net::GridCell {
+                x: cell_x,
+                y: cell_y,
+            }) {
+                255
+            } else {
+                0
+            };
         }
     }
 }
@@ -847,7 +1341,7 @@ pub(super) fn update_hud_system(
             Option<&LinearVelocity>,
             Option<&HealthPool>,
         ),
-        With<ControlledEntity>,
+        (With<ControlledEntity>, Without<GameplayCamera>),
     >,
     fuel_tank_query: Query<'_, '_, (&MountedOn, &FuelTank)>,
     camera_query: Query<'_, '_, &Transform, With<GameplayCamera>>,
@@ -956,37 +1450,41 @@ pub(super) fn update_segmented_bars_system(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn sync_ship_nameplates_system(
+pub(super) fn sync_entity_nameplates_system(
     mut commands: Commands<'_, '_>,
-    ships: Query<
+    world_entities: Query<
         '_,
         '_,
         (
             Entity,
             Option<&EntityGuid>,
-            Option<&EntityLabels>,
+            Option<&HealthPool>,
             Has<ControlledEntity>,
             Has<lightyear::prelude::Interpolated>,
             Has<lightyear::prelude::Predicted>,
         ),
         (
             With<WorldEntity>,
-            Without<ShipNameplateRoot>,
+            Without<EntityNameplateRoot>,
             Without<SuppressedPredictedDuplicateVisual>,
         ),
     >,
-    existing: Query<'_, '_, (Entity, &ShipNameplateRoot)>,
+    existing: Query<'_, '_, (Entity, &EntityNameplateRoot)>,
 ) {
     let mut existing_targets = HashMap::<Entity, Entity>::new();
     for (entity, root) in &existing {
         existing_targets.insert(root.target, entity);
+        // UI nameplate roots are HUD-only entities and must not be tagged as world entities.
+        // This keeps UI/world queries disjoint and avoids stale top-left plate positions.
+        commands.entity(entity).remove::<WorldEntity>();
+        commands.entity(entity).remove::<GameplayHud>();
     }
 
     let mut best_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32)>::new();
     let mut winner_entities = HashSet::<Entity>::new();
-    for (ship_entity, guid, labels, is_controlled, is_interpolated, is_predicted) in &ships {
-        let is_ship = labels.is_some_and(|labels| labels.0.iter().any(|label| label == "Ship"));
-        if !is_ship {
+    for (entity, guid, health_pool, is_controlled, is_interpolated, is_predicted) in &world_entities
+    {
+        if health_pool.is_none() {
             continue;
         }
         let score = if is_controlled {
@@ -1002,24 +1500,24 @@ pub(super) fn sync_ship_nameplates_system(
             match best_entity_by_guid.get_mut(&guid.0) {
                 Some((winner, winner_score)) => {
                     if score > *winner_score
-                        || (score == *winner_score && ship_entity.to_bits() < winner.to_bits())
+                        || (score == *winner_score && entity.to_bits() < winner.to_bits())
                     {
-                        *winner = ship_entity;
+                        *winner = entity;
                         *winner_score = score;
                     }
                 }
                 None => {
-                    best_entity_by_guid.insert(guid.0, (ship_entity, score));
+                    best_entity_by_guid.insert(guid.0, (entity, score));
                 }
             }
         } else {
-            winner_entities.insert(ship_entity);
+            winner_entities.insert(entity);
         }
     }
     winner_entities.extend(best_entity_by_guid.values().map(|(entity, _)| *entity));
 
-    for ship_entity in &winner_entities {
-        if existing_targets.contains_key(ship_entity) {
+    for entity in &winner_entities {
+        if existing_targets.contains_key(entity) {
             continue;
         }
         commands
@@ -1033,13 +1531,9 @@ pub(super) fn sync_ship_nameplates_system(
                     ..default()
                 },
                 Visibility::Hidden,
-                ShipNameplateRoot {
-                    target: *ship_entity,
-                },
-                GameplayHud,
+                EntityNameplateRoot { target: *entity },
                 UiOverlayLayer,
                 RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-                WorldEntity,
                 DespawnOnExit(ClientAppState::InWorld),
             ))
             .with_children(|plate| {
@@ -1064,9 +1558,7 @@ pub(super) fn sync_ship_nameplates_system(
                             inactive_color: Color::srgba(0.08, 0.22, 0.10, 0.85),
                         },
                         SegmentedBarValue { ratio: 1.0 },
-                        ShipNameplateHealthBar {
-                            target: *ship_entity,
-                        },
+                        EntityNameplateHealthBar { target: *entity },
                     ))
                     .with_children(|bar| {
                         for index in 0..16u8 {
@@ -1092,18 +1584,25 @@ pub(super) fn sync_ship_nameplates_system(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn update_ship_nameplate_positions_system(
-    mut roots: Query<'_, '_, (&ShipNameplateRoot, &mut Node, &mut Visibility)>,
-    mut health_bars: Query<'_, '_, (&ShipNameplateHealthBar, &mut SegmentedBarValue)>,
-    ships: Query<
+pub(super) fn update_entity_nameplate_positions_system(
+    nameplate_state: Res<'_, NameplateUiState>,
+    mut roots: Query<
+        '_,
+        '_,
+        (&EntityNameplateRoot, &mut Node, &mut Visibility),
+        Without<WorldEntity>,
+    >,
+    mut health_bars: Query<'_, '_, (&EntityNameplateHealthBar, &mut SegmentedBarValue)>,
+    world_entities: Query<
         '_,
         '_,
         (
             Entity,
-            &Transform,
+            &GlobalTransform,
+            Option<&Visibility>,
+            Option<&ViewVisibility>,
             Option<&SizeM>,
             Option<&HealthPool>,
-            Option<&EntityLabels>,
         ),
         (
             With<WorldEntity>,
@@ -1113,6 +1612,13 @@ pub(super) fn update_ship_nameplate_positions_system(
     gameplay_camera: Query<'_, '_, (&Camera, &Transform), With<GameplayCamera>>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
 ) {
+    if !nameplate_state.enabled {
+        for (_, _, mut visibility) in &mut roots {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
     let Ok((camera, camera_transform)) = gameplay_camera.single() else {
         return;
     };
@@ -1123,30 +1629,38 @@ pub(super) fn update_ship_nameplate_positions_system(
         return;
     };
 
-    let mut ship_data_by_entity = HashMap::<Entity, (Vec3, f32, f32)>::new();
-    for (entity, transform, size_m, health_pool, labels) in &ships {
-        let is_ship = labels.is_some_and(|labels| labels.0.iter().any(|label| label == "Ship"));
-        if !is_ship {
+    let mut entity_data_by_entity = HashMap::<Entity, (Vec3, f32, f32)>::new();
+    for (entity, global_transform, visibility, view_visibility, size_m, health_pool) in
+        &world_entities
+    {
+        let Some(health_pool) = health_pool else {
+            continue;
+        };
+        if visibility.is_some_and(|visibility| *visibility == Visibility::Hidden) {
             continue;
         }
-        let health_ratio = health_pool
-            .map(|health| {
-                if health.maximum > 0.0 {
-                    (health.current / health.maximum).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                }
-            })
-            .unwrap_or(0.0);
-        let half_height_world = size_m.map(|s| s.length * 0.5).unwrap_or(6.0);
-        ship_data_by_entity.insert(
+        if view_visibility.is_some_and(|view_visibility| !view_visibility.get()) {
+            continue;
+        }
+        let health_ratio = if health_pool.maximum > 0.0 {
+            (health_pool.current / health_pool.maximum).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let half_extent_world = size_m.map(|s| s.length * 0.5).unwrap_or(6.0);
+        entity_data_by_entity.insert(
             entity,
-            (transform.translation, half_height_world, health_ratio),
+            (
+                global_transform.translation(),
+                half_extent_world,
+                health_ratio,
+            ),
         );
     }
 
     for (root, mut node, mut visibility) in &mut roots {
-        let Some((world_pos, half_height_world, _)) = ship_data_by_entity.get(&root.target) else {
+        let Some((world_pos, half_extent_world, _)) = entity_data_by_entity.get(&root.target)
+        else {
             *visibility = Visibility::Hidden;
             continue;
         };
@@ -1155,15 +1669,24 @@ pub(super) fn update_ship_nameplate_positions_system(
             *visibility = Visibility::Hidden;
             continue;
         };
-        let top_world = Vec3::new(world_pos.x, world_pos.y + *half_height_world, 0.0);
+        let top_world = Vec3::new(world_pos.x, world_pos.y + *half_extent_world, 0.0);
         let Ok(top_viewport_pos) = camera.world_to_viewport(&camera_global, top_world) else {
             *visibility = Visibility::Hidden;
             continue;
         };
-        if viewport_pos.x < 0.0
-            || viewport_pos.x > window.width()
-            || viewport_pos.y < 0.0
-            || viewport_pos.y > window.height()
+        // Hide plate once the entity itself is fully outside viewport bounds.
+        // Center-only checks cause bars to linger at screen edges.
+        let right_world = Vec3::new(world_pos.x + *half_extent_world, world_pos.y, 0.0);
+        let Ok(right_viewport_pos) = camera.world_to_viewport(&camera_global, right_world) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        let extent_px_x = (right_viewport_pos.x - viewport_pos.x).abs().max(1.0);
+        let extent_px_y = (top_viewport_pos.y - viewport_pos.y).abs().max(1.0);
+        if viewport_pos.x < -extent_px_x
+            || viewport_pos.x > window.width() + extent_px_x
+            || viewport_pos.y < -extent_px_y
+            || viewport_pos.y > window.height() + extent_px_y
         {
             *visibility = Visibility::Hidden;
             continue;
@@ -1172,11 +1695,11 @@ pub(super) fn update_ship_nameplate_positions_system(
         let plate_height = 8.0;
         let vertical_gap = 6.0;
         node.left = px(viewport_pos.x - plate_width * 0.5);
-        let ship_top_y_px = viewport_pos.y.min(top_viewport_pos.y);
-        node.top = px(ship_top_y_px - plate_height - vertical_gap);
+        let entity_top_y_px = viewport_pos.y.min(top_viewport_pos.y);
+        node.top = px(entity_top_y_px - plate_height - vertical_gap);
         *visibility = Visibility::Visible;
 
-        if let Some((_, _, health_ratio)) = ship_data_by_entity.get(&root.target) {
+        if let Some((_, _, health_ratio)) = entity_data_by_entity.get(&root.target) {
             for (bar_target, mut value) in &mut health_bars {
                 if bar_target.target == root.target {
                     value.ratio = *health_ratio;

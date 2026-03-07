@@ -1,10 +1,12 @@
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
-use tracing::info;
+use tracing::{debug, error, info};
 
 #[derive(Debug, Error)]
 pub enum ScriptError {
@@ -66,6 +68,39 @@ pub struct LoadedLuaModule {
     script_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptAssetRegistryEntry {
+    pub asset_id: String,
+    pub source_path: String,
+    pub content_type: String,
+    pub dependencies: Vec<String>,
+    pub bootstrap_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptAssetRegistry {
+    pub schema_version: u32,
+    pub assets: Vec<ScriptAssetRegistryEntry>,
+}
+
+impl ScriptAssetRegistry {
+    pub fn dependencies_by_asset_id(&self) -> HashMap<String, Vec<String>> {
+        let mut out = HashMap::new();
+        for asset in &self.assets {
+            out.insert(asset.asset_id.clone(), asset.dependencies.clone());
+        }
+        out
+    }
+
+    pub fn bootstrap_required_asset_ids(&self) -> HashSet<String> {
+        self.assets
+            .iter()
+            .filter(|asset| asset.bootstrap_required)
+            .map(|asset| asset.asset_id.clone())
+            .collect()
+    }
+}
+
 impl LoadedLuaModule {
     pub fn lua(&self) -> &Lua {
         &self.lua
@@ -99,9 +134,17 @@ pub fn load_lua_module_from_root(
     info!("scripting loading lua module {}", script_path.display());
     let source = std::fs::read_to_string(&script_path)
         .map_err(|err| ScriptError::Io(format!("read {} failed: {err}", script_path.display())))?;
+    load_lua_module_from_source(&source, &script_path, policy)
+}
+
+pub fn load_lua_module_from_source(
+    source: &str,
+    script_path: &Path,
+    policy: &LuaSandboxPolicy,
+) -> Result<LoadedLuaModule, ScriptError> {
     let lua = create_sandboxed_lua(policy)?;
     let module_value = lua
-        .load(&source)
+        .load(source)
         .set_name(script_path.to_string_lossy().as_ref())
         .eval::<Value>()
         .map_err(|err| {
@@ -120,8 +163,208 @@ pub fn load_lua_module_from_root(
     Ok(LoadedLuaModule {
         lua,
         root,
-        script_path,
+        script_path: script_path.to_path_buf(),
     })
+}
+
+pub fn inject_script_logger(lua: &Lua, ctx: &Table, script_label: &str) -> Result<(), ScriptError> {
+    let log = lua
+        .create_table()
+        .map_err(|err| ScriptError::Runtime(format!("create log table failed: {err}")))?;
+
+    let script_label = script_label.to_string();
+    let debug_label = script_label.clone();
+    let debug_fn = lua
+        .create_function(move |_lua, (_log, message): (Table, Value)| {
+            let message = script_log_value_to_string(message);
+            debug!(target: "sidereal_script", script = %debug_label, "{message}");
+            Ok(())
+        })
+        .map_err(|err| ScriptError::Runtime(format!("create log.debug failed: {err}")))?;
+    log.set("debug", debug_fn)
+        .map_err(|err| ScriptError::Runtime(format!("set log.debug failed: {err}")))?;
+
+    let info_label = script_label.clone();
+    let info_fn = lua
+        .create_function(move |_lua, (_log, message): (Table, Value)| {
+            let message = script_log_value_to_string(message);
+            info!(target: "sidereal_script", script = %info_label, "{message}");
+            Ok(())
+        })
+        .map_err(|err| ScriptError::Runtime(format!("create log.info failed: {err}")))?;
+    log.set("info", info_fn)
+        .map_err(|err| ScriptError::Runtime(format!("set log.info failed: {err}")))?;
+
+    let error_fn = lua
+        .create_function(move |_lua, (_log, message): (Table, Value)| {
+            let message = script_log_value_to_string(message);
+            error!(target: "sidereal_script", script = %script_label, "{message}");
+            Ok(())
+        })
+        .map_err(|err| ScriptError::Runtime(format!("create log.error failed: {err}")))?;
+    log.set("error", error_fn)
+        .map_err(|err| ScriptError::Runtime(format!("set log.error failed: {err}")))?;
+
+    ctx.set("log", log)
+        .map_err(|err| ScriptError::Runtime(format!("set ctx.log failed: {err}")))?;
+    Ok(())
+}
+
+fn script_log_value_to_string(value: Value) -> String {
+    match lua_value_to_json(value) {
+        Ok(JsonValue::String(value)) => value,
+        Ok(other) => other.to_string(),
+        Err(err) => format!("<lua-log-decode-error: {err}>"),
+    }
+}
+
+pub fn load_asset_registry_from_root(
+    scripts_root: &Path,
+) -> Result<ScriptAssetRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let module = load_lua_module_from_root(scripts_root, "assets/registry.lua", &policy)?;
+    let root = module.root();
+    let schema_version_i64 = root.get::<i64>("schema_version").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{}: schema_version read failed: {err}",
+            module.script_path().display()
+        ))
+    })?;
+    if schema_version_i64 < 1 {
+        return Err(ScriptError::Contract(format!(
+            "{}: schema_version must be >= 1",
+            module.script_path().display()
+        )));
+    }
+    let schema_version = u32::try_from(schema_version_i64).map_err(|_| {
+        ScriptError::Contract(format!(
+            "{}: schema_version must fit u32",
+            module.script_path().display()
+        ))
+    })?;
+    let assets_table = root.get::<Table>("assets").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{}: assets table read failed: {err}",
+            module.script_path().display()
+        ))
+    })?;
+
+    let mut assets = Vec::<ScriptAssetRegistryEntry>::new();
+    for (idx, value) in assets_table.sequence_values::<Table>().enumerate() {
+        let entry = value.map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: assets[{}] decode failed: {err}",
+                module.script_path().display(),
+                idx + 1
+            ))
+        })?;
+        let context = format!("assets[{}]", idx + 1);
+        let asset_id = table_get_required_string(&entry, "asset_id", &context)?;
+        let source_path = table_get_required_string(&entry, "source_path", &context)?;
+        let content_type = table_get_required_string(&entry, "content_type", &context)?;
+        let dependencies = match entry.get::<Value>("dependencies").map_err(|err| {
+            ScriptError::Contract(format!("{context}.dependencies read failed: {err}"))
+        })? {
+            Value::Nil => Vec::new(),
+            Value::Table(values_table) => {
+                let mut out = Vec::new();
+                for value in values_table.sequence_values::<String>() {
+                    out.push(value.map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "{context}.dependencies entry decode failed: {err}"
+                        ))
+                    })?);
+                }
+                out
+            }
+            _ => {
+                return Err(ScriptError::Contract(format!(
+                    "{context}.dependencies must be an array of strings when present"
+                )));
+            }
+        };
+        let bootstrap_required = match entry.get::<Value>("bootstrap_required").map_err(|err| {
+            ScriptError::Contract(format!("{context}.bootstrap_required read failed: {err}"))
+        })? {
+            Value::Nil => false,
+            Value::Boolean(value) => value,
+            _ => {
+                return Err(ScriptError::Contract(format!(
+                    "{context}.bootstrap_required must be a boolean when present"
+                )));
+            }
+        };
+        assets.push(ScriptAssetRegistryEntry {
+            asset_id,
+            source_path,
+            content_type,
+            dependencies,
+            bootstrap_required,
+        });
+    }
+
+    validate_asset_registry(&assets)?;
+    Ok(ScriptAssetRegistry {
+        schema_version,
+        assets,
+    })
+}
+
+fn validate_asset_registry(assets: &[ScriptAssetRegistryEntry]) -> Result<(), ScriptError> {
+    let mut seen = HashSet::<String>::new();
+    for asset in assets {
+        if asset.asset_id.trim().is_empty() {
+            return Err(ScriptError::Contract(
+                "asset registry entry asset_id must not be empty".to_string(),
+            ));
+        }
+        if asset.source_path.trim().is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "asset registry entry asset_id={} source_path must not be empty",
+                asset.asset_id
+            )));
+        }
+        if asset.content_type.trim().is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "asset registry entry asset_id={} content_type must not be empty",
+                asset.asset_id
+            )));
+        }
+        if !seen.insert(asset.asset_id.clone()) {
+            return Err(ScriptError::Contract(format!(
+                "asset registry duplicates asset_id={}",
+                asset.asset_id
+            )));
+        }
+    }
+    let known = assets
+        .iter()
+        .map(|asset| asset.asset_id.clone())
+        .collect::<HashSet<_>>();
+    for asset in assets {
+        let mut dep_seen = HashSet::<String>::new();
+        for dep in &asset.dependencies {
+            if dep == &asset.asset_id {
+                return Err(ScriptError::Contract(format!(
+                    "asset registry asset_id={} depends on itself",
+                    asset.asset_id
+                )));
+            }
+            if !dep_seen.insert(dep.clone()) {
+                return Err(ScriptError::Contract(format!(
+                    "asset registry asset_id={} duplicates dependency={}",
+                    asset.asset_id, dep
+                )));
+            }
+            if !known.contains(dep) {
+                return Err(ScriptError::Contract(format!(
+                    "asset registry asset_id={} references unknown dependency={}",
+                    asset.asset_id, dep
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn load_lua_module_into_lua_from_root(
@@ -133,8 +376,17 @@ pub fn load_lua_module_into_lua_from_root(
     info!("scripting loading lua module {}", script_path.display());
     let source = std::fs::read_to_string(&script_path)
         .map_err(|err| ScriptError::Io(format!("read {} failed: {err}", script_path.display())))?;
+    let root = load_lua_module_into_lua_from_source(lua, &source, &script_path)?;
+    Ok((root, script_path))
+}
+
+pub fn load_lua_module_into_lua_from_source(
+    lua: &Lua,
+    source: &str,
+    script_path: &Path,
+) -> Result<Table, ScriptError> {
     let module_value = lua
-        .load(&source)
+        .load(source)
         .set_name(script_path.to_string_lossy().as_ref())
         .eval::<Value>()
         .map_err(|err| {
@@ -149,7 +401,7 @@ pub fn load_lua_module_into_lua_from_root(
             )));
         }
     };
-    Ok((root, script_path))
+    Ok(root)
 }
 
 pub fn lua_value_to_json(value: Value) -> Result<JsonValue, ScriptError> {
@@ -403,4 +655,90 @@ pub fn resolve_script_path_from_root(
         )));
     }
     Ok(canonical_candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_registry_script(script_body: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "sidereal_scripting_registry_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("assets")).expect("create scripts root");
+        std::fs::write(root.join("assets/registry.lua"), script_body).expect("write registry");
+        root
+    }
+
+    #[test]
+    fn loads_asset_registry_from_lua() {
+        let root = write_registry_script(
+            r#"
+return {
+  schema_version = 1,
+  assets = {
+    {
+      asset_id = "shader.main",
+      source_path = "shaders/main.wgsl",
+      content_type = "text/plain; charset=utf-8",
+      dependencies = {},
+      bootstrap_required = true,
+    },
+    {
+      asset_id = "texture.bg",
+      source_path = "textures/bg.png",
+      content_type = "image/png",
+      dependencies = { "shader.main" },
+      bootstrap_required = false,
+    },
+  },
+}
+"#,
+        );
+
+        let registry = load_asset_registry_from_root(&root).expect("load registry");
+        assert_eq!(registry.schema_version, 1);
+        assert_eq!(registry.assets.len(), 2);
+        assert!(
+            registry
+                .bootstrap_required_asset_ids()
+                .contains("shader.main")
+        );
+        assert_eq!(
+            registry
+                .dependencies_by_asset_id()
+                .get("texture.bg")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["shader.main".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_dependencies() {
+        let root = write_registry_script(
+            r#"
+return {
+  schema_version = 1,
+  assets = {
+    {
+      asset_id = "texture.bg",
+      source_path = "textures/bg.png",
+      content_type = "image/png",
+      dependencies = { "shader.missing" },
+      bootstrap_required = false,
+    },
+  },
+}
+"#,
+        );
+
+        let err = load_asset_registry_from_root(&root).expect_err("expected validation error");
+        assert!(err.to_string().contains("unknown dependency"));
+    }
 }

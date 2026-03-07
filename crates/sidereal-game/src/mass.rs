@@ -3,12 +3,10 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::entities::ship::corvette::default_corvette_asset_id;
 use crate::flight::angular_inertia_from_size;
 use crate::generated::components::{
     BaseMassKg, CargoMassKg, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid,
     Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn, ShipTag, SizeM, TotalMassKg,
-    VisualAssetId,
 };
 
 fn inventory_mass_kg(inventory: Option<&Inventory>) -> f32 {
@@ -243,13 +241,12 @@ pub fn bootstrap_ship_mass_components(
             Has<CargoMassKg>,
             Has<ModuleMassKg>,
             Has<TotalMassKg>,
-            Has<VisualAssetId>,
         ),
         With<ShipTag>,
     >,
 ) {
-    for (entity, mass_kg, has_base, has_cargo, has_module, has_total, has_visual) in &ships {
-        if has_base && has_cargo && has_module && has_total && has_visual {
+    for (entity, mass_kg, has_base, has_cargo, has_module, has_total) in &ships {
+        if has_base && has_cargo && has_module && has_total {
             continue;
         }
         let hull = mass_kg.map(|m| m.0).unwrap_or(1.0);
@@ -265,9 +262,6 @@ pub fn bootstrap_ship_mass_components(
         }
         if !has_total {
             cmds.insert((TotalMassKg(hull), MassDirty));
-        }
-        if !has_visual {
-            cmds.insert(VisualAssetId(default_corvette_asset_id().to_string()));
         }
     }
 }

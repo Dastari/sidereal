@@ -1,12 +1,12 @@
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::prelude::AppExit;
-use bevy::log::{BoxedFmtLayer, BoxedLayer};
 use bevy::log::tracing::field::{Field, Visit};
 use bevy::log::tracing::{Event, Level, Subscriber};
 use bevy::log::tracing_subscriber::Layer;
 use bevy::log::tracing_subscriber::fmt::MakeWriter;
+use bevy::log::{BoxedFmtLayer, BoxedLayer};
+use bevy::prelude::AppExit;
 use bevy::prelude::*;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -26,7 +26,7 @@ const DEV_CONSOLE_INPUT_ROW_PAD_Y: f32 = 6.0;
 const DEV_CONSOLE_INPUT_ROW_PAD_X: f32 = 8.0;
 const DEV_CONSOLE_LOG_VIEW_BOTTOM_PAD: f32 = 10.0;
 const DEV_CONSOLE_CHAR_WIDTH_FACTOR: f32 = 0.62;
-const DEV_CONSOLE_VISIBLE_LINES_SAFETY_ROWS: usize = 2;
+const DEV_CONSOLE_VISIBLE_LINES_SAFETY_ROWS: usize = 0;
 
 fn dev_console_input_row_height_px() -> f32 {
     DEV_CONSOLE_LOG_FONT_SIZE + (DEV_CONSOLE_INPUT_ROW_PAD_Y * 2.0) + 10.0
@@ -104,11 +104,7 @@ impl SharedConsoleLogBuffer {
         let Ok(guard) = self.inner.lock() else {
             return (last_seq, Vec::new());
         };
-        let newest_seq = guard
-            .lines
-            .back()
-            .map(|line| line.seq)
-            .unwrap_or(last_seq);
+        let newest_seq = guard.lines.back().map(|line| line.seq).unwrap_or(last_seq);
         let first_seq = guard
             .lines
             .front()
@@ -267,9 +263,7 @@ pub(crate) fn install_panic_file_hook() {
     let old_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let bt = std::backtrace::Backtrace::force_capture();
-        let panic_line = format!(
-            "PANIC: {panic_info}\nBACKTRACE:\n{bt}\n",
-        );
+        let panic_line = format!("PANIC: {panic_info}\nBACKTRACE:\n{bt}\n",);
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
             let _ = writeln!(file, "{panic_line}");
         }
@@ -310,6 +304,7 @@ pub(crate) struct DevConsoleState {
     pub scrollback_lines: usize,
     pub visible_lines: usize,
     pub visible_columns: usize,
+    pub rendered_rows_total: usize,
 }
 
 impl Default for DevConsoleState {
@@ -327,6 +322,7 @@ impl Default for DevConsoleState {
             scrollback_lines: 0,
             visible_lines: 40,
             visible_columns: 120,
+            rendered_rows_total: 0,
         }
     }
 }
@@ -459,33 +455,34 @@ fn spawn_dev_console_ui_system(
                     },
                     DevConsoleLogList,
                 ));
-                panel.spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(dev_console_input_row_height_px()),
-                        flex_shrink: 0.0,
-                        padding: UiRect::axes(
-                            Val::Px(DEV_CONSOLE_INPUT_ROW_PAD_X),
-                            Val::Px(DEV_CONSOLE_INPUT_ROW_PAD_Y),
-                        ),
-                        align_items: AlignItems::Center,
-                        overflow: Overflow::clip_x(),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.04, 0.06, 0.1, 1.0)),
-                ))
-                .with_children(|input_row| {
-                    input_row.spawn((
-                        Text::new("> "),
-                        TextFont {
-                            font: Handle::<Font>::default(),
-                            font_size: DEV_CONSOLE_LOG_FONT_SIZE,
+                panel
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(dev_console_input_row_height_px()),
+                            flex_shrink: 0.0,
+                            padding: UiRect::axes(
+                                Val::Px(DEV_CONSOLE_INPUT_ROW_PAD_X),
+                                Val::Px(DEV_CONSOLE_INPUT_ROW_PAD_Y),
+                            ),
+                            align_items: AlignItems::Center,
+                            overflow: Overflow::clip_x(),
                             ..default()
                         },
-                        TextColor(Color::srgb(0.94, 0.96, 1.0)),
-                        DevConsoleInputText,
-                    ));
-                });
+                        BackgroundColor(Color::srgba(0.04, 0.06, 0.1, 1.0)),
+                    ))
+                    .with_children(|input_row| {
+                        input_row.spawn((
+                            Text::new("> "),
+                            TextFont {
+                                font: Handle::<Font>::default(),
+                                font_size: DEV_CONSOLE_LOG_FONT_SIZE,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.94, 0.96, 1.0)),
+                            DevConsoleInputText,
+                        ));
+                    });
             });
         });
 }
@@ -568,8 +565,7 @@ fn handle_dev_console_input_system(
     }
     if keys.just_pressed(KeyCode::Home) {
         state.scrollback_lines = state
-            .displayed_lines
-            .len()
+            .rendered_rows_total
             .saturating_sub(state.visible_lines.max(1));
         state.logs_dirty = true;
     }
@@ -668,7 +664,12 @@ fn handle_dev_console_input_system(
             state.history.push(command.clone());
         }
         state.history_index = None;
-        push_local_console_line(&mut state, Level::INFO, "sidereal_client::dev_console", format!("> {command}"));
+        push_local_console_line(
+            &mut state,
+            Level::INFO,
+            "sidereal_client::dev_console",
+            format!("> {command}"),
+        );
         push_local_console_line(
             &mut state,
             Level::INFO,
@@ -705,8 +706,7 @@ fn push_local_console_line(
 
 fn clamp_scrollback(state: &mut DevConsoleState) {
     let max_scrollback = state
-        .displayed_lines
-        .len()
+        .rendered_rows_total
         .saturating_sub(state.visible_lines.max(1));
     state.scrollback_lines = state.scrollback_lines.min(max_scrollback);
 }
@@ -783,29 +783,102 @@ fn spawn_message_spans(parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands, 
     }
 }
 
-fn truncate_with_ellipsis(input: &str, max_chars: usize) -> String {
-    let count = input.chars().count();
-    if count <= max_chars {
-        return input.to_string();
-    }
-    if max_chars <= 1 {
-        return "…".to_string();
-    }
-    let head = input.chars().take(max_chars - 1).collect::<String>();
-    format!("{head}…")
+#[derive(Clone)]
+struct ConsoleRenderRow {
+    ts_epoch_ms: u128,
+    level: Level,
+    target: String,
+    message: String,
+    continuation: bool,
 }
 
-fn spawn_log_line(
-    parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
-    line: &ConsoleLogLine,
+fn wrap_message_chunks(message: &str, width_chars: usize) -> Vec<String> {
+    let width = width_chars.max(8);
+    let mut rows = Vec::<String>::new();
+    let mut current = String::new();
+    for word in message.split_whitespace() {
+        let word_len = word.chars().count();
+        let cur_len = current.chars().count();
+        let required = if current.is_empty() {
+            word_len
+        } else {
+            cur_len + 1 + word_len
+        };
+        if required <= width {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+            continue;
+        }
+        if !current.is_empty() {
+            rows.push(current);
+            current = String::new();
+        }
+        if word_len <= width {
+            current.push_str(word);
+            continue;
+        }
+        // Hard-wrap very long tokens.
+        let mut token = word.chars().collect::<Vec<char>>();
+        while token.len() > width {
+            let chunk = token.drain(..width).collect::<String>();
+            rows.push(chunk);
+        }
+        if !token.is_empty() {
+            current = token.iter().collect::<String>();
+        }
+    }
+    if !current.is_empty() {
+        rows.push(current);
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
+fn build_render_rows(
+    lines: &VecDeque<ConsoleLogLine>,
     max_columns: usize,
-) {
+) -> Vec<ConsoleRenderRow> {
+    let mut rows = Vec::<ConsoleRenderRow>::new();
+    for line in lines {
+        let ts_human = format_epoch_ms_utc(line.ts_epoch_ms);
+        let prefix = format!("[{ts_human}] {} {}: ", level_label(line.level), line.target);
+        let prefix_chars = prefix.chars().count();
+        let first_budget = max_columns.saturating_sub(prefix_chars).max(8);
+        let continuation_budget = max_columns.saturating_sub(4).max(8);
+        let chunks = wrap_message_chunks(&line.message, first_budget);
+        if let Some(first) = chunks.first() {
+            rows.push(ConsoleRenderRow {
+                ts_epoch_ms: line.ts_epoch_ms,
+                level: line.level,
+                target: line.target.clone(),
+                message: first.clone(),
+                continuation: false,
+            });
+        }
+        for chunk in chunks.iter().skip(1) {
+            let clipped = wrap_message_chunks(chunk, continuation_budget)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            rows.push(ConsoleRenderRow {
+                ts_epoch_ms: line.ts_epoch_ms,
+                level: line.level,
+                target: line.target.clone(),
+                message: clipped,
+                continuation: true,
+            });
+        }
+    }
+    rows
+}
+
+fn spawn_log_line(parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands, row: &ConsoleRenderRow) {
     let dim = Color::srgba(0.74, 0.78, 0.86, 0.9);
-    let ts_human = format_epoch_ms_utc(line.ts_epoch_ms);
-    let prefix = format!("[{ts_human}] {} {}: ", level_label(line.level), line.target);
-    let prefix_chars = prefix.chars().count();
-    let message_budget = max_columns.saturating_sub(prefix_chars).max(8);
-    let clipped_message = truncate_with_ellipsis(&line.message, message_budget);
+    let ts_human = format_epoch_ms_utc(row.ts_epoch_ms);
     parent
         .spawn((
             Text::new(""),
@@ -818,34 +891,46 @@ fn spawn_log_line(
             DevConsoleLogLineText,
         ))
         .with_children(|spans| {
-            spans.spawn((
-                TextSpan::new(format!("[{ts_human}] ")),
-                TextColor(dim),
-                TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: DEV_CONSOLE_LOG_FONT_SIZE,
-                    ..default()
-                },
-            ));
-            spans.spawn((
-                TextSpan::new(format!("{} ", level_label(line.level))),
-                TextColor(level_color(line.level)),
-                TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: DEV_CONSOLE_LOG_FONT_SIZE,
-                    ..default()
-                },
-            ));
-            spans.spawn((
-                TextSpan::new(format!("{}: ", line.target)),
-                TextColor(dim),
-                TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: DEV_CONSOLE_LOG_FONT_SIZE,
-                    ..default()
-                },
-            ));
-            spawn_message_spans(spans, &clipped_message);
+            if row.continuation {
+                spans.spawn((
+                    TextSpan::new("    "),
+                    TextColor(dim),
+                    TextFont {
+                        font: Handle::<Font>::default(),
+                        font_size: DEV_CONSOLE_LOG_FONT_SIZE,
+                        ..default()
+                    },
+                ));
+            } else {
+                spans.spawn((
+                    TextSpan::new(format!("[{ts_human}] ")),
+                    TextColor(dim),
+                    TextFont {
+                        font: Handle::<Font>::default(),
+                        font_size: DEV_CONSOLE_LOG_FONT_SIZE,
+                        ..default()
+                    },
+                ));
+                spans.spawn((
+                    TextSpan::new(format!("{} ", level_label(row.level))),
+                    TextColor(level_color(row.level)),
+                    TextFont {
+                        font: Handle::<Font>::default(),
+                        font_size: DEV_CONSOLE_LOG_FONT_SIZE,
+                        ..default()
+                    },
+                ));
+                spans.spawn((
+                    TextSpan::new(format!("{}: ", row.target)),
+                    TextColor(dim),
+                    TextFont {
+                        font: Handle::<Font>::default(),
+                        font_size: DEV_CONSOLE_LOG_FONT_SIZE,
+                        ..default()
+                    },
+                ));
+            }
+            spawn_message_spans(spans, &row.message);
         });
 }
 
@@ -860,9 +945,7 @@ fn format_epoch_ms_utc(epoch_ms: u128) -> String {
     let second = sec_of_day % 60;
 
     let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{millis:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
 fn truncate_tail_for_console(text: &str, max_chars: usize) -> String {
@@ -920,6 +1003,7 @@ fn tick_dev_console_cursor_blink_system(
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn update_dev_console_ui_system(
     mut commands: Commands<'_, '_>,
     windows: Query<'_, '_, &'_ Window, With<bevy::window::PrimaryWindow>>,
@@ -937,15 +1021,22 @@ fn update_dev_console_ui_system(
     let Ok(mut panel_node) = panel_nodes.single_mut() else {
         return;
     };
-    let win_h = windows.single().map(|window| window.height()).unwrap_or(1080.0);
-    let win_w = windows.single().map(|window| window.width()).unwrap_or(1920.0);
+    let win_h = windows
+        .single()
+        .map(|window| window.height())
+        .unwrap_or(1080.0);
+    let win_w = windows
+        .single()
+        .map(|window| window.width())
+        .unwrap_or(1920.0);
     let eased = 1.0 - (1.0 - state.anim_t).powi(3);
     let panel_h = win_h * 0.5 * eased;
     let line_px = (DEV_CONSOLE_LOG_FONT_SIZE + 4.0).max(1.0);
     let viewport_h =
         (panel_h - dev_console_input_row_height_px() - DEV_CONSOLE_LOG_VIEW_BOTTOM_PAD - 8.0)
             .max(1.0);
-    let measured_lines = ((viewport_h / line_px).floor() as usize).clamp(1, DEV_CONSOLE_VISIBLE_LINES_MAX);
+    let measured_lines =
+        ((viewport_h / line_px).floor() as usize).clamp(1, DEV_CONSOLE_VISIBLE_LINES_MAX);
     state.visible_lines = measured_lines
         .saturating_sub(DEV_CONSOLE_VISIBLE_LINES_SAFETY_ROWS)
         .max(1);
@@ -960,7 +1051,9 @@ fn update_dev_console_ui_system(
     };
 
     if state.logs_dirty {
-        let total = state.displayed_lines.len();
+        let rows = build_render_rows(&state.displayed_lines, state.visible_columns);
+        state.rendered_rows_total = rows.len();
+        let total = rows.len();
         clamp_scrollback(&mut state);
         let end = total.saturating_sub(state.scrollback_lines);
         let start = end.saturating_sub(state.visible_lines.max(1));
@@ -969,8 +1062,8 @@ fn update_dev_console_ui_system(
         }
         if let Ok(list_entity) = log_list.single() {
             commands.entity(list_entity).with_children(|parent| {
-                for line in state.displayed_lines.iter().skip(start).take(end - start) {
-                    spawn_log_line(parent, line, state.visible_columns);
+                for row in rows.iter().skip(start).take(end - start) {
+                    spawn_log_line(parent, row);
                 }
             });
         }
@@ -979,11 +1072,16 @@ fn update_dev_console_ui_system(
 
     if let Ok(mut input_text) = input_text.single_mut() {
         let usable_width = (win_w - (12.0 * 2.0) - (DEV_CONSOLE_INPUT_ROW_PAD_X * 2.0)).max(80.0);
-        let approx_char_width = (DEV_CONSOLE_LOG_FONT_SIZE * DEV_CONSOLE_CHAR_WIDTH_FACTOR).max(1.0);
+        let approx_char_width =
+            (DEV_CONSOLE_LOG_FONT_SIZE * DEV_CONSOLE_CHAR_WIDTH_FACTOR).max(1.0);
         let max_line_chars = (usable_width / approx_char_width).floor() as usize;
         let max_input_chars = max_line_chars.saturating_sub(4).max(1);
         let display_input = truncate_tail_for_console(&state.input_line, max_input_chars);
-        let caret = if state.is_open && blink.visible { "|" } else { " " };
+        let caret = if state.is_open && blink.visible {
+            "|"
+        } else {
+            " "
+        };
         input_text.0 = format!("> {}{}", display_input, caret);
     }
 }

@@ -1,22 +1,29 @@
 //! Gateway auth API, Lightyear auth/session-ready messages, headless session config.
 
+use super::app_state::*;
+use super::assets::{LocalAssetManager, LocalAssetRecord, RuntimeAssetCatalogRecord};
+use super::resources::AssetRootPath;
+use super::resources::{
+    ClientAuthSyncState, HeadlessAccountSwitchPlan, HeadlessTransportMode, LogoutCleanupRequested,
+    PendingDisconnectNotify, SessionReadyWatchdogConfig, SessionReadyWatchdogState,
+};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
+use bevy::tasks::{IoTaskPool, Task, futures_lite::future};
 use lightyear::prelude::{MessageReceiver, MessageSender};
+use sidereal_asset_runtime::{
+    AssetCacheIndexRecord, asset_version_from_sha256_hex, cache_index_path, load_cache_index,
+    save_cache_index, sha256_hex,
+};
 use sidereal_core::gateway_dtos::{
-    AuthTokens, CharactersResponse, EnterWorldRequest, EnterWorldResponse, LoginRequest,
-    MeResponse, PasswordResetConfirmRequest, PasswordResetConfirmResponse, PasswordResetRequest,
-    PasswordResetResponse, RegisterRequest,
+    AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
+    EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
+    PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest,
 };
 use sidereal_net::{
-    ClientAuthMessage, ControlChannel, PlayerEntityId, ServerSessionDeniedMessage,
-    ServerSessionReadyMessage,
+    ClientAuthMessage, ControlChannel, LIGHTYEAR_PROTOCOL_VERSION, PlayerEntityId,
+    ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
-use std::sync::Mutex;
-use std::sync::mpsc::{self, Receiver};
-
-use super::app_state::*;
-use super::resources::{ClientAuthSyncState, HeadlessAccountSwitchPlan, HeadlessTransportMode};
 
 fn decode_api_json<T: serde::de::DeserializeOwned>(
     response: reqwest::blocking::Response,
@@ -45,7 +52,7 @@ fn canonicalize_player_entity_id(raw: &str) -> String {
 
 #[derive(Resource, Default)]
 pub struct GatewayRequestState {
-    pending: Mutex<Option<Receiver<GatewayRequestResult>>>,
+    pending: Option<Task<GatewayRequestResult>>,
 }
 
 #[derive(Debug)]
@@ -75,17 +82,41 @@ enum EnterWorldRequestResult {
     Error(String),
 }
 
+#[derive(Resource, Default)]
+pub struct AssetBootstrapRequestState {
+    pending: Option<Task<Result<AssetBootstrapRequestResult, String>>>,
+    pub submitted: bool,
+    pub completed: bool,
+    pub failed: bool,
+}
+
+#[derive(Debug)]
+struct AssetBootstrapRequestResult {
+    manifest: AssetBootstrapManifestResponse,
+    records: Vec<AssetBootstrapRecord>,
+    cache_index: sidereal_asset_runtime::AssetCacheIndex,
+    bootstrap_total_bytes: u64,
+    bootstrap_ready_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct AssetBootstrapRecord {
+    asset_id: String,
+    relative_cache_path: String,
+    content_type: String,
+    byte_len: u64,
+    asset_version: u64,
+    sha256_hex: String,
+    ready: bool,
+}
+
 pub fn init_gateway_request_state(app: &mut App) {
     app.insert_resource(GatewayRequestState::default());
+    app.insert_resource(AssetBootstrapRequestState::default());
 }
 
 pub fn submit_auth_request(session: &mut ClientSession, request_state: &mut GatewayRequestState) {
-    if request_state
-        .pending
-        .lock()
-        .ok()
-        .is_some_and(|pending| pending.is_some())
-    {
+    if request_state.pending.is_some() {
         session.status = "Another gateway request is already in progress.".to_string();
         session.ui_dirty = true;
         return;
@@ -97,14 +128,9 @@ pub fn submit_auth_request(session: &mut ClientSession, request_state: &mut Gate
     let password = session.password.clone();
     let reset_token = session.reset_token.clone();
     let new_password = session.new_password.clone();
-    let (tx, rx) = mpsc::channel();
-    if let Ok(mut pending) = request_state.pending.lock() {
-        *pending = Some(rx);
-    }
     session.status = "Submitting request...".to_string();
     session.ui_dirty = true;
-
-    std::thread::spawn(move || {
+    request_state.pending = Some(IoTaskPool::get().spawn(async move {
         let client = reqwest::blocking::Client::new();
         let result = match selected_action {
             AuthAction::Login => (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
@@ -152,7 +178,7 @@ pub fn submit_auth_request(session: &mut ClientSession, request_state: &mut Gate
             }
         };
 
-        let payload = match result {
+        match result {
             Ok((Some(tokens), _)) => {
                 match fetch_auth_me(&client, &gateway_url, &tokens.access_token) {
                     Ok(me) => {
@@ -186,9 +212,8 @@ pub fn submit_auth_request(session: &mut ClientSession, request_state: &mut Gate
             Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
                 "Request failed: {err}"
             ))),
-        };
-        let _ = tx.send(payload);
-    });
+        }
+    }));
 }
 
 fn fetch_auth_me(
@@ -248,12 +273,7 @@ pub fn submit_enter_world_request(
     request_state: &mut GatewayRequestState,
     player_entity_id: String,
 ) {
-    if request_state
-        .pending
-        .lock()
-        .ok()
-        .is_some_and(|pending| pending.is_some())
-    {
+    if request_state.pending.is_some() {
         session.status = "Another gateway request is already in progress.".to_string();
         session.ui_dirty = true;
         return;
@@ -265,53 +285,195 @@ pub fn submit_enter_world_request(
     };
     let gateway_url = session.gateway_url.clone();
     let requested_player = player_entity_id;
-    let (tx, rx) = mpsc::channel();
-    if let Ok(mut pending) = request_state.pending.lock() {
-        *pending = Some(rx);
-    }
     session.status = "Submitting Enter World request...".to_string();
     session.ui_dirty = true;
 
-    std::thread::spawn(move || {
+    request_state.pending = Some(IoTaskPool::get().spawn(async move {
         let client = reqwest::blocking::Client::new();
-        let payload =
-            match enter_world_request(&client, &gateway_url, &access_token, &requested_player) {
-                Ok(response) if response.accepted => {
-                    GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
-                        player_entity_id: requested_player,
-                    })
+        match enter_world_request(&client, &gateway_url, &access_token, &requested_player) {
+            Ok(response) if response.accepted => {
+                GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
+                    player_entity_id: requested_player,
+                })
+            }
+            Ok(_) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Rejected {
+                reason: "Enter World request rejected by gateway.".to_string(),
+            }),
+            Err(err) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Error(format!(
+                "Enter World failed: {err}"
+            ))),
+        }
+    }));
+}
+
+pub fn submit_asset_bootstrap_request(
+    session: &mut ClientSession,
+    request_state: &mut AssetBootstrapRequestState,
+    asset_root: &str,
+) {
+    if request_state.pending.is_some() {
+        return;
+    }
+    let Some(access_token) = session.access_token.clone() else {
+        session.status = "Missing access token for asset bootstrap.".to_string();
+        session.ui_dirty = true;
+        return;
+    };
+    let gateway_url = session.gateway_url.clone();
+    let asset_root = asset_root.to_string();
+    let cache_root = std::path::PathBuf::from(&asset_root).join("data/cache_stream");
+    if let Err(err) = std::fs::create_dir_all(&cache_root) {
+        session.status = format!(
+            "Failed to prepare asset cache directory {}: {}",
+            cache_root.display(),
+            err
+        );
+        session.ui_dirty = true;
+        request_state.submitted = false;
+        request_state.completed = false;
+        request_state.failed = true;
+        return;
+    }
+    request_state.submitted = true;
+    request_state.completed = false;
+    request_state.failed = false;
+    session.status = "Fetching asset bootstrap manifest...".to_string();
+    session.ui_dirty = true;
+
+    request_state.pending = Some(IoTaskPool::get().spawn(async move {
+        (|| -> Result<AssetBootstrapRequestResult, String> {
+            let client = reqwest::blocking::Client::new();
+            let manifest = client
+                .get(format!("{gateway_url}/assets/bootstrap-manifest"))
+                .bearer_auth(&access_token)
+                .send()
+                .map_err(|err| err.to_string())
+                .and_then(decode_api_json::<AssetBootstrapManifestResponse>)?;
+            let cache_index_file = cache_index_path(&asset_root);
+            let mut cache_index = load_cache_index(&cache_index_file).unwrap_or_default();
+            let mut records = Vec::<AssetBootstrapRecord>::new();
+            let mut bootstrap_total_bytes = 0u64;
+            let mut bootstrap_ready_bytes = 0u64;
+
+            for entry in &manifest.catalog {
+                let target = std::path::PathBuf::from(&asset_root)
+                    .join("data/cache_stream")
+                    .join(&entry.relative_cache_path);
+                let mut ready = false;
+                if target.is_file()
+                    && let Ok(bytes) = std::fs::read(&target)
+                    && sha256_hex(&bytes) == entry.sha256_hex
+                {
+                    ready = true;
                 }
-                Ok(_) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Rejected {
-                    reason: "Enter World request rejected by gateway.".to_string(),
-                }),
-                Err(err) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Error(
-                    format!("Enter World failed: {err}"),
-                )),
-            };
-        let _ = tx.send(payload);
-    });
+                records.push(AssetBootstrapRecord {
+                    asset_id: entry.asset_id.clone(),
+                    relative_cache_path: entry.relative_cache_path.clone(),
+                    content_type: entry.content_type.clone(),
+                    byte_len: entry.byte_len,
+                    asset_version: asset_version_from_sha256_hex(&entry.sha256_hex),
+                    sha256_hex: entry.sha256_hex.clone(),
+                    ready,
+                });
+            }
+
+            for required in &manifest.required_assets {
+                bootstrap_total_bytes = bootstrap_total_bytes.saturating_add(required.byte_len);
+                let target = std::path::PathBuf::from(&asset_root)
+                    .join("data/cache_stream")
+                    .join(&required.relative_cache_path);
+                let mut satisfied = false;
+                if target.is_file()
+                    && let Ok(bytes) = std::fs::read(&target)
+                    && sha256_hex(&bytes) == required.sha256_hex
+                {
+                    satisfied = true;
+                }
+                if !satisfied {
+                    let url = if required.url.starts_with("http://")
+                        || required.url.starts_with("https://")
+                    {
+                        required.url.clone()
+                    } else {
+                        format!("{gateway_url}{}", required.url)
+                    };
+                    let response_bytes = client
+                        .get(url)
+                        .bearer_auth(&access_token)
+                        .send()
+                        .map_err(|err| err.to_string())?
+                        .error_for_status()
+                        .map_err(|err| err.to_string())?
+                        .bytes()
+                        .map_err(|err| err.to_string())?;
+                    let bytes = response_bytes.to_vec();
+                    let payload_sha = sha256_hex(&bytes);
+                    if payload_sha != required.sha256_hex {
+                        return Err(format!(
+                            "asset checksum mismatch asset_id={} expected={} got={}",
+                            required.asset_id, required.sha256_hex, payload_sha
+                        ));
+                    }
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+                    }
+                    std::fs::write(&target, &bytes).map_err(|err| err.to_string())?;
+                }
+                bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
+            }
+
+            for required in &manifest.required_assets {
+                let version = asset_version_from_sha256_hex(&required.sha256_hex);
+                cache_index.by_asset_id.insert(
+                    required.asset_id.clone(),
+                    AssetCacheIndexRecord {
+                        asset_version: version,
+                        sha256_hex: required.sha256_hex.clone(),
+                    },
+                );
+            }
+            save_cache_index(&cache_index_file, &cache_index).map_err(|err| err.to_string())?;
+
+            for record in &mut records {
+                if manifest
+                    .required_assets
+                    .iter()
+                    .any(|required| required.asset_id == record.asset_id)
+                {
+                    record.ready = true;
+                }
+            }
+
+            Ok(AssetBootstrapRequestResult {
+                manifest,
+                records,
+                cache_index,
+                bootstrap_total_bytes,
+                bootstrap_ready_bytes,
+            })
+        })()
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn poll_gateway_request_results(
-    request_state: ResMut<'_, GatewayRequestState>,
+    mut request_state: ResMut<'_, GatewayRequestState>,
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
     mut session: ResMut<'_, ClientSession>,
     mut character_selection: ResMut<'_, CharacterSelectionState>,
     mut session_ready: ResMut<'_, SessionReadyState>,
     mut auth_sync: ResMut<'_, super::resources::ClientAuthSyncState>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
+    asset_root: Res<'_, AssetRootPath>,
+    mut asset_bootstrap_state: ResMut<'_, AssetBootstrapRequestState>,
 ) {
-    let Ok(mut pending) = request_state.pending.lock() else {
+    let Some(task) = request_state.pending.as_mut() else {
         return;
     };
-    let Some(receiver) = pending.as_ref() else {
+    let Some(payload) = bevy::tasks::block_on(future::poll_once(task)) else {
         return;
     };
-    let Ok(payload) = receiver.try_recv() else {
-        return;
-    };
-    *pending = None;
+    request_state.pending = None;
 
     match payload {
         GatewayRequestResult::Auth(AuthRequestResult::LoginOrRegister {
@@ -360,7 +522,15 @@ pub fn poll_gateway_request_results(
             auth_sync.sent_for_client_entities.clear();
             auth_sync.last_player_entity_id = None;
             session_ready.ready_player_entity_id = None;
+            asset_bootstrap_state.submitted = false;
+            asset_bootstrap_state.completed = false;
+            asset_bootstrap_state.failed = false;
             session.status = "World entry accepted. Waiting for replication bind...".to_string();
+            submit_asset_bootstrap_request(
+                session.as_mut(),
+                asset_bootstrap_state.as_mut(),
+                &asset_root.0,
+            );
             next_state.set(ClientAppState::WorldLoading);
         }
         GatewayRequestResult::Auth(AuthRequestResult::Error(err))
@@ -373,6 +543,76 @@ pub fn poll_gateway_request_results(
         }
     }
     session.ui_dirty = true;
+}
+
+pub fn poll_asset_bootstrap_request_results(
+    mut request_state: ResMut<'_, AssetBootstrapRequestState>,
+    mut session: ResMut<'_, ClientSession>,
+    mut asset_manager: ResMut<'_, LocalAssetManager>,
+    mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
+) {
+    let Some(task) = request_state.pending.as_mut() else {
+        return;
+    };
+    let Some(result) = bevy::tasks::block_on(future::poll_once(task)) else {
+        return;
+    };
+    request_state.pending = None;
+
+    match result {
+        Ok(payload) => {
+            request_state.completed = true;
+            request_state.failed = false;
+            asset_manager.bootstrap_manifest_seen = true;
+            asset_manager.bootstrap_total_bytes = payload.bootstrap_total_bytes;
+            asset_manager.bootstrap_ready_bytes = payload.bootstrap_ready_bytes;
+            asset_manager.bootstrap_phase_complete = true;
+            asset_manager.cache_index = payload.cache_index;
+            asset_manager.cache_index_loaded = true;
+            asset_manager.catalog_by_asset_id.clear();
+            for entry in &payload.manifest.catalog {
+                asset_manager.catalog_by_asset_id.insert(
+                    entry.asset_id.clone(),
+                    RuntimeAssetCatalogRecord {
+                        _asset_guid: entry.asset_guid.clone(),
+                        url: entry.url.clone(),
+                        relative_cache_path: entry.relative_cache_path.clone(),
+                        content_type: entry.content_type.clone(),
+                        _byte_len: entry.byte_len,
+                        sha256_hex: entry.sha256_hex.clone(),
+                    },
+                );
+            }
+            for record in payload.records {
+                asset_manager.records_by_asset_id.insert(
+                    record.asset_id,
+                    LocalAssetRecord {
+                        relative_cache_path: record.relative_cache_path,
+                        _content_type: record.content_type,
+                        _byte_len: record.byte_len,
+                        _chunk_count: 1,
+                        _asset_version: record.asset_version,
+                        _sha256_hex: record.sha256_hex,
+                        ready: record.ready,
+                    },
+                );
+            }
+            session.status = format!(
+                "Asset bootstrap complete ({} required assets).",
+                payload.manifest.required_assets.len()
+            );
+            session.ui_dirty = true;
+        }
+        Err(err) => {
+            request_state.completed = false;
+            request_state.failed = true;
+            asset_manager.bootstrap_manifest_seen = true;
+            asset_manager.bootstrap_phase_complete = false;
+            session.status = format!("Asset bootstrap failed: {err}");
+            session.ui_dirty = true;
+            dialog_queue.push_error("Asset Bootstrap Failed", err);
+        }
+    }
 }
 
 pub fn configure_headless_session_from_env(
@@ -510,6 +750,8 @@ pub fn receive_lightyear_session_ready_messages(
     >,
     session: Res<'_, ClientSession>,
     mut session_ready: ResMut<'_, SessionReadyState>,
+    mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
+    mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
 ) {
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
@@ -526,9 +768,93 @@ pub fn receive_lightyear_session_ready_messages(
             if message_player_id != local_player_id {
                 continue;
             }
+            if message.protocol_version != LIGHTYEAR_PROTOCOL_VERSION {
+                warn!(
+                    "session ready protocol mismatch: server={} client={}",
+                    message.protocol_version, LIGHTYEAR_PROTOCOL_VERSION
+                );
+                dialog_queue.push_error(
+                    "Protocol Mismatch",
+                    format!(
+                        "Replication protocol mismatch.\n\nServer protocol: {}\nClient protocol: {}\n\nRestart client and server with the same build.",
+                        message.protocol_version, LIGHTYEAR_PROTOCOL_VERSION
+                    ),
+                );
+                cleanup_requested.0 = true;
+                continue;
+            }
             session_ready.ready_player_entity_id = Some(message.player_entity_id);
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn watch_session_ready_timeout_system(
+    app_state: Option<Res<'_, State<ClientAppState>>>,
+    headless_mode: Res<'_, HeadlessTransportMode>,
+    time: Res<'_, Time>,
+    session: Res<'_, ClientSession>,
+    session_ready: Res<'_, SessionReadyState>,
+    connected_clients: Query<
+        '_,
+        '_,
+        Entity,
+        (
+            With<lightyear::prelude::client::Client>,
+            With<lightyear::prelude::client::Connected>,
+        ),
+    >,
+    cfg: Res<'_, SessionReadyWatchdogConfig>,
+    mut watchdog: ResMut<'_, SessionReadyWatchdogState>,
+    pending_disconnect: Res<'_, PendingDisconnectNotify>,
+    mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
+    mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
+) {
+    let active_world_state = is_active_world_state(&app_state, &headless_mode);
+    if !active_world_state
+        || cleanup_requested.0
+        || pending_disconnect.0.is_some()
+        || session.access_token.is_none()
+        || session.player_entity_id.is_none()
+        || connected_clients.is_empty()
+    {
+        watchdog.started_at_s = None;
+        return;
+    }
+
+    let session_ready_for_player = session
+        .player_entity_id
+        .as_deref()
+        .and_then(PlayerEntityId::parse)
+        .and_then(|local| {
+            session_ready
+                .ready_player_entity_id
+                .as_deref()
+                .and_then(PlayerEntityId::parse)
+                .map(|ready| ready == local)
+        })
+        .unwrap_or(false);
+    if session_ready_for_player {
+        watchdog.started_at_s = None;
+        return;
+    }
+
+    let now_s = time.elapsed_secs_f64();
+    let started_at_s = *watchdog.started_at_s.get_or_insert(now_s);
+    if now_s - started_at_s < cfg.timeout_s {
+        return;
+    }
+
+    warn!(
+        "session bind timeout after {:.1}s without ServerSessionReady; forcing disconnect (likely protocol/build mismatch)",
+        cfg.timeout_s
+    );
+    dialog_queue.push_error(
+        "Replication Session Failed",
+        "The client could not bind to the replication session in time.\n\nThis usually means the client and replication server are running different builds/protocols.\n\nRestart both and try again.",
+    );
+    cleanup_requested.0 = true;
+    watchdog.started_at_s = None;
 }
 
 pub fn receive_lightyear_session_denied_messages(

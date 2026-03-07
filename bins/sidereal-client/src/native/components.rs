@@ -1,6 +1,7 @@
 //! ECS component markers and data used by native client systems.
 
 use bevy::prelude::*;
+use sidereal_game::RuntimeRenderLayerDefinition;
 
 #[derive(Component)]
 pub(crate) struct WorldEntity;
@@ -47,12 +48,12 @@ pub(crate) struct SegmentedBarSegment {
 }
 
 #[derive(Component)]
-pub(crate) struct ShipNameplateRoot {
+pub(crate) struct EntityNameplateRoot {
     pub target: Entity,
 }
 
 #[derive(Component)]
-pub(crate) struct ShipNameplateHealthBar {
+pub(crate) struct EntityNameplateHealthBar {
     pub target: Entity,
 }
 
@@ -78,16 +79,31 @@ pub(crate) struct TacticalMapTitle;
 pub(crate) struct TacticalMapCursorText;
 
 #[derive(Component)]
-pub(crate) struct TacticalMapMarkerDynamic;
+pub(crate) struct TacticalMapMarkerDynamic {
+    pub key: String,
+}
 
-#[derive(Component)]
-pub(crate) struct TacticalMapScreenFxOverlay;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeScreenOverlayPassKind {
+    TacticalMap,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeScreenOverlayPass {
+    pub kind: RuntimeScreenOverlayPassKind,
+}
 
 #[derive(Component)]
 pub(crate) struct GameplayCamera;
 
 #[derive(Component)]
 pub(crate) struct BackdropCamera;
+
+#[derive(Component)]
+pub(crate) struct FullscreenForegroundCamera;
+
+#[derive(Component)]
+pub(crate) struct PostProcessCamera;
 
 #[derive(Component)]
 pub(crate) struct GameplayHud;
@@ -156,11 +172,63 @@ pub(crate) struct StreamedVisualAttached;
 #[derive(Component)]
 pub(crate) struct StreamedVisualChild;
 
-#[derive(Component)]
-pub(crate) struct ThrusterPlumeAttached;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeWorldVisualFamily {
+    Planet,
+    Thruster,
+}
 
-#[derive(Component)]
-pub(crate) struct ThrusterPlumeChild;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeWorldVisualPassKind {
+    PlanetBody,
+    PlanetCloudBack,
+    PlanetCloudFront,
+    PlanetRingBack,
+    PlanetRingFront,
+    ThrusterPlume,
+}
+
+impl RuntimeWorldVisualPassKind {
+    const fn bit(self) -> u32 {
+        match self {
+            Self::PlanetBody => 1 << 0,
+            Self::PlanetCloudBack => 1 << 1,
+            Self::PlanetCloudFront => 1 << 2,
+            Self::PlanetRingBack => 1 << 3,
+            Self::PlanetRingFront => 1 << 4,
+            Self::ThrusterPlume => 1 << 5,
+        }
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeWorldVisualPass {
+    pub family: RuntimeWorldVisualFamily,
+    pub kind: RuntimeWorldVisualPassKind,
+}
+
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RuntimeWorldVisualPassSet {
+    pub mask: u32,
+}
+
+impl RuntimeWorldVisualPassSet {
+    pub fn contains(&self, kind: RuntimeWorldVisualPassKind) -> bool {
+        (self.mask & kind.bit()) != 0
+    }
+
+    pub fn insert(&mut self, kind: RuntimeWorldVisualPassKind) {
+        self.mask |= kind.bit();
+    }
+
+    pub fn remove(&mut self, kind: RuntimeWorldVisualPassKind) {
+        self.mask &= !kind.bit();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mask == 0
+    }
+}
 
 #[derive(Component)]
 pub(crate) struct WeaponTracerBolt {
@@ -209,11 +277,12 @@ pub(crate) struct PendingVisibilityFadeIn {
     pub duration_s: f32,
 }
 
-#[derive(Component)]
-pub(crate) struct StarfieldBackdrop;
-
-#[derive(Component)]
-pub(crate) struct SpaceBackgroundBackdrop;
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeFullscreenMaterialBinding {
+    Starfield,
+    SpaceBackgroundBase,
+    SpaceBackgroundNebula,
+}
 
 #[derive(Component)]
 pub(crate) struct DebugBlueBackdrop;
@@ -221,10 +290,17 @@ pub(crate) struct DebugBlueBackdrop;
 #[derive(Component)]
 pub(crate) struct SpaceBackdropFallback;
 
-#[derive(Component)]
-pub(crate) struct FullscreenLayerRenderable {
-    pub layer_kind: String,
-    pub layer_order: i32,
+#[derive(Component, Debug, Clone)]
+pub(crate) struct RuntimeFullscreenRenderable {
+    pub layer_id: Option<String>,
+    pub owner_entity: Option<Entity>,
+    pub pass_id: Option<String>,
+}
+
+#[derive(Component, Debug, Clone, PartialEq)]
+pub(crate) struct ResolvedRuntimeRenderLayer {
+    pub layer_id: String,
+    pub definition: RuntimeRenderLayerDefinition,
 }
 
 #[derive(Component)]

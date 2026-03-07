@@ -13,12 +13,10 @@ use lightyear::prelude::{
 use sidereal_game::component_meta::SiderealComponentRegistration;
 
 use super::{
-    AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
-    AssetStreamManifestMessage, ClientAuthMessage, ClientControlRequestMessage,
-    ClientDisconnectNotifyMessage, ClientLocalViewModeMessage, ClientRealtimeInputMessage,
-    ClientTacticalResnapshotRequestMessage, ControlChannel, InputChannel, ManifestChannel,
-    PlayerInput, ServerControlAckMessage, ServerControlRejectMessage,
-    ServerOwnerAssetManifestDeltaMessage,
+    ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
+    ClientLocalViewModeMessage, ClientRealtimeInputMessage, ClientTacticalResnapshotRequestMessage,
+    ControlChannel, InputChannel, ManifestChannel, PlayerInput, ServerControlAckMessage,
+    ServerControlRejectMessage, ServerOwnerAssetManifestDeltaMessage,
     ServerOwnerAssetManifestSnapshotMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
     ServerTacticalContactsDeltaMessage, ServerTacticalContactsSnapshotMessage,
     ServerTacticalFogDeltaMessage, ServerTacticalFogSnapshotMessage, ServerWeaponFiredMessage,
@@ -61,7 +59,19 @@ fn angular_velocity_should_rollback(this: &AngularVelocity, that: &AngularVeloci
     (this.0 - that.0).abs() >= 0.01
 }
 
-pub fn register_lightyear_protocol(app: &mut App) {
+pub fn register_lightyear_client_protocol(app: &mut App) {
+    register_lightyear_common_protocol(app);
+    app.add_plugins(NativeInputPlugin::<PlayerInput>::default());
+    register_lightyear_replication_components(app, LightyearRuntime::Client);
+}
+
+pub fn register_lightyear_server_protocol(app: &mut App) {
+    register_lightyear_common_protocol(app);
+    app.add_plugins(NativeInputPlugin::<PlayerInput>::default());
+    register_lightyear_replication_components(app, LightyearRuntime::Server);
+}
+
+fn register_lightyear_common_protocol(app: &mut App) {
     app.register_message::<ClientAuthMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ClientControlRequestMessage>()
@@ -96,16 +106,6 @@ pub fn register_lightyear_protocol(app: &mut App) {
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerControlRejectMessage>()
         .add_direction(NetworkDirection::Bidirectional);
-    app.register_message::<AssetRequestMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
-    app.register_message::<AssetAckMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
-    app.register_message::<AssetStreamManifestMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
-    app.register_message::<AssetStreamChunkMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
-    app.add_plugins(NativeInputPlugin::<PlayerInput>::default());
-    register_lightyear_replication_components(app);
 
     app.add_channel::<ControlChannel>(ChannelSettings {
         mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
@@ -118,13 +118,6 @@ pub fn register_lightyear_protocol(app: &mut App) {
         mode: ChannelMode::SequencedUnreliable,
         send_frequency: Duration::default(),
         priority: 10.0,
-    })
-    .add_direction(NetworkDirection::Bidirectional);
-
-    app.add_channel::<AssetChannel>(ChannelSettings {
-        mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
-        send_frequency: Duration::default(),
-        priority: 4.0,
     })
     .add_direction(NetworkDirection::Bidirectional);
 
@@ -150,29 +143,47 @@ pub fn register_lightyear_protocol(app: &mut App) {
     .add_direction(NetworkDirection::Bidirectional);
 }
 
-fn register_lightyear_replication_components(app: &mut App) {
+#[derive(Clone, Copy)]
+enum LightyearRuntime {
+    Client,
+    Server,
+}
+
+fn register_lightyear_replication_components(app: &mut App, runtime: LightyearRuntime) {
     // Avian physics components — not managed by the sidereal_component macro,
     // registered manually with prediction for client-side rollback/resimulation.
-    app.register_component::<Position>()
-        .add_prediction()
-        .add_should_rollback(position_should_rollback)
-        .add_correction_fn(lerp_position)
-        .add_interpolation_with(lerp_position);
-    app.register_component::<Rotation>()
-        .add_prediction()
-        .add_should_rollback(rotation_should_rollback)
-        .add_correction_fn(lerp_rotation)
-        .add_interpolation_with(lerp_rotation);
-    app.register_component::<LinearVelocity>()
-        .add_prediction()
-        .add_should_rollback(linear_velocity_should_rollback)
-        .add_interpolation_with(lerp_linear_velocity);
-    app.register_component::<AngularVelocity>()
-        .add_prediction()
-        .add_should_rollback(angular_velocity_should_rollback)
-        .add_interpolation_with(lerp_angular_velocity);
-    app.register_component::<LinearDamping>().add_prediction();
-    app.register_component::<AngularDamping>().add_prediction();
+    match runtime {
+        LightyearRuntime::Client => {
+            app.register_component::<Position>()
+                .add_prediction()
+                .add_should_rollback(position_should_rollback)
+                .add_correction_fn(lerp_position)
+                .add_interpolation_with(lerp_position);
+            app.register_component::<Rotation>()
+                .add_prediction()
+                .add_should_rollback(rotation_should_rollback)
+                .add_correction_fn(lerp_rotation)
+                .add_interpolation_with(lerp_rotation);
+            app.register_component::<LinearVelocity>()
+                .add_prediction()
+                .add_should_rollback(linear_velocity_should_rollback)
+                .add_interpolation_with(lerp_linear_velocity);
+            app.register_component::<AngularVelocity>()
+                .add_prediction()
+                .add_should_rollback(angular_velocity_should_rollback)
+                .add_interpolation_with(lerp_angular_velocity);
+            app.register_component::<LinearDamping>().add_prediction();
+            app.register_component::<AngularDamping>().add_prediction();
+        }
+        LightyearRuntime::Server => {
+            app.register_component::<Position>();
+            app.register_component::<Rotation>();
+            app.register_component::<LinearVelocity>();
+            app.register_component::<AngularVelocity>();
+            app.register_component::<LinearDamping>();
+            app.register_component::<AngularDamping>();
+        }
+    }
 
     // All sidereal_component-annotated types: the proc macro generates a
     // register_lightyear function per component that calls
@@ -187,6 +198,9 @@ fn register_lightyear_replication_components(app: &mut App) {
             .collect();
     registrations.sort_by_key(|r| r.meta.kind);
     for registration in registrations {
-        (registration.register_lightyear)(app);
+        match runtime {
+            LightyearRuntime::Client => (registration.register_lightyear_client)(app),
+            LightyearRuntime::Server => (registration.register_lightyear_server)(app),
+        }
     }
 }

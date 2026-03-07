@@ -6,6 +6,25 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function decimalsFromStep(step: number): number {
+  if (!Number.isFinite(step) || step <= 0) return 0
+  const normalized = step.toString().toLowerCase()
+  if (normalized.includes('e-')) {
+    const [, exponent] = normalized.split('e-')
+    return Number.parseInt(exponent ?? '0', 10) || 0
+  }
+  const decimal = normalized.split('.')[1]
+  return decimal?.length ?? 0
+}
+
+function formatForInput(value: number, step: number): string {
+  const decimals = decimalsFromStep(step)
+  if (decimals === 0) {
+    return String(Math.round(value))
+  }
+  return value.toFixed(decimals).replace(/\.?0+$/, '')
+}
+
 type DebouncedNumberFieldProps = {
   label: string
   value: number
@@ -33,13 +52,13 @@ export function DebouncedNumberField({
 }: DebouncedNumberFieldProps) {
   const safe = Number.isFinite(value) ? clamp(value, min, max) : min
   const [sliderValue, setSliderValue] = React.useState(safe)
-  const [inputValue, setInputValue] = React.useState(String(safe))
+  const [inputValue, setInputValue] = React.useState(formatForInput(safe, step))
   const timerRef = React.useRef<number | null>(null)
 
   React.useEffect(() => {
     setSliderValue(safe)
-    setInputValue(String(safe))
-  }, [safe])
+    setInputValue(formatForInput(safe, step))
+  }, [safe, step])
 
   React.useEffect(() => {
     return () => {
@@ -111,10 +130,10 @@ export function DebouncedNumberField({
             if (Number.isFinite(next)) {
               const clamped = clamp(next, min, max)
               setSliderValue(clamped)
-              setInputValue(String(clamped))
+              setInputValue(formatForInput(clamped, step))
               commitNow(clamped)
             } else {
-              setInputValue(String(sliderValue))
+              setInputValue(formatForInput(sliderValue, step))
             }
           }}
           onKeyDown={(event) => {

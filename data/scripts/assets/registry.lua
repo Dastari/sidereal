@@ -1,0 +1,144 @@
+local AssetRegistry = {}
+
+AssetRegistry.schema_version = 1
+
+AssetRegistry.assets = {
+  {
+    asset_id = "corvette_01",
+    source_path = "sprites/ships/corvette.png",
+    content_type = "image/png",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "rocinante_01",
+    source_path = "sprites/ships/rocinante.png",
+    content_type = "image/png",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "asteroid_texture_red_png",
+    source_path = "textures/red.png",
+    content_type = "image/png",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "map_icon_ship_svg",
+    source_path = "icons/ship.svg",
+    content_type = "image/svg+xml",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "map_icon_planet_svg",
+    source_path = "icons/planet.svg",
+    content_type = "image/svg+xml",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "map_icon_star_svg",
+    source_path = "icons/star.svg",
+    content_type = "image/svg+xml",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "starfield_wgsl",
+    source_path = "shaders/starfield.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "space_background_base_wgsl",
+    source_path = "shaders/space_background_base.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {
+      "space_bg_flare_white_png",
+      "space_bg_flare_blue_png",
+      "space_bg_flare_red_png",
+      "space_bg_flare_sun_png",
+    },
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "space_background_nebula_wgsl",
+    source_path = "shaders/space_background_nebula.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {
+      "space_bg_flare_white_png",
+      "space_bg_flare_blue_png",
+      "space_bg_flare_red_png",
+      "space_bg_flare_sun_png",
+    },
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "tactical_map_overlay_wgsl",
+    source_path = "shaders/tactical_map_overlay.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "sprite_pixel_effect_wgsl",
+    source_path = "shaders/sprite_pixel_effect.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "asteroid_wgsl",
+    source_path = "shaders/asteroid.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {},
+    bootstrap_required = false,
+  },
+  {
+    asset_id = "planet_visual_wgsl",
+    source_path = "shaders/planet_visual.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "runtime_effect_wgsl",
+    source_path = "shaders/runtime_effect.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "space_bg_flare_white_png",
+    source_path = "textures/spacescape/flare-white-small1.png",
+    content_type = "image/png",
+    dependencies = {},
+    bootstrap_required = false,
+  },
+  {
+    asset_id = "space_bg_flare_blue_png",
+    source_path = "textures/spacescape/flare-blue-purple2.png",
+    content_type = "image/png",
+    dependencies = {},
+    bootstrap_required = false,
+  },
+  {
+    asset_id = "space_bg_flare_red_png",
+    source_path = "textures/spacescape/flare-red-yellow1.png",
+    content_type = "image/png",
+    dependencies = {},
+    bootstrap_required = false,
+  },
+  {
+    asset_id = "space_bg_flare_sun_png",
+    source_path = "textures/spacescape/sun.png",
+    content_type = "image/png",
+    dependencies = {},
+    bootstrap_required = false,
+  },
+}
+
+return AssetRegistry

@@ -1,6 +1,6 @@
 @import 'tailwindcss';
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -16,7 +16,7 @@
   --color-card-foreground: oklch(0.95 0.01 280);
 
   /* Borders */
-  
+
   /* Interactive states */
   --color-primary: oklch(0.7 0.15 220);
   --color-primary-foreground: oklch(0.15 0.02 220);
@@ -45,11 +45,31 @@
   --color-entity-label-player: #22c55e;
 
   /* Grid: background muted/40; origin (0,0) = border; other lines = border/80, border/60 */
-  --color-grid-background: color-mix(in oklch, var(--color-muted) 40%, var(--color-card));
-  --color-grid-origin: color-mix(in oklch, var(--color-border) 90%, var(--color-grid-background));
-  --color-grid-major: color-mix(in oklch, var(--color-border) 80%, var(--color-grid-background));
-  --color-grid-minor: color-mix(in oklch, var(--color-border) 70%, var(--color-grid-background));
-  --color-grid-micro: color-mix(in oklch, var(--color-border) 60%, var(--color-grid-background));
+  --color-grid-background: color-mix(
+    in oklch,
+    var(--color-muted) 40%,
+    var(--color-card)
+  );
+  --color-grid-origin: color-mix(
+    in oklch,
+    var(--color-border) 90%,
+    var(--color-grid-background)
+  );
+  --color-grid-major: color-mix(
+    in oklch,
+    var(--color-border) 80%,
+    var(--color-grid-background)
+  );
+  --color-grid-minor: color-mix(
+    in oklch,
+    var(--color-border) 70%,
+    var(--color-grid-background)
+  );
+  --color-grid-micro: color-mix(
+    in oklch,
+    var(--color-border) 60%,
+    var(--color-grid-background)
+  );
 
   /* Ring/glow */
   --color-ring: oklch(0.6 0.15 220);
@@ -123,11 +143,27 @@
   --color-primary-foreground: oklch(0.98 0.005 220);
   --color-secondary: oklch(0.92 0.01 280);
   --color-secondary-foreground: oklch(0.2 0.015 280);
-  --color-grid-background: color-mix(in oklch, var(--color-muted) 40%, var(--color-background));
+  --color-grid-background: color-mix(
+    in oklch,
+    var(--color-muted) 40%,
+    var(--color-background)
+  );
   --color-grid-origin: var(--color-border);
-  --color-grid-major: color-mix(in oklch, var(--color-border) 90%, var(--color-grid-background));
-  --color-grid-minor: color-mix(in oklch, var(--color-border) 80%, var(--color-grid-background));
-  --color-grid-micro: color-mix(in oklch, var(--color-border) 60%, var(--color-grid-background));
+  --color-grid-major: color-mix(
+    in oklch,
+    var(--color-border) 90%,
+    var(--color-grid-background)
+  );
+  --color-grid-minor: color-mix(
+    in oklch,
+    var(--color-border) 80%,
+    var(--color-grid-background)
+  );
+  --color-grid-micro: color-mix(
+    in oklch,
+    var(--color-border) 60%,
+    var(--color-grid-background)
+  );
 }
 
 /* Base resets - Tailwind v4 preflight handles box-sizing and margins */
@@ -150,11 +186,17 @@ body {
 }
 
 #app,
-body > div {
+body > div:first-child {
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+.shader-code-editor:empty::before {
+  content: attr(data-placeholder);
+  color: color-mix(in oklch, var(--color-muted-foreground) 80%, transparent);
+  pointer-events: none;
 }
 
 /* Focus ring */

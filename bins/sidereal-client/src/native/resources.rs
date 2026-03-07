@@ -1,9 +1,10 @@
 //! Shared ECS resources (network, assets, tuning, debug, etc.).
 
+use bevy::ecs::component::ComponentId;
 use bevy::prelude::*;
 use sidereal_game::EntityAction;
+use sidereal_game::{SpaceBackgroundShaderSettings, StarfieldShaderSettings};
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct ClientNetworkTick(pub u64);
@@ -26,6 +27,27 @@ pub(crate) struct ClientAuthSyncState {
     pub sent_for_client_entities: std::collections::HashSet<Entity>,
     pub last_sent_at_s_by_client_entity: HashMap<Entity, f64>,
     pub last_player_entity_id: Option<String>,
+}
+
+#[derive(Debug, Resource, Clone, Copy)]
+pub(crate) struct SessionReadyWatchdogConfig {
+    pub timeout_s: f64,
+}
+
+impl SessionReadyWatchdogConfig {
+    pub fn from_env() -> Self {
+        let timeout_s = std::env::var("SIDEREAL_CLIENT_SESSION_READY_TIMEOUT_S")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.5)
+            .unwrap_or(6.0);
+        Self { timeout_s }
+    }
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct SessionReadyWatchdogState {
+    pub started_at_s: Option<f64>,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -135,6 +157,11 @@ pub(crate) struct DebugOverlayEnabled {
 }
 
 #[derive(Debug, Resource, Default)]
+pub(crate) struct NameplateUiState {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Resource, Default)]
 pub(crate) struct StarfieldMotionState {
     pub prev_speed: f32,
     pub initialized: bool,
@@ -184,6 +211,51 @@ impl Default for CameraMotionState {
             initialized: false,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledRuntimeRenderLayerRule {
+    pub rule_id: String,
+    pub target_layer_id: String,
+    pub priority: i32,
+    pub labels_any: Vec<String>,
+    pub labels_all: Vec<String>,
+    pub archetypes_any: Vec<String>,
+    pub components_all: Vec<ComponentId>,
+    pub components_any: Vec<ComponentId>,
+}
+
+#[derive(Debug, Resource, Clone)]
+pub(crate) struct RuntimeRenderLayerRegistry {
+    pub definitions_by_id: HashMap<String, sidereal_game::RuntimeRenderLayerDefinition>,
+    pub world_rules: Vec<CompiledRuntimeRenderLayerRule>,
+    pub default_world_layer: sidereal_game::RuntimeRenderLayerDefinition,
+}
+
+impl Default for RuntimeRenderLayerRegistry {
+    fn default() -> Self {
+        Self {
+            definitions_by_id: HashMap::new(),
+            world_rules: Vec::new(),
+            default_world_layer: sidereal_game::default_main_world_render_layer(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FullscreenLayerCacheEntry {
+    pub layer_id: String,
+    pub enabled: bool,
+    pub phase: String,
+    pub shader_asset_id: String,
+    pub order: i32,
+    pub starfield_settings: Option<StarfieldShaderSettings>,
+    pub space_background_settings: Option<SpaceBackgroundShaderSettings>,
+}
+
+#[derive(Debug, Resource, Default, Clone)]
+pub(crate) struct FullscreenLayerCache {
+    pub entries_by_layer_id: HashMap<String, FullscreenLayerCacheEntry>,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -420,25 +492,12 @@ pub(crate) struct PendingDisconnectNotifySent(pub bool);
 #[derive(Debug, Resource, Default, PartialEq, Eq)]
 pub(crate) struct LogoutCleanupRequested(pub bool);
 
-#[derive(Resource, Debug)]
-/// Caps client frame rate when set. Configure via `SIDEREAL_CLIENT_MAX_FPS` (default 60; 0 = disabled).
-pub(crate) struct FrameRateCap {
-    pub frame_duration: Duration,
-    pub last_frame_end: Instant,
-}
+/// UI-driven disconnect request (for example from the in-world Escape menu).
+#[derive(Debug, Resource, Default, PartialEq, Eq)]
+pub(crate) struct DisconnectRequest(pub bool);
 
-impl FrameRateCap {
-    pub fn from_env(default_fps: u32) -> Option<Self> {
-        let fps = std::env::var("SIDEREAL_CLIENT_MAX_FPS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(default_fps);
-        if fps == 0 {
-            return None;
-        }
-        Some(Self {
-            frame_duration: Duration::from_secs_f64(1.0 / fps as f64),
-            last_frame_end: Instant::now(),
-        })
-    }
+/// In-world Escape menu visibility state.
+#[derive(Debug, Resource, Default)]
+pub(crate) struct PauseMenuState {
+    pub open: bool,
 }

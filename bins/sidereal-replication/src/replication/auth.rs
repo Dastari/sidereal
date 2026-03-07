@@ -12,11 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sidereal_core::auth::AuthClaims;
 use sidereal_net::{
-    ClientAuthMessage, ClientDisconnectNotifyMessage, ControlChannel, PlayerEntityId,
-    ServerSessionDeniedMessage, ServerSessionReadyMessage,
+    ClientAuthMessage, ClientDisconnectNotifyMessage, ControlChannel, LIGHTYEAR_PROTOCOL_VERSION,
+    PlayerEntityId, ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 
-use crate::replication::assets::AssetStreamServerState;
 use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
@@ -48,7 +47,6 @@ pub fn cleanup_client_auth_bindings(
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_rate_limit_state: ResMut<'_, InputRateLimitState>,
     mut latest_realtime_inputs: ResMut<'_, LatestRealtimeInputsByPlayer>,
-    mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
     mut last_activity: ResMut<'_, ClientLastActivity>,
@@ -102,24 +100,6 @@ pub fn cleanup_client_auth_bindings(
     control_order
         .last_request_seq_by_player
         .retain(|player_entity_id, _| live_player_entity_ids.contains(player_entity_id));
-    stream_state
-        .sent_asset_ids_by_remote
-        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
-    stream_state
-        .pending_requested_asset_ids_by_remote
-        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
-    stream_state
-        .acked_assets_by_remote
-        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
-    stream_state
-        .pending_chunks_by_remote
-        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
-    stream_state
-        .chunk_send_failures_by_remote
-        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
-    stream_state
-        .chunk_send_backoff_frames_by_remote
-        .retain(|remote_id, _| live_remote_ids.contains(remote_id));
     let disconnected_clients: Vec<Entity> = visibility_registry
         .player_entity_id_by_client
         .keys()
@@ -148,7 +128,6 @@ pub fn receive_client_disconnect_notify(
     mut commands: Commands<'_, '_>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
-    mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
     mut last_activity: ResMut<'_, ClientLastActivity>,
     mut receivers: Query<
@@ -174,18 +153,6 @@ pub fn receive_client_disconnect_notify(
             control_order
                 .last_request_seq_by_player
                 .remove(&msg.player_entity_id);
-            stream_state.sent_asset_ids_by_remote.remove(&remote_id.0);
-            stream_state
-                .pending_requested_asset_ids_by_remote
-                .remove(&remote_id.0);
-            stream_state.acked_assets_by_remote.remove(&remote_id.0);
-            stream_state.pending_chunks_by_remote.remove(&remote_id.0);
-            stream_state
-                .chunk_send_failures_by_remote
-                .remove(&remote_id.0);
-            stream_state
-                .chunk_send_backoff_frames_by_remote
-                .remove(&remote_id.0);
             last_activity.0.remove(&client_entity);
             commands.trigger(Unlink {
                 entity: client_entity,
@@ -219,7 +186,6 @@ pub fn receive_client_auth_messages(
     player_accounts: Query<'_, '_, &'_ AccountId, With<PlayerTag>>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
-    mut stream_state: ResMut<'_, AssetStreamServerState>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
 ) {
     let now_s = time.elapsed_secs_f64();
@@ -352,6 +318,7 @@ pub fn receive_client_auth_messages(
                 let target = NetworkTarget::Single(remote_id.0);
                 let ready = ServerSessionReadyMessage {
                     player_entity_id: message_player_wire.clone(),
+                    protocol_version: LIGHTYEAR_PROTOCOL_VERSION,
                 };
                 if let Err(err) = sender
                     .send::<ServerSessionReadyMessage, ControlChannel>(&ready, server, &target)
@@ -398,19 +365,6 @@ pub fn receive_client_auth_messages(
                 bindings.by_client_entity.remove(&old_entity);
                 visibility_registry.unregister_client(old_entity);
             }
-
-            stream_state.sent_asset_ids_by_remote.remove(&remote_id.0);
-            stream_state
-                .pending_requested_asset_ids_by_remote
-                .remove(&remote_id.0);
-            stream_state.acked_assets_by_remote.remove(&remote_id.0);
-            stream_state.pending_chunks_by_remote.remove(&remote_id.0);
-            stream_state
-                .chunk_send_failures_by_remote
-                .remove(&remote_id.0);
-            stream_state
-                .chunk_send_backoff_frames_by_remote
-                .remove(&remote_id.0);
 
             // New authenticated bind is a fresh control session for this player.
             // Reset per-player request ordering so newly started clients (seq from 1)
@@ -470,6 +424,7 @@ pub fn receive_client_auth_messages(
             let target = NetworkTarget::Single(remote_id.0);
             let ready = ServerSessionReadyMessage {
                 player_entity_id: message_player_wire.clone(),
+                protocol_version: LIGHTYEAR_PROTOCOL_VERSION,
             };
             if let Err(err) =
                 sender.send::<ServerSessionReadyMessage, ControlChannel>(&ready, server, &target)

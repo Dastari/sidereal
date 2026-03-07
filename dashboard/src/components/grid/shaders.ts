@@ -110,7 +110,8 @@ void main() {
   vec2 clipPos = screenPos / (u_resolution * 0.5);
   
   gl_Position = vec4(clipPos.x, clipPos.y, 0.0, 1.0);
-  gl_PointSize = a_size * u_zoom * 0.15 + 8.0;
+  float zoomBoost = clamp(log2(max(u_zoom, 1.0) + 1.0) * 1.5, 0.0, 6.0);
+  gl_PointSize = clamp(a_size * 0.45 + 5.0 + zoomBoost, 7.0, 20.0);
   
   v_color = a_color;
   v_selected = a_selected;

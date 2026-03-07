@@ -7,8 +7,7 @@ use lightyear::prelude::{
     ChannelRegistry, LocalAddr, MessageManager, PeerAddr, ReplicationReceiver, Transport, UdpIo,
 };
 use sidereal_net::{
-    AssetChannel, ControlChannel, InputChannel, ManifestChannel, TacticalDeltaChannel,
-    TacticalSnapshotChannel,
+    ControlChannel, InputChannel, ManifestChannel, TacticalDeltaChannel, TacticalSnapshotChannel,
 };
 use std::net::SocketAddr;
 
@@ -112,12 +111,6 @@ pub fn ensure_client_transport_channels(
         if !transport.has_receiver::<InputChannel>() {
             transport.add_receiver_from_registry::<InputChannel>(&registry);
         }
-        if !transport.has_sender::<AssetChannel>() {
-            transport.add_sender_from_registry::<AssetChannel>(&registry);
-        }
-        if !transport.has_receiver::<AssetChannel>() {
-            transport.add_receiver_from_registry::<AssetChannel>(&registry);
-        }
         if !transport.has_sender::<TacticalSnapshotChannel>() {
             transport.add_sender_from_registry::<TacticalSnapshotChannel>(&registry);
         }
@@ -159,6 +152,7 @@ pub fn handle_unexpected_server_disconnect_system(
             state.get(),
             ClientAppState::InWorld
                 | ClientAppState::WorldLoading
+                | ClientAppState::AssetLoading
                 | ClientAppState::CharacterSelect
         )
     }) {

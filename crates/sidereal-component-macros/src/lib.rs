@@ -120,7 +120,11 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
         item_ident.to_string().to_lowercase()
     );
     let register_lightyear_fn_ident = format_ident!(
-        "__sidereal_register_lightyear_{}",
+        "__sidereal_register_lightyear_client_{}",
+        item_ident.to_string().to_lowercase()
+    );
+    let register_lightyear_server_fn_ident = format_ident!(
+        "__sidereal_register_lightyear_server_{}",
         item_ident.to_string().to_lowercase()
     );
     let type_path_fn_ident = format_ident!(
@@ -160,7 +164,7 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { &[crate::component_meta::VisibilityScope::OwnerOnly] }
     };
 
-    let lightyear_body = if replicate && predict {
+    let client_lightyear_body = if replicate && predict {
         quote! {
             #[cfg(feature = "lightyear")]
             {
@@ -170,6 +174,18 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else if replicate {
+        quote! {
+            #[cfg(feature = "lightyear")]
+            {
+                use lightyear::prelude::AppComponentExt;
+                app.register_component::<#item_ident>();
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let server_lightyear_body = if replicate {
         quote! {
             #[cfg(feature = "lightyear")]
             {
@@ -200,7 +216,12 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #[allow(unused_variables)]
         fn #register_lightyear_fn_ident(app: &mut bevy::prelude::App) {
-            #lightyear_body
+            #client_lightyear_body
+        }
+
+        #[allow(unused_variables)]
+        fn #register_lightyear_server_fn_ident(app: &mut bevy::prelude::App) {
+            #server_lightyear_body
         }
 
         fn #type_path_fn_ident() -> &'static str {
@@ -210,7 +231,8 @@ pub fn sidereal_component(attr: TokenStream, item: TokenStream) -> TokenStream {
         inventory::submit! {
             crate::component_meta::SiderealComponentRegistration {
                 register_reflect: #register_fn_ident,
-                register_lightyear: #register_lightyear_fn_ident,
+                register_lightyear_client: #register_lightyear_fn_ident,
+                register_lightyear_server: #register_lightyear_server_fn_ident,
                 type_path: #type_path_fn_ident,
                 meta: <#item_ident as crate::component_meta::SiderealComponentMetadata>::META,
             }

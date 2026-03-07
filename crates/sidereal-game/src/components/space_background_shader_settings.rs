@@ -9,6 +9,7 @@ pub const DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: &str = r#"{
   "enable_nebula_layer": true,
   "enable_stars_layer": true,
   "enable_flares_layer": true,
+  "enable_background_gradient": false,
   "intensity": 0.35000000000000003,
   "drift_scale": 2,
   "zoom_rate": 1,
@@ -190,7 +191,7 @@ pub const DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: &str = r#"{
 
 #[sidereal_component_macros::sidereal_component(
     kind = "space_background_shader_settings",
-    persist = false,
+    persist = true,
     replicate = true,
     visibility = [Public]
 )]
@@ -204,6 +205,8 @@ pub struct SpaceBackgroundShaderSettings {
     pub enable_stars_layer: bool,
     #[serde(default = "default_true")]
     pub enable_flares_layer: bool,
+    #[serde(default)]
+    pub enable_background_gradient: bool,
     pub intensity: f32,
     pub drift_scale: f32,
     pub zoom_rate: f32,
@@ -219,6 +222,8 @@ pub struct SpaceBackgroundShaderSettings {
     pub flare_intensity: f32,
     pub flare_density: f32,
     pub flare_size: f32,
+    #[serde(default)]
+    pub flare_texture_asset_id: Option<String>,
     pub flare_texture_set: u32,
     pub nebula_noise_mode: u32,
     pub nebula_octaves: u32,
@@ -279,6 +284,7 @@ fn builtin_space_background_defaults() -> SpaceBackgroundShaderSettings {
         enable_nebula_layer: true,
         enable_stars_layer: true,
         enable_flares_layer: true,
+        enable_background_gradient: false,
         intensity: 0.35,
         drift_scale: 2.0,
         zoom_rate: 1.0,
@@ -294,6 +300,7 @@ fn builtin_space_background_defaults() -> SpaceBackgroundShaderSettings {
         flare_intensity: 4.0,
         flare_density: 0.54,
         flare_size: 2.29,
+        flare_texture_asset_id: None,
         flare_texture_set: 0,
         nebula_noise_mode: 0,
         nebula_octaves: 5,

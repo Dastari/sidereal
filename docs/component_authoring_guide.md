@@ -49,7 +49,62 @@ Visibility scopes:
 
 If `visibility` is omitted, owner-only is the default policy.
 
-## 4. Examples
+## 4. Editor Schema Metadata
+
+Persistable components now automatically participate in the generated editor-schema registry.
+
+The runtime `GeneratedComponentRegistry` resource is the authoritative source for dashboard/editor
+metadata. Each registry entry now carries:
+
+- `component_kind`
+- `type_path`
+- `replication_visibility`
+- `editor_schema`
+
+`editor_schema` is inferred from Bevy reflection metadata after all component types are registered.
+This is the contract dashboard/editor code should consume instead of hardcoding per-component UI
+rules in frontend code.
+
+Current inference behavior:
+
+- primitive booleans -> `Bool`
+- signed integers -> `SignedInteger`
+- unsigned integers -> `UnsignedInteger`
+- floats -> `Float`
+- `String` -> `String`
+- `Vec2` -> `Vec2`
+- `Vec3` fields ending in `_rgb` -> `ColorRgb`
+- `Vec4` fields ending in `_rgba` -> `ColorRgba`
+- other `Vec3` / `Vec4` fields -> `Vec3` / `Vec4`
+- enums -> `Enum` with variant option names
+- lists/arrays/maps/sets -> `Sequence`
+- structs/tuple structs are flattened into field paths like `foo.bar`
+
+Default numeric hints are inferred conservatively:
+
+- integers get `step = 1`
+- floats get `step = 0.01`
+- common shader-style fields such as `*_strength`, `*_opacity`, `*_scale`, `*_speed`,
+  `*_intensity`, `*_density`, `*_alpha`, `*_power`, and similar get `min = 0`
+- units are inferred from suffixes like `*_m`, `*_kg`, `*_mps`, `*_mps2`, `*_rad`
+
+Important boundary:
+
+- Rust owns the editor-schema inference/validation contract.
+- Frontends should treat this metadata as authoritative for generic editors.
+- Component-specific custom editors may still exist, but they are overrides, not the primary source
+  of truth.
+- When a component shape changes, the inferred schema updates automatically as long as reflection is
+  kept correct.
+
+Future extension point:
+
+- explicit per-field override hints may be added later for cases where automatic inference is not
+  enough
+- that override path should live with the component definition or component registry metadata, not
+  in dashboard-only maps
+
+## 5. Examples
 
 Simple component:
 
@@ -81,7 +136,7 @@ pub struct Inventory {
 }
 ```
 
-## 5. External/Runtime Components (Bevy/Avian)
+## 6. External/Runtime Components (Bevy/Avian)
 
 Do not treat all Bevy/Avian components as durable gameplay schema by default.
 
@@ -89,7 +144,7 @@ Do not treat all Bevy/Avian components as durable gameplay schema by default.
 - Durable gameplay state should live in Sidereal gameplay components.
 - For boundary translation cases (for example hierarchy rebuild or UUID lookup), keep explicit hydration logic at the runtime boundary.
 
-## 6. Entity Archetype Layout (Bundles + Spawn Helpers)
+## 7. Entity Archetype Layout (Bundles + Spawn Helpers)
 
 For gameplay entities, keep archetype defaults and spawn helpers in `crates/sidereal-game/src/entities/`.
 
@@ -117,7 +172,7 @@ crates/sidereal-game/src/entities/
 
 Use this pattern for scalability. Do not spread one archetype's defaults across unrelated crates/services.
 
-## 7. Bundle vs Spawn Function Rules
+## 8. Bundle vs Spawn Function Rules
 
 1. Use a `Bundle` for the base component set of a single entity.
 2. Use `spawn_*` helpers when an archetype is a multi-entity graph (for example hull + hardpoints + modules).
@@ -145,7 +200,7 @@ pub fn spawn_my_entity(commands: &mut Commands, overrides: impl Into<MyEntityOve
 }
 ```
 
-## 8. Bootstrap and Persistence Shape (Graph Records)
+## 9. Bootstrap and Persistence Shape (Graph Records)
 
 Bootstrap/persistence must use graph records as canonical shape (`GraphEntityRecord` + `GraphComponentRecord`).
 
@@ -157,7 +212,7 @@ Rules:
 
 This keeps hydration deterministic and prevents drift between gateway and replication startup behavior.
 
-## 9. Authoring Checklist for New Archetypes
+## 10. Authoring Checklist for New Archetypes
 
 When adding a new archetype (ship/missile/station/container/etc.):
 

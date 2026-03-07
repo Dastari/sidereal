@@ -16,6 +16,7 @@ Current docs:
 - `dr-0003_logout_presence_policy.md`
 - `prediction_runtime_tuning_and_validation.md`
 - `robust_weapons_combat_audio_system_plan.md`
+- `dashboard_route_shell_refactor_note.md`
 - `shader_editor_dashboard_plan.md`
 - `shader_editor_dashboard_implementation_spec.md`
 - `quickstart_first_solar_system.md`
@@ -27,6 +28,10 @@ Current docs:
 These are planning references, not authoritative runtime contracts, except:
 - `visibility_replication_contract.md` (active implementation contract)
 - `asset_delivery_contract.md` (active implementation contract)
+
+Current implementation notes:
+- `shader_editor_dashboard_plan.md` and `shader_editor_dashboard_implementation_spec.md` are active progress-tracking references for the routed `/shader-workshop` tool suite (with `/shader-workbench` redirected for compatibility).
+- `dashboard_route_shell_refactor_note.md` now reflects the implemented routed shell, major tool routes, slug strategy, and shared layout direction.
 
 Source-of-truth architecture remains:
 - `docs/sidereal_design_document.md`

@@ -419,6 +419,86 @@ async fn admin_spawn_entity_returns_nondeterministic_entity_ids() {
     assert_ne!(first_id, second_id);
 }
 
+#[tokio::test]
+async fn admin_scripts_routes_require_authentication() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service);
+
+    let response = app
+        .clone()
+        .oneshot(json_request(Method::GET, "/admin/scripts", "", None))
+        .await
+        .expect("scripts response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let draft_response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/scripts/draft/world/world_init.lua",
+            r#"{"source":"return {}"}"#,
+            None,
+        ))
+        .await
+        .expect("draft response");
+    assert_eq!(draft_response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_scripts_routes_reject_non_admin_caller() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+
+    let register_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/register",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("register response");
+    assert_eq!(register_response.status(), StatusCode::OK);
+    let register_json = response_json(register_response).await;
+    let access_token = register_json["access_token"]
+        .as_str()
+        .expect("access_token")
+        .to_string();
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            "/admin/scripts",
+            "",
+            Some(&access_token),
+        ))
+        .await
+        .expect("scripts response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let publish_response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/scripts/publish/world/world_init.lua",
+            "",
+            Some(&access_token),
+        ))
+        .await
+        .expect("publish response");
+    assert_eq!(publish_response.status(), StatusCode::UNAUTHORIZED);
+}
+
 fn json_request(
     method: Method,
     uri: &str,

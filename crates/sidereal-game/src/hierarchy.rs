@@ -53,6 +53,7 @@ fn would_create_parent_cycle(
 #[allow(clippy::type_complexity)]
 pub fn sync_mounted_hierarchy(
     mut commands: Commands<'_, '_>,
+    updated_hardpoints: Query<'_, '_, (Entity, &'_ Hardpoint), (With<ChildOf>, Changed<Hardpoint>)>,
     unmounted: Query<
         '_,
         '_,
@@ -61,6 +62,12 @@ pub fn sync_mounted_hierarchy(
     >,
     guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid, Option<&'_ ParentGuid>)>,
 ) {
+    for (entity, hardpoint) in &updated_hardpoints {
+        commands.entity(entity).insert(
+            Transform::from_translation(hardpoint.offset_m).with_rotation(hardpoint.local_rotation),
+        );
+    }
+
     if unmounted.is_empty() {
         return;
     }
@@ -109,7 +116,9 @@ pub fn sync_mounted_hierarchy(
 
 #[cfg(test)]
 mod tests {
-    use super::would_create_parent_cycle;
+    use super::{sync_mounted_hierarchy, would_create_parent_cycle};
+    use crate::{EntityGuid, Hardpoint, ParentGuid};
+    use bevy::prelude::*;
     use std::collections::HashMap;
     use uuid::Uuid;
 
@@ -131,5 +140,51 @@ mod tests {
         parents.insert(c, b);
         parents.insert(b, a);
         assert!(!would_create_parent_cycle(c, a, &parents));
+    }
+
+    #[test]
+    fn updates_hardpoint_local_transform_when_offset_changes() {
+        let mut app = App::new();
+        app.add_systems(Update, sync_mounted_hierarchy);
+
+        let parent_guid = Uuid::new_v4();
+        let child_guid = Uuid::new_v4();
+        let parent = app.world_mut().spawn(EntityGuid(parent_guid)).id();
+        let child = app
+            .world_mut()
+            .spawn((
+                EntityGuid(child_guid),
+                ParentGuid(parent_guid),
+                Hardpoint {
+                    hardpoint_id: "hp".to_string(),
+                    offset_m: Vec3::new(1.0, 2.0, 0.0),
+                    local_rotation: Quat::IDENTITY,
+                },
+            ))
+            .id();
+
+        app.update();
+        let initial = *app
+            .world()
+            .entity(child)
+            .get::<Transform>()
+            .expect("initial transform");
+        assert_eq!(initial.translation, Vec3::new(1.0, 2.0, 0.0));
+        assert!(app.world().entity(child).contains::<ChildOf>());
+
+        {
+            let mut entity_mut = app.world_mut().entity_mut(child);
+            let mut hardpoint = entity_mut.get_mut::<Hardpoint>().expect("hardpoint");
+            hardpoint.offset_m = Vec3::new(9.0, -3.0, 0.0);
+        }
+
+        app.update();
+        let updated = *app
+            .world()
+            .entity(child)
+            .get::<Transform>()
+            .expect("updated transform");
+        assert_eq!(updated.translation, Vec3::new(9.0, -3.0, 0.0));
+        assert!(app.world().entities().contains(parent));
     }
 }

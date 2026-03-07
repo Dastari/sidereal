@@ -34,7 +34,8 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Custom gameplay components must be defined as individual files under `crates/sidereal-game/src/components/` (one primary component per file; tightly-coupled helper types may live alongside it) and re-exported via `components/mod.rs`.
 - New persistable/replicated custom components must use `#[sidereal_component(kind = \"...\", persist = ..., replicate = ..., visibility = [...])]`; when `visibility` is omitted, owner-only is the default policy.
 - Bevy hierarchy relationships (`Children`/parent-child) and modular mount relationships (for example hardpoints -> engines/shield generators/flight computers) must persist as graph relationships and hydrate back deterministically.
-- Visibility/range logic must be generic over entities (not ship-only). Use `ScannerRangeM`/related generic components for dynamic sensor range behavior; do not hardcode ship-specific visibility assumptions.
+- Visibility/range logic must be generic over entities (not ship-only). Canonical runtime direction is `VisibilityRangeM` / `VisibilityRangeBuffM`; do not hardcode ship-specific visibility assumptions or hidden `ShipTag` baseline range behavior.
+- Static non-physics world entities (for example planets, stars, and decorative celestial bodies) must use the generic `WorldPosition` / `WorldRotation` lane rather than Avian transform components unless they are actually simulated by physics.
 - Visibility policy must preserve valid no-ship/no-engine states and support data-driven public/faction visibility (`PublicVisibility`, `FactionId`, `FactionVisibility`) without spawning fallback gameplay modules.
 - Changes touching visibility, replication delivery, or redaction must follow `docs/features/visibility_replication_contract.md` and update it when behavior/policy changes.
 - Replication input routing must be bound to authenticated session identity. Bind transport peer/session (`RemoteId`) to authenticated `player_entity_id` and reject mismatched claimed player IDs in subsequent input packets.
@@ -57,9 +58,10 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Platform branching uses `cfg(target_arch = "wasm32")` only. Never use a cargo feature flag to gate native-vs-WASM code paths; `target_arch` is set automatically by the compiler and cannot be miscombined.
 - WASM uses platform-specific network adapters only at the transport boundary. All gameplay, prediction, reconciliation, and ECS systems are shared and must compile for both targets without conditional compilation.
 - Browser transport direction is WebRTC-first (unreliable/unordered data channels for game state, ordered/reliable channel for session control). WebSocket is allowed only as an explicit fallback. New WASM transport work must not default to WebSocket.
-- Asset delivery is stream-based from backend to client; no standalone HTTP asset file serving.
+- Asset payload delivery is gateway HTTP-based via authenticated `/assets/<asset_guid>` fetches; replication transport must not stream asset payload bytes.
+- Concrete asset definitions (asset IDs, filenames, shader/material/audio/sprite references, bootstrap-required sets, dependency metadata) are authored in Lua asset registry scripts and generated catalogs, not hardcoded in Rust runtime code.
 - Client cache is MMO-style local cache: single `assets.pak` + companion index/metadata, with checksum/version invalidation.
-- `bevy_remote` inspection endpoints for shard/replication/client must be auth-gated and follow project security defaults.
+- `bevy_remote` inspection endpoints for shard/replication/client must be auth-gated and follow project security defaults. Until a real authenticated HTTP gate exists, BRP must remain loopback-only.
 
 ## 4. Implementation Workflow Requirements
 

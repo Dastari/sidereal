@@ -1,6 +1,6 @@
 //! Logout: disconnect client and return to auth state.
 //!
-//! Flow: request (Escape or window close) sets PendingDisconnectNotify; a separate system
+//! Flow: request (UI menu or window close) sets PendingDisconnectNotify; a separate system
 //! sends ClientDisconnectNotifyMessage on ControlChannel, waits one frame, then triggers
 //! Disconnect; logout_cleanup clears state and transitions to Auth. The one-frame delay
 //! avoids dropping the notify in same-frame disconnect races.
@@ -13,10 +13,12 @@ use sidereal_net::{ClientDisconnectNotifyMessage, ControlChannel};
 
 use super::app_state::*;
 use super::assets::LocalAssetManager;
+use super::auth_net::AssetBootstrapRequestState;
 use super::ecs_util::queue_despawn_if_exists;
 use super::resources::{
     BootstrapWatchdogState, ClientAuthSyncState, ClientControlRequestState, ClientInputAckTracker,
-    LogoutCleanupRequested, PendingDisconnectNotify, PendingDisconnectNotifySent,
+    DisconnectRequest, LogoutCleanupRequested, PauseMenuState, PendingDisconnectNotify,
+    PendingDisconnectNotifySent,
 };
 
 /// Requests logout on window close (native only). Sets PendingDisconnectNotify so the
@@ -41,23 +43,25 @@ pub fn request_logout_on_window_close_system(
 }
 
 /// Requests logout: sets PendingDisconnectNotify so the notify is sent before Disconnect.
-/// Runs on Escape when we have a player (connected).
+/// Triggered by explicit UI actions (not direct Escape key handling).
 pub fn request_logout_system(
-    input: Res<'_, ButtonInput<KeyCode>>,
     session: Res<'_, ClientSession>,
+    mut disconnect_request: ResMut<'_, DisconnectRequest>,
     mut pending: ResMut<'_, PendingDisconnectNotify>,
     mut pending_sent: ResMut<'_, PendingDisconnectNotifySent>,
 ) {
     if pending.0.is_some() {
         return;
     }
+    if !disconnect_request.0 {
+        return;
+    }
+    disconnect_request.0 = false;
     let Some(player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
-    if input.just_pressed(KeyCode::Escape) {
-        pending.0 = Some(player_entity_id.clone());
-        pending_sent.0 = false;
-    }
+    pending.0 = Some(player_entity_id.clone());
+    pending_sent.0 = false;
 }
 
 /// Sends ClientDisconnectNotifyMessage on ControlChannel and triggers Disconnect, then
@@ -132,8 +136,6 @@ pub fn logout_cleanup_system(
     remote_registry.by_entity_id.clear();
     entity_registry.by_entity_id.clear();
     entity_registry.pending_children_by_parent_id.clear();
-    asset_manager.pending_assets.clear();
-    asset_manager.requested_asset_ids.clear();
     asset_manager.bootstrap_manifest_seen = false;
     asset_manager.bootstrap_phase_complete = false;
     asset_manager.bootstrap_total_bytes = 0;
@@ -150,6 +152,27 @@ pub fn logout_cleanup_system(
     *ack_tracker = ClientInputAckTracker::default();
     *pending = PendingDisconnectNotify::default();
     *pending_sent = PendingDisconnectNotifySent::default();
+}
+
+pub fn reset_logout_ui_flags_system(
+    cleanup_requested: Res<'_, LogoutCleanupRequested>,
+    mut disconnect_request: ResMut<'_, DisconnectRequest>,
+    mut pause_menu_state: ResMut<'_, PauseMenuState>,
+) {
+    if !cleanup_requested.0 {
+        return;
+    }
+    *disconnect_request = DisconnectRequest::default();
+    *pause_menu_state = PauseMenuState::default();
+}
+
+pub fn reset_asset_bootstrap_state_system(
+    cleanup_requested: Res<'_, LogoutCleanupRequested>,
+    mut asset_bootstrap_state: ResMut<'_, AssetBootstrapRequestState>,
+) {
+    if cleanup_requested.0 {
+        *asset_bootstrap_state = AssetBootstrapRequestState::default();
+    }
 }
 
 pub fn purge_stale_world_and_transport_on_enter_auth_system(

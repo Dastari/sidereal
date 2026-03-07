@@ -1,13 +1,13 @@
-//! Platform and render config: constants, wgpu, viewport, frame cap.
+//! Platform and render config: constants, wgpu, viewport.
 
 use bevy::prelude::*;
 use bevy::render::settings::{Backends, WgpuSettings};
 use std::fs;
-use std::time::Instant;
-
-use super::resources::FrameRateCap;
 
 pub const BACKDROP_RENDER_LAYER: usize = 1;
+pub const PLANET_BODY_RENDER_LAYER: usize = 2;
+pub const FULLSCREEN_FOREGROUND_RENDER_LAYER: usize = 3;
+pub const POST_PROCESS_RENDER_LAYER: usize = 4;
 pub const UI_OVERLAY_RENDER_LAYER: usize = 31;
 pub const ORTHO_SCALE_PER_DISTANCE: f32 = 0.02;
 /// Not used when UI overlay uses true screen space (scale derived from window height).
@@ -15,7 +15,6 @@ pub const ORTHO_SCALE_PER_DISTANCE: f32 = 0.02;
 pub const UI_OVERLAY_ORTHO_SCALE: f32 = 0.6;
 pub const MIN_WINDOW_WIDTH: f32 = 960.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 540.0;
-pub const STREAMED_SPRITE_PIXEL_SHADER_PATH: &str = "data/shaders/sprite_pixel_effect.wgsl";
 
 pub fn safe_viewport_size(window: &bevy::window::Window) -> Option<Vec2> {
     let width = window.resolution.width();
@@ -84,12 +83,4 @@ pub fn configured_wgpu_settings() -> WgpuSettings {
         force_fallback_adapter,
         ..Default::default()
     }
-}
-
-pub fn enforce_frame_rate_cap_system(mut frame_cap: ResMut<'_, FrameRateCap>) {
-    let elapsed = frame_cap.last_frame_end.elapsed();
-    if elapsed < frame_cap.frame_duration {
-        std::thread::sleep(frame_cap.frame_duration - elapsed);
-    }
-    frame_cap.last_frame_end = Instant::now();
 }

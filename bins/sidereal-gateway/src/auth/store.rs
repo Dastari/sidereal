@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use sidereal_core::bootstrap_wire::AUTH_CHARACTERS_TABLE;
+use sidereal_persistence::script_catalog_schema_sql;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tokio_postgres::{Client, NoTls};
@@ -116,7 +117,13 @@ impl PostgresAuthStore {
         self.client
             .batch_execute(&schema)
             .await
-            .map_err(|err| AuthError::Internal(format!("schema ensure failed: {err}")))
+            .map_err(|err| AuthError::Internal(format!("schema ensure failed: {err}")))?;
+        self.client
+            .batch_execute(script_catalog_schema_sql())
+            .await
+            .map_err(|err| {
+                AuthError::Internal(format!("script catalog schema ensure failed: {err}"))
+            })
     }
 }
 

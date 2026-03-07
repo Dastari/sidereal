@@ -1,6 +1,6 @@
 # Dashboard Shader Editor and Preview Workbench Plan
 
-Status: Proposed implementation plan  
+Status: Partially implemented  
 Date: 2026-03-03  
 Owners: dashboard + client rendering + asset streaming + replication
 
@@ -26,6 +26,36 @@ Build a Bevy-compatible shader authoring and preview tool inside `/dashboard` th
 6. Safety rails (validation, compile diagnostics, rollback, versioning) to avoid broken live shaders.
 
 Target experience: Unity-style 2D shader authoring loop adapted for Sidereal’s architecture and Bevy WGSL pipeline.
+
+## 1.1 Current Status Snapshot
+
+As of 2026-03-07, the shader workbench is no longer just a plan. The following slices are implemented:
+
+1. Dedicated dashboard route: `/shader-workshop` (with `/shader-workbench` redirected for compatibility).
+2. Shared dashboard shell usage:
+   - left sidebar: shader library tree
+   - center: code editor + preview stack
+   - right panel: metadata, performance, and uniform controls
+3. Server-backed shader catalog/load/upload flow for `data/shaders/` with source/cache parity updates into `data/cache_stream/shaders/`.
+4. Rust/WASM shader preview bridge crate: `crates/sidereal-shader-preview`.
+5. Browser WebGPU preview renderer for:
+   - fullscreen fragment shaders,
+   - float/vector uniforms,
+   - struct uniform blocks containing float/vector fields,
+   - texture + sampler bindings with generated preview assets.
+6. Derived uniform inspector controls in the dashboard.
+7. Simulation-time advancement for uniforms that represent `time`, `age`, `life`, or `progress`.
+8. Diagnostics pane embedded under the preview canvas.
+9. Lua asset registry metadata merge for shader dependencies/roles from `data/scripts/assets/registry.lua`.
+
+The following major pieces are still not implemented:
+
+1. Proper syntax-highlighted WGSL editor; current editor is still a plain textarea.
+2. True embedded Bevy scene/material preview; the browser preview path is still the main visible renderer.
+3. Live apply into a connected game runtime.
+4. Draft/version history and promotion workflow.
+5. Real preview asset import workflow for arbitrary textures.
+6. Deep shader-class preset libraries for sensible default fullscreen/sprite parameters.
 
 ## 2. Scope and Non-Goals
 
@@ -127,23 +157,23 @@ Add server routes in dashboard backend for:
 
 ## 5.3 Runtime Preview Engine (Two options)
 
-### Option A: Shared WebGPU Preview Renderer in Dashboard (v1 baseline)
+### Option A: Shared WebGPU Preview Renderer in Dashboard (implemented baseline)
 
 1. Render preview with WGSL in dashboard canvas using WebGPU pipeline.
 2. Simulate Bevy-style uniform bindings with explicit schemas.
 3. Faster to integrate initially, no Bevy ECS startup overhead.
 
-### Option B: Dedicated Bevy-WASM Preview Module (v2 target)
+### Option B: Dedicated Bevy-WASM Preview Module (partially implemented target)
 
 1. New workspace target dedicated to shader preview runtime.
 2. Embedded as a module/canvas in dashboard.
 3. Uses real Bevy material/shader compilation path.
 4. Best fidelity for bind group/material compatibility.
 
-Recommendation:
+Current reality:
 
-1. Implement Option A first for rapid delivery.
-2. Add Option B for authoritative parity and advanced preview scenes.
+1. Option A is the active preview renderer and user-visible path.
+2. Option B exists today as a Rust/WASM validation/apply bridge, but not yet as the primary visible Bevy scene renderer.
 
 ## 6. Data and Contract Model
 
@@ -201,6 +231,11 @@ Validation layers:
    - apply preview,
    - revert.
 
+Implementation note:
+
+1. Diagnostics are implemented.
+2. Syntax highlighting and richer code intelligence remain outstanding.
+
 ## 7.2 Preview UX
 
 Preview modes:
@@ -221,6 +256,13 @@ Controls:
 3. FPS display,
 4. camera zoom/pan for sprite mode,
 5. background selector (solid, starfield, scene capture).
+
+Current implementation note:
+
+1. A simulation-speed control exists and auto-advances matching time-like uniforms.
+2. Derived sliders/inputs exist for preview uniforms.
+3. Diagnostics are displayed in a bottom split pane below the preview canvas.
+4. Dedicated preview-mode switching, sprite benches, and background selection are still pending.
 
 ## 7.3 Asset Import for Testing
 
@@ -317,6 +359,8 @@ Deliverables:
 2. API spec draft,
 3. initial schema examples for existing shaders.
 
+Status: substantially complete
+
 ## Phase 1: Dashboard Shader Library + Read-Only Viewer
 
 1. Build shader list panel.
@@ -327,6 +371,8 @@ Deliverables:
 
 1. list/filter/search UX,
 2. shader metadata endpoints.
+
+Status: complete
 
 ## Phase 2: Editable Code + Validation
 
@@ -339,6 +385,21 @@ Deliverables:
 1. compile + lint feedback loop,
 2. draft persistence and revision list.
 
+Status: partial
+
+Implemented:
+
+1. editable shader source
+2. Rust/WASM validation bridge
+3. browser WebGPU compile diagnostics
+4. diagnostics UI
+
+Remaining:
+
+1. draft persistence
+2. revision history
+3. richer lint/schema validation endpoints
+
 ## Phase 3: Preview Workbench (WebGPU baseline)
 
 1. Add fullscreen and sprite preview canvases.
@@ -350,6 +411,22 @@ Deliverables:
 1. real-time preview loop,
 2. A/B compare mode.
 
+Status: partial
+
+Implemented:
+
+1. WebGPU fullscreen preview path
+2. uniform controls derived from WGSL
+3. simulated time progression
+4. generated preview textures/samplers for common shader resources
+
+Remaining:
+
+1. richer preview scene presets
+2. A/B compare
+3. texture import UI
+4. better preset/default handling for complex fullscreen shaders
+
 ## Phase 4: Live Runtime Apply + Hot Reload
 
 1. Controlled apply to connected client session.
@@ -359,6 +436,8 @@ Deliverables:
 Deliverables:
 
 1. safe live-edit workflow for development sessions.
+
+Status: not started
 
 ## Phase 5: Bevy-WASM Preview Module
 
@@ -370,6 +449,21 @@ Deliverables:
 
 1. high-fidelity Bevy preview mode,
 2. compatibility confidence before promotion.
+
+Status: partial
+
+Implemented:
+
+1. `sidereal-shader-preview` Rust crate
+2. wasm build pipeline into dashboard public assets
+3. Rust/WASM validation/apply bridge
+4. panic-hooked diagnostics and wasm-safe timing path
+
+Remaining:
+
+1. persistent Bevy-driven visual preview scene
+2. actual Bevy material/bind-group rendering as the main preview mode
+3. parity coverage beyond the current validation bridge
 
 ## 14. Testing and Quality Gates
 
@@ -419,7 +513,7 @@ Required command set before completion:
 ## 17. Initial Backlog Checklist
 
 1. Create `ShaderRegistry` definitions for existing shader assets.
-2. Build `/dashboard` route: `shader-workbench`.
+2. Build `/dashboard` route: `shader-workshop`.
 3. Implement shadcn layout shell with resizable panes.
 4. Add WGSL editor with diagnostics gutter.
 5. Implement validate endpoint and parser integration.
@@ -428,4 +522,3 @@ Required command set before completion:
 8. Add draft save/version list/restore.
 9. Add controlled live-apply command path.
 10. Add documentation updates and contributor workflow notes.
-

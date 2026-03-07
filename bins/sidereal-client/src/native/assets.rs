@@ -1,36 +1,20 @@
-//! Asset stream resources and client asset streaming systems.
-
-use bevy::log::{info, warn};
-use bevy::prelude::*;
-use lightyear::prelude::client::{Client, Connected};
-use lightyear::prelude::{MessageReceiver, MessageSender};
-use sidereal_asset_runtime::{
-    AssetCacheIndex, AssetCacheIndexRecord, cache_index_path, load_cache_index, save_cache_index,
-    sha256_hex,
-};
-use sidereal_game::{
-    FullscreenLayer, SizeM, SpriteShaderAssetId, default_space_background_shader_asset_id,
-    default_starfield_shader_asset_id,
-};
-use sidereal_net::{
-    AssetAckMessage, AssetChannel, AssetRequestMessage, AssetStreamChunkMessage,
-    AssetStreamManifestMessage, RequestedAsset,
-};
-use std::collections::HashMap;
+//! Asset cache and runtime HTTP asset fetch systems.
 
 use super::app_state::ClientSession;
-use super::components::StreamedSpriteShaderAssetId;
-use super::resources::{AssetRootPath, BootstrapWatchdogState};
+use super::components::{StreamedSpriteShaderAssetId, StreamedVisualAssetId};
+use super::resources::AssetRootPath;
 use super::shaders;
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PendingAssetChunks {
-    pub relative_cache_path: String,
-    pub byte_len: u64,
-    pub chunk_count: u32,
-    pub chunks: Vec<Option<Vec<u8>>>,
-    pub counts_toward_bootstrap: bool,
-}
+use bevy::log::warn;
+use bevy::prelude::*;
+use bevy::tasks::{IoTaskPool, Task, futures_lite::future};
+use sidereal_asset_runtime::{
+    AssetCacheIndex, AssetCacheIndexRecord, cache_index_path, save_cache_index, sha256_hex,
+};
+use sidereal_game::{
+    FullscreenLayer, RuntimePostProcessStack, RuntimeRenderLayerDefinition, SizeM,
+    SpriteShaderAssetId,
+};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LocalAssetRecord {
@@ -38,16 +22,25 @@ pub(crate) struct LocalAssetRecord {
     pub _content_type: String,
     pub _byte_len: u64,
     pub _chunk_count: u32,
-    pub asset_version: u64,
-    pub sha256_hex: String,
+    pub _asset_version: u64,
+    pub _sha256_hex: String,
     pub ready: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RuntimeAssetCatalogRecord {
+    pub _asset_guid: String,
+    pub url: String,
+    pub relative_cache_path: String,
+    pub content_type: String,
+    pub _byte_len: u64,
+    pub sha256_hex: String,
 }
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct LocalAssetManager {
     pub records_by_asset_id: HashMap<String, LocalAssetRecord>,
-    pub pending_assets: HashMap<String, PendingAssetChunks>,
-    pub requested_asset_ids: std::collections::HashSet<String>,
+    pub catalog_by_asset_id: HashMap<String, RuntimeAssetCatalogRecord>,
     pub cache_index: AssetCacheIndex,
     pub cache_index_loaded: bool,
     pub bootstrap_manifest_seen: bool,
@@ -78,29 +71,35 @@ impl LocalAssetManager {
             .filter(|record| record.ready)
             .map(|record| record.relative_cache_path.as_str())
     }
-
-    pub fn should_show_runtime_stream_indicator(&self) -> bool {
-        self.bootstrap_complete() && !self.pending_assets.is_empty()
-    }
-
-    pub fn is_cache_fresh(&self, asset_id: &str, asset_version: u64, sha256_hex: &str) -> bool {
-        self.cache_index
-            .by_asset_id
-            .get(asset_id)
-            .is_some_and(|entry| {
-                entry.asset_version == asset_version && entry.sha256_hex == sha256_hex
-            })
-    }
 }
 
 #[derive(Debug, Resource, Default)]
-pub(crate) struct RuntimeAssetStreamIndicatorState {
+pub(crate) struct RuntimeAssetNetIndicatorState {
     pub blinking_phase_s: f32,
 }
 
 #[derive(Debug, Resource, Default)]
-pub(crate) struct CriticalAssetRequestState {
+pub(crate) struct RuntimeAssetHttpFetchState {
+    pending: Option<Task<Result<RuntimeAssetFetchResult, String>>>,
+    in_flight_asset_ids: HashSet<String>,
     pub last_request_at_s: f64,
+}
+
+impl RuntimeAssetHttpFetchState {
+    pub fn has_in_flight_fetch(&self) -> bool {
+        !self.in_flight_asset_ids.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeAssetFetchResult {
+    pub asset_id: String,
+    pub relative_cache_path: String,
+    pub content_type: String,
+    pub byte_len: u64,
+    pub asset_version: u64,
+    pub sha256_hex: String,
+    pub payload: Vec<u8>,
 }
 
 pub(super) fn streamed_visual_asset_path(
@@ -118,12 +117,12 @@ pub(super) fn streamed_visual_asset_path(
     Some(format!("data/cache_stream/{relative}"))
 }
 
-pub(super) fn streamed_sprite_shader_path(
+pub(super) fn streamed_svg_asset_path(
     asset_id: &str,
     asset_manager: &LocalAssetManager,
 ) -> Option<String> {
     let relative = asset_manager.cached_relative_path(asset_id)?;
-    if !relative.ends_with(".wgsl") {
+    if !relative.ends_with(".svg") {
         return None;
     }
     Some(format!("data/cache_stream/{relative}"))
@@ -162,363 +161,268 @@ pub(super) fn read_png_dimensions(path: &std::path::Path) -> Option<UVec2> {
     Some(UVec2::new(width, height))
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub(super) fn receive_lightyear_asset_stream_messages(
-    mut manifest_receivers: Query<
-        '_,
-        '_,
-        &mut MessageReceiver<AssetStreamManifestMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    mut chunk_receivers: Query<
-        '_,
-        '_,
-        &mut MessageReceiver<AssetStreamChunkMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    mut request_senders: Query<
-        '_,
-        '_,
-        &mut MessageSender<AssetRequestMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    mut ack_senders: Query<
-        '_,
-        '_,
-        &mut MessageSender<AssetAckMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    mut asset_manager: ResMut<'_, LocalAssetManager>,
-    mut session: ResMut<'_, ClientSession>,
-    asset_root: Res<'_, AssetRootPath>,
-    mut watchdog: ResMut<'_, BootstrapWatchdogState>,
-    _asset_server: Res<'_, AssetServer>,
-    mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
-) {
-    for mut receiver in &mut manifest_receivers {
-        for manifest in receiver.receive() {
-            watchdog.asset_manifest_seen = true;
-            info!(
-                "client received asset manifest entries={}",
-                manifest.assets.len()
-            );
-            let is_bootstrap_manifest = !asset_manager.bootstrap_phase_complete;
-            if !asset_manager.bootstrap_manifest_seen {
-                asset_manager.bootstrap_manifest_seen = true;
-                asset_manager.bootstrap_total_bytes = 0;
-                asset_manager.bootstrap_ready_bytes = 0;
-            }
-            if !asset_manager.cache_index_loaded {
-                let index_path = cache_index_path(&asset_root.0);
-                asset_manager.cache_index = load_cache_index(&index_path).unwrap_or_default();
-                asset_manager.cache_index_loaded = true;
-            }
-            let mut requested_assets = Vec::<RequestedAsset>::new();
-            for asset in &manifest.assets {
-                let target = std::path::PathBuf::from(&asset_root.0)
-                    .join("data/cache_stream")
-                    .join(&asset.relative_cache_path);
-                let has_cached_file = std::fs::metadata(&target)
-                    .ok()
-                    .is_some_and(|meta| meta.len() > 0);
-                let already_cached = has_cached_file
-                    && asset_manager.is_cache_fresh(
-                        &asset.asset_id,
-                        asset.asset_version,
-                        &asset.sha256_hex,
-                    );
-                let mut record = LocalAssetRecord {
-                    relative_cache_path: asset.relative_cache_path.clone(),
-                    _content_type: asset.content_type.clone(),
-                    _byte_len: asset.byte_len,
-                    _chunk_count: asset.chunk_count,
-                    asset_version: asset.asset_version,
-                    sha256_hex: asset.sha256_hex.clone(),
-                    ready: already_cached,
-                };
-                if already_cached {
-                    if is_bootstrap_manifest {
-                        asset_manager.bootstrap_ready_bytes = asset_manager
-                            .bootstrap_ready_bytes
-                            .saturating_add(asset.byte_len);
-                    }
-                } else {
-                    let chunk_slots = vec![None; asset.chunk_count as usize];
-                    asset_manager.pending_assets.insert(
-                        asset.asset_id.clone(),
-                        PendingAssetChunks {
-                            relative_cache_path: asset.relative_cache_path.clone(),
-                            byte_len: asset.byte_len,
-                            chunk_count: asset.chunk_count,
-                            chunks: chunk_slots,
-                            counts_toward_bootstrap: is_bootstrap_manifest,
-                        },
-                    );
-                    record.ready = false;
-                    if asset_manager
-                        .requested_asset_ids
-                        .insert(asset.asset_id.clone())
-                    {
-                        requested_assets.push(RequestedAsset {
-                            asset_id: asset.asset_id.clone(),
-                            known_asset_version: asset_manager
-                                .cache_index
-                                .by_asset_id
-                                .get(&asset.asset_id)
-                                .map(|entry| entry.asset_version),
-                            known_sha256_hex: asset_manager
-                                .cache_index
-                                .by_asset_id
-                                .get(&asset.asset_id)
-                                .map(|entry| entry.sha256_hex.clone()),
-                        });
-                    }
-                }
-                if is_bootstrap_manifest {
-                    asset_manager.bootstrap_total_bytes = asset_manager
-                        .bootstrap_total_bytes
-                        .saturating_add(asset.byte_len);
-                }
-                asset_manager
-                    .records_by_asset_id
-                    .insert(asset.asset_id.clone(), record);
-            }
-            session.status = format!(
-                "Asset stream manifest received ({} assets).",
-                manifest.assets.len()
-            );
-            if !requested_assets.is_empty() {
-                let request_message = AssetRequestMessage {
-                    requests: requested_assets,
-                };
-                for mut sender in &mut request_senders {
-                    sender.send::<AssetChannel>(request_message.clone());
-                }
-            }
-        }
-    }
-
-    for mut receiver in &mut chunk_receivers {
-        for chunk in receiver.receive() {
-            let mut completed_payload: Option<(String, Vec<u8>)> = None;
-            if let Some(pending) = asset_manager.pending_assets.get_mut(&chunk.asset_id) {
-                if pending.chunk_count != chunk.chunk_count {
-                    continue;
-                }
-                let idx = chunk.chunk_index as usize;
-                if idx >= pending.chunks.len() {
-                    continue;
-                }
-                pending.chunks[idx] = Some(chunk.bytes.clone());
-                if pending.chunks.iter().all(Option::is_some) {
-                    let mut payload = Vec::<u8>::new();
-                    for bytes in pending.chunks.iter().flatten() {
-                        payload.extend_from_slice(bytes);
-                    }
-                    completed_payload = Some((pending.relative_cache_path.clone(), payload));
-                }
-            } else {
-                continue;
-            }
-
-            if let Some((relative_cache_path, payload)) = completed_payload {
-                let target = std::path::PathBuf::from(&asset_root.0)
-                    .join("data/cache_stream")
-                    .join(&relative_cache_path);
-                if let Some(parent) = target.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&target, &payload);
-                session.status = format!("Asset streamed: {}", relative_cache_path);
-                let mut ack_to_send: Option<AssetAckMessage> = None;
-                if let Some(record) = asset_manager.records_by_asset_id.get_mut(&chunk.asset_id) {
-                    let payload_sha = sha256_hex(&payload);
-                    if payload_sha != record.sha256_hex {
-                        warn!(
-                            "client asset checksum mismatch asset_id={} expected={} got={}",
-                            chunk.asset_id, record.sha256_hex, payload_sha
-                        );
-                        continue;
-                    }
-                    record.ready = true;
-                    ack_to_send = Some(AssetAckMessage {
-                        asset_id: chunk.asset_id.clone(),
-                        asset_version: record.asset_version,
-                        sha256_hex: record.sha256_hex.clone(),
-                    });
-                }
-                if let Some(ack) = ack_to_send {
-                    asset_manager.cache_index.by_asset_id.insert(
-                        ack.asset_id.clone(),
-                        AssetCacheIndexRecord {
-                            asset_version: ack.asset_version,
-                            sha256_hex: ack.sha256_hex.clone(),
-                        },
-                    );
-                    let index_path = cache_index_path(&asset_root.0);
-                    let _ = save_cache_index(&index_path, &asset_manager.cache_index);
-                    for mut sender in &mut ack_senders {
-                        sender.send::<AssetChannel>(ack.clone());
-                    }
-                }
-                if let Some(pending) = asset_manager.pending_assets.remove(&chunk.asset_id)
-                    && pending.counts_toward_bootstrap
-                {
-                    asset_manager.bootstrap_ready_bytes = asset_manager
-                        .bootstrap_ready_bytes
-                        .saturating_add(pending.byte_len);
-                }
-                asset_manager.requested_asset_ids.remove(&chunk.asset_id);
-                if shaders::shader_materials_enabled()
-                    && matches!(
-                        chunk.asset_id.as_str(),
-                        id if id == default_starfield_shader_asset_id()
-                            || id == default_space_background_shader_asset_id()
-                            || id == "sprite_pixel_effect_wgsl"
-                            || id == "thruster_plume_wgsl"
-                            || id == "tactical_map_overlay_wgsl"
-                    )
-                {
-                    shaders::reload_streamed_shaders(&mut shaders_assets, &asset_root.0);
-                }
-            }
-        }
-    }
-    if asset_manager.bootstrap_manifest_seen
-        && !asset_manager.bootstrap_phase_complete
-        && asset_manager
-            .pending_assets
-            .values()
-            .all(|pending| !pending.counts_toward_bootstrap)
-    {
-        info!(
-            "client bootstrap asset phase complete (ready_bytes={} total_bytes={})",
-            asset_manager.bootstrap_ready_bytes, asset_manager.bootstrap_total_bytes
-        );
-        asset_manager.bootstrap_phase_complete = true;
-    }
-}
-
-pub(super) fn ensure_critical_assets_available_system(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn queue_missing_catalog_assets_system(
     time: Res<'_, Time>,
-    mut request_senders: Query<
-        '_,
-        '_,
-        &mut MessageSender<AssetRequestMessage>,
-        (With<Client>, With<Connected>),
-    >,
-    mut request_state: ResMut<'_, CriticalAssetRequestState>,
+    mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
     asset_manager: Res<'_, LocalAssetManager>,
     asset_root: Res<'_, AssetRootPath>,
+    session: Res<'_, ClientSession>,
     fullscreen_layers: Query<'_, '_, &'_ FullscreenLayer>,
+    runtime_render_layers: Query<'_, '_, &'_ RuntimeRenderLayerDefinition>,
+    runtime_post_process_stacks: Query<'_, '_, &'_ RuntimePostProcessStack>,
     sprite_shader_asset_ids: Query<'_, '_, &'_ SpriteShaderAssetId>,
     streamed_sprite_shader_asset_ids: Query<'_, '_, &'_ StreamedSpriteShaderAssetId>,
+    streamed_visual_asset_ids: Query<'_, '_, &'_ StreamedVisualAssetId>,
 ) {
-    if request_senders.is_empty() {
+    let Some(access_token) = session.access_token.as_ref() else {
+        return;
+    };
+    if fetch_state.pending.is_some() {
         return;
     }
-    let mut critical_asset_ids = std::collections::HashSet::<String>::new();
-    critical_asset_ids.insert(default_starfield_shader_asset_id().to_string());
-    critical_asset_ids.insert(default_space_background_shader_asset_id().to_string());
-    for asset_id in KNOWN_RUNTIME_SHADER_ASSET_IDS {
-        critical_asset_ids.insert((*asset_id).to_string());
+    let now = time.elapsed_secs_f64();
+    if now - fetch_state.last_request_at_s < 0.05 {
+        return;
     }
+    let mut candidate_asset_ids = std::collections::HashSet::<String>::new();
     for layer in &fullscreen_layers {
         if !layer.shader_asset_id.trim().is_empty() {
-            critical_asset_ids.insert(layer.shader_asset_id.clone());
+            candidate_asset_ids.insert(layer.shader_asset_id.clone());
+        }
+    }
+    for layer in &runtime_render_layers {
+        if !layer.shader_asset_id.trim().is_empty() {
+            candidate_asset_ids.insert(layer.shader_asset_id.clone());
+        }
+        if let Some(params_asset_id) = layer.params_asset_id.as_ref()
+            && !params_asset_id.trim().is_empty()
+        {
+            candidate_asset_ids.insert(params_asset_id.clone());
+        }
+        for binding in &layer.texture_bindings {
+            if !binding.asset_id.trim().is_empty() {
+                candidate_asset_ids.insert(binding.asset_id.clone());
+            }
+        }
+    }
+    for stack in &runtime_post_process_stacks {
+        for pass in &stack.passes {
+            if !pass.shader_asset_id.trim().is_empty() {
+                candidate_asset_ids.insert(pass.shader_asset_id.clone());
+            }
+            if let Some(params_asset_id) = pass.params_asset_id.as_ref()
+                && !params_asset_id.trim().is_empty()
+            {
+                candidate_asset_ids.insert(params_asset_id.clone());
+            }
+            for binding in &pass.texture_bindings {
+                if !binding.asset_id.trim().is_empty() {
+                    candidate_asset_ids.insert(binding.asset_id.clone());
+                }
+            }
         }
     }
     for sprite_shader_asset_id in &sprite_shader_asset_ids {
         if let Some(asset_id) = sprite_shader_asset_id.0.as_ref()
             && !asset_id.trim().is_empty()
         {
-            critical_asset_ids.insert(asset_id.clone());
+            candidate_asset_ids.insert(asset_id.clone());
         }
     }
     for streamed in &streamed_sprite_shader_asset_ids {
         if !streamed.0.trim().is_empty() {
-            critical_asset_ids.insert(streamed.0.clone());
+            candidate_asset_ids.insert(streamed.0.clone());
         }
     }
-    let now = time.elapsed_secs_f64();
-    let mut requests = Vec::new();
-
-    // Retry any manifest-pending assets periodically. This covers startup races where
-    // the manifest arrives before transport message senders are fully wired.
-    for asset_id in asset_manager.pending_assets.keys() {
-        let known = asset_manager.cache_index.by_asset_id.get(asset_id);
-        requests.push(RequestedAsset {
-            asset_id: asset_id.clone(),
-            known_asset_version: known.map(|entry| entry.asset_version),
-            known_sha256_hex: known.map(|entry| entry.sha256_hex.clone()),
-        });
-    }
-
-    let mut missing_critical = Vec::new();
-    for asset_id in critical_asset_ids {
-        if !asset_present_on_disk(&asset_id, &asset_manager, &asset_root.0) {
-            missing_critical.push(asset_id);
+    for visual in &streamed_visual_asset_ids {
+        if !visual.0.trim().is_empty() {
+            candidate_asset_ids.insert(visual.0.clone());
         }
     }
-    if requests.is_empty() && missing_critical.is_empty() {
+    let Some(next_asset_id) = candidate_asset_ids
+        .into_iter()
+        .filter(|asset_id| {
+            !asset_present_in_cache_or_source(asset_id, &asset_manager, &asset_root.0)
+        })
+        .filter(|asset_id| !fetch_state.in_flight_asset_ids.contains(asset_id))
+        .find(|asset_id| asset_manager.catalog_by_asset_id.contains_key(asset_id))
+    else {
         return;
-    }
-    if now - request_state.last_request_at_s < 2.0 {
+    };
+    let Some(catalog) = asset_manager
+        .catalog_by_asset_id
+        .get(&next_asset_id)
+        .cloned()
+    else {
         return;
-    }
-    request_state.last_request_at_s = now;
-    for asset_id in missing_critical {
-        let known = asset_manager.cache_index.by_asset_id.get(&asset_id);
-        requests.push(RequestedAsset {
-            asset_id,
-            known_asset_version: known.map(|entry| entry.asset_version),
-            known_sha256_hex: known.map(|entry| entry.sha256_hex.clone()),
-        });
-    }
-    requests.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
-    requests.dedup_by(|a, b| a.asset_id == b.asset_id);
-    let request_message = AssetRequestMessage { requests };
-    for mut sender in &mut request_senders {
-        sender.send::<AssetChannel>(request_message.clone());
+    };
+    let url = if catalog.url.starts_with("http://") || catalog.url.starts_with("https://") {
+        catalog.url.clone()
+    } else {
+        format!("{}{}", session.gateway_url, catalog.url)
+    };
+    fetch_state
+        .in_flight_asset_ids
+        .insert(next_asset_id.clone());
+    fetch_state.last_request_at_s = now;
+
+    let access_token = access_token.clone();
+    fetch_state.pending = Some(IoTaskPool::get().spawn(async move {
+        (|| -> Result<RuntimeAssetFetchResult, String> {
+            let client = reqwest::blocking::Client::new();
+            let response_bytes = client
+                .get(url)
+                .bearer_auth(access_token)
+                .send()
+                .map_err(|err| err.to_string())?
+                .error_for_status()
+                .map_err(|err| err.to_string())?
+                .bytes()
+                .map_err(|err| err.to_string())?;
+            let payload = response_bytes.to_vec();
+            let payload_sha = sha256_hex(&payload);
+            if payload_sha != catalog.sha256_hex {
+                return Err(format!(
+                    "runtime asset checksum mismatch asset_id={} expected={} got={}",
+                    next_asset_id, catalog.sha256_hex, payload_sha
+                ));
+            }
+            Ok(RuntimeAssetFetchResult {
+                asset_id: next_asset_id,
+                relative_cache_path: catalog.relative_cache_path,
+                content_type: catalog.content_type,
+                byte_len: payload.len() as u64,
+                asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(&payload_sha),
+                sha256_hex: payload_sha,
+                payload,
+            })
+        })()
+    }));
+}
+
+pub(super) fn poll_runtime_asset_http_fetches_system(
+    mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
+    mut asset_manager: ResMut<'_, LocalAssetManager>,
+    mut session: ResMut<'_, ClientSession>,
+    asset_root: Res<'_, AssetRootPath>,
+    mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
+) {
+    let Some(task) = fetch_state.pending.as_mut() else {
+        return;
+    };
+    let Some(result) = bevy::tasks::block_on(future::poll_once(task)) else {
+        return;
+    };
+    fetch_state.pending = None;
+
+    match result {
+        Ok(result) => {
+            let target = std::path::PathBuf::from(&asset_root.0)
+                .join("data/cache_stream")
+                .join(&result.relative_cache_path);
+            let write_result = (|| -> Result<(), String> {
+                let payload_sha = sha256_hex(&result.payload);
+                if payload_sha != result.sha256_hex {
+                    return Err(format!(
+                        "runtime asset checksum mismatch asset_id={} expected={} got={}",
+                        result.asset_id, result.sha256_hex, payload_sha
+                    ));
+                }
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+                }
+                std::fs::write(&target, &result.payload).map_err(|err| err.to_string())?;
+                Ok(())
+            })();
+            match write_result {
+                Ok(()) => {
+                    asset_manager.cache_index.by_asset_id.insert(
+                        result.asset_id.clone(),
+                        AssetCacheIndexRecord {
+                            asset_version: result.asset_version,
+                            sha256_hex: result.sha256_hex.clone(),
+                        },
+                    );
+                    let index_path = cache_index_path(&asset_root.0);
+                    if let Err(err) = save_cache_index(&index_path, &asset_manager.cache_index) {
+                        warn!("failed saving cache index: {}", err);
+                    }
+                    asset_manager.records_by_asset_id.insert(
+                        result.asset_id.clone(),
+                        LocalAssetRecord {
+                            relative_cache_path: result.relative_cache_path.clone(),
+                            _content_type: result.content_type.clone(),
+                            _byte_len: result.byte_len,
+                            _chunk_count: 1,
+                            _asset_version: result.asset_version,
+                            _sha256_hex: result.sha256_hex.clone(),
+                            ready: true,
+                        },
+                    );
+                    session.status = format!("Asset downloaded: {}", result.asset_id);
+                    session.ui_dirty = true;
+                    if shaders::shader_materials_enabled()
+                        && result.relative_cache_path.ends_with(".wgsl")
+                    {
+                        shaders::reload_streamed_shaders(
+                            &mut shaders_assets,
+                            &asset_root.0,
+                            &asset_manager,
+                        );
+                    }
+                }
+                Err(err) => {
+                    warn!("runtime asset download failed: {}", err);
+                    session.status = format!("Asset download failed: {}", err);
+                    session.ui_dirty = true;
+                }
+            }
+            fetch_state.in_flight_asset_ids.remove(&result.asset_id);
+        }
+        Err(err) => {
+            warn!("runtime asset download failed: {}", err);
+            session.status = format!("Asset download failed: {}", err);
+            session.ui_dirty = true;
+            let maybe_id = fetch_state.in_flight_asset_ids.iter().next().cloned();
+            if let Some(asset_id) = maybe_id {
+                fetch_state.in_flight_asset_ids.remove(&asset_id);
+            }
+        }
     }
 }
 
-pub(super) fn asset_present_on_disk(
+fn asset_present_in_cache_or_source(
     asset_id: &str,
     asset_manager: &LocalAssetManager,
     asset_root: &str,
 ) -> bool {
+    if asset_manager
+        .records_by_asset_id
+        .get(asset_id)
+        .is_some_and(|record| record.ready)
+    {
+        return true;
+    }
+    let Some(catalog) = asset_manager.catalog_by_asset_id.get(asset_id) else {
+        return false;
+    };
     let Some(relative_cache_path) = asset_manager
         .records_by_asset_id
         .get(asset_id)
         .map(|record| record.relative_cache_path.as_str())
-        .or_else(|| match asset_id {
-            id if id == default_starfield_shader_asset_id() => Some("shaders/starfield.wgsl"),
-            id if id == default_space_background_shader_asset_id() => {
-                Some("shaders/space_background.wgsl")
-            }
-            "sprite_pixel_effect_wgsl" => Some("shaders/sprite_pixel_effect.wgsl"),
-            "thruster_plume_wgsl" => Some("shaders/thruster_plume.wgsl"),
-            "weapon_impact_spark_wgsl" => Some("shaders/weapon_impact_spark.wgsl"),
-            "tactical_map_overlay_wgsl" => Some("shaders/tactical_map_overlay.wgsl"),
-            _ => None,
-        })
+        .or(Some(catalog.relative_cache_path.as_str()))
     else {
         return false;
     };
     let rooted_stream_path = std::path::PathBuf::from(asset_root)
         .join("data/cache_stream")
         .join(relative_cache_path);
-    if rooted_stream_path.exists() {
-        return true;
+    if !rooted_stream_path.is_file() {
+        return false;
     }
-    std::path::PathBuf::from(asset_root)
-        .join(relative_cache_path)
-        .exists()
+    let Ok(bytes) = std::fs::read(rooted_stream_path) else {
+        return false;
+    };
+    sha256_hex(&bytes) == catalog.sha256_hex
 }
-const KNOWN_RUNTIME_SHADER_ASSET_IDS: &[&str] = &[
-    "sprite_pixel_effect_wgsl",
-    "thruster_plume_wgsl",
-    "weapon_impact_spark_wgsl",
-    "tactical_map_overlay_wgsl",
-];

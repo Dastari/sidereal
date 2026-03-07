@@ -9,21 +9,43 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as ApiWorldRouteImport } from './routes/api.world'
+import { Route as ShaderWorkbenchRouteImport } from './routes/shader-workbench'
+import { Route as DashboardRouteImport } from './routes/_dashboard'
+import { Route as DashboardIndexRouteImport } from './routes/_dashboard.index'
+import { Route as ApiShadersRouteImport } from './routes/api.shaders'
 import { Route as ApiGraphRouteImport } from './routes/api.graph'
+import { Route as ApiDatabaseRouteImport } from './routes/api.database'
 import { Route as ApiBrpRouteImport } from './routes/api.brp'
+import { Route as DashboardShaderWorkshopRouteImport } from './routes/_dashboard.shader-workshop'
+import { Route as DashboardSettingsRouteImport } from './routes/_dashboard.settings'
+import { Route as DashboardScriptEditorRouteImport } from './routes/_dashboard.script-editor'
+import { Route as DashboardGameWorldRouteImport } from './routes/_dashboard.game-world'
+import { Route as DashboardDatabaseRouteImport } from './routes/_dashboard.database'
+import { Route as ApiShadersUploadRouteImport } from './routes/api.shaders.upload'
+import { Route as ApiShadersShaderIdRouteImport } from './routes/api.shaders.$shaderId'
 import { Route as ApiDeleteEntityEntityIdRouteImport } from './routes/api.delete-entity.$entityId'
 import { Route as ApiAdminSpawnEntityRouteImport } from './routes/api.admin.spawn-entity'
+import { Route as DashboardShaderWorkshopShaderIdRouteImport } from './routes/_dashboard.shader-workshop.$shaderId'
+import { Route as DashboardGameWorldEntityGuidRouteImport } from './routes/_dashboard.game-world.$entityGuid'
+import { Route as DashboardDatabaseEntityGuidRouteImport } from './routes/_dashboard.database.$entityGuid'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const ShaderWorkbenchRoute = ShaderWorkbenchRouteImport.update({
+  id: '/shader-workbench',
+  path: '/shader-workbench',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiWorldRoute = ApiWorldRouteImport.update({
-  id: '/api/world',
-  path: '/api/world',
+const DashboardRoute = DashboardRouteImport.update({
+  id: '/_dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardIndexRoute = DashboardIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const ApiShadersRoute = ApiShadersRouteImport.update({
+  id: '/api/shaders',
+  path: '/api/shaders',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGraphRoute = ApiGraphRouteImport.update({
@@ -31,10 +53,50 @@ const ApiGraphRoute = ApiGraphRouteImport.update({
   path: '/api/graph',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDatabaseRoute = ApiDatabaseRouteImport.update({
+  id: '/api/database',
+  path: '/api/database',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiBrpRoute = ApiBrpRouteImport.update({
   id: '/api/brp',
   path: '/api/brp',
   getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardShaderWorkshopRoute = DashboardShaderWorkshopRouteImport.update({
+  id: '/shader-workshop',
+  path: '/shader-workshop',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardSettingsRoute = DashboardSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardScriptEditorRoute = DashboardScriptEditorRouteImport.update({
+  id: '/script-editor',
+  path: '/script-editor',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardGameWorldRoute = DashboardGameWorldRouteImport.update({
+  id: '/game-world',
+  path: '/game-world',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardDatabaseRoute = DashboardDatabaseRouteImport.update({
+  id: '/database',
+  path: '/database',
+  getParentRoute: () => DashboardRoute,
+} as any)
+const ApiShadersUploadRoute = ApiShadersUploadRouteImport.update({
+  id: '/upload',
+  path: '/upload',
+  getParentRoute: () => ApiShadersRoute,
+} as any)
+const ApiShadersShaderIdRoute = ApiShadersShaderIdRouteImport.update({
+  id: '/$shaderId',
+  path: '/$shaderId',
+  getParentRoute: () => ApiShadersRoute,
 } as any)
 const ApiDeleteEntityEntityIdRoute = ApiDeleteEntityEntityIdRouteImport.update({
   id: '/api/delete-entity/$entityId',
@@ -46,82 +108,190 @@ const ApiAdminSpawnEntityRoute = ApiAdminSpawnEntityRouteImport.update({
   path: '/api/admin/spawn-entity',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DashboardShaderWorkshopShaderIdRoute =
+  DashboardShaderWorkshopShaderIdRouteImport.update({
+    id: '/$shaderId',
+    path: '/$shaderId',
+    getParentRoute: () => DashboardShaderWorkshopRoute,
+  } as any)
+const DashboardGameWorldEntityGuidRoute =
+  DashboardGameWorldEntityGuidRouteImport.update({
+    id: '/$entityGuid',
+    path: '/$entityGuid',
+    getParentRoute: () => DashboardGameWorldRoute,
+  } as any)
+const DashboardDatabaseEntityGuidRoute =
+  DashboardDatabaseEntityGuidRouteImport.update({
+    id: '/$entityGuid',
+    path: '/$entityGuid',
+    getParentRoute: () => DashboardDatabaseRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof DashboardIndexRoute
+  '/shader-workbench': typeof ShaderWorkbenchRoute
+  '/database': typeof DashboardDatabaseRouteWithChildren
+  '/game-world': typeof DashboardGameWorldRouteWithChildren
+  '/script-editor': typeof DashboardScriptEditorRoute
+  '/settings': typeof DashboardSettingsRoute
+  '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
+  '/api/database': typeof ApiDatabaseRoute
   '/api/graph': typeof ApiGraphRoute
-  '/api/world': typeof ApiWorldRoute
+  '/api/shaders': typeof ApiShadersRouteWithChildren
+  '/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
+  '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
+  '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
+  '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
+  '/api/shaders/upload': typeof ApiShadersUploadRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
+  '/shader-workbench': typeof ShaderWorkbenchRoute
+  '/database': typeof DashboardDatabaseRouteWithChildren
+  '/game-world': typeof DashboardGameWorldRouteWithChildren
+  '/script-editor': typeof DashboardScriptEditorRoute
+  '/settings': typeof DashboardSettingsRoute
+  '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
+  '/api/database': typeof ApiDatabaseRoute
   '/api/graph': typeof ApiGraphRoute
-  '/api/world': typeof ApiWorldRoute
+  '/api/shaders': typeof ApiShadersRouteWithChildren
+  '/': typeof DashboardIndexRoute
+  '/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
+  '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
+  '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
+  '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
+  '/api/shaders/upload': typeof ApiShadersUploadRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_dashboard': typeof DashboardRouteWithChildren
+  '/shader-workbench': typeof ShaderWorkbenchRoute
+  '/_dashboard/database': typeof DashboardDatabaseRouteWithChildren
+  '/_dashboard/game-world': typeof DashboardGameWorldRouteWithChildren
+  '/_dashboard/script-editor': typeof DashboardScriptEditorRoute
+  '/_dashboard/settings': typeof DashboardSettingsRoute
+  '/_dashboard/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
+  '/api/database': typeof ApiDatabaseRoute
   '/api/graph': typeof ApiGraphRoute
-  '/api/world': typeof ApiWorldRoute
+  '/api/shaders': typeof ApiShadersRouteWithChildren
+  '/_dashboard/': typeof DashboardIndexRoute
+  '/_dashboard/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
+  '/_dashboard/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
+  '/_dashboard/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
+  '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
+  '/api/shaders/upload': typeof ApiShadersUploadRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/shader-workbench'
+    | '/database'
+    | '/game-world'
+    | '/script-editor'
+    | '/settings'
+    | '/shader-workshop'
     | '/api/brp'
+    | '/api/database'
     | '/api/graph'
-    | '/api/world'
+    | '/api/shaders'
+    | '/database/$entityGuid'
+    | '/game-world/$entityGuid'
+    | '/shader-workshop/$shaderId'
     | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
+    | '/api/shaders/$shaderId'
+    | '/api/shaders/upload'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
+    | '/shader-workbench'
+    | '/database'
+    | '/game-world'
+    | '/script-editor'
+    | '/settings'
+    | '/shader-workshop'
     | '/api/brp'
+    | '/api/database'
     | '/api/graph'
-    | '/api/world'
+    | '/api/shaders'
+    | '/'
+    | '/database/$entityGuid'
+    | '/game-world/$entityGuid'
+    | '/shader-workshop/$shaderId'
     | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
+    | '/api/shaders/$shaderId'
+    | '/api/shaders/upload'
   id:
     | '__root__'
-    | '/'
+    | '/_dashboard'
+    | '/shader-workbench'
+    | '/_dashboard/database'
+    | '/_dashboard/game-world'
+    | '/_dashboard/script-editor'
+    | '/_dashboard/settings'
+    | '/_dashboard/shader-workshop'
     | '/api/brp'
+    | '/api/database'
     | '/api/graph'
-    | '/api/world'
+    | '/api/shaders'
+    | '/_dashboard/'
+    | '/_dashboard/database/$entityGuid'
+    | '/_dashboard/game-world/$entityGuid'
+    | '/_dashboard/shader-workshop/$shaderId'
     | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
+    | '/api/shaders/$shaderId'
+    | '/api/shaders/upload'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  DashboardRoute: typeof DashboardRouteWithChildren
+  ShaderWorkbenchRoute: typeof ShaderWorkbenchRoute
   ApiBrpRoute: typeof ApiBrpRoute
+  ApiDatabaseRoute: typeof ApiDatabaseRoute
   ApiGraphRoute: typeof ApiGraphRoute
-  ApiWorldRoute: typeof ApiWorldRoute
+  ApiShadersRoute: typeof ApiShadersRouteWithChildren
   ApiAdminSpawnEntityRoute: typeof ApiAdminSpawnEntityRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/shader-workbench': {
+      id: '/shader-workbench'
+      path: '/shader-workbench'
+      fullPath: '/shader-workbench'
+      preLoaderRoute: typeof ShaderWorkbenchRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/world': {
-      id: '/api/world'
-      path: '/api/world'
-      fullPath: '/api/world'
-      preLoaderRoute: typeof ApiWorldRouteImport
+    '/_dashboard': {
+      id: '/_dashboard'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_dashboard/': {
+      id: '/_dashboard/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof DashboardIndexRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/api/shaders': {
+      id: '/api/shaders'
+      path: '/api/shaders'
+      fullPath: '/api/shaders'
+      preLoaderRoute: typeof ApiShadersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/graph': {
@@ -131,12 +301,68 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiGraphRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/database': {
+      id: '/api/database'
+      path: '/api/database'
+      fullPath: '/api/database'
+      preLoaderRoute: typeof ApiDatabaseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/brp': {
       id: '/api/brp'
       path: '/api/brp'
       fullPath: '/api/brp'
       preLoaderRoute: typeof ApiBrpRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_dashboard/shader-workshop': {
+      id: '/_dashboard/shader-workshop'
+      path: '/shader-workshop'
+      fullPath: '/shader-workshop'
+      preLoaderRoute: typeof DashboardShaderWorkshopRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/_dashboard/settings': {
+      id: '/_dashboard/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof DashboardSettingsRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/_dashboard/script-editor': {
+      id: '/_dashboard/script-editor'
+      path: '/script-editor'
+      fullPath: '/script-editor'
+      preLoaderRoute: typeof DashboardScriptEditorRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/_dashboard/game-world': {
+      id: '/_dashboard/game-world'
+      path: '/game-world'
+      fullPath: '/game-world'
+      preLoaderRoute: typeof DashboardGameWorldRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/_dashboard/database': {
+      id: '/_dashboard/database'
+      path: '/database'
+      fullPath: '/database'
+      preLoaderRoute: typeof DashboardDatabaseRouteImport
+      parentRoute: typeof DashboardRoute
+    }
+    '/api/shaders/upload': {
+      id: '/api/shaders/upload'
+      path: '/upload'
+      fullPath: '/api/shaders/upload'
+      preLoaderRoute: typeof ApiShadersUploadRouteImport
+      parentRoute: typeof ApiShadersRoute
+    }
+    '/api/shaders/$shaderId': {
+      id: '/api/shaders/$shaderId'
+      path: '/$shaderId'
+      fullPath: '/api/shaders/$shaderId'
+      preLoaderRoute: typeof ApiShadersShaderIdRouteImport
+      parentRoute: typeof ApiShadersRoute
     }
     '/api/delete-entity/$entityId': {
       id: '/api/delete-entity/$entityId'
@@ -152,14 +378,109 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminSpawnEntityRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_dashboard/shader-workshop/$shaderId': {
+      id: '/_dashboard/shader-workshop/$shaderId'
+      path: '/$shaderId'
+      fullPath: '/shader-workshop/$shaderId'
+      preLoaderRoute: typeof DashboardShaderWorkshopShaderIdRouteImport
+      parentRoute: typeof DashboardShaderWorkshopRoute
+    }
+    '/_dashboard/game-world/$entityGuid': {
+      id: '/_dashboard/game-world/$entityGuid'
+      path: '/$entityGuid'
+      fullPath: '/game-world/$entityGuid'
+      preLoaderRoute: typeof DashboardGameWorldEntityGuidRouteImport
+      parentRoute: typeof DashboardGameWorldRoute
+    }
+    '/_dashboard/database/$entityGuid': {
+      id: '/_dashboard/database/$entityGuid'
+      path: '/$entityGuid'
+      fullPath: '/database/$entityGuid'
+      preLoaderRoute: typeof DashboardDatabaseEntityGuidRouteImport
+      parentRoute: typeof DashboardDatabaseRoute
+    }
   }
 }
 
+interface DashboardDatabaseRouteChildren {
+  DashboardDatabaseEntityGuidRoute: typeof DashboardDatabaseEntityGuidRoute
+}
+
+const DashboardDatabaseRouteChildren: DashboardDatabaseRouteChildren = {
+  DashboardDatabaseEntityGuidRoute: DashboardDatabaseEntityGuidRoute,
+}
+
+const DashboardDatabaseRouteWithChildren =
+  DashboardDatabaseRoute._addFileChildren(DashboardDatabaseRouteChildren)
+
+interface DashboardGameWorldRouteChildren {
+  DashboardGameWorldEntityGuidRoute: typeof DashboardGameWorldEntityGuidRoute
+}
+
+const DashboardGameWorldRouteChildren: DashboardGameWorldRouteChildren = {
+  DashboardGameWorldEntityGuidRoute: DashboardGameWorldEntityGuidRoute,
+}
+
+const DashboardGameWorldRouteWithChildren =
+  DashboardGameWorldRoute._addFileChildren(DashboardGameWorldRouteChildren)
+
+interface DashboardShaderWorkshopRouteChildren {
+  DashboardShaderWorkshopShaderIdRoute: typeof DashboardShaderWorkshopShaderIdRoute
+}
+
+const DashboardShaderWorkshopRouteChildren: DashboardShaderWorkshopRouteChildren =
+  {
+    DashboardShaderWorkshopShaderIdRoute: DashboardShaderWorkshopShaderIdRoute,
+  }
+
+const DashboardShaderWorkshopRouteWithChildren =
+  DashboardShaderWorkshopRoute._addFileChildren(
+    DashboardShaderWorkshopRouteChildren,
+  )
+
+interface DashboardRouteChildren {
+  DashboardDatabaseRoute: typeof DashboardDatabaseRouteWithChildren
+  DashboardGameWorldRoute: typeof DashboardGameWorldRouteWithChildren
+  DashboardScriptEditorRoute: typeof DashboardScriptEditorRoute
+  DashboardSettingsRoute: typeof DashboardSettingsRoute
+  DashboardShaderWorkshopRoute: typeof DashboardShaderWorkshopRouteWithChildren
+  DashboardIndexRoute: typeof DashboardIndexRoute
+}
+
+const DashboardRouteChildren: DashboardRouteChildren = {
+  DashboardDatabaseRoute: DashboardDatabaseRouteWithChildren,
+  DashboardGameWorldRoute: DashboardGameWorldRouteWithChildren,
+  DashboardScriptEditorRoute: DashboardScriptEditorRoute,
+  DashboardSettingsRoute: DashboardSettingsRoute,
+  DashboardShaderWorkshopRoute: DashboardShaderWorkshopRouteWithChildren,
+  DashboardIndexRoute: DashboardIndexRoute,
+}
+
+const DashboardRouteWithChildren = DashboardRoute._addFileChildren(
+  DashboardRouteChildren,
+)
+
+interface ApiShadersRouteChildren {
+  ApiShadersShaderIdRoute: typeof ApiShadersShaderIdRoute
+  ApiShadersUploadRoute: typeof ApiShadersUploadRoute
+}
+
+const ApiShadersRouteChildren: ApiShadersRouteChildren = {
+  ApiShadersShaderIdRoute: ApiShadersShaderIdRoute,
+  ApiShadersUploadRoute: ApiShadersUploadRoute,
+}
+
+const ApiShadersRouteWithChildren = ApiShadersRoute._addFileChildren(
+  ApiShadersRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  DashboardRoute: DashboardRouteWithChildren,
+  ShaderWorkbenchRoute: ShaderWorkbenchRoute,
   ApiBrpRoute: ApiBrpRoute,
+  ApiDatabaseRoute: ApiDatabaseRoute,
   ApiGraphRoute: ApiGraphRoute,
-  ApiWorldRoute: ApiWorldRoute,
+  ApiShadersRoute: ApiShadersRouteWithChildren,
   ApiAdminSpawnEntityRoute: ApiAdminSpawnEntityRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,
 }

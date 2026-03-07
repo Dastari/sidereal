@@ -4,6 +4,7 @@ mod dialog_ui;
 mod ecs_util;
 
 mod app_state;
+mod asset_loading_ui;
 mod assets;
 mod audio;
 mod auth_net;
@@ -14,12 +15,15 @@ mod components;
 mod control;
 mod debug_overlay;
 mod input;
+mod lighting;
 mod logout;
 mod motion;
 mod owner_manifest;
+mod pause_menu;
 mod platform;
 mod plugins;
 mod remote;
+mod render_layers;
 mod replication;
 mod resources;
 mod scene;
@@ -34,8 +38,9 @@ mod visuals;
 pub(crate) use app_state::*;
 pub(crate) use auth_net::submit_auth_request;
 pub(crate) use backdrop::{
-    SpaceBackgroundMaterial, StarfieldMaterial, StreamedSpriteShaderMaterial,
-    TacticalMapOverlayMaterial, ThrusterPlumeMaterial,
+    AsteroidSpriteShaderMaterial, PlanetVisualMaterial, RuntimeEffectMaterial,
+    SpaceBackgroundMaterial, SpaceBackgroundNebulaMaterial, StarfieldMaterial,
+    StreamedSpriteShaderMaterial, TacticalMapOverlayMaterial,
 };
 pub(crate) use platform::*;
 pub(crate) use remote::*;
@@ -51,6 +56,7 @@ use bevy::render::settings::RenderCreation;
 use bevy::scene::ScenePlugin;
 use bevy::sprite_render::Material2dPlugin;
 use bevy::window::{PresentMode, Window, WindowPlugin, WindowResizeConstraints};
+use bevy_svg::prelude::SvgPlugin;
 
 use lightyear::avian2d::plugin::AvianReplicationMode;
 use lightyear::avian2d::prelude::LightyearAvianPlugin;
@@ -58,12 +64,13 @@ use lightyear::prelude::client::ClientPlugins;
 use lightyear::prelude::client::{Client, Connected};
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
-    SiderealGameCorePlugin, apply_engine_thrust, clamp_angular_velocity,
-    process_character_movement_actions, process_flight_actions, stabilize_idle_motion,
-    sync_mounted_hierarchy,
+    apply_engine_thrust, clamp_angular_velocity, process_character_movement_actions,
+    process_flight_actions, stabilize_idle_motion, sync_mounted_hierarchy,
 };
-use sidereal_net::register_lightyear_protocol;
+use sidereal_net::register_lightyear_client_protocol;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::time::Duration;
 
 pub(crate) fn run() {
@@ -75,8 +82,8 @@ pub(crate) fn run() {
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     };
     eprintln!(
-        "client startup env flags: disable_asset_stream={} disable_repl_adoption={} disable_hierarchy_rebuild={} disable_world_visuals={} disable_motion_ownership={} shader_materials_enabled={} streamed_shader_overrides={}",
-        env_flag("SIDEREAL_CLIENT_DISABLE_ASSET_STREAM"),
+        "client startup env flags: disable_runtime_asset_fetch={} disable_repl_adoption={} disable_hierarchy_rebuild={} disable_world_visuals={} disable_motion_ownership={} shader_materials_enabled={} streamed_shader_overrides={}",
+        env_flag("SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH"),
         env_flag("SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION"),
         env_flag("SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD"),
         env_flag("SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS"),
@@ -91,6 +98,7 @@ pub(crate) fn run() {
     let remote_cfg = match RemoteInspectConfig::from_env("CLIENT", 15714) {
         Ok(cfg) => cfg,
         Err(err) => {
+            log_startup_error_line(&format!("invalid CLIENT BRP config: {err}"));
             eprintln!("invalid CLIENT BRP config: {err}");
             std::process::exit(2);
         }
@@ -142,17 +150,15 @@ pub(crate) fn run() {
         );
         app.add_plugins(Material2dPlugin::<StarfieldMaterial>::default());
         app.add_plugins(Material2dPlugin::<SpaceBackgroundMaterial>::default());
+        app.add_plugins(Material2dPlugin::<SpaceBackgroundNebulaMaterial>::default());
         app.add_plugins(Material2dPlugin::<StreamedSpriteShaderMaterial>::default());
-        app.add_plugins(Material2dPlugin::<ThrusterPlumeMaterial>::default());
+        app.add_plugins(Material2dPlugin::<AsteroidSpriteShaderMaterial>::default());
+        app.add_plugins(Material2dPlugin::<PlanetVisualMaterial>::default());
+        app.add_plugins(Material2dPlugin::<RuntimeEffectMaterial>::default());
         app.add_plugins(Material2dPlugin::<TacticalMapOverlayMaterial>::default());
-        app.add_plugins(Material2dPlugin::<visuals::WeaponImpactSparkMaterial>::default());
+        app.add_plugins(SvgPlugin);
         app.add_plugins(FrameTimeDiagnosticsPlugin::default());
         audio::insert_embedded_menu_loop_audio(&mut app);
-        // FPS cap: SIDEREAL_CLIENT_MAX_FPS (default 60). Set to 0 to disable (uncapped).
-        if let Some(frame_cap) = FrameRateCap::from_env(60) {
-            app.insert_resource(frame_cap);
-            app.add_systems(Last, platform::enforce_frame_rate_cap_system);
-        }
     }
 
     app.add_plugins(
@@ -165,7 +171,7 @@ pub(crate) fn run() {
     app.insert_resource(Gravity(Vec2::ZERO));
     // Client prediction needs shared flight/mass gameplay systems, but not player observer
     // anchoring/movement writers from full server plugin.
-    app.add_plugins(SiderealGameCorePlugin);
+    crate::client_core::configure_shared_client_core(&mut app);
     app.add_plugins(ClientPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / 60.0),
     });
@@ -175,17 +181,9 @@ pub(crate) fn run() {
         rollback_resources: false,
         rollback_islands: false,
     });
-    register_lightyear_protocol(&mut app);
-    let shader_materials_enabled = shaders::shader_materials_enabled();
-    if shader_materials_enabled
-        && let Some(mut shaders_assets) = app
-            .world_mut()
-            .get_resource_mut::<Assets<bevy::shader::Shader>>()
-    {
-        shaders::install_runtime_shaders(&mut shaders_assets, &asset_root);
-    }
+    register_lightyear_client_protocol(&mut app);
     configure_remote(&mut app, &remote_cfg);
-    // Lightyear/Bevy plugins can initialize Fixed time; set project-authoritative 60 Hz after plugin wiring.
+    // Lightyear/Bevy plugins can initialize Fixed time; reset project-authoritative 60 Hz after plugin wiring.
     app.insert_resource(Time::<Fixed>::from_hz(60.0));
     app.insert_resource(AssetRootPath(asset_root));
     app.insert_resource(LocalSimulationDebugMode::from_env());
@@ -199,22 +197,27 @@ pub(crate) fn run() {
     app.insert_resource(PendingDisconnectNotify::default());
     app.insert_resource(PendingDisconnectNotifySent::default());
     app.insert_resource(LogoutCleanupRequested::default());
+    app.insert_resource(DisconnectRequest::default());
+    app.insert_resource(PauseMenuState::default());
     app.insert_resource(ClientNetworkTick::default());
     app.insert_resource(ClientInputAckTracker::default());
     app.insert_resource(ClientInputLogState::default());
     app.insert_resource(ClientInputSendState::default());
     app.insert_resource(ClientAuthSyncState::default());
+    app.insert_resource(SessionReadyWatchdogConfig::from_env());
+    app.insert_resource(SessionReadyWatchdogState::default());
     app.insert_resource(ClientControlRequestState::default());
     app.insert_resource(ClientControlDebugState::default());
     app.insert_resource(ClientViewModeState::default());
     app.insert_resource(SessionReadyState::default());
     app.insert_resource(assets::LocalAssetManager::default());
-    app.insert_resource(assets::RuntimeAssetStreamIndicatorState::default());
-    app.insert_resource(assets::CriticalAssetRequestState::default());
+    app.insert_resource(assets::RuntimeAssetNetIndicatorState::default());
+    app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
     let debug_blue_overlay = std::env::var("SIDEREAL_DEBUG_BLUE_FULLSCREEN")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     app.insert_resource(DebugBlueOverlayEnabled(debug_blue_overlay));
     app.insert_resource(DebugOverlayEnabled { enabled: false });
+    app.insert_resource(NameplateUiState { enabled: false });
     app.insert_resource(LocalPlayerViewState::default());
     app.insert_resource(CharacterSelectionState::default());
     app.insert_resource(FreeCameraState::default());
@@ -313,10 +316,23 @@ pub(crate) fn run() {
         } else {
             app.add_plugins(plugins::ClientVisualsPlugin);
         }
+        app.add_plugins(plugins::ClientLightingPlugin);
         app.add_plugins(plugins::ClientUiPlugin);
         app.add_plugins(plugins::ClientDiagnosticsPlugin);
     }
     app.run();
+}
+
+fn log_startup_error_line(message: &str) {
+    let path = std::env::var("SIDEREAL_CLIENT_LOG_FILE")
+        .unwrap_or_else(|_| "logs/sidereal-client.log".to_string());
+    let path = std::path::PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{message}");
+    }
 }
 
 fn log_native_client_connected(

@@ -2,20 +2,29 @@ use bevy::prelude::*;
 
 pub mod actions;
 pub mod character_movement;
+pub mod collision_outline_generation;
 pub mod combat;
 pub mod component_meta;
 pub mod components;
-pub mod entities;
+pub mod editor_schema;
 pub mod flight;
 pub mod generated;
 pub mod hierarchy;
 pub mod mass;
-pub mod scanner;
+pub mod procedural_sprite_generation;
+pub mod render_layers;
+pub mod visibility_range;
+pub mod world_spatial;
 
 // Re-export commonly used items
 pub use actions::*;
 pub use character_movement::{
     process_character_movement_actions, sync_player_to_controlled_entity,
+};
+pub use collision_outline_generation::{
+    compute_collision_half_extents_from_rgba_alpha,
+    compute_collision_half_extents_from_sprite_length, generate_rdp_collision_outline_from_rgba,
+    generate_rdp_collision_outline_from_sprite_png,
 };
 pub use combat::{
     ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent, apply_damage_from_shot_impacts,
@@ -24,14 +33,25 @@ pub use combat::{
 };
 pub use component_meta::*;
 pub use components::*;
-pub use entities::*;
+pub use editor_schema::*;
 pub use generated::components::*;
 pub use hierarchy::sync_mounted_hierarchy;
 pub use mass::{
     bootstrap_collision_profiles_from_aabb, bootstrap_root_dynamic_entity_colliders,
     bootstrap_ship_mass_components, collider_from_collision_shape, recompute_total_mass,
 };
-pub use scanner::{apply_range_buff, compute_scanner_contribution, total_scanner_range_for_parent};
+pub use procedural_sprite_generation::{
+    ProceduralSpriteImageSet, compute_collision_half_extents_from_procedural_sprite,
+    generate_procedural_sprite_image_set, generate_rdp_collision_outline_from_procedural_sprite,
+};
+pub use render_layers::{
+    DEFAULT_MAIN_WORLD_LAYER_ID, default_main_world_render_layer, is_valid_phase_domain_pair,
+    is_valid_render_domain, is_valid_render_phase, known_component_kinds,
+    validate_runtime_post_process_stack, validate_runtime_render_layer_definition,
+    validate_runtime_render_layer_rule, validate_runtime_world_visual_stack,
+};
+pub use visibility_range::{apply_visibility_range_buff, total_visibility_range_for_parent};
+pub use world_spatial::{resolve_world_position, resolve_world_rotation_rad};
 
 // Re-export flight systems (not components, those come from generated)
 pub use flight::{

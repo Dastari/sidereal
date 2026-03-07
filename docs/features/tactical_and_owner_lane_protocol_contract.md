@@ -110,6 +110,7 @@ pub struct ServerTacticalContactsDeltaMessage {
 pub struct TacticalContact {
     pub entity_id: String, // UUID
     pub kind: String,
+    pub map_icon_asset_id: Option<String>,
     pub faction_id: Option<String>,
     pub position_xy: [f32; 2],
     pub heading_rad: f32,
@@ -125,7 +126,8 @@ Notes:
 
 1. `is_live_now=true` means currently scanner/live visible.
 2. `is_live_now=false` means stale memory projection.
-3. Fields remain redaction-scoped by policy/grants.
+3. `map_icon_asset_id` is sourced from entity `map_icon` (`MapIcon { asset_id }`) when present.
+4. Fields remain redaction-scoped by policy/grants.
 
 ## 5. Owner Asset Manifest Schemas
 
@@ -218,4 +220,13 @@ Current server implementation (first tactical lane cut):
 5. Server consumes validated resnapshot requests and forces immediate tactical snapshots.
 6. Periodic snapshot resync is still sent (currently every ~2 seconds) as a safety net.
 7. Client now applies tactical deltas with strict `base_sequence == cache.sequence`; mismatch is fail-closed and requests resnapshot.
-8. `explored_cells` currently mirrors the current queried/live footprint; persistent explored-memory growth is implemented in the fog-of-war phase.
+8. `explored_cells` is now generated from persisted player memory (`player_explored_cells`) unioned with current live scanner cells each tactical update.
+9. Live scanner cells are rasterized from scanner circles via circle-vs-cell intersection (grid representation, circle semantics).
+10. Persisted explored memory is player-entity scoped and survives hydration/restart through graph persistence.
+11. Tactical fog memory/live rasterization now uses a dedicated fine grid size of 100m cells (independent of visibility/relevance spatial grid cell size).
+12. Persisted `player_explored_cells` is now chunked binary storage (`chunks[]` with adaptive bitset/sparse encoding) rather than flat JSON `[{x,y}]` cell lists.
+
+Future TODOs:
+
+1. Add chunk-level dirty/snapshot telemetry and payload-size metrics for fog updates.
+2. Profile and optimize full fog snapshot materialization path if large-player-history snapshots become expensive.

@@ -8,6 +8,7 @@ members = [
   "crates/sidereal-persistence",
   "crates/sidereal-runtime-sync",
   "crates/sidereal-asset-runtime",
+  "crates/sidereal-shader-preview",
   "crates/sidereal-scripting",
   "bins/sidereal-replication",
   "bins/sidereal-gateway",

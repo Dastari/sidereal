@@ -1,26 +1,35 @@
 //! World scene bootstrap systems.
 
+use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::log::info;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite_render::{ColorMaterial, MeshMaterial2d};
 use bevy::state::state_scoped::DespawnOnExit;
 
 use super::app_state::{ClientAppState, ClientSession};
+use super::assets::LocalAssetManager;
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, GameplayCamera, GameplayHud, HudFpsText,
-    HudFuelBarFill, HudHealthBarFill, HudManifestText, HudPositionValueText, HudSpeedValueText,
-    HudTacticalText, LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill,
-    RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
-    SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot, TacticalMapScreenFxOverlay,
+    BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, FullscreenForegroundCamera,
+    GameplayCamera, GameplayHud, HudFpsText, HudFuelBarFill, HudHealthBarFill, HudManifestText,
+    HudPositionValueText, HudSpeedValueText, HudTacticalText, LoadingOverlayRoot,
+    LoadingOverlayText, LoadingProgressBarFill, PostProcessCamera, RuntimeScreenOverlayPass,
+    RuntimeScreenOverlayPassKind, RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle,
+    SegmentedBarValue, SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot,
     TacticalMapTitle, TopDownCamera, UiOverlayLayer,
 };
-use super::platform::{BACKDROP_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER};
+use super::platform::{
+    BACKDROP_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER, PLANET_BODY_RENDER_LAYER,
+    POST_PROCESS_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER,
+};
 use super::resources::{
     AssetRootPath, CameraMotionState, DebugBlueOverlayEnabled, EmbeddedFonts, StarfieldMotionState,
 };
 use super::shaders;
+
+const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_world_scene(
@@ -29,16 +38,18 @@ pub(super) fn spawn_world_scene(
     mut session: ResMut<'_, ClientSession>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut images: ResMut<'_, Assets<Image>>,
     mut color_materials: ResMut<'_, Assets<ColorMaterial>>,
     mut tactical_map_materials: ResMut<'_, Assets<TacticalMapOverlayMaterial>>,
     mut starfield_motion: ResMut<'_, StarfieldMotionState>,
     mut camera_motion: ResMut<'_, CameraMotionState>,
     asset_root: Res<'_, AssetRootPath>,
+    asset_manager: Res<'_, LocalAssetManager>,
     debug_blue_overlay: Res<'_, DebugBlueOverlayEnabled>,
 ) {
     *starfield_motion = StarfieldMotionState::default();
     *camera_motion = CameraMotionState::default();
-    shaders::reload_streamed_shaders(&mut shaders_assets, &asset_root.0);
+    shaders::reload_streamed_shaders(&mut shaders_assets, &asset_root.0, &asset_manager);
     commands.spawn((
         Camera2d,
         Camera {
@@ -73,6 +84,7 @@ pub(super) fn spawn_world_scene(
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, 80.0),
+        RenderLayers::from_layers(&[0, PLANET_BODY_RENDER_LAYER]),
         GameplayCamera,
         TopDownCamera {
             distance: 30.0,
@@ -85,6 +97,34 @@ pub(super) fn spawn_world_scene(
             filtered_focus_xy: Vec2::ZERO,
             focus_initialized: false,
         },
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            is_active: true,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        FullscreenForegroundCamera,
+        RenderLayers::layer(FULLSCREEN_FOREGROUND_RENDER_LAYER),
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 2,
+            is_active: true,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        PostProcessCamera,
+        RenderLayers::layer(POST_PROCESS_RENDER_LAYER),
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
@@ -435,14 +475,30 @@ pub(super) fn spawn_world_scene(
         DespawnOnExit(ClientAppState::InWorld),
     ));
     let tactical_overlay_mesh = meshes.add(Rectangle::new(1.0, 1.0));
-    let tactical_overlay_material = tactical_map_materials.add(TacticalMapOverlayMaterial::default());
+    let fog_mask = images.add(Image::new_fill(
+        Extent3d {
+            width: TACTICAL_FOG_MASK_RESOLUTION,
+            height: TACTICAL_FOG_MASK_RESOLUTION,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[255],
+        TextureFormat::R8Unorm,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    ));
+    let tactical_overlay_material = tactical_map_materials.add(TacticalMapOverlayMaterial {
+        fog_mask,
+        ..default()
+    });
     commands.spawn((
         Mesh2d(tactical_overlay_mesh),
         MeshMaterial2d(tactical_overlay_material),
         Transform::from_xyz(0.0, 0.0, -10.0),
         RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
         Visibility::Hidden,
-        TacticalMapScreenFxOverlay,
+        RuntimeScreenOverlayPass {
+            kind: RuntimeScreenOverlayPassKind::TacticalMap,
+        },
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));

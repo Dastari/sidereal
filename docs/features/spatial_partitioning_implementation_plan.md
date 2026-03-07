@@ -37,7 +37,7 @@ File: `bins/sidereal-replication/src/replication/visibility.rs`
 - `VISIBILITY_CELL_SIZE_M = 300.0` (hardcoded constant)
 - `cell_key(position: Vec3) -> (i32, i32)` — integer grid coordinates from f32 position
 - `add_entities_in_radius(center, radius_m, entities_by_cell, out)` — walks cells in a square around center
-- `build_candidate_set_for_client(...)` — in SpatialGrid mode: owned entities + entities near observer anchor (DEFAULT_VIEW_RANGE_M) + entities near each scanner source
+- `build_candidate_set_for_client(...)` — in SpatialGrid mode: owned entities + entities near observer anchor (DEFAULT_VIEW_RANGE_M) + entities near each visibility source
 - `should_bypass_candidate_filter(...)` — ensures owned, public, faction-matched, and scanner-range entities are never missed by the grid
 - `VisibilityScratch` — per-tick scratch buffer rebuilt from scratch every tick
 - `entities_by_cell: HashMap<(i32, i32), Vec<Entity>>` — the spatial grid itself (only occupied cells stored)
@@ -208,12 +208,12 @@ During per-client candidate construction, compute reachable systems:
 ```rust
 fn compute_reachable_systems(
     observer_anchor: Option<Vec3>,
-    scanner_sources: &[(Vec3, f32)],
+    visibility_sources: &[(Vec3, f32)],
     solar_system_positions: &HashMap<Uuid, Vec3>,
     solar_system_radii: &HashMap<Uuid, f32>,
 ) -> HashSet<Uuid> {
     let mut reachable = HashSet::new();
-    let max_reach = scanner_sources
+    let max_reach = visibility_sources
         .iter()
         .map(|(_, range)| *range)
         .fold(0.0_f32, f32::max)
@@ -227,7 +227,7 @@ fn compute_reachable_systems(
 
         let close_enough = observer_anchor.is_some_and(|anchor| {
             (system_center - anchor).length() <= system_radius + max_reach
-        }) || scanner_sources.iter().any(|(pos, range)| {
+        }) || visibility_sources.iter().any(|(pos, range)| {
             (system_center - *pos).length() <= system_radius + range
         });
 
@@ -323,7 +323,7 @@ The following are explicitly out of scope for this plan:
 - **`gain_visibility` / `lose_visibility` calls** — the final visibility decision mechanism is unchanged.
 - **Mount-root resolution** — unchanged. Children inherit owner/faction/public from their mount root.
 - **Observer anchor tracking** — unchanged. Player entity position remains the delivery center.
-- **Scanner range computation** — unchanged. `compute_controlled_entity_scanner_ranges` aggregates module contributions.
+- **Scanner range computation** — unchanged. `compute_controlled_entity_visibility_ranges` aggregates module contributions.
 - **Candidate bypass** — `should_bypass_candidate_filter` is unchanged. Owned, public, faction-matched, and scanner-range entities always bypass candidate filtering.
 - **Tick frequency** — visibility still runs every FixedUpdate tick (30 Hz). No throttling or skip-frame logic.
 - **f64 migration** — cell key type moves to `i64` now (trivial, forward-compatible), but position types remain `Vec3`/f32 until the Avian f64 migration is done separately.
@@ -373,7 +373,7 @@ These must hold at all times and are testable:
 
 2. **`add_entities_in_radius` correctness**: verify entities at exact boundary of radius are included, entities outside are excluded, and the square-walk covers the correct cell range.
 
-3. **Candidate set construction**: with known entity positions and a known observer position + scanner sources, verify the candidate set contains exactly the expected entities.
+3. **Candidate set construction**: with known entity positions and a known observer position + visibility sources, verify the candidate set contains exactly the expected entities.
 
 4. **Bypass filter**: verify owned, public, faction-matched, and scanner-range entities pass the bypass even when not in the candidate set.
 
@@ -454,7 +454,7 @@ FixedUpdate:
   7. sync_controlled_entity_transforms      ← Bevy transforms updated from physics
   8. sync_player_anchor_to_controlled_entity
   9. update_client_observer_anchor_positions
-  10. compute_controlled_entity_scanner_ranges
+  10. compute_controlled_entity_visibility_ranges
   11. update_network_visibility             ← visibility decisions made
 ```
 

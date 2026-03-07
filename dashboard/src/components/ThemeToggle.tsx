@@ -1,4 +1,4 @@
-import { Monitor, Moon, Sun } from 'lucide-react'
+import { Moon, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Tooltip,
@@ -8,31 +8,27 @@ import {
 import { useTheme } from '@/hooks/use-theme'
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme()
+  const { theme, resolvedTheme, setTheme } = useTheme()
 
   const cycleTheme = () => {
-    const themes: Array<'light' | 'dark' | 'system'> = [
-      'light',
-      'dark',
-      'system',
-    ]
-    const currentIndex = themes.indexOf(theme)
-    const nextIndex = (currentIndex + 1) % themes.length
-    setTheme(themes[nextIndex])
+    const effectiveTheme = theme === 'system' ? resolvedTheme : theme
+    setTheme(effectiveTheme === 'dark' ? 'light' : 'dark')
   }
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button variant="ghost" size="icon" onClick={cycleTheme}>
-          {theme === 'light' && <Sun className="h-4 w-4" />}
-          {theme === 'dark' && <Moon className="h-4 w-4" />}
-          {theme === 'system' && <Monitor className="h-4 w-4" />}
+          {resolvedTheme === 'light' ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
           <span className="sr-only">Toggle theme</span>
         </Button>
       </TooltipTrigger>
       <TooltipContent>
-        <p>Theme: {theme}</p>
+        <p>Theme: {theme === 'system' ? `${resolvedTheme} (system)` : theme}</p>
       </TooltipContent>
     </Tooltip>
   )

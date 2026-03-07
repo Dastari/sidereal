@@ -10,12 +10,12 @@ fn visibility_context(
     player_entity_id: &str,
     observer_anchor_position: Option<Vec3>,
     player_faction_id: Option<&str>,
-    scanner_sources: Vec<(Vec3, f32)>,
+    visibility_sources: Vec<(Vec3, f32)>,
 ) -> PlayerVisibilityContext {
     PlayerVisibilityContext {
         player_entity_id: player_entity_id.to_string(),
         observer_anchor_position,
-        scanner_sources,
+        visibility_sources,
         player_faction_id: player_faction_id.map(ToString::to_string),
         view_mode: ClientLocalViewMode::Tactical,
     }
@@ -122,7 +122,7 @@ fn scanner_authorization_still_requires_delivery_scope() {
             Some(target_position),
             &ctx
         ),
-        Some(VisibilityAuthorization::Scanner)
+        Some(VisibilityAuthorization::Range)
     );
     assert!(!is_entity_visible_to_player(
         "player-a",
@@ -156,7 +156,7 @@ fn scanner_authorization_with_missing_observer_anchor_is_culled() {
             Some(target_position),
             &ctx
         ),
-        Some(VisibilityAuthorization::Scanner)
+        Some(VisibilityAuthorization::Range)
     );
     assert!(!is_entity_visible_to_player(
         "player-a",

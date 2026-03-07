@@ -73,6 +73,7 @@ fn compute_manifest_diff(
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn stream_owner_asset_manifest_messages(
     server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
     mut sender: ServerMultiMessageSender<'_, '_, With<Connected>>,
@@ -218,20 +219,18 @@ pub fn stream_owner_asset_manifest_messages(
                     &message, server, &target,
                 );
                 emitted_snapshot = true;
-            } else {
-                if !upserts.is_empty() || !removals.is_empty() {
-                    let message = ServerOwnerAssetManifestDeltaMessage {
-                        player_entity_id: player_entity_id.clone(),
-                        sequence: state.sequence,
-                        base_sequence: previous_sequence,
-                        upserts,
-                        removals,
-                        generated_at_tick,
-                    };
-                    let _ = sender.send::<ServerOwnerAssetManifestDeltaMessage, ManifestChannel>(
-                        &message, server, &target,
-                    );
-                }
+            } else if !upserts.is_empty() || !removals.is_empty() {
+                let message = ServerOwnerAssetManifestDeltaMessage {
+                    player_entity_id: player_entity_id.clone(),
+                    sequence: state.sequence,
+                    base_sequence: previous_sequence,
+                    upserts,
+                    removals,
+                    generated_at_tick,
+                };
+                let _ = sender.send::<ServerOwnerAssetManifestDeltaMessage, ManifestChannel>(
+                    &message, server, &target,
+                );
             }
         }
         if emitted_snapshot {

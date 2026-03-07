@@ -24,10 +24,8 @@ export function AppLayout({
 }: AppLayoutProps) {
   const [isSidebarDragging, setIsSidebarDragging] = React.useState(false)
   const [isDetailDragging, setIsDetailDragging] = React.useState(false)
-  const [currentSidebarWidth, setCurrentSidebarWidth] =
-    React.useState(sidebarWidth)
-  const [currentDetailWidth, setCurrentDetailWidth] =
-    React.useState(detailPanelWidth)
+  const [currentSidebarWidth, setCurrentSidebarWidth] = React.useState(280)
+  const [currentDetailWidth, setCurrentDetailWidth] = React.useState(320)
 
   React.useEffect(() => {
     setCurrentSidebarWidth(sidebarWidth)
@@ -119,7 +117,7 @@ export function AppLayout({
             />
           </aside>
         )}
-        <main className="flex-1 overflow-hidden relative bg-card">
+        <main className="grow flex overflow-hidden relative bg-card">
           {children}
         </main>
         {detailPanel && (

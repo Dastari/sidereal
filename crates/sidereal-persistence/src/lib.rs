@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 const DEFAULT_GRAPH_NAME: &str = "sidereal";
+const SCRIPT_CATALOG_DOCUMENTS_TABLE: &str = "script_catalog_documents";
+const SCRIPT_CATALOG_VERSIONS_TABLE: &str = "script_catalog_versions";
+const SCRIPT_CATALOG_DRAFTS_TABLE: &str = "script_catalog_drafts";
 
 #[derive(Debug, Error)]
 pub enum PersistenceError {
@@ -56,6 +59,35 @@ pub struct GraphEntityRecord {
 pub struct GraphPersistence {
     client: Client,
     graph_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptCatalogRecord {
+    pub script_path: String,
+    pub source: String,
+    pub revision: u64,
+    pub origin: String,
+    pub family: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptCatalogDocumentSummary {
+    pub script_path: String,
+    pub family: String,
+    pub active_revision: Option<u64>,
+    pub has_draft: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptCatalogDocumentDetail {
+    pub script_path: String,
+    pub family: String,
+    pub active_revision: Option<u64>,
+    pub active_source: Option<String>,
+    pub active_origin: Option<String>,
+    pub draft_source: Option<String>,
+    pub draft_origin: Option<String>,
+    pub draft_updated_at_epoch_s: Option<u64>,
 }
 
 impl GraphPersistence {
@@ -132,6 +164,7 @@ impl GraphPersistence {
                 ",
             )
             .map_err(db_err("create script world init state table"))?;
+        ensure_script_catalog_schema(&mut self.client)?;
 
         Ok(())
     }
@@ -502,8 +535,431 @@ pub fn ensure_schema_in_transaction(tx: &mut Transaction<'_>, graph_name: &str) 
         ",
     )
     .map_err(db_err("create script world init state table"))?;
+    tx.batch_execute(script_catalog_schema_sql())
+        .map_err(db_err("create script catalog tables"))?;
 
     Ok(())
+}
+
+pub fn script_catalog_schema_sql() -> &'static str {
+    concat!(
+        "CREATE TABLE IF NOT EXISTS ",
+        "script_catalog_documents",
+        " (",
+        "script_path TEXT PRIMARY KEY,",
+        "script_family TEXT NOT NULL,",
+        "active_revision BIGINT NOT NULL,",
+        "created_at_epoch_s BIGINT NOT NULL,",
+        "updated_at_epoch_s BIGINT NOT NULL",
+        ");",
+        "CREATE TABLE IF NOT EXISTS ",
+        "script_catalog_versions",
+        " (",
+        "script_path TEXT NOT NULL REFERENCES script_catalog_documents(script_path) ON DELETE CASCADE,",
+        "revision BIGINT NOT NULL,",
+        "source TEXT NOT NULL,",
+        "origin TEXT NOT NULL,",
+        "created_at_epoch_s BIGINT NOT NULL,",
+        "PRIMARY KEY (script_path, revision)",
+        ");",
+        "CREATE INDEX IF NOT EXISTS script_catalog_documents_family_idx ON script_catalog_documents(script_family);",
+        "CREATE TABLE IF NOT EXISTS ",
+        "script_catalog_drafts",
+        " (",
+        "script_path TEXT PRIMARY KEY,",
+        "script_family TEXT NOT NULL,",
+        "source TEXT NOT NULL,",
+        "origin TEXT NOT NULL,",
+        "updated_at_epoch_s BIGINT NOT NULL",
+        ");"
+    )
+}
+
+pub fn ensure_script_catalog_schema(client: &mut Client) -> Result<()> {
+    client
+        .batch_execute(script_catalog_schema_sql())
+        .map_err(db_err("create script catalog tables"))?;
+    Ok(())
+}
+
+pub fn infer_script_family(script_path: &str) -> String {
+    if script_path == "world/world_init.lua" {
+        return "world_init".to_string();
+    }
+    if script_path == "assets/registry.lua" {
+        return "asset_registry".to_string();
+    }
+    if script_path == "bundles/bundle_registry.lua" {
+        return "bundle_registry".to_string();
+    }
+    if script_path == "accounts/player_init.lua" {
+        return "player_init".to_string();
+    }
+    if script_path.starts_with("bundles/") {
+        return "bundle".to_string();
+    }
+    if script_path.starts_with("ai/") {
+        return "ai".to_string();
+    }
+    if script_path.starts_with("world/") {
+        return "world".to_string();
+    }
+    "misc".to_string()
+}
+
+pub fn load_active_script_catalog(client: &mut Client) -> Result<Vec<ScriptCatalogRecord>> {
+    ensure_script_catalog_schema(client)?;
+    let rows = client
+        .query(
+            &format!(
+                "SELECT d.script_path, d.script_family, d.active_revision, v.source, v.origin
+                 FROM {SCRIPT_CATALOG_DOCUMENTS_TABLE} d
+                 JOIN {SCRIPT_CATALOG_VERSIONS_TABLE} v
+                   ON v.script_path = d.script_path
+                  AND v.revision = d.active_revision
+                 ORDER BY d.script_path ASC"
+            ),
+            &[],
+        )
+        .map_err(db_err("load active script catalog"))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let revision: i64 = row.get(2);
+        out.push(ScriptCatalogRecord {
+            script_path: row.get(0),
+            family: row.get(1),
+            revision: revision.max(0) as u64,
+            source: row.get(3),
+            origin: row.get(4),
+        });
+    }
+    Ok(out)
+}
+
+pub fn replace_active_script_catalog(
+    client: &mut Client,
+    records: &[ScriptCatalogRecord],
+) -> Result<()> {
+    ensure_script_catalog_schema(client)?;
+    let now_epoch_s = now_epoch_s() as i64;
+    let mut tx = client
+        .transaction()
+        .map_err(db_err("begin script catalog transaction"))?;
+
+    let keep_paths = records
+        .iter()
+        .map(|record| record.script_path.clone())
+        .collect::<Vec<_>>();
+    if keep_paths.is_empty() {
+        tx.execute(
+            &format!("DELETE FROM {SCRIPT_CATALOG_DOCUMENTS_TABLE}"),
+            &[],
+        )
+        .map_err(db_err("delete script catalog documents"))?;
+        tx.commit()
+            .map_err(db_err("commit empty script catalog transaction"))?;
+        return Ok(());
+    }
+
+    tx.execute(
+        &format!(
+            "DELETE FROM {SCRIPT_CATALOG_DOCUMENTS_TABLE}
+             WHERE NOT (script_path = ANY($1))"
+        ),
+        &[&keep_paths],
+    )
+    .map_err(db_err("prune script catalog documents"))?;
+
+    for record in records {
+        let revision = record.revision as i64;
+        tx.execute(
+            &format!(
+                "INSERT INTO {SCRIPT_CATALOG_DOCUMENTS_TABLE}
+                    (script_path, script_family, active_revision, created_at_epoch_s, updated_at_epoch_s)
+                 VALUES ($1, $2, $3, $4, $4)
+                 ON CONFLICT (script_path) DO UPDATE
+                 SET script_family = EXCLUDED.script_family,
+                     active_revision = EXCLUDED.active_revision,
+                     updated_at_epoch_s = EXCLUDED.updated_at_epoch_s"
+            ),
+            &[
+                &record.script_path,
+                &record.family,
+                &revision,
+                &now_epoch_s,
+            ],
+        )
+        .map_err(db_err("upsert script catalog document"))?;
+        tx.execute(
+            &format!(
+                "INSERT INTO {SCRIPT_CATALOG_VERSIONS_TABLE}
+                    (script_path, revision, source, origin, created_at_epoch_s)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (script_path, revision) DO UPDATE
+                 SET source = EXCLUDED.source,
+                     origin = EXCLUDED.origin"
+            ),
+            &[
+                &record.script_path,
+                &revision,
+                &record.source,
+                &record.origin,
+                &now_epoch_s,
+            ],
+        )
+        .map_err(db_err("upsert script catalog version"))?;
+    }
+
+    tx.commit()
+        .map_err(db_err("commit script catalog transaction"))?;
+    Ok(())
+}
+
+pub fn list_script_catalog_documents(
+    client: &mut Client,
+) -> Result<Vec<ScriptCatalogDocumentSummary>> {
+    ensure_script_catalog_schema(client)?;
+    let doc_rows = client
+        .query(
+            &format!(
+                "SELECT script_path, script_family, active_revision
+                 FROM {SCRIPT_CATALOG_DOCUMENTS_TABLE}
+                 ORDER BY script_path ASC"
+            ),
+            &[],
+        )
+        .map_err(db_err("list script catalog documents"))?;
+    let draft_rows = client
+        .query(
+            &format!(
+                "SELECT script_path, script_family
+                 FROM {SCRIPT_CATALOG_DRAFTS_TABLE}
+                 ORDER BY script_path ASC"
+            ),
+            &[],
+        )
+        .map_err(db_err("list script catalog drafts"))?;
+
+    let mut by_path = HashMap::<String, ScriptCatalogDocumentSummary>::new();
+    for row in doc_rows {
+        let revision: i64 = row.get(2);
+        let script_path: String = row.get(0);
+        by_path.insert(
+            script_path.clone(),
+            ScriptCatalogDocumentSummary {
+                script_path,
+                family: row.get(1),
+                active_revision: Some(revision.max(0) as u64),
+                has_draft: false,
+            },
+        );
+    }
+    for row in draft_rows {
+        let script_path: String = row.get(0);
+        let family: String = row.get(1);
+        by_path
+            .entry(script_path.clone())
+            .and_modify(|entry| {
+                entry.has_draft = true;
+                if entry.family.is_empty() {
+                    entry.family = family.clone();
+                }
+            })
+            .or_insert(ScriptCatalogDocumentSummary {
+                script_path,
+                family,
+                active_revision: None,
+                has_draft: true,
+            });
+    }
+    let mut out = by_path.into_values().collect::<Vec<_>>();
+    out.sort_by(|a, b| a.script_path.cmp(&b.script_path));
+    Ok(out)
+}
+
+pub fn load_script_catalog_document(
+    client: &mut Client,
+    script_path: &str,
+) -> Result<Option<ScriptCatalogDocumentDetail>> {
+    ensure_script_catalog_schema(client)?;
+    let doc_row = client
+        .query_opt(
+            &format!(
+                "SELECT d.script_path, d.script_family, d.active_revision, v.source, v.origin
+                 FROM {SCRIPT_CATALOG_DOCUMENTS_TABLE} d
+                 LEFT JOIN {SCRIPT_CATALOG_VERSIONS_TABLE} v
+                   ON v.script_path = d.script_path
+                  AND v.revision = d.active_revision
+                 WHERE d.script_path = $1"
+            ),
+            &[&script_path],
+        )
+        .map_err(db_err("load script catalog document"))?;
+    let draft_row = client
+        .query_opt(
+            &format!(
+                "SELECT script_path, script_family, source, origin, updated_at_epoch_s
+                 FROM {SCRIPT_CATALOG_DRAFTS_TABLE}
+                 WHERE script_path = $1"
+            ),
+            &[&script_path],
+        )
+        .map_err(db_err("load script catalog draft"))?;
+
+    if doc_row.is_none() && draft_row.is_none() {
+        return Ok(None);
+    }
+
+    let mut detail = if let Some(row) = doc_row {
+        let revision: i64 = row.get(2);
+        ScriptCatalogDocumentDetail {
+            script_path: row.get(0),
+            family: row.get(1),
+            active_revision: Some(revision.max(0) as u64),
+            active_source: row.get(3),
+            active_origin: row.get(4),
+            draft_source: None,
+            draft_origin: None,
+            draft_updated_at_epoch_s: None,
+        }
+    } else {
+        ScriptCatalogDocumentDetail {
+            script_path: script_path.to_string(),
+            family: String::new(),
+            active_revision: None,
+            active_source: None,
+            active_origin: None,
+            draft_source: None,
+            draft_origin: None,
+            draft_updated_at_epoch_s: None,
+        }
+    };
+
+    if let Some(row) = draft_row {
+        let updated_at: i64 = row.get(4);
+        detail.script_path = row.get(0);
+        if detail.family.is_empty() {
+            detail.family = row.get(1);
+        }
+        detail.draft_source = row.get(2);
+        detail.draft_origin = row.get(3);
+        detail.draft_updated_at_epoch_s = Some(updated_at.max(0) as u64);
+    }
+    if detail.family.is_empty() {
+        detail.family = infer_script_family(script_path);
+    }
+    Ok(Some(detail))
+}
+
+pub fn upsert_script_catalog_draft(
+    client: &mut Client,
+    script_path: &str,
+    family: &str,
+    source: &str,
+    origin: &str,
+) -> Result<()> {
+    ensure_script_catalog_schema(client)?;
+    let family = if family.trim().is_empty() {
+        infer_script_family(script_path)
+    } else {
+        family.trim().to_string()
+    };
+    let now_epoch_s = now_epoch_s() as i64;
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {SCRIPT_CATALOG_DRAFTS_TABLE}
+                    (script_path, script_family, source, origin, updated_at_epoch_s)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (script_path) DO UPDATE
+                 SET script_family = EXCLUDED.script_family,
+                     source = EXCLUDED.source,
+                     origin = EXCLUDED.origin,
+                     updated_at_epoch_s = EXCLUDED.updated_at_epoch_s"
+            ),
+            &[&script_path, &family, &source, &origin, &now_epoch_s],
+        )
+        .map_err(db_err("upsert script catalog draft"))?;
+    Ok(())
+}
+
+pub fn discard_script_catalog_draft(client: &mut Client, script_path: &str) -> Result<bool> {
+    ensure_script_catalog_schema(client)?;
+    let deleted = client
+        .execute(
+            &format!("DELETE FROM {SCRIPT_CATALOG_DRAFTS_TABLE} WHERE script_path = $1"),
+            &[&script_path],
+        )
+        .map_err(db_err("discard script catalog draft"))?;
+    Ok(deleted > 0)
+}
+
+pub fn publish_script_catalog_draft(client: &mut Client, script_path: &str) -> Result<Option<u64>> {
+    ensure_script_catalog_schema(client)?;
+    let mut tx = client
+        .transaction()
+        .map_err(db_err("begin script draft publish transaction"))?;
+    let draft_row = tx
+        .query_opt(
+            &format!(
+                "SELECT script_family, source, origin
+                 FROM {SCRIPT_CATALOG_DRAFTS_TABLE}
+                 WHERE script_path = $1"
+            ),
+            &[&script_path],
+        )
+        .map_err(db_err("load script draft for publish"))?;
+    let Some(draft_row) = draft_row else {
+        tx.commit()
+            .map_err(db_err("commit empty script draft publish transaction"))?;
+        return Ok(None);
+    };
+    let family: String = draft_row.get(0);
+    let source: String = draft_row.get(1);
+    let origin: String = draft_row.get(2);
+    let next_revision = tx
+        .query_one(
+            &format!(
+                "SELECT COALESCE(MAX(revision), 0) + 1
+                 FROM {SCRIPT_CATALOG_VERSIONS_TABLE}
+                 WHERE script_path = $1"
+            ),
+            &[&script_path],
+        )
+        .map_err(db_err("compute next script revision"))?
+        .get::<_, i64>(0)
+        .max(1);
+    let now_epoch_s = now_epoch_s() as i64;
+    tx.execute(
+        &format!(
+            "INSERT INTO {SCRIPT_CATALOG_VERSIONS_TABLE}
+                (script_path, revision, source, origin, created_at_epoch_s)
+             VALUES ($1, $2, $3, $4, $5)"
+        ),
+        &[&script_path, &next_revision, &source, &origin, &now_epoch_s],
+    )
+    .map_err(db_err("insert published script version"))?;
+    tx.execute(
+        &format!(
+            "INSERT INTO {SCRIPT_CATALOG_DOCUMENTS_TABLE}
+                (script_path, script_family, active_revision, created_at_epoch_s, updated_at_epoch_s)
+             VALUES ($1, $2, $3, $4, $4)
+             ON CONFLICT (script_path) DO UPDATE
+             SET script_family = EXCLUDED.script_family,
+                 active_revision = EXCLUDED.active_revision,
+                 updated_at_epoch_s = EXCLUDED.updated_at_epoch_s"
+        ),
+        &[&script_path, &family, &next_revision, &now_epoch_s],
+    )
+    .map_err(db_err("upsert published script document"))?;
+    tx.execute(
+        &format!("DELETE FROM {SCRIPT_CATALOG_DRAFTS_TABLE} WHERE script_path = $1"),
+        &[&script_path],
+    )
+    .map_err(db_err("delete published script draft"))?;
+    tx.commit()
+        .map_err(db_err("commit script draft publish transaction"))?;
+    Ok(Some(next_revision as u64))
 }
 
 pub fn persist_graph_records_in_transaction(
@@ -738,11 +1194,8 @@ fn cypher_set_clauses(prefix: &str, value: &JsonValue) -> Vec<String> {
     };
     obj.iter()
         .map(|(key, val)| {
-            let clean_key = key
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect::<String>();
-            format!("{prefix}.{clean_key}={}", cypher_literal(val))
+            let ident = cypher_property_ident(key);
+            format!("{prefix}.{ident}={}", cypher_literal(val))
         })
         .collect::<Vec<_>>()
 }
@@ -761,17 +1214,19 @@ pub fn cypher_literal(value: &JsonValue) -> String {
         JsonValue::Object(map) => {
             let rendered = map
                 .iter()
-                .map(|(k, v)| {
-                    let clean_key = k
-                        .chars()
-                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                        .collect::<String>();
-                    format!("{clean_key}:{}", cypher_literal(v))
-                })
+                .map(|(k, v)| format!("{}:{}", cypher_property_ident(k), cypher_literal(v)))
                 .collect::<Vec<_>>();
             format!("{{{}}}", rendered.join(","))
         }
     }
+}
+
+fn cypher_property_ident(raw_key: &str) -> String {
+    let clean_key = raw_key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect::<String>();
+    format!("`{clean_key}`")
 }
 
 #[doc(hidden)]
@@ -876,4 +1331,58 @@ fn now_epoch_s() -> u64 {
 
 fn db_err(action: &'static str) -> impl Fn(postgres::Error) -> PersistenceError {
     move |err| PersistenceError::Database(format!("{action} failed: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cypher_literal, cypher_set_clauses, infer_script_family};
+    use serde_json::json;
+
+    #[test]
+    fn infer_script_family_classifies_known_roots() {
+        assert_eq!(infer_script_family("world/world_init.lua"), "world_init");
+        assert_eq!(infer_script_family("assets/registry.lua"), "asset_registry");
+        assert_eq!(
+            infer_script_family("bundles/bundle_registry.lua"),
+            "bundle_registry"
+        );
+        assert_eq!(
+            infer_script_family("accounts/player_init.lua"),
+            "player_init"
+        );
+        assert_eq!(
+            infer_script_family("bundles/starter/planet_body.lua"),
+            "bundle"
+        );
+        assert_eq!(infer_script_family("ai/pirate_patrol.lua"), "ai");
+        assert_eq!(infer_script_family("world/something_else.lua"), "world");
+        assert_eq!(infer_script_family("misc/foo.lua"), "misc");
+    }
+
+    #[test]
+    fn cypher_set_clauses_quote_keyword_like_property_names() {
+        let clauses = cypher_set_clauses(
+            "c",
+            &json!({
+                "order": -190,
+                "display_name": "StarField"
+            }),
+        );
+        assert!(clauses.iter().any(|value| value == "c.`order`=-190"));
+        assert!(
+            clauses
+                .iter()
+                .any(|value| value == "c.`display_name`='StarField'")
+        );
+    }
+
+    #[test]
+    fn cypher_literal_quotes_object_keys() {
+        let rendered = cypher_literal(&json!({
+            "order": -190,
+            "phase": "fullscreen_background"
+        }));
+        assert!(rendered.contains("`order`:-190"));
+        assert!(rendered.contains("`phase`:'fullscreen_background'"));
+    }
 }

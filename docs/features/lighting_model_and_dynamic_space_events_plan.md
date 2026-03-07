@@ -1,241 +1,578 @@
 # Lighting Model and Dynamic Space Events Plan
 
-Status: Proposed implementation plan  
-Date: 2026-03-03  
-Owners: client rendering + gameplay runtime + asset streaming
+Status: Active implementation contract and phased plan
+Date: 2026-03-06
+Owners: client rendering + gameplay runtime + asset/shader authoring
 
 Primary references:
 - `docs/sidereal_design_document.md`
 - `docs/features/asset_delivery_contract.md`
-- `docs/features/thruster_plumes_afterburner_plan.md`
+- `docs/features/scripting_support.md`
+- `docs/features/procedural_asteroids.md`
+- `docs/features/procedural_planets.md`
 - `docs/features/visibility_replication_contract.md`
 
-## 1. Goals
+## 1. Why This Must Be Baked In Early
 
-Define one consistent lighting model for Sidereal (top-down action RPG) that supports:
+Sidereal is no longer a simple sprite stack. The project already has:
 
-1. Global illumination style ambient response.
-2. Directional/key light from suns/stars.
-3. Dynamic emissive lighting from thrusters, weapons, impacts, and particles.
-4. Normal/bump-map based ship/asteroid lighting and shadow cues.
-5. Flashy neon combat readability (lasers, guns, plasma effects).
-6. Background lightning and other sci-fi dynamic space events.
-7. Native + WASM parity with streamed shader/material assets.
+1. fullscreen background materials,
+2. streamed sprite materials,
+3. procedural asteroid materials,
+4. procedural planet materials,
+5. thruster plume materials,
+6. tactical-map overlays,
+7. a growing set of authored visual payloads coming from Lua.
 
-## 2. Non-Negotiable Runtime Rules
+If lighting is added late, every one of those paths will need retrofitting with inconsistent assumptions. The correct move is to define the 2.5D lighting contract now and make all future world-facing materials conform to it.
 
-1. Authority remains one-way: gameplay simulation and visibility are server-authoritative; lighting is presentation unless explicitly declared gameplay-relevant.
-2. Lighting systems must never write authoritative motion/gameplay state.
-3. Dynamic light/particle instances are not replicated one-by-one.
-4. Replicate compact event/state inputs only; derive render detail client-side.
-5. Use logical `asset_id` references, never raw runtime file paths in gameplay components.
-6. Keep native/WASM behavior aligned; no gameplay-lighting forks by target.
+This document is the render contract for that work.
 
-## 3. Consistent Lighting Model
+## 2.1 Current Implementation Status
 
-Use a layered 2.5D lighting stack:
+Implemented now:
 
-1. `L0` Background radiance: fullscreen shaders (starfield/nebula/background) output ambient sky radiance and event flashes.
-2. `L1` Stellar key light: one or more directional/area sun contributions affecting world sprites/normal maps.
-3. `L2` Local dynamic lights: short-lived point/cone lights from thrusters, weapon fire, impacts, explosions, EMP arcs.
-4. `L3` Emissive/bloom composite: neon highlights and glow shaping for combat readability.
+1. `EnvironmentLightingState` exists as a canonical public replicated/persisted ECS component.
+2. Lua owns the bootstrap/default environment-lighting payload through `environment.lighting`.
+3. The client derives a shared `WorldLightingState` resource from replicated ECS state.
+4. If a replicated `PlanetBodyShaderSettings` entity with `body_kind = 1` is present, the client resolves direct-light direction per rendered entity from that star's world position instead of a single shard-global direction.
+5. Planets, asteroid sprite materials, and thruster plumes now consume shared world-light uniforms instead of only private shader light constants.
+6. A first client-derived `LocalLightEmitter` collection path exists, seeded from thruster plume visuals.
+7. One bounded dominant local-light contribution is now resolved per rendered entity and folded into planet, asteroid, ring, cloud, and plume materials.
 
-All world objects sample the same lighting inputs (ambient + stellar + local) so visuals stay coherent.
+Not done yet:
 
-## 4. Global Illumination Strategy (Top-Down Friendly)
+1. bounded multi-emitter accumulation is not yet injected into all world materials; current runtime resolves one dominant nearby local light per rendered entity,
+2. ships still need their shared lit material upgrade path,
+3. backdrop radiance is not yet folded automatically into the derived world-light state,
+4. dynamic space-event descriptors are still planned, not implemented.
 
-Do not attempt heavyweight real-time ray-traced GI for v1.
+## 2. Scope
 
-Recommended approach:
+This lighting model covers the **world render stack** only:
 
-1. Low-resolution light accumulation buffer (screen-space or world-tiled).
-2. Ambient probe grid per camera region:
-   - seeded from background radiance + nebula color fields,
-   - slowly time-smoothed,
-   - sampled by lit sprite/material shaders.
-3. Optional emissive injection pass:
-   - strong local emitters (explosions, large plasma bursts) inject temporary bounce tint into nearby probes.
+1. ships and other sprite-like entities,
+2. asteroids,
+3. planets and moons,
+4. thruster plumes,
+5. weapon tracers / impacts / explosions,
+6. fullscreen backdrop radiance and dynamic space events.
 
-Result: GI-like cohesion at MMO-friendly cost.
+It does **not** make lighting authoritative gameplay state by default. Lighting is presentation unless a future gameplay feature explicitly declares otherwise.
 
-## 5. Sun/Star Lighting
+## 3. Core Decision
 
-### 5.1 Data model
+Sidereal uses a **2.5D material-driven lighting model** built on Bevy `Material2d` and client-side lighting resources.
 
-Introduce a public replicated environment state (shard-level):
+The lighting stack is:
 
-1. `EnvironmentLightingState`
-   - primary light direction (world-space)
-   - primary light color/intensity
-   - optional secondary stellar fill
-   - ambient baseline color/intensity
+1. `Background Radiance`
+   - derived from fullscreen backdrop layers and solar-system environment state.
+2. `Global Stellar Illumination`
+   - one primary sun/key light plus optional low-cost secondary fill.
+3. `Local Dynamic Emitters`
+   - ships, thrusters, impacts, muzzle flashes, explosions, special events.
+4. `Material Response`
+   - each world material computes its own shading from a shared lighting contract.
+5. `Post / Glow`
+   - optional later phase, but fed from the same emissive model.
 
-### 5.2 Runtime behavior
+The key architectural rule is:
 
-1. Lighting direction is stable over short intervals; blend over time for transitions.
-2. World materials use this as key light source for normals/shadows.
-3. Sun occlusion for 2D top-down uses simplified height-shadow approximation (see Section 6).
+**all world materials sample the same lighting inputs, but each material remains responsible for its own surface response.**
 
-## 6. Normal/Bump Maps and Shadow Cues
+That means:
 
-### 6.1 Surface shading model
+1. backdrop shaders do not directly light ships,
+2. ships do not use Bevy 3D PBR,
+3. planets do not need a separate rendering architecture,
+4. asteroid normals, planet normals, and ship normals all feed one shared model.
 
-Add optional per-entity material metadata:
+## 4. Current Render Architecture Constraints
 
-1. `NormalMapAssetId` (optional)
-2. `HeightForShadowM` (optional scalar or profile id)
-3. `MaterialLightingProfileId` (optional preset)
+The lighting plan must fit the architecture that already exists:
 
-### 6.2 Shadow model
+1. `BackdropCamera` renders fullscreen layer materials.
+2. `GameplayCamera` renders world entities and dedicated lower-z layers such as `PLANET_BODY_RENDER_LAYER`.
+3. World visuals are mostly child renderables attached below replicated ECS entities.
+4. Most active world materials are `Material2d` fragment shaders.
+5. Native and WASM builds must stay in lockstep.
 
-For top-down readability and performance:
+This means the lighting model must avoid:
 
-1. Use projected contact/drop shadows with light-direction offset.
-2. Modulate shadow softness/length by `HeightForShadowM` and sun elevation proxy.
-3. Avoid expensive per-pixel shadow maps in v1.
+1. dependence on full Bevy 3D PBR mesh pipelines for ordinary gameplay objects,
+2. per-object heavy shadow maps,
+3. platform-specific render graph branches that only work on native.
 
-This provides strong depth cues for ships/modules/asteroids while staying performant.
+## 5. Non-Negotiable Rules
 
-## 7. Thrusters, Weapons, and Particle Lighting
+1. Lighting must never write authoritative simulation state.
+2. Dynamic lights are client-derived from replicated world state or replicated compact events, not replicated one-by-one as expensive render objects.
+3. Asset/shader references remain logical `asset_id` values authored in Lua registries.
+4. Any shared lighting data needed by multiple materials must be exposed through stable material uniforms/resources, not ad-hoc shader-local constants.
+5. New world-facing shaders must join this lighting contract rather than invent private lighting logic.
+6. Native and WASM must keep identical material inputs and high-level lighting behavior.
 
-### 7.1 Dynamic emitters
+## 6. Lighting Layers
 
-Extend visual effect systems with a shared emitter contract:
+### 6.1 L0: Background Radiance
 
-1. `LocalLightEmitter`
-   - color, intensity, radius
-   - shape (`point`, `cone`, `capsule`)
-   - falloff curve
-   - ttl/fade policy
+Fullscreen backdrop layers already establish the visual mood of the scene. They should also provide the world with low-frequency radiance information.
+
+Background radiance is not direct illumination. It is:
+
+1. ambient color bias,
+2. soft backlight/rim bias,
+3. event-driven flash tint,
+4. low-frequency fill for shadows.
 
 Sources:
 
-1. Thruster plumes (already present) emit cone/point lights.
-2. Weapon fire emits short pulse lights.
-3. Beam/laser weapons emit line-segment light proxies.
-4. Explosions and hit sparks emit burst lights.
+1. `SpaceBackgroundShaderSettings`
+2. `StarfieldShaderSettings`
+3. future solar-system environment presets
+4. future dynamic space events (`ion_storm`, `solar_arc`, `pulsar_sweep`)
 
-### 7.2 Neon combat look
+Output contract:
 
-Establish palette bands and intensity rails:
+1. `ambient_color_rgb`
+2. `ambient_intensity`
+3. `backlight_color_rgb`
+4. `backlight_screen_or_world_direction`
+5. `event_flash_color_rgb`
+6. `event_flash_intensity`
 
-1. Faction/player-safe base hues.
-2. High-saturation accent hues for weapon classes.
-3. Controlled bloom threshold to prevent full-screen washout.
-4. Per-effect max luminance caps to protect readability.
+This output should be computed once per frame into a shared lighting resource, not recomputed separately in every world material from scratch.
 
-### 7.3 Particle lighting
+### 6.2 L1: Global Stellar Illumination
 
-1. Particles receive lighting from ambient + local light buffer.
-2. Selected particles (muzzle flare/explosion core) also emit light.
-3. Distant LOD: disable particle-emissive lights first, keep only major emitters.
+The world needs one coherent key light.
 
-## 8. Background Lightning and Dynamic Sci-Fi Space Events
+The correct model is:
 
-## 8.1 Lightning (thunder/lightning style in space backdrop)
+1. one primary stellar light sourced from a replicated star body when available,
+2. optional secondary fill light later,
+3. no dependence on Bevy 3D `DirectionalLight` for the actual 2D material response.
 
-Implement as environment event-driven backdrop modulation:
+The existing Bevy `DirectionalLight` can remain for any engine subsystems that still need it, but the real world-lighting contract should be a client-side lighting resource consumed by `Material2d` shaders.
 
-1. `BackgroundStormEvent`
-   - event type (`ion_storm`, `nebula_lightning`, `solar_arc`)
-   - region seed / spatial mask
-   - flash cadence profile
-   - color/intensity curve
-   - duration
-2. Backdrop shaders sample active storm events and add:
-   - cloud/nebula arc flashes,
-   - directional sheet-light pulses,
-   - horizon glow ramps.
+Primary stellar light state:
 
-Note: no atmospheric thunder requirement; optional low-frequency rumble SFX can still be used stylistically.
+1. `source_position_xy` when a star body exists
+2. fallback `direction_xy` when no star body exists yet
+3. `elevation`
+4. `color_rgb`
+5. `intensity`
+6. `wrap`
+7. `shadow_softness`
 
-## 8.2 Common dynamic space events (v1 list)
+This is what ships, asteroids, and planets should use for:
 
-1. Solar flare pulses (global warm key-light spikes).
-2. Nebula ion lightning cells (regional blue/violet flashes).
-3. Plasma wind gusts (ambient hue drift + particle streaks).
-4. Debris electrostatic storms (local spark arcs).
-5. Gravitational shear lensing waves (distortion + subtle light bend).
-6. Pulsar sweep bands (periodic directional color/intensity sweep).
+1. diffuse term,
+2. specular highlight direction,
+3. rim shaping,
+4. drop-shadow direction later,
+5. night/day hemisphere response on planets.
 
-## 8.3 Authority and replication
+### 6.3 L2: Local Dynamic Emitters
 
-1. Cosmetic-only events can be deterministic client-generated from shard seed + time window.
-2. Gameplay-relevant events (if later added) must be server-authored and replicated as compact event state.
-3. Keep event payload compact and cadence-bounded.
+Local emitters are short-lived or object-bound lights near gameplay entities.
 
-## 9. Asset/Shader Contract Additions
+Examples:
 
-Add logical asset IDs (examples):
+1. ship running lights,
+2. exhaust plumes,
+3. afterburner plumes,
+4. muzzle flashes,
+5. beam cores,
+6. tracer impacts,
+7. explosion cores,
+8. EMP arcs,
+9. special environment anomalies.
 
-1. `lighting_world_lit_sprite_wgsl`
-2. `lighting_light_accumulation_wgsl`
-3. `lighting_bloom_composite_wgsl`
-4. `lighting_background_storm_wgsl`
-5. `textures.lut.neon_palette_png`
-6. `textures.noise.storm_cells_png`
-7. `textures.normals.ship_default_png`
+These are not independent replicated render entities. They should come from a shared client-side emitter model driven by already replicated state.
 
-Require source/cache parity:
+Emitter shapes:
 
-1. `data/shaders/*` source and `data/cache_stream/shaders/*` streamed cache paths must stay aligned in the same change.
+1. point
+2. cone
+3. capsule / line segment
+4. disk / halo
 
-## 10. Performance and LOD Policy
+Emitter fields:
 
-1. Hard budget dynamic lights per camera zone (for example near/mid/far tiers).
-2. Cluster or tile lights for cheap accumulation.
-3. Distant entities use reduced lighting model:
-   - no normal-map detail,
-   - no particle-emissive lights,
-   - reduced bloom/emissive contribution.
-4. Expose runtime tuning env vars for light count, probe resolution, bloom quality.
+1. source entity or world position
+2. color
+3. intensity
+4. radius
+5. direction
+6. cone angle or segment length
+7. ttl / fade
+8. category / budget class
 
-## 11. Implementation Phases
+### 6.4 L3: Emissive / Glow
 
-### Phase A: Foundation
+Emissive is not the same thing as a local light.
 
-1. Add shared lighting data components/resources (`EnvironmentLightingState`, emitter contract).
-2. Add shader/material scaffolding and streamed asset IDs.
-3. Integrate ambient + stellar key-light into existing world sprite path.
+Examples:
 
-### Phase B: Surface Lighting
+1. a lava seam on a planet is emissive,
+2. a bright engine core is emissive,
+3. a muzzle flash both emits light and is emissive,
+4. neon UI is emissive but not world-lighting.
 
-1. Add optional normal/bump map support for ships and asteroids.
-2. Add projected top-down shadow cues from stellar direction.
+The world material contract should separate:
 
-### Phase C: Combat Emissive Stack
+1. `surface_lighting_response`
+2. `emissive_output`
 
-1. Convert thruster/weapon/explosion visuals to shared emitter pipeline.
-2. Add neon bloom composite and clamp policy.
-3. Add LOD throttling and budgets.
+This allows later bloom/post to consume emissive cleanly without rewriting surface shaders again.
 
-### Phase D: Space Events
+## 7. Shared World Lighting Contract
 
-1. Implement background lightning storm event model.
-2. Add initial dynamic event catalog (solar flare, ion storm, pulsar sweep).
-3. Integrate optional event SFX hooks.
+Every lit world material should conceptually receive the same lighting inputs:
 
-### Phase E: Hardening
+1. `ambient_color_rgb + ambient_intensity`
+2. `backlight_color_rgb + backlight_intensity`
+3. `stellar_direction_xy + elevation + color + intensity`
+4. `event_flash_color_rgb + intensity`
+5. a bounded local-light accumulation result
 
-1. Profiling and fallback tiers for low-end GPUs.
-2. Cross-target parity verification (native + wasm webgpu).
-3. Multiplayer session sanity checks for synchronized event timing where required.
+Every world material should provide or derive:
 
-## 12. Testing Plan
+1. `albedo`
+2. `alpha`
+3. `normal`
+4. `roughness_like scalar`
+5. `metallic/specular bias` if needed
+6. `height/depth cue` if needed for shadow offset
+7. `emissive`
+
+This does **not** mean all materials share one Rust struct today. It means all new materials must be designed so they can accept these concepts without architectural churn.
+
+## 8. Material-Specific Responsibilities
+
+### 8.1 Ships and Ordinary Sprites
+
+Ships will eventually need:
+
+1. optional normal map asset or generated normal map,
+2. optional lighting profile,
+3. optional running-light emitters,
+4. optional material mask for emissive windows/engines.
+
+Recommended contract additions:
+
+1. `NormalMapAssetId` optional
+2. `MaterialLightingProfileId` optional
+3. `LightEmitterProfile` optional
+
+Ship shaders should not stay as plain unlit image shaders long-term.
+
+### 8.2 Asteroids
+
+Asteroids already generate:
+
+1. albedo,
+2. normal map,
+3. deterministic silhouette.
+
+So asteroids should be the first material migrated fully into the shared lighting contract. They are the easiest proof that the model works on procedural content.
+
+### 8.3 Planets
+
+Planets already do local procedural bump lighting in-shader.
+
+Next phase for planets is not “invent more private lighting.” It is:
+
+1. replace planet-local ad-hoc light constants with shared environment lighting inputs,
+2. let atmosphere and rim terms react to global radiance and stellar direction,
+3. optionally add separate atmosphere/rings child passes that consume the same shared lighting state.
+
+### 8.4 Thruster Plumes
+
+Thruster plumes should both:
+
+1. render emissive color,
+2. register local dynamic light emitters.
+
+They are the first obvious gameplay-linked local-light source and should become the seed of the emitter system.
+
+### 8.5 Weapon / Impact Effects
+
+Weapon tracer and impact effects should feed:
+
+1. emissive render output,
+2. short-lived pulse emitters.
+
+The important rule is that the client derives these from existing replicated weapon-fire and impact events. No extra authoritative light replication lane is needed.
+
+## 9. How To Implement This With Bevy
+
+## 9.1 Do Not Bet the Design on Bevy 3D Lights
+
+Bevy `DirectionalLight` / `PointLight` are not the correct primary abstraction for this game's world lighting.
+
+Reasons:
+
+1. the world is mostly 2D `Material2d`,
+2. planets are rendered as 2D spheres on quads,
+3. asteroids and plumes are custom fragment shaders,
+4. we need deterministic cross-material visual behavior, not partial engine-default lighting.
+
+Bevy 3D lights can still exist for limited engine support, but the real contract should be material uniforms/resources we control.
+
+## 9.2 Recommended Bevy Implementation Shape
+
+Phaseable implementation:
+
+1. Add a client-side `WorldLightingState` resource.
+2. Update it each frame from:
+   - current solar-system or shard environment,
+   - fullscreen backdrop radiance values,
+   - active dynamic space events.
+3. Add a client-side `LocalLightEmitter` collection/resource updated from:
+   - thruster plume visuals,
+   - weapon tracer/impact systems,
+   - future ship running lights.
+4. Build a bounded local-light accumulation representation:
+   - either screen-space low-res texture,
+   - or camera-local clustered/tiled array uploaded to materials.
+5. Update all lit world materials to sample:
+   - `WorldLightingState`,
+   - bounded local-light data.
+
+## 9.3 Preferred v1 Data Path
+
+For this project, the safest v1 is:
+
+1. `WorldLightingState` resource
+2. camera-local bounded array of top N local emitters
+3. per-material shading using those uniforms
+
+This is cheaper and simpler than introducing a full custom render-graph light buffer immediately.
+
+Later, if needed:
+
+1. move to a low-resolution light accumulation texture,
+2. then keep the same logical lighting contract while changing the backend implementation.
+
+## 10. Global Illumination Strategy
+
+Do not attempt true GI in v1.
+
+Instead, use a cheap GI-like approximation:
+
+1. ambient radiance from backdrop/environment,
+2. backlight/rim tint from nebula/starfield mood,
+3. optional event flash injection,
+4. optional very low-resolution local-light accumulation later.
+
+This gives cohesion without full bounce-light simulation.
+
+The term “global illumination” in Sidereal should mean:
+
+1. scene-wide ambient and backlight consistency,
+2. not physically correct recursive light transport.
+
+## 11. Dynamic Space Events
+
+Space events are first-class inputs to lighting.
+
+They should not be treated as one-off shader gimmicks.
+
+Event families:
+
+1. `solar_flare`
+2. `ion_storm`
+3. `nebula_lightning`
+4. `pulsar_sweep`
+5. `plasma_wind`
+6. `gravitational_lensing_wave`
+
+Each event can affect one or more layers:
+
+1. backdrop-only distortion,
+2. ambient radiance tint,
+3. global key-light pulse,
+4. local regional emitter clusters,
+5. optional audio hooks.
+
+Recommended state model:
+
+1. compact replicated or deterministic event descriptor,
+2. client-side interpolation and visual realization,
+3. shared injection into `WorldLightingState`.
+
+## 12. Proposed Data Model
+
+### 12.1 Environment / Stellar Lighting
+
+Add a shared replicated public component or singleton-style entity:
+
+`EnvironmentLightingState`
+
+Suggested fields:
+
+1. `primary_direction_xy`
+2. `primary_elevation`
+3. `primary_color_rgb`
+4. `primary_intensity`
+5. `ambient_color_rgb`
+6. `ambient_intensity`
+7. `backlight_color_rgb`
+8. `backlight_intensity`
+9. `event_flash_color_rgb`
+10. `event_flash_intensity`
+
+Why entity-based instead of resource-only:
+
+1. it fits the repo's ECS/persistence model better,
+2. it is inspectable in tooling/dashboard,
+3. it can be replicated through the existing component pipeline.
+
+The client can still materialize a derived non-replicated resource from it for efficient render updates.
+
+### 12.2 Local Emitters
+
+Add a runtime-only client component/resource family:
+
+1. `LocalLightEmitter`
+2. `ResolvedLocalLight`
+3. `CameraLocalLightSet`
+
+These should remain client-side derived state unless a future gameplay feature needs explicit replicated event descriptors.
+
+### 12.3 Material Lighting Profiles
+
+Add authorable content hooks for material response:
+
+1. `MaterialLightingProfileId`
+2. optional `NormalMapAssetId`
+3. optional `EmissiveMaskAssetId`
+
+This keeps shader behavior data-driven instead of hardcoded by entity type forever.
+
+## 13. Render Layers and Depth Policy
+
+Lighting must respect the current layered 2.5D world:
+
+1. backdrop layer
+2. planet body layer
+3. ordinary world entity layer
+4. UI overlay layer
+
+Rules:
+
+1. backdrop contributes radiance but is not lit by local ship lights,
+2. planets receive global lighting and selected event flashes,
+3. ordinary world entities receive global + local lighting,
+4. UI is not part of world lighting.
+
+This prevents accidental cross-layer coupling later.
+
+## 14. Performance Policy
+
+The lighting model must be budgeted from day one.
+
+### 14.1 Emitter Budgets
+
+Per camera:
+
+1. very small always-on lights budget for ships,
+2. medium transient budget for combat,
+3. distant emitters culled aggressively,
+4. top-N selection by importance score.
+
+Importance score factors:
+
+1. screen-space size,
+2. intensity,
+3. distance to camera,
+4. category priority,
+5. ownership or player-local bias.
+
+### 14.2 LOD
+
+First things to reduce at distance:
+
+1. local emitters,
+2. specular detail,
+3. per-pixel normal influence,
+4. atmosphere detail,
+5. post/glow intensity.
+
+Do not degrade:
+
+1. silhouette readability,
+2. primary key-light direction,
+3. core faction/combat readability colors.
+
+## 15. Implementation Order
+
+### Phase 1: Contract and Shared State
+
+1. [x] Add `EnvironmentLightingState` component/resource path.
+2. [x] Define the shared world-lighting uniforms expected by lit materials.
+3. [x] Stop hardcoding private light constants into new materials where avoidable.
+4. [x] Document asset IDs and data ownership.
+
+### Phase 2: First Real Consumers
+
+1. [x] Move asteroid material onto shared lighting inputs.
+2. [x] Move planet material onto shared lighting inputs.
+3. [ ] Introduce a lit ship material path or compatible upgrade path for world sprites.
+
+### Phase 3: Local Emitters
+
+1. [x] Add client-derived local emitter system.
+2. [x] Make thruster plumes emit light.
+3. [ ] Make weapon impacts / muzzle flashes emit light.
+4. [ ] Apply bounded local-light contribution in world materials.
+
+### Phase 4: Shadow / Depth Cues
+
+1. Add cheap projected contact/drop shadows for ships and asteroids.
+2. Drive shadow direction from primary stellar light.
+3. Tune for readability, not realism.
+
+### Phase 5: Dynamic Space Events
+
+1. Add compact space-event descriptors.
+2. Feed them into backdrop radiance and global flashes.
+3. Add selective local/regional event emitters where needed.
+
+### Phase 6: Post / Glow
+
+1. Add restrained bloom/emissive composite if still needed.
+2. Keep brightness caps and readability constraints explicit.
+
+## 16. Immediate Next Steps
+
+These are the next steps that should follow from the current state of the codebase:
+
+1. Add `EnvironmentLightingState` as a canonical public ECS component or singleton-style entity.
+2. Refactor `planet_visual.wgsl` and `asteroid.wgsl` to consume shared environment-light uniforms instead of shader-private light assumptions.
+3. Add a client-derived local light emitter path seeded first from thruster plumes.
+4. Define the ship lighting upgrade path so ships do not remain the odd one out while planets/asteroids become lit.
+5. Fold backdrop radiance and event flashes into the derived `WorldLightingState`.
+6. Only after the above, add separate hero-atmosphere/rings or heavier post effects.
+
+## 17. Testing and Validation
 
 Unit tests:
 
-1. Lighting state blending and clamping.
-2. Emitter lifecycle (spawn/fade/despawn) determinism.
-3. LOD budget selection stability.
+1. lighting state clamping and blending,
+2. emitter importance sorting and budgeting,
+3. deterministic event-to-light translation.
 
 Integration tests:
 
-1. Replicated environment lighting state reaches clients correctly.
-2. Cosmetic event generation is deterministic for same shard seed/time window.
-3. Gameplay unaffected when lighting assets are missing (fail-soft placeholders).
+1. replicated environment lighting reaches clients,
+2. lighting resources update cleanly during world transitions,
+3. missing lighting assets fail soft without breaking gameplay visuals.
 
-Build/quality gates:
+Build gates:
 
 1. `cargo fmt --all -- --check`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
@@ -243,9 +580,9 @@ Build/quality gates:
 4. `cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu`
 5. `cargo check -p sidereal-client --target x86_64-pc-windows-gnu`
 
-## 13. Open Decisions
+## 18. Open Decisions
 
-1. Should environment lighting state live as shard-global resource only, or also as replicated ECS singleton entity for tooling visibility?
-2. Should storm events be fully server-scheduled or hybrid deterministic (server keyframes + client interpolation)?
-3. What is the first strict visual style guide for neon palettes and bloom limits to keep combat legible?
-4. Which event types, if any, become gameplay-affecting in v1 versus cosmetic-only?
+1. Should `EnvironmentLightingState` be one shard-global entity, one per solar system, or both with local override rules?
+2. For v1 local lights, is a bounded uniform array enough or do we go straight to a low-resolution accumulation texture?
+3. Do ship running lights belong in authoritative content data now, or only after the generic lit ship material path lands?
+4. Which dynamic space events are cosmetic-only in v1, and which eventually become gameplay-affecting?

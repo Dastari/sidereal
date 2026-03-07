@@ -1,14 +1,12 @@
 use bevy::prelude::*;
 use lightyear::prelude::is_in_rollback;
 use sidereal_game::{
-    ControlledEntityGuid, EntityGuid, MountedOn, PlayerTag, ScannerComponent, ScannerRangeBuff,
-    ScannerRangeM, ShipTag, total_scanner_range_for_parent,
+    ControlledEntityGuid, EntityGuid, MountedOn, PlayerTag, VisibilityRangeBuffM, VisibilityRangeM,
+    total_visibility_range_for_parent,
 };
 
 use crate::replication::visibility::ClientObserverAnchorPositionMap;
 use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity, debug_env};
-
-const SHIP_BASE_SCANNER_RANGE_M: f32 = 300.0;
 
 #[derive(Resource, Default)]
 pub struct PlayerControlDebugState {
@@ -85,7 +83,7 @@ pub fn update_client_observer_anchor_positions(
 }
 
 #[allow(clippy::type_complexity)]
-pub fn compute_controlled_entity_scanner_ranges(
+pub fn compute_controlled_entity_visibility_ranges(
     mut commands: Commands<'_, '_>,
     mut controlled_entities: Query<
         '_,
@@ -93,21 +91,15 @@ pub fn compute_controlled_entity_scanner_ranges(
         (
             Entity,
             &'_ EntityGuid,
-            Option<&'_ mut ScannerRangeM>,
-            Option<&'_ ShipTag>,
-            Option<&'_ ScannerComponent>,
-            Option<&'_ ScannerRangeBuff>,
+            Option<&'_ mut VisibilityRangeM>,
+            Option<&'_ VisibilityRangeBuffM>,
         ),
         With<SimulatedControlledEntity>,
     >,
-    scanner_modules: Query<
+    visibility_range_buffs: Query<
         '_,
         '_,
-        (
-            &'_ MountedOn,
-            &'_ ScannerComponent,
-            Option<&'_ ScannerRangeBuff>,
-        ),
+        (&'_ MountedOn, &'_ VisibilityRangeBuffM),
         Without<SimulatedControlledEntity>,
     >,
     rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
@@ -115,26 +107,22 @@ pub fn compute_controlled_entity_scanner_ranges(
     if is_in_rollback(rollback_query) {
         return;
     }
-    for (entity, entity_guid, scanner_range, ship_tag, own_scanner, own_buff) in
-        &mut controlled_entities
-    {
-        let mut total_range = total_scanner_range_for_parent(
+    for (entity, entity_guid, visibility_range, own_buff) in &mut controlled_entities {
+        let total_range = total_visibility_range_for_parent(
             entity_guid.0,
-            own_scanner,
             own_buff,
-            scanner_modules.iter(),
+            visibility_range_buffs.iter(),
         );
-        if ship_tag.is_some() {
-            total_range += SHIP_BASE_SCANNER_RANGE_M;
-        }
         if total_range > 0.0 {
-            if let Some(mut scanner_range) = scanner_range {
-                scanner_range.0 = total_range;
+            if let Some(mut visibility_range) = visibility_range {
+                visibility_range.0 = total_range;
             } else {
-                commands.entity(entity).insert(ScannerRangeM(total_range));
+                commands
+                    .entity(entity)
+                    .insert(VisibilityRangeM(total_range));
             }
-        } else if scanner_range.is_some() {
-            commands.entity(entity).remove::<ScannerRangeM>();
+        } else if visibility_range.is_some() {
+            commands.entity(entity).remove::<VisibilityRangeM>();
         }
     }
 }

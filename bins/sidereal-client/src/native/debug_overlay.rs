@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prediction::prelude::{PredictionHistory, PredictionManager};
 use sidereal_game::{
-    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ScannerRangeM, SizeM,
+    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, SizeM, VisibilityRangeM,
 };
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
@@ -14,6 +14,7 @@ use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
     ControlledEntity, HudFpsText, HudManifestText, HudTacticalText, WorldEntity,
 };
+use super::dev_console::{DevConsoleState, is_console_open};
 use super::resources::{
     BootstrapWatchdogState, DebugOverlayEnabled, DeferredPredictedAdoptionState,
     LocalSimulationDebugMode, OwnedAssetManifestCache, PredictionBootstrapTuning,
@@ -31,8 +32,12 @@ pub(crate) struct RollbackSampleState {
 
 pub(crate) fn toggle_debug_overlay_system(
     input: Res<'_, ButtonInput<KeyCode>>,
+    dev_console_state: Option<Res<'_, DevConsoleState>>,
     mut debug_overlay: ResMut<'_, DebugOverlayEnabled>,
 ) {
+    if is_console_open(dev_console_state.as_deref()) {
+        return;
+    }
     if input.just_pressed(KeyCode::F3) {
         debug_overlay.enabled = !debug_overlay.enabled;
     }
@@ -185,8 +190,10 @@ pub(crate) fn draw_debug_overlay_system(
             Option<&'_ MountedOn>,
             Option<&'_ Hardpoint>,
             Option<&'_ ControlledEntity>,
-            Option<&'_ ScannerRangeM>,
-            Option<&'_ EntityGuid>,
+            Option<&'_ VisibilityRangeM>,
+            Has<lightyear::prelude::Replicated>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<lightyear::prelude::Predicted>,
             Option<&'_ lightyear::prelude::Confirmed<Position>>,
             Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
         ),
@@ -196,6 +203,13 @@ pub(crate) fn draw_debug_overlay_system(
     if !debug_overlay.enabled {
         return;
     }
+    const DEBUG_OVERLAY_Z_OFFSET: f32 = 6.0;
+    const REPLICATED_OVERLAY_Z_STEP: f32 = 0.0;
+    const INTERPOLATED_OVERLAY_Z_STEP: f32 = 0.18;
+    const PREDICTED_OVERLAY_Z_STEP: f32 = 0.36;
+    const CONFIRMED_OVERLAY_Z_STEP: f32 = 0.54;
+    const CONFIRMED_OVERLAY_POSITION_EPSILON_M: f32 = 0.05;
+    const CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD: f32 = 0.01;
     let local_controlled_entity =
         player_view_state
             .controlled_entity_id
@@ -226,13 +240,25 @@ pub(crate) fn draw_debug_overlay_system(
         hardpoint,
         controlled_marker,
         scanner_range,
-        _entity_guid,
+        is_replicated,
+        is_interpolated,
+        is_predicted,
         confirmed_position,
         confirmed_rotation,
     ) in &entities
     {
         let world = global_transform.compute_transform();
-        let pos = world.translation;
+        let replication_z_step = if is_predicted {
+            PREDICTED_OVERLAY_Z_STEP
+        } else if is_interpolated {
+            INTERPOLATED_OVERLAY_Z_STEP
+        } else if is_replicated {
+            REPLICATED_OVERLAY_Z_STEP
+        } else {
+            0.0
+        };
+        let pos =
+            world.translation + Vec3::new(0.0, 0.0, DEBUG_OVERLAY_Z_OFFSET + replication_z_step);
         let rot = world.rotation;
         let half_extents = collision_aabb.map(|aabb| aabb.half_extents).or_else(|| {
             size_m.map(|size| Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5))
@@ -267,16 +293,24 @@ pub(crate) fn draw_debug_overlay_system(
                 && let (Some(confirmed_position), Some(confirmed_rotation)) =
                     (confirmed_position, confirmed_rotation)
             {
-                let confirmed_pos = confirmed_position.0.0.extend(0.0);
+                let confirmed_pos = confirmed_position
+                    .0
+                    .0
+                    .extend(DEBUG_OVERLAY_Z_OFFSET + CONFIRMED_OVERLAY_Z_STEP);
                 let confirmed_rot: Quat = confirmed_rotation.0.into();
-                for idx in 0..outline.points.len() {
-                    let a = outline.points[idx];
-                    let b = outline.points[(idx + 1) % outline.points.len()];
-                    let world_a = confirmed_pos + (confirmed_rot * a.extend(0.0));
-                    let world_b = confirmed_pos + (confirmed_rot * b.extend(0.0));
-                    gizmos.line(world_a, world_b, controlled_confirmed_color);
+                let should_draw_confirmed = pos.distance(confirmed_pos)
+                    > CONFIRMED_OVERLAY_POSITION_EPSILON_M
+                    || rot.angle_between(confirmed_rot) > CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD;
+                if should_draw_confirmed {
+                    for idx in 0..outline.points.len() {
+                        let a = outline.points[idx];
+                        let b = outline.points[(idx + 1) % outline.points.len()];
+                        let world_a = confirmed_pos + (confirmed_rot * a.extend(0.0));
+                        let world_b = confirmed_pos + (confirmed_rot * b.extend(0.0));
+                        gizmos.line(world_a, world_b, controlled_confirmed_color);
+                    }
+                    gizmos.line(pos, confirmed_pos, prediction_error_color);
                 }
-                gizmos.line(pos, confirmed_pos, prediction_error_color);
             }
         } else if let Some(half_extents) = half_extents {
             let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, half_extents);
@@ -294,11 +328,19 @@ pub(crate) fn draw_debug_overlay_system(
                     (confirmed_position, confirmed_rotation)
             {
                 let confirmed_rot: Quat = confirmed_rotation.0.into();
-                let confirmed_pos = confirmed_position.0.0.extend(0.0);
-                let confirmed_transform =
-                    Transform::from_translation(confirmed_pos).with_rotation(confirmed_rot);
-                gizmos.aabb_3d(aabb, confirmed_transform, controlled_confirmed_color);
-                gizmos.line(pos, confirmed_pos, prediction_error_color);
+                let confirmed_pos = confirmed_position
+                    .0
+                    .0
+                    .extend(DEBUG_OVERLAY_Z_OFFSET + CONFIRMED_OVERLAY_Z_STEP);
+                let should_draw_confirmed = pos.distance(confirmed_pos)
+                    > CONFIRMED_OVERLAY_POSITION_EPSILON_M
+                    || rot.angle_between(confirmed_rot) > CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD;
+                if should_draw_confirmed {
+                    let confirmed_transform =
+                        Transform::from_translation(confirmed_pos).with_rotation(confirmed_rot);
+                    gizmos.aabb_3d(aabb, confirmed_transform, controlled_confirmed_color);
+                    gizmos.line(pos, confirmed_pos, prediction_error_color);
+                }
             }
         }
 

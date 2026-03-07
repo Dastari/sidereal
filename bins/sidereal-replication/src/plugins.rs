@@ -6,8 +6,8 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    assets, auth, combat, control, input, lifecycle, owner_manifest, persistence,
-    runtime_scripting, runtime_state, simulation_entities, tactical, visibility,
+    auth, combat, control, input, lifecycle, owner_manifest, persistence, runtime_scripting,
+    runtime_state, simulation_entities, tactical, visibility,
 };
 
 pub(crate) struct ReplicationLifecyclePlugin;
@@ -77,8 +77,9 @@ impl Plugin for ReplicationVisibilityPlugin {
             FixedUpdate,
             (
                 simulation_entities::sync_controlled_entity_transforms,
+                simulation_entities::sync_world_entity_transforms_from_world_space,
                 runtime_state::update_client_observer_anchor_positions,
-                runtime_state::compute_controlled_entity_scanner_ranges,
+                runtime_state::compute_controlled_entity_visibility_ranges,
                 visibility::ensure_network_visibility_for_replicated_entities,
                 visibility::update_network_visibility,
                 owner_manifest::stream_owner_asset_manifest_messages,
@@ -127,22 +128,6 @@ impl Plugin for ReplicationRuntimeScriptingPlugin {
             )
                 .chain()
                 .before(PhysicsSystems::Prepare),
-        );
-    }
-}
-
-pub(crate) struct ReplicationAssetsPlugin;
-
-impl Plugin for ReplicationAssetsPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, assets::initialize_asset_stream_cache);
-        app.add_systems(
-            FixedUpdate,
-            (
-                assets::stream_bootstrap_assets_to_authenticated_clients,
-                assets::send_asset_stream_chunks_paced
-                    .after(assets::stream_bootstrap_assets_to_authenticated_clients),
-            ),
         );
     }
 }

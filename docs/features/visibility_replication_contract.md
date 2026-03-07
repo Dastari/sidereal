@@ -43,10 +43,11 @@ Current implementation baseline:
 3. Full policy checks run after candidates; policy exceptions (owner/public/faction/scanner) are fail-closed safe.
 4. World position checks use `GlobalTransform` semantics for range/visibility behavior.
 5. Observer anchor identity is player entity (`camera <- player <- controlled(optional)`).
-6. Scanner contributions come from owned scanner-capable roots; no global default scanner for non-ship entities.
+6. Current runtime uses generic `VisibilityRangeM` / `VisibilityRangeBuffM` with no implicit `ShipTag` baseline.
 7. `VisibilitySpatialGrid` and `VisibilityDisclosure` are mirrored onto player entity for owner debug/inspection.
 8. Delivery range is dynamic per client view and reflected in runtime visibility telemetry.
-9. `FullscreenLayer` entities are treated as non-spatial overlays: once authorized client context exists, they bypass delivery-range/scanner candidate culling and remain replicated while connected.
+9. Fullscreen authored config entities are treated as non-spatial overlays: legacy `FullscreenLayer` entities and fullscreen-phase `RuntimeRenderLayerDefinition` entities bypass delivery-range/visibility-range candidate culling and remain replicated while connected.
+10. Background authoring settings such as `SpaceBackgroundShaderSettings` and `StarfieldShaderSettings` are durable world configuration and remain persistable so hydration recreates the full authored config entity rather than only the layer-definition shell.
 
 ## 4. Multi-Lane Contract (Current + Approved Direction)
 
@@ -73,8 +74,10 @@ Fog/intel behavior:
 
 1. Players start with unexplored space (`0` explored coverage).
 2. Exploration permanently grows discovered map coverage (`ExploredCells`).
-3. Live intel is only from current scanner/live visibility.
+3. Live intel is only from current visibility/live visibility.
 4. Outside live visibility, only server-stored last-known intel may be shown (stale memory).
+5. Tactical explored-memory persistence uses chunked binary component payloads (adaptive dense/sparse chunk encoding), not flat JSON coordinate lists.
+6. Tactical fog memory cell size is 100m and independent from visibility relevance spatial grid cell size.
 
 Authoritative placement:
 
@@ -111,3 +114,29 @@ For any PR touching visibility, tactical delivery, fog/intel memory, or redactio
    1. this contract,
    2. any related DR under `docs/features/`,
    3. `docs/decision_register.md` links when decisions change.
+
+## 8. Visibility Range Naming Direction (Accepted)
+
+Canonical generic visibility-range terminology is now:
+
+1. `VisibilityRangeM`
+   - effective resolved visibility/disclosure range read by the hot visibility path
+2. `VisibilityRangeBuffM`
+   - generic contributing modifier to visibility range
+
+Normative direction:
+
+1. Visibility systems should converge on `VisibilityRangeM` / `VisibilityRangeBuffM`.
+2. Genre-specific names such as `scanner` may remain in Lua/content authoring, but not as the engine-owned built-in runtime concept.
+3. `ShipTag` must not imply hidden baseline visibility range.
+4. Root entities may carry both effective `VisibilityRangeM` and local `VisibilityRangeBuffM`.
+5. Aggregation should compute root effective range from generic contributors before hot visibility checks run.
+
+Implementation note:
+
+1. Runtime code now uses `VisibilityRangeM` / `VisibilityRangeBuffM`.
+2. `VisibilityDisclosure` now carries `visibility_sources`, not `scanner_sources`.
+3. Genre-specific `scanner_*` wording may still exist in content/action names, but not as the engine-owned runtime component names.
+4. See:
+   - `docs/features/dr-0028_generic_visibility_range_components.md`
+   - `docs/features/generic_visibility_range_migration_plan.md`

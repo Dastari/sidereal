@@ -1,6 +1,13 @@
 import * as React from 'react'
 import { DebouncedNumberField } from './DebouncedNumberField'
 import type { ComponentEditorProps } from './types'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
+import { Input } from '@/components/ui/input'
+import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 
 type SpaceBackgroundShaderSettings = {
@@ -8,6 +15,7 @@ type SpaceBackgroundShaderSettings = {
   enable_nebula_layer: boolean
   enable_stars_layer: boolean
   enable_flares_layer: boolean
+  enable_background_gradient: boolean
   intensity: number
   drift_scale: number
   zoom_rate: number
@@ -81,6 +89,7 @@ type SpaceBackgroundShaderSettingsPayload = {
   enable_nebula_layer: boolean
   enable_stars_layer: boolean
   enable_flares_layer: boolean
+  enable_background_gradient: boolean
   intensity: number
   drift_scale: number
   zoom_rate: number
@@ -229,6 +238,7 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
       enable_nebula_layer: true,
       enable_stars_layer: true,
       enable_flares_layer: true,
+      enable_background_gradient: false,
       intensity: 1,
       drift_scale: 1,
       zoom_rate: 1,
@@ -363,6 +373,9 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
     enable_nebula_layer: Boolean(obj.enable_nebula_layer ?? true),
     enable_stars_layer: Boolean(obj.enable_stars_layer ?? true),
     enable_flares_layer: Boolean(obj.enable_flares_layer ?? true),
+    enable_background_gradient: Boolean(
+      obj.enable_background_gradient ?? false,
+    ),
     intensity: Number.isFinite(intensity) ? intensity : 1,
     drift_scale: Number.isFinite(driftScale) ? driftScale : 1,
     zoom_rate: Number.isFinite(zoomRate) ? zoomRate : 1,
@@ -382,7 +395,9 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
     nebula_noise_mode: Number.isFinite(nebulaNoiseMode) ? nebulaNoiseMode : 0,
     nebula_octaves: Number.isFinite(nebulaOctaves) ? nebulaOctaves : 5,
     nebula_gain: Number.isFinite(nebulaGain) ? nebulaGain : 0.52,
-    nebula_lacunarity: Number.isFinite(nebulaLacunarity) ? nebulaLacunarity : 2.0,
+    nebula_lacunarity: Number.isFinite(nebulaLacunarity)
+      ? nebulaLacunarity
+      : 2.0,
     nebula_power: Number.isFinite(nebulaPower) ? nebulaPower : 1.0,
     nebula_shelf: Number.isFinite(nebulaShelf) ? nebulaShelf : 0.42,
     nebula_ridge_offset: Number.isFinite(nebulaRidgeOffset)
@@ -425,8 +440,12 @@ function parseSettings(value: unknown): SpaceBackgroundShaderSettings {
     depth_occlusion_strength: Number.isFinite(depthOcclusionStrength)
       ? depthOcclusionStrength
       : 1.08,
-    backlight_screen_x: Number.isFinite(backlightScreenX) ? backlightScreenX : -0.3,
-    backlight_screen_y: Number.isFinite(backlightScreenY) ? backlightScreenY : 0.1,
+    backlight_screen_x: Number.isFinite(backlightScreenX)
+      ? backlightScreenX
+      : -0.3,
+    backlight_screen_y: Number.isFinite(backlightScreenY)
+      ? backlightScreenY
+      : 0.1,
     backlight_intensity: Number.isFinite(backlightIntensity)
       ? backlightIntensity
       : 4,
@@ -462,14 +481,18 @@ export function SpaceBackgroundShaderSettingsEditor({
   readOnly = false,
 }: ComponentEditorProps) {
   const parsed = parseSettings(value)
-  const [selectedPreset, setSelectedPreset] = React.useState<PresetKey>('custom')
+  const [selectedPreset, setSelectedPreset] =
+    React.useState<PresetKey>('custom')
 
   const toPayload = React.useCallback(
-    (next: SpaceBackgroundShaderSettings): SpaceBackgroundShaderSettingsPayload => ({
+    (
+      next: SpaceBackgroundShaderSettings,
+    ): SpaceBackgroundShaderSettingsPayload => ({
       enabled: next.enabled,
       enable_nebula_layer: next.enable_nebula_layer,
       enable_stars_layer: next.enable_stars_layer,
       enable_flares_layer: next.enable_flares_layer,
+      enable_background_gradient: next.enable_background_gradient,
       intensity: clamp(roundToStep(next.intensity, 0.05), 0, 4),
       drift_scale: clamp(roundToStep(next.drift_scale, 0.05), 0, 4),
       zoom_rate: clamp(roundToStep(next.zoom_rate, 0.05), 0, 4),
@@ -509,16 +532,32 @@ export function SpaceBackgroundShaderSettingsEditor({
       nebula_noise_mode: clamp(Math.round(next.nebula_noise_mode), 0, 1),
       nebula_octaves: clamp(Math.round(next.nebula_octaves), 1, 8),
       nebula_gain: clamp(roundToStep(next.nebula_gain, 0.01), 0.1, 0.95),
-      nebula_lacunarity: clamp(roundToStep(next.nebula_lacunarity, 0.05), 1.1, 4),
+      nebula_lacunarity: clamp(
+        roundToStep(next.nebula_lacunarity, 0.05),
+        1.1,
+        4,
+      ),
       nebula_power: clamp(roundToStep(next.nebula_power, 0.05), 0.2, 4),
       nebula_shelf: clamp(roundToStep(next.nebula_shelf, 0.01), 0, 0.95),
-      nebula_ridge_offset: clamp(roundToStep(next.nebula_ridge_offset, 0.01), 0.5, 2.5),
+      nebula_ridge_offset: clamp(
+        roundToStep(next.nebula_ridge_offset, 0.01),
+        0.5,
+        2.5,
+      ),
       star_mask_enabled: next.star_mask_enabled,
       star_mask_mode: clamp(Math.round(next.star_mask_mode), 0, 1),
       star_mask_octaves: clamp(Math.round(next.star_mask_octaves), 1, 8),
       star_mask_gain: clamp(roundToStep(next.star_mask_gain, 0.01), 0.1, 0.95),
-      star_mask_lacunarity: clamp(roundToStep(next.star_mask_lacunarity, 0.05), 1.1, 4),
-      star_mask_threshold: clamp(roundToStep(next.star_mask_threshold, 0.01), 0, 0.99),
+      star_mask_lacunarity: clamp(
+        roundToStep(next.star_mask_lacunarity, 0.05),
+        1.1,
+        4,
+      ),
+      star_mask_threshold: clamp(
+        roundToStep(next.star_mask_threshold, 0.01),
+        0,
+        0.99,
+      ),
       star_mask_power: clamp(roundToStep(next.star_mask_power, 0.05), 0.2, 4),
       star_mask_ridge_offset: clamp(
         roundToStep(next.star_mask_ridge_offset, 0.01),
@@ -545,18 +584,42 @@ export function SpaceBackgroundShaderSettingsEditor({
         0,
         2,
       ),
-      depth_parallax_scale: clamp(roundToStep(next.depth_parallax_scale, 0.01), 0, 2),
-      depth_haze_strength: clamp(roundToStep(next.depth_haze_strength, 0.01), 0, 2),
+      depth_parallax_scale: clamp(
+        roundToStep(next.depth_parallax_scale, 0.01),
+        0,
+        2,
+      ),
+      depth_haze_strength: clamp(
+        roundToStep(next.depth_haze_strength, 0.01),
+        0,
+        2,
+      ),
       depth_occlusion_strength: clamp(
         roundToStep(next.depth_occlusion_strength, 0.01),
         0,
         3,
       ),
-      backlight_screen_x: clamp(roundToStep(next.backlight_screen_x, 0.01), -1.5, 1.5),
-      backlight_screen_y: clamp(roundToStep(next.backlight_screen_y, 0.01), -1.5, 1.5),
-      backlight_intensity: clamp(roundToStep(next.backlight_intensity, 0.01), 0, 20),
+      backlight_screen_x: clamp(
+        roundToStep(next.backlight_screen_x, 0.01),
+        -1.5,
+        1.5,
+      ),
+      backlight_screen_y: clamp(
+        roundToStep(next.backlight_screen_y, 0.01),
+        -1.5,
+        1.5,
+      ),
+      backlight_intensity: clamp(
+        roundToStep(next.backlight_intensity, 0.01),
+        0,
+        20,
+      ),
       backlight_wrap: clamp(roundToStep(next.backlight_wrap, 0.01), 0, 2),
-      backlight_edge_boost: clamp(roundToStep(next.backlight_edge_boost, 0.01), 0, 6),
+      backlight_edge_boost: clamp(
+        roundToStep(next.backlight_edge_boost, 0.01),
+        0,
+        6,
+      ),
       backlight_bloom_scale: clamp(
         roundToStep(next.backlight_bloom_scale, 0.01),
         0,
@@ -613,83 +676,6 @@ export function SpaceBackgroundShaderSettingsEditor({
     next: SpaceBackgroundShaderSettings[TKey],
   ) => {
     emit({ ...parsed, [key]: next })
-  }
-
-  const updateTint = (axis: 'x' | 'y' | 'z', next: number) => {
-    emit({
-      ...parsed,
-      tint_rgb: {
-        ...parsed.tint_rgb,
-        [axis]: next,
-      },
-    })
-  }
-
-  const updateBackground = (axis: 'x' | 'y' | 'z', next: number) => {
-    emit({
-      ...parsed,
-      background_rgb: {
-        ...parsed.background_rgb,
-        [axis]: next,
-      },
-    })
-  }
-
-  const updateNebulaColor = (
-    key:
-      | 'nebula_color_primary_rgb'
-      | 'nebula_color_secondary_rgb'
-      | 'nebula_color_accent_rgb',
-    axis: 'x' | 'y' | 'z',
-    next: number,
-  ) => {
-    emit({
-      ...parsed,
-      [key]: {
-        ...parsed[key],
-        [axis]: next,
-      },
-    })
-  }
-
-  const updateFlareTint = (axis: 'x' | 'y' | 'z', next: number) => {
-    emit({
-      ...parsed,
-      flare_tint_rgb: {
-        ...parsed.flare_tint_rgb,
-        [axis]: next,
-      },
-    })
-  }
-
-  const updateStarColor = (axis: 'x' | 'y' | 'z', next: number) => {
-    emit({
-      ...parsed,
-      star_color_rgb: {
-        ...parsed.star_color_rgb,
-        [axis]: next,
-      },
-    })
-  }
-
-  const updateBacklightColor = (axis: 'x' | 'y' | 'z', next: number) => {
-    emit({
-      ...parsed,
-      backlight_color_rgb: {
-        ...parsed.backlight_color_rgb,
-        [axis]: next,
-      },
-    })
-  }
-
-  const updateShaftColor = (axis: 'x' | 'y' | 'z', next: number) => {
-    emit({
-      ...parsed,
-      shaft_color_rgb: {
-        ...parsed.shaft_color_rgb,
-        [axis]: next,
-      },
-    })
   }
 
   const applyPreset = (preset: PresetKey) => {
@@ -831,7 +817,7 @@ export function SpaceBackgroundShaderSettingsEditor({
         onClick={() => {
           void copyCurrentAsJson()
         }}
-        className="w-full rounded-md border border-border/60 px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full rounded-md border border-border/60 px-2 py-2 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
       >
         Copy As JSON (for Rust default constant)
       </button>
@@ -841,769 +827,772 @@ export function SpaceBackgroundShaderSettingsEditor({
         readOnly={readOnly}
         onChange={(next) => updateField('enabled', next)}
       />
-      <ToggleField
-        label="Enable Nebula Layer"
-        checked={parsed.enable_nebula_layer}
-        readOnly={readOnly}
-        onChange={(next) => updateField('enable_nebula_layer', next)}
-      />
-      <ToggleField
-        label="Enable Stars Layer"
-        checked={parsed.enable_stars_layer}
-        readOnly={readOnly}
-        onChange={(next) => updateField('enable_stars_layer', next)}
-      />
-      <ToggleField
-        label="Enable Flares Layer"
-        checked={parsed.enable_flares_layer}
-        readOnly={readOnly}
-        onChange={(next) => updateField('enable_flares_layer', next)}
-      />
-      <Field
-        label="Intensity"
-        value={parsed.intensity}
-        min={0}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('intensity', next)}
-      />
-      <Field
-        label="Drift Scale"
-        value={parsed.drift_scale}
-        min={0}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('drift_scale', next)}
-      />
-      <Field
-        label="Zoom Rate"
-        value={parsed.zoom_rate}
-        min={0}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('zoom_rate', next)}
-      />
-      <Field
-        label="Velocity Glow"
-        value={parsed.velocity_glow}
-        min={0}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('velocity_glow', next)}
-      />
-      <Field
-        label="Nebula Strength"
-        value={parsed.nebula_strength}
-        min={0}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_strength', next)}
-      />
-      <Field
-        label="Seed"
-        value={parsed.seed}
-        min={0}
-        max={100000}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateField('seed', next)}
-      />
-      <Field
-        label="Background R"
-        value={parsed.background_rgb.x}
-        min={0}
-        max={1}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateBackground('x', next)}
-      />
-      <Field
-        label="Background G"
-        value={parsed.background_rgb.y}
-        min={0}
-        max={1}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateBackground('y', next)}
-      />
-      <Field
-        label="Background B"
-        value={parsed.background_rgb.z}
-        min={0}
-        max={1}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateBackground('z', next)}
-      />
-      <Field
-        label="Nebula Primary R"
-        value={parsed.nebula_color_primary_rgb.x}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_primary_rgb', 'x', next)}
-      />
-      <Field
-        label="Nebula Primary G"
-        value={parsed.nebula_color_primary_rgb.y}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_primary_rgb', 'y', next)}
-      />
-      <Field
-        label="Nebula Primary B"
-        value={parsed.nebula_color_primary_rgb.z}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_primary_rgb', 'z', next)}
-      />
-      <Field
-        label="Nebula Secondary R"
-        value={parsed.nebula_color_secondary_rgb.x}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_secondary_rgb', 'x', next)}
-      />
-      <Field
-        label="Nebula Secondary G"
-        value={parsed.nebula_color_secondary_rgb.y}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_secondary_rgb', 'y', next)}
-      />
-      <Field
-        label="Nebula Secondary B"
-        value={parsed.nebula_color_secondary_rgb.z}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_secondary_rgb', 'z', next)}
-      />
-      <Field
-        label="Nebula Accent R"
-        value={parsed.nebula_color_accent_rgb.x}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_accent_rgb', 'x', next)}
-      />
-      <Field
-        label="Nebula Accent G"
-        value={parsed.nebula_color_accent_rgb.y}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_accent_rgb', 'y', next)}
-      />
-      <Field
-        label="Nebula Accent B"
-        value={parsed.nebula_color_accent_rgb.z}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateNebulaColor('nebula_color_accent_rgb', 'z', next)}
-      />
-      <ToggleField
-        label="Flare Layer Enabled"
-        checked={parsed.flare_enabled}
-        readOnly={readOnly}
-        onChange={(next) => updateField('flare_enabled', next)}
-      />
-      <Field
-        label="Flare Intensity"
-        value={parsed.flare_intensity}
-        min={0}
-        max={4}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('flare_intensity', next)}
-      />
-      <Field
-        label="Flare Density"
-        value={parsed.flare_density}
-        min={0}
-        max={1}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('flare_density', next)}
-      />
-      <Field
-        label="Flare Size"
-        value={parsed.flare_size}
-        min={0.1}
-        max={4}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('flare_size', next)}
-      />
-      <Field
-        label="Flare Tint R"
-        value={parsed.flare_tint_rgb.x}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateFlareTint('x', next)}
-      />
-      <Field
-        label="Flare Tint G"
-        value={parsed.flare_tint_rgb.y}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateFlareTint('y', next)}
-      />
-      <Field
-        label="Flare Tint B"
-        value={parsed.flare_tint_rgb.z}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateFlareTint('z', next)}
-      />
-      <SelectField
-        label="Flare Image"
-        value={String(parsed.flare_texture_set)}
-        options={[
-          { value: '0', label: 'White' },
-          { value: '1', label: 'Blue / Purple' },
-          { value: '2', label: 'Red / Yellow' },
-          { value: '3', label: 'Sun' },
-        ]}
-        readOnly={readOnly}
-        onChange={(next) =>
-          updateField('flare_texture_set', Number.parseInt(next, 10) || 0)
-        }
-      />
-      <SelectField
-        label="Nebula Noise Mode"
-        value={String(parsed.nebula_noise_mode)}
-        options={[
-          { value: '0', label: 'fBm' },
-          { value: '1', label: 'Ridged fBm' },
-        ]}
-        readOnly={readOnly}
-        onChange={(next) =>
-          updateField('nebula_noise_mode', Number.parseInt(next, 10) || 0)
-        }
-      />
-      <Field
-        label="Nebula Octaves"
-        value={parsed.nebula_octaves}
-        min={1}
-        max={8}
-        step={1}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_octaves', next)}
-      />
-      <Field
-        label="Nebula Gain"
-        value={parsed.nebula_gain}
-        min={0.1}
-        max={0.95}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_gain', next)}
-      />
-      <Field
-        label="Nebula Lacunarity"
-        value={parsed.nebula_lacunarity}
-        min={1.1}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_lacunarity', next)}
-      />
-      <Field
-        label="Nebula Power"
-        value={parsed.nebula_power}
-        min={0.2}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_power', next)}
-      />
-      <Field
-        label="Nebula Shelf"
-        value={parsed.nebula_shelf}
-        min={0}
-        max={0.95}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_shelf', next)}
-      />
-      <Field
-        label="Nebula Ridge Offset"
-        value={parsed.nebula_ridge_offset}
-        min={0.5}
-        max={2.5}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_ridge_offset', next)}
-      />
-      <ToggleField
-        label="Star/Flare Noise Mask Enabled"
-        checked={parsed.star_mask_enabled}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_enabled', next)}
-      />
-      <SelectField
-        label="Star/Flare Mask Mode"
-        value={String(parsed.star_mask_mode)}
-        options={[
-          { value: '0', label: 'fBm' },
-          { value: '1', label: 'Ridged fBm' },
-        ]}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_mode', Number.parseInt(next, 10) || 0)}
-      />
-      <Field
-        label="Star/Flare Mask Octaves"
-        value={parsed.star_mask_octaves}
-        min={1}
-        max={8}
-        step={1}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_octaves', next)}
-      />
-      <Field
-        label="Star/Flare Mask Gain"
-        value={parsed.star_mask_gain}
-        min={0.1}
-        max={0.95}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_gain', next)}
-      />
-      <Field
-        label="Star/Flare Mask Lacunarity"
-        value={parsed.star_mask_lacunarity}
-        min={1.1}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_lacunarity', next)}
-      />
-      <Field
-        label="Star/Flare Mask Threshold"
-        value={parsed.star_mask_threshold}
-        min={0}
-        max={0.99}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_threshold', next)}
-      />
-      <Field
-        label="Star/Flare Mask Power"
-        value={parsed.star_mask_power}
-        min={0.2}
-        max={4}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_power', next)}
-      />
-      <Field
-        label="Star/Flare Mask Ridge Offset"
-        value={parsed.star_mask_ridge_offset}
-        min={0.5}
-        max={2.5}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_ridge_offset', next)}
-      />
-      <Field
-        label="Star/Flare Mask Scale"
-        value={parsed.star_mask_scale}
-        min={0.2}
-        max={8}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_mask_scale', next)}
-      />
-      <SelectField
-        label="Nebula Blend Mode"
-        value={String(parsed.nebula_blend_mode)}
-        options={BLEND_MODE_OPTIONS}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_blend_mode', Number.parseInt(next, 10) || 0)}
-      />
-      <Field
-        label="Nebula Opacity"
-        value={parsed.nebula_opacity}
-        min={0}
-        max={1}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('nebula_opacity', next)}
-      />
-      <SelectField
-        label="Stars Blend Mode"
-        value={String(parsed.stars_blend_mode)}
-        options={BLEND_MODE_OPTIONS}
-        readOnly={readOnly}
-        onChange={(next) => updateField('stars_blend_mode', Number.parseInt(next, 10) || 0)}
-      />
-      <Field
-        label="Stars Opacity"
-        value={parsed.stars_opacity}
-        min={0}
-        max={1}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('stars_opacity', next)}
-      />
-      <Field
-        label="Star Count"
-        value={parsed.star_count}
-        min={0}
-        max={5}
-        step={0.05}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_count', next)}
-      />
-      <Field
-        label="Star Size Min"
-        value={parsed.star_size_min}
-        min={0.01}
-        max={0.35}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_size_min', next)}
-      />
-      <Field
-        label="Star Size Max"
-        value={parsed.star_size_max}
-        min={0.01}
-        max={0.35}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateField('star_size_max', next)}
-      />
-      <Field
-        label="Star Color R"
-        value={parsed.star_color_rgb.x}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateStarColor('x', next)}
-      />
-      <Field
-        label="Star Color G"
-        value={parsed.star_color_rgb.y}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateStarColor('y', next)}
-      />
-      <Field
-        label="Star Color B"
-        value={parsed.star_color_rgb.z}
-        min={0}
-        max={2}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateStarColor('z', next)}
-      />
-      <SelectField
-        label="Flares Blend Mode"
-        value={String(parsed.flares_blend_mode)}
-        options={BLEND_MODE_OPTIONS}
-        readOnly={readOnly}
-        onChange={(next) => updateField('flares_blend_mode', Number.parseInt(next, 10) || 0)}
-      />
-      <Field
-        label="Flares Opacity"
-        value={parsed.flares_opacity}
-        min={0}
-        max={1}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('flares_opacity', next)}
-      />
-      <Field
-        label="Depth Layer Separation"
-        value={parsed.depth_layer_separation}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('depth_layer_separation', next)}
-      />
-      <Field
-        label="Depth Parallax Scale"
-        value={parsed.depth_parallax_scale}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('depth_parallax_scale', next)}
-      />
-      <Field
-        label="Depth Haze Strength"
-        value={parsed.depth_haze_strength}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('depth_haze_strength', next)}
-      />
-      <Field
-        label="Depth Occlusion Strength"
-        value={parsed.depth_occlusion_strength}
-        min={0}
-        max={3}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('depth_occlusion_strength', next)}
-      />
-      <Field
-        label="Backlight Screen X"
-        value={parsed.backlight_screen_x}
-        min={-1.5}
-        max={1.5}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('backlight_screen_x', next)}
-      />
-      <Field
-        label="Backlight Screen Y"
-        value={parsed.backlight_screen_y}
-        min={-1.5}
-        max={1.5}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('backlight_screen_y', next)}
-      />
-      <Field
-        label="Backlight Intensity"
-        value={parsed.backlight_intensity}
-        min={0}
-        max={20}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('backlight_intensity', next)}
-      />
-      <Field
-        label="Backlight Wrap"
-        value={parsed.backlight_wrap}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('backlight_wrap', next)}
-      />
-      <Field
-        label="Backlight Edge Boost"
-        value={parsed.backlight_edge_boost}
-        min={0}
-        max={6}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('backlight_edge_boost', next)}
-      />
-      <Field
-        label="Backlight Bloom Scale"
-        value={parsed.backlight_bloom_scale}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('backlight_bloom_scale', next)}
-      />
-      <Field
-        label="Backlight Bloom Threshold"
-        value={parsed.backlight_bloom_threshold}
-        min={0}
-        max={1}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('backlight_bloom_threshold', next)}
-      />
-      <ToggleField
-        label="Enable Backlight"
-        checked={parsed.enable_backlight}
-        readOnly={readOnly}
-        onChange={(next) => updateField('enable_backlight', next)}
-      />
-      <ToggleField
-        label="Enable Light Shafts"
-        checked={parsed.enable_light_shafts}
-        readOnly={readOnly}
-        onChange={(next) => updateField('enable_light_shafts', next)}
-      />
-      <ToggleField
-        label="Shafts Debug View"
-        checked={parsed.shafts_debug_view}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shafts_debug_view', next)}
-      />
-      <Field
-        label="Shaft Intensity"
-        value={parsed.shaft_intensity}
-        min={0}
-        max={40}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shaft_intensity', next)}
-      />
-      <Field
-        label="Shaft Length"
-        value={parsed.shaft_length}
-        min={0.05}
-        max={0.95}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shaft_length', next)}
-      />
-      <Field
-        label="Shaft Falloff"
-        value={parsed.shaft_falloff}
-        min={0.2}
-        max={8}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shaft_falloff', next)}
-      />
-      <Field
-        label="Shaft Samples"
-        value={parsed.shaft_samples}
-        min={4}
-        max={24}
-        step={1}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shaft_samples', next)}
-      />
-      <SelectField
-        label="Shaft Quality"
-        value={String(parsed.shaft_quality)}
-        options={[
-          { value: '0', label: 'Low' },
-          { value: '1', label: 'Medium' },
-          { value: '2', label: 'High' },
-        ]}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shaft_quality', Number.parseInt(next, 10) || 0)}
-      />
-      <SelectField
-        label="Shaft Blend Mode"
-        value={String(parsed.shaft_blend_mode)}
-        options={BLEND_MODE_OPTIONS}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shaft_blend_mode', Number.parseInt(next, 10) || 0)}
-      />
-      <Field
-        label="Shaft Opacity"
-        value={parsed.shaft_opacity}
-        min={0}
-        max={1}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateField('shaft_opacity', next)}
-      />
-      <Field
-        label="Shaft Color R"
-        value={parsed.shaft_color_rgb.x}
-        min={0}
-        max={3}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateShaftColor('x', next)}
-      />
-      <Field
-        label="Shaft Color G"
-        value={parsed.shaft_color_rgb.y}
-        min={0}
-        max={3}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateShaftColor('y', next)}
-      />
-      <Field
-        label="Shaft Color B"
-        value={parsed.shaft_color_rgb.z}
-        min={0}
-        max={3}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateShaftColor('z', next)}
-      />
-      <Field
-        label="Backlight Color R"
-        value={parsed.backlight_color_rgb.x}
-        min={0}
-        max={3}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateBacklightColor('x', next)}
-      />
-      <Field
-        label="Backlight Color G"
-        value={parsed.backlight_color_rgb.y}
-        min={0}
-        max={3}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateBacklightColor('y', next)}
-      />
-      <Field
-        label="Backlight Color B"
-        value={parsed.backlight_color_rgb.z}
-        min={0}
-        max={3}
-        step={0.001}
-        readOnly={readOnly}
-        onChange={(next) => updateBacklightColor('z', next)}
-      />
-      <Field
-        label="Tint R"
-        value={parsed.tint_rgb.x}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateTint('x', next)}
-      />
-      <Field
-        label="Tint G"
-        value={parsed.tint_rgb.y}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateTint('y', next)}
-      />
-      <Field
-        label="Tint B"
-        value={parsed.tint_rgb.z}
-        min={0}
-        max={2}
-        step={0.01}
-        readOnly={readOnly}
-        onChange={(next) => updateTint('z', next)}
-      />
+
+      <Group title="Global">
+        <Field
+          label="Intensity"
+          value={parsed.intensity}
+          min={0}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('intensity', next)}
+        />
+        <Field
+          label="Drift Scale"
+          value={parsed.drift_scale}
+          min={0}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('drift_scale', next)}
+        />
+        <Field
+          label="Zoom Rate"
+          value={parsed.zoom_rate}
+          min={0}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('zoom_rate', next)}
+        />
+        <Field
+          label="Velocity Glow"
+          value={parsed.velocity_glow}
+          min={0}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('velocity_glow', next)}
+        />
+        <Field
+          label="Seed"
+          value={parsed.seed}
+          min={0}
+          max={100000}
+          step={0.001}
+          readOnly={readOnly}
+          onChange={(next) => updateField('seed', next)}
+        />
+        <ColorField
+          label="Background"
+          value={parsed.background_rgb}
+          max={1}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              background_rgb: next,
+            })
+          }
+        />
+        <ToggleField
+          label="Background Gradient"
+          checked={parsed.enable_background_gradient}
+          readOnly={readOnly}
+          onChange={(next) => updateField('enable_background_gradient', next)}
+        />
+        <ColorField
+          label="Tint"
+          value={parsed.tint_rgb}
+          max={2}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              tint_rgb: next,
+            })
+          }
+        />
+      </Group>
+
+      <Group
+        title="Nebula Layer"
+        enabled={parsed.enable_nebula_layer}
+        readOnly={readOnly}
+        onEnabledChange={(next) => updateField('enable_nebula_layer', next)}
+      >
+        <Field
+          label="Nebula Strength"
+          value={parsed.nebula_strength}
+          min={0}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_strength', next)}
+        />
+        <ColorField
+          label="Primary Color"
+          value={parsed.nebula_color_primary_rgb}
+          max={2}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              nebula_color_primary_rgb: next,
+            })
+          }
+        />
+        <ColorField
+          label="Secondary Color"
+          value={parsed.nebula_color_secondary_rgb}
+          max={2}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              nebula_color_secondary_rgb: next,
+            })
+          }
+        />
+        <ColorField
+          label="Accent Color"
+          value={parsed.nebula_color_accent_rgb}
+          max={2}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              nebula_color_accent_rgb: next,
+            })
+          }
+        />
+        <SelectField
+          label="Nebula Noise Mode"
+          value={String(parsed.nebula_noise_mode)}
+          options={[
+            { value: '0', label: 'fBm' },
+            { value: '1', label: 'Ridged fBm' },
+          ]}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('nebula_noise_mode', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <Field
+          label="Nebula Octaves"
+          value={parsed.nebula_octaves}
+          min={1}
+          max={8}
+          step={1}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_octaves', next)}
+        />
+        <Field
+          label="Nebula Gain"
+          value={parsed.nebula_gain}
+          min={0.1}
+          max={0.95}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_gain', next)}
+        />
+        <Field
+          label="Nebula Lacunarity"
+          value={parsed.nebula_lacunarity}
+          min={1.1}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_lacunarity', next)}
+        />
+        <Field
+          label="Nebula Power"
+          value={parsed.nebula_power}
+          min={0.2}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_power', next)}
+        />
+        <Field
+          label="Nebula Shelf"
+          value={parsed.nebula_shelf}
+          min={0}
+          max={0.95}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_shelf', next)}
+        />
+        <Field
+          label="Nebula Ridge Offset"
+          value={parsed.nebula_ridge_offset}
+          min={0.5}
+          max={2.5}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_ridge_offset', next)}
+        />
+        <SelectField
+          label="Nebula Blend Mode"
+          value={String(parsed.nebula_blend_mode)}
+          options={BLEND_MODE_OPTIONS}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('nebula_blend_mode', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <Field
+          label="Nebula Opacity"
+          value={parsed.nebula_opacity}
+          min={0}
+          max={1}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('nebula_opacity', next)}
+        />
+      </Group>
+
+      <Group
+        title="Stars Layer"
+        enabled={parsed.enable_stars_layer}
+        readOnly={readOnly}
+        onEnabledChange={(next) => updateField('enable_stars_layer', next)}
+      >
+        <SelectField
+          label="Stars Blend Mode"
+          value={String(parsed.stars_blend_mode)}
+          options={BLEND_MODE_OPTIONS}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('stars_blend_mode', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <Field
+          label="Stars Opacity"
+          value={parsed.stars_opacity}
+          min={0}
+          max={1}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('stars_opacity', next)}
+        />
+        <Field
+          label="Star Count"
+          value={parsed.star_count}
+          min={0}
+          max={5}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_count', next)}
+        />
+        <RangeField
+          label="Star Size Range"
+          minValue={parsed.star_size_min}
+          maxValue={parsed.star_size_max}
+          min={0.01}
+          max={0.35}
+          step={0.001}
+          readOnly={readOnly}
+          onChange={(minValue, maxValue) => {
+            emit({
+              ...parsed,
+              star_size_min: minValue,
+              star_size_max: maxValue,
+            })
+          }}
+        />
+        <ColorField
+          label="Star Color"
+          value={parsed.star_color_rgb}
+          max={2}
+          alpha={parsed.stars_opacity}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              star_color_rgb: next,
+            })
+          }
+          onAlphaChange={(next) => updateField('stars_opacity', next)}
+        />
+      </Group>
+
+      <Group title="Star/Flare Mask">
+        <ToggleField
+          label="Enabled"
+          checked={parsed.star_mask_enabled}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_enabled', next)}
+        />
+        <SelectField
+          label="Mask Mode"
+          value={String(parsed.star_mask_mode)}
+          options={[
+            { value: '0', label: 'fBm' },
+            { value: '1', label: 'Ridged fBm' },
+          ]}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('star_mask_mode', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <Field
+          label="Mask Octaves"
+          value={parsed.star_mask_octaves}
+          min={1}
+          max={8}
+          step={1}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_octaves', next)}
+        />
+        <Field
+          label="Mask Gain"
+          value={parsed.star_mask_gain}
+          min={0.1}
+          max={0.95}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_gain', next)}
+        />
+        <Field
+          label="Mask Lacunarity"
+          value={parsed.star_mask_lacunarity}
+          min={1.1}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_lacunarity', next)}
+        />
+        <Field
+          label="Mask Threshold"
+          value={parsed.star_mask_threshold}
+          min={0}
+          max={0.99}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_threshold', next)}
+        />
+        <Field
+          label="Mask Power"
+          value={parsed.star_mask_power}
+          min={0.2}
+          max={4}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_power', next)}
+        />
+        <Field
+          label="Mask Ridge Offset"
+          value={parsed.star_mask_ridge_offset}
+          min={0.5}
+          max={2.5}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_ridge_offset', next)}
+        />
+        <Field
+          label="Mask Scale"
+          value={parsed.star_mask_scale}
+          min={0.2}
+          max={8}
+          step={0.05}
+          readOnly={readOnly}
+          onChange={(next) => updateField('star_mask_scale', next)}
+        />
+      </Group>
+
+      <Group
+        title="Flares Layer"
+        enabled={parsed.enable_flares_layer}
+        readOnly={readOnly}
+        onEnabledChange={(next) => updateField('enable_flares_layer', next)}
+      >
+        <ToggleField
+          label="Flare Layer Enabled"
+          checked={parsed.flare_enabled}
+          readOnly={readOnly}
+          onChange={(next) => updateField('flare_enabled', next)}
+        />
+        <Field
+          label="Flare Intensity"
+          value={parsed.flare_intensity}
+          min={0}
+          max={4}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('flare_intensity', next)}
+        />
+        <Field
+          label="Flare Density"
+          value={parsed.flare_density}
+          min={0}
+          max={1}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('flare_density', next)}
+        />
+        <Field
+          label="Flare Size"
+          value={parsed.flare_size}
+          min={0.1}
+          max={4}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('flare_size', next)}
+        />
+        <ColorField
+          label="Flare Tint"
+          value={parsed.flare_tint_rgb}
+          max={2}
+          alpha={parsed.flares_opacity}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              flare_tint_rgb: next,
+            })
+          }
+          onAlphaChange={(next) => updateField('flares_opacity', next)}
+        />
+        <SelectField
+          label="Flare Image"
+          value={String(parsed.flare_texture_set)}
+          options={[
+            { value: '0', label: 'White' },
+            { value: '1', label: 'Blue / Purple' },
+            { value: '2', label: 'Red / Yellow' },
+            { value: '3', label: 'Sun' },
+          ]}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('flare_texture_set', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <SelectField
+          label="Flares Blend Mode"
+          value={String(parsed.flares_blend_mode)}
+          options={BLEND_MODE_OPTIONS}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('flares_blend_mode', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <Field
+          label="Flares Opacity"
+          value={parsed.flares_opacity}
+          min={0}
+          max={1}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('flares_opacity', next)}
+        />
+      </Group>
+
+      <Group title="Depth">
+        <Field
+          label="Depth Layer Separation"
+          value={parsed.depth_layer_separation}
+          min={0}
+          max={2}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('depth_layer_separation', next)}
+        />
+        <Field
+          label="Depth Parallax Scale"
+          value={parsed.depth_parallax_scale}
+          min={0}
+          max={2}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('depth_parallax_scale', next)}
+        />
+        <Field
+          label="Depth Haze Strength"
+          value={parsed.depth_haze_strength}
+          min={0}
+          max={2}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('depth_haze_strength', next)}
+        />
+        <Field
+          label="Depth Occlusion Strength"
+          value={parsed.depth_occlusion_strength}
+          min={0}
+          max={3}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('depth_occlusion_strength', next)}
+        />
+      </Group>
+
+      <Group
+        title="Backlight"
+        enabled={parsed.enable_backlight}
+        readOnly={readOnly}
+        onEnabledChange={(next) => updateField('enable_backlight', next)}
+      >
+        <Field
+          label="Backlight Screen X"
+          value={parsed.backlight_screen_x}
+          min={-1.5}
+          max={1.5}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('backlight_screen_x', next)}
+        />
+        <Field
+          label="Backlight Screen Y"
+          value={parsed.backlight_screen_y}
+          min={-1.5}
+          max={1.5}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('backlight_screen_y', next)}
+        />
+        <Field
+          label="Backlight Intensity"
+          value={parsed.backlight_intensity}
+          min={0}
+          max={20}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('backlight_intensity', next)}
+        />
+        <Field
+          label="Backlight Wrap"
+          value={parsed.backlight_wrap}
+          min={0}
+          max={2}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('backlight_wrap', next)}
+        />
+        <Field
+          label="Backlight Edge Boost"
+          value={parsed.backlight_edge_boost}
+          min={0}
+          max={6}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('backlight_edge_boost', next)}
+        />
+        <Field
+          label="Backlight Bloom Scale"
+          value={parsed.backlight_bloom_scale}
+          min={0}
+          max={2}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('backlight_bloom_scale', next)}
+        />
+        <Field
+          label="Backlight Bloom Threshold"
+          value={parsed.backlight_bloom_threshold}
+          min={0}
+          max={1}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('backlight_bloom_threshold', next)}
+        />
+        <ColorField
+          label="Backlight Color"
+          value={parsed.backlight_color_rgb}
+          max={3}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              backlight_color_rgb: next,
+            })
+          }
+        />
+      </Group>
+
+      <Group
+        title="Light Shafts"
+        enabled={parsed.enable_light_shafts}
+        readOnly={readOnly}
+        onEnabledChange={(next) => updateField('enable_light_shafts', next)}
+      >
+        <ToggleField
+          label="Shafts Debug View"
+          checked={parsed.shafts_debug_view}
+          readOnly={readOnly}
+          onChange={(next) => updateField('shafts_debug_view', next)}
+        />
+        <Field
+          label="Shaft Intensity"
+          value={parsed.shaft_intensity}
+          min={0}
+          max={40}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('shaft_intensity', next)}
+        />
+        <Field
+          label="Shaft Length"
+          value={parsed.shaft_length}
+          min={0.05}
+          max={0.95}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('shaft_length', next)}
+        />
+        <Field
+          label="Shaft Falloff"
+          value={parsed.shaft_falloff}
+          min={0.2}
+          max={8}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('shaft_falloff', next)}
+        />
+        <Field
+          label="Shaft Samples"
+          value={parsed.shaft_samples}
+          min={4}
+          max={24}
+          step={1}
+          readOnly={readOnly}
+          onChange={(next) => updateField('shaft_samples', next)}
+        />
+        <SelectField
+          label="Shaft Quality"
+          value={String(parsed.shaft_quality)}
+          options={[
+            { value: '0', label: 'Low' },
+            { value: '1', label: 'Medium' },
+            { value: '2', label: 'High' },
+          ]}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('shaft_quality', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <SelectField
+          label="Shaft Blend Mode"
+          value={String(parsed.shaft_blend_mode)}
+          options={BLEND_MODE_OPTIONS}
+          readOnly={readOnly}
+          onChange={(next) =>
+            updateField('shaft_blend_mode', Number.parseInt(next, 10) || 0)
+          }
+        />
+        <Field
+          label="Shaft Opacity"
+          value={parsed.shaft_opacity}
+          min={0}
+          max={1}
+          step={0.01}
+          readOnly={readOnly}
+          onChange={(next) => updateField('shaft_opacity', next)}
+        />
+        <ColorField
+          label="Shaft Color"
+          value={parsed.shaft_color_rgb}
+          max={3}
+          alpha={parsed.shaft_opacity}
+          readOnly={readOnly}
+          onChange={(next) =>
+            emit({
+              ...parsed,
+              shaft_color_rgb: next,
+            })
+          }
+          onAlphaChange={(next) => updateField('shaft_opacity', next)}
+        />
+      </Group>
     </div>
+  )
+}
+
+type Vec3 = { x: number; y: number; z: number }
+
+function useDebouncedCommit<T>(
+  onCommit: (next: T) => void,
+  debounceMs = 180,
+): (next: T) => void {
+  const timerRef = React.useRef<number | null>(null)
+
+  React.useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current)
+      }
+    }
+  }, [])
+
+  return React.useCallback(
+    (next: T) => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current)
+      }
+      timerRef.current = window.setTimeout(() => {
+        onCommit(next)
+      }, debounceMs)
+    },
+    [debounceMs, onCommit],
+  )
+}
+
+function Group({
+  title,
+  children,
+  enabled,
+  readOnly,
+  onEnabledChange,
+}: {
+  title: string
+  children: React.ReactNode
+  enabled?: boolean
+  readOnly?: boolean
+  onEnabledChange?: (next: boolean) => void
+}) {
+  return (
+    <Collapsible
+      defaultOpen={false}
+      className="rounded-md border border-border/60"
+    >
+      <div className="flex items-center gap-2 px-2 py-2">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex flex-1 items-center justify-between rounded-sm px-1 py-1 text-left text-xs font-medium hover:bg-accent"
+          >
+            <span>{title}</span>
+            <span className="text-[10px] text-muted-foreground">Expand</span>
+          </button>
+        </CollapsibleTrigger>
+        {typeof enabled === 'boolean' && onEnabledChange ? (
+          <DebouncedSwitch
+            label={`${title} toggle`}
+            checked={enabled}
+            readOnly={Boolean(readOnly)}
+            onChange={onEnabledChange}
+          />
+        ) : null}
+      </div>
+      <CollapsibleContent className="space-y-2 border-t border-border/50 px-3 py-3">
+        {children}
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function DebouncedSwitch({
+  checked,
+  readOnly,
+  label,
+  onChange,
+}: {
+  checked: boolean
+  readOnly: boolean
+  label: string
+  onChange: (next: boolean) => void
+}) {
+  const commit = useDebouncedCommit(onChange)
+
+  return (
+    <Switch
+      checked={checked}
+      onCheckedChange={(next) => commit(Boolean(next))}
+      disabled={readOnly}
+      onClick={(event) => event.stopPropagation()}
+      aria-label={label}
+    />
   )
 }
 
@@ -1619,13 +1608,13 @@ function ToggleField({
   onChange: (next: boolean) => void
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-2 py-1.5">
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-2 py-2">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <Switch
+      <DebouncedSwitch
         checked={checked}
-        onCheckedChange={onChange}
-        disabled={readOnly}
-        aria-label={`${label} toggle`}
+        readOnly={readOnly}
+        label={`${label} toggle`}
+        onChange={onChange}
       />
     </div>
   )
@@ -1657,8 +1646,195 @@ function Field({
       step={step}
       readOnly={readOnly}
       onChange={onChange}
-      inputClassName="w-20 text-right font-mono text-xs"
+      inputClassName="h-10 w-28 [appearance:textfield] text-right font-mono text-sm [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
     />
+  )
+}
+
+function toHex(value: Vec3, max: number): string {
+  const r = Math.round(clamp(value.x / max, 0, 1) * 255)
+  const g = Math.round(clamp(value.y / max, 0, 1) * 255)
+  const b = Math.round(clamp(value.z / max, 0, 1) * 255)
+  const hex = (n: number) => n.toString(16).padStart(2, '0')
+  return `#${hex(r)}${hex(g)}${hex(b)}`
+}
+
+function fromHex(value: string, max: number): Vec3 | null {
+  const hex = value.trim()
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(hex)
+  if (!match) return null
+  const raw = match[1]
+  const r = Number.parseInt(raw.slice(0, 2), 16) / 255
+  const g = Number.parseInt(raw.slice(2, 4), 16) / 255
+  const b = Number.parseInt(raw.slice(4, 6), 16) / 255
+  return { x: r * max, y: g * max, z: b * max }
+}
+
+function ColorField({
+  label,
+  value,
+  max,
+  alpha,
+  readOnly,
+  onChange,
+  onAlphaChange,
+}: {
+  label: string
+  value: Vec3
+  max: number
+  alpha?: number
+  readOnly: boolean
+  onChange: (next: Vec3) => void
+  onAlphaChange?: (next: number) => void
+}) {
+  const commitColor = useDebouncedCommit(onChange)
+  const [hexValue, setHexValue] = React.useState(toHex(value, max))
+
+  React.useEffect(() => {
+    setHexValue(toHex(value, max))
+  }, [value, max])
+
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 p-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="flex items-center gap-2">
+        <Input
+          type="color"
+          value={hexValue}
+          disabled={readOnly}
+          onChange={(event) => {
+            const nextHex = event.target.value
+            setHexValue(nextHex)
+            const parsed = fromHex(nextHex, max)
+            if (parsed) {
+              commitColor(parsed)
+            }
+          }}
+          className="h-10 w-14 cursor-pointer p-1"
+          aria-label={`${label} color`}
+        />
+        <Input
+          value={hexValue}
+          disabled={readOnly}
+          onChange={(event) => {
+            const nextHex = event.target.value
+            setHexValue(nextHex)
+            const parsed = fromHex(nextHex, max)
+            if (parsed) {
+              commitColor(parsed)
+            }
+          }}
+          className="h-10 font-mono text-xs uppercase"
+          aria-label={`${label} hex`}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field
+          label="R"
+          value={value.x}
+          min={0}
+          max={max}
+          step={0.001}
+          readOnly={readOnly}
+          onChange={(next) => onChange({ ...value, x: next })}
+        />
+        <Field
+          label="G"
+          value={value.y}
+          min={0}
+          max={max}
+          step={0.001}
+          readOnly={readOnly}
+          onChange={(next) => onChange({ ...value, y: next })}
+        />
+        <Field
+          label="B"
+          value={value.z}
+          min={0}
+          max={max}
+          step={0.001}
+          readOnly={readOnly}
+          onChange={(next) => onChange({ ...value, z: next })}
+        />
+        {onAlphaChange ? (
+          <Field
+            label="A"
+            value={alpha ?? 1}
+            min={0}
+            max={1}
+            step={0.01}
+            readOnly={readOnly}
+            onChange={onAlphaChange}
+          />
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function RangeField({
+  label,
+  minValue,
+  maxValue,
+  min,
+  max,
+  step,
+  readOnly,
+  onChange,
+}: {
+  label: string
+  minValue: number
+  maxValue: number
+  min: number
+  max: number
+  step: number
+  readOnly: boolean
+  onChange: (minValue: number, maxValue: number) => void
+}) {
+  const [values, setValues] = React.useState<[number, number]>([
+    Math.min(minValue, maxValue),
+    Math.max(minValue, maxValue),
+  ])
+  const commit = useDebouncedCommit<[number, number]>((next) => {
+    onChange(next[0], next[1])
+  })
+
+  React.useEffect(() => {
+    setValues([Math.min(minValue, maxValue), Math.max(minValue, maxValue)])
+  }, [minValue, maxValue])
+
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 p-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">{label}</div>
+        <div className="text-xs font-mono text-muted-foreground">
+          {values[0].toFixed(3)} to {values[1].toFixed(3)}
+        </div>
+      </div>
+      <Slider
+        value={values}
+        min={min}
+        max={max}
+        step={step}
+        disabled={readOnly}
+        onValueChange={(next) => {
+          if (next.length < 2) return
+          const sorted: [number, number] = [
+            Math.min(next[0], next[1]),
+            Math.max(next[0], next[1]),
+          ]
+          setValues(sorted)
+        }}
+        onValueCommit={(next) => {
+          if (next.length < 2) return
+          const sorted: [number, number] = [
+            Math.min(next[0], next[1]),
+            Math.max(next[0], next[1]),
+          ]
+          commit(sorted)
+        }}
+      />
+    </div>
   )
 }
 
@@ -1675,14 +1851,16 @@ function SelectField({
   readOnly: boolean
   onChange: (next: string) => void
 }) {
+  const commit = useDebouncedCommit(onChange)
+
   return (
     <div className="space-y-1">
       <div className="text-xs text-muted-foreground">{label}</div>
       <select
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => commit(e.target.value)}
         disabled={readOnly}
-        className="flex h-8 w-full rounded-md border border-border/60 bg-background px-2 text-xs"
+        className="flex h-10 w-full rounded-md border border-border/60 bg-background px-2 text-sm"
         aria-label={`${label} value`}
       >
         {options.map((option) => (

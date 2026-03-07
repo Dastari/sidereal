@@ -13,6 +13,7 @@ use super::components::{
     ClientSceneEntity, ControlledEntity, GameplayCamera, GameplayHud, TopDownCamera,
     UiOverlayCamera,
 };
+use super::dev_console::{DevConsoleState, is_console_open};
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
 use super::resources::{CameraMotionState, TacticalMapUiState};
 
@@ -166,10 +167,10 @@ pub(crate) fn resolve_camera_anchor_entity(
         return Some(controlled_entity);
     }
 
-    if let Some(player_guid) = player_guid {
-        if let Some(entity) = find_best_runtime_by_guid(player_guid) {
-            return Some(entity);
-        }
+    if let Some(player_guid) = player_guid
+        && let Some(entity) = find_best_runtime_by_guid(player_guid)
+    {
+        return Some(entity);
     }
 
     // Camera contract: always follow the local player entity.
@@ -188,6 +189,7 @@ pub(crate) fn resolve_camera_anchor_entity(
 pub(crate) fn update_topdown_camera_system(
     time: Res<'_, Time>,
     input: Option<Res<'_, ButtonInput<KeyCode>>>,
+    dev_console_state: Option<Res<'_, DevConsoleState>>,
     tactical_map_state: Res<'_, TacticalMapUiState>,
     mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
     session: Res<'_, ClientSession>,
@@ -205,6 +207,20 @@ pub(crate) fn update_topdown_camera_system(
         ),
         (Without<Camera>, Without<GameplayCamera>),
     >,
+    controlled_anchor_candidates: Query<
+        '_,
+        '_,
+        (
+            &'_ Transform,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+        ),
+        (
+            With<ControlledEntity>,
+            Without<Camera>,
+            Without<GameplayCamera>,
+        ),
+    >,
     mut free_camera: ResMut<'_, FreeCameraState>,
     mut camera_query: Query<
         '_,
@@ -217,9 +233,13 @@ pub(crate) fn update_topdown_camera_system(
     let Ok((mut camera_transform, mut projection, mut camera)) = camera_query.single_mut() else {
         return;
     };
+    let suppress_for_console = is_console_open(dev_console_state.as_deref());
 
     let mut wheel_delta_y = 0.0f32;
     for event in mouse_wheel_events.read() {
+        if suppress_for_console {
+            continue;
+        }
         let normalized = match event.unit {
             MouseScrollUnit::Line => event.y,
             MouseScrollUnit::Pixel => event.y / 32.0,
@@ -238,14 +258,38 @@ pub(crate) fn update_topdown_camera_system(
         ortho.scale = (camera.distance * ORTHO_SCALE_PER_DISTANCE).max(0.01);
     }
 
-    let follow_anchor = resolve_camera_anchor_entity(
-        &session,
-        &player_view_state,
-        &entity_registry,
-        &anchor_candidates,
-    )
-    .and_then(|entity| anchor_query.get(entity).ok())
-    .map(|anchor_transform| anchor_transform.translation.truncate());
+    // Prefer the concrete controlled runtime entity first. This avoids follow jitter from
+    // GUID-level ambiguity when stale/interpolated duplicates coexist during relevance churn.
+    let controlled_anchor = controlled_anchor_candidates
+        .iter()
+        .fold(
+            None::<(Vec2, i32)>,
+            |winner, (transform, is_predicted, is_interpolated)| {
+                let score = if is_predicted {
+                    3
+                } else if is_interpolated {
+                    2
+                } else {
+                    1
+                };
+                if winner.is_none_or(|(_, best_score)| score > best_score) {
+                    Some((transform.translation.truncate(), score))
+                } else {
+                    winner
+                }
+            },
+        )
+        .map(|(xy, _)| xy);
+    let follow_anchor = controlled_anchor.or_else(|| {
+        resolve_camera_anchor_entity(
+            &session,
+            &player_view_state,
+            &entity_registry,
+            &anchor_candidates,
+        )
+        .and_then(|entity| anchor_query.get(entity).ok())
+        .map(|anchor_transform| anchor_transform.translation.truncate())
+    });
 
     let focus_xy = if player_view_state.detached_free_camera {
         if !free_camera.initialized {
@@ -253,7 +297,7 @@ pub(crate) fn update_topdown_camera_system(
             free_camera.initialized = true;
         }
         let mut axis = Vec2::ZERO;
-        if let Some(keys) = input.as_ref() {
+        if !suppress_for_console && let Some(keys) = input.as_ref() {
             if keys.pressed(KeyCode::ArrowUp) {
                 axis.y += 1.0;
             }

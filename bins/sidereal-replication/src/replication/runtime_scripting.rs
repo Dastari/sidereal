@@ -5,17 +5,16 @@ use serde_json::Value as JsonValue;
 use sidereal_game::{EntityGuid, FlightComputer, OwnerId, ScriptState, ScriptValue};
 use sidereal_net::PlayerEntityId;
 use sidereal_scripting::{
-    LuaSandboxPolicy, ScriptError, create_sandboxed_lua_vm, load_lua_module_into_lua_from_root,
-    lua_value_to_json, reset_lua_instruction_budget,
+    LuaSandboxPolicy, ScriptError, create_sandboxed_lua_vm, inject_script_logger,
+    load_lua_module_into_lua_from_source, lua_value_to_json, reset_lua_instruction_budget,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 use uuid::Uuid;
 
-use crate::replication::scripting::scripts_root_dir;
+use crate::replication::scripting::{ScriptCatalogResource, lookup_script_catalog_entry};
 
 #[derive(Clone)]
 struct ScriptEntitySnapshot {
@@ -93,17 +92,20 @@ pub struct ScriptRuntime {
     handlers: HashMap<String, ScriptHandler>,
     next_tick_run_by_entity_handler: HashMap<String, f64>,
     pending_intents: Vec<ScriptIntent>,
+    catalog_revision: u64,
 }
 
 impl ScriptRuntime {
-    fn from_scripts_root(scripts_root: &std::path::Path) -> Result<Self, ScriptError> {
+    fn from_catalog(catalog: &ScriptCatalogResource) -> Result<Self, ScriptError> {
         let policy = LuaSandboxPolicy::from_env();
         let lua = create_sandboxed_lua_vm(&policy)?;
         let mut handlers = HashMap::new();
 
-        for script_rel_path in discover_ai_script_paths(scripts_root)? {
-            let (module, module_path) =
-                load_lua_module_into_lua_from_root(&lua, scripts_root, &script_rel_path)?;
+        for script_rel_path in discover_ai_script_paths(catalog) {
+            let entry = lookup_script_catalog_entry(catalog, &script_rel_path)
+                .map_err(ScriptError::Contract)?;
+            let module_path = Path::new(&script_rel_path).to_path_buf();
+            let module = load_lua_module_into_lua_from_source(&lua, &entry.source, &module_path)?;
             let default_handler_name = Path::new(&script_rel_path)
                 .file_stem()
                 .and_then(|v| v.to_str())
@@ -164,6 +166,7 @@ impl ScriptRuntime {
             handlers,
             next_tick_run_by_entity_handler: HashMap::new(),
             pending_intents: Vec::new(),
+            catalog_revision: catalog.revision,
         })
     }
 }
@@ -171,21 +174,21 @@ impl ScriptRuntime {
 pub fn init_resources(app: &mut App) {
     app.insert_resource(ScriptWorldSnapshot::default());
     app.insert_resource(ScriptEventQueue::default());
-    let scripts_root = scripts_root_dir();
-    match ScriptRuntime::from_scripts_root(&scripts_root) {
+    let catalog = app.world().resource::<ScriptCatalogResource>().clone();
+    match ScriptRuntime::from_catalog(&catalog) {
         Ok(runtime) => {
             info!(
-                "replication runtime scripting initialized root={} handlers={}",
-                scripts_root.display(),
-                runtime.handlers.len()
+                "replication runtime scripting initialized root={} handlers={} catalog_revision={}",
+                catalog.root_dir,
+                runtime.handlers.len(),
+                catalog.revision
             );
             app.insert_non_send_resource(runtime);
         }
         Err(err) => {
             warn!(
                 "replication runtime scripting disabled: root={} error={}",
-                scripts_root.display(),
-                err
+                catalog.root_dir, err
             );
         }
     }
@@ -224,10 +227,25 @@ pub fn refresh_script_world_snapshot(
 
 pub fn run_script_intervals(
     runtime: Option<NonSendMut<'_, ScriptRuntime>>,
+    catalog: Res<'_, ScriptCatalogResource>,
     snapshot: Res<'_, ScriptWorldSnapshot>,
     time: Res<'_, Time>,
 ) {
     let Some(mut runtime) = runtime else { return };
+    if runtime.catalog_revision != catalog.revision {
+        match ScriptRuntime::from_catalog(&catalog) {
+            Ok(new_runtime) => {
+                *runtime = new_runtime;
+            }
+            Err(err) => {
+                warn!(
+                    "replication runtime scripting reload failed root={} catalog_revision={} error={}",
+                    catalog.root_dir, catalog.revision, err
+                );
+                return;
+            }
+        }
+    }
     let now_s = time.elapsed_secs_f64();
     if runtime.handlers.is_empty() {
         return;
@@ -274,6 +292,7 @@ pub fn run_script_intervals(
             &runtime.lua,
             Rc::clone(&snapshot_map),
             pending_intents.clone(),
+            handler_log_name.as_str(),
         ) {
             Ok(v) => v,
             Err(err) => {
@@ -328,10 +347,25 @@ pub fn run_script_intervals(
 
 pub fn run_script_events(
     runtime: Option<NonSendMut<'_, ScriptRuntime>>,
+    catalog: Res<'_, ScriptCatalogResource>,
     snapshot: Res<'_, ScriptWorldSnapshot>,
     mut event_queue: ResMut<'_, ScriptEventQueue>,
 ) {
     let Some(mut runtime) = runtime else { return };
+    if runtime.catalog_revision != catalog.revision {
+        match ScriptRuntime::from_catalog(&catalog) {
+            Ok(new_runtime) => {
+                *runtime = new_runtime;
+            }
+            Err(err) => {
+                warn!(
+                    "replication runtime scripting reload failed root={} catalog_revision={} error={}",
+                    catalog.root_dir, catalog.revision, err
+                );
+                return;
+            }
+        }
+    }
     if runtime.handlers.is_empty() || event_queue.pending.is_empty() {
         return;
     }
@@ -366,6 +400,7 @@ pub fn run_script_events(
                 &runtime.lua,
                 Rc::clone(&snapshot_map),
                 pending_intents.clone(),
+                handler_name.as_str(),
             ) {
                 Ok(v) => v,
                 Err(err) => {
@@ -526,10 +561,12 @@ fn build_script_context(
     lua: &Lua,
     snapshot_map: Rc<HashMap<String, ScriptEntitySnapshot>>,
     pending_intents: Rc<RefCell<Vec<ScriptIntent>>>,
+    script_label: &str,
 ) -> Result<Table, ScriptError> {
     let ctx = lua
         .create_table()
         .map_err(|err| ScriptError::Runtime(format!("create script ctx failed: {err}")))?;
+    inject_script_logger(lua, &ctx, script_label)?;
     let world = lua
         .create_table()
         .map_err(|err| ScriptError::Runtime(format!("create script world failed: {err}")))?;
@@ -642,25 +679,15 @@ fn parse_uuid(raw: &str) -> Result<Uuid, String> {
     Uuid::parse_str(raw).map_err(|err| format!("invalid uuid {raw}: {err}"))
 }
 
-fn discover_ai_script_paths(scripts_root: &Path) -> Result<Vec<String>, ScriptError> {
-    let ai_dir = scripts_root.join("ai");
-    let entries = fs::read_dir(&ai_dir)
-        .map_err(|err| ScriptError::Io(format!("read {} failed: {err}", ai_dir.display())))?;
-    let mut rel_paths = Vec::new();
-    for entry in entries {
-        let entry = entry
-            .map_err(|err| ScriptError::Io(format!("read {} failed: {err}", ai_dir.display())))?;
-        let path = entry.path();
-        if path.extension().and_then(|v| v.to_str()) != Some("lua") {
-            continue;
-        }
-        let Some(filename) = path.file_name().and_then(|v| v.to_str()) else {
-            continue;
-        };
-        rel_paths.push(format!("ai/{filename}"));
-    }
+fn discover_ai_script_paths(catalog: &ScriptCatalogResource) -> Vec<String> {
+    let mut rel_paths = catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.script_path.starts_with("ai/"))
+        .map(|entry| entry.script_path.clone())
+        .collect::<Vec<_>>();
     rel_paths.sort();
-    Ok(rel_paths)
+    rel_paths
 }
 
 fn json_to_lua_value(lua: &Lua, value: &JsonValue) -> Result<Value, ScriptError> {

@@ -4,7 +4,10 @@ use avian2d::prelude::{Position, Rotation};
 use bevy::prelude::*;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::Confirmed;
-use sidereal_game::FullscreenLayer;
+use sidereal_game::{
+    FullscreenLayer, WorldPosition, WorldRotation, resolve_world_position,
+    resolve_world_rotation_rad,
+};
 
 use super::components::{PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity};
 
@@ -43,6 +46,42 @@ pub(crate) fn sync_confirmed_world_entity_transforms_from_physics(
     }
 }
 
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_confirmed_world_entity_transforms_from_world_space(
+    mut entities: Query<
+        '_,
+        '_,
+        (
+            &'_ WorldPosition,
+            Option<&'_ WorldRotation>,
+            &'_ mut Transform,
+        ),
+        (
+            With<WorldEntity>,
+            Without<Position>,
+            Without<Rotation>,
+            Without<lightyear::prelude::Predicted>,
+            Without<lightyear::prelude::Interpolated>,
+        ),
+    >,
+) {
+    for (position, rotation, mut transform) in &mut entities {
+        let planar_position = if position.0.is_finite() {
+            position.0
+        } else {
+            Vec2::ZERO
+        };
+        let heading = rotation
+            .map(|value| value.0)
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0);
+        transform.translation.x = planar_position.x;
+        transform.translation.y = planar_position.y;
+        transform.translation.z = 0.0;
+        transform.rotation = Quat::from_rotation_z(heading);
+    }
+}
+
 /// Bootstrap for interpolated entities that just became relevant but do not yet
 /// have interpolation history samples. Without this, they can render at default
 /// Transform (0,0) until the next server delta arrives.
@@ -54,6 +93,8 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         (
             Option<&'_ Position>,
             Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
             Option<&'_ Confirmed<Position>>,
             Option<&'_ Confirmed<Rotation>>,
             &'_ mut Transform,
@@ -66,6 +107,8 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
     for (
         position,
         rotation,
+        world_position,
+        world_rotation,
         confirmed_position,
         confirmed_rotation,
         mut transform,
@@ -73,6 +116,22 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         rotation_history,
     ) in &mut entities
     {
+        let is_static_world_spatial = position.is_none()
+            && rotation.is_none()
+            && (world_position.is_some() || world_rotation.is_some());
+        if is_static_world_spatial {
+            let planar_position = resolve_world_position(position, world_position)
+                .filter(|p| p.is_finite())
+                .unwrap_or(Vec2::ZERO);
+            let heading = resolve_world_rotation_rad(rotation, world_rotation)
+                .filter(|r| r.is_finite())
+                .unwrap_or(0.0);
+            transform.translation.x = planar_position.x;
+            transform.translation.y = planar_position.y;
+            transform.translation.z = 0.0;
+            transform.rotation = Quat::from_rotation_z(heading);
+            continue;
+        }
         // Interpolation needs at least 2 samples. With only one (or zero), preserve
         // authoritative spawn pose from Confirmed values so entities don't render at origin.
         let history_ready = position_history.and_then(|h| h.end()).is_some()
@@ -82,10 +141,10 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         }
         let source_position = confirmed_position
             .map(|p| p.0.0)
-            .or_else(|| position.map(|p| p.0));
+            .or_else(|| resolve_world_position(position, world_position));
         let source_heading = confirmed_rotation
             .map(|r| r.0.as_radians())
-            .or_else(|| rotation.map(|r| r.as_radians()));
+            .or_else(|| resolve_world_rotation_rad(rotation, world_rotation));
         let planar_position = if source_position.is_some_and(|p| p.is_finite()) {
             source_position.unwrap_or(Vec2::ZERO)
         } else {
@@ -118,6 +177,8 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
             Has<lightyear::prelude::Interpolated>,
             Option<&'_ Position>,
             Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
             Option<&'_ Confirmed<Position>>,
             Option<&'_ Confirmed<Rotation>>,
             Option<&'_ ConfirmedHistory<Position>>,
@@ -134,6 +195,8 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
         is_interpolated,
         position,
         rotation,
+        world_position,
+        world_rotation,
         confirmed_position,
         confirmed_rotation,
         position_history,
@@ -151,6 +214,22 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
             // Fullscreen layers are non-spatial overlay entities: they have no physics
             // transform history but should render as soon as adopted.
             ready = true;
+        } else if position.is_none()
+            && rotation.is_none()
+            && (world_position.is_some() || world_rotation.is_some())
+        {
+            if let (Some(planar_position), Some(heading)) = (
+                resolve_world_position(position, world_position),
+                resolve_world_rotation_rad(rotation, world_rotation),
+            ) {
+                source_position = Some(planar_position);
+                source_heading = Some(heading);
+                ready = true;
+            } else if let (Some(cp), Some(cr)) = (confirmed_position, confirmed_rotation) {
+                source_position = Some(cp.0.0);
+                source_heading = Some(cr.0.as_radians());
+                ready = true;
+            }
         } else if is_interpolated {
             let history_ready = position_history.and_then(|h| h.end()).is_some()
                 && rotation_history.and_then(|h| h.end()).is_some();
@@ -161,9 +240,12 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
                 source_heading = Some(cr.0.as_radians());
                 ready = true;
             }
-        } else if let (Some(p), Some(r)) = (position, rotation) {
-            source_position = Some(p.0);
-            source_heading = Some(r.as_radians());
+        } else if let (Some(planar_position), Some(heading)) = (
+            resolve_world_position(position, world_position),
+            resolve_world_rotation_rad(rotation, world_rotation),
+        ) {
+            source_position = Some(planar_position);
+            source_heading = Some(heading);
             ready = true;
         }
 

@@ -90,6 +90,9 @@ export function getGridThemeColors(root?: HTMLElement): GridThemeColors {
   const label = getCssColorRgb('--color-foreground', el)
   const selectionRing = getCssColorRgb('--color-success', el)
   const originLine = getCssColorRgb('--color-grid-origin', el)
+  const foreground = getCssColorRgb('--color-foreground', el)
+  const playerColor = getCssColorRgb('--color-entity-label-player', el)
+  const shipColor = getCssColorRgb('--color-entity-label-ship', el)
 
   const getEntityColor = (
     _kind: string,
@@ -97,10 +100,10 @@ export function getGridThemeColors(root?: HTMLElement): GridThemeColors {
   ): [number, number, number] => {
     if (entityLabels?.length) {
       const labels = entityLabels.map((l) => String(l).toLowerCase())
-      if (labels.includes('player')) return getCssColorRgb('--color-entity-label-player', el)
-      if (labels.some((l) => l === 'ship')) return getCssColorRgb('--color-entity-label-ship', el)
+      if (labels.includes('player')) return playerColor
+      if (labels.some((l) => l === 'ship')) return shipColor
     }
-    return getCssColorRgb('--color-foreground', el)
+    return foreground
   }
 
   return {

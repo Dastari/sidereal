@@ -12,8 +12,9 @@ pub(crate) fn run() {
         }),
         ..Default::default()
     }));
+    crate::client_core::configure_shared_client_core(&mut app);
     app.add_systems(Startup, || {
-        info!("sidereal-client wasm scaffold booted (WebGPU-capable)");
+        info!("sidereal-client wasm scaffold booted with shared client core (WebGPU-capable)");
     });
     app.run();
 }

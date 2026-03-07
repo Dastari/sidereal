@@ -3,8 +3,12 @@ import {
   COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER,
   COMPONENT_TYPE_DENSITY,
   COMPONENT_TYPE_ENGINE,
+  COMPONENT_TYPE_HARDPOINT,
   COMPONENT_TYPE_FLIGHT_TUNING,
+  COMPONENT_TYPE_ENVIRONMENT_LIGHTING_STATE,
   COMPONENT_TYPE_MAX_VELOCITY_MPS,
+  COMPONENT_TYPE_SIZE_M,
+  COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS,
   COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
   COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS,
@@ -28,6 +32,11 @@ const EngineEditor = React.lazy(() =>
     default: m.EngineEditor,
   })),
 )
+const HardpointEditor = React.lazy(() =>
+  import('./HardpointEditor').then((m) => ({
+    default: m.HardpointEditor,
+  })),
+)
 const FlightTuningEditor = React.lazy(() =>
   import('./FlightTuningEditor').then((m) => ({
     default: m.FlightTuningEditor,
@@ -38,6 +47,11 @@ const MaxVelocityMpsEditor = React.lazy(() =>
     default: m.MaxVelocityMpsEditor,
   })),
 )
+const SizeMEditor = React.lazy(() =>
+  import('./SizeMEditor').then((m) => ({
+    default: m.SizeMEditor,
+  })),
+)
 const StarfieldShaderSettingsEditor = React.lazy(() =>
   import('./StarfieldShaderSettingsEditor').then((m) => ({
     default: m.StarfieldShaderSettingsEditor,
@@ -46,6 +60,16 @@ const StarfieldShaderSettingsEditor = React.lazy(() =>
 const SpaceBackgroundShaderSettingsEditor = React.lazy(() =>
   import('./SpaceBackgroundShaderSettingsEditor').then((m) => ({
     default: m.SpaceBackgroundShaderSettingsEditor,
+  })),
+)
+const PlanetBodyShaderSettingsEditor = React.lazy(() =>
+  import('./PlanetBodyShaderSettingsEditor').then((m) => ({
+    default: m.PlanetBodyShaderSettingsEditor,
+  })),
+)
+const EnvironmentLightingStateEditor = React.lazy(() =>
+  import('./EnvironmentLightingStateEditor').then((m) => ({
+    default: m.EnvironmentLightingStateEditor,
   })),
 )
 const ThrusterPlumeShaderSettingsEditor = React.lazy(() =>
@@ -67,11 +91,17 @@ const EDITOR_MAP: Record<
   [COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER]:
     CharacterMovementControllerEditor,
   [COMPONENT_TYPE_ENGINE]: EngineEditor,
+  [COMPONENT_TYPE_HARDPOINT]: HardpointEditor,
   [COMPONENT_TYPE_FLIGHT_TUNING]: FlightTuningEditor,
   [COMPONENT_TYPE_MAX_VELOCITY_MPS]: MaxVelocityMpsEditor,
+  [COMPONENT_TYPE_SIZE_M]: SizeMEditor,
   [COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS]: StarfieldShaderSettingsEditor,
   [COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS]:
     SpaceBackgroundShaderSettingsEditor,
+  [COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS]:
+    PlanetBodyShaderSettingsEditor,
+  [COMPONENT_TYPE_ENVIRONMENT_LIGHTING_STATE]:
+    EnvironmentLightingStateEditor,
   [COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS]:
     ThrusterPlumeShaderSettingsEditor,
   [COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS]: TacticalMapUiSettingsEditor,
@@ -79,9 +109,7 @@ const EDITOR_MAP: Record<
 
 export { isEditableComponent, getComponentTypeKey }
 
-export function getEditableComponentTypeKey(
-  node: GraphNode,
-): string | null {
+export function getEditableComponentTypeKey(node: GraphNode): string | null {
   return getComponentTypeKey(node)
 }
 

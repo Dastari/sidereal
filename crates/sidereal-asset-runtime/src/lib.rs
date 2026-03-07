@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sidereal_scripting::ScriptAssetRegistryEntry;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,24 @@ pub struct AssetCatalogEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeAssetCatalogEntry {
+    pub asset_id: String,
+    pub asset_guid: String,
+    pub relative_cache_path: String,
+    pub source_path: String,
+    pub content_type: String,
+    pub byte_len: u64,
+    pub sha256_hex: String,
+    pub bootstrap_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedRuntimeAsset {
+    pub full_path: PathBuf,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssetCacheIndexRecord {
     pub asset_version: u64,
     pub sha256_hex: String,
@@ -24,85 +43,6 @@ pub struct AssetCacheIndexRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct AssetCacheIndex {
     pub by_asset_id: HashMap<String, AssetCacheIndexRecord>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamableAssetSource {
-    pub asset_id: &'static str,
-    pub relative_cache_path: &'static str,
-    pub content_type: &'static str,
-}
-
-pub fn default_streamable_asset_sources() -> &'static [StreamableAssetSource] {
-    &[
-        StreamableAssetSource {
-            asset_id: "corvette_01",
-            relative_cache_path: "sprites/ships/corvette.png",
-            content_type: "image/png",
-        },
-        StreamableAssetSource {
-            asset_id: "starfield_wgsl",
-            relative_cache_path: "shaders/starfield.wgsl",
-            content_type: "text/plain; charset=utf-8",
-        },
-        StreamableAssetSource {
-            asset_id: "space_background_wgsl",
-            relative_cache_path: "shaders/space_background.wgsl",
-            content_type: "text/plain; charset=utf-8",
-        },
-        StreamableAssetSource {
-            asset_id: "tactical_map_overlay_wgsl",
-            relative_cache_path: "shaders/tactical_map_overlay.wgsl",
-            content_type: "text/plain; charset=utf-8",
-        },
-        StreamableAssetSource {
-            asset_id: "sprite_pixel_effect_wgsl",
-            relative_cache_path: "shaders/sprite_pixel_effect.wgsl",
-            content_type: "text/plain; charset=utf-8",
-        },
-        StreamableAssetSource {
-            asset_id: "thruster_plume_wgsl",
-            relative_cache_path: "shaders/thruster_plume.wgsl",
-            content_type: "text/plain; charset=utf-8",
-        },
-        StreamableAssetSource {
-            asset_id: "weapon_impact_spark_wgsl",
-            relative_cache_path: "shaders/weapon_impact_spark.wgsl",
-            content_type: "text/plain; charset=utf-8",
-        },
-        StreamableAssetSource {
-            asset_id: "space_bg_flare_white_png",
-            relative_cache_path: "textures/spacescape/flare-white-small1.png",
-            content_type: "image/png",
-        },
-        StreamableAssetSource {
-            asset_id: "space_bg_flare_blue_png",
-            relative_cache_path: "textures/spacescape/flare-blue-purple2.png",
-            content_type: "image/png",
-        },
-        StreamableAssetSource {
-            asset_id: "space_bg_flare_red_png",
-            relative_cache_path: "textures/spacescape/flare-red-yellow1.png",
-            content_type: "image/png",
-        },
-        StreamableAssetSource {
-            asset_id: "space_bg_flare_sun_png",
-            relative_cache_path: "textures/spacescape/sun.png",
-            content_type: "image/png",
-        },
-    ]
-}
-
-pub fn default_asset_dependencies() -> HashMap<String, Vec<String>> {
-    HashMap::from([(
-        "space_background_wgsl".to_string(),
-        vec![
-            "space_bg_flare_white_png".to_string(),
-            "space_bg_flare_blue_png".to_string(),
-            "space_bg_flare_red_png".to_string(),
-            "space_bg_flare_sun_png".to_string(),
-        ],
-    )])
 }
 
 pub fn expand_required_assets(
@@ -133,6 +73,138 @@ pub fn asset_version_from_sha256_hex(sha256: &str) -> u64 {
     u64::from_str_radix(as_str, 16).unwrap_or(0)
 }
 
+pub fn generated_asset_guid(asset_id: &str, sha256_hex: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"sidereal-asset-guid-v1:");
+    digest.update(asset_id.as_bytes());
+    digest.update(b":");
+    digest.update(sha256_hex.as_bytes());
+    let hex = format!("{:x}", digest.finalize());
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+pub fn generated_relative_cache_path(
+    asset_guid: &str,
+    source_path: &str,
+    content_type: &str,
+) -> String {
+    let extension = Path::new(source_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .or_else(|| content_type_extension(content_type).map(str::to_string))
+        .unwrap_or_else(|| "bin".to_string());
+    let directory = cache_directory_for_content_type(content_type, extension.as_str());
+    format!("{directory}/{asset_guid}.{extension}")
+}
+
+pub fn build_runtime_asset_catalog(
+    asset_root: &Path,
+    assets: &[ScriptAssetRegistryEntry],
+) -> io::Result<Vec<RuntimeAssetCatalogEntry>> {
+    let mut out = Vec::with_capacity(assets.len());
+    for asset in assets {
+        let full_path = asset_root.join(&asset.source_path);
+        let bytes = std::fs::read(&full_path)?;
+        let sha256_hex = sha256_hex(&bytes);
+        let asset_guid = generated_asset_guid(&asset.asset_id, &sha256_hex);
+        out.push(RuntimeAssetCatalogEntry {
+            asset_id: asset.asset_id.clone(),
+            asset_guid: asset_guid.clone(),
+            relative_cache_path: generated_relative_cache_path(
+                &asset_guid,
+                asset.source_path.as_str(),
+                asset.content_type.as_str(),
+            ),
+            source_path: asset.source_path.clone(),
+            content_type: asset.content_type.clone(),
+            byte_len: bytes.len() as u64,
+            sha256_hex,
+            bootstrap_required: asset.bootstrap_required,
+        });
+    }
+    Ok(out)
+}
+
+pub fn published_runtime_asset_path(
+    asset_root: &Path,
+    entry: &RuntimeAssetCatalogEntry,
+) -> PathBuf {
+    asset_root
+        .join("published_assets")
+        .join(&entry.relative_cache_path)
+}
+
+pub fn source_runtime_asset_path(asset_root: &Path, entry: &RuntimeAssetCatalogEntry) -> PathBuf {
+    asset_root.join(&entry.source_path)
+}
+
+pub fn materialize_runtime_asset(
+    asset_root: &Path,
+    entry: &RuntimeAssetCatalogEntry,
+) -> io::Result<MaterializedRuntimeAsset> {
+    let source_path = source_runtime_asset_path(asset_root, entry);
+    let published_path = published_runtime_asset_path(asset_root, entry);
+    let source_bytes = std::fs::read(&source_path)?;
+    let source_sha256 = sha256_hex(&source_bytes);
+    if source_sha256 != entry.sha256_hex {
+        return Err(io::Error::other(format!(
+            "asset checksum mismatch for {} from {}",
+            entry.asset_id,
+            source_path.display()
+        )));
+    }
+    let published_is_current = std::fs::read(&published_path)
+        .ok()
+        .map(|bytes| sha256_hex(&bytes) == entry.sha256_hex)
+        .unwrap_or(false);
+    if !published_is_current {
+        if let Some(parent) = published_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&published_path, &source_bytes)?;
+    }
+    Ok(MaterializedRuntimeAsset {
+        full_path: published_path,
+        content_type: entry.content_type.clone(),
+    })
+}
+
+fn content_type_extension(content_type: &str) -> Option<&'static str> {
+    match content_type {
+        "image/png" => Some("png"),
+        "image/svg+xml" => Some("svg"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "text/wgsl" | "text/plain+wgsl" | "application/wgsl" => Some("wgsl"),
+        "audio/ogg" => Some("ogg"),
+        "audio/wav" => Some("wav"),
+        _ => None,
+    }
+}
+
+fn cache_directory_for_content_type(content_type: &str, extension: &str) -> &'static str {
+    if extension == "wgsl" || content_type.contains("wgsl") {
+        "shaders"
+    } else if extension == "svg" || content_type == "image/svg+xml" {
+        "icons"
+    } else if content_type.starts_with("image/") {
+        "textures"
+    } else if content_type.starts_with("audio/") {
+        "audio"
+    } else {
+        "data"
+    }
+}
+
 pub fn cache_index_path(asset_root: &str) -> PathBuf {
     PathBuf::from(asset_root)
         .join("data/cache_stream")
@@ -151,4 +223,70 @@ pub fn save_cache_index(path: &Path, index: &AssetCacheIndex) -> io::Result<()> 
     }
     let bytes = serde_json::to_vec_pretty(index).map_err(io::Error::other)?;
     std::fs::write(path, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn generated_relative_cache_path_does_not_leak_source_layout() {
+        let path = generated_relative_cache_path(
+            "12345678-1234-1234-1234-123456789abc",
+            "sprites/ships/corvette.png",
+            "image/png",
+        );
+        assert_eq!(path, "textures/12345678-1234-1234-1234-123456789abc.png");
+    }
+
+    #[test]
+    fn generated_relative_cache_path_routes_shaders_to_shader_cache() {
+        let path = generated_relative_cache_path(
+            "12345678-1234-1234-1234-123456789abc",
+            "shaders/starfield.wgsl",
+            "text/wgsl",
+        );
+        assert_eq!(path, "shaders/12345678-1234-1234-1234-123456789abc.wgsl");
+    }
+
+    #[test]
+    fn materialize_runtime_asset_publishes_generated_payload_copy() {
+        let asset_root = std::env::temp_dir().join(format!(
+            "sidereal-asset-runtime-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let source_path = asset_root.join("textures/red.png");
+        std::fs::create_dir_all(source_path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&source_path, b"payload").expect("write source");
+        let entry = RuntimeAssetCatalogEntry {
+            asset_id: "texture.red".to_string(),
+            asset_guid: generated_asset_guid("texture.red", &sha256_hex(b"payload")),
+            relative_cache_path: generated_relative_cache_path(
+                "12345678-1234-1234-1234-123456789abc",
+                "textures/red.png",
+                "image/png",
+            ),
+            source_path: "textures/red.png".to_string(),
+            content_type: "image/png".to_string(),
+            byte_len: 7,
+            sha256_hex: sha256_hex(b"payload"),
+            bootstrap_required: true,
+        };
+
+        let materialized = materialize_runtime_asset(&asset_root, &entry).expect("materialize");
+        assert!(
+            materialized
+                .full_path
+                .starts_with(asset_root.join("published_assets"))
+        );
+        assert_eq!(
+            std::fs::read(materialized.full_path).expect("read"),
+            b"payload"
+        );
+        let _ = std::fs::remove_dir_all(&asset_root);
+    }
 }

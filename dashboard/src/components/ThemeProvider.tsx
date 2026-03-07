@@ -11,7 +11,7 @@ interface ThemeProviderProps {
 
 export function ThemeProvider({
   children,
-  defaultTheme = 'dark',
+  defaultTheme = 'system',
   storageKey = 'sidereal-theme',
 }: ThemeProviderProps) {
   const themeState = useThemeState(defaultTheme, storageKey)

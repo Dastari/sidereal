@@ -203,10 +203,10 @@ pub fn send_lightyear_input_messages(
             player_view_state.detached_free_camera && !controlling_player_anchor;
         let (player_input, _axes) =
             if suppress_input_for_camera_only || !window_focused || suppress_for_console {
-            neutral_player_input()
-        } else {
-            player_input_from_keyboard(input.as_deref())
-        };
+                neutral_player_input()
+            } else {
+                player_input_from_keyboard(input.as_deref())
+            };
         (player_entity_id, target_entity_id, player_input)
     } else {
         return;

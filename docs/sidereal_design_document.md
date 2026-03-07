@@ -30,7 +30,8 @@ Core player loop:
 4. Runtime simulation state is authoritative in memory; persistence is durability/hydration.
 5. Visibility and redaction are server-side concerns before serialization.
 6. Behavior is capability-driven; labels like "Ship" are descriptive, not branching logic.
-7. Motion authority uses Avian components directly (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`); legacy gameplay mirror motion components are not used.
+7. Motion authority for physics entities uses Avian components directly (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`); legacy gameplay mirror motion components are not used.
+8. Static non-physics world entities use `WorldPosition` / `WorldRotation`; Avian transform components are reserved for actual physics/simulation participants.
 
 ## 3. Runtime Architecture
 
@@ -52,6 +53,7 @@ Core player loop:
 - Legacy JSON envelope helpers are persistence/test fixtures only.
 - Production native runtime transport is currently UDP (`UdpIo` / `ServerUdpIo`).
 - Browser/WASM transport is not yet implemented end-to-end; WebRTC-first remains the accepted target direction.
+- The WASM client still does not implement the full native runtime, but it now shares the fixed-step gameplay core bootstrap with native instead of being a completely separate render-only shell.
 
 ### 3.2.1 Server-Only Admin Spawn Control Path (Current)
 
@@ -71,6 +73,13 @@ Security rules:
 1. Game client transport is never allowed to issue spawn commands.
 2. Caller-supplied owner overrides are ignored/replaced by server-authoritative target player id.
 3. Spawn requests are audit-logged with actor, target player, bundle, and spawned entity id.
+
+### 3.2.2 Bevy Remote Inspection (Current)
+
+- `bevy_remote` is available for client/replication inspection in development.
+- Current hardening policy is loopback-only bind.
+- A BRP auth token is still required in config, but it is not yet the primary network security boundary.
+- Non-loopback BRP exposure is not allowed until an authenticated HTTP gate exists in front of the endpoint.
 
 ### 3.3 WASM Transport Direction (Future)
 
@@ -117,14 +126,26 @@ Physics/mass:
 
 Visibility/scanning:
 
-- `ScannerRangeM`
+- `VisibilityRangeM`
 - `ScannerComponent`
-- `ScannerRangeBuff`
+- `VisibilityRangeBuffM`
 
 Visual identity (2D migration path):
 
 - `VisualAssetId` (entity-generic sprite asset identity)
 - `SpriteShaderAssetId` (optional sprite pixel-shader asset identity)
+- Render composition is migrating to Lua-authored render-layer definitions and rule-based world-layer assignment executed through a fixed set of generic client material schemas; see `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
+- Runtime shader/material ownership follows a family taxonomy rather than one Rust material type per effect; see `docs/features/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`.
+
+### 4.2.1 Render Layer Contract (Planned Direction)
+
+The generic 2D render composition direction is:
+
+1. Default non-fullscreen entities render in the main world layer.
+2. Lua-authored rules may redirect entities to other world layers by labels/archetype/component presence.
+3. Fullscreen background and foreground layers are authored separately from generic gameplay spawn paths.
+4. Camera-scoped post-process passes are authored separately from world-layer assignment.
+5. Layer depth/parallax is render-derived only; it must not mutate authoritative entity positions or other simulation motion state.
 
 ### 4.3 Capability Rules
 
@@ -307,7 +328,7 @@ Implementation note:
 ### 7.2 Authorization and Fog-of-War Contract
 
 - Scanner range is server-enforced fog-of-war for non-owned entities.
-- Default scanner authorization floor is `300m` around the player's character observer position (player entity/camera context).
+- There is no hidden `ShipTag` or player-observer baseline visibility floor. Visibility-range capability must be authored explicitly in data/components.
 - Scanner authorization aggregates over all owned entities (not only the currently controlled entity), including valid ownership/attachment chains.
 - Non-public entities outside active scanner authorization must not be delivered.
 - Visibility exceptions are explicit and server-enforced:
@@ -364,7 +385,7 @@ Implementation note:
 - Visibility selection must use spatial indexing/query acceleration, not full-world scans per client tick.
 - Spatial queries must include:
   - nearby cells for focus/delivery radii,
-  - owned/scanner-derived authorization coverage.
+  - owned/visibility-range-derived authorization coverage.
 - Keep explicit performance telemetry for visibility queries:
   - candidates per frame,
   - included entities per frame,
@@ -386,7 +407,7 @@ Implementation note:
 
 **Observer and scanner aggregation**
 
-- **Current:** One observer position per client from persisted player runtime camera state (`position_m`/`Transform.translation` on the player entity), with scanner-source union over owned entities.
+- **Current:** One observer position per client from persisted player runtime camera state (`position_m`/`Transform.translation` on the player entity), with visibility-source union over owned entities.
 - **Target (see 7.2):** Keep scanner authorization aggregated over *all* owned entities (e.g. all ships the player owns), with observer/visibility logic supporting multiple observer points or equivalent aggregated coverage per client.
 
 **Control swap (player changes which ship they control)**
@@ -418,20 +439,22 @@ Implementation note:
 - Player-specific runtime/persistent data is player-entity scoped. Authoritative control state persists via `controlled_entity_guid` on the player entity; score, quest progression, and other character-local settings persist on the player entity in graph persistence.
 - Account identity is an auth container and external reference. An account may own multiple player entities (characters); `player_entity_id` selects which character/session identity is bound for runtime control.
 - Replication binds session transport identity to authenticated `player_entity_id`.
-- Client world entry state transition is `Auth -> CharacterSelect -> WorldLoading -> InWorld`; transition to `InWorld` occurs only after replication session-ready bind acknowledgment for the selected `player_entity_id` plus replicated player-entity presence on client.
+- Client world entry state transition is `Auth -> CharacterSelect -> WorldLoading -> AssetLoading -> InWorld`; transition to `InWorld` occurs only after replication session-ready bind acknowledgment for the selected `player_entity_id`, required asset validation/download, and replicated player-entity presence on client.
 - Input packets with mismatched identity claims are rejected.
 - Gameplay control selection remains ownership-authorized.
 - Runtime systems must fail closed on ownership/identity mismatches (reject and log) rather than silently creating replacement state.
 
-## 9. Asset Streaming
+## 9. Asset Delivery
 
-- Asset delivery is stream-based through backend/client runtime channels.
-- Current client cache backend is file-tree based under `data/cache_stream/**`.
-- `assets.pak` + index metadata remains the target cache shape; rollout is tracked in `docs/features/asset_delivery_contract.md`.
-- Starter corvette runtime visual default is defined via gameplay component `VisualAssetId("corvette_01")`; default stream source maps that asset ID to `sprites/ships/corvette.png` (served from `ASSET_ROOT`, typically `data/sprites/ships/corvette.png` in local development).
-- Optional per-entity sprite shader is driven by `SpriteShaderAssetId`; baseline streamed shader asset ID is `sprite_pixel_effect_wgsl` (`shaders/sprite_pixel_effect.wgsl`) and binds to client runtime shader path `data/cache_stream/shaders/sprite_pixel_effect.wgsl`.
+- Asset definitions are authored in Lua runtime asset registry scripts and compiled into authoritative catalog metadata.
+- Rust runtime code must not hardcode concrete gameplay asset IDs, filenames, shader names, material names, sprite names, or audio names.
+- Each published asset version has an immutable generated `asset_guid`; payload download route is authenticated gateway HTTP `GET /assets/<asset_guid>`.
+- Client startup receives server-authoritative asset manifest metadata (required assets and optional full catalog) including `asset_id`, `asset_guid`, checksum, and fetch URL.
+- Client world entry lifecycle includes a dedicated `AssetLoading` state between `WorldLoading` and `InWorld`; required assets must validate/download before `InWorld`.
+- Runtime missing assets are fetched lazily by `asset_guid` when new `asset_id` references appear in replicated data.
+- Target cache shape remains `assets.pak` + `assets.index`; rollout and schema details are tracked in `docs/features/asset_delivery_contract.md`.
 - Missing assets must fail soft (no gameplay crash).
-- Transitional note: gateway still exposes `/assets/stream/{asset_id}`; runtime asset consumption is stream-first and standalone HTTP serving is slated for removal from gameplay paths.
+- Shader asset metadata should evolve toward domain/signature/schema compatibility metadata rather than singleton hard-coded runtime role dispatch; details live in `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md` and `docs/features/asset_delivery_contract.md`.
 
 ## 10. Client Platform Model
 

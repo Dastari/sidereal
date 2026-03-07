@@ -1,11 +1,15 @@
 import {
+  ErrorComponent,
   HeadContent,
   Outlet,
   Scripts,
   createRootRoute,
 } from '@tanstack/react-router'
+import { NuqsAdapter } from 'nuqs/adapters/react'
 
 import appCss from '../styles.css?url'
+import { ThemeProvider } from '@/components/ThemeProvider'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 export const Route = createRootRoute({
   head: () => ({
@@ -51,17 +55,49 @@ export const Route = createRootRoute({
       </div>
     </div>
   ),
+  errorComponent: ({ error }) => (
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        <div
+          style={{
+            minHeight: '100vh',
+            display: 'grid',
+            placeItems: 'center',
+            background: '#0b0d12',
+            color: '#d7e0ea',
+            fontFamily: 'Inter, sans-serif',
+            padding: 24,
+          }}
+        >
+          <div style={{ width: '100%', maxWidth: 720 }}>
+            <h1 style={{ marginBottom: 12 }}>Dashboard Route Error</h1>
+            <ErrorComponent error={error} />
+          </div>
+        </div>
+        <Scripts />
+      </body>
+    </html>
+  ),
   component: RootComponent,
 })
 
 function RootComponent() {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
       <body>
-        <Outlet />
+        <ThemeProvider defaultTheme="system">
+          <TooltipProvider delayDuration={200}>
+            <NuqsAdapter>
+              <Outlet />
+            </NuqsAdapter>
+          </TooltipProvider>
+        </ThemeProvider>
         <Scripts />
       </body>
     </html>

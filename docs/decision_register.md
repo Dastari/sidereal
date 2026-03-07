@@ -60,6 +60,60 @@ For each decision:
 
 ## Decisions
 
+## DR-0029: Runtime Shader Family Taxonomy and Lua Authoring Model
+- Status: Accepted
+- Date: 2026-03-07
+- Owners: client rendering + scripting + asset streaming
+- Context:
+  - Rendering was at risk of drifting into one Rust material type per effect, which conflicts with the longer-term Lua-authored/generic-engine direction.
+  - We need an explicit family taxonomy so future effects do not recreate bespoke client rendering paths.
+- Decision:
+  - Adopt a small fixed set of runtime shader/material families.
+  - Keep fullscreen background schemas (`StarfieldMaterial`, `SpaceBackgroundMaterial`, and provisionally `TacticalMapOverlayMaterial`) where justified.
+  - Collapse planet body/cloud/ring into one planet visual family.
+  - Define a generic effect family for thrusters, sparks, explosions, smoke, shockwaves, trails, shields, and similar world-space effects.
+  - Lua owns composition, passes, shader asset IDs, params, and textures; Rust owns family ABI and validation.
+- Alternatives considered:
+  - Keep adding one Rust material type per effect: rejected (does not scale and conflicts with the Lua-authored target).
+  - Force one universal shader/material for everything: rejected (too blunt and would create a worse ABI).
+- Consequences:
+  - Positive:
+    - Clear target for future rendering refactors.
+    - Better separation between engine ABI and Lua-authored content.
+  - Negative:
+    - Requires deliberate family-level ABI design before effect migration.
+- Follow-up:
+  - Collapse the planet trio first.
+  - Define and implement the generic effect-family ABI next.
+- Decision doc:
+  - `docs/features/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
+- References:
+  - `docs/features/dynamic_runtime_shader_material_plan.md`
+  - `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+
+## DR-0030: Non-Physics World Spatial Components
+- Status: Accepted
+- Date: 2026-03-07
+- Owners: client runtime + replication + persistence + scripting
+- Context:
+  - Static celestial/decorative world entities were being authored through Avian transform components even though they are not physics entities.
+  - That created the wrong coupling and contributed to static bodies collapsing to origin when only Avian spatial consumers were wired.
+- Decision:
+  - Canonical non-physics spatial components are:
+    - `WorldPosition`
+    - `WorldRotation`
+  - Static celestial/decorative world entities must use those components instead of Avian transform components unless they are truly simulated by physics.
+  - Client and replication spatial consumers must resolve world-space from Avian first, then the non-physics world-space lane.
+- Consequences:
+  - Positive:
+    - Removes static planets/stars from the physics loop.
+    - Preserves ordinary world-space rendering and culling semantics.
+    - Gives the engine a generic non-physics spatial lane for future landmarks/decorative bodies.
+  - Negative:
+    - Requires dual-lane spatial consumers until the migration is complete.
+- Decision doc:
+  - `docs/features/dr-0030_non_physics_world_spatial_components.md`
+
 ## DR-0001: Account / Character / Session Terminology
 - Status: Accepted
 - Date: 2026-02-24
@@ -325,6 +379,35 @@ For each decision:
   - `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
   - `docs/features/tactical_and_owner_lane_protocol_contract.md`
   - `docs/sidereal_design_document.md`
+
+## DR-0019: Chunked Binary Storage for Player Fog Memory
+- Status: Accepted
+- Date: 2026-03-06
+- Owners: Replication + persistence + tactical UI
+- Context:
+  - Flat explored-cell JSON lists do not scale for long-lived player discovery history.
+  - Tactical fog memory should stay player-scoped ECS data while reducing storage/write amplification.
+- Decision:
+  - Keep `PlayerExploredCells` as canonical player component, but store explored coverage as chunked binary payloads.
+  - Use adaptive per-chunk encoding (`Bitset` / `SparseDeltaVarint`) with base64 transport inside component payload.
+  - Update tactical runtime to apply visibility-range coverage incrementally and emit only newly explored cells in deltas.
+  - Decouple tactical fog cell size (100m) from visibility/relevance spatial grid size.
+- Alternatives considered:
+  - Continue flat `Vec<{x,y}>` JSON payloads: rejected (storage/write cost).
+  - New external side table outside player ECS graph: rejected (breaks authoritative player-entity scoped state rule).
+- Consequences:
+  - Positive:
+    - Better storage density and lower persistence churn for large exploration histories.
+    - Keeps architecture-compliant player-entity component ownership.
+  - Negative:
+    - Schema reset required for local/dev persisted data.
+    - Full fog snapshot still materializes chunked memory when requested.
+- Decision doc:
+  - `docs/features/dr-0019_fog_memory_chunk_storage.md`
+- References:
+  - `docs/features/dr-0018_fog_of_war_and_intel_memory_model.md`
+  - `docs/features/tactical_and_owner_lane_protocol_contract.md`
+  - `docs/features/visibility_replication_contract.md`
 
 ## DR-0008: Character Ownership Is Enforced at Every Runtime Boundary
 - Status: Accepted
@@ -625,3 +708,290 @@ For each decision:
   - `docs/features/asset_delivery_contract.md`
   - `docs/sidereal_design_document.md`
   - `bins/sidereal-client/src/native/mod.rs`
+
+## DR-0019: Lua Asset Registry Authority and Gateway HTTP Asset Delivery
+- Status: Accepted
+- Date: 2026-03-06
+- Owners: Scripting + gateway + replication + client runtime
+- Context:
+  - Existing docs/runtime paths still centered on replication-streamed asset payloads and some hardcoded Rust asset naming.
+  - Project direction requires script-authored asset authority and gateway-served payload bytes.
+- Decision:
+  - Lua asset registry is the authoritative source of runtime asset definitions and bootstrap-required policy.
+  - Rust runtime code must not hardcode concrete gameplay asset IDs/filenames/shader/material/audio/sprite references.
+  - Server generates catalog metadata/checksums/immutable `asset_guid` values from Lua registry input.
+  - Asset payload downloads are authenticated gateway HTTP `GET /assets/<asset_guid>`, not replication chunk streaming.
+  - Client world entry includes `AssetLoading` state that validates/downloads required assets before `InWorld`.
+- Alternatives considered:
+  - Keep replication asset chunk streaming as primary path: rejected (conflicts with gateway route direction).
+  - Keep Rust-maintained critical asset lists: rejected (drift and poor scripting authority).
+- Consequences:
+  - Positive:
+    - Single source of truth for content assets in Lua.
+    - Cleaner gateway-observable delivery path and deterministic pre-world readiness.
+  - Negative:
+    - Requires migration across gateway/client/replication/runtime tests.
+- Follow-up:
+  - Implement phased plan and tests in updated asset delivery contract.
+  - Align scripting/runtime docs and AGENTS enforcement rules in same change.
+- Decision doc:
+  - `docs/features/dr-0019_lua_asset_registry_and_gateway_http_delivery.md`
+- References:
+  - `docs/features/dr-0019_lua_asset_registry_and_gateway_http_delivery.md`
+  - `docs/features/asset_delivery_contract.md`
+  - `docs/features/scripting_support.md`
+  - `docs/sidereal_design_document.md`
+
+## DR-0020: Server-Only Authoritative Quest/Mission Script Execution
+- Status: Accepted
+- Date: 2026-03-06
+- Owners: Gameplay + scripting + replication + client
+- Context:
+  - Quest/missions must be deterministic, cheat-resistant, and consistent across dedicated server, listen-host, and offline-authoritative modes.
+  - Client-side script execution for authoritative quest progression creates divergence and exploit risk.
+- Decision:
+  - Authoritative quest/mission scripting executes on the authoritative host only.
+  - Clients consume replicated quest state and UI metadata; clients do not authoritatively execute quest logic.
+  - Optional future client scripting is presentation-only and cannot mutate authoritative gameplay state.
+- Alternatives considered:
+  - Dual execution on server + client for quest progression: rejected (desync and exploit risk).
+  - Client-authoritative quest progression with server validation: rejected (complex and weaker trust boundary).
+- Consequences:
+  - Positive:
+    - Strong authority model and deterministic progression.
+    - Cleaner anti-cheat posture and easier persistence semantics.
+  - Negative:
+    - Requires robust replication/UI metadata for quest UX.
+- Follow-up:
+  - Implement quest state replication paths and owner-scoped UI data contract.
+  - Add determinism/restart/multi-player isolation tests for quest progression.
+- Decision doc:
+  - `docs/features/scripting_support.md` (Phase D1)
+- References:
+  - `docs/features/scripting_support.md`
+  - `docs/sidereal_design_document.md`
+
+## DR-0021: Quest Template/Instance Model with Player-Scoped Persistence
+- Status: Accepted
+- Date: 2026-03-06
+- Owners: Gameplay + scripting + persistence
+- Context:
+  - Multiple players need to run the same mission template concurrently without state contamination.
+  - Progression data must align with player-entity scoped persistence rules.
+- Decision:
+  - Use immutable script-authored quest templates plus runtime quest instances.
+  - By default, each player acceptance creates a separate quest instance.
+  - Quest journal/progression persists on player ECS entity components; party/shared modes are explicit opt-in mission semantics.
+- Alternatives considered:
+  - Global singleton quest instances keyed only by template: rejected (cross-player contamination).
+  - Account-table quest progression outside ECS: rejected (breaks player-entity-scoped runtime state rules).
+- Consequences:
+  - Positive:
+    - Safe concurrent quest participation for many players.
+    - Aligns with existing persistence architecture and hydration expectations.
+  - Negative:
+    - Requires generic quest components/resources and migration/testing work.
+- Follow-up:
+  - Add generic quest components, quest intent actions, and bridge events defined in scripting roadmap Phase D1.
+  - Add vertical-slice mission (`fly to X -> collect Y -> deliver to Z`) as first end-to-end validation.
+- Decision doc:
+  - `docs/features/scripting_support.md` (Phase D1)
+- References:
+  - `docs/features/scripting_support.md`
+  - `docs/sidereal_design_document.md`
+
+## DR-0022: Quest Progression and Inventory Mutation Through Script Hooks + Intent APIs
+- Status: Accepted
+- Date: 2026-03-06
+- Owners: Gameplay + scripting + replication + persistence
+- Context:
+  - Quest content requires step tracking, counters (for example `5/10 uranium`), completion gates, and inventory mutation on turn-in.
+  - Direct script-side component mutation would break authority and validation boundaries.
+- Decision:
+  - Quest logic uses script hooks (`on_accept`, `on_event`, `on_tick`, `can_complete`, `on_complete`, `on_fail`) and read helpers.
+  - All mutations (objective progress, quest state transitions, inventory consume/grant/transfer) are emitted as intents and validated in Rust.
+  - Scripts may inspect authoritative entity/component state broadly on server, but owner/context constraints are enforced in intent validation paths.
+- Alternatives considered:
+  - Let scripts directly mutate quest/inventory components: rejected (bypasses validation and authority pipeline).
+  - Hardcode quest objective evaluators entirely in Rust: rejected (too little content flexibility and poor genre-agnostic goals).
+- Consequences:
+  - Positive:
+    - Flexible quest authoring with robust authority guarantees.
+    - Clear path for multiplayer-safe objective counters and item turn-ins.
+  - Negative:
+    - Requires explicit intent and event surface expansion.
+    - Requires careful test coverage for race/replay/idempotency behavior.
+- Follow-up:
+  - Implement planned query helpers and intent actions in scripting support section 8.
+  - Add vertical-slice quest and restart/multi-player isolation tests.
+- Decision doc:
+  - `docs/features/scripting_support.md` (sections 8.2, 8.3, 8.6, Phase D1)
+- References:
+  - `docs/features/scripting_support.md`
+  - `docs/sidereal_design_document.md`
+
+## DR-0024: Privileged Scripted World Mutation via Validated Actions (No Raw ECS Writes)
+- Status: Accepted
+- Date: 2026-03-06
+- Owners: Scripting + replication + gameplay
+- Context:
+  - Content scripting needs high-power orchestration capabilities (teleports, scripted encounter positioning, batch movement, controlled component patching).
+  - Allowing Lua direct ECS mutation would undermine authority guardrails, single-writer motion rules, and auditability.
+- Decision:
+  - Scripts may request high-power world mutations through explicit privileged server-side actions.
+  - Lua does not receive direct mutable ECS handles or unrestricted component-write access.
+  - Privileged actions are validated, scheduled, and auditable through Rust authority systems.
+- Alternatives considered:
+  - Disallow all transform/motion mutation from scripts: rejected (insufficient for quest/cinematic/event orchestration).
+  - Permit unrestricted direct component writes from Lua: rejected (violates safety, determinism, and policy boundaries).
+- Consequences:
+  - Positive:
+    - Enables robust scripted gameplay/campaign systems.
+    - Preserves deterministic authority boundaries and operational observability.
+  - Negative:
+    - Requires a maintained action allowlist and validation layer.
+    - Adds implementation complexity for scheduling and conflict prevention.
+- Follow-up:
+  - Implement privileged actions catalog and validation rules in scripting roadmap.
+  - Add tests for invalid action rejection, audit log coverage, and Avian writer-conflict prevention.
+- Decision doc:
+  - `docs/features/scripting_support.md` (sections 2.1, 2.7.3, 8.3, 8.7)
+- References:
+  - `docs/features/scripting_support.md`
+  - `docs/sidereal_design_document.md`
+
+## DR-0025: Runtime Script Catalog Authority
+- Status: Accepted
+- Date: 2026-03-07
+- Owners: Runtime + scripting + dashboard/tooling
+- Context:
+  - Live dashboard/BRP script editing requires runtime script source to be authoritative in memory, not implicitly on disk.
+  - Replication now has BRP-visible script catalog and derived registry resources, but durable DB-backed script publication is still pending.
+- Decision:
+  - Runtime script execution should resolve source from Bevy-managed in-memory catalog resources.
+  - Filesystem `.lua` content is bootstrap seed input and explicit reload source only.
+  - Long term, persisted database-backed script content becomes the durable authoritative source, with disk remaining for seeding/defaults.
+- Alternatives considered:
+  - Keep filesystem as direct runtime authority: rejected (breaks live editing and explicit reload semantics).
+  - Mutate disk files directly from tooling: rejected (poor operational model and weak path to DB-backed publishing).
+  - Move immediately to DB-only scripts: rejected for now (seed/default authoring workflow still matters).
+- Consequences:
+  - Positive:
+    - Enables dashboard/BRP live editing.
+    - Makes runtime script resources authoritative instead of observational.
+    - Establishes a clean path to DB-backed script publishing.
+  - Negative:
+    - Requires explicit revisioning/invalidation rules.
+    - Requires family-specific lifecycle semantics (`world_init`, bundles, asset registry, runtime AI).
+- Follow-up:
+  - Add richer publish/draft/rollback flow on top of the active catalog.
+  - Add first-class dashboard/API write path for gateway-visible edits.
+- Decision doc:
+  - `docs/features/dr-0025_runtime_script_catalog_authority.md`
+- References:
+  - `docs/features/scripting_support.md`
+  - `docs/features/dr-0025_runtime_script_catalog_authority.md`
+  - `bins/sidereal-replication/src/replication/scripting.rs`
+
+## DR-0026: SQL Tables for Durable Script Catalog Persistence
+- Status: Accepted
+- Date: 2026-03-07
+- Owners: Runtime + scripting + persistence
+- Context:
+  - Runtime script catalogs are now authoritative in memory, but scripts still need durable storage across restart.
+  - Scripts are content records, not simulation entities, so graph persistence is the wrong shape.
+- Decision:
+  - Durable script persistence uses relational SQL tables, not graph records and not direct Bevy-resource persistence.
+  - Runtime execution still reads from the in-memory script catalog; SQL stores the active durable catalog and its revisions.
+  - Filesystem `.lua` content remains seed/default input and explicit reload source only.
+- Alternatives considered:
+  - Persist scripts in graph ECS records: rejected (wrong persistence shape for content records).
+  - Invent direct resource persistence: rejected (creates a second persistence model).
+  - Keep disk as the only durable source: rejected (breaks live editing/publish goals).
+- Consequences:
+  - Positive:
+    - One durable script authority shared by gateway and replication.
+    - Natural path for versioned publish semantics later.
+  - Negative:
+    - Adds SQL schema and synchronization responsibilities.
+    - Current workflow is still active-catalog replacement, not a full draft/publish pipeline.
+- Follow-up:
+  - Add dashboard/API write flows for script publishing.
+  - Extend active-version model into richer publish/rollback semantics if needed.
+- Decision doc:
+  - `docs/features/dr-0026_sql_script_catalog_persistence.md`
+- References:
+  - `docs/features/scripting_support.md`
+  - `docs/features/dr-0026_sql_script_catalog_persistence.md`
+  - `crates/sidereal-persistence/src/lib.rs`
+
+## DR-0027: Lua-Authored Render Layers and Generic Shader Pipeline
+- Status: Accepted direction; layer/rule/runtime groundwork implemented
+- Date: 2026-03-07
+- Owners: Client rendering + scripting + replication + asset streaming
+- Context:
+  - Current runtime still hardcodes game-specific fullscreen layer kinds, shader roles, material registrations, and some asset-ID-specific visual paths.
+  - Desired direction is a generic 2D render composition model where Lua authors layer definitions and assignment rules while Rust owns validation and execution.
+- Decision:
+  - Move toward Lua-authored render layer definitions, rule-based world-layer assignment, and camera-scoped post-process stacks executed through a small fixed set of generic Rust material schemas.
+  - Default non-fullscreen entity spawn paths target the main world layer unless rules or explicit overrides redirect them.
+  - Layer depth semantics for world-space layers are render-derived parallax/ordering only; they must not mutate authoritative simulation positions.
+- Alternatives considered:
+  - Keep fixed hard-coded layer kinds and content-specific material types as engine contract: rejected (not generic and does not scale).
+  - Require every spawn path to specify render layer explicitly: rejected (poor default ergonomics and leaks rendering concerns into generic gameplay spawn paths).
+  - Rewrite authoritative entity positions for background depth/parallax: rejected (breaks simulation and authority semantics).
+- Consequences:
+  - Positive:
+    - Cleaner engine/content separation.
+    - Better fit for arbitrary 2D games and script-authored visual composition.
+    - Preserves authoritative gameplay state while enabling rich render layering.
+  - Negative:
+    - Requires coordinated migration across client, replication, gateway bootstrap, catalog metadata, and content docs.
+    - Existing Sidereal-specific visual systems need staged migration or isolation.
+- Follow-up:
+  - Implement the phased plan and validation/model changes in the dedicated feature doc.
+  - Update shader/material, scripting, asset, and design docs to align with the new render-layer model.
+- Decision doc:
+  - `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+- References:
+  - `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+  - `docs/features/dynamic_runtime_shader_material_plan.md`
+  - `docs/features/scripting_support.md`
+  - `docs/features/asset_delivery_contract.md`
+  - `docs/sidereal_design_document.md`
+
+## DR-0028: Generic Visibility Range Components
+- Status: Accepted
+- Date: 2026-03-07
+- Owners: replication + gameplay visibility + scripting
+- Context:
+  - Visibility runtime still uses legacy scanner-oriented component names and one remaining ship-specific baseline behavior.
+  - The project rule is that visibility/range logic must stay generic over entities and not depend on ship-only assumptions.
+- Decision:
+  - Canonical generic components are:
+    - `VisibilityRangeM`
+    - `VisibilityRangeBuffM`
+  - `VisibilityRangeM` is the effective resolved range used by the visibility hot path.
+  - `VisibilityRangeBuffM` is the generic contributing modifier that may exist on roots, children, modules, or temporary effect entities.
+  - Root entities may validly carry both components.
+  - `ShipTag` must not grant implicit baseline visibility range.
+- Alternatives considered:
+  - Keep `ScannerRange*` as the engine-owned names: rejected (too domain-flavored for the generic runtime layer).
+  - Use `SensorRange*`: rejected (better for Lua/content naming than engine semantics).
+  - Call Lua during visibility checks: rejected (wrong hot-path boundary).
+- Consequences:
+  - Positive:
+    - Cleaner generic runtime vocabulary.
+    - Preserves genre-specific naming in Lua/content while keeping engine semantics generic.
+    - Supports temporary effects like `scanner_ping` without hidden ship rules.
+  - Negative:
+    - Required a deliberate runtime/doc/content migration away from the old scanner-oriented names.
+  - Follow-up:
+  - Migration implemented in runtime systems, Lua bundles, and docs.
+- Decision doc:
+  - `docs/features/dr-0028_generic_visibility_range_components.md`
+- References:
+  - `docs/features/dr-0028_generic_visibility_range_components.md`
+  - `docs/features/generic_visibility_range_migration_plan.md`
+  - `docs/features/visibility_replication_contract.md`
+  - `AGENTS.md`

@@ -1,7 +1,7 @@
 # Scripting Support
 
 **Status:** Active contract and implementation plan
-**Last updated:** 2026-03-04
+**Last updated:** 2026-03-07
 
 ## 1. Decision Summary
 
@@ -31,18 +31,21 @@ This does not block future evaluation of `bevy_mod_scripting` for specific tooli
 
 ### 1.3 Decision Register
 
-The following DR entries should be created as this system matures:
+The following DR entries define scripting authority/runtime direction:
 
-- **DR-020**: Scripting Language Selection (Lua for content) -- accepted.
-- **DR-021**: Script-ECS Boundary Definition -- accepted, contract in section 2.1.
-- **DR-022**: Mod Security and Sandboxing Policy -- accepted, baseline implemented in section 4.
-- **DR-023**: Script Execution Model (event-driven + read-only queries + intent-only writes) -- accepted, contract in section 2.6.
+- **DR-0020**: Server-only authoritative quest/mission script execution -- accepted.
+- **DR-0021**: Quest template/instance model with player-scoped persistence -- accepted.
+- **DR-0022**: Quest progression and inventory mutation through script hooks + intent APIs -- accepted.
+- **DR-0023**: Mod security and sandboxing policy -- tracked by this contract (section 4), add dedicated DR doc if policy scope expands.
+- **DR-0024**: Privileged scripted world mutation via validated actions (no raw ECS writes) -- accepted.
 
 ## 2. Architecture Contract
 
 ### 2.1 Authority Boundary
 
-Scripts emit intent through Rust APIs. Scripts do not directly mutate transforms, velocities, ownership, or session binding.
+Scripts execute on the authoritative host and mutate gameplay state through Rust-owned script APIs.
+Lua does not receive raw ECS world references or direct component write handles.
+Instead, scripts request mutation through validated intent/actions (including privileged mutation actions where allowed).
 
 Script APIs must resolve to the same authority flow as all other gameplay:
 
@@ -53,6 +56,7 @@ client input -> shard sim -> replication/distribution -> persistence
 - Script-side entity identity uses UUID/entity IDs only. No raw Bevy `Entity` handles cross the script boundary.
 - Script runtime must never bypass replication visibility/redaction policy.
 - Script-spawned entities pass through normal visibility and replication policy systems.
+- High-power operations (teleport, transform override, batched repositioning, component field mutation) are allowed only via explicit server-side script API actions with validation, scheduling, and audit.
 
 ### 2.2 Runtime Placement
 
@@ -85,11 +89,38 @@ Scripts execute only on the authoritative runtime host:
 
 Browser/native clients do not execute authoritative gameplay scripts; they receive replicated outcomes.
 
+### 2.2.1 Script Logging API
+
+All current authoritative Lua execution contexts expose a `ctx.log` table backed by Rust `tracing`.
+
+Available methods:
+
+- `ctx.log:debug(message)`
+- `ctx.log:info(message)`
+- `ctx.log:error(message)`
+
+Behavior:
+
+- The logger automatically tags output with the script path (gateway/replication bootstrap and bundle scripts) or handler name (replication runtime AI handlers).
+- `message` may be a string or any Lua value convertible through the existing JSON bridge; non-string values are serialized before logging.
+- This is intended for script diagnostics and operational tracing only. It must not be used as a substitute for gameplay-side state/telemetry persistence.
+
+Example:
+
+```lua
+function WorldInit.build_graph_records(ctx)
+  ctx.log:info("building starter world records")
+  return {}
+end
+```
+
 Integration points:
 
 - `bins/sidereal-gateway`: account-registration-time script hooks (starter bundle selection, world init config).
 - `bins/sidereal-replication`: authoritative host boot world orchestration, and (future) runtime event-driven script execution.
-- Script-driven runtime shader binding for 2D visuals is planned via generic client material types and streamed shader assets (see `docs/features/dynamic_runtime_shader_material_plan.md`).
+- Script-driven runtime shader binding and render-layer composition for 2D visuals now runs through Lua-authored `RuntimeRenderLayerDefinition`, `RuntimeRenderLayerRule`, `RuntimeRenderLayerOverride`, `RuntimePostProcessStack`, and `RuntimeWorldVisualStack` component data. Replication and gateway validate those authored records server-side, the client builds a runtime layer registry from replicated state, world entities resolve layer assignment as `override -> highest-priority rule -> default main_world`, fullscreen background/foreground plus camera-scoped post-process overlay passes execute from those authored definitions, and layered world visuals such as the current planet body/cloud/ring stack now consume an authored `RuntimeWorldVisualStack` instead of inferring pass composition client-side. The remaining migration gap is removal of the last content-specific shader adapters and continued reduction of the dedicated Rust `Material2d` families that still exist because Bevy material schemas are type-static (see `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`, `docs/features/dynamic_runtime_shader_material_plan.md`, and `docs/features/asset_delivery_contract.md`).
+- Procedural visual tuning payloads for authored world content are Lua-owned. Current examples include asteroid procedural sprite profiles and planet body shader settings emitted from Lua bundles, while Rust owns the validated component schema and render/runtime implementation.
+- Shared environment-lighting defaults are also Lua-authored now via the `environment.lighting` bundle and replicated `EnvironmentLightingState` component, while the client derives its render-time lighting resource from that ECS state.
 
 ### 2.3 Content Model
 
@@ -97,7 +128,16 @@ Integration points:
 - Scripts reference archetype/variant IDs and high-level commands; they do not define low-level physics internals.
 - Variant/archetype resolution remains server-side and persistence-backed (aligned with `dr-0007_entity_variant_framework.md`).
 
-### 2.4 Component Extensibility Rules
+### 2.4 Asset Registry Authority Contract
+
+Lua scripting also owns authoritative content asset registry definitions:
+
+1. Asset IDs, dependencies, bootstrap-required policies, and source references are authored in Lua registry scripts.
+2. Rust runtime systems validate and consume generated catalog metadata; Rust must not define hardcoded per-asset runtime maps/lists.
+3. Gameplay/script payloads reference logical `asset_id` only; gateway delivery resolves immutable `asset_guid` and serves payloads via `/assets/<asset_guid>`.
+4. Script-authored registry changes must flow through catalog build/publish tooling before activation.
+
+### 2.5 Component Extensibility Rules
 
 To keep scripting powerful without breaking persistence/replication contracts:
 
@@ -112,7 +152,7 @@ Implication for mods:
 - "New entity type" in mod terms means a new data/script archetype built from registered components and variant overlays.
 - Truly new authoritative ECS component families require Rust component authoring, registry integration, and persistence/replication coverage through the normal workflow.
 
-### 2.5 Generic Script-State Components (Planned)
+### 2.6 Generic Script-State Components (Planned)
 
 Provide generic script-friendly persisted components (e.g. `ScriptState { data: HashMap<String, ScriptValue> }`) so mods can track custom per-entity logic state without requiring new Rust component types. This is the single biggest enabler for mod diversity and should be implemented before the modding phase.
 
@@ -122,7 +162,7 @@ Example policy-aligned pattern:
 - Damage systems in Rust check `Indestructible` and suppress health reduction/destruction.
 - Behavior remains deterministic and authoritative because component semantics are implemented in Rust systems.
 
-### 2.6 Script Execution Model: Event-Driven with Read-Only Queries
+### 2.7 Script Execution Model: Event-Driven with Read-Only Queries
 
 Scripts follow a hybrid execution model: event-driven execution triggers with read-only world access within handlers. This is the same model used by Factorio, WoW, and Roblox.
 
@@ -134,7 +174,7 @@ Three alternative models were evaluated:
 | Purely event-driven | Scripts only receive pre-packaged event payloads, no world access | Rejected -- too limiting; AI/economy logic needs to inspect world state to make decisions |
 | **Hybrid (accepted)** | **Event-driven execution + read-only world queries within handlers + intent-only writes** | **Accepted** -- clean authority boundary, expressive enough for real content, budgetable |
 
-#### 2.6.1 Execution: Event-Driven
+#### 2.7.1 Execution: Event-Driven
 
 Rust controls when script code runs. Scripts never poll or run in a loop. Two trigger mechanisms:
 
@@ -143,7 +183,7 @@ Rust controls when script code runs. Scripts never poll or run in a loop. Two tr
 
 Handlers are short-lived: a handler runs, reads world state, emits intent, and returns. No persistent coroutines or blocking waits.
 
-#### 2.6.2 World Access: Read-Only Queries Within Handlers
+#### 2.7.2 World Access: Read-Only Queries Within Handlers
 
 When a handler fires, it can read any component on any entity on the authoritative host. This is safe because:
 
@@ -156,13 +196,15 @@ Read API returns point-in-time snapshots. Scripts cannot hold references across 
 
 **Snapshot boundary**: The script world snapshot is built at the start of each FixedUpdate tick, after the previous tick's physics writeback has propagated. Scripts see world state as of the prior tick's physics resolution. Intent application occurs before the current tick's physics step, so script-driven motion is reflected in the same tick's physics. The replication visibility system evaluates positions after the current tick's physics writeback. Net effect: no one-tick visibility lag for script-driven motion. See `docs/features/spatial_partitioning_implementation_plan.md` section 10.3 for the full schedule diagram.
 
-#### 2.6.3 Mutations: Intent-Only
+#### 2.7.3 Mutations: Intent-Only (Including Privileged Script Actions)
 
-All state changes go through `ctx:emit_intent(action, payload)`. This queues a validated action through the same authority pipeline as player input. The server processes it like any other gameplay action. Scripts never directly mutate components, positions, velocities, or ownership.
+All state changes go through `ctx:emit_intent(action, payload)` (or equivalent validated script-action entrypoints). This queues a validated action through the same authority pipeline as player input. The server processes it like any other gameplay action.
+
+Scripts do not mutate ECS storage directly. However, privileged script actions may request authoritative mutations such as teleporting entities, setting transform state, or writing allowlisted component fields.
 
 Invalid intent is rejected and logged. The script continues executing (intent rejection is not a script error).
 
-#### 2.6.4 Script State Persistence
+#### 2.7.4 Script State Persistence
 
 Scripts read and write per-entity custom state through the `ScriptState` component:
 
@@ -171,7 +213,7 @@ Scripts read and write per-entity custom state through the `ScriptState` compone
 
 `ScriptState` persists across ticks and across server restarts via graph persistence. This allows scripts to maintain stateful logic (patrol waypoint index, mission progress, economy accumulators) without requiring new Rust component types.
 
-#### 2.6.5 Example: NPC AI Patrol/Engage/Flee
+#### 2.7.5 Example: NPC AI Patrol/Engage/Flee
 
 ```lua
 function on_ai_tick(ctx, event)
@@ -238,7 +280,7 @@ end
 
 The handler reads world state to make decisions but every mutation goes through `emit_intent`. Rust validates each intent (ownership, range, fuel, ammo) before applying it.
 
-#### 2.6.6 Example: Economy Station Tick
+#### 2.7.6 Example: Economy Station Tick
 
 ```lua
 function on_economy_tick(ctx, event)
@@ -270,7 +312,7 @@ function on_economy_tick(ctx, event)
 end
 ```
 
-#### 2.6.7 Example: Mission Lifecycle
+#### 2.7.7 Example: Mission Lifecycle
 
 ```lua
 function on_mission_start(ctx, event)
@@ -369,7 +411,7 @@ Sandboxing is enforced from the shared `sidereal-scripting` crate. All script ex
 
 ## 5. Event Bridge
 
-The event bridge is the Rust-to-Lua dispatch layer that triggers script handlers in response to authoritative gameplay events. Combined with the hybrid execution model (section 2.6), this is the primary runtime interface between ECS systems and script content.
+The event bridge is the Rust-to-Lua dispatch layer that triggers script handlers in response to authoritative gameplay events. Combined with the hybrid execution model (section 2.7), this is the primary runtime interface between ECS systems and script content.
 
 ### 5.1 Event Flow
 
@@ -475,6 +517,14 @@ Phase C implementation should support at minimum:
 | `mission_objective_complete` | `{ mission_id, objective_id }` | Mission system |
 | `mission_completed` | `{ mission_id, player_id }` | Mission system |
 | `mission_failed` | `{ mission_id, player_id, reason }` | Mission system |
+| `inventory_changed` | `{ entity_id, owner_player_id?, delta, reason }` | Inventory/cargo systems |
+| `cargo_collected` | `{ player_id, ship_entity_id, item_id, quantity, source_entity_id? }` | Loot/mining/salvage |
+| `cargo_delivered` | `{ player_id, ship_entity_id, item_id, quantity, destination_entity_id }` | Trade/mission delivery |
+| `docked` | `{ player_id, ship_entity_id, station_entity_id }` | Docking system |
+| `undocked` | `{ player_id, ship_entity_id, station_entity_id }` | Docking system |
+| `interaction_completed` | `{ player_id, entity_id, interaction_id }` | Generic interaction/action system |
+| `gain_entity_visibility` | `{ observer_entity_id, target_entity_id, confidence? }` | Visibility/scanner systems |
+| `lose_entity_visibility` | `{ observer_entity_id, target_entity_id, last_known_position }` | Visibility/scanner systems |
 
 #### Spatial Partition Events (Future)
 
@@ -570,9 +620,15 @@ AGE graph persistence remains canonical for entity/component state. Script table
 ### 7.3 Current Implementation
 
 `world_init.lua` now provides both:
-- `world_defaults` (shader asset IDs), and
-- `build_graph_records(ctx)` returning authoritative fullscreen-layer graph records (including `space_background_shader_settings` and `starfield_shader_settings` payloads).
-- `world_defaults.additional_required_asset_ids` may optionally list extra runtime asset IDs (for example shader IDs) that should be pre-streamed during bootstrap.
+- `world_defaults` describing authored render layers/rules and starter bundle defaults, and
+- `build_graph_records(ctx)` returning authoritative render-layer graph records (currently including fullscreen background layers, default `main_world`, `midground_planets`, the planet assignment rule, and shader-setting payloads for starfield/space background content adapters).
+- deterministic world-content bundle spawning (currently pirate patrol + asteroid field members).
+- `world_defaults` must reference logical `asset_id` values only; bootstrap-required behavior is declared in the Lua asset registry, not a Rust-maintained or ad-hoc list.
+
+Migration note:
+- `world_init.lua` no longer depends on fixed `space_background_shader_asset_id` / `starfield_shader_asset_id` fields. It authors the background, world, and rule definitions directly through `ctx.render:define_layer(...)` / `ctx.render:define_rule(...)`.
+- Fullscreen background and fullscreen foreground layer execution now comes from those authored layer definitions. Camera-scoped post-process stacks are also authored data, but their currently supported shader adapters are limited to the existing fullscreen shader families until the fully generic runtime material path replaces the remaining content-specific adapters.
+- The next render-scripting migration step is not "more fullscreen layers"; it is authored multi-pass visual stacks so layered content like planets/clouds/rings can be expressed as script-authored pass composition rather than bespoke Rust child-pass orchestration. That path is tracked in `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
 
 The replication host reads and applies these records at boot with idempotent guard key `script_world_init_state`, and the gateway uses the same script payload for first-time persistence when records are missing.
 
@@ -600,7 +656,7 @@ return WorldInit
 
 ## 8. Runtime API Surface (v1 Target)
 
-The runtime API is exposed to Lua handlers via the `ctx` object passed to every handler invocation. It follows the hybrid execution model (section 2.6): read-only world access plus intent-only writes.
+The runtime API is exposed to Lua handlers via the `ctx` object passed to every handler invocation. It follows the hybrid execution model (section 2.7): read-only world access plus intent-only writes.
 
 ### 8.1 Handler Context (`ctx`)
 
@@ -747,6 +803,23 @@ local entities = ctx.world:query_in_system(system_uuid, filter)
 
 `query_in_system` uses a `SolarSystemId` index in the script world snapshot (not spatial cells). It counts against the per-handler spatial query budget.
 
+#### Quest/Inventory Query Helpers (Planned v1)
+
+For scripted mission/quest progression, the runtime should expose dedicated helper queries in addition to generic entity/component lookups.
+
+| Method | Return | Notes |
+|---|---|---|
+| `ctx.world:get_active_ship(player_id)` | `ScriptEntity or nil` | Resolves current controlled/active ship for that player. |
+| `ctx.world:get_inventory(entity_id)` | `table or nil` | Snapshot of `Inventory` payload for entity. |
+| `ctx.world:get_item_count(entity_id, item_id)` | `number` | Fast count helper (0 if absent). |
+| `ctx.world:get_player_active_quests(player_id)` | `{QuestInstanceSummary, ...}` | Owner-scoped active instances only. |
+| `ctx.world:get_quest_instance(quest_instance_id)` | `QuestInstanceSnapshot or nil` | Includes objective states/counters. |
+| `ctx.world:quest_objective_progress(quest_instance_id, objective_id)` | `table or nil` | Counter/progress snapshot for one objective. |
+| `ctx.world:get_entities_in_range(entity_id, radius, filter?)` | `{ScriptEntity, ...}` | Convenience wrapper around `query_nearby` using entity position as center. |
+| `ctx.world:last_known_position(observer_entity_id, target_entity_id)` | `{x,y} or nil` | Visibility-memory helper for search behavior. |
+
+Server-side scripts may read any authoritative entity/component state through existing query APIs; these helper calls provide canonical, validated shortcuts for common quest logic.
+
 ### 8.3 Intent Emission (`ctx:emit_intent`)
 
 All mutations go through intent emission. Each intent is validated by Rust authority systems before being applied. Invalid intent is rejected and logged; the script continues executing.
@@ -771,8 +844,41 @@ ctx:emit_intent(action_name, payload_table)
 | `"fail_mission"` | `{ mission_id, reason }` | Mark mission failed. |
 | `"set_script_state"` | `{ entity_id, key, value }` | Set a key/value on the entity's `ScriptState` component. |
 | `"emit_event"` | `{ event_id, payload }` | Emit a script-defined event into the event bridge. |
+| `"accept_quest"` | `{ player_id, quest_template_id }` | Create player-scoped quest instance from template. |
+| `"abandon_quest"` | `{ player_id, quest_instance_id }` | Abandon active quest instance. |
+| `"advance_quest_objective"` | `{ quest_instance_id, objective_id, delta \| set_value }` | Update objective counters/progress. |
+| `"complete_quest"` | `{ quest_instance_id, rewards? }` | Mark quest complete; rewards validated/applied in Rust. |
+| `"fail_quest"` | `{ quest_instance_id, reason }` | Mark quest failed. |
+| `"consume_inventory_item"` | `{ entity_id, item_id, quantity, reason }` | Remove items after validation (non-negative, available quantity). |
+| `"grant_inventory_item"` | `{ entity_id, item_id, quantity, reason }` | Add items through canonical inventory system path. |
+| `"transfer_inventory_item"` | `{ from_entity_id, to_entity_id, item_id, quantity, reason }` | Atomic server-validated transfer path. |
 
 The intent action set is extensible by adding Rust-side intent handlers. Scripts cannot invent new intent actions; unknown actions are rejected.
+
+#### Privileged Mutation Actions (Planned)
+
+For scenario control, scripted events, and quest orchestration, the runtime should support privileged server-only mutation actions behind strict validation:
+
+| Action | Payload | Typical use |
+|---|---|---|
+| `"teleport_entity"` | `{ entity_id, position, rotation?, zero_velocity? }` | Warp ship/player/NPC for mission transitions, cutscenes, admin recovery. |
+| `"set_entity_transform"` | `{ entity_id, position?, rotation? }` | Scripted positioning for encounters/cinematics. |
+| `"set_entity_velocity"` | `{ entity_id, linear_velocity?, angular_velocity? }` | Controlled impulse/launch effects. |
+| `"batch_move_entities"` | `{ moves = [{ entity_id, position, rotation? }, ...] }` | Move fleets/waves atomically. |
+| `"set_component_fields"` | `{ entity_id, component_kind, patch }` | Generic allowlisted field patch for non-authority-sensitive data. |
+| `"despawn_entities_in_region"` | `{ bounds, filter, reason }` | Cleanup transient encounter entities. |
+| `"spawn_from_template"` | `{ template_id, spawn_context }` | Deterministic event/encounter generation from script-owned templates. |
+| `"set_visibility_override"` | `{ entity_id, mode, duration_s? }` | Scripted stealth/reveal event rules (policy-gated). |
+| `"scanner_ping"` | `{ entity_id, radius_m?, duration_s? }` | Trigger active scan pulse/search sweep. |
+| `"set_ai_mode"` | `{ entity_id, mode, reason? }` | Explicit AI-mode transitions for behavior trees/state machines. |
+
+Safety rules for privileged actions:
+1. Server-only execution path; never client-authoritative.
+2. Explicit allowlist by action and component/field.
+3. Schedule-aware writes (applied at deterministic stage before physics prepare).
+4. Audit log entries for privileged mutation actions.
+5. Denylist for identity/auth/session-binding and other restricted fields.
+6. One-shot Avian override support is allowed (for teleport/snap), but continuous writer conflicts must be prevented.
 
 ### 8.4 Scheduling (`ctx.events`)
 
@@ -821,6 +927,615 @@ local waves = ctx.mission:get("waves_spawned")
 
 Mission state persists via graph records attached to the mission entity. It survives server restarts.
 
+### 8.6 Quest Hooks, Steps, and Counter Objectives (Planned v1)
+
+This section defines the hook and data model needed for script-authored quests like:
+"Fly to X, collect Y, return to Z and deliver."
+
+#### 8.6.1 Objective Model
+
+Each quest instance stores objective entries:
+
+```lua
+{
+  objective_id = "collect_uranium",
+  kind = "collect_item",
+  item_id = "resource.uranium",
+  required = 10,
+  current = 5,
+  completed = false,
+}
+```
+
+Supported objective kinds (v1):
+1. `visit_entity` / `visit_region`
+2. `collect_item`
+3. `deliver_item`
+4. `interact_with_entity`
+5. `kill_target` / `destroy_target`
+
+Counter objectives (`collect_item`, `kill_target`, etc.) always track `current/required` and should be replicated for UI strings like `Collect 5/10 Uranium`.
+
+#### 8.6.2 Quest Hook Lifecycle
+
+Quest scripts should be able to implement:
+1. `on_accept(ctx, quest)` - initialize instance state/objectives.
+2. `on_event(ctx, quest, event)` - react to gameplay events (`inventory_changed`, `docked`, etc.).
+3. `on_tick(ctx, quest)` - optional periodic consistency checks.
+4. `can_complete(ctx, quest)` - hard validation gate before completion.
+5. `on_complete(ctx, quest)` - apply rewards/cleanup.
+6. `on_fail(ctx, quest, reason)` - failure handling/cleanup.
+
+#### 8.6.3 Completion Gate Rules
+
+`can_complete` must enforce all required conditions, for example:
+1. all prior objectives marked complete,
+2. active ship inventory contains required items,
+3. player is at required destination/station.
+
+Rust still performs final authoritative validation when completion intents are processed.
+
+#### 8.6.4 Example: Collect 10 Uranium then Deliver
+
+```lua
+local Quest = {}
+
+Quest.template_id = "starter_uranium_run_v1"
+
+function Quest.on_accept(ctx, quest)
+  ctx:emit_intent("advance_quest_objective", {
+    quest_instance_id = quest.id,
+    objective_id = "collect_uranium",
+    set_value = { current = 0, required = 10, completed = false },
+  })
+end
+
+function Quest.on_event(ctx, quest, event)
+  if event.type == "cargo_collected" and event.item_id == "resource.uranium" then
+    local ship = ctx.world:get_active_ship(event.player_id)
+    if not ship then
+      return
+    end
+    local count = ctx.world:get_item_count(ship:guid(), "resource.uranium")
+    ctx:emit_intent("advance_quest_objective", {
+      quest_instance_id = quest.id,
+      objective_id = "collect_uranium",
+      set_value = {
+        current = count,
+        required = 10,
+        completed = count >= 10,
+      },
+    })
+  end
+
+  if event.type == "docked" and event.station_entity_id == quest.data.turn_in_station_id then
+    if Quest.can_complete(ctx, quest, event.player_id) then
+      local ship = ctx.world:get_active_ship(event.player_id)
+      ctx:emit_intent("consume_inventory_item", {
+        entity_id = ship:guid(),
+        item_id = "resource.uranium",
+        quantity = 10,
+        reason = "quest_turn_in:" .. quest.id,
+      })
+      ctx:emit_intent("complete_quest", {
+        quest_instance_id = quest.id,
+        rewards = { credits = 2500, reputation = { miners_guild = 5 } },
+      })
+    end
+  end
+end
+
+function Quest.can_complete(ctx, quest, player_id)
+  local objectives = ctx.world:get_quest_instance(quest.id).objectives
+  for _, objective in ipairs(objectives) do
+    if not objective.completed then
+      return false
+    end
+  end
+
+  local ship = ctx.world:get_active_ship(player_id)
+  if not ship then
+    return false
+  end
+  local uranium = ctx.world:get_item_count(ship:guid(), "resource.uranium")
+  return uranium >= 10
+end
+
+return Quest
+```
+
+#### 8.6.5 Validation and Safety Notes
+
+1. Script logic may propose inventory/quest mutations, but Rust authority handlers must validate ownership, range/context, and quantity bounds.
+2. `consume_inventory_item` must fail closed if available quantity is insufficient at commit time.
+3. Quest objective counters are eventually consistent with gameplay events; scripts may recompute counters from authoritative inventory snapshots to self-heal missed events.
+4. Multi-player isolation is mandatory: per-player quest instances must never share mutable objective state unless explicitly marked party-shared.
+
+#### 8.6.6 Example AI Pattern: Threat Memory + Pursuit + Search + Give Up
+
+The following pseudocode demonstrates the style needed for pirate/NPC combat logic:
+1. maintain a war-list array (`at_war_with`) rather than one target,
+2. decay hostility over time,
+3. pursue last-seen position after visibility loss,
+4. active scan attempt,
+5. return to patrol if search fails.
+
+```lua
+local PirateCombat = {}
+
+PirateCombat.handler_name = "pirate_combat"
+PirateCombat.tick_interval_seconds = 0.5
+
+local WAR_DECAY_S = 180.0
+local ATTACK_RADIUS_M = 8000.0
+local SEARCH_GIVE_UP_S = 20.0
+
+local function now_s(ctx)
+  return ctx.time:now_s()
+end
+
+local function read_state(entity)
+  return entity:get("script_state") or { data = {} }
+end
+
+local function get_war_list(state)
+  local list = state.data.at_war_with
+  if list == nil then
+    list = {}
+  end
+  return list
+end
+
+local function persist_war_list(ctx, entity_id, war_list)
+  ctx:emit_intent("set_script_state", {
+    entity_id = entity_id,
+    key = "at_war_with",
+    value = war_list,
+  })
+end
+
+local function find_war_entry(war_list, target_id)
+  for i, entry in ipairs(war_list) do
+    if entry.target_id == target_id then
+      return i, entry
+    end
+  end
+  return nil, nil
+end
+
+function PirateCombat.on_damage_applied(ctx, event)
+  local me = ctx.world:find_entity(event.entity_id)
+  if me == nil then
+    return
+  end
+
+  local source_id = event.shooter_entity_id
+  if source_id == nil then
+    return
+  end
+
+  local state = read_state(me)
+  local war = get_war_list(state)
+  local idx, entry = find_war_entry(war, source_id)
+  if entry == nil then
+    entry = {
+      target_id = source_id,
+      hostility = 0,
+    }
+    table.insert(war, entry)
+    idx = #war
+  end
+  war[idx].hostility = math.min((war[idx].hostility or 0) + event.damage, 1000)
+  war[idx].last_seen_s = now_s(ctx)
+  war[idx].last_seen_pos = event.source_position -- if event provides it
+
+  persist_war_list(ctx, event.entity_id, war)
+  ctx:emit_intent("set_ai_mode", {
+    entity_id = event.entity_id,
+    mode = "attack",
+    reason = "took_damage",
+  })
+end
+
+function PirateCombat.on_gain_entity_visibility(ctx, event)
+  local me = ctx.world:find_entity(event.observer_entity_id)
+  if me == nil then
+    return
+  end
+  local target = ctx.world:find_entity(event.target_entity_id)
+  if target == nil then
+    return
+  end
+
+  local state = read_state(me)
+  local war = get_war_list(state)
+  local _, entry = find_war_entry(war, event.target_entity_id)
+  if entry ~= nil then
+    entry.last_seen_s = now_s(ctx)
+    entry.last_seen_pos = target:position()
+    persist_war_list(ctx, event.observer_entity_id, war)
+  end
+end
+
+function PirateCombat.on_lose_entity_visibility(ctx, event)
+  local me = ctx.world:find_entity(event.observer_entity_id)
+  if me == nil then
+    return
+  end
+
+  local state = read_state(me)
+  local war = get_war_list(state)
+  local _, entry = find_war_entry(war, event.target_entity_id)
+  if entry == nil then
+    return
+  end
+
+  entry.last_seen_s = now_s(ctx)
+  entry.last_seen_pos = event.last_known_position
+  entry.search_started_s = now_s(ctx)
+  persist_war_list(ctx, event.observer_entity_id, war)
+
+  -- Move to last known position immediately.
+  ctx:emit_intent("fly_towards", {
+    entity_id = event.observer_entity_id,
+    target_position = event.last_known_position,
+  })
+
+  -- Trigger scanner sweep while searching.
+  ctx:emit_intent("scanner_ping", {
+    entity_id = event.observer_entity_id,
+    radius_m = 12000,
+    duration_s = 3.0,
+  })
+end
+
+function PirateCombat.on_tick(ctx, event)
+  local me = ctx.world:find_entity(event.entity_id)
+  if me == nil then
+    return
+  end
+  local pos = me:position()
+  local state = read_state(me)
+  local war = get_war_list(state)
+  local t = now_s(ctx)
+
+  -- Decay and prune hostility entries (array form).
+  local i = #war
+  while i >= 1 do
+    local entry = war[i]
+    local age = t - (entry.last_seen_s or t)
+    if age > WAR_DECAY_S then
+      table.remove(war, i)
+    else
+      entry.hostility = math.max((entry.hostility or 0) - 0.5, 0)
+      if entry.hostility <= 0 then
+        table.remove(war, i)
+      end
+    end
+    i = i - 1
+  end
+
+  -- Select highest-hostility visible target in range.
+  local candidates = ctx.world:get_entities_in_range(event.entity_id, ATTACK_RADIUS_M, {
+    has_any = { "ship_tag", "player_tag" },
+    limit = 30,
+  })
+  local best_target = nil
+  local best_score = -1
+  for _, entity in ipairs(candidates) do
+    local guid = entity:guid()
+    local _, entry = find_war_entry(war, guid)
+    if entry ~= nil then
+      local score = entry.hostility or 0
+      if score > best_score then
+        best_score = score
+        best_target = entity
+      end
+    end
+  end
+
+  if best_target ~= nil then
+    ctx:emit_intent("set_ai_mode", { entity_id = event.entity_id, mode = "attack" })
+    ctx:emit_intent("fly_towards", {
+      entity_id = event.entity_id,
+      target_position = best_target:position(),
+    })
+    persist_war_list(ctx, event.entity_id, war)
+    return
+  end
+
+  -- No visible target: pursue/search last known position for remaining entries.
+  local chase = nil
+  for _, entry in ipairs(war) do
+    if entry.last_seen_pos ~= nil then
+      chase = entry
+      break
+    end
+  end
+
+  if chase ~= nil then
+    ctx:emit_intent("set_ai_mode", { entity_id = event.entity_id, mode = "search" })
+    ctx:emit_intent("fly_towards", {
+      entity_id = event.entity_id,
+      target_position = chase.last_seen_pos,
+    })
+    if chase.search_started_s ~= nil and (t - chase.search_started_s) > SEARCH_GIVE_UP_S then
+      -- Give up on this target after timed search window.
+      chase.hostility = 0
+      chase.last_seen_pos = nil
+    end
+    persist_war_list(ctx, event.entity_id, war)
+    return
+  end
+
+  -- No threats left: return to patrol behavior.
+  ctx:emit_intent("set_ai_mode", { entity_id = event.entity_id, mode = "patrol" })
+  persist_war_list(ctx, event.entity_id, war)
+end
+
+return PirateCombat
+```
+
+Implementation notes:
+1. This example stores `at_war_with` as an array/list so it is straightforward to inspect in dashboard tooling.
+2. If the list grows large, Rust-side helper APIs can provide optimized target-index lookup while preserving list semantics in script-visible state.
+
+### 8.7 Context Exposure Expansion Matrix (Planned)
+
+This matrix explicitly documents what must be added to `ctx` to support near-term questing and longer-term genre-agnostic scripting (dynamic events, procedural generation, etc.).
+
+#### 8.7.1 Questing and Progression
+
+Required new `ctx` surface:
+1. `ctx.world:get_active_ship(player_id)`
+2. `ctx.world:get_inventory(entity_id)`
+3. `ctx.world:get_item_count(entity_id, item_id)`
+4. `ctx.world:get_player_active_quests(player_id)`
+5. `ctx.world:get_quest_instance(quest_instance_id)`
+6. `ctx.world:quest_objective_progress(quest_instance_id, objective_id)`
+
+Required new intents/events:
+1. Intents: `accept_quest`, `abandon_quest`, `advance_quest_objective`, `complete_quest`, `fail_quest`, `consume_inventory_item`, `grant_inventory_item`, `transfer_inventory_item`
+2. Events: `inventory_changed`, `cargo_collected`, `cargo_delivered`, `docked`, `interaction_completed`
+
+Required Rust-side support:
+1. Persisted quest instance components/resources.
+2. Owner-scoped replication for quest journal/progress state.
+3. Validation handlers for quest/inventory intents.
+
+#### 8.7.2 Dynamic World Events
+
+Required new `ctx` surface:
+1. `ctx.events:emit_world_event(event_id, payload, scope?)`
+2. `ctx.world:query_in_system(system_id, filter)` (planned in Phase D)
+3. `ctx.world:find_system_at(position)` (planned in Phase D)
+
+Required new intents/events:
+1. Intents: `spawn_entity`, `despawn_entity`, `emit_event` (expanded payload/schema validation)
+2. Events: `entered_system`, `left_system`, `deep_space_enter`, `approach_body` (already tracked as future partition-derived events)
+
+Required Rust-side support:
+1. Event rate limiting/cooldowns and dedupe.
+2. Shard-safe event emission routing.
+3. Observability for script-generated event chains.
+
+#### 8.7.3 Procedural Generation (Asteroids, Encounters, Zones)
+
+Current baseline (implemented):
+1. Deterministic asteroid field generation at world bootstrap is live in `world_init.lua` by looping and calling `spawn_bundle_graph_records("asteroid.field_member", overrides)`.
+2. This runs under the existing one-time `script_world_init_state` guard, so generated world content is idempotent across restarts.
+3. Determinism currently uses Lua hash helpers (`hash01(index, salt)`); Rust-seeded RNG helper exposure is still future work.
+
+Required new `ctx` surface:
+1. `ctx.world:query_region(bounds, filter)` (or equivalent bounded spatial query helper)
+2. `ctx.world:is_region_seeded(seed_key)` / `ctx.world:mark_region_seeded(seed_key)` (idempotent generation guards)
+3. deterministic RNG helper exposed from Rust (`ctx.rand:next_*`) seeded by world/shard/region keys
+
+Required new intents/events:
+1. Intents: `spawn_entity` with archetype/variant + deterministic override payloads
+2. Events: region/system bootstrap hooks (`region_unloaded`, `region_loaded`, `system_bootstrap`) as needed
+
+Required Rust-side support:
+1. Deterministic seed strategy contract (world seed + region coordinates + content version).
+2. Idempotent persistence checks to avoid duplicate generation on restart/rejoin.
+3. Budget controls for generation bursts (per tick/per region spawn caps).
+
+#### 8.7.4 Cross-Genre Authoring Support
+
+Required new `ctx` surface:
+1. richer read-only component access in `ScriptEntity:get(kind)` beyond `script_state`
+2. generic label/faction/component filter queries (already in target API model)
+3. stable script API version negotiation per bundle
+
+Required Rust-side support:
+1. Script API compatibility checks on activation/join.
+2. Schema validation and strict fail-closed behavior for unknown actions/events.
+3. Native/WASM client parity for replicated script-driven outcomes (clients render state, not authority).
+
+#### 8.7.5 High-Value Scripted Operations to Support
+
+The following operations are likely needed across Sidereal and future non-space projects:
+
+1. **Quest/campaign orchestration**
+   - teleport player/party to mission phase area,
+   - atomically advance multiple objectives,
+   - consume/transfer required turn-in items,
+   - spawn/despawn objective entities with stable references.
+2. **Dynamic encounter control**
+   - spawn enemy waves from templates with deterministic seeds,
+   - retreat/warp waves on condition,
+   - region cleanup after encounter completion/failure.
+3. **Procedural world generation**
+   - deterministic asteroid/debris field generation per region seed,
+   - idempotent "generate once" guards,
+   - regeneration policies for depleted/cleared regions.
+4. **Live world events**
+   - timed faction incursions or trade surges,
+   - temporary hazard zones with scripted effects,
+   - scripted server announcements and event-state replication.
+5. **Cinematic and narrative moments**
+   - batch move + orientation alignment for fleets/NPCs,
+   - lockstep trigger chains (arrive -> dialogue -> spawn -> combat start),
+   - deterministic rollback-safe event transitions.
+6. **Admin/ops recovery tools**
+   - recover stuck entities via server-side teleport,
+   - scripted cleanup of invalid transient entities,
+   - deterministic repair actions (rebuild missing encounter state from templates).
+
+### 8.8 Trigger and Dialogue Orchestration Model (Planned)
+
+This section defines how quests/dialogue can be triggered beyond simple "add quest" actions.
+
+#### 8.8.1 Trigger Sources to Support
+
+Scripts should be able to react to these trigger families (common across RPG/MMO designs):
+
+1. **Spatial trigger volumes**
+   - player enters/exits script-defined radius/shape around a trigger entity.
+2. **Timer-based triggers**
+   - player accumulated playtime thresholds,
+   - quest elapsed time windows,
+   - world/event schedule windows.
+3. **Interaction triggers**
+   - explicit interact with NPC/object/terminal.
+4. **Progression triggers**
+   - objective completion, quest chain prerequisite completion, reputation threshold.
+5. **Inventory/economy triggers**
+   - acquire/lose item, cargo threshold reached, delivery confirmation.
+6. **Combat triggers**
+   - damage received, target destroyed, survived ambush window.
+7. **World-state triggers**
+   - faction control changed, station state changed, dynamic event phase changes.
+8. **Randomized deterministic triggers**
+   - probability-based procs using deterministic seed inputs.
+
+#### 8.8.2 Recommended Trigger Events
+
+Add/standardize these events in the bridge:
+
+1. `enter_script_trigger` `{ player_id, trigger_entity_id }`
+2. `exit_script_trigger` `{ player_id, trigger_entity_id }`
+3. `dialog_response_submitted` `{ player_id, dialog_id, choice_id }`
+
+Note: `gain_entity_visibility` is useful for AI perception logic, but explicit trigger-volume events should be the primary mechanism for authored area triggers.
+Timer threshold events are optional convenience events; creator-authored timer logic should prefer script-entity `on_tick` checks for maximum flexibility.
+
+#### 8.8.2A Preferred Authoring Pattern: Script-Entity Tick Timers
+
+Preferred design for quest creators:
+1. Place a script entity with `on_tick_handler`.
+2. Read authoritative time/player state each tick.
+3. Run custom threshold/cooldown logic in Lua.
+4. Emit quest/dialog intents when conditions pass.
+
+This keeps timer logic fully data/script-authored instead of hardcoding many one-off Rust timer event types.
+
+Required time helpers for this pattern:
+1. `ctx.time:now_s()`
+2. `ctx.time:world_accumulated_s()`
+3. `ctx.time:player_accumulated_s(player_id)`
+4. optional helper: `ctx.state:cooldown_ready(entity_id, key, duration_s)`
+
+Example pseudocode:
+
+```lua
+local Trigger = {}
+Trigger.handler_name = "trigger_quest_34234"
+Trigger.tick_interval_seconds = 1.0
+
+function Trigger.on_tick(ctx, event)
+  local trigger = ctx.world:find_entity(event.entity_id)
+  if trigger == nil then
+    return
+  end
+
+  local players = ctx.world:get_entities_in_range(event.entity_id, 2500, {
+    has = "player_tag",
+    limit = 128,
+  })
+
+  local now = ctx.time:now_s()
+  for _, player in ipairs(players) do
+    local player_id = player:guid()
+    local play_s = ctx.time:player_accumulated_s(player_id)
+
+    -- Creator-authored timer rule: only after 20m playtime.
+    if play_s >= 1200 and ctx.state:cooldown_ready(event.entity_id, "offer:" .. player_id, 600) then
+      ctx:emit_intent("offer_quest", {
+        player_id = player_id,
+        quest_template_id = "quest_34234",
+      })
+    end
+  end
+end
+
+return Trigger
+```
+
+#### 8.8.3 Blocking (Must-Respond) Dialogue Contract
+
+For flows where player must respond before proceeding:
+
+1. Lua emits `start_dialog` intent with blocking policy:
+   - `{ player_id, dialog_id, nodes, blocking = true, timeout_s?, default_choice_id? }`
+2. Rust creates authoritative active-dialog state for the player.
+3. Client receives replicated dialog ticket and enters blocking UI mode.
+4. While blocking dialog is active, server rejects blocked gameplay intents (movement/fire/interaction as configured).
+5. Player must choose a valid response (or timeout policy resolves).
+6. Rust emits `dialog_response_submitted`, Lua continues script branch.
+
+This preserves server authority while enabling "you must respond" narrative gates.
+
+Blocking dialog pseudocode (forced response gate):
+
+```lua
+function Trigger.start_forced_dialog(ctx, player_id)
+  ctx:emit_intent("start_dialog", {
+    player_id = player_id,
+    dialog_id = "distress_call_intro_v1",
+    blocking = true,
+    timeout_s = 45.0,
+    default_choice_id = "decline",
+    nodes = {
+      {
+        id = "root",
+        text = "Unidentified vessel, respond immediately.",
+        choices = {
+          { id = "accept", text = "We'll help." },
+          { id = "decline", text = "Not interested." },
+        },
+      },
+    },
+  })
+end
+
+function Trigger.on_dialog_response_submitted(ctx, event)
+  if event.dialog_id ~= "distress_call_intro_v1" then
+    return
+  end
+  if event.choice_id == "accept" then
+    ctx:emit_intent("accept_quest", {
+      player_id = event.player_id,
+      quest_template_id = "quest_34234",
+    })
+  else
+    ctx:emit_intent("fail_quest", {
+      quest_instance_id = "quest_34234:" .. event.player_id,
+      reason = "Player declined distress call",
+    })
+  end
+end
+```
+
+#### 8.8.4 Rust Systems Required for 8.8
+
+1. Trigger-volume detection system (radius/shape enter/exit) with per-player dedupe.
+2. Deterministic time exposure to scripts (`ctx.time` helpers) including player accumulated playtime persisted on player entity.
+3. Dialog runtime components (`ActiveDialog`, dialog node state, blocking policy).
+4. Input-gate validation in authoritative intent processing while blocking dialog is active.
+5. Replication path for dialog tickets and quest/dialog notifications to client UI.
+6. Idempotency/cooldown helpers so tick-driven scripts cannot repeatedly open the same flow.
+
 ## 9. Offline Campaign and Host-Opened Sessions
 
 ### 9.1 Offline Single-Player
@@ -847,7 +1562,7 @@ Mission state persists via graph records attached to the mission entity. It surv
 |---|---|
 | Archetypes/components | Continue using `sidereal-game` components/macros as source of truth |
 | Persistence | Scripts produce ECS changes; durable state persists via graph records (`GraphEntityRecord`/`GraphComponentRecord`) |
-| Asset delivery | Scripts reference logical asset IDs/archetype/variant IDs only |
+| Asset delivery | Scripts own Lua asset registry definitions and reference logical `asset_id` values only; gateway serves payloads by immutable `asset_guid` |
 | Visibility/replication | Script-spawned entities pass through normal visibility and replication policy |
 
 ## 11. Implemented State (March 2026)
@@ -864,20 +1579,43 @@ Mission state persists via graph records attached to the mission entity. It surv
 2. **Script source root**: `data/scripts` (override via `SIDEREAL_SCRIPTS_ROOT`).
 
 3. **Gateway script hooks** (`bins/sidereal-gateway/src/auth/starter_world_scripts.rs`):
-   - `accounts/player_init.lua`: calls `player_init(ctx)` for starter bundle selection.
+   - `accounts/player_init.lua`: calls `player_init(ctx)` for ship bundle selection (`ship_bundle_id`).
    - `bundles/bundle_registry.lua`: loads bundle definitions and validates `required_component_kinds` against `generated_component_registry()`.
-   - Starter/player records are now script-authored through bundle `graph_records_script` payloads (`starter_corvette` moved off Rust template path).
+   - Account bootstrap composes a Rust-authored player entity record with script-authored ship bundle graph records.
    - Script `context` includes `new_uuid()` for dynamic entity/module graph ID generation in Lua.
    - Lua-to-JSON recursive conversion is shared via `sidereal-scripting::lua_value_to_json`.
+   - Gateway now resolves script execution through a cached in-memory `ScriptCatalogResource` instead of reading `.lua` files on every call.
+   - Gateway authoritative load order is now:
+     1. load the active script catalog from SQL tables if present,
+     2. otherwise seed from disk and persist that seed set into SQL,
+     3. fall back to disk only when the helper is used without a reachable database (for example isolated unit tests).
+   - Gateway exposes `current_script_catalog(root)` and `reload_script_catalog_from_disk(root)` helpers; reload-from-disk now also replaces the active SQL-backed catalog.
+   - Gateway starter-world bundle spawning and collision-outline helpers now resolve bundle/asset metadata from the cached catalog path rather than directly reloading registry scripts.
 
 4. **Replication script hooks** (`bins/sidereal-replication/src/replication/scripting.rs`):
    - Loads `world/world_init.lua` at authoritative host boot.
-   - Executes `build_graph_records(ctx)` and applies fullscreen backdrop layer graph records once, guarded by `script_world_init_state` DB marker.
+   - Executes `build_graph_records(ctx)` and applies world bootstrap graph records once, guarded by `script_world_init_state` DB marker.
+   - Bootstrap records now include deterministic Lua-generated asteroid field entities via `spawn_bundle_graph_records("asteroid.field_member", overrides)`.
    - World-init guard uses existing `GraphPersistence` connection (no extra DB clients).
-  - Asset bootstrap reads `world_defaults` so script-selected backdrop shader asset IDs and optional `additional_required_asset_ids` are included in always-required stream assets.
+   - Asset bootstrap metadata now derives from Lua asset registry policy (`bootstrap_required`) and script-selected `asset_id` references; payload fetches occur via gateway `/assets/<asset_guid>`.
+   - Mirrors all discovered `.lua` source files into a runtime `ScriptCatalogResource` (BRP-visible), with per-entry `source`, `script_path`, `origin`, and `revision`.
+   - Replication authoritative load order is now:
+     1. load the active script catalog from SQL tables if present,
+     2. otherwise seed from disk and persist that seed set into SQL,
+     3. if authoritative SQL load is temporarily unavailable, boot from disk into the in-memory catalog and mark SQL persistence as pending,
+     4. execute runtime scripts from the in-memory catalog built from that authoritative source.
+   - Exposes `ScriptCatalogControlResource` (BRP-visible) with `reload_all_from_disk_requested` so tooling can request a full reload of seed scripts from disk.
+   - `ScriptCatalogControlResource` now also reports the last persist result/time plus startup fallback state so BRP tooling can observe whether an in-memory edit has been durably flushed to SQL and whether startup is still running from a disk-seeded fallback catalog.
+   - Mirrors Lua entity registry definitions into a runtime `EntityRegistryResource` (BRP-visible), derived from `ScriptCatalogResource`.
+   - Mirrors Lua asset registry definitions into a runtime `AssetRegistryResource` (BRP-visible), derived from `ScriptCatalogResource`.
+   - Runtime bundle spawning on the replication host resolves bundle source, bundle registry metadata, and asset registry metadata from those resources instead of reloading registry scripts from disk on every spawn request.
+   - Nested Lua `spawn_bundle_graph_records(...)` calls reuse the same script-catalog/registry snapshot for that evaluation, so one script invocation is internally consistent.
+   - Normalized catalog changes are now persisted back to SQL automatically, so BRP/script edits survive service restart.
 
 5. **Replication runtime scripting slice** (`bins/sidereal-replication/src/replication/runtime_scripting.rs`):
    - Persistent sandboxed Lua VM is initialized at host boot (non-send Bevy resource).
+   - AI/runtime handler modules are now compiled from `ScriptCatalogResource`, not read directly from disk.
+   - When `ScriptCatalogResource.revision` changes, the runtime scripting host rebuilds its handler set from the updated in-memory source on the next execution pass.
    - Generic per-entity interval scheduler runs Lua `on_tick(ctx, event)` handlers selected via `ScriptState.data.on_tick_handler`.
    - Read-only `ctx.world:find_entity(uuid)` + `ScriptEntity` wrapper (`guid`, `position`, `has`, `get` for `script_state`).
    - Intent bridge prototype: `ctx:emit_intent("fly_towards" | "stop" | "set_script_state", payload)`.
@@ -898,26 +1636,257 @@ Mission state persists via graph records attached to the mission entity. It surv
 | File | Purpose |
 |---|---|
 | `data/scripts/world/world_init.lua` | World defaults + scripted world-init graph records for backdrop layers/settings |
-| `data/scripts/accounts/player_init.lua` | Starter bundle selection for new accounts |
+| `data/scripts/accounts/player_init.lua` | New-account ship bundle selection for player spawn (`ship_bundle_id`) |
 | `data/scripts/bundles/bundle_registry.lua` | Bundle definitions with component-kind allowlists |
-| `data/scripts/bundles/entity_registry.lua` | Lua bundle entity registry and predefined graph-record builders (`corvette`, `starter_corvette`, `debug_minimal_dynamic`) |
+| `data/scripts/bundles/entity_registry.lua` | Optional bundle lifecycle hooks (`on_spawned`) |
+| `data/scripts/bundles/ship/*.lua` | Ship prefab bundle graph-record builders (for example `ship.corvette`, `ship.rocinante`) |
+| `data/scripts/bundles/starter/asteroid_field.lua` | Asteroid field member bundle used by world bootstrap generation |
 | `data/scripts/ai/pirate_patrol.lua` | Runtime interval-driven patrol AI prototype |
 
 ### 11.3 Current Runtime Model
 
 - Gateway scripting: account-registration-time persistent entity creation (starter/player graph records).
-- Replication scripting: authoritative host boot world orchestration (`world_init`) with one-time guard.
-- Replication runtime scripting: persistent Lua VM + interval callback execution + intent application during `FixedUpdate`.
+- Replication scripting: authoritative host boot world orchestration (`world_init`) with one-time guard, executed from the in-memory script catalog.
+- Replication runtime scripting: persistent Lua VM + interval callback execution + intent application during `FixedUpdate`, with handler source coming from the in-memory script catalog.
 - Persistence vs spawn: scripts currently drive graph record creation/persistence; runtime spawn into ECS world occurs by replication hydration/bootstrap from persisted graph state.
 
 ### 11.4 Current Compromises
 
-1. `world_init` is replication-startup-only (one-time marker guarded), while gateway registration only evaluates `player_init` + bundle scripts. Both hosts independently resolve the scripts root.
-2. Script storage is filesystem-only; DB publish/version workflow is deferred.
-3. World init now seeds one patrol NPC prototype for runtime scripting validation; broader world population orchestration remains pending.
-4. Event bridge is still interval-first prototype (single script module); full declarative multi-module event routing from section 5 is pending.
-5. `WorldInitScriptConfig` struct is defined in both gateway and replication (identical shape). Could be shared via the scripting crate if dependencies allow.
-6. Lua table conversion is currently shape-inferred (array vs object). Empty table literals are ambiguous; script payloads should avoid relying on empty arrays until explicit array constructors are added.
+1. `world_init` is replication-startup-only (one-time marker guarded), while gateway registration only uses the gateway starter-world script surfaces (`player_init`, bundle registry, bundle graph records). Gateway is now catalog-backed too, but it still does not have replication's BRP-driven Bevy resource host model.
+2. Durable script persistence now uses SQL tables, not graph records. Disk is seed/default content plus explicit reload source, not the long-term authority.
+3. `reload_all_from_disk_requested` replaces the in-memory script catalog from the disk seed set and that replacement is then flushed into the active SQL-backed catalog. This intentionally overwrites any prior live-edited SQL state with disk content.
+4. World init currently seeds legacy fullscreen layers, one patrol NPC prototype, and a deterministic asteroid field. Dynamic region-load/unload generation is still pending, and the fullscreen bootstrap contract should migrate to the DR-0027 authored render-layer model.
+5. Event bridge is still interval-first prototype (single script module); full declarative multi-module event routing from section 5 is pending.
+6. `WorldInitScriptConfig` struct is defined in both gateway and replication (identical shape). Could be shared via the scripting crate if dependencies allow.
+7. Lua table conversion is currently shape-inferred (array vs object). Empty table literals are ambiguous; script payloads should avoid relying on empty arrays until explicit array constructors are added.
+
+### 11.4.1 Script Source Authority (Replication Host)
+
+On the replication host, the authoritative runtime script model is now:
+
+1. `.lua` files are loaded into `ScriptCatalogResource` at startup as seed content.
+2. Runtime script execution resolves source from `ScriptCatalogResource`, not directly from disk.
+3. If authoritative SQL load fails during startup, replication now still boots from disk into `ScriptCatalogResource`, derives runtime registries from that catalog, and retries durability on subsequent persist passes instead of entering an empty-script degraded mode.
+4. BRP/dashboard edits to `ScriptCatalogResource.entries[*].source` are intended to take effect on the next relevant execution after the catalog revision advances.
+5. `ScriptCatalogControlResource.reload_all_from_disk_requested = true` explicitly replaces the in-memory catalog from the filesystem seed set and bumps catalog revision.
+6. Derived resources (`EntityRegistryResource`, `AssetRegistryResource`) follow `ScriptCatalogResource` revisions and are regenerated from current in-memory source, not independently polled from disk.
+7. Replication automatically persists normalized catalog revisions to SQL tables after in-memory edits/reloads, so the catalog is durable across restart.
+
+This means replication now has the correct direction for live editing:
+
+1. edit in-memory source,
+2. derived registries rebuild from that source,
+3. future world-init/bundle/runtime executions observe the edited source.
+
+It does **not** yet mean scripts are durable across restart; that still requires DB-backed published script persistence.
+
+### 11.4.2 Script Source Authority (Gateway)
+
+Gateway now follows the same source-of-truth direction, with a runtime shape appropriate to the HTTP/auth service:
+
+1. Gateway loads the active script catalog from SQL on first use; when SQL has no script rows yet, disk seed content is loaded and written into SQL.
+2. Gateway script execution resolves source from the cached in-memory `ScriptCatalogResource`, not directly from disk.
+3. `reload_script_catalog_from_disk(root)` explicitly replaces both the cached gateway catalog and the active SQL-backed catalog from the filesystem seed set.
+4. Gateway bundle spawning helper paths now resolve bundle and asset metadata through the cached catalog model.
+
+Current limitation:
+
+1. Gateway does not expose this as a Bevy `Resource`, because gateway is not a Bevy app runtime.
+2. Gateway does not yet support BRP-driven live mutation of script source. It supports cached execution plus explicit reload-from-disk, with SQL as durable authority.
+3. Dashboard publish/edit flows still need to write through a first-class API instead of relying on replication-local BRP edits only.
+
+### 11.4.3 Durable Script Persistence (SQL Tables)
+
+Durable script storage is now table-backed rather than graph-backed.
+
+Authoritative layering is:
+
+1. **Runtime authority**: in-memory `ScriptCatalogResource` / gateway cached catalog.
+2. **Durable authority**: SQL tables.
+3. **Seed/default source**: filesystem `.lua` under `data/scripts`.
+
+Current SQL schema:
+
+1. `script_catalog_documents`
+   - `script_path` primary key
+   - `script_family`
+   - `active_revision`
+   - `created_at_epoch_s`
+   - `updated_at_epoch_s`
+2. `script_catalog_versions`
+   - `(script_path, revision)` primary key
+   - `source`
+   - `origin`
+   - `created_at_epoch_s`
+
+Current semantics:
+
+1. Replication and gateway both load active script source from the SQL catalog when rows exist.
+2. If the SQL catalog is empty, services seed it from disk.
+3. If replication cannot reach SQL during startup, it still boots from disk and keeps a persist-pending in-memory catalog until SQL becomes reachable.
+4. Replication persists normalized in-memory catalog changes back to SQL automatically.
+5. Gateway reload-from-disk replaces the active SQL catalog with the disk seed set.
+5. Scripts are **not** persisted as graph ECS entities/components.
+
+This is intentional: scripts are content records, not world simulation entities.
+
+### 11.4.4 Draft / Publish Framework (Gateway API)
+
+The next workflow layer now exists on top of the active SQL catalog:
+
+1. **Draft**
+   - save/update unpublished source in `script_catalog_drafts`
+2. **Publish**
+   - create a new immutable entry in `script_catalog_versions`
+   - update `script_catalog_documents.active_revision`
+   - remove the corresponding draft row
+3. **Discard draft**
+   - removes the unpublished draft without changing the active published script
+4. **Reload from disk**
+   - replaces the active SQL catalog from filesystem seed content
+
+Current authenticated gateway routes:
+
+1. `GET /admin/scripts`
+   - list script documents and whether a draft exists
+2. `GET /admin/scripts/detail/{*script_path}`
+   - load active + draft detail for one script
+3. `POST /admin/scripts/draft/{*script_path}`
+   - save/update a draft payload
+4. `DELETE /admin/scripts/draft/{*script_path}`
+   - discard a draft
+5. `POST /admin/scripts/publish/{*script_path}`
+   - publish the current draft as a new active immutable revision
+6. `POST /admin/scripts/reload-from-disk`
+   - replace the active catalog from disk seed files
+
+Security contract:
+
+1. All script-management routes require bearer auth.
+2. All script-management routes require `admin` or `dev_tool` role.
+3. These routes are gateway-owned operational/editor APIs, not public gameplay APIs.
+
+Current limitation:
+
+1. Publishing updates durable SQL authority immediately.
+2. Running services do **not** yet automatically pull published changes into their live in-memory catalogs.
+3. Replication live editing still exists through BRP resource mutation, but that is now a dev-time path rather than the intended long-term publish path.
+
+### 11.5 Current Runtime Contract (As Implemented)
+
+This subsection is the authoritative "what exists today" contract and should be kept in sync with runtime code.
+
+#### 11.5.1 Script Execution Surfaces
+
+1. **Gateway registration scripts**
+   - `accounts/player_init.lua`:
+     - Required function: `player_init(ctx) -> { starter_bundle_id = string }`
+     - Injected context fields:
+       - `account_id` (UUID string)
+       - `player_entity_id` (UUID string)
+       - `email` (string)
+       - `new_uuid()` (function)
+   - `bundles/bundle_registry.lua`:
+     - Required table: `bundles`
+     - Each bundle entry requires:
+       - `graph_records_script`
+       - `required_component_kinds`
+2. **Replication startup scripts**
+   - `world/world_init.lua`:
+     - Required table: `world_defaults`
+     - Required function: `build_graph_records(ctx)`
+     - Injected context helpers:
+       - `new_uuid()`
+       - `spawn_bundle_graph_records(bundle_id, overrides?)`
+3. **Replication runtime scripts**
+   - Auto-discovered from `data/scripts/ai/*.lua`
+   - Module fields consumed at load:
+     - `handler_name` (optional, defaults to filename stem)
+     - `tick_interval_seconds` (optional, default `2.0`)
+     - `on_tick(ctx, event)` (optional)
+     - any `on_<event_name>(ctx, event)` function (optional)
+
+#### 11.5.2 Runtime Hook Binding Model (Current)
+
+Runtime hook selection is **entity-driven** via `ScriptState.data`:
+
+1. Tick hook binding:
+   - `script_state.data.on_tick_handler = "<handler_name>"`
+   - optional override: `script_state.data.tick_interval_s = <seconds>`
+2. Event hook binding:
+   - `script_state.data.event_hooks = { ["event_name"] = "<handler_name>" }`
+
+Example payload currently used by world bootstrap:
+
+```lua
+script_state_data = {
+  on_tick_handler = "pirate_patrol",
+  tick_interval_s = 2.0,
+  event_hooks = {},
+}
+```
+
+#### 11.5.3 Runtime `ctx` Exposure (Current)
+
+Current runtime-scripting `ctx` is intentionally minimal:
+
+1. `ctx.world:find_entity(guid)`
+2. `ctx:emit_intent(action, payload)`
+
+Current `ScriptEntity` methods:
+1. `entity:guid()`
+2. `entity:position()`
+3. `entity:has(component_kind)` where only `"script_state"` is supported today
+4. `entity:get(component_kind)` where only `"script_state"` is supported today
+
+Important current limitation:
+- Runtime component access key is lowercase `"script_state"` in current implementation path (not canonical component-kind expansion yet).
+
+#### 11.5.4 Runtime Events Currently Enqueued
+
+Current event producers are combat-driven:
+
+1. `shot_fired`
+2. `shot_impact`
+3. `damage_applied`
+
+Payloads are JSON/Lua tables generated by replication combat systems.
+
+#### 11.5.5 Runtime Intents Currently Supported
+
+Only these actions are accepted by current runtime scripting intent parser:
+
+1. `fly_towards`
+2. `stop`
+3. `set_script_state`
+
+All other actions are rejected as unsupported in current runtime implementation.
+
+#### 11.5.6 Script Control Safety Guard (Current)
+
+Current script-driven control intents are applied only if:
+1. target entity has `ScriptState`,
+2. target `OwnerId` exists and is **not** a player entity ID (`npc`/non-player ownership path),
+3. payload passes intent parser validation.
+
+This prevents runtime scripts from directly steering player-owned entities in the current slice.
+
+#### 11.5.7 FixedUpdate Ordering (Current)
+
+Current runtime scripting order in `FixedUpdate`:
+
+1. `refresh_script_world_snapshot`
+2. `run_script_intervals`
+3. `run_script_events`
+4. `apply_script_intents` (before `sidereal_game::process_flight_actions`)
+
+This chain executes before physics prepare.
+
+#### 11.5.8 Current/Planned Boundary Clarification
+
+1. Section 11.5 describes **implemented behavior now**.
+2. Sections 5, 8, and Phase D+ define the **target expanded API surface**.
+3. If runtime behavior changes, section 11.5 must be updated in the same change.
 
 ## 12. Implementation Plan
 
@@ -939,6 +1908,15 @@ Mission state persists via graph records attached to the mission entity. It surv
 - [ ] Share `WorldInitScriptConfig` through the scripting crate or a shared types module to eliminate duplication between gateway and replication.
 - [ ] Add approved-path `require` replacement so scripts can import shared modules within the scripts root.
 
+### Phase B2: Lua Asset Registry Integration
+
+- [ ] Add canonical script module for asset registry (for example `data/scripts/assets/registry.lua`) with schema versioning and validation.
+- [ ] Implement shared loader/decoder in `sidereal-scripting` so gateway/replication use one registry parsing path.
+- [ ] Mark bootstrap-required assets in Lua registry (`bootstrap_required`) and remove ad-hoc always-required Rust lists.
+- [ ] Build generated catalog metadata (`asset_id`, `asset_guid`, shader domain/schema metadata, optional compatibility aliases, checksum, dependencies, content type) from Lua registry input.
+- [ ] Add startup manifest payload schema consumed by client `AssetLoading` flow (`required_assets` + optional full catalog).
+- [ ] Add contract tests ensuring runtime Rust code does not rely on hardcoded concrete asset IDs/filenames.
+
 ### Phase C: Event Bridge + Handler Context
 
 - [ ] Implement `ScriptEventQueue` Rust resource for buffering events per tick.
@@ -947,6 +1925,7 @@ Mission state persists via graph records attached to the mission entity. It surv
 - [ ] Implement per-handler instruction budget and error isolation (abort handler on budget exceeded, log error, continue to next handler).
 - [ ] Add `ctx` handler context object exposing `ctx.world` (read-only) and `ctx:emit_intent()` (write).
 - [ ] Add initial event allowlist from section 5.4 (world_boot, session, entity lifecycle, combat, system transitions, economy, mission).
+- [ ] Extend allowlist with visibility and inventory-oriented events required for AI/quest logic (`gain_entity_visibility`, `lose_entity_visibility`, `inventory_changed`, `cargo_collected`, `cargo_delivered`).
 - [ ] Add throttling/aggregation for high-frequency events (collision, damage): configurable per-event-type rate limits.
 - [ ] Add event bridge observability: per-handler execution time, instruction count, error count, exposed via `bevy_remote`.
 - [ ] Add integration test: Rust event emitted -> Lua handler fires -> intent queued -> state change validated.
@@ -965,14 +1944,106 @@ Mission state persists via graph records attached to the mission entity. It surv
 - [ ] Implement `ctx.world:find_system_at(pos)` and `ctx.world:query_in_system(uuid, filter)` (solar system queries).
 - [ ] Implement intent queue: `ctx:emit_intent(action, payload)` -> Rust-side validation -> authoritative state change.
 - [ ] Add core intent actions: `fly_towards`, `stop`, `fire_weapons`, `spawn_entity`, `despawn_entity`, `set_script_state`, `emit_event`.
+- [ ] Add privileged runtime actions for scripted orchestration (`teleport_entity`, `set_entity_transform`, `set_entity_velocity`, `batch_move_entities`) with scheduling and validation guardrails.
+- [ ] Add scanner/search support actions (`scanner_ping`, optional `set_ai_mode` state helper) for loss-of-visibility behavior loops.
 - [x] Add `ScriptState` generic persisted component (`HashMap<String, ScriptValue>`) with `#[sidereal_component(...)]` registration.
 - [ ] Implement `ctx.events:register_interval()`, `schedule_after()`, `cancel_interval()` with minimum interval floor.
 - [ ] Implement `ctx.mission` scoped state interface: `set_ref()`, `get_ref()`, `set()`, `get()`.
+- [ ] Expose `ctx.time:now_s()` (or equivalent deterministic runtime time helper) for decay/cooldown logic in scripts.
+- [ ] Expose script cooldown/idempotency helpers (`ctx.state:ensure_once`, `ctx.state:cooldown_ready`) for tick-driven trigger entities.
+- [ ] Add range/query convenience helpers used by behavior loops (`get_entities_in_range`, `last_known_position`, `get_active_ship`, inventory count helpers).
 - [ ] Implement first scripted mission (escort convoy) using the event bridge and runtime API.
 - [ ] Add persisted mission state model with graph persistence roundtrip (mission state survives restart).
 - [ ] Add integration tests for mission start/update/complete/fail lifecycle across restart.
 - [ ] Add script API version field to bundle manifest for forward compatibility checks.
 - [ ] Verify hydration invariant: `EntityGuid` → entity → partition cell mapping is complete before first script interval tick fires. See `docs/features/spatial_partitioning_implementation_plan.md` section 10.7.
+
+### Phase D1: Genre-Agnostic Content Runtime + Quest System (Immediate Priority)
+
+This subsection captures immediate roadmap decisions to keep Sidereal reusable across genres (space, platformer, tactics, etc.) while preserving deterministic authority.
+
+#### D1.1 Accepted Direction: Genre in Scripts, Simulation in Rust
+
+1. Rust remains the deterministic simulation kernel and authority boundary enforcer.
+2. Lua is the primary genre/content layer (missions, dialogue, progression, encounter logic, spawn orchestration, scripted rules).
+3. "Space game" behavior should continue moving from hardcoded Rust branching into script-authored data and handlers.
+4. Genre-specific behavior should be expressed through:
+   - script-authored events/handlers,
+   - script-authored mission/objective definitions,
+   - script-owned persistent state (`ScriptState` and/or dedicated generic progression components),
+   - generic intent APIs that remain authority-safe.
+
+#### D1.2 Accepted Direction: Server-Authoritative Quest Execution
+
+Quest/mission logic runs on the authoritative host only (dedicated server or local host in offline/listen-host mode).
+
+Clients do not execute authoritative quest scripts. Clients receive:
+1. replicated quest state (owner-scoped where needed),
+2. UI metadata (titles, objective text, rewards, waypoint hints),
+3. server-authored progress/fail/complete outcomes.
+
+Optional future client scripting is presentation-only and must not mutate authoritative gameplay state.
+
+#### D1.3 Quest Data Model (Immediate Contract)
+
+Use a template/instance model:
+
+1. **QuestTemplate** (script-authored definition):
+   - immutable ID (`quest_template_id`),
+   - objective graph/stages,
+   - reward rules,
+   - optional branching conditions.
+2. **QuestInstance** (per-player or per-party runtime state):
+   - unique `quest_instance_id`,
+   - owner scope (`player_entity_id` or party ID),
+   - per-objective progress state,
+   - status (`active`, `completed`, `failed`, `abandoned`),
+   - references to spawned/target entities by UUID.
+3. **Player quest journal/progression**:
+   - persisted on the player ECS entity (owner-scoped),
+   - script-readable and script-writable through validated intent APIs,
+   - replicated owner-only by default.
+
+The same mission accepted by multiple players creates separate `QuestInstance` records unless explicitly marked as shared-party content.
+
+#### D1.4 Immediate API Additions Needed
+
+Add generic server intent actions and query helpers to support fully scripted quests:
+
+1. `accept_quest` `{ player_id, quest_template_id }`
+2. `abandon_quest` `{ player_id, quest_instance_id }`
+3. `advance_quest_objective` `{ quest_instance_id, objective_id, delta | set_value }`
+4. `complete_quest` `{ quest_instance_id, rewards }`
+5. `fail_quest` `{ quest_instance_id, reason }`
+6. `set_player_script_state` `{ player_id, key, value }` (or equivalent generic player-state mutation intent)
+7. query helpers:
+   - `ctx.world:get_player_active_quests(player_id)`
+   - `ctx.world:get_quest_instance(quest_instance_id)`
+   - `ctx.world:find_entities_matching_objective(...)` (built on existing spatial/query contracts)
+
+All mutations remain intent-only and are validated in Rust authority systems.
+
+#### D1.5 Immediate Implementation Plan (Quest Vertical Slice)
+
+1. **Quest runtime components/resources**
+   - Add generic persisted quest components (template reference, progress, status, owner scope).
+   - Keep player progression state on player entity components (aligns with project non-negotiables).
+2. **Quest event bridge wiring**
+   - Add canonical events:
+     - `quest_accepted`, `quest_objective_progress`, `quest_completed`, `quest_failed`
+     - gameplay-derived triggers (`cargo_delivered`, `entity_entered_region`, `inventory_changed`).
+   - Implement quest hook lifecycle callbacks (`on_accept`, `on_event`, `on_tick`, `can_complete`, `on_complete`, `on_fail`).
+3. **Lua quest module format**
+   - Add `data/scripts/quests/*.lua` manifest style including template metadata, objective definitions, and lifecycle handlers.
+4. **Replication/UI path**
+   - Replicate owner-scoped quest journal state to client.
+   - Client renders quest log/objective widgets from replicated state only.
+5. **Vertical-slice mission**
+   - Implement "fly to X -> collect Y -> deliver to Z" fully via Lua quest logic plus generic Rust intents/systems.
+6. **Determinism tests**
+   - restart/resume for in-flight quest instances,
+   - same-template multi-player isolation (no cross-contamination),
+   - invalid quest intent rejection coverage.
 
 ### Phase E: NPC AI Scripting
 
@@ -1085,7 +2156,7 @@ Optimization strategies:
 - `docs/component_authoring_guide.md` -- component registry and generation workflow.
 - `docs/features/dr-0007_entity_variant_framework.md` -- variant/archetype framework.
 - `docs/features/visibility_replication_contract.md` -- visibility and replication policy.
-- `docs/features/asset_delivery_contract.md` -- asset streaming and catalog.
+- `docs/features/asset_delivery_contract.md` -- Lua registry-driven asset catalog and gateway asset delivery.
 - `docs/features/galaxy_world_structure.md` -- galaxy/solar system world model and scripting integration.
 - `docs/features/spatial_partitioning_implementation_plan.md` -- spatial partition grid, cell sizing, script query integration (section 10).
 

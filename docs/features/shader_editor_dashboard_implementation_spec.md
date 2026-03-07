@@ -1,12 +1,13 @@
 # Shader Editor/Preview Dashboard Implementation Spec
 
-Status: Proposed implementation spec  
+Status: Active partial implementation spec  
 Date: 2026-03-05  
 Owners: dashboard + rendering + runtime toolchain
 
 Primary references:
 - `docs/sidereal_design_document.md`
 - `docs/features/asset_delivery_contract.md`
+- `docs/features/shader_editor_wgsl_linting_and_diagnostics_plan.md`
 - `docs/features/visibility_replication_contract.md`
 - `docs/ui_design_guide.md`
 - `AGENTS.md`
@@ -21,14 +22,42 @@ Deliver a production-ready shader editor + live preview workflow in `/dashboard`
 4. Server-backed shader listing/load for all known shaders (initial phase).
 5. Clear upgrade path to live in-game shader updates and reusable shader library assets for gameplay + Lua.
 
+## 1.1 Current Implementation State
+
+Implemented today:
+
+1. Route-backed shader workshop in `/shader-workshop`.
+2. Dashboard-shell layout with:
+   - left shader library tree,
+   - center code editor + preview split,
+   - right metadata/performance/uniform inspector.
+3. Server APIs for shader list/load/upload.
+4. Rust/WASM preview bridge crate and wasm build integration.
+5. Browser WebGPU preview renderer with:
+   - fullscreen triangle rendering,
+   - float/vector uniforms,
+   - struct uniform flattening for float/vector fields,
+   - generated texture/sampler resources for common preview bindings.
+6. Bottom-pane diagnostics under the preview canvas.
+7. Simulation-speed driven advancement for time-like shader uniforms.
+8. Shader dependency/role metadata merged from the Lua asset registry.
+
+Not yet implemented:
+
+1. Syntax-highlighted WGSL editor.
+2. Full Bevy visual preview scene as the primary visible renderer.
+3. Live runtime apply to a connected world/client.
+4. Draft persistence/version history.
+5. Full preview asset import workflow.
+
 ## 2. Scope
 
 ### 2.1 In scope (current implementation target)
 
-1. Dashboard route: `shader-workbench`.
+1. Dashboard route: `shader-workshop`.
 2. Server APIs to list/load shader sources and metadata.
-3. Monaco-based WGSL editor with format action + diagnostics pane.
-4. Bevy WASM preview plugin embedded in dashboard canvas.
+3. WGSL editor surface with diagnostics pane.
+4. Rust/WASM validation bridge plus browser WebGPU preview embedded in dashboard canvas.
 5. Uniform inspector with shadcn controls mapped by schema type.
 6. Preview-only live apply loop (edit -> validate -> preview compile -> render).
 
@@ -53,7 +82,7 @@ Deliver a production-ready shader editor + live preview workflow in `/dashboard`
 
 ## 4.1 Dashboard Frontend
 
-Route: `/shader-workbench`
+Route: `/shader-workshop`
 
 Panels:
 
@@ -61,31 +90,34 @@ Panels:
    - filter by class (`fullscreen`, `sprite`, `effect`, `post`).
    - search by ID/path/tags.
 2. Code Editor Panel
-   - Monaco WGSL language mode.
-   - diagnostics gutter + problems list.
-   - format action.
+   - current implementation: plain textarea editor.
+   - target: Monaco or CodeMirror WGSL mode.
 3. Uniform Inspector Panel
    - dynamic controls generated from schema.
 4. Preview Canvas Panel
-   - hosted Bevy WASM runtime plugin.
-   - mode: fullscreen quad, sprite bench, effect bench.
+   - current implementation: browser WebGPU renderer over a fullscreen triangle.
+   - current diagnostics pane lives directly below preview in the center stack.
+   - target: hosted Bevy WASM runtime plugin / richer scene presets.
 5. Revision/Actions Panel
-   - validate, preview-apply, save draft, copy JSON.
+   - current implementation: validate/apply/save.
+   - target: draft/version/promotion flow.
 
 ## 4.2 Backend (Dashboard Server)
 
-Add APIs:
+Current APIs:
 
 1. `GET /api/shaders`
    - list all shader records discoverable on server.
 2. `GET /api/shaders/:shaderId`
    - return source, metadata, schema, entry points.
-3. `POST /api/shaders/:shaderId/validate`
-   - WGSL parse + binding schema lint.
-4. `POST /api/shaders/:shaderId/preview-apply`
-   - returns validated payload to preview runtime bridge.
-5. `POST /api/shaders/:shaderId/save-draft`
-   - persist draft record (DB/file-backed).
+3. `POST /api/shaders/upload`
+   - upload/update canonical shader source and streamed cache counterpart.
+
+Still pending:
+
+1. `POST /api/shaders/:shaderId/validate`
+2. `POST /api/shaders/:shaderId/preview-apply`
+3. `POST /api/shaders/:shaderId/save-draft`
 
 ## 4.3 Bevy WASM Preview Plugin
 
@@ -103,6 +135,12 @@ Plugin responsibilities:
 3. Uniform buffer updates from inspector state.
 4. Deterministic time controls (play/pause/scrub).
 
+Current implementation note:
+
+1. The Rust/WASM module exists primarily as a validation/apply bridge today.
+2. The visible preview canvas is still driven by the browser WebGPU renderer.
+3. Deterministic time control is partially implemented through simulation-speed advancement of matching uniforms.
+
 ## 5. Editor Requirements
 
 ## 5.1 Code Editor
@@ -112,7 +150,11 @@ Mandatory features:
 1. Syntax highlight for WGSL.
 2. Line/column diagnostics.
 3. Format command (WGSL formatter service).
-4. Keyboard shortcuts:
+4. WGSL diagnostics architecture should follow `docs/features/shader_editor_wgsl_linting_and_diagnostics_plan.md`:
+   - debounced text-in/diagnostics-out flow,
+   - validator-backed syntax/semantic diagnostics,
+   - project-specific Sidereal shader rules layered on top.
+5. Keyboard shortcuts:
    - `Ctrl/Cmd+S`: save draft
    - `Ctrl/Cmd+Enter`: validate
    - `Ctrl/Cmd+Shift+Enter`: apply preview
@@ -145,20 +187,27 @@ Registry record fields:
 8. `tags`
 9. `version/hash`
 10. `updated_at/updated_by`
+11. `dependencies` (resolved from the Lua asset registry `data/scripts/assets/registry.lua` for shader-linked asset IDs)
+
+Current implementation note:
+
+1. `shader_id`, `shader_class`, `source_path`, `cache_path`, dependency metadata, shader role, and bootstrap-required metadata are already surfaced.
+2. `uniform_schema` is currently inferred from WGSL uniform declarations at preview time, not persisted as a canonical backend schema record yet.
 
 Initial population:
 
 1. Enumerate server-side shader assets from canonical source directory.
-2. Merge with known metadata records when available.
+2. Merge with Lua asset registry metadata when available so declared texture/LUT dependencies and shader roles are visible in the workbench.
+3. Merge with known metadata records when available.
 
 ## 7. Live Preview Flow
 
 1. User edits WGSL.
-2. Frontend calls `validate`.
-3. If valid, frontend calls `preview-apply`.
-4. Preview bridge pushes source + params into Bevy WASM plugin.
-5. Plugin recompiles/rebinds material and re-renders.
-6. Errors (compile/bind/runtime) stream back to diagnostics panel.
+2. Frontend derives preview uniforms from the WGSL.
+3. Frontend calls Rust/WASM validation/apply bridge.
+4. Frontend compiles/renders via browser WebGPU preview renderer.
+5. Preview rerenders as uniform controls and simulation time advance.
+6. Errors (validation/compile/bind/runtime) stream into the bottom diagnostics panel.
 
 ## 8. Future Live Game Integration
 
@@ -194,6 +243,12 @@ Runtime:
 1. WASM preview compile smoke tests for supported shader classes.
 2. Native/WASM parity checks for shared shader/material contracts.
 
+Current status:
+
+1. `sidereal-shader-preview` unit tests cover valid WGSL, invalid apply behavior, and Bevy-import normalization.
+2. Dashboard build/test currently validate the route and preview bundle build.
+3. Full route-level integration coverage for preview controls and renderer behavior remains outstanding.
+
 Minimum checks before merge:
 
 1. `cargo check --workspace`
@@ -204,16 +259,23 @@ Minimum checks before merge:
 ## 11. Delivery Phases
 
 1. Phase A: Shader catalog + read/load APIs + static editor shell.
+   Current status: complete.
 2. Phase B: Validation pipeline + diagnostics UX.
+   Current status: partial.
 3. Phase C: Bevy WASM preview plugin integration.
+   Current status: partial bridge implemented; full visible Bevy preview still pending.
 4. Phase D: Schema-driven uniform inspector (full shadcn mapping).
+   Current status: partial via inferred float/vector/struct uniform controls.
 5. Phase E: Draft persistence/versioning.
+   Current status: not started.
 6. Phase F: Promotion pipeline + shader library (future).
+   Current status: not started.
 7. Phase G: Live in-game update + Lua integration (future).
+   Current status: not started.
 
 ## 12. Open Decisions
 
 1. Draft persistence backend: Postgres vs file-backed store.
-2. Formatter engine choice for WGSL (embedded vs service call).
-3. Preview asset sourcing policy (allow uploads vs constrained built-ins).
+2. Editor choice for WGSL syntax highlighting/intelligence: CodeMirror + WGSL mode/LSP vs Monaco-based integration.
+3. Preview asset sourcing policy: when to switch from generated placeholder textures to explicit uploaded/selected preview assets.
 4. Final publish governance (single approver vs multi-step review).

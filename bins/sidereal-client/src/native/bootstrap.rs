@@ -29,7 +29,7 @@ pub(super) fn watch_in_world_bootstrap_failures(
     tuning: Res<'_, PredictionBootstrapTuning>,
     auth_state: Res<'_, ClientAuthSyncState>,
     mut session: ResMut<'_, ClientSession>,
-    mut asset_manager: ResMut<'_, LocalAssetManager>,
+    asset_manager: Res<'_, LocalAssetManager>,
     mut watchdog: ResMut<'_, BootstrapWatchdogState>,
     mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
     mut dialog_queue: ResMut<'_, dialog_ui::DialogQueue>,
@@ -88,16 +88,6 @@ pub(super) fn watch_in_world_bootstrap_failures(
             ),
         );
         watchdog.timeout_dialog_shown = true;
-        if watchdog.replication_state_seen && !asset_manager.bootstrap_phase_complete {
-            warn!(
-                "forcing bootstrap completion in degraded mode after timeout (replication active, no manifest)"
-            );
-            asset_manager.bootstrap_phase_complete = true;
-            session.status =
-                "Replication active without manifest; continuing in degraded bootstrap mode."
-                    .to_string();
-            session.ui_dirty = true;
-        }
     }
 
     if !watchdog.no_world_state_dialog_shown
@@ -164,16 +154,14 @@ pub(super) fn watch_in_world_bootstrap_failures(
 
     if !watchdog.stream_stall_dialog_shown
         && asset_manager.bootstrap_manifest_seen
-        && !asset_manager.pending_assets.is_empty()
+        && asset_manager.bootstrap_total_bytes > asset_manager.bootstrap_ready_bytes
         && now - watchdog.last_bootstrap_progress_at_s > 6.0
     {
         warn!(
-            "client bootstrap stream stalled (ready_bytes={} total_bytes={} pending_assets={})",
-            asset_manager.bootstrap_ready_bytes,
-            asset_manager.bootstrap_total_bytes,
-            asset_manager.pending_assets.len()
+            "client bootstrap HTTP asset delivery stalled (ready_bytes={} total_bytes={})",
+            asset_manager.bootstrap_ready_bytes, asset_manager.bootstrap_total_bytes,
         );
-        session.status = "Asset streaming stalled. Check error dialog.".to_string();
+        session.status = "Asset delivery stalled. Check error dialog.".to_string();
         session.ui_dirty = true;
         dialog_queue.push_error(
             "Asset Streaming Stalled",
@@ -181,22 +169,15 @@ pub(super) fn watch_in_world_bootstrap_failures(
                 "Received asset manifest, but bootstrap download progress has not changed for 6 seconds.\n\n\
                  Diagnostics:\n\
                  - Bootstrap ready bytes: {}\n\
-                 - Bootstrap total bytes: {}\n\
-                 - Pending assets: {}\n\n\
-                 Check replication asset stream logs for chunk send/request/ack activity.",
+                 - Bootstrap total bytes: {}\n\n\
+                 Check gateway asset delivery logs for `/assets/bootstrap-manifest` and `/assets/<asset_guid>` request failures.",
                 asset_manager.bootstrap_ready_bytes,
                 asset_manager.bootstrap_total_bytes,
-                asset_manager.pending_assets.len(),
             ),
         );
         watchdog.stream_stall_dialog_shown = true;
-        if !asset_manager.bootstrap_phase_complete {
-            warn!("forcing bootstrap completion in degraded mode after asset stream stall");
-            asset_manager.bootstrap_phase_complete = true;
-            session.status =
-                "Asset bootstrap stalled; continuing in degraded mode while streaming retries."
-                    .to_string();
-            session.ui_dirty = true;
-        }
+        session.status =
+            "Required asset bootstrap stalled; waiting for asset fetch recovery.".to_string();
+        session.ui_dirty = true;
     }
 }

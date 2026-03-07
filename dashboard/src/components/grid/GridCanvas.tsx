@@ -34,9 +34,12 @@ interface GridCanvasProps {
   centerOnRequestSeq?: number
   /** Visibility overlay data for selected player entity. */
   selectedPlayerVisibilityOverlay?: PlayerVisibilityOverlay | null
+  cameraState?: { x: number; y: number; zoom: number } | null
+  onCameraStateChange?: (camera: { x: number; y: number; zoom: number }) => void
   onContextMenuRequest?: (
     entityId: string | null,
     point: { x: number; y: number },
+    worldPoint: { x: number; y: number },
   ) => void
 }
 
@@ -56,11 +59,14 @@ export function GridCanvas({
   centerOnPosition,
   centerOnRequestSeq,
   selectedPlayerVisibilityOverlay,
+  cameraState,
+  onCameraStateChange,
   onContextMenuRequest,
 }: GridCanvasProps) {
   const MIN_ZOOM = 1e-6
   const MAX_ZOOM = 1e6
   void _graphNodes // Used indirectly via expandedNodes
+  const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const labelsCanvasRef = useRef<HTMLCanvasElement>(null)
   const { resolvedTheme } = useTheme()
@@ -71,30 +77,39 @@ export function GridCanvas({
   const movedRef = useRef(false)
   const pointerRef = useRef({ x: 0, y: 0 })
   const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [isPanning, setIsPanning] = useState(false)
+  const [showNamePlates, setShowNamePlates] = useState(false)
   const [zoomPercent, setZoomPercent] = useState(50)
   const rafRef = useRef<number>(0)
+  const renderQueuedRef = useRef(false)
+  const requestRenderRef = useRef<() => void>(() => {})
+  const cameraSyncTimerRef = useRef<number | null>(null)
+  const resizeDebounceTimerRef = useRef<number | null>(null)
+  const lastAppliedCameraKeyRef = useRef<string | null>(null)
 
   const { init, resize, render } = useGridRenderer(canvasRef, themeColors)
   const renderNodesRef = useRef<Map<string, ExpandedNode>>(new Map())
 
-  const extrapolate2d = useCallback(
-    (
-      x: number,
-      y: number,
-      vx: number,
-      vy: number,
-      sampledAtMs: number,
-      nowMs: number,
-    ): { x: number; y: number } => {
-      if (!Number.isFinite(sampledAtMs)) return { x, y }
-      const dtSeconds = Math.max(0, Math.min(10, (nowMs - sampledAtMs) / 1000))
-      return {
-        x: x + vx * dtSeconds,
-        y: y + vy * dtSeconds,
-      }
-    },
-    [],
-  )
+  const emitCameraState = useCallback(() => {
+    if (!onCameraStateChange) return
+    const camera = cameraRef.current
+    onCameraStateChange({
+      x: camera.x,
+      y: camera.y,
+      zoom: camera.zoom,
+    })
+  }, [onCameraStateChange])
+
+  const queueCameraStateSync = useCallback(() => {
+    if (!onCameraStateChange) return
+    if (cameraSyncTimerRef.current !== null) {
+      window.clearTimeout(cameraSyncTimerRef.current)
+    }
+    cameraSyncTimerRef.current = window.setTimeout(() => {
+      cameraSyncTimerRef.current = null
+      emitCameraState()
+    }, 120)
+  }, [emitCameraState, onCameraStateChange])
 
   // Build combined node map for rendering
   // ONLY render root entities (no parentEntityId) on the map at their x/y positions
@@ -156,25 +171,21 @@ export function GridCanvas({
     excludedFromMapIds,
   ])
 
-  const getRenderNodes = useCallback(
-    (nowMs: number): Map<string, ExpandedNode> => {
-      const projected = new Map<string, ExpandedNode>()
-      for (const [id, node] of allNodes) {
-        const vx =
-          typeof node.properties.vx === 'number' ? node.properties.vx : 0
-        const vy =
-          typeof node.properties.vy === 'number' ? node.properties.vy : 0
-        const sampledAtMs =
-          typeof node.properties.sampledAtMs === 'number'
-            ? node.properties.sampledAtMs
-            : nowMs
-        const pos = extrapolate2d(node.x, node.y, vx, vy, sampledAtMs, nowMs)
-        projected.set(id, { ...node, x: pos.x, y: pos.y })
-      }
-      return projected
-    },
-    [allNodes, extrapolate2d],
-  )
+  const visibleGraphEdges = React.useMemo(() => {
+    if (allNodes.size === 0) {
+      return []
+    }
+
+    // Root-only map mode has no visible graph edges. Avoid scanning the full BRP graph.
+    if (sourceMode === 'database' || expandedNodes.size === 0) {
+      return []
+    }
+
+    const visibleNodeIds = new Set(allNodes.keys())
+    return graphEdges.filter(
+      (edge) => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to),
+    )
+  }, [allNodes, expandedNodes.size, graphEdges, sourceMode])
 
   // World-to-screen coordinate conversion
   const worldToScreen = useCallback((wx: number, wy: number) => {
@@ -186,6 +197,48 @@ export function GridCanvas({
       y: canvas.height * 0.5 - (wy - cam.y) * cam.zoom,
     }
   }, [])
+
+  const screenToWorld = useCallback((clientX: number, clientY: number) => {
+    const canvas = canvasRef.current
+    if (!canvas) return { x: 0, y: 0 }
+    const rect = canvas.getBoundingClientRect()
+    const dpr = window.devicePixelRatio || 1
+    const sx = (clientX - rect.left) * dpr
+    const sy = (clientY - rect.top) * dpr
+    const cam = cameraRef.current
+    return {
+      x: (sx - canvas.width * 0.5) / cam.zoom + cam.x,
+      y: (canvas.height * 0.5 - sy) / cam.zoom + cam.y,
+    }
+  }, [])
+
+  const cullNodesToViewport = useCallback(
+    (nodes: Map<string, ExpandedNode>): Map<string, ExpandedNode> => {
+      const canvas = canvasRef.current
+      if (!canvas || nodes.size === 0) {
+        return nodes
+      }
+
+      const cam = cameraRef.current
+      const overscanPx = 96
+      const halfWidthWorld = (canvas.width * 0.5 + overscanPx) / cam.zoom
+      const halfHeightWorld = (canvas.height * 0.5 + overscanPx) / cam.zoom
+      const minX = cam.x - halfWidthWorld
+      const maxX = cam.x + halfWidthWorld
+      const minY = cam.y - halfHeightWorld
+      const maxY = cam.y + halfHeightWorld
+
+      const visibleNodes = new Map<string, ExpandedNode>()
+      for (const [id, node] of nodes) {
+        if (node.x < minX || node.x > maxX || node.y < minY || node.y > maxY) {
+          continue
+        }
+        visibleNodes.set(id, node)
+      }
+      return visibleNodes
+    },
+    [],
+  )
 
   // Pick node at screen position
   const pickNode = useCallback(
@@ -225,8 +278,13 @@ export function GridCanvas({
     if (!ctx) return
 
     const dpr = window.devicePixelRatio || 1
-    labelsCanvas.width = canvas.width
-    labelsCanvas.height = canvas.height
+    if (
+      labelsCanvas.width !== canvas.width ||
+      labelsCanvas.height !== canvas.height
+    ) {
+      labelsCanvas.width = canvas.width
+      labelsCanvas.height = canvas.height
+    }
 
     ctx.clearRect(0, 0, labelsCanvas.width, labelsCanvas.height)
     ctx.font = `${11 * dpr}px Inter, system-ui, sans-serif`
@@ -236,6 +294,73 @@ export function GridCanvas({
     ctx.textBaseline = 'middle'
 
     const cam = cameraRef.current
+
+    for (const [id, node] of renderNodesRef.current) {
+      const screenPos = worldToScreen(node.x, node.y)
+      const entityLabels = node.properties.entity_labels as
+        | Array<string>
+        | undefined
+      const [r, g, b] = themeColors.getEntityColor(node.kind, entityLabels)
+      const zoomBoost = Math.max(
+        0,
+        Math.min(6, Math.log2(Math.max(cam.zoom, 1) + 1) * 1.5),
+      )
+      const pointSize = Math.max(
+        7,
+        Math.min(20, (node.depth === 0 ? 20 : 12) * 0.45 + 5 + zoomBoost),
+      )
+      const radius = pointSize * 0.5
+
+      ctx.beginPath()
+      ctx.arc(screenPos.x, screenPos.y, radius, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, 0.95)`
+      ctx.fill()
+
+      if (id === selectedId) {
+        const [sr, sg, sb] = themeColors.selectionRing
+        ctx.lineWidth = Math.max(1.5, 2 * dpr)
+        ctx.strokeStyle = `rgba(${Math.round(sr * 255)}, ${Math.round(sg * 255)}, ${Math.round(sb * 255)}, 0.95)`
+        ctx.beginPath()
+        ctx.arc(screenPos.x, screenPos.y, radius + 2.5 * dpr, 0, Math.PI * 2)
+        ctx.stroke()
+      } else if (id === hoveredId) {
+        ctx.lineWidth = Math.max(1, 1.5 * dpr)
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)'
+        ctx.beginPath()
+        ctx.arc(screenPos.x, screenPos.y, radius + 1.5 * dpr, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+    }
+
+    const exploredCellSizeM = selectedPlayerVisibilityOverlay?.explored_cell_size_m
+    if (
+      selectedPlayerVisibilityOverlay &&
+      Number.isFinite(exploredCellSizeM) &&
+      exploredCellSizeM > 0
+    ) {
+      ctx.save()
+      ctx.fillStyle = 'rgba(7, 10, 16, 0.78)'
+      ctx.fillRect(0, 0, labelsCanvas.width, labelsCanvas.height)
+      ctx.globalCompositeOperation = 'destination-out'
+      for (const cell of selectedPlayerVisibilityOverlay.explored_cells) {
+        if (!Number.isFinite(cell.x) || !Number.isFinite(cell.y)) continue
+        const minX = cell.x * exploredCellSizeM
+        const minY = cell.y * exploredCellSizeM
+        const cornerA = worldToScreen(minX, minY)
+        const cornerB = worldToScreen(minX + exploredCellSizeM, minY + exploredCellSizeM)
+        const rectX = Math.min(cornerA.x, cornerB.x)
+        const rectY = Math.min(cornerA.y, cornerB.y)
+        const widthPx = Math.abs(cornerB.x - cornerA.x)
+        const heightPx = Math.abs(cornerB.y - cornerA.y)
+        if (!Number.isFinite(widthPx) || !Number.isFinite(heightPx)) continue
+        ctx.fillRect(rectX, rectY, widthPx, heightPx)
+      }
+      ctx.restore()
+    }
+
+    if (!showNamePlates) {
+      return
+    }
 
     for (const [id, node] of renderNodesRef.current) {
       const screenPos = worldToScreen(node.x, node.y)
@@ -269,7 +394,6 @@ export function GridCanvas({
       selectedPlayerVisibilityOverlay.cell_size_m > 0
     ) {
       const cellSizeM = selectedPlayerVisibilityOverlay.cell_size_m
-      const cam = cameraRef.current
 
       ctx.save()
 
@@ -340,16 +464,67 @@ export function GridCanvas({
     hoveredId,
     themeColors,
     selectedPlayerVisibilityOverlay,
+    showNamePlates,
   ])
 
   // Main render loop
-  const frame = useCallback(() => {
-    const renderNodes = getRenderNodes(Date.now())
-    renderNodesRef.current = renderNodes
-    render(cameraRef.current, renderNodes, graphEdges, selectedId, hoveredId)
+  const drawFrame = useCallback(() => {
+    const visibleNodes = cullNodesToViewport(allNodes)
+    renderNodesRef.current = visibleNodes
+    const renderedNodes = new Map<string, ExpandedNode>()
+    render(
+      cameraRef.current,
+      renderedNodes,
+      visibleGraphEdges,
+      selectedId,
+      hoveredId,
+    )
     drawLabels()
-    rafRef.current = requestAnimationFrame(frame)
-  }, [render, getRenderNodes, graphEdges, selectedId, hoveredId, drawLabels])
+  }, [
+    render,
+    allNodes,
+    cullNodesToViewport,
+    visibleGraphEdges,
+    selectedId,
+    hoveredId,
+    drawLabels,
+  ])
+
+  const requestRender = useCallback(() => {
+    if (renderQueuedRef.current) return
+    renderQueuedRef.current = true
+    rafRef.current = requestAnimationFrame(() => {
+      renderQueuedRef.current = false
+      drawFrame()
+    })
+  }, [drawFrame])
+
+  useEffect(() => {
+    requestRenderRef.current = requestRender
+  }, [requestRender])
+
+  useEffect(() => {
+    if (
+      !cameraState ||
+      !Number.isFinite(cameraState.x) ||
+      !Number.isFinite(cameraState.y) ||
+      !Number.isFinite(cameraState.zoom)
+    ) {
+      return
+    }
+    const cameraKey = `${cameraState.x}:${cameraState.y}:${cameraState.zoom}`
+    if (lastAppliedCameraKeyRef.current === cameraKey) {
+      return
+    }
+    lastAppliedCameraKeyRef.current = cameraKey
+    cameraRef.current = {
+      x: cameraState.x,
+      y: cameraState.y,
+      zoom: cameraState.zoom,
+    }
+    setZoomPercent(Math.round(cameraState.zoom * 100))
+    requestRender()
+  }, [cameraState, requestRender])
 
   // Center camera only on explicit center requests, not on live position updates.
   useEffect(() => {
@@ -360,31 +535,118 @@ export function GridCanvas({
     ) {
       cameraRef.current.x = centerOnPosition.x
       cameraRef.current.y = centerOnPosition.y
+      queueCameraStateSync()
+      requestRender()
     }
-  }, [centerOnRequestSeq, centerOnPosition])
+  }, [centerOnRequestSeq, centerOnPosition, queueCameraStateSync, requestRender])
 
-  // Initialize and start render loop
+  // Initialize renderer and size handling.
   useEffect(() => {
     init()
     resize()
 
-    const handleResize = () => resize()
-    window.addEventListener('resize', handleResize)
+    const queueResizeRender = () => {
+      if (resizeDebounceTimerRef.current !== null) {
+        window.clearTimeout(resizeDebounceTimerRef.current)
+      }
+      resizeDebounceTimerRef.current = window.setTimeout(() => {
+        resizeDebounceTimerRef.current = null
+        resize()
+        requestRenderRef.current()
+      }, 80)
+    }
 
-    rafRef.current = requestAnimationFrame(frame)
+    const handleResize = () => {
+      queueResizeRender()
+    }
+    window.addEventListener('resize', handleResize)
+    requestRenderRef.current()
 
     return () => {
       window.removeEventListener('resize', handleResize)
       cancelAnimationFrame(rafRef.current)
+      renderQueuedRef.current = false
+      if (cameraSyncTimerRef.current !== null) {
+        window.clearTimeout(cameraSyncTimerRef.current)
+      }
+      if (resizeDebounceTimerRef.current !== null) {
+        window.clearTimeout(resizeDebounceTimerRef.current)
+      }
     }
-  }, [init, resize, frame])
+  }, [init, resize])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const queueResizeRender = () => {
+      if (resizeDebounceTimerRef.current !== null) {
+        window.clearTimeout(resizeDebounceTimerRef.current)
+      }
+      resizeDebounceTimerRef.current = window.setTimeout(() => {
+        resizeDebounceTimerRef.current = null
+        resize()
+        requestRenderRef.current()
+      }, 80)
+    }
+
+    const observer = new ResizeObserver(() => {
+      queueResizeRender()
+    })
+
+    observer.observe(container)
+
+    return () => {
+      observer.disconnect()
+      if (resizeDebounceTimerRef.current !== null) {
+        window.clearTimeout(resizeDebounceTimerRef.current)
+      }
+    }
+  }, [resize])
+
+  // Render on state/data changes.
+  useEffect(() => {
+    requestRender()
+  }, [
+    requestRender,
+    allNodes,
+    visibleGraphEdges,
+    selectedId,
+    hoveredId,
+    showNamePlates,
+    selectedPlayerVisibilityOverlay,
+  ])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat) return
+      const target = event.target
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return
+      }
+      if (event.key.toLowerCase() !== 'v') return
+      setShowNamePlates((prev) => !prev)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [])
 
   // Mouse handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return
     draggingRef.current = true
     movedRef.current = false
     pointerRef.current = { x: e.clientX, y: e.clientY }
-  }, [])
+    setIsPanning(true)
+    requestRender()
+  }, [requestRender])
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
@@ -404,13 +666,19 @@ export function GridCanvas({
       cameraRef.current.x -= dx / cameraRef.current.zoom
       cameraRef.current.y += dy / cameraRef.current.zoom
       pointerRef.current = { x: e.clientX, y: e.clientY }
+      queueCameraStateSync()
+      requestRender()
     },
-    [pickNode],
+    [pickNode, queueCameraStateSync, requestRender],
   )
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
+      if (e.button !== 0) return
       draggingRef.current = false
+      setIsPanning(false)
+      emitCameraState()
+      requestRender()
 
       if (!movedRef.current) {
         const hit = pickNode(e.clientX, e.clientY)
@@ -425,7 +693,7 @@ export function GridCanvas({
         // Click on empty space: keep current selection (do not deselect)
       }
     },
-    [pickNode, selectedId, onSelect, onExpand],
+    [emitCameraState, pickNode, selectedId, onSelect, onExpand, requestRender],
   )
 
   const handleDoubleClick = useCallback(
@@ -438,19 +706,17 @@ export function GridCanvas({
     [pickNode, onExpand],
   )
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-
+  const handleWheel = useCallback((clientX: number, clientY: number, deltaY: number) => {
     const canvas = canvasRef.current
     if (!canvas) return
 
     const rect = canvas.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
-    const sx = (e.clientX - rect.left) * dpr
-    const sy = (e.clientY - rect.top) * dpr
+    const sx = (clientX - rect.left) * dpr
+    const sy = (clientY - rect.top) * dpr
 
     const oldZoom = cameraRef.current.zoom
-    const zoomFactor = Math.exp(-e.deltaY * 0.001)
+    const zoomFactor = Math.exp(-deltaY * 0.001)
     const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * zoomFactor))
 
     // Zoom towards cursor position
@@ -461,40 +727,77 @@ export function GridCanvas({
     cameraRef.current.x = worldX - (sx - canvas.width * 0.5) / newZoom
     cameraRef.current.y = worldY - (canvas.height * 0.5 - sy) / newZoom
     setZoomPercent(Math.round(newZoom * 100))
-  }, [])
+    queueCameraStateSync()
+    requestRender()
+  }, [queueCameraStateSync, requestRender])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const handleNativeWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      handleWheel(event.clientX, event.clientY, event.deltaY)
+    }
+
+    canvas.addEventListener('wheel', handleNativeWheel, { passive: false })
+    return () => {
+      canvas.removeEventListener('wheel', handleNativeWheel)
+    }
+  }, [handleWheel])
 
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault()
+    (clientX: number, clientY: number) => {
       if (!onContextMenuRequest) return
-      const hit = pickNode(e.clientX, e.clientY)
-      onContextMenuRequest(hit, { x: e.clientX, y: e.clientY })
+      const hit = pickNode(clientX, clientY)
+      if (hit) {
+        onSelect(hit)
+      }
+      const worldPoint = screenToWorld(clientX, clientY)
+      onContextMenuRequest(hit, { x: clientX, y: clientY }, worldPoint)
     },
-    [onContextMenuRequest, pickNode],
+    [onContextMenuRequest, onSelect, pickNode, screenToWorld],
   )
 
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const handleNativeContextMenu = (event: MouseEvent) => {
+      event.preventDefault()
+      handleContextMenu(event.clientX, event.clientY)
+    }
+
+    canvas.addEventListener('contextmenu', handleNativeContextMenu)
+    return () => {
+      canvas.removeEventListener('contextmenu', handleNativeContextMenu)
+    }
+  }, [handleContextMenu])
+
   return (
-    <div className="relative w-full h-full overflow-hidden">
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden">
       <canvas
         ref={canvasRef}
         className={cn(
           'absolute inset-0 w-full h-full',
-          hoveredId ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
+          hoveredId ? 'cursor-default' : isPanning ? 'cursor-grabbing' : 'cursor-default',
         )}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={() => {
           draggingRef.current = false
+          setIsPanning(false)
           setHoveredId(null)
+          emitCameraState()
         }}
         onDoubleClick={handleDoubleClick}
-        onWheel={handleWheel}
-        onContextMenu={handleContextMenu}
       />
       <canvas
         ref={labelsCanvasRef}
-        className="absolute inset-0 w-full h-full pointer-events-none"
+        className={cn(
+          'absolute inset-0 h-full w-full pointer-events-none',
+        )}
       />
       {/* Zoom indicator */}
       <div className="absolute bottom-4 left-4 px-3 py-1.5 rounded-md bg-card/80 backdrop-blur border border-border text-xs text-muted-foreground">
@@ -502,7 +805,7 @@ export function GridCanvas({
       </div>
       {/* Help hint */}
       <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded-md bg-card/60 backdrop-blur border border-border-subtle text-xs text-muted-foreground/70">
-        Scroll to zoom • Drag to pan • Double-click to expand
+        Scroll to zoom • Drag to pan • Right-click for actions • Double-click to expand • V: names {showNamePlates ? 'on' : 'off'}
       </div>
     </div>
   )

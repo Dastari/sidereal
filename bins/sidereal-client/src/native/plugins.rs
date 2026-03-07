@@ -18,9 +18,9 @@ use super::debug_overlay::{
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
 use super::{
-    assets, audio, auth_net, auth_ui, backdrop, bootstrap, control, dialog_ui, input, logout,
-    dev_console, owner_manifest, replication, scene, scene_world, tactical, transforms, transport,
-    ui, visuals,
+    asset_loading_ui, assets, audio, auth_net, auth_ui, backdrop, bootstrap, control, dev_console,
+    dialog_ui, input, lighting, logout, owner_manifest, pause_menu, render_layers, replication,
+    scene, scene_world, tactical, transforms, transport, ui, visuals,
 };
 
 fn env_flag(name: &str) -> bool {
@@ -69,6 +69,10 @@ impl Plugin for ClientBootstrapPlugin {
                 .chain(),
         );
         app.add_systems(
+            OnEnter(ClientAppState::AssetLoading),
+            asset_loading_ui::setup_asset_loading_screen,
+        );
+        app.add_systems(
             OnEnter(ClientAppState::InWorld),
             (
                 transport::ensure_lightyear_client_system,
@@ -104,6 +108,7 @@ impl Plugin for ClientTransportPlugin {
                     auth_net::send_lightyear_auth_messages,
                     auth_net::receive_lightyear_session_ready_messages,
                     auth_net::receive_lightyear_session_denied_messages,
+                    auth_net::watch_session_ready_timeout_system,
                 ),
             );
         }
@@ -116,10 +121,12 @@ pub(super) struct ClientReplicationPlugin {
 
 impl Plugin for ClientReplicationPlugin {
     fn build(&self, app: &mut App) {
-        let disable_asset_stream = env_flag("SIDEREAL_CLIENT_DISABLE_ASSET_STREAM");
+        let disable_runtime_asset_fetch = env_flag("SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH");
         let disable_adoption = env_flag("SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION");
-        if disable_asset_stream {
-            info!("client asset stream systems disabled via SIDEREAL_CLIENT_DISABLE_ASSET_STREAM");
+        if disable_runtime_asset_fetch {
+            info!(
+                "client runtime asset fetch systems disabled via SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH"
+            );
         }
         if disable_adoption {
             info!(
@@ -153,23 +160,25 @@ impl Plugin for ClientReplicationPlugin {
                     replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
                     replication::prune_runtime_entity_registry_system,
-                    assets::receive_lightyear_asset_stream_messages
-                        .run_if(move || !disable_asset_stream),
-                    assets::ensure_critical_assets_available_system
-                        .after(assets::receive_lightyear_asset_stream_messages)
-                        .run_if(move || !disable_asset_stream),
+                    assets::queue_missing_catalog_assets_system
+                        .run_if(move || !disable_runtime_asset_fetch),
+                    assets::poll_runtime_asset_http_fetches_system
+                        .after(assets::queue_missing_catalog_assets_system)
+                        .run_if(move || !disable_runtime_asset_fetch),
                     replication::adopt_native_lightyear_replicated_entities
                         .after(replication::prune_runtime_entity_registry_system)
                         .run_if(move || !disable_adoption),
                     transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
-                    transforms::sync_interpolated_world_entity_transforms_without_history
+                    transforms::sync_confirmed_world_entity_transforms_from_world_space
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+                    transforms::sync_interpolated_world_entity_transforms_without_history
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
                     transforms::reveal_world_entities_when_initial_transform_ready.after(
                         transforms::sync_interpolated_world_entity_transforms_without_history,
                     ),
                     replication::sync_local_player_view_state_system
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
                     replication::sync_controlled_entity_tags_system
                         .after(replication::sync_local_player_view_state_system),
                     control::send_local_view_mode_updates
@@ -195,25 +204,29 @@ impl Plugin for ClientReplicationPlugin {
                     replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
                     replication::prune_runtime_entity_registry_system,
-                    assets::receive_lightyear_asset_stream_messages
-                        .run_if(move || !disable_asset_stream),
-                    assets::ensure_critical_assets_available_system
-                        .after(assets::receive_lightyear_asset_stream_messages)
-                        .run_if(move || !disable_asset_stream),
+                    assets::queue_missing_catalog_assets_system
+                        .run_if(move || !disable_runtime_asset_fetch),
+                    assets::poll_runtime_asset_http_fetches_system
+                        .after(assets::queue_missing_catalog_assets_system)
+                        .run_if(move || !disable_runtime_asset_fetch),
                     replication::adopt_native_lightyear_replicated_entities
                         .after(replication::prune_runtime_entity_registry_system)
                         .run_if(move || !disable_adoption),
                     transforms::sync_confirmed_world_entity_transforms_from_physics
                         .after(replication::adopt_native_lightyear_replicated_entities),
-                    transforms::sync_interpolated_world_entity_transforms_without_history
+                    transforms::sync_confirmed_world_entity_transforms_from_world_space
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+                    transforms::sync_interpolated_world_entity_transforms_without_history
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
                     transforms::reveal_world_entities_when_initial_transform_ready.after(
                         transforms::sync_interpolated_world_entity_transforms_without_history,
                     ),
                     replication::transition_world_loading_to_in_world
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
+                    replication::transition_asset_loading_to_in_world
+                        .after(replication::transition_world_loading_to_in_world),
                     replication::sync_local_player_view_state_system
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
                     replication::sync_controlled_entity_tags_system
                         .after(replication::sync_local_player_view_state_system),
                     control::send_local_view_mode_updates
@@ -279,40 +292,96 @@ impl Plugin for ClientVisualsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponTracerPool>();
         app.init_resource::<WeaponTracerCooldowns>();
+        app.init_resource::<super::resources::RuntimeRenderLayerRegistry>();
+        app.init_resource::<super::resources::FullscreenLayerCache>();
+        let in_world_visuals_core = (
+            render_layers::sync_runtime_render_layer_registry_system
+                .after(replication::adopt_native_lightyear_replicated_entities),
+            render_layers::resolve_runtime_render_layer_assignments_system
+                .after(render_layers::sync_runtime_render_layer_registry_system),
+            visuals::suppress_duplicate_predicted_interpolated_visuals_system
+                .after(replication::adopt_native_lightyear_replicated_entities),
+            visuals::cleanup_streamed_visual_children_system
+                .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
+            visuals::cleanup_planet_body_visual_children_system
+                .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
+            visuals::attach_planet_visual_stack_system
+                .after(visuals::cleanup_planet_body_visual_children_system),
+            visuals::ensure_planet_body_root_visibility_system
+                .after(visuals::attach_planet_visual_stack_system),
+            visuals::update_planet_body_visuals_system
+                .after(visuals::ensure_planet_body_root_visibility_system),
+            visuals::attach_thruster_plume_visuals_system
+                .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
+        );
+        let in_world_visuals_effects = (
+            visuals::update_thruster_plume_visuals_system
+                .after(visuals::attach_thruster_plume_visuals_system),
+            visuals::ensure_weapon_tracer_pool_system
+                .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
+            visuals::emit_weapon_tracer_visuals_system
+                .after(visuals::ensure_weapon_tracer_pool_system),
+            visuals::receive_remote_weapon_tracer_messages_system
+                .after(visuals::ensure_weapon_tracer_pool_system),
+            visuals::update_weapon_tracer_visuals_system
+                .after(visuals::emit_weapon_tracer_visuals_system)
+                .after(visuals::receive_remote_weapon_tracer_messages_system),
+            visuals::update_weapon_impact_sparks_system
+                .after(visuals::update_weapon_tracer_visuals_system),
+            visuals::attach_streamed_visual_assets_system
+                .after(assets::poll_runtime_asset_http_fetches_system)
+                .after(render_layers::resolve_runtime_render_layer_assignments_system),
+            visuals::update_streamed_visual_layer_transforms_system
+                .after(visuals::attach_streamed_visual_assets_system)
+                .after(render_layers::resolve_runtime_render_layer_assignments_system),
+            visuals::update_entity_visibility_fade_in_system
+                .after(visuals::update_streamed_visual_layer_transforms_system)
+                .after(visuals::ensure_planet_body_root_visibility_system),
+        );
+        let in_world_backdrop = (
+            backdrop::refresh_fullscreen_layer_cache_system
+                .after(replication::adopt_native_lightyear_replicated_entities),
+            backdrop::sync_fullscreen_layer_renderables_system
+                .after(backdrop::refresh_fullscreen_layer_cache_system),
+            backdrop::sync_runtime_post_process_renderables_system
+                .after(replication::adopt_native_lightyear_replicated_entities),
+            backdrop::sync_backdrop_camera_system
+                .after(backdrop::sync_fullscreen_layer_renderables_system)
+                .after(backdrop::sync_runtime_post_process_renderables_system),
+            backdrop::sync_backdrop_fullscreen_system.after(backdrop::sync_backdrop_camera_system),
+        );
         app.add_systems(
             Update,
-            (
-                visuals::suppress_duplicate_predicted_interpolated_visuals_system
-                    .after(replication::adopt_native_lightyear_replicated_entities),
-                visuals::cleanup_streamed_visual_children_system
-                    .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
-                visuals::attach_thruster_plume_visuals_system
-                    .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
-                visuals::update_thruster_plume_visuals_system
-                    .after(visuals::attach_thruster_plume_visuals_system),
-                visuals::ensure_weapon_tracer_pool_system
-                    .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
-                visuals::emit_weapon_tracer_visuals_system
-                    .after(visuals::ensure_weapon_tracer_pool_system),
-                visuals::receive_remote_weapon_tracer_messages_system
-                    .after(visuals::ensure_weapon_tracer_pool_system),
-                visuals::update_weapon_tracer_visuals_system
-                    .after(visuals::emit_weapon_tracer_visuals_system)
-                    .after(visuals::receive_remote_weapon_tracer_messages_system),
-                visuals::update_weapon_impact_sparks_system
-                    .after(visuals::update_weapon_tracer_visuals_system),
-                visuals::attach_streamed_visual_assets_system
-                    .after(assets::receive_lightyear_asset_stream_messages),
-                visuals::update_entity_visibility_fade_in_system
-                    .after(visuals::attach_streamed_visual_assets_system),
-                backdrop::sync_fullscreen_layer_renderables_system
-                    .after(replication::adopt_native_lightyear_replicated_entities),
-                backdrop::sync_backdrop_camera_system
-                    .after(backdrop::sync_fullscreen_layer_renderables_system),
-                backdrop::sync_backdrop_fullscreen_system
-                    .after(backdrop::sync_backdrop_camera_system),
-            )
-                .run_if(in_state(ClientAppState::InWorld)),
+            in_world_visuals_core.run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            in_world_visuals_effects.run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            in_world_backdrop.run_if(in_state(ClientAppState::InWorld)),
+        );
+    }
+}
+
+pub(super) struct ClientLightingPlugin;
+
+impl Plugin for ClientLightingPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<lighting::WorldLightingState>();
+        app.init_resource::<lighting::CameraLocalLightSet>();
+        let in_world_lighting = (
+            lighting::sync_world_lighting_state_system
+                .after(replication::adopt_native_lightyear_replicated_entities),
+            lighting::collect_thruster_local_light_emitters_system
+                .after(visuals::update_thruster_plume_visuals_system),
+            visuals::update_asteroid_shader_lighting_system
+                .after(lighting::sync_world_lighting_state_system),
+        );
+        app.add_systems(
+            Update,
+            in_world_lighting.run_if(in_state(ClientAppState::InWorld)),
         );
     }
 }
@@ -336,17 +405,22 @@ impl Plugin for ClientUiPlugin {
         );
         app.add_systems(Update, scene::handle_character_select_buttons);
         app.add_systems(Update, auth_net::poll_gateway_request_results);
+        app.add_systems(Update, auth_net::poll_asset_bootstrap_request_results);
         app.add_systems(
             Update,
             gate_menu_camera_system.run_if(not(in_state(ClientAppState::InWorld))),
         );
         app.add_systems(
             Update,
+            asset_loading_ui::update_asset_loading_screen
+                .run_if(in_state(ClientAppState::AssetLoading)),
+        );
+        app.add_systems(
+            Update,
             (
                 gate_gameplay_camera_system,
                 ui::toggle_tactical_map_mode_system,
-                ui::sync_tactical_map_camera_zoom_system
-                    .after(ui::toggle_tactical_map_mode_system),
+                ui::sync_tactical_map_camera_zoom_system.after(ui::toggle_tactical_map_mode_system),
                 ui::update_owned_entities_panel_system
                     .after(owner_manifest::receive_owner_asset_manifest_messages),
                 ui::handle_owned_entities_panel_buttons,
@@ -356,15 +430,19 @@ impl Plugin for ClientUiPlugin {
                 ui::update_loading_overlay_system,
                 ui::update_runtime_stream_icon_system,
                 bootstrap::watch_in_world_bootstrap_failures,
-                sync_player_anchor_render_transform_to_controlled_entity,
+                sync_player_anchor_render_transform_to_controlled_entity
+                    .after(replication::sync_controlled_entity_tags_system)
+                    .after(transforms::sync_interpolated_world_entity_transforms_without_history),
                 update_topdown_camera_system
-                    .after(sync_player_anchor_render_transform_to_controlled_entity),
+                    .after(sync_player_anchor_render_transform_to_controlled_entity)
+                    .after(replication::sync_controlled_entity_tags_system)
+                    .after(transforms::sync_interpolated_world_entity_transforms_without_history),
                 sync_ui_overlay_camera_to_gameplay_camera_system
                     .after(update_topdown_camera_system),
                 update_camera_motion_state.after(update_topdown_camera_system),
                 ui::propagate_ui_overlay_layer_system,
                 ui::update_hud_system,
-                ui::sync_ship_nameplates_system,
+                ui::sync_entity_nameplates_system,
                 toggle_debug_overlay_system,
                 update_debug_fps_text_system,
                 update_debug_manifest_text_system.after(update_debug_fps_text_system),
@@ -374,7 +452,30 @@ impl Plugin for ClientUiPlugin {
         );
         app.add_systems(
             Update,
-            ui::update_tactical_map_fx_overlay_system
+            ui::toggle_nameplates_system.run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            (
+                ui::update_entity_nameplate_positions_system
+                    .after(ui::sync_entity_nameplates_system),
+                ui::update_segmented_bars_system
+                    .after(ui::update_entity_nameplate_positions_system),
+            )
+                .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            (
+                pause_menu::toggle_pause_menu_system,
+                pause_menu::sync_pause_menu_ui_system.after(pause_menu::toggle_pause_menu_system),
+                pause_menu::handle_pause_menu_interactions_system,
+            )
+                .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            ui::update_runtime_screen_overlay_passes_system
                 .after(ui::update_tactical_map_overlay_system)
                 .run_if(in_state(ClientAppState::InWorld)),
         );
@@ -386,10 +487,8 @@ impl Plugin for ClientUiPlugin {
                     .after(super::backdrop::compute_fullscreen_external_world_system),
                 super::backdrop::update_space_background_material_system
                     .after(super::backdrop::update_starfield_material_system),
-                ui::update_ship_nameplate_positions_system
+                draw_debug_overlay_system
                     .after(super::backdrop::update_space_background_material_system),
-                ui::update_segmented_bars_system.after(ui::update_ship_nameplate_positions_system),
-                draw_debug_overlay_system.after(ui::update_segmented_bars_system),
             )
                 .chain()
                 .run_if(in_state(ClientAppState::InWorld)),
@@ -403,21 +502,33 @@ impl Plugin for ClientUiPlugin {
         let logout_chain = (
             logout::request_logout_system.run_if(in_state(ClientAppState::InWorld)),
             logout::request_logout_system.run_if(in_state(ClientAppState::WorldLoading)),
+            logout::request_logout_system.run_if(in_state(ClientAppState::AssetLoading)),
             logout::request_logout_system.run_if(in_state(ClientAppState::CharacterSelect)),
             logout::request_logout_on_window_close_system.run_if(in_state(ClientAppState::InWorld)),
             logout::request_logout_on_window_close_system
                 .run_if(in_state(ClientAppState::WorldLoading)),
             logout::request_logout_on_window_close_system
+                .run_if(in_state(ClientAppState::AssetLoading)),
+            logout::request_logout_on_window_close_system
                 .run_if(in_state(ClientAppState::CharacterSelect)),
             logout::send_disconnect_notify_and_trigger_system,
+            logout::reset_asset_bootstrap_state_system
+                .run_if(resource_equals(LogoutCleanupRequested(true))),
+            logout::reset_logout_ui_flags_system
+                .run_if(resource_equals(LogoutCleanupRequested(true))),
             logout::logout_cleanup_system.run_if(resource_equals(LogoutCleanupRequested(true))),
         );
         #[cfg(target_arch = "wasm32")]
         let logout_chain = (
             logout::request_logout_system.run_if(in_state(ClientAppState::InWorld)),
             logout::request_logout_system.run_if(in_state(ClientAppState::WorldLoading)),
+            logout::request_logout_system.run_if(in_state(ClientAppState::AssetLoading)),
             logout::request_logout_system.run_if(in_state(ClientAppState::CharacterSelect)),
             logout::send_disconnect_notify_and_trigger_system,
+            logout::reset_asset_bootstrap_state_system
+                .run_if(resource_equals(LogoutCleanupRequested(true))),
+            logout::reset_logout_ui_flags_system
+                .run_if(resource_equals(LogoutCleanupRequested(true))),
             logout::logout_cleanup_system.run_if(resource_equals(LogoutCleanupRequested(true))),
         );
         app.add_systems(PreUpdate, logout_chain.chain());

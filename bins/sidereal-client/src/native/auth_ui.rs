@@ -1,3 +1,4 @@
+use bevy::app::AppExit;
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -5,10 +6,10 @@ use bevy::log::info;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
+use super::dev_console::DevConsoleState;
 use super::{
     AuthAction, ClientAppState, ClientSession, EmbeddedFonts, FocusField, submit_auth_request,
 };
-use super::dev_console::DevConsoleState;
 
 #[derive(Component)]
 struct AuthUiRoot;
@@ -54,6 +55,7 @@ enum AuthButtonKind {
     Submit,
     SwitchFlow(AuthAction),
     Focus(FocusField),
+    Quit,
 }
 
 #[derive(Resource)]
@@ -230,6 +232,34 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
                             "Forgot Confirm",
                             AuthAction::ForgotConfirm,
                         );
+                    });
+                panel
+                    .spawn((
+                        Button,
+                        AuthUiButton(AuthButtonKind::Quit),
+                        Node {
+                            width: Val::Px(120.0),
+                            height: Val::Px(36.0),
+                            align_self: AlignSelf::FlexEnd,
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
+                            ..default()
+                        },
+                        Transform::default(),
+                        GlobalTransform::default(),
+                        BackgroundColor(Color::srgba(0.18, 0.2, 0.26, 0.85)),
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new("Quit"),
+                            TextFont {
+                                font: font_regular.clone(),
+                                font_size: 14.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgba(0.83, 0.89, 0.95, 0.95)),
+                        ));
                     });
 
                 panel.spawn((
@@ -459,6 +489,7 @@ fn handle_auth_button_interactions(
     >,
     mut session: ResMut<'_, ClientSession>,
     mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
+    mut app_exit: MessageWriter<'_, AppExit>,
 ) {
     for (interaction, button, mut bg, input_box) in &mut interactions {
         match *interaction {
@@ -486,6 +517,10 @@ fn handle_auth_button_interactions(
                         session.ui_dirty = true;
                         *bg = BackgroundColor(Color::srgba(0.12, 0.15, 0.21, 0.98));
                     }
+                    AuthButtonKind::Quit => {
+                        app_exit.write(AppExit::Success);
+                        *bg = BackgroundColor(Color::srgba(0.25, 0.28, 0.36, 0.9));
+                    }
                 }
             }
             Interaction::Hovered => {
@@ -499,6 +534,9 @@ fn handle_auth_button_interactions(
                         }
                         AuthButtonKind::Focus(_) => {
                             BackgroundColor(Color::srgba(0.11, 0.13, 0.2, 0.96))
+                        }
+                        AuthButtonKind::Quit => {
+                            BackgroundColor(Color::srgba(0.22, 0.25, 0.32, 0.88))
                         }
                     };
                 }
@@ -514,6 +552,9 @@ fn handle_auth_button_interactions(
                         }
                         AuthButtonKind::Focus(_) => {
                             BackgroundColor(Color::srgba(0.09, 0.11, 0.16, 0.95))
+                        }
+                        AuthButtonKind::Quit => {
+                            BackgroundColor(Color::srgba(0.18, 0.2, 0.26, 0.85))
                         }
                     };
                 }

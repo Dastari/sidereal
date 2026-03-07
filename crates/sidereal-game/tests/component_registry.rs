@@ -3,6 +3,7 @@ use sidereal_game::SiderealGamePlugin;
 use sidereal_game::generated::components::{
     GeneratedComponentRegistry, generated_component_registry,
 };
+use sidereal_game::{ComponentEditorValueKind, SiderealGameCorePlugin};
 use std::collections::HashSet;
 
 #[test]
@@ -59,4 +60,41 @@ fn sidereal_game_plugin_inserts_generated_registry_resource() {
         app.world()
             .contains_resource::<GeneratedComponentRegistry>()
     );
+}
+
+#[test]
+fn generated_registry_resource_infers_editor_schema() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, SiderealGameCorePlugin));
+    let registry = app.world().resource::<GeneratedComponentRegistry>();
+    let mapping = registry
+        .entries
+        .iter()
+        .find(|entry| entry.component_kind == "planet_body_shader_settings")
+        .expect("planet_body_shader_settings mapping should exist");
+    assert_eq!(
+        mapping.editor_schema.root_value_kind,
+        ComponentEditorValueKind::Struct
+    );
+    let seed_field = mapping
+        .editor_schema
+        .fields
+        .iter()
+        .find(|field| field.field_path == "seed")
+        .expect("seed field should be inferred");
+    assert_eq!(seed_field.value_kind, ComponentEditorValueKind::UnsignedInteger);
+    let sun_direction_field = mapping
+        .editor_schema
+        .fields
+        .iter()
+        .find(|field| field.field_path == "sun_direction_xy")
+        .expect("sun_direction_xy field should be inferred");
+    assert_eq!(sun_direction_field.value_kind, ComponentEditorValueKind::Vec2);
+    let primary_color_field = mapping
+        .editor_schema
+        .fields
+        .iter()
+        .find(|field| field.field_path == "color_primary_rgb")
+        .expect("color_primary_rgb field should be inferred");
+    assert_eq!(primary_color_field.value_kind, ComponentEditorValueKind::ColorRgb);
 }

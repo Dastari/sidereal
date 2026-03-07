@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  Copy,
   Globe,
   Hexagon,
   Rocket,
@@ -13,6 +14,7 @@ import {
 import type { WorldEntity } from '@/components/grid/types'
 import type { DataSourceMode } from '@/components/sidebar/Toolbar'
 import { cn } from '@/lib/utils'
+import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Collapsible,
@@ -22,6 +24,7 @@ import {
 
 interface EntityTreeProps {
   entities: Array<WorldEntity>
+  resources?: Array<{ typePath: string }>
   selectedId: string | null
   onSelect: (id: string) => void
   sourceMode: DataSourceMode
@@ -30,7 +33,10 @@ interface EntityTreeProps {
 }
 
 const ENTITY_ROOT_GROUP_KEY = '__entity_root__'
+const RESOURCE_ROOT_GROUP_KEY = '__resource_root__'
 const DEFAULT_GROUP_KEY = 'Entity'
+const RESOURCE_SELECTION_PREFIX = 'resource:'
+const LIVE_RESOURCE_PREVIEW_LIMIT = 100
 
 const kindIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   ship: Rocket,
@@ -67,6 +73,7 @@ function getLabelGroupKey(entity: WorldEntity): string | null {
 
 function EntityTree({
   entities,
+  resources = [],
   selectedId,
   onSelect,
   sourceMode,
@@ -77,9 +84,10 @@ function EntityTree({
     {},
   )
   const [openNodes, setOpenNodes] = React.useState<Record<string, boolean>>({})
+  const [showAllResources, setShowAllResources] = React.useState(false)
+  const [search, setSearch] = React.useState('')
 
-  const { rootsByGroupKey, childrenByParent, useEntityRoot } =
-    React.useMemo(() => {
+  const { rootsByGroupKey, childrenByParent } = React.useMemo(() => {
     const byId = new Map<string, WorldEntity>()
     const byGuid = new Map<string, WorldEntity>()
     for (const entity of entities) {
@@ -155,10 +163,6 @@ function EntityTree({
     return {
       rootsByGroupKey: roots,
       childrenByParent: children,
-      useEntityRoot:
-        useDatabaseLabelGrouping ||
-        useBrpNamePrefixGrouping ||
-        hasLabelGrouping,
     }
   }, [entities, sourceMode])
 
@@ -168,9 +172,72 @@ function EntityTree({
       .sort(([a], [b]) => a.localeCompare(b))
   }, [rootsByGroupKey])
 
+  const filteredGroups = React.useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    if (!needle) {
+      return sortedGroups
+    }
+
+    const byId = new Map<string, WorldEntity>()
+    const byGuid = new Map<string, WorldEntity>()
+    for (const entity of entities) {
+      byId.set(entity.id, entity)
+      if (entity.entityGuid) {
+        byGuid.set(entity.entityGuid, entity)
+      }
+    }
+
+    const includedIds = new Set<string>()
+
+    const includeAncestors = (entity: WorldEntity) => {
+      if (includedIds.has(entity.id)) return
+      includedIds.add(entity.id)
+      if (!entity.parentEntityId) return
+      const parent =
+        byId.get(entity.parentEntityId) ?? byGuid.get(entity.parentEntityId) ?? null
+      if (parent) {
+        includeAncestors(parent)
+      }
+    }
+
+    for (const entity of entities) {
+      const labelText = entity.entity_labels?.join(' ') ?? ''
+      const matches = `${entity.name} ${entity.kind} ${entity.entityGuid ?? ''} ${labelText}`
+        .toLowerCase()
+        .includes(needle)
+      if (matches) {
+        includeAncestors(entity)
+      }
+    }
+
+    return sortedGroups
+      .map(([groupKey, items]) => [
+        groupKey,
+        items.filter((entity) => includedIds.has(entity.id)),
+      ] as const)
+      .filter(([, items]) => items.length > 0)
+  }, [entities, search, sortedGroups])
+
+  React.useEffect(() => {
+    setOpenGroups({})
+    setOpenNodes({})
+    setShowAllResources(false)
+  }, [sourceMode])
+
   const isGroupOpen = React.useCallback(
-    (kind: string) => openGroups[kind] ?? true,
-    [openGroups],
+    (kind: string) => {
+      if (Object.hasOwn(openGroups, kind)) {
+        return openGroups[kind]
+      }
+      if (kind === RESOURCE_ROOT_GROUP_KEY) {
+        return sourceMode === 'database'
+      }
+      if (kind === ENTITY_ROOT_GROUP_KEY) {
+        return sourceMode === 'database'
+      }
+      return sourceMode === 'database'
+    },
+    [openGroups, sourceMode],
   )
 
   const toggleGroup = React.useCallback((kind: string) => {
@@ -186,60 +253,133 @@ function EntityTree({
     setOpenNodes((prev) => ({ ...prev, [entityId]: !(prev[entityId] ?? true) }))
   }, [])
 
-  const groupContent = (
-    <>
-      {sortedGroups.map(([groupKey, items]) => (
-        <EntityGroup
-          key={groupKey}
-          kind={groupKey}
-          entities={items}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          sourceMode={sourceMode}
-          onDelete={onDelete}
-          onContextMenuRequest={onContextMenuRequest}
-          childrenByParent={childrenByParent}
-          isOpen={isGroupOpen(groupKey)}
-          onToggleOpen={() => toggleGroup(groupKey)}
-          isNodeOpen={isNodeOpen}
-          onToggleNode={toggleNode}
-        />
-      ))}
-    </>
+  const worldRootOpen = isGroupOpen(ENTITY_ROOT_GROUP_KEY)
+  const resourcesRootOpen = isGroupOpen(RESOURCE_ROOT_GROUP_KEY)
+  const sortedResources = React.useMemo(
+    () => [...resources].sort((a, b) => a.typePath.localeCompare(b.typePath)),
+    [resources],
   )
+  const visibleResources = React.useMemo(() => {
+    if (sourceMode === 'database' || showAllResources) {
+      return sortedResources
+    }
+    return sortedResources.slice(0, LIVE_RESOURCE_PREVIEW_LIMIT)
+  }, [showAllResources, sortedResources, sourceMode])
+  const hasHiddenResources = visibleResources.length < sortedResources.length
 
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-1">
-        {useEntityRoot ? (
-          <Collapsible
-            open={isGroupOpen(ENTITY_ROOT_GROUP_KEY)}
-            onOpenChange={() => toggleGroup(ENTITY_ROOT_GROUP_KEY)}
-          >
-            <CollapsibleTrigger className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-secondary/50 text-sm font-medium text-foreground/90 transition-colors">
-              {isGroupOpen(ENTITY_ROOT_GROUP_KEY) ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+        <div className="pb-2">
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search entities"
+            className="h-8"
+          />
+        </div>
+        <Collapsible
+          open={worldRootOpen}
+          onOpenChange={() => toggleGroup(ENTITY_ROOT_GROUP_KEY)}
+        >
+          <CollapsibleTrigger className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-secondary/50 text-sm font-medium text-foreground/90 transition-colors">
+            {worldRootOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+            <Sparkles className="h-4 w-4 text-primary" />
+            <span>World</span>
+            <span className="ml-auto text-xs text-muted-foreground">
+              {entities.length}
+            </span>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="ml-4 pl-2 border-l border-border-subtle space-y-1 mt-1">
+              {filteredGroups.map(([groupKey, items]) => (
+                <EntityGroup
+                  key={groupKey}
+                  kind={groupKey}
+                  entities={items}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                  sourceMode={sourceMode}
+                  onDelete={onDelete}
+                  onContextMenuRequest={onContextMenuRequest}
+                  childrenByParent={childrenByParent}
+                  isOpen={isGroupOpen(groupKey)}
+                  onToggleOpen={() => toggleGroup(groupKey)}
+                  isNodeOpen={isNodeOpen}
+                  onToggleNode={toggleNode}
+                />
+              ))}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+        <Collapsible
+          open={resourcesRootOpen}
+          onOpenChange={() => toggleGroup(RESOURCE_ROOT_GROUP_KEY)}
+        >
+          <CollapsibleTrigger className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-secondary/50 text-sm font-medium text-foreground/90 transition-colors">
+            {resourcesRootOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+            <Box className="h-4 w-4 text-primary" />
+            <span>Resources</span>
+            <span className="ml-auto text-xs text-muted-foreground">
+              {sortedResources.length}
+            </span>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="ml-4 pl-2 border-l border-border-subtle space-y-0.5 mt-1">
+              {sortedResources.length > 0 ? (
+                <>
+                  {visibleResources.map((resource) => {
+                  const resourceSelectionId = `${RESOURCE_SELECTION_PREFIX}${resource.typePath}`
+                  const isSelectedResource = selectedId === resourceSelectionId
+                  return (
+                    <button
+                      key={resource.typePath}
+                      type="button"
+                      onClick={() => onSelect(resourceSelectionId)}
+                      className={cn(
+                        'flex items-center gap-2 w-full rounded px-2 py-1 text-left text-sm transition-colors',
+                        isSelectedResource
+                          ? 'bg-primary/15 text-primary'
+                          : 'hover:bg-secondary/50 text-foreground/80',
+                      )}
+                      title={resource.typePath}
+                    >
+                      <Box className="h-3.5 w-3.5 shrink-0 text-primary/80" />
+                      <span className="truncate font-mono text-xs">
+                        {resource.typePath}
+                      </span>
+                    </button>
+                  )
+                  })}
+                  {hasHiddenResources ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllResources(true)}
+                      className="w-full rounded px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+                    >
+                      Show {sortedResources.length - visibleResources.length} more resources
+                    </button>
+                  ) : null}
+                </>
               ) : (
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                <div className="px-2 py-1 text-xs text-muted-foreground">
+                  No BRP resources loaded
+                </div>
               )}
-              <Sparkles className="h-4 w-4 text-primary" />
-              <span>Entity</span>
-              <span className="ml-auto text-xs text-muted-foreground">
-                {entities.length}
-              </span>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="ml-4 pl-2 border-l border-border-subtle space-y-1 mt-1">
-                {groupContent}
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        ) : (
-          groupContent
-        )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
         {entities.length === 0 && (
           <div className="text-sm text-muted-foreground text-center py-8">
-            No entities loaded
+            No world entities loaded
           </div>
         )}
       </div>
@@ -309,7 +449,6 @@ function EntityGroup({
               isNodeOpen={isNodeOpen}
               onToggleNode={onToggleNode}
               isSelected={entity.id === selectedId}
-              selectedId={selectedId}
               onSelect={onSelect}
             />
           ))}
@@ -347,6 +486,7 @@ function EntityTreeNode({
   onSelect,
 }: EntityTreeNodeProps) {
   const [isDeleting, setIsDeleting] = React.useState(false)
+  const [copiedGuid, setCopiedGuid] = React.useState(false)
   const children = childrenByParent.get(entity.id) ?? []
   const hasChildren = children.length > 0
   const open = hasChildren ? isNodeOpen(entity.id) : false
@@ -368,6 +508,18 @@ function EntityTreeNode({
     if (!onContextMenuRequest) return
     e.preventDefault()
     onContextMenuRequest(entity.id, { x: e.clientX, y: e.clientY })
+  }
+
+  const handleCopyGuid = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!entity.entityGuid) return
+    try {
+      await navigator.clipboard.writeText(entity.entityGuid)
+      setCopiedGuid(true)
+      window.setTimeout(() => setCopiedGuid(false), 1200)
+    } catch (error) {
+      console.error('Failed to copy entity guid:', error)
+    }
   }
 
   return (
@@ -402,13 +554,22 @@ function EntityTreeNode({
         >
           <Icon className="h-3.5 w-3.5 shrink-0 text-primary/80" />
           <span className="truncate flex-1">{entity.name}</span>
-          <span
-            className="max-w-[14ch] truncate text-xs text-muted-foreground font-mono shrink-0"
-            title={entity.entityGuid ?? undefined}
-          >
-            {entity.entityGuid ?? entity.componentCount}
-          </span>
         </button>
+
+        {entity.entityGuid ? (
+          <button
+            onClick={handleCopyGuid}
+            className={cn(
+              'h-7 w-7 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-all shrink-0',
+              copiedGuid
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+            )}
+            title={copiedGuid ? 'Copied entity GUID' : 'Copy entity GUID'}
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
 
         {sourceMode !== 'liveClient' && (
           <button
@@ -443,7 +604,6 @@ function EntityTreeNode({
               isNodeOpen={isNodeOpen}
               onToggleNode={onToggleNode}
               isSelected={child.id === selectedId}
-              selectedId={selectedId}
               onSelect={onSelect}
             />
           ))}

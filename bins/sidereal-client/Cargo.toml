@@ -8,7 +8,9 @@ authors.workspace = true
 [dependencies]
 avian2d.workspace = true
 bevy = { workspace = true, features = ["webgpu", "mp3"] }
+bevy_svg = "0.18.0"
 sidereal-core = { path = "../../crates/sidereal-core" }
+sidereal-game = { path = "../../crates/sidereal-game" }
 serde.workspace = true
 serde_json.workspace = true
 
@@ -17,7 +19,6 @@ bevy_remote = "0.18.0"
 lightyear.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rand.workspace = true
-sidereal-game = { path = "../../crates/sidereal-game" }
 sidereal-net = { path = "../../crates/sidereal-net", features = ["lightyear_protocol"] }
 sidereal-runtime-sync = { path = "../../crates/sidereal-runtime-sync" }
 sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime" }

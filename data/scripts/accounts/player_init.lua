@@ -5,7 +5,7 @@ PlayerInit.context = {}
 function PlayerInit.player_init(ctx)
   local _ = ctx
   return {
-    starter_bundle_id = "starter_corvette",
+    ship_bundle_id = "ship.corvette",
   }
 end
 

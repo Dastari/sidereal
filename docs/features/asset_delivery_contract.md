@@ -1,810 +1,301 @@
 # Asset Delivery Contract
 
-Status: Active implementation contract  
-Last updated: March 5, 2026  
-Primary architecture reference: `docs/sidereal_design_document.md`  
-Related contract: `docs/features/visibility_replication_contract.md`
-Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`
+Status: Active implementation contract
+Last updated: March 7, 2026
+Primary architecture reference: `docs/sidereal_design_document.md`
+Related contract: `docs/features/scripting_support.md`
+Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
+Related render-layer contract: `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 
 ## 1. Purpose
 
-Define the enforceable runtime contract for Sidereal asset delivery so implementation matches product goals:
+Define the enforceable runtime contract for Sidereal asset delivery under a Lua-authored asset registry model.
 
-1. On first connect, send the initial asset set required for what the player can currently see.
-2. Let clients request missing assets while gameplay remains stable via placeholders/fallbacks.
-3. Use a persistent local cache and reuse it across sessions.
-4. Recover cleanly when the local cache is partially or fully deleted.
-5. Provide a concrete plan for generating and consuming `assets.pak`.
-6. Provide a concrete MMO-style ("WoW-like") staged delivery model.
+Core outcomes:
 
-This document focuses on runtime behavior and protocol contracts, not DCC/content-authoring workflow.
+1. Asset definitions (IDs, classes, dependencies, preload policy) are authored in Lua, not Rust.
+2. Server builds authoritative asset metadata/checksums from the Lua registry.
+3. Client enters a dedicated `AssetLoading` state before `InWorld` and validates/downloads required assets.
+4. Asset payloads are fetched through authenticated gateway HTTP route `/assets/<asset_guid>`.
+5. Runtime cache is checksum-verified and reused across sessions.
 
 ## 2. Scope and Non-Goals
 
 ### In scope
 
-- Replication-controlled asset manifests/chunks for gameplay runtime paths.
-- Cache validation, cache misses, recovery behavior.
-- Placeholder and swap-in behavior for missing streamed assets.
-- Native and WASM parity requirements.
-- Security/authorization constraints on delivery.
+- Lua registry schema and ownership rules.
+- Server-side catalog build and checksum generation.
+- Client startup manifest sync and cache validation.
+- Pre-world required asset download flow.
+- Runtime lazy asset fetch behavior for newly referenced `asset_id` values.
+- Native/WASM parity requirements.
 
-### Out of scope (for now)
+### Out of scope
 
-- Asset compression format bikeshedding beyond a baseline.
-- CDN/web launcher/installer flows.
-- Full audio asset graph authoring (audio content may be absent initially).
+- DCC authoring tooling UX details.
+- CDN and launcher installer strategy.
+- Binary format bikeshedding beyond checksum/caching guarantees.
 
-## 3. Current-State Audit (as of February 24, 2026)
+## 3. Non-Negotiable Invariants
 
-### Implemented today
+1. Asset authority is server-side and data-driven from Lua registry content.
+2. Rust runtime code must not hardcode gameplay asset IDs, filenames, shader names, material names, sprite names, or audio clip names.
+3. Asset identity crossing service boundaries uses logical `asset_id` and immutable `asset_guid` only.
+4. Each published asset version has its own immutable generated `asset_guid`.
+5. Asset payload bytes are not streamed over replication transport channels.
+6. Asset payload downloads use authenticated gateway HTTP GET `/assets/<asset_guid>` only.
+7. Missing/corrupt assets must fail soft; client must not crash due to missing content.
+8. Cache trust decisions are deterministic via checksum (`sha256`) and version metadata.
+9. Native and WASM clients must implement the same asset state machine and validation logic.
 
-- Replication stream sends asset manifests + chunks over control channel.
-- Client can request assets and acknowledge completed writes.
-- Client maintains `index.json` with `asset_version` + `sha256`.
-- Client fail-soft behavior exists for shader/background paths and some world visuals.
+## 4. Terminology
 
-### Gaps vs intended model
+- `asset_id`: stable logical content identifier used by gameplay/scripts/components.
+- `asset_guid`: immutable generated ID for one published payload version; used in gateway URL path.
+- `lua asset registry`: runtime script-authored source of truth describing all known assets and policies.
+- `bootstrap required assets`: assets that must be present before client transitions from `AssetLoading` to `InWorld`.
+- `runtime optional assets`: non-blocking assets fetched on demand when referenced after world entry.
+- `asset catalog`: generated server artifact derived from Lua registry + build pipeline metadata.
 
-- Initial asset selection is currently a fixed baseline set, not visibility/camera-driven.
-- Runtime cache is file-tree based (`data/cache_stream/**`), not `assets.pak`.
-- Gateway still exposes standalone `/assets/stream/{asset_id}` route.
-- WASM runtime is scaffold-only and does not yet implement shared streaming/cache logic.
-- "Clear entire cache" behavior is implicitly handled but not yet explicitly contract-tested.
+## 5. Lua Asset Registry Contract
 
-## 4. Non-Negotiable Invariants
+The authoritative registry is defined in Lua under the scripts root (for example `data/scripts/assets/registry.lua`).
 
-1. Server-authoritative only: clients never authorize themselves to receive new assets by local inference.
-2. Asset delivery scope is a narrowing of visibility/authorization scope, never an expansion.
-3. Asset identity across boundaries is logical (`asset_id`, version, hash), never local file handles.
-4. Missing/corrupt assets must fail soft; no gameplay crash due solely to absent streamed content.
-5. Runtime gameplay path must not depend on standalone HTTP asset file serving.
-6. Native and WASM must implement the same gameplay-facing asset behavior and protocol.
-7. Cache validity decisions must be deterministic (`asset_version` + checksum/hash).
-8. Runtime-critical shaders must always have a built-in fallback source in the client binary; streamed/cache shader files are overrides, never hard requirements.
-9. Missing streamed shader/audio/texture/sprite content must never crash the client process.
-10. Runtime asset swap-in must be atomic: keep current fallback/live asset active until replacement validates and loads successfully.
+### 5.1 Required registry fields per asset entry
 
-### 4.1 Runtime Shader Safety Contract
+Minimum canonical shape:
 
-1. Core materials (starfield/background/sprite effects/thruster plume) must bind to stable built-in shader handles.
-2. At startup, client seeds shader assets from embedded defaults.
-3. When streamed shader cache files arrive, client replaces the same shader handles with streamed content.
-4. If streamed shader read/compile fails, client keeps the existing shader handle content and logs recoverable errors only.
-5. Renderer startup must not depend on local `data/cache_stream/**` existence.
-
-## 5. Terminology
-
-- `authorized entity set`: entities server allows this player to know about.
-- `delivery entity set`: currently delivered subset after stream/rate/camera culling.
-- `required asset set`: transitive closure of assets needed to render/sim those delivered entities.
-- `critical assets`: minimum subset required to keep world rendering coherent (fallback shaders, baseline hulls, etc.).
-- `bootstrap phase`: initial in-world asset readiness phase after session bind.
-- `runtime stream phase`: ongoing streaming while already in world.
-- `asset catalog`: authoritative generated master list mapping `asset_id` to metadata/dependencies/storage location.
-- `asset alias`: stable logical name resolved to an immutable versioned `asset_id`.
-- `source asset tree`: developer authoring layout on disk (for example `data_src/models`, `data_src/audio`), not used directly by runtime.
-
-### 5.1 Master List Requirement (Authoritative Catalog)
-
-Sidereal MUST use a master list. The master list is the generated `asset catalog`, not hardcoded lists in runtime systems.
-
-Required properties:
-
-1. Generated by tooling from source assets + sidecar/import rules.
-2. Loaded by replication/client runtime at startup.
-3. Treated as authoritative for:
-   - valid `asset_id` set,
-   - dependency graph expansion,
-   - version/hash validation,
-   - pack/chunk resolution.
-
-Runtime code must not infer production asset sets only from ad-hoc filesystem traversal or manually-curated static arrays.
-
-### 5.2 Asset ID and Alias Strategy
-
-Gameplay and replicated components MUST reference logical IDs, not file paths.
-
-Suggested conventions:
-
-- Immutable versioned ID:
-  - `ship.corvette_01.model@sha256:8235fcf13e2fec7f`
-  - `audio.sfx.weapon.laser_shot@sha256:1f2a...`
-- Stable alias:
-  - `ship.corvette_01.model`
-  - `audio.sfx.weapon.laser_shot`
-
-Alias resolution happens through catalog/alias map:
-
-```text
-audio.sfx.weapon.laser_shot -> audio.sfx.weapon.laser_shot@sha256:1f2a...
-```
-
-Policy:
-
-1. Immutable IDs are never mutated in place.
-2. Content updates publish a new immutable ID (new hash/version).
-3. Alias repoint is explicit and release-controlled.
-
-### 5.3 Asset Registration Pipeline (Build-Time)
-
-Registration should be implemented as a build pipeline (for example `xtask` or dedicated packer crate):
-
-1. Scan source tree (sprites/textures/audio/shaders/etc.).
-2. Assign/validate logical `asset_id`.
-3. Compute content hash and derived `asset_version`.
-4. Discover dependencies:
-   - explicit/declarative for sprite/audio/material/shader links through sidecar metadata or catalog dependency maps.
-5. Write `asset_catalog.json` + pack/chunk artifacts.
-6. Emit validation report (missing deps, cycles, duplicate IDs).
-
-Illustrative sidecar pattern:
-
-```json
-{
-  "asset_id": "audio.sfx.weapon.laser_shot",
-  "source_path": "audio/weapons/laser.wav",
-  "content_type": "audio/wav",
-  "tags": ["weapon", "sfx", "combat"]
-}
-```
-
-### 5.4 Grass-Roots "laser.wav" Example
-
-Question: "How does the system know where `laser.wav` is?"
-
-Answer:
-
-1. Source file exists in authoring tree (`data_src/audio/weapons/laser.wav`).
-2. Build pipeline registers it as `audio.sfx.weapon.laser_shot` and writes catalog entry.
-3. Gameplay event references `audio.sfx.weapon.laser_shot` (or immutable resolved ID), never raw file path.
-4. Runtime resolver reads catalog and maps ID -> pack offset/chunk location.
-5. If missing locally, client requests by ID; placeholder/silent fallback is used until ready.
-
-### 5.5 Developer Tooling Workflow (Required)
-
-Sidereal should provide first-party tooling so developers do not manually maintain `asset_id -> blob_key` mappings.
-
-Required commands (illustrative naming):
-
-```bash
-cargo xtask assets init            # scaffold metadata sidecars for new files
-cargo xtask assets validate        # verify IDs, deps, hashes, schema
-cargo xtask assets build           # produce catalog + pack/chunks locally
-cargo xtask assets publish         # upload blobs and publish release manifest
-cargo xtask assets activate        # mark release active for environment
-```
-
-#### Developer experience
-
-1. Developer drops source files under `data_src/` (models, textures, audio, shaders, scripts).
-2. Developer runs `assets init` to generate missing sidecars (or writes sidecars manually).
-3. Developer runs `assets validate` to catch:
-   - duplicate IDs,
-   - missing dependencies,
-   - invalid metadata,
-   - unsupported content types.
-4. Developer runs `assets build` to generate:
-   - `asset_catalog.json`,
-   - `asset_aliases.json` (if used),
-   - pack/chunk payload artifacts,
-   - release manifest (`release_id`, created timestamp, catalog hash).
-5. Developer runs `assets publish`:
-   - tool uploads payloads to blob storage using deterministic keys,
-   - tool rewrites catalog storage locations (`blob_key`) if needed.
-6. Developer runs `assets activate` (or CI does it) to select the active catalog release for a target environment.
-
-#### Deterministic blob key generation
-
-`blob_key` should be derived by the tool from immutable content identity, not manually entered:
-
-```text
-assets/{sha256_prefix}/{sha256_full}.chunk
-```
-
-or pack-based:
-
-```text
-releases/{release_id}/packs/assets_00001.pak
-```
-
-Either approach is valid if catalog lookups are deterministic and content-addressed.
-
-#### Example generated mapping artifact
-
-```json
-{
-  "release_id": "0a2cb97a-55dc-4ed0-8d39-ecf6cf0b9d1b",
-  "entries": [
+```lua
+return {
+  schema_version = 1,
+  assets = {
     {
-      "asset_id": "audio.sfx.weapon.laser_shot",
-      "asset_version": 912345678901234567,
+      asset_id = "sprite.ship.rocinante",
+      content_type = "image/png",
+      source_path = "sprites/ships/rocinante.png",
+      dependencies = { "shader.sprite.pixel_default" },
+      bootstrap_required = true,
+      tags = { "ship", "starter" },
+    },
+  },
+}
+```
+
+Rules:
+
+1. `asset_id` is the script/gameplay-facing identifier.
+2. `source_path` is authoring-time input only; it never crosses to client-facing runtime protocols.
+3. Published `relative_cache_path` values are generated runtime metadata and must not reveal authoring/source-tree layout.
+4. `dependencies` are logical `asset_id` references.
+5. `bootstrap_required = true` marks assets that must be present before `InWorld`.
+6. All fields are validated by Rust loader/schema checks; invalid registry blocks activation.
+
+### 5.2 Forbidden runtime patterns
+
+1. Hardcoded Rust maps such as `asset_id -> file path`.
+2. Hardcoded Rust lists of "always preload" assets.
+3. Per-feature Rust constants naming concrete shader/sprite/audio files.
+
+Rust may define generic systems and schema validators only.
+
+## 6. Catalog Build and Publish Contract
+
+Server-side tooling must build a generated catalog from Lua registry entries:
+
+1. Load Lua registry and validate schema/uniqueness/dependencies.
+2. Resolve source files and compute payload checksum (`sha256`).
+3. Generate immutable `asset_guid` for each published payload version.
+4. Produce catalog metadata including:
+   - `asset_id`
+   - `asset_guid`
+   - shader domain/signature/schema compatibility metadata
+   - `sha256_hex`
+   - `byte_len`
+   - `content_type`
+   - dependency list
+   - `bootstrap_required`
+5. Publish payload bytes to gateway-readable storage.
+6. Publish an active catalog version pointer consumed by gateway/replication.
+
+Current implementation note:
+1. Gateway now builds runtime asset catalog entries through the shared `sidereal-asset-runtime` path.
+2. Gateway payload serving resolves `/assets/<asset_guid>` through shared runtime asset materialization into generated published storage (`<asset_root>/published_assets/...`) instead of route-local authoring path access.
+3. Source-tree `source_path` remains authoring input only and is not exposed to the client-facing manifest.
+4. Client bootstrap-required asset gating now fails closed for required assets; stalled required downloads surface dialogs but do not force `InWorld`.
+
+## 7. Gateway Delivery Contract
+
+### 7.1 Payload route
+
+- Route: `GET /assets/<asset_guid>`
+- Auth: required; bound to session/account policy.
+- Response: asset bytes with metadata headers (`content-type`, checksum header, cache headers).
+- Unknown/unauthorized `asset_guid` returns fail-closed error.
+
+### 7.2 Startup metadata payload
+
+Before world entry, client receives a JSON manifest from server (via gateway API or session bootstrap response) containing at minimum:
+
+```json
+{
+  "catalog_version": "2026-03-06T00:00:00Z",
+  "required_assets": [
+    {
+      "asset_id": "sprite.ship.rocinante",
+      "asset_guid": "2cf33ea8-3c79-4f24-97a9-72d971dc7f43",
       "sha256_hex": "ab12cd34...",
-      "blob_key": "assets/ab/ab12cd34...chunk",
-      "content_type": "audio/wav",
-      "deps": []
+      "url": "/assets/2cf33ea8-3c79-4f24-97a9-72d971dc7f43"
     }
-  ]
+  ],
+  "catalog": []
 }
 ```
 
-This artifact is what the server consumes at boot/runtime. Manual per-asset registration in server code is forbidden outside temporary migration shims.
+`catalog` may contain the full asset list for runtime lazy fetch optimization.
 
-## 6. Required Behavior by Use Case
+## 8. Client State Machine Contract
 
-### 6.1 Initial connect bootstrap (visibility + camera aligned)
+Client entry flow is:
 
-Server MUST:
+`Auth -> CharacterSelect -> WorldLoading -> AssetLoading -> InWorld`
 
-1. Authenticate and bind `RemoteId -> player_entity_id`.
-2. Compute initial delivery entity set using:
-   - visibility/authorization policy,
-   - current persisted player camera position,
-   - delivery culling policy.
-3. Resolve required assets for delivered entities via authoritative asset dependency graph.
-4. Send manifest/chunks for all missing required assets (excluding client-proven fresh cache entries once inventory handshake exists).
+### 8.1 AssetLoading requirements
 
-Client MUST:
+In `AssetLoading`, client must:
 
-1. Enter bootstrap mode when first manifest arrives.
-2. Keep gameplay responsive with placeholders until each asset resolves.
-3. Mark bootstrap complete only when bootstrap-scoped required assets are ready or degraded fallback timeout policy is explicitly triggered.
+1. Load local cache index/metadata.
+2. Verify checksums for known cached entries (full scan at startup or deterministic rolling strategy with equivalent guarantee).
+3. Compare required manifest entries by `asset_guid` + checksum.
+4. Download missing/stale required assets via gateway `/assets/<asset_guid>`.
+5. Commit validated assets to local cache.
+6. Transition to `InWorld` only when all required assets validate.
+7. Required-asset stalls may surface warning/error dialogs and retry behavior, but they must not force bootstrap completion in degraded mode.
 
-### 6.2 Missing assets during runtime
+### 8.2 Runtime lazy fetch
 
-Client MUST:
+After entering world:
 
-1. Detect missing or stale assets for any entity/layer requiring them.
-2. Request missing assets without blocking simulation tick or crashing renderer.
-3. Continue to render fallback representation until streamed asset validates and is mounted.
-4. Continuously evaluate runtime shader dependencies (replicated shader IDs + known runtime shader materials) and request missing shader assets without requiring hardcoded per-feature critical lists.
+1. If entity/component references `asset_id` not yet locally available, client triggers background download.
+2. Resolver maps `asset_id` -> `asset_guid` via received catalog metadata.
+3. Shader-material systems resolve shader sources by authoritative `shader_asset_id` plus catalog domain/signature/schema metadata.
+4. Visual/audio fallback stays active until asset validates and mounts.
+5. Swap-in remains atomic; failed load keeps fallback and schedules retry.
+6. Runtime shader install uses catalog/cache-provided shader bytes when available; built-in fallback is limited to one emergency shader per generic runtime family rather than a compiled-in WGSL source per named content case.
 
-Server MUST:
+## 9. Runtime Entity Asset Resolution Contract
 
-1. Accept authenticated asset requests.
-2. Respond with manifest/chunks for requested assets (subject to authorization).
-3. Pace chunk transmission to avoid transport buffer overload.
+1. Replicated/persisted gameplay components carry logical `asset_id` values only.
+2. Client runtime continuously evaluates entities/components for referenced `asset_id` values.
+3. Missing local entries enqueue fetch jobs by resolved `asset_guid`.
+4. Dependency closure must be honored; if asset `A` depends on `B`, both are fetched/validated before final attach.
 
-### 6.3 Local cache reuse
+## 10. Cache Contract
 
-Client MUST:
-
-1. Persist cache metadata and payloads.
-2. Reuse fresh cached assets across sessions without re-downloading.
-3. Revalidate via version/hash before trusting cached entries.
-
-### 6.4 Full cache clear recovery
-
-If cache is fully deleted between sessions:
-
-1. Client must still boot and reach world using placeholders.
-2. Client must request and rehydrate required assets from server.
-3. No manual repair step should be required by player.
-
-### 6.5 `assets.pak` rollout
-
-System MUST migrate from loose files to:
-
-- `assets.pak` (single payload container),
-- `assets.index` (metadata + offsets + versions + hashes),
-- optional `assets.tmp` during transactional update.
-
-## 7. Protocol Contract
-
-## 7.1 Existing messages (retained)
-
-```rust
-#[derive(Serialize, Deserialize)]
-pub struct AssetRequestMessage {
-    pub requests: Vec<RequestedAsset>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RequestedAsset {
-    pub asset_id: String,
-    pub known_asset_version: Option<u64>,
-    pub known_sha256_hex: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AssetStreamManifestMessage {
-    pub assets: Vec<AssetCatalogEntry>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct AssetStreamChunkMessage {
-    pub asset_id: String,
-    pub relative_cache_path: String,
-    pub chunk_index: u32,
-    pub chunk_count: u32,
-    pub bytes: Vec<u8>,
-}
-```
-
-## 7.2 Required additions (for full WoW-style behavior)
-
-### `ClientAssetInventoryMessage` (new)
-
-Sent after auth bind so server can skip known-fresh payloads.
-
-```rust
-#[derive(Serialize, Deserialize)]
-pub struct ClientAssetInventoryMessage {
-    pub cache_epoch: u64, // client local monotonic epoch after cache reset/rebuild
-    pub entries: Vec<ClientAssetInventoryEntry>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct ClientAssetInventoryEntry {
-    pub asset_id: String,
-    pub asset_version: u64,
-    pub sha256_hex: String,
-}
-```
-
-### `AssetStreamPhase` metadata (new)
-
-Manifest must identify whether entries are bootstrap-critical vs runtime-opportunistic.
-
-```rust
-#[derive(Serialize, Deserialize)]
-pub enum AssetStreamPhase {
-    BootstrapCritical,
-    BootstrapOptional,
-    Runtime,
-}
-```
-
-### Optional `AssetRejectMessage` (new)
-
-Explicit rejection reason improves observability and client fallback behavior.
-
-```rust
-#[derive(Serialize, Deserialize)]
-pub struct AssetRejectMessage {
-    pub asset_id: String,
-    pub reason: String, // unauthorized | unknown_asset | bad_request
-}
-```
-
-## 8. Initial Required-Asset Selection Contract
-
-Server algorithm requirements:
-
-1. Start from delivery entity set (already policy-filtered).
-2. For each entity, read all referenced asset IDs from replicated/persisted components.
-3. Expand dependency graph transitively (models -> buffers/textures/material shaders, etc.).
-4. Add global critical assets.
-5. Subtract client-proven fresh inventory entries.
-6. Emit manifest + chunks for remainder.
-
-Illustrative code sketch:
-
-```rust
-fn compute_initial_required_assets(
-    delivered_entities: &[EntityId],
-    entity_asset_refs: &EntityAssetRefStore,
-    deps: &AssetDependencyMap,
-    critical: &HashSet<String>,
-    client_inventory: &HashMap<String, (u64, String)>,
-    catalog: &AssetCatalog,
-) -> HashSet<String> {
-    let mut required = HashSet::new();
-
-    for entity_id in delivered_entities {
-        if let Some(asset_refs) = entity_asset_refs.get(entity_id) {
-            for asset_id in asset_refs {
-                required.insert(asset_id.clone());
-            }
-        }
-    }
-
-    required.extend(critical.iter().cloned());
-    required = expand_transitive_dependencies(required, deps);
-
-    required
-        .into_iter()
-        .filter(|asset_id| !inventory_matches_catalog(asset_id, client_inventory, catalog))
-        .collect()
-}
-```
-
-Constraint: This must run after visibility/camera delivery determination; asset bootstrap must not leak hidden entities via inferred asset references.
-
-### 8.1 Where Asset References Come From
-
-Required asset references should be collected from:
-
-1. Replicated/persisted gameplay components on delivered entities (for example model/material/shader IDs).
-2. Active world presentation layers (background/fullscreen layers).
-3. Predicted short-horizon event dependencies (for example local weapon fire SFX likely to trigger immediately).
-
-Illustrative mapping interface:
-
-```rust
-pub trait AssetReferenceProvider {
-    fn referenced_asset_ids(&self, out: &mut Vec<String>);
-}
-```
-
-Components such as `FullscreenLayer`, ship visual components, weapon VFX/SFX config components should implement this provider (or equivalent generated registry mapping) so asset collection is systematic.
-
-### 8.2 Audio Event Example (Weapon Fire)
-
-If a ship can fire immediately after spawn, the bootstrap/runtime asset collector should include required SFX IDs before first use when possible.
-
-Example:
-
-```rust
-#[derive(Component)]
-pub struct WeaponAudioProfile {
-    pub fire_sfx_asset_id: String, // e.g. "audio.sfx.weapon.laser_shot"
-}
-```
-
-When event fires:
-
-1. If ready: play resolved handle.
-2. If missing: enqueue request by `asset_id`, optionally play fallback click/silence, never crash.
-3. On `AssetReady(asset_id)`, subsequent events use real clip.
-
-## 9. Placeholder and Swap Contract
-
-## 9.1 Placeholder requirements
-
-For unresolved assets, client must render fallback visuals:
-
-- Entities with missing sprite: simple proxy sprite/quad plus transform.
-- Missing shader-driven fullscreen layer: known-safe fallback material path.
-- Missing texture: neutral fallback texture.
-- Missing audio (future): silent fallback or benign placeholder event path.
-
-## 9.2 Swap requirements
-
-- Swap-in is atomic per asset instance: no partial scene attach with unresolved dependencies.
-- Existing entity transform/physics ownership must remain unchanged during visual swap.
-- A failed swap must keep placeholder visible and retry later.
-
-Illustrative swap system sketch:
-
-```rust
-fn attach_or_swap_visual(
-    entity: Entity,
-    asset_id: &str,
-    assets: &LocalAssetManager,
-    commands: &mut Commands,
-    asset_server: &AssetServer,
-) {
-    if let Some(sprite_path) = assets.ready_sprite_path(asset_id) {
-        // Remove placeholder marker/components, attach streamed sprite.
-        commands.entity(entity).remove::<PlaceholderVisual>();
-        commands.entity(entity).with_children(|c| {
-            c.spawn(Sprite::from_image(asset_server.load(sprite_path)));
-        });
-    } else {
-        // Keep or create fallback proxy.
-        commands.entity(entity).insert(PlaceholderVisual);
-    }
-}
-```
-
-## 10. Cache Contract (`assets.pak` + `assets.index`)
-
-## 10.1 On-disk layout (target)
+Target local cache shape remains:
 
 ```text
 data/cache_stream/
   assets.pak
   assets.index
-  assets.tmp          # optional transactional staging
+  assets.tmp
 ```
 
-## 10.2 `assets.index` minimum fields
+Minimum guarantees:
 
-- schema version
-- pack checksum/version
-- per asset:
-  - `asset_id`
-  - `offset`
-  - `compressed_len`
-  - `uncompressed_len`
-  - `asset_version`
-  - `sha256`
-  - `content_type`
+1. `assets.index` tracks `asset_id`, `asset_guid`, `sha256`, offsets/lengths, content type, and schema version.
+2. Cache read path validates checksum before exposing a ready asset.
+3. Interrupted writes recover safely via transactional temp/journal process.
+4. Missing/corrupt cache state auto-recovers without manual user steps.
 
-## 10.3 Read path
+## 11. Security and Abuse Controls
 
-1. Load `assets.index`.
-2. Verify pack checksum/version where applicable.
-3. For each requested asset, seek by offset in `assets.pak`.
-4. Validate hash before exposing as ready.
+1. Asset manifest and asset payload access must be session-authenticated.
+2. Gateway denies unknown/non-active `asset_guid`.
+3. Optional per-session/per-IP rate limits for asset route.
+4. Manifest generation must not leak unauthorized world data through hidden asset references.
+5. Checksum mismatch and repeated failures trigger telemetry and guardrails.
 
-## 10.4 Write/update path
+## 12. Observability Contract
 
-1. Receive chunks into in-memory or temp staging.
-2. Validate assembled payload hash.
-3. Append/update in `assets.tmp` (or journaled pack writer).
-4. Atomically replace `assets.pak` and `assets.index`.
-5. On startup, recover from interrupted temp files safely.
+Required metrics/logs:
 
-## 10.5 Cache clear behavior
-
-- If `assets.pak` and/or `assets.index` are missing: treat as empty cache; do not error-fatally.
-- If index exists but pack missing/corrupt: reset cache epoch, rebuild index, re-request required assets.
-- If unknown schema version: clear + rebuild path must be automatic.
-
-## 10.6 Server Storage Format: Pack vs Raw Files
-
-Recommended model:
-
-1. Keep raw/source files for authoring and build pipeline input.
-2. Serve runtime streaming from generated pack/chunk artifacts (same logical catalog contract as client).
-
-Why:
-
-- deterministic hashes/versions across environments,
-- simpler diff/patch behavior,
-- avoids runtime "what file exists where" drift.
-
-During migration, server may support fallback read from raw files, but this should be temporary and logged as degraded mode.
-
-## 10.7 Update and Version Rollout Policy
-
-When an existing asset changes:
-
-1. New content hash => new immutable version ID.
-2. Catalog is regenerated.
-3. Alias may be repointed to new version in a release.
-4. Clients with old cached version keep using it until server requests new version through manifests.
-5. On next manifest, stale version is invalidated by version/hash mismatch and re-streamed.
-
-Do not mutate an existing version record in place.
-
-## 10.8 Postgres: Required or Optional?
-
-Short answer:
-
-- Not required for initial implementation.
-- Recommended only when live publishing/rollback or operational tooling demands it.
-
-### File-only catalog mode (default starting point)
-
-- Catalog + pack artifacts are versioned deploy artifacts loaded at startup.
-- Pros: simple, deterministic, low moving parts.
-- Cons: requires deploy/restart for catalog changes.
-
-### DB-backed catalog mode (optional advanced mode)
-
-Use when you need:
-
-- live catalog publish without restart,
-- channelized releases,
-- rollback selection by release ID,
-- cross-shard catalog governance tools.
-
-Illustrative minimal schema:
-
-```sql
-CREATE TABLE asset_catalog_release (
-  release_id UUID PRIMARY KEY,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  label TEXT NOT NULL,
-  active BOOLEAN NOT NULL DEFAULT FALSE
-);
-
-CREATE TABLE asset_entry (
-  release_id UUID NOT NULL REFERENCES asset_catalog_release(release_id),
-  asset_id TEXT NOT NULL,
-  asset_version BIGINT NOT NULL,
-  sha256_hex TEXT NOT NULL,
-  content_type TEXT NOT NULL,
-  pack_path TEXT NOT NULL,
-  pack_offset BIGINT NOT NULL,
-  packed_len BIGINT NOT NULL,
-  unpacked_len BIGINT NOT NULL,
-  PRIMARY KEY (release_id, asset_id)
-);
-
-CREATE TABLE asset_dependency (
-  release_id UUID NOT NULL,
-  asset_id TEXT NOT NULL,
-  depends_on_asset_id TEXT NOT NULL,
-  PRIMARY KEY (release_id, asset_id, depends_on_asset_id),
-  FOREIGN KEY (release_id, asset_id)
-    REFERENCES asset_entry(release_id, asset_id),
-  FOREIGN KEY (release_id, depends_on_asset_id)
-    REFERENCES asset_entry(release_id, asset_id)
-);
-
-CREATE TABLE asset_alias (
-  release_id UUID NOT NULL REFERENCES asset_catalog_release(release_id),
-  alias_id TEXT NOT NULL,
-  target_asset_id TEXT NOT NULL,
-  PRIMARY KEY (release_id, alias_id),
-  FOREIGN KEY (release_id, target_asset_id)
-    REFERENCES asset_entry(release_id, asset_id)
-);
-```
-
-Note: gameplay persistence still stores logical IDs on entities/components; database catalog is operational metadata, not a replacement for ECS ownership of gameplay state.
-
-## 11. WoW-Style Delivery Model for Sidereal
-
-For Sidereal, "WoW-style" means:
-
-1. Local persistent cache as primary source.
-2. Versioned/hash-validated assets from authoritative backend.
-3. Incremental patching: only changed/missing assets stream.
-4. Playable while streaming: placeholders + progressive fidelity.
-5. Deterministic repair path when cache is invalid.
-
-It does **not** require reproducing Blizzard's exact binary formats; it requires equivalent behavior guarantees.
-
-## 12. Native/WASM Parity Contract
-
-Required:
-
-- Same logical messages and state machine for asset bootstrap/runtime requests.
-- Same cache-validity semantics (`asset_version` + hash).
-- Same fallback/placeholder behavior at gameplay boundary.
-- Platform-specific transport adapters allowed only at network boundary.
-
-Forbidden:
-
-- Native-only gameplay behavior that assumes streamed assets always exist.
-- WASM skipping placeholder/fail-soft behavior.
-
-## 13. Security and Abuse Controls
-
-1. Asset request handling must be bound to authenticated session identity.
-2. Unknown/unlisted `asset_id` must be rejected without server panic.
-3. Optional rate limiting per remote for request spam.
-4. Manifest generation must not disclose private/hidden entity existence.
-5. Chunk assembly must enforce max byte/chunk bounds.
-
-## 14. Observability Contract
-
-Emit structured metrics/logs for:
-
-- bootstrap manifest count, bytes, completion latency
-- runtime missing-asset request rate
-- cache hit rate / miss rate / stale-hit rate
+- `asset_loading_duration_ms`
+- required asset count/bytes
+- cache hit/miss/stale rates
 - checksum mismatch count
-- placeholder active count
-- retries and stalled-stream events
-- per-client chunk queue depth and send pacing drops
+- runtime lazy fetch request count
+- failed downloads and retry counts
+- per-client asset-loading transition latency
 
-Minimum alerting conditions:
+## 13. Implementation Plan
 
-- checksum mismatches above threshold
-- bootstrap timeout/stall rate above threshold
-- repeated cache rebuild loops on same client version
+### Phase A: Contracts and schema
 
-## 15. Implementation Plan (Phased)
+1. Add Lua asset registry module and schema validation in `sidereal-scripting`.
+2. Remove remaining hardcoded Rust asset lists/maps from active paths.
+3. Add explicit validation errors for registry duplicates/missing deps/invalid fields.
 
-## Phase A: close correctness gaps on current loose-file cache
+### Phase B: Catalog builder and gateway metadata
 
-1. Derive bootstrap asset set from delivery entity set + camera-scoped delivery.
-2. Add explicit model placeholder component/system for unresolved streamed models.
-3. Add integration tests for full cache deletion and recovery.
-4. Remove/disable standalone runtime HTTP asset-serving path from gameplay flow.
+1. Build generated asset catalog from Lua registry including checksum + generated `asset_guid`.
+2. Add startup asset manifest JSON payload carrying required assets and optional full catalog.
+3. Wire gateway `/assets/<asset_guid>` route to immutable published payloads.
 
-## Phase B: add inventory-aware bootstrap negotiation
+Status update (2026-03-07):
+1. Runtime manifest generation is shared through `sidereal-asset-runtime`.
+2. Gateway `/assets/<asset_guid>` now serves through the shared runtime asset materialization/storage path.
+3. Remaining work is moving from on-demand materialization to a cleaner published catalog/storage lifecycle with fewer runtime rebuilds.
 
-1. Add `ClientAssetInventoryMessage`.
-2. Server computes delta from inventory, not just "sent once this session."
-3. Add metrics for hit/miss and skipped sends.
+### Phase C: Client `AssetLoading` state
 
-## Phase C: introduce `assets.pak` + `assets.index` backend
+1. Add dedicated `AssetLoading` client state between `WorldLoading` and `InWorld`.
+2. Implement cache checksum verification pass and required-asset download barrier.
+3. Block `InWorld` transition until required manifest validates.
 
-1. Implement pack writer/reader crate (`sidereal-asset-runtime` extension).
-2. Keep compatibility layer reading existing loose files during migration window.
-3. Add migration utility to compact loose files into pack.
+### Phase D: Runtime lazy fetch
 
-## Phase D: WASM parity
+1. Add runtime asset resolver from replicated `asset_id` references.
+2. Trigger background fetch for missing assets via catalog `asset_guid` mapping.
+3. Keep fail-soft placeholders and atomic swap behavior.
 
-1. Port shared asset state machine into WASM runtime path.
-2. Ensure WebGPU build uses identical placeholder + swap semantics.
-3. Add parity tests validating same protocol behavior native vs wasm32.
+### Phase E: Hardening and parity
 
-## 15.1 Concrete Bevy + Lightyear Module Responsibilities
+1. Add native/WASM parity checks for startup and runtime fetch behavior.
+2. Add retry/backoff and error UX for persistent download failures.
+3. Add telemetry dashboards and alert thresholds.
 
-Suggested baseline module split:
+## 14. Test Plan
 
-### Shared crates
+### 14.1 Unit tests
 
-- `crates/sidereal-asset-runtime`
-  - `catalog.rs`: `AssetCatalog`, lookup APIs, alias resolution.
-  - `pack.rs`: pack reader/writer + index codec.
-  - `deps.rs`: dependency expansion and validation.
-  - `cache.rs`: cache freshness and corruption recovery helpers.
+- Lua registry schema validation and duplicate detection.
+- Dependency closure and cycle detection.
+- Catalog generation determinism (`asset_id`, checksum, generated `asset_guid`).
+- Cache checksum validation and corruption recovery.
 
-- `crates/sidereal-net`
-  - message definitions for inventory/manifest/chunk/ack/reject extensions.
+### 14.2 Integration tests
 
-### Replication server (`bins/sidereal-replication`)
+- Empty cache startup: required assets download then `InWorld` transition.
+- Warm cache startup: checksum-valid required assets skip download.
+- Checksum mismatch: stale entry redownload and replace.
+- Runtime missing asset reference: lazy fetch + fallback swap.
+- Unauthorized/unknown `asset_guid` fetch: fail closed without crash.
 
-- `replication/assets/catalog_state.rs`
-  - load/refresh catalog resource at startup.
-- `replication/assets/selection.rs`
-  - compute required asset sets from delivered entities.
-- `replication/assets/stream.rs`
-  - manifest diff + paced chunk enqueue/send.
-- `replication/assets/metrics.rs`
-  - delivery counters and error telemetry.
+### 14.3 End-to-end tests
 
-### Client (`bins/sidereal-client`)
+- Login -> Enter World -> AssetLoading -> InWorld lifecycle.
+- Full catalog receipt + on-demand fetch during gameplay.
+- Restart with persistent cache reuse.
+- Native and WASM parity for manifest processing and gateway fetch paths.
 
-- `client/assets/state.rs`
-  - local inventory/cache state machine.
-- `client/assets/io.rs`
-  - pack/index disk IO + transactional commit.
-- `client/assets/messages.rs`
-  - receive manifest/chunks, send requests/acks/inventory.
-- `client/assets/fallbacks.rs`
-  - placeholder render/audio policies.
-- `client/assets/swap.rs`
-  - `AssetReady`-driven swap in.
+## 15. Acceptance Criteria
 
-This split keeps entrypoints focused on wiring, per AGENTS constraints.
+All must be true:
 
-## 15.2 End-to-End Runtime State Machine (Target)
-
-1. Client authenticates and binds to replication.
-2. Client sends inventory snapshot (`ClientAssetInventoryMessage`).
-3. Server computes delivered entities, resolves required asset IDs, diffs vs inventory.
-4. Server sends phase-tagged manifest + chunks.
-5. Client validates chunk assemblies, commits to pack/index, sends ack.
-6. Client emits ready events; placeholders swap to final assets.
-7. Runtime continues with opportunistic manifests when delivery scope changes.
-
-## 16. Test Matrix
-
-## 16.1 Unit tests
-
-- dependency expansion/transitive closure
-- checksum/version cache freshness logic
-- pack index read/write + corruption recovery
-- placeholder swap state transitions
-
-## 16.2 Integration tests
-
-- bootstrap with empty cache
-- bootstrap with warm cache (no redownload expected)
-- runtime missing asset request after entity enters delivery scope
-- full cache delete between sessions
-- corrupted index and corrupted pack recovery
-- unauthorized asset request rejection
-
-## 16.3 Soak/load tests
-
-- many clients requesting overlapping sets
-- repeated reconnect with cache retained
-- constrained bandwidth with chunk pacing
-
-## 16.4 Platform checks
-
-Run both:
-
-```bash
-cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
-cargo check -p sidereal-client --target x86_64-pc-windows-gnu
-```
-
-## 17. Minimal Acceptance Criteria for "Contract Implemented"
-
-All must pass:
-
-1. Initial bootstrap assets are selected from delivered visible entities + dependencies.
-2. Missing assets do not crash gameplay; placeholders are visible and swap correctly.
-3. Client reuses cache across sessions with hash/version validation.
-4. Full cache deletion recovers automatically without manual intervention.
-5. Runtime path uses `assets.pak` + `assets.index` (or explicitly documented migration phase if incomplete).
-6. No standalone HTTP gameplay asset-file serving path remains active.
-7. Native/WASM parity evidence exists for asset flow behavior.
-
-## 18. Open Migration Notes
-
-- Current runtime has useful primitives already (manifest/chunk/request/ack, checksum, pacing).
-- Migration should preserve wire compatibility where possible to avoid broad protocol churn.
-- If protocol additions are introduced, gate with explicit message versioning and compatibility tests.
+1. Asset definitions come from Lua registry; no Rust hardcoded asset naming lists remain in runtime paths.
+2. Server generates catalog entries with checksum and immutable `asset_guid`.
+3. Client has an explicit `AssetLoading` state before `InWorld`.
+4. Required assets are validated/downloaded before entering world.
+5. Runtime missing assets are fetched lazily via gateway `/assets/<asset_guid>`.
+6. Missing/corrupt assets fail soft with placeholders and no client crash.
+7. Native and WASM behavior is equivalent at gameplay boundary.

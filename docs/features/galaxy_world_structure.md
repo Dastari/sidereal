@@ -20,7 +20,7 @@ This document covers:
 
 ### 2.1 Current State: f32
 
-All coordinates are currently f32. Avian2d `Position` wraps `Vec2` (f32). Gameplay components (`ScannerRangeM`, `SizeM`, etc.) are f32. Persistence parses positions as f64 then truncates to f32 during hydration.
+All coordinates are currently f32. Avian2d `Position` wraps `Vec2` (f32). Gameplay components (`VisibilityRangeM`, `SizeM`, etc.) are f32. Persistence parses positions as f64 then truncates to f32 during hydration.
 
 ### 2.2 Why f32 Is Insufficient
 
@@ -46,7 +46,7 @@ avian2d = { version = "0.5.0", features = ["serialize", "f64"] }
 
 This changes `Position` to wrap `DVec2`, `LinearVelocity` to `DVec2`, etc. At 5,000 km from origin, f64 precision is better than a nanometer -- effectively unlimited for any game-scale galaxy.
 
-Gameplay components (`ScannerRangeM`, `SizeM`, `FlightTuning`, `Engine`, `FuelTank`, `MassKg`, etc.) remain f32. They represent small-magnitude values where f32 precision is more than sufficient.
+Gameplay components (`VisibilityRangeM`, `SizeM`, `FlightTuning`, `Engine`, `FuelTank`, `MassKg`, etc.) remain f32. They represent small-magnitude values where f32 precision is more than sufficient.
 
 ### 2.4 Rendering: Camera-Relative f32
 

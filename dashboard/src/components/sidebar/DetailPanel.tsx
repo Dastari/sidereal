@@ -29,6 +29,7 @@ import {
 interface DetailPanelProps {
   selectedId: string | null
   entities: Array<WorldEntity>
+  resources?: Array<{ typePath: string; value?: unknown; error?: string }>
   expandedNodes: Map<string, ExpandedNode>
   graphNodes: Map<string, GraphNode>
   graphEdges: Array<GraphEdge>
@@ -50,6 +51,7 @@ interface DetailPanelProps {
 export function DetailPanel({
   selectedId,
   entities,
+  resources = [],
   expandedNodes,
   graphNodes,
   graphEdges,
@@ -60,6 +62,74 @@ export function DetailPanel({
   onComponentUpdate,
   onClose,
 }: DetailPanelProps) {
+  const selectedResourceTypePath = selectedId?.startsWith('resource:')
+    ? selectedId.slice('resource:'.length)
+    : null
+  if (selectedResourceTypePath) {
+    const selectedResource =
+      resources.find((resource) => resource.typePath === selectedResourceTypePath) ??
+      null
+    const resourceValue = selectedResource?.value
+    const displayValue = formatDisplayValue(resourceValue ?? null)
+    const renderEntityRegistryResource = selectedResourceTypePath.includes(
+      'EntityRegistryResource',
+    )
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex-none p-5 border-b border-border-subtle">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <h2 className="font-semibold text-foreground truncate">
+                {selectedResourceTypePath}
+              </h2>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <Badge variant="secondary" className="capitalize text-xs">
+                  Resource
+                </Badge>
+                {selectedResource?.error ? (
+                  <span className="text-xs text-destructive truncate">
+                    {selectedResource.error}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            {onClose ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                aria-label="Close panel"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        <ScrollArea className="flex-1 ml-1">
+          <div className="p-5 space-y-4">
+            <PropertySection title="Type Path" icon={Layers}>
+              <PropertyRow label="type_path" value={selectedResourceTypePath} mono />
+            </PropertySection>
+            <PropertySection title="Value" icon={Box}>
+              {selectedResource ? (
+                renderEntityRegistryResource ? (
+                  <EntityRegistryResourceView value={resourceValue} />
+                ) : (
+                  <ValueField value={displayValue} mono className="text-xs" />
+                )
+              ) : (
+                <span className="text-sm text-muted-foreground">
+                  Resource not found in current BRP snapshot
+                </span>
+              )}
+            </PropertySection>
+          </div>
+        </ScrollArea>
+      </div>
+    )
+  }
+
   if (!selectedId) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground p-8">
@@ -281,6 +351,135 @@ export function DetailPanel({
               })()}
             </div>
       </ScrollArea>
+    </div>
+  )
+}
+
+type EntityRegistryResourceEntry = {
+  entity_id: string
+  entity_class?: string
+  graph_records_script?: string
+  required_component_kinds?: Array<string>
+}
+
+function parseEntityRegistryResourceEntries(
+  value: unknown,
+): Array<EntityRegistryResourceEntry> {
+  if (typeof value !== 'object' || value === null) return []
+  const root = value as Record<string, unknown>
+  const wrapped =
+    typeof root.value === 'object' && root.value !== null
+      ? (root.value as Record<string, unknown>)
+      : root
+  const entries = wrapped.entries
+  if (!Array.isArray(entries)) return []
+  const parsed: Array<EntityRegistryResourceEntry> = []
+  for (const rawEntry of entries) {
+    if (typeof rawEntry !== 'object' || rawEntry === null) continue
+    const entry = rawEntry as Record<string, unknown>
+    const entityId = entry.entity_id
+    if (typeof entityId !== 'string') continue
+    parsed.push({
+      entity_id: entityId,
+      entity_class: typeof entry.entity_class === 'string' ? entry.entity_class : undefined,
+      graph_records_script:
+        typeof entry.graph_records_script === 'string'
+          ? entry.graph_records_script
+          : undefined,
+      required_component_kinds: Array.isArray(entry.required_component_kinds)
+        ? entry.required_component_kinds.filter(
+            (kind): kind is string => typeof kind === 'string',
+          )
+        : undefined,
+    })
+  }
+  return parsed.sort((a, b) => a.entity_id.localeCompare(b.entity_id))
+}
+
+function EntityRegistryResourceView({ value }: { value: unknown }) {
+  const entries = React.useMemo(
+    () => parseEntityRegistryResourceEntries(value),
+    [value],
+  )
+  if (entries.length === 0) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        EntityRegistryResource has no entries in this snapshot.
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-1">
+      {entries.map((entry) => (
+        <EntityRegistryEntryCard key={entry.entity_id} entry={entry} />
+      ))}
+    </div>
+  )
+}
+
+function EntityRegistryEntryCard({
+  entry,
+}: {
+  entry: EntityRegistryResourceEntry
+}) {
+  const [expanded, setExpanded] = React.useState(false)
+  return (
+    <div className="border border-border rounded-md overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left"
+      >
+        <span className="flex-1 text-sm font-medium min-w-0 flex items-baseline gap-2 w-0">
+          <span className="font-mono truncate">{entry.entity_id}</span>
+          {entry.entity_class ? (
+            <span className="text-muted-foreground font-normal text-xs truncate">
+              {entry.entity_class}
+            </span>
+          ) : null}
+        </span>
+        <ChevronRight
+          className={cn(
+            'h-4 w-4 text-muted-foreground transition-transform flex-none',
+            expanded && 'rotate-90',
+          )}
+        />
+      </button>
+      {expanded ? (
+        <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-1">
+          {entry.entity_class ? (
+            <div className="flex items-start gap-2 py-0.5 min-w-0">
+              <span className="text-xs text-muted-foreground shrink-0">class</span>
+              <ValueField
+                value={formatDisplayValue(entry.entity_class)}
+                mono
+                className="text-xs text-foreground/90 min-w-0 flex-1 truncate grow w-0"
+              />
+            </div>
+          ) : null}
+          {entry.graph_records_script ? (
+            <div className="flex items-start gap-2 py-0.5 min-w-0">
+              <span className="text-xs text-muted-foreground shrink-0">script</span>
+              <ValueField
+                value={formatDisplayValue(entry.graph_records_script)}
+                mono
+                className="text-xs text-foreground/90 min-w-0 flex-1 truncate grow w-0"
+              />
+            </div>
+          ) : null}
+          {entry.required_component_kinds &&
+          entry.required_component_kinds.length > 0 ? (
+            <div className="flex items-start gap-2 py-0.5 min-w-0">
+              <span className="text-xs text-muted-foreground shrink-0">components</span>
+              <ValueField
+                value={formatDisplayValue(entry.required_component_kinds)}
+                mono
+                className="text-xs text-foreground/90 min-w-0 flex-1 truncate grow w-0"
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }

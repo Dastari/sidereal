@@ -3,14 +3,14 @@ use std::net::{IpAddr, Ipv4Addr};
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 
 #[test]
-fn enabled_config_accepts_unspecified_bind_with_token() {
+fn enabled_config_rejects_unspecified_bind_even_with_token() {
     let cfg = RemoteInspectConfig {
         enabled: true,
         bind_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         port: 15714,
         auth_token: Some("0123456789abcdef".to_string()),
     };
-    assert!(cfg.validate().is_ok());
+    assert!(cfg.validate().is_err());
 }
 
 #[test]
@@ -58,12 +58,12 @@ fn enabled_config_accepts_token() {
 }
 
 #[test]
-fn enabled_config_accepts_non_loopback_bind_with_token() {
+fn enabled_config_rejects_non_loopback_bind_even_with_token() {
     let cfg = RemoteInspectConfig {
         enabled: true,
         bind_addr: IpAddr::V4(Ipv4Addr::new(172, 27, 80, 1)),
         port: 15702,
         auth_token: Some("0123456789abcdef".to_string()),
     };
-    assert!(cfg.validate().is_ok());
+    assert!(cfg.validate().is_err());
 }

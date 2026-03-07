@@ -1,6 +1,6 @@
 # DR-0018: Fog of War and Intel Memory Model
 
-Status: Proposed  
+Status: Active  
 Date: 2026-03-05  
 Owners: replication + gameplay visibility + tactical UI
 
@@ -31,7 +31,8 @@ Client does not authoritatively infer fog/intel from local world entities.
 ## 3.1 Player persisted components (authoritative)
 
 1. `PlayerExploredCells`
-   1. chunked/cell-set representation of discovered coverage.
+   1. chunked/cell-set representation of discovered coverage,
+   2. binary payload chunks with adaptive dense/sparse encoding for storage efficiency.
 2. `PlayerIntelMemory`
    1. keyed by target entity GUID,
    2. stores last authorized/seen snapshot:
@@ -117,9 +118,18 @@ Negative:
    2. stale vs live transitions,
    3. no unauthorized disclosure in unexplored/stale states.
 
-## 11. References
+## 11. Progress Tracking
+
+1. Server tactical lane snapshot+delta delivery: complete.
+2. Scanner circle rasterization for live fog cells: complete.
+3. Persist/load explored memory on player entity: complete.
+4. Chunked binary explored-memory storage: complete.
+5. Fog cell size decoupled to 100m tactical grid: complete.
+
+## 12. References
 
 1. `docs/features/visibility_replication_contract.md`
 2. `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
 3. `docs/features/scan_intel_minimap_spatial_plan.md`
 4. `docs/features/tactical_and_owner_lane_protocol_contract.md`
+5. `docs/features/dr-0019_fog_memory_chunk_storage.md`

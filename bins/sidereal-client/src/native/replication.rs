@@ -9,7 +9,8 @@ use lightyear::prediction::prelude::{PredictionManager, RollbackMode};
 use lightyear::prelude::client::Client;
 use sidereal_game::{
     ActionQueue, CollisionOutlineM, ControlledEntityGuid, EntityGuid, Hardpoint, MountedOn,
-    PlayerTag, SimulationMotionWriter, SizeM, SpriteShaderAssetId, VisualAssetId,
+    PlayerTag, SimulationMotionWriter, SizeM, SpriteShaderAssetId, VisualAssetId, WorldPosition,
+    WorldRotation,
 };
 use sidereal_runtime_sync::{
     RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
@@ -251,6 +252,23 @@ pub(crate) fn transition_world_loading_to_in_world(
     if !has_local_player_entity {
         return;
     }
+    next_state.set(ClientAppState::AssetLoading);
+}
+
+pub(crate) fn transition_asset_loading_to_in_world(
+    app_state: Option<Res<'_, State<ClientAppState>>>,
+    asset_bootstrap_state: Res<'_, super::auth_net::AssetBootstrapRequestState>,
+    mut next_state: ResMut<'_, NextState<ClientAppState>>,
+) {
+    if !app_state
+        .as_ref()
+        .is_some_and(|state| **state == ClientAppState::AssetLoading)
+    {
+        return;
+    }
+    if !asset_bootstrap_state.completed || asset_bootstrap_state.failed {
+        return;
+    }
     next_state.set(ClientAppState::InWorld);
 }
 
@@ -364,6 +382,7 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             Without<DespawnOnExit<ClientAppState>>,
         ),
     >,
+    world_spatial_query: Query<'_, '_, (Option<&'_ WorldPosition>, Option<&'_ WorldRotation>)>,
     controlled_query: Query<'_, '_, Entity, With<ControlledEntity>>,
 ) {
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
@@ -386,6 +405,8 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
         _is_interpolated,
     ) in &replicated_entities
     {
+        let (world_position, world_rotation) =
+            world_spatial_query.get(entity).unwrap_or((None, None));
         let Some(guid) = guid else {
             continue;
         };
@@ -399,8 +420,12 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
                 == Some(runtime_entity_id.as_str());
         let predicted_mode = !local_mode.0;
         let is_spatial_root = is_root_entity && size_m.is_some();
+        let is_static_world_spatial =
+            (world_position.is_some() || world_rotation.is_some()) && linear_velocity.is_none();
         if is_spatial_root
-            && (position.is_none() || rotation.is_none() || linear_velocity.is_none())
+            && ((position.is_none() && world_position.is_none())
+                || (rotation.is_none() && world_rotation.is_none())
+                || (!is_static_world_spatial && linear_velocity.is_none()))
         {
             // Avoid adopting partially replicated spatial roots at (0,0) until core
             // motion components arrive; this prevents transient wrong-world placement.

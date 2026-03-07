@@ -9,6 +9,7 @@ authors.workspace = true
 anyhow.workspace = true
 avian2d.workspace = true
 bevy.workspace = true
+base64.workspace = true
 bevy_remote.workspace = true
 lightyear.workspace = true
 sidereal-core = { path = "../../crates/sidereal-core" }

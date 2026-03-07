@@ -3,22 +3,18 @@ mod plugins;
 mod replication;
 use crate::replication::{
     assets, auth, control, input, lifecycle, owner_manifest, persistence, runtime_scripting,
-    runtime_state, simulation_entities, tactical, visibility,
+    runtime_state, scripting, simulation_entities, tactical, visibility,
 };
-use avian2d::prelude::{
-    Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems, PhysicsTransformPlugin,
-};
+use avian2d::prelude::{Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems};
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
-use lightyear::avian2d::plugin::AvianReplicationMode;
-use lightyear::avian2d::prelude::LightyearAvianPlugin;
 use lightyear::prelude::server::ServerPlugins;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{HierarchyRebuildEnabled, SiderealGamePlugin};
-use sidereal_net::register_lightyear_protocol;
+use sidereal_net::register_lightyear_server_protocol;
 use std::time::Duration;
 
 fn main() {
@@ -47,7 +43,11 @@ fn main() {
     );
     app.add_plugins(AssetPlugin::default());
     app.add_plugins(ScenePlugin);
-    app.add_plugins(LogPlugin::default());
+    app.add_plugins(LogPlugin {
+        // Suppress noisy transient UDP send errors (EAGAIN / os error 11) from lightyear transport.
+        filter: "info,lightyear_udp::server=off".to_string(),
+        ..Default::default()
+    });
     app.add_plugins(SiderealGamePlugin);
     // Prevent server-side Bevy hierarchy components from being replicated.
     app.insert_resource(HierarchyRebuildEnabled(false));
@@ -55,7 +55,6 @@ fn main() {
         PhysicsPlugins::default()
             .with_length_unit(1.0)
             .build()
-            .disable::<PhysicsTransformPlugin>()
             .disable::<PhysicsInterpolationPlugin>(),
     );
     app.add_message::<bevy::asset::AssetEvent<Mesh>>();
@@ -64,13 +63,7 @@ fn main() {
     app.add_plugins(ServerPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / 60.0),
     });
-    app.add_plugins(LightyearAvianPlugin {
-        replication_mode: AvianReplicationMode::PositionButInterpolateTransform,
-        update_syncs_manually: false,
-        rollback_resources: false,
-        rollback_islands: false,
-    });
-    register_lightyear_protocol(&mut app);
+    register_lightyear_server_protocol(&mut app);
     lifecycle::configure_remote(&mut app, &remote_cfg);
 
     // Lightyear/Bevy plugins can initialize Fixed time; enforce authoritative 60 Hz after plugin wiring.
@@ -89,6 +82,7 @@ fn init_resources(app: &mut App) {
     persistence::init_resources(app);
     control::init_resources(app);
     runtime_state::init_resources(app);
+    scripting::init_resources(app);
     runtime_scripting::init_resources(app);
     owner_manifest::init_resources(app);
     tactical::init_resources(app);
@@ -103,7 +97,6 @@ fn register_plugins(app: &mut App) {
     app.add_plugins(plugins::ReplicationRuntimeScriptingPlugin);
     app.add_plugins(plugins::ReplicationVisibilityPlugin);
     app.add_plugins(plugins::ReplicationPersistencePlugin);
-    app.add_plugins(plugins::ReplicationAssetsPlugin);
     app.add_plugins(plugins::ReplicationBootstrapBridgePlugin);
     app.add_systems(
         Update,
@@ -115,8 +108,6 @@ fn register_plugins(app: &mut App) {
             input::receive_latest_realtime_input_messages,
             control::receive_client_control_requests,
             visibility::receive_client_local_view_mode_messages,
-            assets::receive_client_asset_requests,
-            assets::receive_client_asset_acks,
             input::report_input_drop_metrics,
             persistence::report_persistence_worker_metrics,
             simulation_entities::process_bootstrap_entity_commands,

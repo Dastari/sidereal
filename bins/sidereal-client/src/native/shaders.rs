@@ -1,45 +1,134 @@
-//! Streamed shader reload helpers.
+//! Runtime shader install/reload helpers.
 
+use bevy::log::warn;
 use bevy::prelude::*;
 
 use super::assets::LocalAssetManager;
 
-const DEFAULT_STARFIELD_SHADER_SOURCE: &str =
-    include_str!("../../../../data/shaders/starfield.wgsl");
-const DEFAULT_SPACE_BACKGROUND_SHADER_SOURCE: &str =
-    include_str!("../../../../data/shaders/space_background.wgsl");
-const DEFAULT_SPRITE_PIXEL_SHADER_SOURCE: &str =
-    include_str!("../../../../data/shaders/sprite_pixel_effect.wgsl");
-const DEFAULT_THRUSTER_PLUME_SHADER_SOURCE: &str =
-    include_str!("../../../../data/shaders/thruster_plume.wgsl");
-const DEFAULT_TACTICAL_MAP_OVERLAY_SHADER_SOURCE: &str =
-    include_str!("../../../../data/shaders/tactical_map_overlay.wgsl");
-
-const STARFIELD_SHADER_OVERRIDE_PATH: &str = "data/cache_stream/shaders/starfield.wgsl";
-const SPACE_BACKGROUND_SHADER_OVERRIDE_PATH: &str =
-    "data/cache_stream/shaders/space_background.wgsl";
-const SPRITE_PIXEL_SHADER_OVERRIDE_PATH: &str =
-    "data/cache_stream/shaders/sprite_pixel_effect.wgsl";
-const THRUSTER_PLUME_SHADER_OVERRIDE_PATH: &str = "data/cache_stream/shaders/thruster_plume.wgsl";
-const TACTICAL_MAP_OVERLAY_SHADER_OVERRIDE_PATH: &str =
-    "data/cache_stream/shaders/tactical_map_overlay.wgsl";
-
-const STARFIELD_SHADER_LABEL: &str = "sidereal://shader/starfield";
-const SPACE_BACKGROUND_SHADER_LABEL: &str = "sidereal://shader/space_background";
-const SPRITE_PIXEL_SHADER_LABEL: &str = "sidereal://shader/sprite_pixel_effect";
-const THRUSTER_PLUME_SHADER_LABEL: &str = "sidereal://shader/thruster_plume";
-const TACTICAL_MAP_OVERLAY_SHADER_LABEL: &str = "sidereal://shader/tactical_map_overlay";
+// Material2d fragment shaders can rely on Bevy's default vertex path.
+const FALLBACK_FRAGMENT_SHADER_SOURCE: &str = r#"
+@fragment
+fn fragment() -> @location(0) vec4<f32> {
+  return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+}
+"#;
 
 pub const STARFIELD_SHADER_HANDLE: Handle<bevy::shader::Shader> =
     bevy::asset::uuid_handle!("ee54757d-14a2-4f84-8fdb-cdf547be8401");
-pub const SPACE_BACKGROUND_SHADER_HANDLE: Handle<bevy::shader::Shader> =
+pub const SPACE_BACKGROUND_BASE_SHADER_HANDLE: Handle<bevy::shader::Shader> =
     bevy::asset::uuid_handle!("3491ffc9-a955-4a2e-bdf5-7d2cef546f35");
+pub const SPACE_BACKGROUND_NEBULA_SHADER_HANDLE: Handle<bevy::shader::Shader> =
+    bevy::asset::uuid_handle!("84fc7002-8686-4fb5-a79c-e62048fe3b78");
 pub const SPRITE_PIXEL_SHADER_HANDLE: Handle<bevy::shader::Shader> =
     bevy::asset::uuid_handle!("33999a9f-c09f-4ce2-b7d2-65c7fe640a48");
-pub const THRUSTER_PLUME_SHADER_HANDLE: Handle<bevy::shader::Shader> =
+pub const ASTEROID_SPRITE_SHADER_HANDLE: Handle<bevy::shader::Shader> =
+    bevy::asset::uuid_handle!("5ac93fc1-e198-4a11-a3a2-3d6ca6f121d3");
+pub const PLANET_VISUAL_SHADER_HANDLE: Handle<bevy::shader::Shader> =
+    bevy::asset::uuid_handle!("cb5dd61d-270f-4dca-bc4d-7f7329a8c41b");
+pub const RUNTIME_EFFECT_SHADER_HANDLE: Handle<bevy::shader::Shader> =
     bevy::asset::uuid_handle!("0cae863f-b918-4470-b7ee-f30749186a34");
 pub const TACTICAL_MAP_OVERLAY_SHADER_HANDLE: Handle<bevy::shader::Shader> =
     bevy::asset::uuid_handle!("f7de7110-00a1-41f2-b498-ec705dbd2d22");
+
+#[derive(Clone, Copy)]
+enum RuntimeShaderFamily {
+    Fullscreen,
+    WorldSprite,
+    WorldPolygon,
+    Effect,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeFullscreenShaderKind {
+    Starfield,
+    SpaceBackgroundBase,
+    SpaceBackgroundNebula,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeWorldSpriteShaderKind {
+    GenericSprite,
+    Asteroid,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeWorldPolygonShaderKind {
+    PlanetVisual,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeEffectShaderKind {
+    RuntimeEffect,
+    TacticalMapOverlay,
+}
+
+#[derive(Clone)]
+struct RuntimeShaderSpec {
+    asset_id: &'static str,
+    label: &'static str,
+    handle: Handle<bevy::shader::Shader>,
+    family: RuntimeShaderFamily,
+    fullscreen_kind: Option<RuntimeFullscreenShaderKind>,
+}
+
+const RUNTIME_SHADER_SPECS: &[RuntimeShaderSpec] = &[
+    RuntimeShaderSpec {
+        asset_id: "starfield_wgsl",
+        label: "sidereal://shader/starfield",
+        handle: STARFIELD_SHADER_HANDLE,
+        family: RuntimeShaderFamily::Fullscreen,
+        fullscreen_kind: Some(RuntimeFullscreenShaderKind::Starfield),
+    },
+    RuntimeShaderSpec {
+        asset_id: "space_background_base_wgsl",
+        label: "sidereal://shader/space_background_base",
+        handle: SPACE_BACKGROUND_BASE_SHADER_HANDLE,
+        family: RuntimeShaderFamily::Fullscreen,
+        fullscreen_kind: Some(RuntimeFullscreenShaderKind::SpaceBackgroundBase),
+    },
+    RuntimeShaderSpec {
+        asset_id: "space_background_nebula_wgsl",
+        label: "sidereal://shader/space_background_nebula",
+        handle: SPACE_BACKGROUND_NEBULA_SHADER_HANDLE,
+        family: RuntimeShaderFamily::Fullscreen,
+        fullscreen_kind: Some(RuntimeFullscreenShaderKind::SpaceBackgroundNebula),
+    },
+    RuntimeShaderSpec {
+        asset_id: "sprite_pixel_shader_wgsl",
+        label: "sidereal://shader/sprite_pixel_effect",
+        handle: SPRITE_PIXEL_SHADER_HANDLE,
+        family: RuntimeShaderFamily::WorldSprite,
+        fullscreen_kind: None,
+    },
+    RuntimeShaderSpec {
+        asset_id: "asteroid_wgsl",
+        label: "sidereal://shader/asteroid_sprite",
+        handle: ASTEROID_SPRITE_SHADER_HANDLE,
+        family: RuntimeShaderFamily::WorldSprite,
+        fullscreen_kind: None,
+    },
+    RuntimeShaderSpec {
+        asset_id: "planet_visual_wgsl",
+        label: "sidereal://shader/planet_visual",
+        handle: PLANET_VISUAL_SHADER_HANDLE,
+        family: RuntimeShaderFamily::WorldPolygon,
+        fullscreen_kind: None,
+    },
+    RuntimeShaderSpec {
+        asset_id: "runtime_effect_wgsl",
+        label: "sidereal://shader/runtime_effect",
+        handle: RUNTIME_EFFECT_SHADER_HANDLE,
+        family: RuntimeShaderFamily::Effect,
+        fullscreen_kind: None,
+    },
+    RuntimeShaderSpec {
+        asset_id: "tactical_map_overlay_wgsl",
+        label: "sidereal://shader/tactical_map_overlay",
+        handle: TACTICAL_MAP_OVERLAY_SHADER_HANDLE,
+        family: RuntimeShaderFamily::Fullscreen,
+        fullscreen_kind: None,
+    },
+];
 
 fn env_flag_with_default(name: &str, default: bool) -> bool {
     std::env::var(name)
@@ -54,96 +143,163 @@ pub fn shader_materials_enabled() -> bool {
 }
 
 pub fn streamed_shader_overrides_enabled() -> bool {
-    env_flag_with_default("SIDEREAL_CLIENT_ENABLE_STREAMED_SHADER_OVERRIDES", false)
-}
-
-fn read_override_or_default(
-    asset_root: &str,
-    override_rel_path: &str,
-    default_source: &str,
-) -> String {
-    if !streamed_shader_overrides_enabled() {
-        return default_source.to_string();
-    }
-    let rooted_override = std::path::PathBuf::from(asset_root).join(override_rel_path);
-    std::fs::read_to_string(rooted_override).unwrap_or_else(|_| default_source.to_string())
+    env_flag_with_default("SIDEREAL_CLIENT_ENABLE_STREAMED_SHADER_OVERRIDES", true)
 }
 
 fn install_shader(
     shaders: &mut Assets<bevy::shader::Shader>,
     handle: Handle<bevy::shader::Shader>,
     label: &str,
-    source: String,
+    source: &str,
 ) {
-    let _ = shaders.insert(handle.id(), bevy::shader::Shader::from_wgsl(source, label));
-}
-
-pub fn install_runtime_shaders(shaders: &mut Assets<bevy::shader::Shader>, asset_root: &str) {
-    install_shader(
-        shaders,
-        STARFIELD_SHADER_HANDLE,
-        STARFIELD_SHADER_LABEL,
-        read_override_or_default(
-            asset_root,
-            STARFIELD_SHADER_OVERRIDE_PATH,
-            DEFAULT_STARFIELD_SHADER_SOURCE,
-        ),
-    );
-    install_shader(
-        shaders,
-        SPACE_BACKGROUND_SHADER_HANDLE,
-        SPACE_BACKGROUND_SHADER_LABEL,
-        read_override_or_default(
-            asset_root,
-            SPACE_BACKGROUND_SHADER_OVERRIDE_PATH,
-            DEFAULT_SPACE_BACKGROUND_SHADER_SOURCE,
-        ),
-    );
-    install_shader(
-        shaders,
-        SPRITE_PIXEL_SHADER_HANDLE,
-        SPRITE_PIXEL_SHADER_LABEL,
-        read_override_or_default(
-            asset_root,
-            SPRITE_PIXEL_SHADER_OVERRIDE_PATH,
-            DEFAULT_SPRITE_PIXEL_SHADER_SOURCE,
-        ),
-    );
-    install_shader(
-        shaders,
-        THRUSTER_PLUME_SHADER_HANDLE,
-        THRUSTER_PLUME_SHADER_LABEL,
-        read_override_or_default(
-            asset_root,
-            THRUSTER_PLUME_SHADER_OVERRIDE_PATH,
-            DEFAULT_THRUSTER_PLUME_SHADER_SOURCE,
-        ),
-    );
-    install_shader(
-        shaders,
-        TACTICAL_MAP_OVERLAY_SHADER_HANDLE,
-        TACTICAL_MAP_OVERLAY_SHADER_LABEL,
-        read_override_or_default(
-            asset_root,
-            TACTICAL_MAP_OVERLAY_SHADER_OVERRIDE_PATH,
-            DEFAULT_TACTICAL_MAP_OVERLAY_SHADER_SOURCE,
-        ),
+    let _ = shaders.insert(
+        handle.id(),
+        bevy::shader::Shader::from_wgsl(source.to_string(), label),
     );
 }
 
-pub fn reload_streamed_shaders(shaders: &mut Assets<bevy::shader::Shader>, asset_root: &str) {
-    install_runtime_shaders(shaders, asset_root);
+fn fallback_shader_source_for_family(_family: RuntimeShaderFamily) -> &'static str {
+    FALLBACK_FRAGMENT_SHADER_SOURCE
 }
 
-pub fn streamed_shader_path_for_asset_id(shader_asset_id: &str) -> Option<&'static str> {
-    match shader_asset_id {
-        "starfield_wgsl" => Some(STARFIELD_SHADER_OVERRIDE_PATH),
-        "space_background_wgsl" => Some(SPACE_BACKGROUND_SHADER_OVERRIDE_PATH),
-        "sprite_pixel_effect_wgsl" => Some(SPRITE_PIXEL_SHADER_OVERRIDE_PATH),
-        "thruster_plume_wgsl" => Some(THRUSTER_PLUME_SHADER_OVERRIDE_PATH),
-        "tactical_map_overlay_wgsl" => Some(TACTICAL_MAP_OVERLAY_SHADER_OVERRIDE_PATH),
-        _ => None,
+pub fn fullscreen_shader_kind(shader_asset_id: &str) -> Option<RuntimeFullscreenShaderKind> {
+    RUNTIME_SHADER_SPECS
+        .iter()
+        .find(|spec| spec.asset_id == shader_asset_id)
+        .and_then(|spec| spec.fullscreen_kind)
+}
+
+pub fn world_sprite_shader_kind(shader_asset_id: &str) -> Option<RuntimeWorldSpriteShaderKind> {
+    RUNTIME_SHADER_SPECS
+        .iter()
+        .find(|spec| spec.asset_id == shader_asset_id)
+        .and_then(|spec| match spec.asset_id {
+            "sprite_pixel_shader_wgsl" => Some(RuntimeWorldSpriteShaderKind::GenericSprite),
+            "asteroid_wgsl" => Some(RuntimeWorldSpriteShaderKind::Asteroid),
+            _ => None,
+        })
+}
+
+pub fn world_polygon_shader_kind(shader_asset_id: &str) -> Option<RuntimeWorldPolygonShaderKind> {
+    RUNTIME_SHADER_SPECS
+        .iter()
+        .find(|spec| spec.asset_id == shader_asset_id)
+        .and_then(|spec| match spec.asset_id {
+            "planet_visual_wgsl" => Some(RuntimeWorldPolygonShaderKind::PlanetVisual),
+            _ => None,
+        })
+}
+
+pub fn world_polygon_shader_handle(
+    kind: RuntimeWorldPolygonShaderKind,
+) -> Handle<bevy::shader::Shader> {
+    match kind {
+        RuntimeWorldPolygonShaderKind::PlanetVisual => runtime_shader_handle("planet_visual_wgsl")
+            .expect("planet visual shader handle must be registered"),
     }
+}
+
+pub fn runtime_effect_shader_handle(kind: RuntimeEffectShaderKind) -> Handle<bevy::shader::Shader> {
+    match kind {
+        RuntimeEffectShaderKind::RuntimeEffect => runtime_shader_handle("runtime_effect_wgsl")
+            .expect("runtime effect shader handle must be registered"),
+        RuntimeEffectShaderKind::TacticalMapOverlay => {
+            runtime_shader_handle("tactical_map_overlay_wgsl")
+                .expect("tactical overlay shader handle must be registered")
+        }
+    }
+}
+
+pub fn runtime_shader_handle(shader_asset_id: &str) -> Option<Handle<bevy::shader::Shader>> {
+    RUNTIME_SHADER_SPECS
+        .iter()
+        .find(|spec| spec.asset_id == shader_asset_id)
+        .map(|spec| spec.handle.clone())
+}
+
+fn read_shader_source_for_asset(
+    asset_root: &str,
+    asset_manager: &LocalAssetManager,
+    shader_asset_id: &str,
+) -> Option<String> {
+    let entry = asset_manager.catalog_by_asset_id.get(shader_asset_id)?;
+
+    let rooted_stream_path = std::path::PathBuf::from(asset_root)
+        .join("data/cache_stream")
+        .join(&entry.relative_cache_path);
+    if let Ok(source) = std::fs::read_to_string(&rooted_stream_path) {
+        return Some(source);
+    }
+    let rooted_direct_path = std::path::PathBuf::from(asset_root).join(&entry.relative_cache_path);
+    std::fs::read_to_string(rooted_direct_path).ok()
+}
+
+fn shader_asset_ready(
+    asset_root: &str,
+    asset_manager: &LocalAssetManager,
+    shader_asset_id: &str,
+) -> bool {
+    let Some(relative_cache_path) = asset_manager.cached_relative_path(shader_asset_id) else {
+        return false;
+    };
+    let rooted_stream_path = std::path::PathBuf::from(asset_root)
+        .join("data/cache_stream")
+        .join(relative_cache_path);
+    let rooted_direct_path = std::path::PathBuf::from(asset_root).join(relative_cache_path);
+    rooted_stream_path.exists() || rooted_direct_path.exists()
+}
+
+fn install_runtime_shader(
+    shaders: &mut Assets<bevy::shader::Shader>,
+    asset_root: &str,
+    asset_manager: &LocalAssetManager,
+    spec: &RuntimeShaderSpec,
+) {
+    let source = read_shader_source_for_asset(asset_root, asset_manager, spec.asset_id);
+    if let Some(source) = source {
+        install_shader(shaders, spec.handle.clone(), spec.label, &source);
+    } else {
+        warn!(
+            "runtime shader asset missing from cache/catalog asset_id={} label={}; installing shared fallback shader",
+            spec.asset_id, spec.label
+        );
+        install_shader(
+            shaders,
+            spec.handle.clone(),
+            spec.label,
+            fallback_shader_source_for_family(spec.family),
+        );
+    }
+}
+
+pub fn install_runtime_shaders(
+    shaders: &mut Assets<bevy::shader::Shader>,
+    asset_root: &str,
+    asset_manager: &LocalAssetManager,
+) {
+    if !streamed_shader_overrides_enabled() {
+        for spec in RUNTIME_SHADER_SPECS {
+            install_shader(
+                shaders,
+                spec.handle.clone(),
+                spec.label,
+                fallback_shader_source_for_family(spec.family),
+            );
+        }
+        return;
+    }
+
+    for spec in RUNTIME_SHADER_SPECS {
+        install_runtime_shader(shaders, asset_root, asset_manager, spec);
+    }
+}
+
+pub fn reload_streamed_shaders(
+    shaders: &mut Assets<bevy::shader::Shader>,
+    asset_root: &str,
+    asset_manager: &LocalAssetManager,
+) {
+    install_runtime_shaders(shaders, asset_root, asset_manager);
 }
 
 pub fn fullscreen_layer_shader_ready(
@@ -151,28 +307,19 @@ pub fn fullscreen_layer_shader_ready(
     asset_manager: &LocalAssetManager,
     shader_asset_id: &str,
 ) -> bool {
-    if let Some(relative_cache_path) = asset_manager.cached_relative_path(shader_asset_id) {
-        let rooted_stream_path = std::path::PathBuf::from(asset_root)
-            .join("data/cache_stream")
-            .join(relative_cache_path);
-        let rooted_direct_path = std::path::PathBuf::from(asset_root).join(relative_cache_path);
-        if rooted_stream_path.exists() || rooted_direct_path.exists() {
-            return true;
-        }
+    if shader_asset_ready(asset_root, asset_manager, shader_asset_id) {
+        return true;
     }
 
-    matches!(
-        shader_asset_id,
-        "starfield_wgsl"
-            | "space_background_wgsl"
-            | "sprite_pixel_effect_wgsl"
-            | "thruster_plume_wgsl"
-            | "tactical_map_overlay_wgsl"
-    ) || streamed_shader_path_for_asset_id(shader_asset_id).is_some_and(
-        |streamed_shader_rel_path| {
-            std::path::PathBuf::from(asset_root)
-                .join(streamed_shader_rel_path)
-                .exists()
-        },
-    )
+    // Fullscreen materials have installed shader handles, so absence of a streamed
+    // file should not block rendering.
+    true
+}
+
+pub fn world_sprite_shader_ready(
+    asset_root: &str,
+    asset_manager: &LocalAssetManager,
+    shader_asset_id: &str,
+) -> bool {
+    shader_asset_ready(asset_root, asset_manager, shader_asset_id)
 }

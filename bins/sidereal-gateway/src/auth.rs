@@ -24,8 +24,11 @@ pub use starter_world::{
     persist_starter_world_for_new_account,
 };
 pub use starter_world_scripts::{
-    ScriptBundleRegistry, load_bundle_registry, load_player_init_config, load_world_init_config,
-    scripts_root_dir,
+    ScriptBundleRegistry, ScriptCatalogEntry, ScriptCatalogResource, current_script_catalog,
+    discard_persisted_script_catalog_draft, list_persisted_script_catalog_documents,
+    load_bundle_registry, load_persisted_script_catalog_document, load_player_init_config,
+    load_world_init_config, publish_persisted_script_catalog_draft,
+    reload_script_catalog_from_disk, save_script_catalog_draft, scripts_root_dir,
 };
 pub use store::{AuthStore, InMemoryAuthStore, PostgresAuthStore};
 pub use types::{

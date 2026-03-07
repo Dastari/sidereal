@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use lightyear::prelude::PeerId;
 
-use crate::replication::assets::AssetStreamServerState;
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::auth::cleanup_client_auth_bindings;
 use crate::replication::control::ClientControlRequestOrder;
@@ -21,7 +20,6 @@ fn cleanup_drops_visibility_for_disconnected_client() {
     app.init_resource::<ClientInputTickTracker>();
     app.init_resource::<InputRateLimitState>();
     app.init_resource::<LatestRealtimeInputsByPlayer>();
-    app.init_resource::<AssetStreamServerState>();
     app.init_resource::<ClientVisibilityRegistry>();
     app.init_resource::<ClientControlRequestOrder>();
     app.init_resource::<ClientLastActivity>();

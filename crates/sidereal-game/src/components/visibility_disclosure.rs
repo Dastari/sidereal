@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Reflect, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[reflect(Serialize, Deserialize)]
-pub struct VisibilityScannerSource {
+pub struct VisibilityRangeSource {
     pub x: f32,
     pub y: f32,
     pub z: f32,
@@ -21,5 +21,5 @@ pub struct VisibilityScannerSource {
 #[derive(Component, Reflect, Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[reflect(Component, Serialize, Deserialize)]
 pub struct VisibilityDisclosure {
-    pub scanner_sources: Vec<VisibilityScannerSource>,
+    pub visibility_sources: Vec<VisibilityRangeSource>,
 }

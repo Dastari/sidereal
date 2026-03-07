@@ -76,6 +76,24 @@ pub struct EnterWorldResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetBootstrapManifestEntry {
+    pub asset_id: String,
+    pub asset_guid: String,
+    pub sha256_hex: String,
+    pub relative_cache_path: String,
+    pub content_type: String,
+    pub byte_len: u64,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetBootstrapManifestResponse {
+    pub catalog_version: String,
+    pub required_assets: Vec<AssetBootstrapManifestEntry>,
+    pub catalog: Vec<AssetBootstrapManifestEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminSpawnEntityRequest {
     pub player_entity_id: String,
     pub bundle_id: String,
@@ -89,4 +107,62 @@ pub struct AdminSpawnEntityResponse {
     pub spawned_entity_id: String,
     pub bundle_id: String,
     pub owner_player_entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptCatalogDocumentSummaryDto {
+    pub script_path: String,
+    pub family: String,
+    pub active_revision: Option<u64>,
+    pub has_draft: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListScriptsResponse {
+    pub scripts: Vec<ScriptCatalogDocumentSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptCatalogDocumentDetailDto {
+    pub script_path: String,
+    pub family: String,
+    pub active_revision: Option<u64>,
+    pub active_source: Option<String>,
+    pub active_origin: Option<String>,
+    pub draft_source: Option<String>,
+    pub draft_origin: Option<String>,
+    pub draft_updated_at_epoch_s: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveScriptDraftRequest {
+    pub source: String,
+    pub origin: Option<String>,
+    pub family: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveScriptDraftResponse {
+    pub ok: bool,
+    pub script_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishScriptResponse {
+    pub ok: bool,
+    pub script_path: String,
+    pub published_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscardScriptDraftResponse {
+    pub ok: bool,
+    pub script_path: String,
+    pub discarded: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReloadScriptsFromDiskResponse {
+    pub ok: bool,
+    pub script_count: usize,
 }

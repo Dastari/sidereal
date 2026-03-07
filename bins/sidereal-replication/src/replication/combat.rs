@@ -1,10 +1,14 @@
 use bevy::prelude::*;
+use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::server::RawServer;
-use lightyear::prelude::{NetworkTarget, Server, ServerMultiMessageSender};
+use lightyear::prelude::{
+    NetworkTarget, RemoteId, ReplicationState, Server, ServerMultiMessageSender,
+};
 use serde_json::json;
-use sidereal_game::{ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent};
-use sidereal_net::{InputChannel, ServerWeaponFiredMessage};
+use sidereal_game::{EntityGuid, OwnerId, ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent};
+use sidereal_net::{InputChannel, PlayerEntityId, ServerWeaponFiredMessage};
 
+use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::runtime_scripting::{ScriptEvent, ScriptEventQueue};
 
 const TRACER_VISUAL_SPEED_MPS: f32 = 1800.0;
@@ -16,10 +20,39 @@ pub fn broadcast_weapon_fired_messages(
     server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     mut resolved_events: MessageReader<'_, '_, ShotImpactResolvedEvent>,
+    client_remotes: Query<'_, '_, (Entity, &'_ RemoteId), With<ClientOf>>,
+    replicated_entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Option<&'_ OwnerId>,
+            &'_ ReplicationState,
+        ),
+    >,
+    bindings: Res<'_, AuthenticatedClientBindings>,
 ) {
     let Ok(server) = server_query.single() else {
         return;
     };
+    let client_player_ids = bindings
+        .by_client_entity
+        .iter()
+        .filter_map(|(client_entity, player_entity_id)| {
+            PlayerEntityId::parse(player_entity_id.as_str())
+                .map(|id| (*client_entity, id.canonical_wire_id()))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let shooter_entity_by_guid = replicated_entities
+        .iter()
+        .map(|(entity, guid, owner_id, _)| {
+            let owner_player_id = owner_id
+                .and_then(|owner| PlayerEntityId::parse(owner.0.as_str()))
+                .map(|id| id.canonical_wire_id());
+            (guid.0, (entity, owner_player_id))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
 
     for resolved in resolved_events.read() {
         let travel = resolved.impact_pos - resolved.origin;
@@ -39,8 +72,29 @@ pub fn broadcast_weapon_fired_messages(
             impact_xy: Some([resolved.impact_pos.x, resolved.impact_pos.y]),
             ttl_s: visual_ttl_s,
         };
-        let target = NetworkTarget::All;
-        let _ = sender.send::<ServerWeaponFiredMessage, InputChannel>(&message, server, &target);
+        let Some((shooter_entity, shooter_owner_player_id)) =
+            shooter_entity_by_guid.get(&resolved.shooter_guid)
+        else {
+            continue;
+        };
+        let Ok((_, _, _, shooter_replication_state)) = replicated_entities.get(*shooter_entity)
+        else {
+            continue;
+        };
+        for (client_entity, remote_id) in &client_remotes {
+            let is_shooter_owner_client =
+                shooter_owner_player_id.as_ref().is_some_and(|owner_id| {
+                    client_player_ids
+                        .get(&client_entity)
+                        .is_some_and(|client_player_id| client_player_id == owner_id)
+                });
+            if !is_shooter_owner_client && !shooter_replication_state.is_visible(client_entity) {
+                continue;
+            }
+            let target = NetworkTarget::Single(remote_id.0);
+            let _ =
+                sender.send::<ServerWeaponFiredMessage, InputChannel>(&message, server, &target);
+        }
     }
 }
 
