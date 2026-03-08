@@ -60,7 +60,18 @@ pub fn sync_mounted_hierarchy(
         (Entity, &'_ ParentGuid, Option<&'_ Hardpoint>),
         (Without<ChildOf>, With<ParentGuid>),
     >,
-    guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid, Option<&'_ ParentGuid>)>,
+    guid_entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Option<&'_ ParentGuid>,
+            Has<Transform>,
+            Has<GlobalTransform>,
+            Has<Visibility>,
+        ),
+    >,
 ) {
     for (entity, hardpoint) in &updated_hardpoints {
         commands.entity(entity).insert(
@@ -74,7 +85,7 @@ pub fn sync_mounted_hierarchy(
 
     let mut entity_by_guid = HashMap::<Uuid, Entity>::new();
     let mut parent_by_guid = HashMap::<Uuid, Uuid>::new();
-    for (entity, guid, maybe_parent) in guid_entities.iter() {
+    for (entity, guid, maybe_parent, _, _, _) in guid_entities.iter() {
         entity_by_guid.insert(guid.0, entity);
         if let Some(parent) = maybe_parent {
             parent_by_guid.insert(guid.0, parent.0);
@@ -82,7 +93,7 @@ pub fn sync_mounted_hierarchy(
     }
 
     for (child_entity, parent_guid, hardpoint) in &unmounted {
-        let Ok((_, child_entity_guid, _)) = guid_entities.get(child_entity) else {
+        let Ok((_, child_entity_guid, _, _, _, _)) = guid_entities.get(child_entity) else {
             continue;
         };
         let child_guid = child_entity_guid.0;
@@ -99,6 +110,21 @@ pub fn sync_mounted_hierarchy(
             continue;
         };
 
+        let Ok((_, _, _, has_transform, has_global_transform, has_visibility)) =
+            guid_entities.get(parent_entity)
+        else {
+            continue;
+        };
+        let mut parent_commands = commands.entity(parent_entity);
+        if !has_transform {
+            parent_commands.insert(Transform::default());
+        }
+        if !has_global_transform {
+            parent_commands.insert(GlobalTransform::default());
+        }
+        if !has_visibility {
+            parent_commands.insert(Visibility::default());
+        }
         commands.entity(parent_entity).add_child(child_entity);
 
         // Track accepted links in this frame so subsequent checks are safe
@@ -186,5 +212,27 @@ mod tests {
             .expect("updated transform");
         assert_eq!(updated.translation, Vec3::new(9.0, -3.0, 0.0));
         assert!(app.world().entities().contains(parent));
+    }
+
+    #[test]
+    fn inserts_missing_spatial_components_on_parent_before_linking_child() {
+        let mut app = App::new();
+        app.add_systems(Update, sync_mounted_hierarchy);
+
+        let parent_guid = Uuid::new_v4();
+        let child_guid = Uuid::new_v4();
+        let parent = app.world_mut().spawn(EntityGuid(parent_guid)).id();
+        let child = app
+            .world_mut()
+            .spawn((EntityGuid(child_guid), ParentGuid(parent_guid)))
+            .id();
+
+        app.update();
+
+        let parent_ref = app.world().entity(parent);
+        assert!(parent_ref.contains::<Transform>());
+        assert!(parent_ref.contains::<GlobalTransform>());
+        assert!(parent_ref.contains::<Visibility>());
+        assert!(app.world().entity(child).contains::<ChildOf>());
     }
 }

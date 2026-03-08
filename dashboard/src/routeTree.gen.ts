@@ -20,14 +20,20 @@ import { Route as DashboardShaderWorkshopRouteImport } from './routes/_dashboard
 import { Route as DashboardSettingsRouteImport } from './routes/_dashboard.settings'
 import { Route as DashboardScriptEditorRouteImport } from './routes/_dashboard.script-editor'
 import { Route as DashboardGameWorldRouteImport } from './routes/_dashboard.game-world'
+import { Route as DashboardGameClientRouteImport } from './routes/_dashboard.game-client'
 import { Route as DashboardDatabaseRouteImport } from './routes/_dashboard.database'
+import { Route as DashboardDatabaseIndexRouteImport } from './routes/_dashboard.database.index'
 import { Route as ApiShadersUploadRouteImport } from './routes/api.shaders.upload'
 import { Route as ApiShadersShaderIdRouteImport } from './routes/api.shaders.$shaderId'
 import { Route as ApiDeleteEntityEntityIdRouteImport } from './routes/api.delete-entity.$entityId'
 import { Route as ApiAdminSpawnEntityRouteImport } from './routes/api.admin.spawn-entity'
 import { Route as DashboardShaderWorkshopShaderIdRouteImport } from './routes/_dashboard.shader-workshop.$shaderId'
 import { Route as DashboardGameWorldEntityGuidRouteImport } from './routes/_dashboard.game-world.$entityGuid'
+import { Route as DashboardDatabaseTablesRouteImport } from './routes/_dashboard.database.tables'
+import { Route as DashboardDatabaseAccountsRouteImport } from './routes/_dashboard.database.accounts'
 import { Route as DashboardDatabaseEntityGuidRouteImport } from './routes/_dashboard.database.$entityGuid'
+import { Route as ApiDatabaseCharactersPlayerEntityIdDisplayNameRouteImport } from './routes/api.database.characters.$playerEntityId.display-name'
+import { Route as ApiDatabaseAccountsAccountIdPasswordResetRouteImport } from './routes/api.database.accounts.$accountId.password-reset'
 
 const ShaderWorkbenchRoute = ShaderWorkbenchRouteImport.update({
   id: '/shader-workbench',
@@ -83,10 +89,20 @@ const DashboardGameWorldRoute = DashboardGameWorldRouteImport.update({
   path: '/game-world',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardGameClientRoute = DashboardGameClientRouteImport.update({
+  id: '/game-client',
+  path: '/game-client',
+  getParentRoute: () => DashboardRoute,
+} as any)
 const DashboardDatabaseRoute = DashboardDatabaseRouteImport.update({
   id: '/database',
   path: '/database',
   getParentRoute: () => DashboardRoute,
+} as any)
+const DashboardDatabaseIndexRoute = DashboardDatabaseIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DashboardDatabaseRoute,
 } as any)
 const ApiShadersUploadRoute = ApiShadersUploadRouteImport.update({
   id: '/upload',
@@ -120,74 +136,114 @@ const DashboardGameWorldEntityGuidRoute =
     path: '/$entityGuid',
     getParentRoute: () => DashboardGameWorldRoute,
   } as any)
+const DashboardDatabaseTablesRoute = DashboardDatabaseTablesRouteImport.update({
+  id: '/tables',
+  path: '/tables',
+  getParentRoute: () => DashboardDatabaseRoute,
+} as any)
+const DashboardDatabaseAccountsRoute =
+  DashboardDatabaseAccountsRouteImport.update({
+    id: '/accounts',
+    path: '/accounts',
+    getParentRoute: () => DashboardDatabaseRoute,
+  } as any)
 const DashboardDatabaseEntityGuidRoute =
   DashboardDatabaseEntityGuidRouteImport.update({
     id: '/$entityGuid',
     path: '/$entityGuid',
     getParentRoute: () => DashboardDatabaseRoute,
   } as any)
+const ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute =
+  ApiDatabaseCharactersPlayerEntityIdDisplayNameRouteImport.update({
+    id: '/characters/$playerEntityId/display-name',
+    path: '/characters/$playerEntityId/display-name',
+    getParentRoute: () => ApiDatabaseRoute,
+  } as any)
+const ApiDatabaseAccountsAccountIdPasswordResetRoute =
+  ApiDatabaseAccountsAccountIdPasswordResetRouteImport.update({
+    id: '/accounts/$accountId/password-reset',
+    path: '/accounts/$accountId/password-reset',
+    getParentRoute: () => ApiDatabaseRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof DashboardIndexRoute
   '/shader-workbench': typeof ShaderWorkbenchRoute
   '/database': typeof DashboardDatabaseRouteWithChildren
+  '/game-client': typeof DashboardGameClientRoute
   '/game-world': typeof DashboardGameWorldRouteWithChildren
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
-  '/api/database': typeof ApiDatabaseRoute
+  '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
   '/api/shaders': typeof ApiShadersRouteWithChildren
   '/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
+  '/database/accounts': typeof DashboardDatabaseAccountsRoute
+  '/database/tables': typeof DashboardDatabaseTablesRoute
   '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
+  '/database/': typeof DashboardDatabaseIndexRoute
+  '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
+  '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
 }
 export interface FileRoutesByTo {
   '/shader-workbench': typeof ShaderWorkbenchRoute
-  '/database': typeof DashboardDatabaseRouteWithChildren
+  '/game-client': typeof DashboardGameClientRoute
   '/game-world': typeof DashboardGameWorldRouteWithChildren
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
-  '/api/database': typeof ApiDatabaseRoute
+  '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
   '/api/shaders': typeof ApiShadersRouteWithChildren
   '/': typeof DashboardIndexRoute
   '/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
+  '/database/accounts': typeof DashboardDatabaseAccountsRoute
+  '/database/tables': typeof DashboardDatabaseTablesRoute
   '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
+  '/database': typeof DashboardDatabaseIndexRoute
+  '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
+  '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_dashboard': typeof DashboardRouteWithChildren
   '/shader-workbench': typeof ShaderWorkbenchRoute
   '/_dashboard/database': typeof DashboardDatabaseRouteWithChildren
+  '/_dashboard/game-client': typeof DashboardGameClientRoute
   '/_dashboard/game-world': typeof DashboardGameWorldRouteWithChildren
   '/_dashboard/script-editor': typeof DashboardScriptEditorRoute
   '/_dashboard/settings': typeof DashboardSettingsRoute
   '/_dashboard/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
-  '/api/database': typeof ApiDatabaseRoute
+  '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
   '/api/shaders': typeof ApiShadersRouteWithChildren
   '/_dashboard/': typeof DashboardIndexRoute
   '/_dashboard/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
+  '/_dashboard/database/accounts': typeof DashboardDatabaseAccountsRoute
+  '/_dashboard/database/tables': typeof DashboardDatabaseTablesRoute
   '/_dashboard/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/_dashboard/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
+  '/_dashboard/database/': typeof DashboardDatabaseIndexRoute
+  '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
+  '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -195,6 +251,7 @@ export interface FileRouteTypes {
     | '/'
     | '/shader-workbench'
     | '/database'
+    | '/game-client'
     | '/game-world'
     | '/script-editor'
     | '/settings'
@@ -204,16 +261,21 @@ export interface FileRouteTypes {
     | '/api/graph'
     | '/api/shaders'
     | '/database/$entityGuid'
+    | '/database/accounts'
+    | '/database/tables'
     | '/game-world/$entityGuid'
     | '/shader-workshop/$shaderId'
     | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
+    | '/database/'
+    | '/api/database/accounts/$accountId/password-reset'
+    | '/api/database/characters/$playerEntityId/display-name'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/shader-workbench'
-    | '/database'
+    | '/game-client'
     | '/game-world'
     | '/script-editor'
     | '/settings'
@@ -224,17 +286,23 @@ export interface FileRouteTypes {
     | '/api/shaders'
     | '/'
     | '/database/$entityGuid'
+    | '/database/accounts'
+    | '/database/tables'
     | '/game-world/$entityGuid'
     | '/shader-workshop/$shaderId'
     | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
+    | '/database'
+    | '/api/database/accounts/$accountId/password-reset'
+    | '/api/database/characters/$playerEntityId/display-name'
   id:
     | '__root__'
     | '/_dashboard'
     | '/shader-workbench'
     | '/_dashboard/database'
+    | '/_dashboard/game-client'
     | '/_dashboard/game-world'
     | '/_dashboard/script-editor'
     | '/_dashboard/settings'
@@ -245,19 +313,24 @@ export interface FileRouteTypes {
     | '/api/shaders'
     | '/_dashboard/'
     | '/_dashboard/database/$entityGuid'
+    | '/_dashboard/database/accounts'
+    | '/_dashboard/database/tables'
     | '/_dashboard/game-world/$entityGuid'
     | '/_dashboard/shader-workshop/$shaderId'
     | '/api/admin/spawn-entity'
     | '/api/delete-entity/$entityId'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
+    | '/_dashboard/database/'
+    | '/api/database/accounts/$accountId/password-reset'
+    | '/api/database/characters/$playerEntityId/display-name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRouteWithChildren
   ShaderWorkbenchRoute: typeof ShaderWorkbenchRoute
   ApiBrpRoute: typeof ApiBrpRoute
-  ApiDatabaseRoute: typeof ApiDatabaseRoute
+  ApiDatabaseRoute: typeof ApiDatabaseRouteWithChildren
   ApiGraphRoute: typeof ApiGraphRoute
   ApiShadersRoute: typeof ApiShadersRouteWithChildren
   ApiAdminSpawnEntityRoute: typeof ApiAdminSpawnEntityRoute
@@ -343,12 +416,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardGameWorldRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/_dashboard/game-client': {
+      id: '/_dashboard/game-client'
+      path: '/game-client'
+      fullPath: '/game-client'
+      preLoaderRoute: typeof DashboardGameClientRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/_dashboard/database': {
       id: '/_dashboard/database'
       path: '/database'
       fullPath: '/database'
       preLoaderRoute: typeof DashboardDatabaseRouteImport
       parentRoute: typeof DashboardRoute
+    }
+    '/_dashboard/database/': {
+      id: '/_dashboard/database/'
+      path: '/'
+      fullPath: '/database/'
+      preLoaderRoute: typeof DashboardDatabaseIndexRouteImport
+      parentRoute: typeof DashboardDatabaseRoute
     }
     '/api/shaders/upload': {
       id: '/api/shaders/upload'
@@ -392,6 +479,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardGameWorldEntityGuidRouteImport
       parentRoute: typeof DashboardGameWorldRoute
     }
+    '/_dashboard/database/tables': {
+      id: '/_dashboard/database/tables'
+      path: '/tables'
+      fullPath: '/database/tables'
+      preLoaderRoute: typeof DashboardDatabaseTablesRouteImport
+      parentRoute: typeof DashboardDatabaseRoute
+    }
+    '/_dashboard/database/accounts': {
+      id: '/_dashboard/database/accounts'
+      path: '/accounts'
+      fullPath: '/database/accounts'
+      preLoaderRoute: typeof DashboardDatabaseAccountsRouteImport
+      parentRoute: typeof DashboardDatabaseRoute
+    }
     '/_dashboard/database/$entityGuid': {
       id: '/_dashboard/database/$entityGuid'
       path: '/$entityGuid'
@@ -399,15 +500,35 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardDatabaseEntityGuidRouteImport
       parentRoute: typeof DashboardDatabaseRoute
     }
+    '/api/database/characters/$playerEntityId/display-name': {
+      id: '/api/database/characters/$playerEntityId/display-name'
+      path: '/characters/$playerEntityId/display-name'
+      fullPath: '/api/database/characters/$playerEntityId/display-name'
+      preLoaderRoute: typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRouteImport
+      parentRoute: typeof ApiDatabaseRoute
+    }
+    '/api/database/accounts/$accountId/password-reset': {
+      id: '/api/database/accounts/$accountId/password-reset'
+      path: '/accounts/$accountId/password-reset'
+      fullPath: '/api/database/accounts/$accountId/password-reset'
+      preLoaderRoute: typeof ApiDatabaseAccountsAccountIdPasswordResetRouteImport
+      parentRoute: typeof ApiDatabaseRoute
+    }
   }
 }
 
 interface DashboardDatabaseRouteChildren {
   DashboardDatabaseEntityGuidRoute: typeof DashboardDatabaseEntityGuidRoute
+  DashboardDatabaseAccountsRoute: typeof DashboardDatabaseAccountsRoute
+  DashboardDatabaseTablesRoute: typeof DashboardDatabaseTablesRoute
+  DashboardDatabaseIndexRoute: typeof DashboardDatabaseIndexRoute
 }
 
 const DashboardDatabaseRouteChildren: DashboardDatabaseRouteChildren = {
   DashboardDatabaseEntityGuidRoute: DashboardDatabaseEntityGuidRoute,
+  DashboardDatabaseAccountsRoute: DashboardDatabaseAccountsRoute,
+  DashboardDatabaseTablesRoute: DashboardDatabaseTablesRoute,
+  DashboardDatabaseIndexRoute: DashboardDatabaseIndexRoute,
 }
 
 const DashboardDatabaseRouteWithChildren =
@@ -440,6 +561,7 @@ const DashboardShaderWorkshopRouteWithChildren =
 
 interface DashboardRouteChildren {
   DashboardDatabaseRoute: typeof DashboardDatabaseRouteWithChildren
+  DashboardGameClientRoute: typeof DashboardGameClientRoute
   DashboardGameWorldRoute: typeof DashboardGameWorldRouteWithChildren
   DashboardScriptEditorRoute: typeof DashboardScriptEditorRoute
   DashboardSettingsRoute: typeof DashboardSettingsRoute
@@ -449,6 +571,7 @@ interface DashboardRouteChildren {
 
 const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardDatabaseRoute: DashboardDatabaseRouteWithChildren,
+  DashboardGameClientRoute: DashboardGameClientRoute,
   DashboardGameWorldRoute: DashboardGameWorldRouteWithChildren,
   DashboardScriptEditorRoute: DashboardScriptEditorRoute,
   DashboardSettingsRoute: DashboardSettingsRoute,
@@ -458,6 +581,22 @@ const DashboardRouteChildren: DashboardRouteChildren = {
 
 const DashboardRouteWithChildren = DashboardRoute._addFileChildren(
   DashboardRouteChildren,
+)
+
+interface ApiDatabaseRouteChildren {
+  ApiDatabaseAccountsAccountIdPasswordResetRoute: typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
+  ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute: typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
+}
+
+const ApiDatabaseRouteChildren: ApiDatabaseRouteChildren = {
+  ApiDatabaseAccountsAccountIdPasswordResetRoute:
+    ApiDatabaseAccountsAccountIdPasswordResetRoute,
+  ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute:
+    ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute,
+}
+
+const ApiDatabaseRouteWithChildren = ApiDatabaseRoute._addFileChildren(
+  ApiDatabaseRouteChildren,
 )
 
 interface ApiShadersRouteChildren {
@@ -478,7 +617,7 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRouteWithChildren,
   ShaderWorkbenchRoute: ShaderWorkbenchRoute,
   ApiBrpRoute: ApiBrpRoute,
-  ApiDatabaseRoute: ApiDatabaseRoute,
+  ApiDatabaseRoute: ApiDatabaseRouteWithChildren,
   ApiGraphRoute: ApiGraphRoute,
   ApiShadersRoute: ApiShadersRouteWithChildren,
   ApiAdminSpawnEntityRoute: ApiAdminSpawnEntityRoute,

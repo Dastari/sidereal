@@ -15,6 +15,7 @@ Project operating contract for human and AI contributors working in this reposit
 - Component authoring workflow/macros: `docs/component_authoring_guide.md`
 - Visibility/replication implementation contract: `docs/features/visibility_replication_contract.md`
 - Asset delivery implementation contract: `docs/features/asset_delivery_contract.md`
+- Lightyear upstream issue triage reference: `docs/features/lightyear_upstream_issue_snapshot.md`
 - UI design system and component patterns: `docs/ui_design_guide.md`
 - Repo overview: `README.md`
 
@@ -57,10 +58,11 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Large runtime refactors must split mixed concerns into domain modules; avoid continuing monolithic growth in client/server entrypoints. Keep entrypoints focused on app wiring and plugin composition.
 - Platform branching uses `cfg(target_arch = "wasm32")` only. Never use a cargo feature flag to gate native-vs-WASM code paths; `target_arch` is set automatically by the compiler and cannot be miscombined.
 - WASM uses platform-specific network adapters only at the transport boundary. All gameplay, prediction, reconciliation, and ECS systems are shared and must compile for both targets without conditional compilation.
-- Browser transport direction is WebRTC-first (unreliable/unordered data channels for game state, ordered/reliable channel for session control). WebSocket is allowed only as an explicit fallback. New WASM transport work must not default to WebSocket.
+- Browser transport direction is WebTransport-first. WebSocket is allowed only as an explicit fallback. New WASM transport work must not default to WebSocket.
 - Asset payload delivery is gateway HTTP-based via authenticated `/assets/<asset_guid>` fetches; replication transport must not stream asset payload bytes.
 - Concrete asset definitions (asset IDs, filenames, shader/material/audio/sprite references, bootstrap-required sets, dependency metadata) are authored in Lua asset registry scripts and generated catalogs, not hardcoded in Rust runtime code.
 - Client cache is MMO-style local cache: single `assets.pak` + companion index/metadata, with checksum/version invalidation.
+- Browser/WASM runtime asset mounting must be byte-backed from the authenticated cache adapter or gateway fetch path; browser code must not rely on filesystem-style `AssetServer` paths such as `data/cache_stream/...`.
 - `bevy_remote` inspection endpoints for shard/replication/client must be auth-gated and follow project security defaults. Until a real authenticated HTTP gate exists, BRP must remain loopback-only.
 
 ## 4. Implementation Workflow Requirements
@@ -74,6 +76,7 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - For new gameplay components, include persistence/hydration mapping updates (or explicit non-persisted runtime-only rationale) and tests in the same change.
 - For scripting-connected components (for example `FlightComputer`), script APIs may emit intent only; scripts must not directly authoritatively mutate transforms/velocities/ownership or bypass Rust authority systems.
 - Keep boundaries explicit between crates/services (no persistence/network leakage into gameplay core).
+- If Lightyear behaviour appears unexplained, check `docs/features/lightyear_upstream_issue_snapshot.md` before assuming the issue is local-only or introducing a workaround. If the behaviour matches an upstream issue, reference it in the change; if not, update the snapshot with the new upstream search result.
 - When adding or changing client-side code: verify both native and WASM targets still build. If a change breaks the WASM target, fix it in the same PR before marking complete. Do not defer WASM build failures.
 - WASM client validation must include WebGPU support in the build configuration (`bevy/webgpu`), not only default WASM feature sets.
 - When changing client behavior, transport contracts, prediction/reconciliation flow, or client runtime defaults: update docs to note native impact and WASM impact (or explicitly state "no WASM impact").
@@ -86,6 +89,7 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Postgres + AGE local infra is defined in `docker-compose.yaml`.
 - Initialization SQL for AGE/graph lives under `docker/init/`.
 - Asset root default is `./data`.
+- Replication and gateway tracing output is written to both the console and workspace-relative `./logs/` with a fresh timestamped file per process start; use the persisted log files for debugging service startup, transport, auth, and runtime behavior.
 - Follow runtime defaults and env vars listed in `docs/sidereal_design_document.md`.
 
 ## 6. Quality Gates (Minimum)

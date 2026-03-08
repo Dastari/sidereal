@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
     replicate = true,
     visibility = [OwnerOnly]
 )]
-#[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Component, Reflect, Serialize, Deserialize, PartialEq)]
 #[reflect(Component, Serialize, Deserialize)]
 pub struct TacticalMapUiSettings {
+    pub shader_asset_id: String,
     pub map_distance_m: f32,
     pub map_zoom_wheel_sensitivity: f32,
     pub overlay_takeover_alpha: f32,
@@ -43,6 +44,7 @@ pub struct TacticalMapUiSettings {
 impl Default for TacticalMapUiSettings {
     fn default() -> Self {
         Self {
+            shader_asset_id: String::new(),
             map_distance_m: 90.0,
             map_zoom_wheel_sensitivity: 0.12,
             overlay_takeover_alpha: 0.995,

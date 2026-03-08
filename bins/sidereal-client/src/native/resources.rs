@@ -2,9 +2,53 @@
 
 use bevy::ecs::component::ComponentId;
 use bevy::prelude::*;
+use sidereal_asset_runtime::AssetCacheIndex;
+use sidereal_core::gateway_dtos::{
+    AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
+    EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
+    PasswordResetRequest, PasswordResetResponse, RegisterRequest,
+};
 use sidereal_game::EntityAction;
 use sidereal_game::{SpaceBackgroundShaderSettings, StarfieldShaderSettings};
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) type GatewayFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + 'static>>;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type GatewayFuture<T> =
+    Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'static>>;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) type CacheFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + 'static>>;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type CacheFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'static>>;
+
+#[derive(Clone, Copy, Resource)]
+pub(crate) struct GatewayHttpAdapter {
+    pub login: fn(String, LoginRequest) -> GatewayFuture<AuthTokens>,
+    pub register: fn(String, RegisterRequest) -> GatewayFuture<AuthTokens>,
+    pub request_password_reset:
+        fn(String, PasswordResetRequest) -> GatewayFuture<PasswordResetResponse>,
+    pub confirm_password_reset: fn(String, PasswordResetConfirmRequest) -> GatewayFuture<()>,
+    pub fetch_me: fn(String, String) -> GatewayFuture<MeResponse>,
+    pub fetch_characters: fn(String, String) -> GatewayFuture<CharactersResponse>,
+    pub enter_world: fn(String, String, EnterWorldRequest) -> GatewayFuture<EnterWorldResponse>,
+    pub fetch_bootstrap_manifest:
+        fn(String, String) -> GatewayFuture<AssetBootstrapManifestResponse>,
+    pub fetch_asset_bytes: fn(String, String) -> GatewayFuture<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Resource)]
+pub(crate) struct AssetCacheAdapter {
+    pub prepare_root: fn(String) -> CacheFuture<()>,
+    pub load_index: fn(String) -> CacheFuture<AssetCacheIndex>,
+    pub save_index: fn(String, AssetCacheIndex) -> CacheFuture<()>,
+    pub read_valid_asset: fn(String, String, String) -> CacheFuture<Option<Vec<u8>>>,
+    pub write_asset: fn(String, String, Vec<u8>) -> CacheFuture<()>,
+    pub read_valid_asset_sync: fn(&str, &str, &str) -> Option<Vec<u8>>,
+}
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct ClientNetworkTick(pub u64);

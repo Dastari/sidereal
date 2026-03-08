@@ -265,10 +265,21 @@ pub fn receive_lightyear_control_results(
             }
             player_view_state.desired_controlled_entity_id =
                 player_view_state.controlled_entity_id.clone();
-            warn!(
-                "client control request rejected player={} seq={} reason={}",
-                message.player_entity_id, message.request_seq, message.reason
-            );
+            let duplicate_stale_seq = message.reason == "stale_seq"
+                && request_state.pending_request_seq != Some(message.request_seq);
+            if duplicate_stale_seq {
+                if client_control_debug_logging_enabled() {
+                    info!(
+                        "client ignored duplicate stale control rejection player={} seq={} reason={}",
+                        message.player_entity_id, message.request_seq, message.reason
+                    );
+                }
+            } else {
+                warn!(
+                    "client control request rejected player={} seq={} reason={}",
+                    message.player_entity_id, message.request_seq, message.reason
+                );
+            }
         }
     }
 }

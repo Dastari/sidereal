@@ -18,14 +18,15 @@ use sidereal_persistence::{
     upsert_script_catalog_draft,
 };
 use sidereal_scripting::{
-    LuaSandboxPolicy, ScriptError, inject_script_logger, load_lua_module_from_source,
+    LuaSandboxPolicy, ScriptAssetRegistry, ScriptError, inject_script_logger,
+    load_asset_registry_from_source, load_lua_module_from_source,
     load_lua_module_into_lua_from_source, lua_value_to_json, resolve_scripts_root,
     table_get_required_string, table_get_required_string_list, validate_component_kinds,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 fn remove_empty_array_like_field(
@@ -184,6 +185,7 @@ pub struct WorldInitScriptConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerInitScriptConfig {
+    pub player_bundle_id: String,
     pub ship_bundle_id: String,
 }
 
@@ -200,25 +202,12 @@ pub struct ScriptBundleRegistry {
     pub bundles: HashMap<String, ScriptBundleDefinition>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GatewayAssetRegistryEntry {
-    pub asset_id: String,
-    pub source_path: String,
-    pub content_type: String,
-    pub dependencies: Vec<String>,
-    pub bootstrap_required: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GatewayAssetRegistry {
-    pub entries: Vec<GatewayAssetRegistryEntry>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ScriptContext<'a> {
     pub account_id: Uuid,
     pub player_entity_id: &'a str,
     pub email: &'a str,
+    pub controlled_entity_guid: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -250,7 +239,7 @@ fn gateway_database_url() -> String {
 
 pub fn scripts_root_dir() -> PathBuf {
     let resolved = resolve_scripts_root(env!("CARGO_MANIFEST_DIR"));
-    info!("gateway scripting root resolved to {}", resolved.display());
+    debug!("gateway scripting root resolved to {}", resolved.display());
     resolved
 }
 
@@ -423,8 +412,21 @@ pub fn publish_persisted_script_catalog_draft(script_path: &str) -> Result<Optio
     let database_url = gateway_database_url();
     let mut client = postgres::Client::connect(&database_url, postgres::NoTls)
         .map_err(|err| AuthError::Internal(format!("postgres connect failed: {err}")))?;
-    publish_script_catalog_draft(&mut client, script_path)
-        .map_err(|err| AuthError::Internal(format!("publish script catalog draft failed: {err}")))
+    let published_revision =
+        publish_script_catalog_draft(&mut client, script_path).map_err(|err| {
+            AuthError::Internal(format!("publish script catalog draft failed: {err}"))
+        })?;
+    if published_revision.is_some() {
+        let root = scripts_root_dir();
+        let catalog = load_script_catalog_from_database_or_seed(&root)?;
+        let cache =
+            SCRIPT_CATALOG_CACHE.get_or_init(|| Mutex::new(ScriptCatalogCacheState::default()));
+        let mut guard = cache.lock().map_err(|_| {
+            AuthError::Internal("gateway script catalog cache lock poisoned".to_string())
+        })?;
+        guard.catalog = Some(catalog);
+    }
+    Ok(published_revision)
 }
 
 pub fn discard_persisted_script_catalog_draft(script_path: &str) -> Result<bool, AuthError> {
@@ -663,10 +665,16 @@ pub fn load_player_init_config_from_catalog(
     };
     let ship_bundle_id = table_get_required_string(&table, "ship_bundle_id", "player_init")
         .map_err(map_script_error)?;
-    Ok(PlayerInitScriptConfig { ship_bundle_id }).inspect(|config| {
+    let player_bundle_id = table_get_required_string(&table, "player_bundle_id", "player_init")
+        .map_err(map_script_error)?;
+    Ok(PlayerInitScriptConfig {
+        player_bundle_id,
+        ship_bundle_id,
+    })
+    .inspect(|config| {
         info!(
-            "gateway player-init script selected ship_bundle_id={} for account_id={} player_entity_id={}",
-            config.ship_bundle_id, context.account_id, context.player_entity_id
+            "gateway player-init script selected player_bundle_id={} ship_bundle_id={} for account_id={} player_entity_id={}",
+            config.player_bundle_id, config.ship_bundle_id, context.account_id, context.player_entity_id
         );
     })
 }
@@ -731,87 +739,10 @@ pub fn load_bundle_registry_from_catalog(
 
 pub fn load_asset_registry_from_catalog(
     catalog: &ScriptCatalogResource,
-) -> Result<GatewayAssetRegistry, AuthError> {
-    let policy = LuaSandboxPolicy::from_env();
+) -> Result<ScriptAssetRegistry, AuthError> {
     let entry = lookup_script_catalog_entry(catalog, "assets/registry.lua")?;
-    let module =
-        load_lua_module_from_source(&entry.source, Path::new("assets/registry.lua"), &policy)
-            .map_err(map_script_error)?;
-    let root = module.root();
-    let schema_version_i64 = root
-        .get::<i64>("schema_version")
-        .map_err(|err| AuthError::Internal(format!("assets/registry.lua: {err}")))?;
-    if schema_version_i64 < 1 {
-        return Err(AuthError::Internal(
-            "assets/registry.lua: schema_version must be >= 1".to_string(),
-        ));
-    }
-    let assets_table = root
-        .get::<Table>("assets")
-        .map_err(|err| AuthError::Internal(format!("assets/registry.lua: {err}")))?;
-
-    let mut entries = Vec::new();
-    for (idx, value) in assets_table.sequence_values::<Table>().enumerate() {
-        let asset = value.map_err(|err| {
-            AuthError::Internal(format!(
-                "assets/registry.lua: assets[{}] decode failed: {err}",
-                idx + 1
-            ))
-        })?;
-        let context = format!("assets[{}]", idx + 1);
-        let asset_id =
-            table_get_required_string(&asset, "asset_id", &context).map_err(map_script_error)?;
-        let source_path =
-            table_get_required_string(&asset, "source_path", &context).map_err(map_script_error)?;
-        let content_type = table_get_required_string(&asset, "content_type", &context)
-            .map_err(map_script_error)?;
-        let dependencies = match asset
-            .get::<Value>("dependencies")
-            .map_err(|err| AuthError::Internal(format!("assets/registry.lua: {err}")))?
-        {
-            Value::Nil => Vec::new(),
-            Value::Table(values) => {
-                let mut out = Vec::new();
-                for value in values.sequence_values::<String>() {
-                    out.push(value.map_err(|err| {
-                        AuthError::Internal(format!(
-                            "assets/registry.lua: {}.dependencies decode failed: {err}",
-                            context
-                        ))
-                    })?);
-                }
-                out
-            }
-            _ => {
-                return Err(AuthError::Internal(format!(
-                    "assets/registry.lua: {}.dependencies must be an array of strings when present",
-                    context
-                )));
-            }
-        };
-        let bootstrap_required = match asset
-            .get::<Value>("bootstrap_required")
-            .map_err(|err| AuthError::Internal(format!("assets/registry.lua: {err}")))?
-        {
-            Value::Nil => false,
-            Value::Boolean(value) => value,
-            _ => {
-                return Err(AuthError::Internal(format!(
-                    "assets/registry.lua: {}.bootstrap_required must be boolean when present",
-                    context
-                )));
-            }
-        };
-        entries.push(GatewayAssetRegistryEntry {
-            asset_id,
-            source_path,
-            content_type,
-            dependencies,
-            bootstrap_required,
-        });
-    }
-    entries.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
-    Ok(GatewayAssetRegistry { entries })
+    load_asset_registry_from_source(&entry.source, Path::new("assets/registry.lua"))
+        .map_err(map_script_error)
 }
 
 pub fn load_graph_records_for_bundle(
@@ -936,6 +867,12 @@ fn inject_script_context(
         ctx.set("email", context.email).map_err(|err| {
             AuthError::Internal(format!("{}: {err}", module.script_path().display()))
         })?;
+        if let Some(controlled_entity_guid) = context.controlled_entity_guid {
+            ctx.set("controlled_entity_guid", controlled_entity_guid)
+                .map_err(|err| {
+                    AuthError::Internal(format!("{}: {err}", module.script_path().display()))
+                })?;
+        }
     }
     let new_uuid = module
         .lua()
@@ -1286,7 +1223,7 @@ fn inject_generate_collision_outline_fn(
             let asset_registry = load_asset_registry_from_catalog(&catalog)
                 .map_err(|err| mlua::Error::runtime(err.to_string()))?;
             let Some(asset) = asset_registry
-                .entries
+                .assets
                 .iter()
                 .find(|entry| entry.asset_id == visual_asset_id)
             else {
@@ -1360,7 +1297,7 @@ fn inject_generate_collision_outline_fn(
             let asset_registry =
                 load_asset_registry_from_catalog(&catalog).map_err(|err| mlua::Error::runtime(err.to_string()))?;
             let Some(asset) = asset_registry
-                .entries
+                .assets
                 .iter()
                 .find(|entry| entry.asset_id == visual_asset_id)
             else {
@@ -1448,20 +1385,21 @@ mod tests {
     use super::{
         ScriptContext, load_bundle_registry, load_graph_records_for_bundle,
         load_player_init_config, load_world_init_config, load_world_init_graph_records,
-        scripts_root_dir,
+        reload_script_catalog_from_disk, scripts_root_dir,
     };
     use uuid::Uuid;
 
     #[test]
     fn default_world_init_script_loads() {
         let root = scripts_root_dir();
+        let _ = reload_script_catalog_from_disk(&root).expect("reload script catalog");
         let config = load_world_init_config(&root).expect("load world init");
         assert!(!config.render_layer_shader_asset_ids.is_empty());
         assert!(
             config
                 .render_layer_shader_asset_ids
                 .iter()
-                .any(|id| id == "space_background_wgsl")
+                .any(|id| id == "space_background_base_wgsl")
         );
         assert!(
             config
@@ -1474,21 +1412,25 @@ mod tests {
     #[test]
     fn default_player_init_script_loads() {
         let root = scripts_root_dir();
+        let _ = reload_script_catalog_from_disk(&root).expect("reload script catalog");
         let config = load_player_init_config(
             &root,
             ScriptContext {
                 account_id: Uuid::new_v4(),
                 player_entity_id: &Uuid::new_v4().to_string(),
                 email: "pilot@example.com",
+                controlled_entity_guid: None,
             },
         )
         .expect("load player init");
+        assert_eq!(config.player_bundle_id, "player.default");
         assert_eq!(config.ship_bundle_id, "ship.corvette");
     }
 
     #[test]
     fn default_bundle_registry_loads_and_validates_component_kinds() {
         let root = scripts_root_dir();
+        let _ = reload_script_catalog_from_disk(&root).expect("reload script catalog");
         let registry = load_bundle_registry(&root).expect("load bundle registry");
         let corvette = registry
             .bundles
@@ -1506,6 +1448,15 @@ mod tests {
                 .required_component_kinds
                 .contains(&"visibility_range_buff_m".to_string())
         );
+        let player_bundle = registry
+            .bundles
+            .get("player.default")
+            .expect("player bundle");
+        assert_eq!(player_bundle.bundle_class, "player");
+        assert_eq!(
+            player_bundle.graph_records_script,
+            "bundles/starter/player.lua"
+        );
     }
 
     #[test]
@@ -1520,6 +1471,7 @@ mod tests {
                 account_id: Uuid::new_v4(),
                 player_entity_id: &Uuid::new_v4().to_string(),
                 email: "pilot@example.com",
+                controlled_entity_guid: None,
             },
         )
         .expect("load graph records for starter bundle");
@@ -1547,6 +1499,7 @@ mod tests {
                 account_id: Uuid::new_v4(),
                 player_entity_id: &Uuid::new_v4().to_string(),
                 email: "pilot@example.com",
+                controlled_entity_guid: None,
             },
         )
         .expect("load graph records for starter bundle");

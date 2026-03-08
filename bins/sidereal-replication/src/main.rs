@@ -8,16 +8,38 @@ use crate::replication::{
 use avian2d::prelude::{Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems};
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::asset::{AssetApp, AssetPlugin};
-use bevy::log::LogPlugin;
+use bevy::log::tracing_subscriber::fmt::writer::MakeWriterExt;
+use bevy::log::{BoxedFmtLayer, LogPlugin};
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
+use lightyear::input::native::prelude::NativeStateSequence;
+use lightyear::input::plugin::InputPlugin as LightyearInputProtocolPlugin;
 use lightyear::prelude::server::ServerPlugins;
+use sidereal_core::logging::prepare_timestamped_log_file;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{HierarchyRebuildEnabled, SiderealGamePlugin};
 use sidereal_net::register_lightyear_server_protocol;
+use std::fs::OpenOptions;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
+static REPLICATION_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 fn main() {
+    let run_log = match prepare_timestamped_log_file("sidereal-replication") {
+        Ok(run_log) => run_log,
+        Err(err) => {
+            eprintln!("failed to create replication log file: {err}");
+            std::process::exit(2);
+        }
+    };
+    if REPLICATION_LOG_PATH.set(run_log.path.clone()).is_err() {
+        eprintln!("replication log path initialized more than once");
+        std::process::exit(2);
+    }
+    drop(run_log.file);
+
     let remote_cfg: RemoteInspectConfig = match RemoteInspectConfig::from_env("REPLICATION", 15713)
     {
         Ok(cfg) => cfg,
@@ -45,7 +67,8 @@ fn main() {
     app.add_plugins(ScenePlugin);
     app.add_plugins(LogPlugin {
         // Suppress noisy transient UDP send errors (EAGAIN / os error 11) from lightyear transport.
-        filter: "info,lightyear_udp::server=off".to_string(),
+        filter: "info,lightyear_udp::server=off,postgres::config=warn".to_string(),
+        fmt_layer: replication_fmt_layer,
         ..Default::default()
     });
     app.add_plugins(SiderealGamePlugin);
@@ -63,6 +86,9 @@ fn main() {
     app.add_plugins(ServerPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / 60.0),
     });
+    app.add_plugins(LightyearInputProtocolPlugin::<
+        NativeStateSequence<sidereal_net::PlayerInput>,
+    >::default());
     register_lightyear_server_protocol(&mut app);
     lifecycle::configure_remote(&mut app, &remote_cfg);
 
@@ -71,6 +97,25 @@ fn main() {
     init_resources(&mut app);
     register_plugins(&mut app);
     app.run();
+}
+
+fn replication_fmt_layer(_app: &mut App) -> Option<BoxedFmtLayer> {
+    let log_path = REPLICATION_LOG_PATH
+        .get()
+        .expect("replication log path should be initialized");
+    let log_file = OpenOptions::new()
+        .append(true)
+        .open(log_path)
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed to open replication log file {}: {err}",
+                log_path.display()
+            )
+        });
+    Some(Box::new(
+        bevy::log::tracing_subscriber::fmt::Layer::default()
+            .with_writer(std::io::stderr.and(log_file)),
+    ))
 }
 
 fn init_resources(app: &mut App) {
@@ -103,6 +148,9 @@ fn register_plugins(app: &mut App) {
         (
             bevy::ecs::schedule::ApplyDeferred,
             lifecycle::ensure_server_transport_channels,
+            lifecycle::ensure_server_message_components,
+            auth::receive_client_auth_messages,
+            auth::audit_pending_client_auth_state,
             auth::receive_client_disconnect_notify,
             auth::cleanup_client_auth_bindings,
             input::receive_latest_realtime_input_messages,

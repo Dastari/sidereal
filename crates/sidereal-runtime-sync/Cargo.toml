@@ -5,10 +5,14 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = ["persistence"]
+persistence = ["dep:sidereal-persistence"]
+
 [dependencies]
 bevy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sidereal-game = { path = "../sidereal-game" }
-sidereal-persistence = { path = "../sidereal-persistence" }
+sidereal-persistence = { path = "../sidereal-persistence", optional = true }
 uuid.workspace = true

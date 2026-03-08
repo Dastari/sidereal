@@ -70,15 +70,26 @@ pub struct EnterWorldRequest {
     pub player_entity_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReplicationTransportConfig {
+    pub udp_addr: Option<String>,
+    pub webtransport_addr: Option<String>,
+    pub webtransport_certificate_sha256: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnterWorldResponse {
     pub accepted: bool,
+    #[serde(default)]
+    pub replication_transport: ReplicationTransportConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetBootstrapManifestEntry {
     pub asset_id: String,
     pub asset_guid: String,
+    pub shader_family: Option<String>,
+    pub dependencies: Vec<String>,
     pub sha256_hex: String,
     pub relative_cache_path: String,
     pub content_type: String,

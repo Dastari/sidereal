@@ -22,6 +22,8 @@ make dev-stack
 make dev-stack-client
 ```
 
+Gateway and replication tracing logs are written to both the console and workspace-relative `./logs/`, with a new timestamped file per process start.
+
 ## Useful Targets
 
 ```bash

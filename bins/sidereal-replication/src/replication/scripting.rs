@@ -324,7 +324,7 @@ pub fn init_resources(app: &mut App) {
             load_outcome.startup_status_message
         );
     } else {
-        bevy::log::info!(
+        bevy::log::debug!(
             "replication script catalog startup ready root={}: {}",
             scripts_root.display(),
             load_outcome.startup_status_message

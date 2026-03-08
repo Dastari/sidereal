@@ -91,14 +91,19 @@ fn infer_type_path_into_schema(
     let type_info = registration.type_info();
 
     match type_info {
-        TypeInfo::Struct(info) => infer_struct_info(type_registry, info, path_prefix, fields, visited),
+        TypeInfo::Struct(info) => {
+            infer_struct_info(type_registry, info, path_prefix, fields, visited)
+        }
         TypeInfo::TupleStruct(info) => {
             infer_tuple_struct_info(type_registry, info, path_prefix, name_hint, fields, visited)
         }
-        TypeInfo::Tuple(info) => infer_tuple_info(type_registry, info, path_prefix, name_hint, fields, visited),
+        TypeInfo::Tuple(info) => {
+            infer_tuple_info(type_registry, info, path_prefix, name_hint, fields, visited)
+        }
         TypeInfo::Enum(info) => infer_enum_info(info, path_prefix, name_hint, fields),
         TypeInfo::List(_) | TypeInfo::Array(_) | TypeInfo::Map(_) | TypeInfo::Set(_) => {
-            let field_name = name_hint.unwrap_or(type_path.rsplit("::").next().unwrap_or(type_path));
+            let field_name =
+                name_hint.unwrap_or(type_path.rsplit("::").next().unwrap_or(type_path));
             fields.push(ComponentEditorFieldSchema {
                 field_path: path_prefix.unwrap_or(field_name).to_string(),
                 field_name: field_name.to_string(),
@@ -244,7 +249,11 @@ fn infer_opaque_info(
 ) {
     let field_name = name_hint.unwrap_or_else(|| info.type_path_table().short_path());
     let type_path = info.type_path_table().path();
-    fields.push(field_schema(path_prefix.unwrap_or(field_name), field_name, infer_value_kind(type_path, Some(field_name))));
+    fields.push(field_schema(
+        path_prefix.unwrap_or(field_name),
+        field_name,
+        infer_value_kind(type_path, Some(field_name)),
+    ));
 }
 
 fn push_named_field(
@@ -301,7 +310,11 @@ fn push_leaf_or_nested(
     }
 }
 
-fn field_schema(field_path: &str, field_name: &str, value_kind: ComponentEditorValueKind) -> ComponentEditorFieldSchema {
+fn field_schema(
+    field_path: &str,
+    field_name: &str,
+    value_kind: ComponentEditorValueKind,
+) -> ComponentEditorFieldSchema {
     let (min, max, step, unit) = numeric_hints(value_kind, field_name);
     ComponentEditorFieldSchema {
         field_path: field_path.to_string(),
@@ -334,7 +347,9 @@ fn numeric_hints(
         | ComponentEditorValueKind::Tuple
         | ComponentEditorValueKind::Unknown => (None, None, None, None),
         ComponentEditorValueKind::SignedInteger => (None, None, Some(1.0), unit_hint(field_name)),
-        ComponentEditorValueKind::UnsignedInteger => (Some(0.0), None, Some(1.0), unit_hint(field_name)),
+        ComponentEditorValueKind::UnsignedInteger => {
+            (Some(0.0), None, Some(1.0), unit_hint(field_name))
+        }
         ComponentEditorValueKind::Float => {
             if field_name.ends_with("_alpha")
                 || field_name.ends_with("_opacity")
@@ -400,16 +415,25 @@ fn infer_value_kind(type_path: &str, field_name: Option<&str>) -> ComponentEdito
     if lower == "bool" {
         return ComponentEditorValueKind::Bool;
     }
-    if matches!(lower.as_str(), "u8" | "u16" | "u32" | "u64" | "u128" | "usize") {
+    if matches!(
+        lower.as_str(),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+    ) {
         return ComponentEditorValueKind::UnsignedInteger;
     }
-    if matches!(lower.as_str(), "i8" | "i16" | "i32" | "i64" | "i128" | "isize") {
+    if matches!(
+        lower.as_str(),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+    ) {
         return ComponentEditorValueKind::SignedInteger;
     }
     if matches!(lower.as_str(), "f32" | "f64") {
         return ComponentEditorValueKind::Float;
     }
-    if lower == "alloc::string::string" || lower == "std::string::string" || lower == "bevy::utils::cowarc<'static, str>" {
+    if lower == "alloc::string::string"
+        || lower == "std::string::string"
+        || lower == "bevy::utils::cowarc<'static, str>"
+    {
         return ComponentEditorValueKind::String;
     }
     if lower.ends_with("::vec2") || lower == "glam::vec2" {

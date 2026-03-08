@@ -130,8 +130,8 @@ export function getComponentValue(node: GraphNode): unknown {
   if ('value' in props && props.value !== undefined) {
     return props.value
   }
-  if ('0' in props && props[0] !== undefined) {
-    return props[0]
+  if ('0' in props && props['0'] !== undefined) {
+    return props['0']
   }
   const entries = Object.entries(props)
   if (entries.length === 1 && typeof entries[0][1] === 'number') {

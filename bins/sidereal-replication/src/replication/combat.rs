@@ -1,6 +1,5 @@
 use bevy::prelude::*;
-use lightyear::prelude::server::ClientOf;
-use lightyear::prelude::server::RawServer;
+use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
     NetworkTarget, RemoteId, ReplicationState, Server, ServerMultiMessageSender,
 };
@@ -17,10 +16,10 @@ const TRACER_VISUAL_MIN_TTL_S: f32 = 0.01;
 pub fn init_resources(_app: &mut App) {}
 
 pub fn broadcast_weapon_fired_messages(
-    server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
+    server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     mut resolved_events: MessageReader<'_, '_, ShotImpactResolvedEvent>,
-    client_remotes: Query<'_, '_, (Entity, &'_ RemoteId), With<ClientOf>>,
+    client_remotes: Query<'_, '_, (Entity, &'_ LinkOf, &'_ RemoteId), With<ClientOf>>,
     replicated_entities: Query<
         '_,
         '_,
@@ -33,9 +32,6 @@ pub fn broadcast_weapon_fired_messages(
     >,
     bindings: Res<'_, AuthenticatedClientBindings>,
 ) {
-    let Ok(server) = server_query.single() else {
-        return;
-    };
     let client_player_ids = bindings
         .by_client_entity
         .iter()
@@ -81,7 +77,10 @@ pub fn broadcast_weapon_fired_messages(
         else {
             continue;
         };
-        for (client_entity, remote_id) in &client_remotes {
+        for (client_entity, link_of, remote_id) in &client_remotes {
+            let Ok(server) = server_query.get(link_of.server) else {
+                continue;
+            };
             let is_shooter_owner_client =
                 shooter_owner_player_id.as_ref().is_some_and(|owner_id| {
                     client_player_ids

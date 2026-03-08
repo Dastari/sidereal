@@ -1,18 +1,26 @@
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+#[cfg(target_arch = "wasm32")]
+use bevy::log::BoxedLayer;
 use bevy::log::tracing::field::{Field, Visit};
 use bevy::log::tracing::{Event, Level, Subscriber};
 use bevy::log::tracing_subscriber::Layer;
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::log::tracing_subscriber::fmt::MakeWriter;
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::log::{BoxedFmtLayer, BoxedLayer};
 use bevy::prelude::AppExit;
 use bevy::prelude::*;
 use std::collections::VecDeque;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::ecs_util::queue_despawn_if_exists;
@@ -76,12 +84,8 @@ impl Default for SharedConsoleLogBuffer {
 
 impl SharedConsoleLogBuffer {
     pub(crate) fn push(&self, level: Level, target: String, message: String) {
-        let ts_epoch_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
         let line = ConsoleLogLine {
-            ts_epoch_ms,
+            ts_epoch_ms: console_timestamp_epoch_ms(),
             level,
             target,
             message,
@@ -123,6 +127,19 @@ impl SharedConsoleLogBuffer {
             .collect();
         (newest_seq, collected)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn console_timestamp_epoch_ms() -> u128 {
+    js_sys::Date::now().max(0.0) as u128
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn console_timestamp_epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 pub(crate) struct ConsoleTracingLayer {
@@ -211,15 +228,18 @@ pub(crate) fn build_log_capture_layer(app: &mut App) -> Option<BoxedLayer> {
 }
 
 #[derive(Clone)]
+#[cfg(not(target_arch = "wasm32"))]
 struct DualLogMakeWriter {
     file: Arc<Mutex<File>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct DualLogWriter {
     file: Arc<Mutex<File>>,
     stderr: std::io::Stderr,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> MakeWriter<'a> for DualLogMakeWriter {
     type Writer = DualLogWriter;
 
@@ -231,6 +251,7 @@ impl<'a> MakeWriter<'a> for DualLogMakeWriter {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Write for DualLogWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let _ = self.stderr.write_all(buf);
@@ -249,12 +270,14 @@ impl Write for DualLogWriter {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn log_file_path() -> PathBuf {
     std::env::var("SIDEREAL_CLIENT_LOG_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("logs/sidereal-client.log"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn install_panic_file_hook() {
     let log_path = log_file_path();
     if let Some(parent) = log_path.parent() {
@@ -272,6 +295,7 @@ pub(crate) fn install_panic_file_hook() {
     }));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn build_file_fmt_layer(_app: &mut App) -> Option<BoxedFmtLayer> {
     let path = log_file_path();
     if let Some(parent) = path.parent() {
@@ -689,12 +713,8 @@ fn push_local_console_line(
     target: &str,
     message: String,
 ) {
-    let ts_epoch_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
     state.displayed_lines.push_back(ConsoleLogLine {
-        ts_epoch_ms,
+        ts_epoch_ms: console_timestamp_epoch_ms(),
         level,
         target: target.to_string(),
         message,

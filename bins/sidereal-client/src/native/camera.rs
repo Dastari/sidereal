@@ -10,8 +10,8 @@ use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::app_state::{ClientSession, FreeCameraState, LocalPlayerViewState};
 use super::components::{
-    ClientSceneEntity, ControlledEntity, GameplayCamera, GameplayHud, TopDownCamera,
-    UiOverlayCamera,
+    ClientSceneEntity, ControlledEntity, DebugOverlayCamera, GameplayCamera, GameplayHud,
+    TopDownCamera, UiOverlayCamera,
 };
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
@@ -387,6 +387,31 @@ pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
             ui_ortho.scaling_mode = ScalingMode::WindowSize;
             ui_ortho.scale = 1.0;
         }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_debug_overlay_camera_to_gameplay_camera_system(
+    gameplay_camera: Query<
+        '_,
+        '_,
+        (&'_ Transform, &'_ Projection),
+        (With<GameplayCamera>, Without<DebugOverlayCamera>),
+    >,
+    mut debug_camera: Query<
+        '_,
+        '_,
+        (&'_ mut Transform, &'_ mut Projection),
+        (With<DebugOverlayCamera>, Without<GameplayCamera>),
+    >,
+) {
+    let Ok((gameplay_transform, gameplay_projection)) = gameplay_camera.single() else {
+        return;
+    };
+
+    for (mut debug_transform, mut debug_projection) in &mut debug_camera {
+        *debug_transform = *gameplay_transform;
+        *debug_projection = gameplay_projection.clone();
     }
 }
 

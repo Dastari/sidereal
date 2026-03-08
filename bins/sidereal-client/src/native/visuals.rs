@@ -53,7 +53,6 @@ const WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ: f32 = 18.0;
 const WEAPON_TRACER_WIGGLE_MAX_AMP_MPS: f32 = 120.0;
 const WEAPON_IMPACT_SPARK_TTL_S: f32 = 0.12;
 const WEAPON_TRACER_MIN_TTL_S: f32 = 0.01;
-const ASTEROID_TEXTURE_ASSET_ID: &str = "asteroid_texture_red_png";
 const PLANET_BODY_PARALLAX_FACTOR: f32 = 0.18;
 const PLANET_CLOUD_BACK_LAYER_Z_OFFSET: f32 = -0.2;
 const PLANET_CLOUD_FRONT_LAYER_Z_OFFSET: f32 = 0.5;
@@ -401,10 +400,11 @@ pub(super) fn cleanup_streamed_visual_children_system(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn attach_streamed_visual_assets_system(
     mut commands: Commands<'_, '_>,
-    asset_server: Res<'_, AssetServer>,
     mut images: ResMut<'_, Assets<Image>>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
+    cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
+    shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
     mut sprite_shader_materials: ResMut<'_, Assets<StreamedSpriteShaderMaterial>>,
     mut asteroid_shader_materials: ResMut<'_, Assets<AsteroidSpriteShaderMaterial>>,
@@ -414,6 +414,7 @@ pub(super) fn attach_streamed_visual_assets_system(
         '_,
         HashMap<(uuid::Uuid, u64), (Handle<Image>, Handle<Image>)>,
     >,
+    mut streamed_image_cache: Local<'_, HashMap<String, Handle<Image>>>,
     candidates: Query<
         '_,
         '_,
@@ -464,14 +465,13 @@ pub(super) fn attach_streamed_visual_assets_system(
             Visibility::default(),
         ));
 
-        let world_sprite_kind =
-            sprite_shader.and_then(|shader| shaders::world_sprite_shader_kind(&shader.0));
+        let world_sprite_kind = sprite_shader
+            .and_then(|shader| shaders::world_sprite_shader_kind(&shader_assignments, &shader.0));
         let is_asteroid_shader = matches!(
             world_sprite_kind,
             Some(shaders::RuntimeWorldSpriteShaderKind::Asteroid)
         );
         let generated_asteroid_image = if is_asteroid_shader
-            && asset_id.0 == ASTEROID_TEXTURE_ASSET_ID
             && let Some(procedural_sprite) = procedural_sprite
             && procedural_sprite.generator_id == "asteroid_rocky_v1"
         {
@@ -509,29 +509,36 @@ pub(super) fn attach_streamed_visual_assets_system(
 
         let image_handle = if let Some(handle) = generated_asteroid_image.clone() {
             handle
+        } else if let Some(handle) = streamed_image_cache.get(&asset_id.0) {
+            handle.clone()
         } else {
-            let Some(path) = assets::streamed_visual_asset_path(&asset_id.0, &asset_manager) else {
+            let Some(handle) = assets::cached_image_handle(
+                &asset_id.0,
+                &asset_manager,
+                &asset_root.0,
+                *cache_adapter,
+                &mut images,
+            ) else {
                 continue;
             };
-            asset_server.load(path)
+            streamed_image_cache.insert(asset_id.0.clone(), handle.clone());
+            handle
         };
 
         let texture_size_px = generated_asteroid_image
             .as_ref()
             .and_then(|handle| images.get(handle))
             .map(|image| image.size())
-            .or_else(|| {
-                let path = assets::streamed_visual_asset_path(&asset_id.0, &asset_manager)?;
-                let rooted_path = std::path::PathBuf::from(&asset_root.0).join(path);
-                images
-                    .get(&image_handle)
-                    .map(|image| image.size())
-                    .or_else(|| assets::read_png_dimensions(&rooted_path))
-            });
+            .or_else(|| images.get(&image_handle).map(|image| image.size()));
         let custom_size = assets::resolved_world_sprite_size(texture_size_px, size_m);
 
         let has_streamed_sprite_shader_path = sprite_shader.is_some_and(|shader| {
-            shaders::world_sprite_shader_ready(&asset_root.0, &asset_manager, &shader.0)
+            shaders::world_sprite_shader_ready(
+                &asset_root.0,
+                &asset_manager,
+                *cache_adapter,
+                &shader.0,
+            )
         });
         let material_kind = resolve_streamed_visual_material_kind(
             use_shader_materials,
@@ -683,12 +690,13 @@ pub(super) fn cleanup_planet_body_visual_children_system(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn attach_planet_visual_stack_system(
     mut commands: Commands<'_, '_>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
     mut planet_materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
     time: Res<'_, Time>,
+    shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
     mut candidates: Query<
@@ -747,7 +755,7 @@ pub(super) fn attach_planet_visual_stack_system(
             continue;
         };
         if !next_pass_set.contains(RuntimeWorldVisualPassKind::PlanetBody)
-            && shaders::world_polygon_shader_kind(&body_pass.shader_asset_id)
+            && shaders::world_polygon_shader_kind(&shader_assignments, &body_pass.shader_asset_id)
                 == Some(shaders::RuntimeWorldPolygonShaderKind::PlanetVisual)
         {
             let mesh = meshes.add(Rectangle::new(1.0, 1.0));
@@ -790,9 +798,9 @@ pub(super) fn attach_planet_visual_stack_system(
             find_world_visual_pass(visual_stack, RuntimeWorldVisualPassKind::PlanetCloudFront),
         ) && (!next_pass_set.contains(RuntimeWorldVisualPassKind::PlanetCloudBack)
             || !next_pass_set.contains(RuntimeWorldVisualPassKind::PlanetCloudFront))
-            && shaders::world_polygon_shader_kind(&back_pass.shader_asset_id)
+            && shaders::world_polygon_shader_kind(&shader_assignments, &back_pass.shader_asset_id)
                 == Some(shaders::RuntimeWorldPolygonShaderKind::PlanetVisual)
-            && shaders::world_polygon_shader_kind(&front_pass.shader_asset_id)
+            && shaders::world_polygon_shader_kind(&shader_assignments, &front_pass.shader_asset_id)
                 == Some(shaders::RuntimeWorldPolygonShaderKind::PlanetVisual)
         {
             let back_material = planet_materials.add(PlanetVisualMaterial {
@@ -871,9 +879,9 @@ pub(super) fn attach_planet_visual_stack_system(
             find_world_visual_pass(visual_stack, RuntimeWorldVisualPassKind::PlanetRingFront),
         ) && (!next_pass_set.contains(RuntimeWorldVisualPassKind::PlanetRingBack)
             || !next_pass_set.contains(RuntimeWorldVisualPassKind::PlanetRingFront))
-            && shaders::world_polygon_shader_kind(&back_pass.shader_asset_id)
+            && shaders::world_polygon_shader_kind(&shader_assignments, &back_pass.shader_asset_id)
                 == Some(shaders::RuntimeWorldPolygonShaderKind::PlanetVisual)
-            && shaders::world_polygon_shader_kind(&front_pass.shader_asset_id)
+            && shaders::world_polygon_shader_kind(&shader_assignments, &front_pass.shader_asset_id)
                 == Some(shaders::RuntimeWorldPolygonShaderKind::PlanetVisual)
         {
             let back_material = planet_materials.add(PlanetVisualMaterial {
@@ -1331,6 +1339,7 @@ pub(super) fn update_thruster_plume_visuals_system(
 pub(super) fn update_asteroid_shader_lighting_system(
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
+    shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut asteroid_materials: ResMut<'_, Assets<AsteroidSpriteShaderMaterial>>,
     parents: Query<
         '_,
@@ -1355,7 +1364,9 @@ pub(super) fn update_asteroid_shader_lighting_system(
 ) {
     for (entity_children, position, world_position, shader_asset_id) in &parents {
         if !matches!(
-            shader_asset_id.and_then(|shader| shaders::world_sprite_shader_kind(&shader.0)),
+            shader_asset_id.and_then(|shader| {
+                shaders::world_sprite_shader_kind(&shader_assignments, &shader.0)
+            }),
             Some(shaders::RuntimeWorldSpriteShaderKind::Asteroid)
         ) {
             continue;

@@ -52,8 +52,10 @@ Core player loop:
 - Runtime protocol traffic is bincode-driven through Lightyear registrations.
 - Legacy JSON envelope helpers are persistence/test fixtures only.
 - Production native runtime transport is currently UDP (`UdpIo` / `ServerUdpIo`).
-- Browser/WASM transport is not yet implemented end-to-end; WebRTC-first remains the accepted target direction.
+- Browser/WASM transport now targets a WebTransport-first browser boundary through Lightyear-compatible adapters, with WebSocket allowed only as an explicit fallback.
 - The WASM client still does not implement the full native runtime, but it now shares the fixed-step gameplay core bootstrap with native instead of being a completely separate render-only shell.
+- Gateway HTTP must answer browser CORS preflight for local dashboard/client origins. The runtime default allows `http://localhost:3000` and `http://127.0.0.1:3000`; set comma-separated `GATEWAY_ALLOWED_ORIGINS` when the browser host origin differs.
+- Gateway and replication tracing output is written to both the console and workspace-relative `./logs/`, using a fresh timestamped log file for each process start.
 
 ### 3.2.1 Server-Only Admin Spawn Control Path (Current)
 
@@ -81,15 +83,15 @@ Security rules:
 - A BRP auth token is still required in config, but it is not yet the primary network security boundary.
 - Non-loopback BRP exposure is not allowed until an authenticated HTTP gate exists in front of the endpoint.
 
-### 3.3 WASM Transport Direction (Future)
+### 3.3 WASM Transport Direction (Current)
 
-WASM client direction remains WebRTC-first:
+WASM client direction is WebTransport-first:
 
-- reliable ordered channel for session/control traffic,
-- unreliable unordered channel for realtime gameplay traffic.
+- Lightyear browser transport uses WebTransport as the primary runtime lane.
+- Gateway auth/bootstrap/asset payloads remain authenticated HTTP, not replication transport.
+- WebSocket may exist only as an explicit fallback path; it is not the default browser runtime transport.
 
-WebSocket may exist only as explicit fallback.  
-Gameplay/simulation systems remain shared between native and WASM; only transport adapter code differs at the boundary.
+Gameplay/simulation systems remain shared between native and WASM; only transport and browser I/O adapters differ at the boundary.
 
 ## 4. Bevy ECS Gameplay Model
 
@@ -212,6 +214,7 @@ pub struct PlayerInput {
 ```
 
 Server input routing is bound to authenticated session identity and controlled entity mapping.
+Authoritative replication input is carried by Sidereal's authenticated realtime input lane; Lightyear native input remains client-local prediction support and native-client protocol compatibility, not the server's authoritative input source.
 
 ### 5.2.1 Control and Camera Chain (Normative)
 

@@ -1581,7 +1581,7 @@ end
 3. **Gateway script hooks** (`bins/sidereal-gateway/src/auth/starter_world_scripts.rs`):
    - `accounts/player_init.lua`: calls `player_init(ctx)` for ship bundle selection (`ship_bundle_id`).
    - `bundles/bundle_registry.lua`: loads bundle definitions and validates `required_component_kinds` against `generated_component_registry()`.
-   - Account bootstrap composes a Rust-authored player entity record with script-authored ship bundle graph records.
+   - Account bootstrap now composes both the player entity record and starter ship graph records through Lua-authored bundle scripts selected by `accounts/player_init.lua`.
    - Script `context` includes `new_uuid()` for dynamic entity/module graph ID generation in Lua.
    - Lua-to-JSON recursive conversion is shared via `sidereal-scripting::lua_value_to_json`.
    - Gateway now resolves script execution through a cached in-memory `ScriptCatalogResource` instead of reading `.lua` files on every call.

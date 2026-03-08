@@ -52,6 +52,10 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
   - reject request,
   - preserve server integrity,
   - no crash/no panic/no silent fallback entity creation.
+- Replication auth misconfiguration (for example missing/invalid `GATEWAY_JWT_SECRET` on replication):
+  - deny session explicitly,
+  - keep client out of world,
+  - do not silently leave client hanging in `WorldLoading`.
 - Missing controlled entity:
   - valid state (`controlled = None`),
   - client remains functional in free-camera mode.

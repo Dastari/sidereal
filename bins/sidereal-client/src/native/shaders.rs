@@ -2,8 +2,14 @@
 
 use bevy::log::warn;
 use bevy::prelude::*;
+use sidereal_game::{
+    PlanetBodyShaderSettings, ProceduralSprite, RuntimeRenderLayerDefinition, SpriteShaderAssetId,
+    TacticalMapUiSettings,
+};
 
 use super::assets::LocalAssetManager;
+use super::components::StreamedSpriteShaderAssetId;
+use super::resources::{AssetCacheAdapter, AssetRootPath};
 
 // Material2d fragment shaders can rely on Bevy's default vertex path.
 const FALLBACK_FRAGMENT_SHADER_SOURCE: &str = r#"
@@ -62,73 +68,107 @@ pub enum RuntimeEffectShaderKind {
     TacticalMapOverlay,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeShaderSlot {
+    Starfield,
+    SpaceBackgroundBase,
+    SpaceBackgroundNebula,
+    GenericSprite,
+    AsteroidSprite,
+    PlanetVisual,
+    RuntimeEffect,
+    TacticalMapOverlay,
+}
+
 #[derive(Clone)]
 struct RuntimeShaderSpec {
-    asset_id: &'static str,
+    slot: RuntimeShaderSlot,
     label: &'static str,
     handle: Handle<bevy::shader::Shader>,
     family: RuntimeShaderFamily,
-    fullscreen_kind: Option<RuntimeFullscreenShaderKind>,
 }
 
 const RUNTIME_SHADER_SPECS: &[RuntimeShaderSpec] = &[
     RuntimeShaderSpec {
-        asset_id: "starfield_wgsl",
+        slot: RuntimeShaderSlot::Starfield,
         label: "sidereal://shader/starfield",
         handle: STARFIELD_SHADER_HANDLE,
         family: RuntimeShaderFamily::Fullscreen,
-        fullscreen_kind: Some(RuntimeFullscreenShaderKind::Starfield),
     },
     RuntimeShaderSpec {
-        asset_id: "space_background_base_wgsl",
+        slot: RuntimeShaderSlot::SpaceBackgroundBase,
         label: "sidereal://shader/space_background_base",
         handle: SPACE_BACKGROUND_BASE_SHADER_HANDLE,
         family: RuntimeShaderFamily::Fullscreen,
-        fullscreen_kind: Some(RuntimeFullscreenShaderKind::SpaceBackgroundBase),
     },
     RuntimeShaderSpec {
-        asset_id: "space_background_nebula_wgsl",
+        slot: RuntimeShaderSlot::SpaceBackgroundNebula,
         label: "sidereal://shader/space_background_nebula",
         handle: SPACE_BACKGROUND_NEBULA_SHADER_HANDLE,
         family: RuntimeShaderFamily::Fullscreen,
-        fullscreen_kind: Some(RuntimeFullscreenShaderKind::SpaceBackgroundNebula),
     },
     RuntimeShaderSpec {
-        asset_id: "sprite_pixel_shader_wgsl",
+        slot: RuntimeShaderSlot::GenericSprite,
         label: "sidereal://shader/sprite_pixel_effect",
         handle: SPRITE_PIXEL_SHADER_HANDLE,
         family: RuntimeShaderFamily::WorldSprite,
-        fullscreen_kind: None,
     },
     RuntimeShaderSpec {
-        asset_id: "asteroid_wgsl",
+        slot: RuntimeShaderSlot::AsteroidSprite,
         label: "sidereal://shader/asteroid_sprite",
         handle: ASTEROID_SPRITE_SHADER_HANDLE,
         family: RuntimeShaderFamily::WorldSprite,
-        fullscreen_kind: None,
     },
     RuntimeShaderSpec {
-        asset_id: "planet_visual_wgsl",
+        slot: RuntimeShaderSlot::PlanetVisual,
         label: "sidereal://shader/planet_visual",
         handle: PLANET_VISUAL_SHADER_HANDLE,
         family: RuntimeShaderFamily::WorldPolygon,
-        fullscreen_kind: None,
     },
     RuntimeShaderSpec {
-        asset_id: "runtime_effect_wgsl",
+        slot: RuntimeShaderSlot::RuntimeEffect,
         label: "sidereal://shader/runtime_effect",
         handle: RUNTIME_EFFECT_SHADER_HANDLE,
         family: RuntimeShaderFamily::Effect,
-        fullscreen_kind: None,
     },
     RuntimeShaderSpec {
-        asset_id: "tactical_map_overlay_wgsl",
+        slot: RuntimeShaderSlot::TacticalMapOverlay,
         label: "sidereal://shader/tactical_map_overlay",
         handle: TACTICAL_MAP_OVERLAY_SHADER_HANDLE,
         family: RuntimeShaderFamily::Fullscreen,
-        fullscreen_kind: None,
     },
 ];
+
+#[derive(Debug, Clone, Resource, PartialEq, Eq, Default)]
+pub struct RuntimeShaderAssignments {
+    starfield_asset_id: Option<String>,
+    space_background_base_asset_id: Option<String>,
+    space_background_nebula_asset_id: Option<String>,
+    generic_sprite_asset_id: Option<String>,
+    asteroid_sprite_asset_id: Option<String>,
+    planet_visual_asset_id: Option<String>,
+    runtime_effect_asset_id: Option<String>,
+    tactical_map_overlay_asset_id: Option<String>,
+}
+
+impl RuntimeShaderAssignments {
+    fn asset_id_for_slot(&self, slot: RuntimeShaderSlot) -> Option<&str> {
+        match slot {
+            RuntimeShaderSlot::Starfield => self.starfield_asset_id.as_deref(),
+            RuntimeShaderSlot::SpaceBackgroundBase => {
+                self.space_background_base_asset_id.as_deref()
+            }
+            RuntimeShaderSlot::SpaceBackgroundNebula => {
+                self.space_background_nebula_asset_id.as_deref()
+            }
+            RuntimeShaderSlot::GenericSprite => self.generic_sprite_asset_id.as_deref(),
+            RuntimeShaderSlot::AsteroidSprite => self.asteroid_sprite_asset_id.as_deref(),
+            RuntimeShaderSlot::PlanetVisual => self.planet_visual_asset_id.as_deref(),
+            RuntimeShaderSlot::RuntimeEffect => self.runtime_effect_asset_id.as_deref(),
+            RuntimeShaderSlot::TacticalMapOverlay => self.tactical_map_overlay_asset_id.as_deref(),
+        }
+    }
+}
 
 fn env_flag_with_default(name: &str, default: bool) -> bool {
     std::env::var(name)
@@ -162,106 +202,155 @@ fn fallback_shader_source_for_family(_family: RuntimeShaderFamily) -> &'static s
     FALLBACK_FRAGMENT_SHADER_SOURCE
 }
 
-pub fn fullscreen_shader_kind(shader_asset_id: &str) -> Option<RuntimeFullscreenShaderKind> {
-    RUNTIME_SHADER_SPECS
-        .iter()
-        .find(|spec| spec.asset_id == shader_asset_id)
-        .and_then(|spec| spec.fullscreen_kind)
+pub fn fullscreen_shader_kind(
+    assignments: &RuntimeShaderAssignments,
+    shader_asset_id: &str,
+) -> Option<RuntimeFullscreenShaderKind> {
+    if assignments.starfield_asset_id.as_deref() == Some(shader_asset_id) {
+        Some(RuntimeFullscreenShaderKind::Starfield)
+    } else if assignments.space_background_base_asset_id.as_deref() == Some(shader_asset_id) {
+        Some(RuntimeFullscreenShaderKind::SpaceBackgroundBase)
+    } else if assignments.space_background_nebula_asset_id.as_deref() == Some(shader_asset_id) {
+        Some(RuntimeFullscreenShaderKind::SpaceBackgroundNebula)
+    } else {
+        None
+    }
 }
 
-pub fn world_sprite_shader_kind(shader_asset_id: &str) -> Option<RuntimeWorldSpriteShaderKind> {
-    RUNTIME_SHADER_SPECS
-        .iter()
-        .find(|spec| spec.asset_id == shader_asset_id)
-        .and_then(|spec| match spec.asset_id {
-            "sprite_pixel_shader_wgsl" => Some(RuntimeWorldSpriteShaderKind::GenericSprite),
-            "asteroid_wgsl" => Some(RuntimeWorldSpriteShaderKind::Asteroid),
-            _ => None,
-        })
+pub fn world_sprite_shader_kind(
+    assignments: &RuntimeShaderAssignments,
+    shader_asset_id: &str,
+) -> Option<RuntimeWorldSpriteShaderKind> {
+    if assignments.generic_sprite_asset_id.as_deref() == Some(shader_asset_id) {
+        Some(RuntimeWorldSpriteShaderKind::GenericSprite)
+    } else if assignments.asteroid_sprite_asset_id.as_deref() == Some(shader_asset_id) {
+        Some(RuntimeWorldSpriteShaderKind::Asteroid)
+    } else {
+        None
+    }
 }
 
-pub fn world_polygon_shader_kind(shader_asset_id: &str) -> Option<RuntimeWorldPolygonShaderKind> {
-    RUNTIME_SHADER_SPECS
-        .iter()
-        .find(|spec| spec.asset_id == shader_asset_id)
-        .and_then(|spec| match spec.asset_id {
-            "planet_visual_wgsl" => Some(RuntimeWorldPolygonShaderKind::PlanetVisual),
-            _ => None,
-        })
+pub fn world_polygon_shader_kind(
+    assignments: &RuntimeShaderAssignments,
+    shader_asset_id: &str,
+) -> Option<RuntimeWorldPolygonShaderKind> {
+    if assignments.planet_visual_asset_id.as_deref() == Some(shader_asset_id) {
+        Some(RuntimeWorldPolygonShaderKind::PlanetVisual)
+    } else {
+        None
+    }
 }
 
 pub fn world_polygon_shader_handle(
     kind: RuntimeWorldPolygonShaderKind,
 ) -> Handle<bevy::shader::Shader> {
     match kind {
-        RuntimeWorldPolygonShaderKind::PlanetVisual => runtime_shader_handle("planet_visual_wgsl")
-            .expect("planet visual shader handle must be registered"),
+        RuntimeWorldPolygonShaderKind::PlanetVisual => {
+            runtime_shader_handle(RuntimeShaderSlot::PlanetVisual)
+        }
     }
 }
 
 pub fn runtime_effect_shader_handle(kind: RuntimeEffectShaderKind) -> Handle<bevy::shader::Shader> {
     match kind {
-        RuntimeEffectShaderKind::RuntimeEffect => runtime_shader_handle("runtime_effect_wgsl")
-            .expect("runtime effect shader handle must be registered"),
+        RuntimeEffectShaderKind::RuntimeEffect => {
+            runtime_shader_handle(RuntimeShaderSlot::RuntimeEffect)
+        }
         RuntimeEffectShaderKind::TacticalMapOverlay => {
-            runtime_shader_handle("tactical_map_overlay_wgsl")
-                .expect("tactical overlay shader handle must be registered")
+            runtime_shader_handle(RuntimeShaderSlot::TacticalMapOverlay)
         }
     }
 }
 
-pub fn runtime_shader_handle(shader_asset_id: &str) -> Option<Handle<bevy::shader::Shader>> {
+pub fn runtime_shader_handle(slot: RuntimeShaderSlot) -> Handle<bevy::shader::Shader> {
     RUNTIME_SHADER_SPECS
         .iter()
-        .find(|spec| spec.asset_id == shader_asset_id)
+        .find(|spec| spec.slot == slot)
         .map(|spec| spec.handle.clone())
+        .expect("runtime shader slot handle must be registered")
 }
 
 fn read_shader_source_for_asset(
     asset_root: &str,
     asset_manager: &LocalAssetManager,
+    cache_adapter: AssetCacheAdapter,
     shader_asset_id: &str,
 ) -> Option<String> {
-    let entry = asset_manager.catalog_by_asset_id.get(shader_asset_id)?;
-
-    let rooted_stream_path = std::path::PathBuf::from(asset_root)
-        .join("data/cache_stream")
-        .join(&entry.relative_cache_path);
-    if let Ok(source) = std::fs::read_to_string(&rooted_stream_path) {
+    if let Some(source) = super::assets::cached_shader_source(
+        shader_asset_id,
+        asset_manager,
+        asset_root,
+        cache_adapter,
+    ) {
         return Some(source);
     }
-    let rooted_direct_path = std::path::PathBuf::from(asset_root).join(&entry.relative_cache_path);
-    std::fs::read_to_string(rooted_direct_path).ok()
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let entry = asset_manager.catalog_by_asset_id.get(shader_asset_id)?;
+        let rooted_direct_path =
+            std::path::PathBuf::from(asset_root).join(&entry.relative_cache_path);
+        std::fs::read_to_string(rooted_direct_path).ok()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
 }
 
 fn shader_asset_ready(
     asset_root: &str,
     asset_manager: &LocalAssetManager,
+    cache_adapter: AssetCacheAdapter,
     shader_asset_id: &str,
 ) -> bool {
-    let Some(relative_cache_path) = asset_manager.cached_relative_path(shader_asset_id) else {
-        return false;
-    };
-    let rooted_stream_path = std::path::PathBuf::from(asset_root)
-        .join("data/cache_stream")
-        .join(relative_cache_path);
-    let rooted_direct_path = std::path::PathBuf::from(asset_root).join(relative_cache_path);
-    rooted_stream_path.exists() || rooted_direct_path.exists()
+    if super::assets::cached_asset_bytes(shader_asset_id, asset_manager, asset_root, cache_adapter)
+        .is_some()
+    {
+        return true;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(relative_cache_path) = asset_manager.cached_relative_path(shader_asset_id) else {
+            return false;
+        };
+        let rooted_direct_path = std::path::PathBuf::from(asset_root).join(relative_cache_path);
+        rooted_direct_path.exists()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
 }
 
 fn install_runtime_shader(
     shaders: &mut Assets<bevy::shader::Shader>,
     asset_root: &str,
     asset_manager: &LocalAssetManager,
+    cache_adapter: AssetCacheAdapter,
+    assignments: &RuntimeShaderAssignments,
     spec: &RuntimeShaderSpec,
 ) {
-    let source = read_shader_source_for_asset(asset_root, asset_manager, spec.asset_id);
+    let Some(shader_asset_id) = assignments.asset_id_for_slot(spec.slot) else {
+        install_shader(
+            shaders,
+            spec.handle.clone(),
+            spec.label,
+            fallback_shader_source_for_family(spec.family),
+        );
+        return;
+    };
+    let source =
+        read_shader_source_for_asset(asset_root, asset_manager, cache_adapter, shader_asset_id);
     if let Some(source) = source {
         install_shader(shaders, spec.handle.clone(), spec.label, &source);
     } else {
         warn!(
             "runtime shader asset missing from cache/catalog asset_id={} label={}; installing shared fallback shader",
-            spec.asset_id, spec.label
+            shader_asset_id, spec.label
         );
         install_shader(
             shaders,
@@ -276,6 +365,8 @@ pub fn install_runtime_shaders(
     shaders: &mut Assets<bevy::shader::Shader>,
     asset_root: &str,
     asset_manager: &LocalAssetManager,
+    cache_adapter: AssetCacheAdapter,
+    assignments: &RuntimeShaderAssignments,
 ) {
     if !streamed_shader_overrides_enabled() {
         for spec in RUNTIME_SHADER_SPECS {
@@ -290,7 +381,14 @@ pub fn install_runtime_shaders(
     }
 
     for spec in RUNTIME_SHADER_SPECS {
-        install_runtime_shader(shaders, asset_root, asset_manager, spec);
+        install_runtime_shader(
+            shaders,
+            asset_root,
+            asset_manager,
+            cache_adapter,
+            assignments,
+            spec,
+        );
     }
 }
 
@@ -298,16 +396,25 @@ pub fn reload_streamed_shaders(
     shaders: &mut Assets<bevy::shader::Shader>,
     asset_root: &str,
     asset_manager: &LocalAssetManager,
+    cache_adapter: AssetCacheAdapter,
+    assignments: &RuntimeShaderAssignments,
 ) {
-    install_runtime_shaders(shaders, asset_root, asset_manager);
+    install_runtime_shaders(
+        shaders,
+        asset_root,
+        asset_manager,
+        cache_adapter,
+        assignments,
+    );
 }
 
 pub fn fullscreen_layer_shader_ready(
     asset_root: &str,
     asset_manager: &LocalAssetManager,
+    cache_adapter: AssetCacheAdapter,
     shader_asset_id: &str,
 ) -> bool {
-    if shader_asset_ready(asset_root, asset_manager, shader_asset_id) {
+    if shader_asset_ready(asset_root, asset_manager, cache_adapter, shader_asset_id) {
         return true;
     }
 
@@ -319,7 +426,183 @@ pub fn fullscreen_layer_shader_ready(
 pub fn world_sprite_shader_ready(
     asset_root: &str,
     asset_manager: &LocalAssetManager,
+    cache_adapter: AssetCacheAdapter,
     shader_asset_id: &str,
 ) -> bool {
-    shader_asset_ready(asset_root, asset_manager, shader_asset_id)
+    shader_asset_ready(asset_root, asset_manager, cache_adapter, shader_asset_id)
+}
+
+fn non_empty_asset_id(asset_id: &str) -> Option<String> {
+    (!asset_id.trim().is_empty()).then(|| asset_id.to_string())
+}
+
+fn first_sprite_shader_asset_id<'a, I>(
+    entries: I,
+    exclude_asset_ids: &[Option<&str>],
+) -> Option<String>
+where
+    I: IntoIterator<Item = (&'a str, bool, bool)>,
+{
+    entries
+        .into_iter()
+        .find_map(|(asset_id, is_planet, is_asteroid)| {
+            if is_planet || is_asteroid {
+                return None;
+            }
+            let asset_id = asset_id.trim();
+            if asset_id.is_empty()
+                || exclude_asset_ids
+                    .iter()
+                    .flatten()
+                    .any(|value| *value == asset_id)
+            {
+                return None;
+            }
+            Some(asset_id.to_string())
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn sync_runtime_shader_assignments_system(
+    mut assignments: ResMut<'_, RuntimeShaderAssignments>,
+    runtime_render_layers: Query<'_, '_, &'_ RuntimeRenderLayerDefinition>,
+    sprite_shader_asset_ids: Query<
+        '_,
+        '_,
+        (
+            &'_ SpriteShaderAssetId,
+            Option<&'_ PlanetBodyShaderSettings>,
+            Option<&'_ ProceduralSprite>,
+        ),
+    >,
+    streamed_sprite_shader_asset_ids: Query<
+        '_,
+        '_,
+        (
+            &'_ StreamedSpriteShaderAssetId,
+            Option<&'_ PlanetBodyShaderSettings>,
+            Option<&'_ ProceduralSprite>,
+        ),
+    >,
+    tactical_map_settings: Query<'_, '_, &'_ TacticalMapUiSettings>,
+    mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
+    asset_root: Res<'_, AssetRootPath>,
+    asset_manager: Res<'_, LocalAssetManager>,
+    cache_adapter: Res<'_, AssetCacheAdapter>,
+) {
+    let mut next = RuntimeShaderAssignments::default();
+
+    for layer in &runtime_render_layers {
+        let Some(shader_asset_id) = non_empty_asset_id(&layer.shader_asset_id) else {
+            continue;
+        };
+        match layer.layer_id.as_str() {
+            "bg_starfield" => next.starfield_asset_id = Some(shader_asset_id),
+            "bg_space_background_base" => {
+                next.space_background_base_asset_id = Some(shader_asset_id)
+            }
+            "bg_space_background_nebula" => {
+                next.space_background_nebula_asset_id = Some(shader_asset_id)
+            }
+            _ if layer.material_domain == "world_polygon"
+                && next.planet_visual_asset_id.is_none() =>
+            {
+                next.planet_visual_asset_id = Some(shader_asset_id)
+            }
+            _ => {}
+        }
+    }
+
+    for settings in &tactical_map_settings {
+        if let Some(shader_asset_id) = non_empty_asset_id(&settings.shader_asset_id) {
+            next.tactical_map_overlay_asset_id = Some(shader_asset_id);
+            break;
+        }
+    }
+
+    if next.runtime_effect_asset_id.is_none() {
+        next.runtime_effect_asset_id = asset_manager
+            .catalog_by_asset_id
+            .iter()
+            .find(|(_, entry)| entry.shader_family.as_deref() == Some("effect"))
+            .map(|(asset_id, _)| asset_id.clone());
+    }
+
+    for (shader_asset_id, _planet, procedural_sprite) in &sprite_shader_asset_ids {
+        let Some(shader_asset_id) = shader_asset_id.0.as_deref() else {
+            continue;
+        };
+        if next.asteroid_sprite_asset_id.is_none()
+            && procedural_sprite.is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1")
+        {
+            next.asteroid_sprite_asset_id = non_empty_asset_id(shader_asset_id);
+        }
+    }
+    for (shader_asset_id, _planet, procedural_sprite) in &streamed_sprite_shader_asset_ids {
+        if next.asteroid_sprite_asset_id.is_some() {
+            break;
+        }
+        if procedural_sprite.is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1") {
+            next.asteroid_sprite_asset_id = non_empty_asset_id(&shader_asset_id.0);
+        }
+    }
+
+    if next.planet_visual_asset_id.is_none() {
+        for (shader_asset_id, planet_settings, _) in &sprite_shader_asset_ids {
+            if planet_settings.is_some() {
+                next.planet_visual_asset_id = shader_asset_id.0.clone();
+                if next.planet_visual_asset_id.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+
+    next.generic_sprite_asset_id = first_sprite_shader_asset_id(
+        sprite_shader_asset_ids.iter().filter_map(
+            |(shader_asset_id, planet_settings, procedural_sprite)| {
+                shader_asset_id.0.as_deref().map(|asset_id| {
+                    (
+                        asset_id,
+                        planet_settings.is_some(),
+                        procedural_sprite
+                            .is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1"),
+                    )
+                })
+            },
+        ),
+        &[
+            next.planet_visual_asset_id.as_deref(),
+            next.asteroid_sprite_asset_id.as_deref(),
+        ],
+    )
+    .or_else(|| {
+        first_sprite_shader_asset_id(
+            streamed_sprite_shader_asset_ids.iter().map(
+                |(shader_asset_id, planet_settings, procedural_sprite)| {
+                    (
+                        shader_asset_id.0.as_str(),
+                        planet_settings.is_some(),
+                        procedural_sprite
+                            .is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1"),
+                    )
+                },
+            ),
+            &[
+                next.planet_visual_asset_id.as_deref(),
+                next.asteroid_sprite_asset_id.as_deref(),
+            ],
+        )
+    });
+
+    if *assignments != next {
+        *assignments = next;
+        reload_streamed_shaders(
+            &mut shaders_assets,
+            &asset_root.0,
+            &asset_manager,
+            *cache_adapter,
+            &assignments,
+        );
+    }
 }

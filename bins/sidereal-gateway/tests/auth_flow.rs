@@ -136,6 +136,40 @@ async fn login_does_not_dispatch_bootstrap_command() {
 }
 
 #[tokio::test]
+async fn login_route_answers_cors_preflight_for_dashboard_origin() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/auth/login")
+                .header(header::ORIGIN, "http://localhost:3000")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+                .body(Body::empty())
+                .expect("preflight request"),
+        )
+        .await
+        .expect("preflight response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .expect("allow origin header"),
+        "http://localhost:3000"
+    );
+}
+
+#[tokio::test]
 async fn register_conflict_does_not_dispatch_bootstrap() {
     let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
     let service = Arc::new(AuthService::new_with_persister(

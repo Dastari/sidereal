@@ -47,6 +47,7 @@ AssetRegistry.assets = {
   },
   {
     asset_id = "starfield_wgsl",
+    shader_family = "fullscreen_starfield",
     source_path = "shaders/starfield.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {},
@@ -54,6 +55,7 @@ AssetRegistry.assets = {
   },
   {
     asset_id = "space_background_base_wgsl",
+    shader_family = "fullscreen_space_background_base",
     source_path = "shaders/space_background_base.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {
@@ -66,6 +68,7 @@ AssetRegistry.assets = {
   },
   {
     asset_id = "space_background_nebula_wgsl",
+    shader_family = "fullscreen_space_background_nebula",
     source_path = "shaders/space_background_nebula.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {
@@ -78,6 +81,7 @@ AssetRegistry.assets = {
   },
   {
     asset_id = "tactical_map_overlay_wgsl",
+    shader_family = "screen_overlay_tactical_map",
     source_path = "shaders/tactical_map_overlay.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {},
@@ -85,6 +89,7 @@ AssetRegistry.assets = {
   },
   {
     asset_id = "sprite_pixel_effect_wgsl",
+    shader_family = "world_sprite_generic",
     source_path = "shaders/sprite_pixel_effect.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {},
@@ -92,13 +97,15 @@ AssetRegistry.assets = {
   },
   {
     asset_id = "asteroid_wgsl",
+    shader_family = "world_sprite_asteroid",
     source_path = "shaders/asteroid.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {},
-    bootstrap_required = false,
+    bootstrap_required = true,
   },
   {
     asset_id = "planet_visual_wgsl",
+    shader_family = "world_polygon_planet",
     source_path = "shaders/planet_visual.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {},
@@ -106,6 +113,7 @@ AssetRegistry.assets = {
   },
   {
     asset_id = "runtime_effect_wgsl",
+    shader_family = "effect",
     source_path = "shaders/runtime_effect.wgsl",
     content_type = "text/plain; charset=utf-8",
     dependencies = {},

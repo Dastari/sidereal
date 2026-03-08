@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { DatabaseToolPage } from './_dashboard.database'
+import { DatabaseEntitiesPage } from './_dashboard.database'
 
 export const Route = createFileRoute('/_dashboard/database/$entityGuid')({
   component: DatabaseEntityRoutePage,
@@ -7,5 +7,5 @@ export const Route = createFileRoute('/_dashboard/database/$entityGuid')({
 
 function DatabaseEntityRoutePage() {
   const { entityGuid } = Route.useParams()
-  return <DatabaseToolPage selectedEntityGuid={entityGuid} />
+  return <DatabaseEntitiesPage selectedEntityGuid={entityGuid} />
 }

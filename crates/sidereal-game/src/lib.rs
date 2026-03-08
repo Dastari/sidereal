@@ -101,20 +101,36 @@ pub struct SiderealGamePlugin;
 impl Plugin for SiderealGamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(SiderealGameCorePlugin);
-        app.insert_resource(HierarchyRebuildEnabled::default());
+        if app
+            .world()
+            .get_resource::<HierarchyRebuildEnabled>()
+            .is_none()
+        {
+            app.insert_resource(HierarchyRebuildEnabled::default());
+        }
         app.add_message::<ShotFiredEvent>();
         app.add_message::<ShotImpactResolvedEvent>();
         app.add_message::<ShotHitEvent>();
 
+        let add_hierarchy_rebuild = app
+            .world()
+            .get_resource::<HierarchyRebuildEnabled>()
+            .map(|flag| flag.0)
+            .unwrap_or(true);
+        if add_hierarchy_rebuild {
+            app.add_systems(
+                PostUpdate,
+                sync_mounted_hierarchy
+                    .before(bevy::transform::TransformSystems::Propagate)
+                    .run_if(hierarchy_rebuild_enabled),
+            );
+        }
         app.add_systems(
             PostUpdate,
             (
                 bootstrap_ship_mass_components,
                 bootstrap_collision_profiles_from_aabb,
                 bootstrap_root_dynamic_entity_colliders,
-                sync_mounted_hierarchy
-                    .before(bevy::transform::TransformSystems::Propagate)
-                    .run_if(hierarchy_rebuild_enabled),
             ),
         );
         app.add_systems(

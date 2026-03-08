@@ -2,14 +2,22 @@ use bevy::log::{error, info};
 use bevy::prelude::*;
 use bevy_remote::RemotePlugin;
 use bevy_remote::http::RemoteHttpPlugin;
-use lightyear::prelude::LocalAddr;
 use lightyear::prelude::client::Connected;
-use lightyear::prelude::server::{ClientOf, LinkOf, RawServer, ServerUdpIo, Start, Stopped};
-use lightyear::prelude::{
-    ChannelRegistry, Replicate, ReplicationGroup, ReplicationSender, SendUpdatesMode, Transport,
-    Unlink,
+use lightyear::prelude::server::{
+    ClientOf, LinkOf, RawServer, ServerUdpIo, Start, Stopped, WebTransportServerIo,
 };
+use lightyear::prelude::{
+    ChannelRegistry, MessageReceiver, MessageSender, Replicate, ReplicationGroup,
+    ReplicationSender, SendUpdatesMode, Transport, Unlink,
+};
+use lightyear::prelude::{Identity, LocalAddr};
 use sidereal_core::remote_inspect::RemoteInspectConfig;
+use sidereal_net::{
+    ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
+    ClientLocalViewModeMessage, ClientRealtimeInputMessage, ClientTacticalResnapshotRequestMessage,
+    ServerControlAckMessage, ServerControlRejectMessage, ServerSessionDeniedMessage,
+    ServerSessionReadyMessage,
+};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
@@ -97,16 +105,100 @@ pub fn start_lightyear_server(mut commands: Commands<'_, '_>) {
         .id();
     commands.trigger(Start { entity: server });
     info!("replication lightyear UDP server starting on {}", bind_addr);
+
+    if let Some((bind_addr, certificate)) = webtransport_server_config_from_env() {
+        let server = commands
+            .spawn((
+                Name::new("replication-lightyear-webtransport-server"),
+                RawServer,
+                WebTransportServerIo { certificate },
+                LocalAddr(bind_addr),
+                Stopped,
+            ))
+            .id();
+        commands.trigger(Start { entity: server });
+        info!(
+            "replication lightyear WebTransport server starting on {}",
+            bind_addr
+        );
+    }
+}
+
+fn webtransport_server_config_from_env() -> Option<(SocketAddr, Identity)> {
+    let bind_addr = std::env::var("REPLICATION_WEBTRANSPORT_BIND")
+        .ok()?
+        .parse::<SocketAddr>()
+        .map_err(|err| error!("invalid REPLICATION_WEBTRANSPORT_BIND: {err}"))
+        .ok()?;
+
+    let certificate = match (
+        std::env::var("REPLICATION_WEBTRANSPORT_CERT_PEM"),
+        std::env::var("REPLICATION_WEBTRANSPORT_KEY_PEM"),
+    ) {
+        (Ok(cert_pem), Ok(key_pem)) => {
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|err| {
+                    error!("failed creating tokio runtime for WebTransport cert load: {err}")
+                })
+                .ok()?;
+            match runtime.block_on(Identity::load_pemfiles(cert_pem, key_pem)) {
+                Ok(identity) => identity,
+                Err(err) => {
+                    error!("failed loading WebTransport certificate PEM files: {err}");
+                    return None;
+                }
+            }
+        }
+        _ => {
+            let sans = vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+            ];
+            match Identity::self_signed(sans) {
+                Ok(identity) => identity,
+                Err(err) => {
+                    error!("failed generating self-signed WebTransport certificate: {err}");
+                    return None;
+                }
+            }
+        }
+    };
+
+    let digest = certificate.certificate_chain().as_slice()[0].hash();
+    info!("replication WebTransport certificate digest {}", digest);
+    Some((bind_addr, certificate))
 }
 
 pub fn log_replication_client_connected(
     trigger: On<Add, Connected>,
-    clients: Query<'_, '_, (), With<ClientOf>>,
+    clients: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ LinkOf>,
+            Option<&'_ Transport>,
+            Has<MessageReceiver<ClientAuthMessage>>,
+            Has<MessageSender<ServerSessionReadyMessage>>,
+        ),
+        With<ClientOf>,
+    >,
 ) {
-    if clients.get(trigger.entity).is_ok() {
+    if let Ok((link_of, transport, has_auth_receiver, has_session_ready_sender)) =
+        clients.get(trigger.entity)
+    {
+        let has_control_receiver = transport
+            .is_some_and(|transport| transport.has_receiver::<sidereal_net::ControlChannel>());
+        let has_control_sender = transport
+            .is_some_and(|transport| transport.has_sender::<sidereal_net::ControlChannel>());
         info!(
-            "replication lightyear client connected entity={:?}",
-            trigger.entity
+            "replication lightyear client connected entity={:?} server={:?} has_auth_receiver={} has_session_ready_sender={} has_control_receiver={} has_control_sender={}",
+            trigger.entity,
+            link_of.map(|link| link.server),
+            has_auth_receiver,
+            has_session_ready_sender,
+            has_control_receiver,
+            has_control_sender
         );
     }
 }
@@ -124,6 +216,66 @@ pub fn setup_client_replication_sender(trigger: On<Add, LinkOf>, mut commands: C
         ));
     info!(
         "replication attached ReplicationSender to client link entity={:?}",
+        trigger.entity
+    );
+}
+
+pub fn prime_client_link_transport_on_insert(
+    trigger: On<Insert, (Transport, ClientOf)>,
+    mut commands: Commands<'_, '_>,
+    mut transports: Query<'_, '_, &'_ mut Transport, With<ClientOf>>,
+    registry: Res<'_, ChannelRegistry>,
+) {
+    let Ok(mut transport) = transports.get_mut(trigger.entity) else {
+        return;
+    };
+
+    if !transport.has_receiver::<sidereal_net::ControlChannel>() {
+        transport.add_receiver_from_registry::<sidereal_net::ControlChannel>(&registry);
+    }
+    if !transport.has_sender::<sidereal_net::ControlChannel>() {
+        transport.add_sender_from_registry::<sidereal_net::ControlChannel>(&registry);
+    }
+    if !transport.has_receiver::<sidereal_net::InputChannel>() {
+        transport.add_receiver_from_registry::<sidereal_net::InputChannel>(&registry);
+    }
+    if !transport.has_sender::<sidereal_net::InputChannel>() {
+        transport.add_sender_from_registry::<sidereal_net::InputChannel>(&registry);
+    }
+    if !transport.has_receiver::<sidereal_net::TacticalSnapshotChannel>() {
+        transport.add_receiver_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
+    }
+    if !transport.has_sender::<sidereal_net::TacticalSnapshotChannel>() {
+        transport.add_sender_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
+    }
+    if !transport.has_receiver::<sidereal_net::TacticalDeltaChannel>() {
+        transport.add_receiver_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
+    }
+    if !transport.has_sender::<sidereal_net::TacticalDeltaChannel>() {
+        transport.add_sender_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
+    }
+    if !transport.has_receiver::<sidereal_net::ManifestChannel>() {
+        transport.add_receiver_from_registry::<sidereal_net::ManifestChannel>(&registry);
+    }
+    if !transport.has_sender::<sidereal_net::ManifestChannel>() {
+        transport.add_sender_from_registry::<sidereal_net::ManifestChannel>(&registry);
+    }
+
+    commands.entity(trigger.entity).insert((
+        MessageReceiver::<ClientAuthMessage>::default(),
+        MessageReceiver::<ClientDisconnectNotifyMessage>::default(),
+        MessageReceiver::<ClientControlRequestMessage>::default(),
+        MessageReceiver::<ClientRealtimeInputMessage>::default(),
+        MessageReceiver::<ClientLocalViewModeMessage>::default(),
+        MessageReceiver::<ClientTacticalResnapshotRequestMessage>::default(),
+        MessageSender::<ServerSessionReadyMessage>::default(),
+        MessageSender::<ServerSessionDeniedMessage>::default(),
+        MessageSender::<ServerControlAckMessage>::default(),
+        MessageSender::<ServerControlRejectMessage>::default(),
+    ));
+
+    info!(
+        "replication primed transport/message components for client link entity={:?}",
         trigger.entity
     );
 }
@@ -163,6 +315,97 @@ pub fn ensure_server_transport_channels(
         }
         if !transport.has_sender::<sidereal_net::ManifestChannel>() {
             transport.add_sender_from_registry::<sidereal_net::ManifestChannel>(&registry);
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn ensure_server_message_components(
+    mut commands: Commands<'_, '_>,
+    clients: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Has<MessageReceiver<ClientAuthMessage>>,
+            Has<MessageReceiver<ClientDisconnectNotifyMessage>>,
+            Has<MessageReceiver<ClientControlRequestMessage>>,
+            Has<MessageReceiver<ClientRealtimeInputMessage>>,
+            Has<MessageReceiver<ClientLocalViewModeMessage>>,
+            Has<MessageReceiver<ClientTacticalResnapshotRequestMessage>>,
+            Has<MessageSender<ServerSessionReadyMessage>>,
+            Has<MessageSender<ServerSessionDeniedMessage>>,
+            Has<MessageSender<ServerControlAckMessage>>,
+            Has<MessageSender<ServerControlRejectMessage>>,
+        ),
+        With<ClientOf>,
+    >,
+) {
+    for (
+        client_entity,
+        has_auth_recv,
+        has_disconnect_recv,
+        has_control_recv,
+        has_input_recv,
+        has_view_mode_recv,
+        has_tactical_resnapshot_recv,
+        has_session_ready_send,
+        has_session_denied_send,
+        has_control_ack_send,
+        has_control_reject_send,
+    ) in &clients
+    {
+        let mut patched = Vec::new();
+        let mut entity_commands = commands.entity(client_entity);
+
+        if !has_auth_recv {
+            entity_commands.insert(MessageReceiver::<ClientAuthMessage>::default());
+            patched.push("recv:ClientAuthMessage");
+        }
+        if !has_disconnect_recv {
+            entity_commands.insert(MessageReceiver::<ClientDisconnectNotifyMessage>::default());
+            patched.push("recv:ClientDisconnectNotifyMessage");
+        }
+        if !has_control_recv {
+            entity_commands.insert(MessageReceiver::<ClientControlRequestMessage>::default());
+            patched.push("recv:ClientControlRequestMessage");
+        }
+        if !has_input_recv {
+            entity_commands.insert(MessageReceiver::<ClientRealtimeInputMessage>::default());
+            patched.push("recv:ClientRealtimeInputMessage");
+        }
+        if !has_view_mode_recv {
+            entity_commands.insert(MessageReceiver::<ClientLocalViewModeMessage>::default());
+            patched.push("recv:ClientLocalViewModeMessage");
+        }
+        if !has_tactical_resnapshot_recv {
+            entity_commands
+                .insert(MessageReceiver::<ClientTacticalResnapshotRequestMessage>::default());
+            patched.push("recv:ClientTacticalResnapshotRequestMessage");
+        }
+        if !has_session_ready_send {
+            entity_commands.insert(MessageSender::<ServerSessionReadyMessage>::default());
+            patched.push("send:ServerSessionReadyMessage");
+        }
+        if !has_session_denied_send {
+            entity_commands.insert(MessageSender::<ServerSessionDeniedMessage>::default());
+            patched.push("send:ServerSessionDeniedMessage");
+        }
+        if !has_control_ack_send {
+            entity_commands.insert(MessageSender::<ServerControlAckMessage>::default());
+            patched.push("send:ServerControlAckMessage");
+        }
+        if !has_control_reject_send {
+            entity_commands.insert(MessageSender::<ServerControlRejectMessage>::default());
+            patched.push("send:ServerControlRejectMessage");
+        }
+
+        if !patched.is_empty() {
+            info!(
+                "replication patched missing message components for client link entity={:?}: {}",
+                client_entity,
+                patched.join(", ")
+            );
         }
     }
 }

@@ -371,7 +371,7 @@ function EntityTree({
                 </>
               ) : (
                 <div className="px-2 py-1 text-xs text-muted-foreground">
-                  No BRP resources loaded
+                  No resources loaded
                 </div>
               )}
             </div>
@@ -449,6 +449,7 @@ function EntityGroup({
               isNodeOpen={isNodeOpen}
               onToggleNode={onToggleNode}
               isSelected={entity.id === selectedId}
+              selectedId={selectedId}
               onSelect={onSelect}
             />
           ))}
@@ -491,6 +492,13 @@ function EntityTreeNode({
   const hasChildren = children.length > 0
   const open = hasChildren ? isNodeOpen(entity.id) : false
   const Icon = getKindIcon(entity.kind)
+
+  const handleSelectClick = () => {
+    onSelect(entity.id)
+    if (sourceMode !== 'database' && hasChildren && !open) {
+      onToggleNode(entity.id)
+    }
+  }
 
   const handleDeleteClick = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -542,7 +550,7 @@ function EntityTreeNode({
         )}
 
         <button
-          onClick={() => onSelect(entity.id)}
+          onClick={handleSelectClick}
           onContextMenu={handleContextMenu}
           className={cn(
             'flex items-center gap-2 flex-1 px-2 py-1 rounded-md text-sm transition-colors text-left min-w-0',
@@ -604,6 +612,7 @@ function EntityTreeNode({
               isNodeOpen={isNodeOpen}
               onToggleNode={onToggleNode}
               isSelected={child.id === selectedId}
+              selectedId={selectedId}
               onSelect={onSelect}
             />
           ))}

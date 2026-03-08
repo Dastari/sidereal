@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "scripting_catalog")]
 use sidereal_scripting::ScriptAssetRegistryEntry;
 use std::collections::HashMap;
 use std::io;
@@ -20,6 +21,8 @@ pub struct AssetCatalogEntry {
 pub struct RuntimeAssetCatalogEntry {
     pub asset_id: String,
     pub asset_guid: String,
+    pub shader_family: Option<String>,
+    pub dependencies: Vec<String>,
     pub relative_cache_path: String,
     pub source_path: String,
     pub content_type: String,
@@ -106,6 +109,7 @@ pub fn generated_relative_cache_path(
     format!("{directory}/{asset_guid}.{extension}")
 }
 
+#[cfg(feature = "scripting_catalog")]
 pub fn build_runtime_asset_catalog(
     asset_root: &Path,
     assets: &[ScriptAssetRegistryEntry],
@@ -119,6 +123,8 @@ pub fn build_runtime_asset_catalog(
         out.push(RuntimeAssetCatalogEntry {
             asset_id: asset.asset_id.clone(),
             asset_guid: asset_guid.clone(),
+            shader_family: asset.shader_family.clone(),
+            dependencies: asset.dependencies.clone(),
             relative_cache_path: generated_relative_cache_path(
                 &asset_guid,
                 asset.source_path.as_str(),
@@ -132,6 +138,47 @@ pub fn build_runtime_asset_catalog(
         });
     }
     Ok(out)
+}
+
+pub fn catalog_version(entries: &[RuntimeAssetCatalogEntry]) -> String {
+    let mut records = entries
+        .iter()
+        .map(|entry| {
+            let mut dependencies = entry.dependencies.clone();
+            dependencies.sort();
+            (
+                entry.asset_id.as_str(),
+                entry.asset_guid.as_str(),
+                entry.shader_family.as_deref().unwrap_or(""),
+                entry.sha256_hex.as_str(),
+                entry.bootstrap_required,
+                dependencies,
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut digest = Sha256::new();
+    digest.update(b"sidereal-catalog-v1");
+    for (asset_id, asset_guid, shader_family, sha256_hex, bootstrap_required, dependencies) in
+        records
+    {
+        digest.update(b"\nasset:");
+        digest.update(asset_id.as_bytes());
+        digest.update(b":");
+        digest.update(asset_guid.as_bytes());
+        digest.update(b":");
+        digest.update(shader_family.as_bytes());
+        digest.update(b":");
+        digest.update(sha256_hex.as_bytes());
+        digest.update(b":");
+        digest.update(if bootstrap_required { b"1" } else { b"0" });
+        for dependency in dependencies {
+            digest.update(b":dep:");
+            digest.update(dependency.as_bytes());
+        }
+    }
+    format!("{:x}", digest.finalize())
 }
 
 pub fn published_runtime_asset_path(
@@ -265,6 +312,8 @@ mod tests {
         let entry = RuntimeAssetCatalogEntry {
             asset_id: "texture.red".to_string(),
             asset_guid: generated_asset_guid("texture.red", &sha256_hex(b"payload")),
+            shader_family: None,
+            dependencies: Vec::new(),
             relative_cache_path: generated_relative_cache_path(
                 "12345678-1234-1234-1234-123456789abc",
                 "textures/red.png",
@@ -288,5 +337,28 @@ mod tests {
             b"payload"
         );
         let _ = std::fs::remove_dir_all(&asset_root);
+    }
+
+    #[test]
+    fn catalog_version_changes_when_dependencies_change() {
+        let base_entry = RuntimeAssetCatalogEntry {
+            asset_id: "shader.main".to_string(),
+            asset_guid: "guid-1".to_string(),
+            shader_family: Some("effect".to_string()),
+            dependencies: vec!["texture.a".to_string()],
+            relative_cache_path: "shaders/guid-1.wgsl".to_string(),
+            source_path: "shaders/main.wgsl".to_string(),
+            content_type: "text/wgsl".to_string(),
+            byte_len: 3,
+            sha256_hex: "abc".to_string(),
+            bootstrap_required: true,
+        };
+        let mut changed_entry = base_entry.clone();
+        changed_entry.dependencies.push("texture.b".to_string());
+
+        assert_ne!(
+            catalog_version(&[base_entry]),
+            catalog_version(&[changed_entry])
+        );
     }
 }

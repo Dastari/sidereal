@@ -60,6 +60,31 @@ For each decision:
 
 ## Decisions
 
+## DR-0031: Lightyear Native Input Runtime Split Follow-Up
+- Status: Accepted
+- Date: 2026-03-08
+- Owners: networking / replication runtime
+- Context:
+  - Replication server still accumulates dormant-system warnings because upstream `lightyear_inputs_native::InputPlugin<A>` installs both client and server input plugins when both features are compiled.
+  - Replication also hit upstream Lightyear issue `#1200`, `Panic: subtract with overflow`, in the native server input receive path.
+  - Sidereal already has an authenticated authoritative server input lane through `ClientRealtimeInputMessage`, player/session binding, and server-side controlled-entity routing.
+- Decision:
+  - Keep Lightyear native input on the client only for predicted `ActionState<PlayerInput>` behavior.
+  - Keep native-input protocol registration on replication for wire compatibility with native clients, but do not run Lightyear's upstream native server receive/update systems.
+  - Keep authoritative server control on Sidereal's authenticated realtime input lane.
+  - Continue tracking the upstream Lightyear runtime split / overflow fix separately.
+- Consequences:
+  - Positive:
+    - Sidereal avoids the crashing upstream native server input path while preserving client prediction.
+    - The replication server keeps one authoritative input source instead of two parallel server input lanes.
+  - Negative:
+    - Sidereal still carries Lightyear native-input protocol registration on replication even though that path is not authoritative server input.
+- Follow-up:
+  - Track upstream Lightyear issue `#1200`.
+  - Reassess whether replication should ever re-enable native server input after upstream fixes land.
+- Decision doc:
+  - `docs/features/dr-0031_lightyear_native_input_runtime_split_followup.md`
+
 ## DR-0029: Runtime Shader Family Taxonomy and Lua Authoring Model
 - Status: Accepted
 - Date: 2026-03-07
@@ -994,4 +1019,38 @@ For each decision:
   - `docs/features/dr-0028_generic_visibility_range_components.md`
   - `docs/features/generic_visibility_range_migration_plan.md`
   - `docs/features/visibility_replication_contract.md`
+  - `AGENTS.md`
+
+## DR-0029: WebTransport-First Browser Runtime Transport
+- Status: Accepted
+- Date: 2026-03-08
+- Owners: client/runtime + networking + replication
+- Context:
+  - Active docs had drifted between WebRTC-first and WebTransport wording for the browser transport boundary.
+  - The wasm parity implementation now depends on one concrete browser transport contract plus a browser-safe runtime asset mounting contract.
+- Decision:
+  - Browser/WASM runtime transport is WebTransport-first.
+  - WebSocket is allowed only as an explicit fallback path and must not be the default browser transport.
+  - Gateway auth/bootstrap/asset delivery remain authenticated HTTP boundaries, not replication payload transport.
+  - Browser runtime asset mounting is byte-backed from validated cache or gateway payload bytes, not filesystem-style `AssetServer` paths.
+- Alternatives considered:
+  - Keep WebRTC-first wording: rejected (no longer matched active implementation direction).
+  - Default to WebSocket for browser runtime traffic: rejected (wrong latency/ordering default for the project).
+  - Leave the browser transport contract vague: rejected (too much implementation churn and doc drift).
+- Consequences:
+  - Positive:
+    - One canonical browser transport contract now exists across project docs.
+    - Client and replication browser transport work can continue without further contract churn.
+  - Negative:
+    - Browser deployment now depends on explicit WebTransport listener/certificate handling.
+- Follow-up:
+  - Keep wasm parity docs/checklists aligned with this decision.
+  - Add live browser validation coverage for login, world-entry, asset bootstrap, and in-world replication.
+- Decision doc:
+  - `docs/features/dr-0029_webtransport_first_browser_transport.md`
+- References:
+  - `docs/features/dr-0029_webtransport_first_browser_transport.md`
+  - `docs/features/wasm_parity_implementation_plan.md`
+  - `docs/features/asset_delivery_contract.md`
+  - `docs/sidereal_design_document.md`
   - `AGENTS.md`

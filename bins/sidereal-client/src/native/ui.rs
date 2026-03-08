@@ -20,10 +20,7 @@ use std::collections::{HashMap, HashSet};
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, OwnedEntitiesPanelState,
 };
-use super::assets::{
-    LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetNetIndicatorState,
-    streamed_svg_asset_path,
-};
+use super::assets::{LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetNetIndicatorState};
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     ControlledEntity, EntityNameplateHealthBar, EntityNameplateRoot, GameplayCamera, GameplayHud,
@@ -164,7 +161,7 @@ pub(super) fn sync_tactical_map_camera_zoom_system(
     let map_settings = map_settings_query
         .iter()
         .next()
-        .copied()
+        .cloned()
         .unwrap_or_default();
     let mut wheel_delta_y = 0.0f32;
     for event in mouse_wheel_events.read() {
@@ -235,7 +232,10 @@ pub(super) fn update_tactical_map_overlay_system(
     time: Res<'_, Time>,
     mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
     contacts_cache: Res<'_, TacticalContactsCache>,
-    asset_server: Res<'_, AssetServer>,
+    asset_io: (
+        Res<'_, super::resources::AssetRootPath>,
+        Res<'_, super::resources::AssetCacheAdapter>,
+    ),
     asset_manager: Res<'_, LocalAssetManager>,
     mouse_buttons: Res<'_, ButtonInput<MouseButton>>,
     camera_motion: Res<'_, CameraMotionState>,
@@ -314,10 +314,11 @@ pub(super) fn update_tactical_map_overlay_system(
         ),
     >,
 ) {
+    let (asset_root, cache_adapter) = asset_io;
     let map_settings = map_settings_query
         .iter()
         .next()
-        .copied()
+        .cloned()
         .unwrap_or_default();
     let tactical_defaults = {
         let defaults_query = map_queries.p7();
@@ -493,10 +494,8 @@ pub(super) fn update_tactical_map_overlay_system(
             });
         if let Some(base_asset_id) = base_asset_id
             && let Some(svg_handle) = resolve_tactical_marker_svg(
-                &asset_server,
-                &asset_manager,
-                &mut svg_assets,
-                &mut meshes,
+                (&asset_manager, &asset_root.0, *cache_adapter),
+                (&mut svg_assets, &mut meshes),
                 &mut icon_cache,
                 base_asset_id,
                 TacticalMarkerColorRole::FriendlySelf,
@@ -554,10 +553,8 @@ pub(super) fn update_tactical_map_overlay_system(
         };
         let color_role = TacticalMarkerColorRole::HostileContact;
         let Some(svg_handle) = resolve_tactical_marker_svg(
-            &asset_server,
-            &asset_manager,
-            &mut svg_assets,
-            &mut meshes,
+            (&asset_manager, &asset_root.0, *cache_adapter),
+            (&mut svg_assets, &mut meshes),
             &mut icon_cache,
             base_asset_id,
             color_role,
@@ -762,19 +759,29 @@ fn tactical_marker_color(role: TacticalMarkerColorRole) -> Color {
 }
 
 fn resolve_tactical_marker_svg(
-    asset_server: &AssetServer,
-    asset_manager: &LocalAssetManager,
-    svg_assets: &mut Assets<Svg>,
-    meshes: &mut Assets<Mesh>,
+    asset_io: (
+        &LocalAssetManager,
+        &str,
+        super::resources::AssetCacheAdapter,
+    ),
+    render_assets: (&mut Assets<Svg>, &mut Assets<Mesh>),
     cache: &mut TacticalMapIconSvgCache,
     base_asset_id: &str,
     role: TacticalMarkerColorRole,
 ) -> Option<Handle<Svg>> {
+    let (asset_manager, asset_root, cache_adapter) = asset_io;
+    let (svg_assets, meshes) = render_assets;
     let base_handle = if let Some(handle) = cache.base_by_asset_id.get(base_asset_id) {
         handle.clone()
     } else {
-        let path = streamed_svg_asset_path(base_asset_id, asset_manager)?;
-        let handle = asset_server.load(path);
+        let handle = super::assets::cached_svg_handle(
+            base_asset_id,
+            asset_manager,
+            asset_root,
+            cache_adapter,
+            svg_assets,
+            meshes,
+        )?;
         cache
             .base_by_asset_id
             .insert(base_asset_id.to_string(), handle.clone());
@@ -845,7 +852,7 @@ pub(super) fn update_runtime_screen_overlay_passes_system(
     let map_settings = map_settings_query
         .iter()
         .next()
-        .copied()
+        .cloned()
         .unwrap_or_default();
     let Ok(window) = windows.single() else {
         return;

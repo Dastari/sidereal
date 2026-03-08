@@ -17,14 +17,17 @@ import type {
   WorldEntity,
 } from '@/components/grid/types'
 import type { DataSourceMode } from '@/components/sidebar/Toolbar'
+import type { GeneratedComponentRegistryResource } from '@/features/component-schema/types'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ComponentEditorRenderer } from '@/components/brp-editors'
 import {
-  ComponentEditorRenderer,
-  isEditableComponent,
-} from '@/components/brp-editors'
+  findGeneratedComponentRegistryResource,
+  isGeneratedComponentRegistryTypePath,
+  parseGeneratedComponentRegistryResource,
+} from '@/features/component-schema/registry'
 
 interface DetailPanelProps {
   selectedId: string | null
@@ -62,6 +65,10 @@ export function DetailPanel({
   onComponentUpdate,
   onClose,
 }: DetailPanelProps) {
+  const generatedComponentRegistry = React.useMemo(
+    () => findGeneratedComponentRegistryResource(resources),
+    [resources],
+  )
   const selectedResourceTypePath = selectedId?.startsWith('resource:')
     ? selectedId.slice('resource:'.length)
     : null
@@ -74,6 +81,8 @@ export function DetailPanel({
     const renderEntityRegistryResource = selectedResourceTypePath.includes(
       'EntityRegistryResource',
     )
+    const renderGeneratedRegistryResource =
+      isGeneratedComponentRegistryTypePath(selectedResourceTypePath)
     return (
       <div className="flex flex-col h-full">
         <div className="flex-none p-5 border-b border-border-subtle">
@@ -115,6 +124,8 @@ export function DetailPanel({
               {selectedResource ? (
                 renderEntityRegistryResource ? (
                   <EntityRegistryResourceView value={resourceValue} />
+                ) : renderGeneratedRegistryResource ? (
+                  <GeneratedComponentRegistryView value={resourceValue} />
                 ) : (
                   <ValueField value={displayValue} mono className="text-xs" />
                 )
@@ -342,6 +353,7 @@ export function DetailPanel({
                         entityId={selectedId}
                         graphNodes={graphNodes}
                         graphEdges={graphEdges}
+                        generatedComponentRegistry={generatedComponentRegistry}
                         sourceMode={sourceMode}
                         onComponentUpdate={onComponentUpdate}
                       />
@@ -484,6 +496,38 @@ function EntityRegistryEntryCard({
   )
 }
 
+function GeneratedComponentRegistryView({ value }: { value: unknown }) {
+  const registry = React.useMemo(
+    () => parseGeneratedComponentRegistryResource(value),
+    [value],
+  )
+
+  if (!registry || registry.entries.length === 0) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        GeneratedComponentRegistry has no entries in this snapshot.
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1">
+      {registry.entries.map((entry) => (
+        <div
+          key={entry.type_path}
+          className="rounded-md border border-border px-3 py-2 text-xs"
+        >
+          <div className="font-medium text-foreground">{entry.component_kind}</div>
+          <div className="font-mono text-muted-foreground">{entry.type_path}</div>
+          <div className="mt-1 text-muted-foreground">
+            {entry.editor_schema.fields.length} fields
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 interface PropertySectionProps {
   title: string
   icon: React.ComponentType<{ className?: string }>
@@ -534,6 +578,7 @@ interface ComponentsListProps {
   entityId: string
   graphNodes: Map<string, GraphNode>
   graphEdges: Array<GraphEdge>
+  generatedComponentRegistry: GeneratedComponentRegistryResource | null
   sourceMode?: DataSourceMode
   onComponentUpdate?: (
     entityId: string,
@@ -546,6 +591,7 @@ function ComponentsList({
   entityId,
   graphNodes,
   graphEdges,
+  generatedComponentRegistry,
   sourceMode,
   onComponentUpdate,
 }: ComponentsListProps) {
@@ -725,21 +771,18 @@ function ComponentsList({
                       )}
                     </div>
                   </div>
-                  {isEditableComponent(node) && (
-                    <div className="space-y-1 grow">
-                      <ComponentEditorRenderer
-                        componentNodeId={id}
-                        entityId={entityId}
-                        node={node}
-                        onUpdate={(typePath, value) => {
-                          onComponentUpdate?.(entityId, typePath, value)
-                        }}
-                        readOnly={
-                          sourceMode === 'database' || !onComponentUpdate
-                        }
-                      />
-                    </div>
-                  )}
+                  <div className="space-y-1 grow">
+                    <ComponentEditorRenderer
+                      componentNodeId={id}
+                      entityId={entityId}
+                      node={node}
+                      generatedComponentRegistry={generatedComponentRegistry}
+                      onUpdate={(typePath, value) => {
+                        onComponentUpdate?.(entityId, typePath, value)
+                      }}
+                      readOnly={sourceMode === 'database' || !onComponentUpdate}
+                    />
+                  </div>
                 </div>
               )}
             </div>

@@ -4,50 +4,61 @@ use super::app_state::*;
 use super::assets::{LocalAssetManager, LocalAssetRecord, RuntimeAssetCatalogRecord};
 use super::resources::AssetRootPath;
 use super::resources::{
-    ClientAuthSyncState, HeadlessAccountSwitchPlan, HeadlessTransportMode, LogoutCleanupRequested,
-    PendingDisconnectNotify, SessionReadyWatchdogConfig, SessionReadyWatchdogState,
+    AssetCacheAdapter, ClientAuthSyncState, GatewayHttpAdapter, HeadlessAccountSwitchPlan,
+    HeadlessTransportMode, LogoutCleanupRequested, PendingDisconnectNotify,
+    SessionReadyWatchdogConfig, SessionReadyWatchdogState,
 };
 use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task, futures_lite::future};
-use lightyear::prelude::{MessageReceiver, MessageSender};
-use sidereal_asset_runtime::{
-    AssetCacheIndexRecord, asset_version_from_sha256_hex, cache_index_path, load_cache_index,
-    save_cache_index, sha256_hex,
-};
+use lightyear::prelude::{MessageReceiver, MessageSender, Transport};
+use sidereal_asset_runtime::{AssetCacheIndexRecord, asset_version_from_sha256_hex, sha256_hex};
 use sidereal_core::gateway_dtos::{
     AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
     EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
-    PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest,
+    PasswordResetRequest, RegisterRequest,
 };
 use sidereal_net::{
     ClientAuthMessage, ControlChannel, LIGHTYEAR_PROTOCOL_VERSION, PlayerEntityId,
     ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 
-fn decode_api_json<T: serde::de::DeserializeOwned>(
-    response: reqwest::blocking::Response,
-) -> Result<T, String> {
-    let status = response.status();
-    let body = response.text().map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body)
-            && let Some(message) = error_json.get("error").and_then(|v| v.as_str())
-        {
-            return Err(format!("{status}: {message}"));
-        }
-        if body.trim().is_empty() {
-            return Err(status.to_string());
-        }
-        return Err(format!("{status}: {body}"));
-    }
-    serde_json::from_str::<T>(&body).map_err(|err| err.to_string())
-}
-
 fn canonicalize_player_entity_id(raw: &str) -> String {
     PlayerEntityId::parse(raw)
         .map(PlayerEntityId::canonical_wire_id)
         .unwrap_or_else(|| raw.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn validate_world_entry_transport(
+    transport: &sidereal_core::gateway_dtos::ReplicationTransportConfig,
+) -> Result<(), String> {
+    if transport
+        .webtransport_addr
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(
+            "Gateway world-entry response did not include a WebTransport address. Configure replication/gateway WebTransport env before using the browser client.".to_string(),
+        );
+    }
+    if transport
+        .webtransport_certificate_sha256
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(
+            "Gateway world-entry response did not include a WebTransport certificate digest. Configure replication/gateway WebTransport env before using the browser client.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_world_entry_transport(
+    _transport: &sidereal_core::gateway_dtos::ReplicationTransportConfig,
+) -> Result<(), String> {
+    Ok(())
 }
 
 #[derive(Resource, Default)]
@@ -77,8 +88,13 @@ enum AuthRequestResult {
 
 #[derive(Debug)]
 enum EnterWorldRequestResult {
-    Accepted { player_entity_id: String },
-    Rejected { reason: String },
+    Accepted {
+        player_entity_id: String,
+        replication_transport: sidereal_core::gateway_dtos::ReplicationTransportConfig,
+    },
+    Rejected {
+        reason: String,
+    },
     Error(String),
 }
 
@@ -115,7 +131,11 @@ pub fn init_gateway_request_state(app: &mut App) {
     app.insert_resource(AssetBootstrapRequestState::default());
 }
 
-pub fn submit_auth_request(session: &mut ClientSession, request_state: &mut GatewayRequestState) {
+pub fn submit_auth_request(
+    session: &mut ClientSession,
+    request_state: &mut GatewayRequestState,
+    gateway_http: GatewayHttpAdapter,
+) {
     if request_state.pending.is_some() {
         session.status = "Another gateway request is already in progress.".to_string();
         session.ui_dirty = true;
@@ -131,70 +151,65 @@ pub fn submit_auth_request(session: &mut ClientSession, request_state: &mut Gate
     session.status = "Submitting request...".to_string();
     session.ui_dirty = true;
     request_state.pending = Some(IoTaskPool::get().spawn(async move {
-        let client = reqwest::blocking::Client::new();
-        let result = match selected_action {
-            AuthAction::Login => (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-                let response = client
-                    .post(format!("{gateway_url}/auth/login"))
-                    .json(&LoginRequest { email, password })
-                    .send()
-                    .map_err(|err| err.to_string())?;
-                let tokens = decode_api_json::<AuthTokens>(response)?;
-                Ok((Some(tokens), None::<String>))
-            })(),
-            AuthAction::Register => (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-                let response = client
-                    .post(format!("{gateway_url}/auth/register"))
-                    .json(&RegisterRequest { email, password })
-                    .send()
-                    .map_err(|err| err.to_string())?;
-                let tokens = decode_api_json::<AuthTokens>(response)?;
-                Ok((Some(tokens), None::<String>))
-            })(),
-            AuthAction::ForgotRequest => {
-                (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-                    let response = client
-                        .post(format!("{gateway_url}/auth/password-reset/request"))
-                        .json(&PasswordResetRequest { email })
-                        .send()
-                        .map_err(|err| err.to_string())?;
-                    let resp = decode_api_json::<PasswordResetResponse>(response)?;
-                    Ok((None, resp.reset_token))
-                })()
-            }
-            AuthAction::ForgotConfirm => {
-                (|| -> Result<(Option<AuthTokens>, Option<String>), String> {
-                    let response = client
-                        .post(format!("{gateway_url}/auth/password-reset/confirm"))
-                        .json(&PasswordResetConfirmRequest {
-                            reset_token,
-                            new_password,
-                        })
-                        .send()
-                        .map_err(|err| err.to_string())?;
-                    let _ = decode_api_json::<PasswordResetConfirmResponse>(response)?;
-                    Ok((None, None::<String>))
-                })()
-            }
+        let result: Result<(Option<AuthTokens>, Option<String>), String> = match selected_action {
+            AuthAction::Login => (gateway_http.login)(
+                gateway_url.clone(),
+                LoginRequest {
+                    email: email.clone(),
+                    password: password.clone(),
+                },
+            )
+            .await
+            .map(|tokens| (Some(tokens), None::<String>)),
+            AuthAction::Register => (gateway_http.register)(
+                gateway_url.clone(),
+                RegisterRequest {
+                    email: email.clone(),
+                    password: password.clone(),
+                },
+            )
+            .await
+            .map(|tokens| (Some(tokens), None::<String>)),
+            AuthAction::ForgotRequest => (gateway_http.request_password_reset)(
+                gateway_url.clone(),
+                PasswordResetRequest {
+                    email: email.clone(),
+                },
+            )
+            .await
+            .map(|resp| (None, resp.reset_token)),
+            AuthAction::ForgotConfirm => (gateway_http.confirm_password_reset)(
+                gateway_url.clone(),
+                PasswordResetConfirmRequest {
+                    reset_token: reset_token.clone(),
+                    new_password: new_password.clone(),
+                },
+            )
+            .await
+            .map(|()| (None, None::<String>)),
         };
 
         match result {
             Ok((Some(tokens), _)) => {
-                match fetch_auth_me(&client, &gateway_url, &tokens.access_token) {
-                    Ok(me) => {
-                        match fetch_auth_characters(&client, &gateway_url, &tokens.access_token) {
-                            Ok(characters) => {
-                                GatewayRequestResult::Auth(AuthRequestResult::LoginOrRegister {
-                                    tokens,
-                                    me,
-                                    characters,
-                                })
-                            }
-                            Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(
-                                format!("Auth OK but character lookup failed: {err}"),
-                            )),
+                match fetch_auth_me(gateway_http, &gateway_url, &tokens.access_token).await {
+                    Ok(me) => match fetch_auth_characters(
+                        gateway_http,
+                        &gateway_url,
+                        &tokens.access_token,
+                    )
+                    .await
+                    {
+                        Ok(characters) => {
+                            GatewayRequestResult::Auth(AuthRequestResult::LoginOrRegister {
+                                tokens,
+                                me,
+                                characters,
+                            })
                         }
-                    }
+                        Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
+                            "Auth OK but character lookup failed: {err}"
+                        ))),
+                    },
                     Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
                         "Auth OK but profile lookup failed: {err}"
                     ))),
@@ -217,60 +232,40 @@ pub fn submit_auth_request(session: &mut ClientSession, request_state: &mut Gate
 }
 
 fn fetch_auth_me(
-    client: &reqwest::blocking::Client,
+    gateway_http: GatewayHttpAdapter,
     gateway_url: &str,
     access_token: &str,
-) -> Result<MeResponse, String> {
-    client
-        .get(format!("{gateway_url}/auth/me"))
-        .bearer_auth(access_token)
-        .send()
-        .map_err(|err| err.to_string())?
-        .error_for_status()
-        .map_err(|err| err.to_string())?
-        .json::<MeResponse>()
-        .map_err(|err| err.to_string())
+) -> super::resources::GatewayFuture<MeResponse> {
+    (gateway_http.fetch_me)(gateway_url.to_string(), access_token.to_string())
 }
 
 fn fetch_auth_characters(
-    client: &reqwest::blocking::Client,
+    gateway_http: GatewayHttpAdapter,
     gateway_url: &str,
     access_token: &str,
-) -> Result<CharactersResponse, String> {
-    client
-        .get(format!("{gateway_url}/auth/characters"))
-        .bearer_auth(access_token)
-        .send()
-        .map_err(|err| err.to_string())?
-        .error_for_status()
-        .map_err(|err| err.to_string())?
-        .json::<CharactersResponse>()
-        .map_err(|err| err.to_string())
+) -> super::resources::GatewayFuture<CharactersResponse> {
+    (gateway_http.fetch_characters)(gateway_url.to_string(), access_token.to_string())
 }
 
 fn enter_world_request(
-    client: &reqwest::blocking::Client,
+    gateway_http: GatewayHttpAdapter,
     gateway_url: &str,
     access_token: &str,
     player_entity_id: &str,
-) -> Result<EnterWorldResponse, String> {
-    client
-        .post(format!("{gateway_url}/world/enter"))
-        .bearer_auth(access_token)
-        .json(&EnterWorldRequest {
+) -> super::resources::GatewayFuture<EnterWorldResponse> {
+    (gateway_http.enter_world)(
+        gateway_url.to_string(),
+        access_token.to_string(),
+        EnterWorldRequest {
             player_entity_id: player_entity_id.to_string(),
-        })
-        .send()
-        .map_err(|err| err.to_string())?
-        .error_for_status()
-        .map_err(|err| err.to_string())?
-        .json::<EnterWorldResponse>()
-        .map_err(|err| err.to_string())
+        },
+    )
 }
 
 pub fn submit_enter_world_request(
     session: &mut ClientSession,
     request_state: &mut GatewayRequestState,
+    gateway_http: GatewayHttpAdapter,
     player_entity_id: String,
 ) {
     if request_state.pending.is_some() {
@@ -289,11 +284,13 @@ pub fn submit_enter_world_request(
     session.ui_dirty = true;
 
     request_state.pending = Some(IoTaskPool::get().spawn(async move {
-        let client = reqwest::blocking::Client::new();
-        match enter_world_request(&client, &gateway_url, &access_token, &requested_player) {
+        match enter_world_request(gateway_http, &gateway_url, &access_token, &requested_player)
+            .await
+        {
             Ok(response) if response.accepted => {
                 GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
                     player_entity_id: requested_player,
+                    replication_transport: response.replication_transport,
                 })
             }
             Ok(_) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Rejected {
@@ -309,149 +306,142 @@ pub fn submit_enter_world_request(
 pub fn submit_asset_bootstrap_request(
     session: &mut ClientSession,
     request_state: &mut AssetBootstrapRequestState,
+    gateway_http: GatewayHttpAdapter,
+    cache_adapter: AssetCacheAdapter,
     asset_root: &str,
 ) {
     if request_state.pending.is_some() {
+        info!("asset bootstrap request already pending; skipping duplicate submit");
         return;
     }
     let Some(access_token) = session.access_token.clone() else {
         session.status = "Missing access token for asset bootstrap.".to_string();
         session.ui_dirty = true;
+        warn!("asset bootstrap request skipped: missing access token");
         return;
     };
     let gateway_url = session.gateway_url.clone();
     let asset_root = asset_root.to_string();
-    let cache_root = std::path::PathBuf::from(&asset_root).join("data/cache_stream");
-    if let Err(err) = std::fs::create_dir_all(&cache_root) {
-        session.status = format!(
-            "Failed to prepare asset cache directory {}: {}",
-            cache_root.display(),
-            err
-        );
-        session.ui_dirty = true;
-        request_state.submitted = false;
-        request_state.completed = false;
-        request_state.failed = true;
-        return;
-    }
     request_state.submitted = true;
     request_state.completed = false;
     request_state.failed = false;
     session.status = "Fetching asset bootstrap manifest...".to_string();
     session.ui_dirty = true;
+    info!(
+        "asset bootstrap request submitted: gateway_url={} asset_root={}",
+        gateway_url, asset_root
+    );
 
     request_state.pending = Some(IoTaskPool::get().spawn(async move {
-        (|| -> Result<AssetBootstrapRequestResult, String> {
-            let client = reqwest::blocking::Client::new();
-            let manifest = client
-                .get(format!("{gateway_url}/assets/bootstrap-manifest"))
-                .bearer_auth(&access_token)
-                .send()
-                .map_err(|err| err.to_string())
-                .and_then(decode_api_json::<AssetBootstrapManifestResponse>)?;
-            let cache_index_file = cache_index_path(&asset_root);
-            let mut cache_index = load_cache_index(&cache_index_file).unwrap_or_default();
-            let mut records = Vec::<AssetBootstrapRecord>::new();
-            let mut bootstrap_total_bytes = 0u64;
-            let mut bootstrap_ready_bytes = 0u64;
+        info!("asset bootstrap task starting");
+        info!("asset bootstrap preparing cache root");
+        (cache_adapter.prepare_root)(asset_root.clone()).await?;
+        info!("asset bootstrap cache root prepared");
+        info!("asset bootstrap requesting manifest from gateway");
+        let manifest =
+            (gateway_http.fetch_bootstrap_manifest)(gateway_url.clone(), access_token.clone())
+                .await?;
+        info!(
+            "asset bootstrap manifest fetched: required_assets={} catalog_assets={}",
+            manifest.required_assets.len(),
+            manifest.catalog.len()
+        );
+        let mut cache_index = (cache_adapter.load_index)(asset_root.clone()).await?;
+        let mut records = Vec::<AssetBootstrapRecord>::new();
+        let mut bootstrap_total_bytes = 0u64;
+        let mut bootstrap_ready_bytes = 0u64;
 
-            for entry in &manifest.catalog {
-                let target = std::path::PathBuf::from(&asset_root)
-                    .join("data/cache_stream")
-                    .join(&entry.relative_cache_path);
-                let mut ready = false;
-                if target.is_file()
-                    && let Ok(bytes) = std::fs::read(&target)
-                    && sha256_hex(&bytes) == entry.sha256_hex
+        for entry in &manifest.catalog {
+            let ready = (cache_adapter.read_valid_asset)(
+                asset_root.clone(),
+                entry.relative_cache_path.clone(),
+                entry.sha256_hex.clone(),
+            )
+            .await?
+            .is_some();
+            records.push(AssetBootstrapRecord {
+                asset_id: entry.asset_id.clone(),
+                relative_cache_path: entry.relative_cache_path.clone(),
+                content_type: entry.content_type.clone(),
+                byte_len: entry.byte_len,
+                asset_version: asset_version_from_sha256_hex(&entry.sha256_hex),
+                sha256_hex: entry.sha256_hex.clone(),
+                ready,
+            });
+        }
+
+        for required in &manifest.required_assets {
+            bootstrap_total_bytes = bootstrap_total_bytes.saturating_add(required.byte_len);
+            let satisfied = (cache_adapter.read_valid_asset)(
+                asset_root.clone(),
+                required.relative_cache_path.clone(),
+                required.sha256_hex.clone(),
+            )
+            .await?
+            .is_some();
+            if !satisfied {
+                let url = if required.url.starts_with("http://")
+                    || required.url.starts_with("https://")
                 {
-                    ready = true;
+                    required.url.clone()
+                } else {
+                    format!("{gateway_url}{}", required.url)
+                };
+                info!(
+                    "asset bootstrap download starting: asset_id={} relative_cache_path={} bytes={}",
+                    required.asset_id, required.relative_cache_path, required.byte_len
+                );
+                let bytes = (gateway_http.fetch_asset_bytes)(url, access_token.clone()).await?;
+                let payload_sha = sha256_hex(&bytes);
+                if payload_sha != required.sha256_hex {
+                    return Err(format!(
+                        "asset checksum mismatch asset_id={} expected={} got={}",
+                        required.asset_id, required.sha256_hex, payload_sha
+                    ));
                 }
-                records.push(AssetBootstrapRecord {
-                    asset_id: entry.asset_id.clone(),
-                    relative_cache_path: entry.relative_cache_path.clone(),
-                    content_type: entry.content_type.clone(),
-                    byte_len: entry.byte_len,
-                    asset_version: asset_version_from_sha256_hex(&entry.sha256_hex),
-                    sha256_hex: entry.sha256_hex.clone(),
-                    ready,
-                });
-            }
-
-            for required in &manifest.required_assets {
-                bootstrap_total_bytes = bootstrap_total_bytes.saturating_add(required.byte_len);
-                let target = std::path::PathBuf::from(&asset_root)
-                    .join("data/cache_stream")
-                    .join(&required.relative_cache_path);
-                let mut satisfied = false;
-                if target.is_file()
-                    && let Ok(bytes) = std::fs::read(&target)
-                    && sha256_hex(&bytes) == required.sha256_hex
-                {
-                    satisfied = true;
-                }
-                if !satisfied {
-                    let url = if required.url.starts_with("http://")
-                        || required.url.starts_with("https://")
-                    {
-                        required.url.clone()
-                    } else {
-                        format!("{gateway_url}{}", required.url)
-                    };
-                    let response_bytes = client
-                        .get(url)
-                        .bearer_auth(&access_token)
-                        .send()
-                        .map_err(|err| err.to_string())?
-                        .error_for_status()
-                        .map_err(|err| err.to_string())?
-                        .bytes()
-                        .map_err(|err| err.to_string())?;
-                    let bytes = response_bytes.to_vec();
-                    let payload_sha = sha256_hex(&bytes);
-                    if payload_sha != required.sha256_hex {
-                        return Err(format!(
-                            "asset checksum mismatch asset_id={} expected={} got={}",
-                            required.asset_id, required.sha256_hex, payload_sha
-                        ));
-                    }
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-                    }
-                    std::fs::write(&target, &bytes).map_err(|err| err.to_string())?;
-                }
-                bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
-            }
-
-            for required in &manifest.required_assets {
-                let version = asset_version_from_sha256_hex(&required.sha256_hex);
-                cache_index.by_asset_id.insert(
-                    required.asset_id.clone(),
-                    AssetCacheIndexRecord {
-                        asset_version: version,
-                        sha256_hex: required.sha256_hex.clone(),
-                    },
+                (cache_adapter.write_asset)(
+                    asset_root.clone(),
+                    required.relative_cache_path.clone(),
+                    bytes,
+                )
+                .await?;
+                info!(
+                    "asset bootstrap cache write complete: asset_id={} relative_cache_path={} bytes={}",
+                    required.asset_id, required.relative_cache_path, required.byte_len
                 );
             }
-            save_cache_index(&cache_index_file, &cache_index).map_err(|err| err.to_string())?;
+            bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
+        }
 
-            for record in &mut records {
-                if manifest
-                    .required_assets
-                    .iter()
-                    .any(|required| required.asset_id == record.asset_id)
-                {
-                    record.ready = true;
-                }
+        for required in &manifest.required_assets {
+            let version = asset_version_from_sha256_hex(&required.sha256_hex);
+            cache_index.by_asset_id.insert(
+                required.asset_id.clone(),
+                AssetCacheIndexRecord {
+                    asset_version: version,
+                    sha256_hex: required.sha256_hex.clone(),
+                },
+            );
+        }
+        (cache_adapter.save_index)(asset_root.clone(), cache_index.clone()).await?;
+
+        for record in &mut records {
+            if manifest
+                .required_assets
+                .iter()
+                .any(|required| required.asset_id == record.asset_id)
+            {
+                record.ready = true;
             }
+        }
 
-            Ok(AssetBootstrapRequestResult {
-                manifest,
-                records,
-                cache_index,
-                bootstrap_total_bytes,
-                bootstrap_ready_bytes,
-            })
-        })()
+        Ok(AssetBootstrapRequestResult {
+            manifest,
+            records,
+            cache_index,
+            bootstrap_total_bytes,
+            bootstrap_ready_bytes,
+        })
     }));
 }
 
@@ -465,6 +455,8 @@ pub fn poll_gateway_request_results(
     mut auth_sync: ResMut<'_, super::resources::ClientAuthSyncState>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
     asset_root: Res<'_, AssetRootPath>,
+    gateway_http: Res<'_, GatewayHttpAdapter>,
+    cache_adapter: Res<'_, AssetCacheAdapter>,
     mut asset_bootstrap_state: ResMut<'_, AssetBootstrapRequestState>,
 ) {
     let Some(task) = request_state.pending.as_mut() else {
@@ -517,8 +509,16 @@ pub fn poll_gateway_request_results(
         }
         GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
             player_entity_id,
+            replication_transport,
         }) => {
+            if let Err(err) = validate_world_entry_transport(&replication_transport) {
+                session.status = err.clone();
+                dialog_queue.push_error("Browser Transport Unavailable", err);
+                session.ui_dirty = true;
+                return;
+            }
             session.player_entity_id = Some(canonicalize_player_entity_id(&player_entity_id));
+            session.replication_transport = replication_transport;
             auth_sync.sent_for_client_entities.clear();
             auth_sync.last_player_entity_id = None;
             session_ready.ready_player_entity_id = None;
@@ -529,6 +529,8 @@ pub fn poll_gateway_request_results(
             submit_asset_bootstrap_request(
                 session.as_mut(),
                 asset_bootstrap_state.as_mut(),
+                *gateway_http,
+                *cache_adapter,
                 &asset_root.0,
             );
             next_state.set(ClientAppState::WorldLoading);
@@ -575,6 +577,8 @@ pub fn poll_asset_bootstrap_request_results(
                     entry.asset_id.clone(),
                     RuntimeAssetCatalogRecord {
                         _asset_guid: entry.asset_guid.clone(),
+                        shader_family: entry.shader_family.clone(),
+                        dependencies: entry.dependencies.clone(),
                         url: entry.url.clone(),
                         relative_cache_path: entry.relative_cache_path.clone(),
                         content_type: entry.content_type.clone(),
@@ -673,11 +677,13 @@ pub fn send_lightyear_auth_messages(
     mut senders: Query<
         '_,
         '_,
-        (Entity, &mut MessageSender<ClientAuthMessage>),
         (
-            With<lightyear::prelude::client::Client>,
-            With<lightyear::prelude::client::Connected>,
+            Entity,
+            &mut MessageSender<ClientAuthMessage>,
+            Option<&Transport>,
+            Has<lightyear::prelude::client::Connected>,
         ),
+        With<lightyear::prelude::client::Client>,
     >,
 ) {
     let active_world_state = is_active_world_state(&app_state, &headless_mode);
@@ -707,7 +713,10 @@ pub fn send_lightyear_auth_messages(
         .and_then(PlayerEntityId::parse)
         .is_some_and(|ready_id| ready_id.canonical_wire_id() == canonical_player_entity_id);
 
-    for (client_entity, mut sender) in &mut senders {
+    for (client_entity, mut sender, transport, connected) in &mut senders {
+        if !connected {
+            continue;
+        }
         let sent_before = auth_state.sent_for_client_entities.contains(&client_entity);
         if sent_before && session_ready_for_player {
             continue;
@@ -722,14 +731,23 @@ pub fn send_lightyear_auth_messages(
         if sent_before && !should_resend_while_unbound {
             continue;
         }
+        let has_control_sender =
+            transport.is_some_and(|transport| transport.has_sender::<ControlChannel>());
+        if !has_control_sender {
+            warn!(
+                "client auth bind skipped: ControlChannel sender missing for connected client_entity={:?}",
+                client_entity
+            );
+            continue;
+        }
         let auth_message = ClientAuthMessage {
             player_entity_id: canonical_player_entity_id.clone(),
             access_token: access_token.clone(),
         };
         sender.send::<ControlChannel>(auth_message);
         info!(
-            "client auth bind message sent for player_entity_id={} client_entity={:?}",
-            canonical_player_entity_id, client_entity
+            "client auth bind message sent for player_entity_id={} client_entity={:?} has_control_sender={}",
+            canonical_player_entity_id, client_entity, has_control_sender
         );
         auth_state.sent_for_client_entities.insert(client_entity);
         auth_state
@@ -743,10 +761,7 @@ pub fn receive_lightyear_session_ready_messages(
         '_,
         '_,
         &mut MessageReceiver<ServerSessionReadyMessage>,
-        (
-            With<lightyear::prelude::client::Client>,
-            With<lightyear::prelude::client::Connected>,
-        ),
+        With<lightyear::prelude::client::Client>,
     >,
     session: Res<'_, ClientSession>,
     mut session_ready: ResMut<'_, SessionReadyState>,
@@ -783,6 +798,10 @@ pub fn receive_lightyear_session_ready_messages(
                 cleanup_requested.0 = true;
                 continue;
             }
+            info!(
+                "client session ready received for player_entity_id={}",
+                message.player_entity_id
+            );
             session_ready.ready_player_entity_id = Some(message.player_entity_id);
         }
     }
@@ -795,15 +814,7 @@ pub fn watch_session_ready_timeout_system(
     time: Res<'_, Time>,
     session: Res<'_, ClientSession>,
     session_ready: Res<'_, SessionReadyState>,
-    connected_clients: Query<
-        '_,
-        '_,
-        Entity,
-        (
-            With<lightyear::prelude::client::Client>,
-            With<lightyear::prelude::client::Connected>,
-        ),
-    >,
+    clients: Query<'_, '_, Entity, With<lightyear::prelude::client::Client>>,
     cfg: Res<'_, SessionReadyWatchdogConfig>,
     mut watchdog: ResMut<'_, SessionReadyWatchdogState>,
     pending_disconnect: Res<'_, PendingDisconnectNotify>,
@@ -816,7 +827,7 @@ pub fn watch_session_ready_timeout_system(
         || pending_disconnect.0.is_some()
         || session.access_token.is_none()
         || session.player_entity_id.is_none()
-        || connected_clients.is_empty()
+        || clients.is_empty()
     {
         watchdog.started_at_s = None;
         return;
@@ -862,10 +873,7 @@ pub fn receive_lightyear_session_denied_messages(
         '_,
         '_,
         &mut MessageReceiver<ServerSessionDeniedMessage>,
-        (
-            With<lightyear::prelude::client::Client>,
-            With<lightyear::prelude::client::Connected>,
-        ),
+        With<lightyear::prelude::client::Client>,
     >,
     session: Res<'_, ClientSession>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,

@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = ["scripting_catalog"]
+scripting_catalog = ["dep:sidereal-scripting"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sidereal-scripting = { path = "../sidereal-scripting" }
+sidereal-scripting = { path = "../sidereal-scripting", optional = true }

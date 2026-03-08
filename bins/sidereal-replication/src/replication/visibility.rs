@@ -6,10 +6,9 @@ use lightyear::prelude::{
 };
 use sidereal_game::{
     EntityGuid, FactionId, FactionVisibility, FullscreenLayer, MountedOn, OwnerId, ParentGuid,
-    PlayerTag, PublicVisibility, RENDER_DOMAIN_FULLSCREEN,
-    RENDER_PHASE_FULLSCREEN_BACKGROUND, RENDER_PHASE_FULLSCREEN_FOREGROUND,
-    RuntimeRenderLayerDefinition, VisibilityDisclosure, VisibilityGridCell, VisibilityRangeM,
-    VisibilityRangeSource, VisibilitySpatialGrid,
+    PlayerTag, PublicVisibility, RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
+    RENDER_PHASE_FULLSCREEN_FOREGROUND, RuntimeRenderLayerDefinition, VisibilityDisclosure,
+    VisibilityGridCell, VisibilityRangeM, VisibilityRangeSource, VisibilitySpatialGrid,
 };
 use sidereal_net::{ClientLocalViewMode, ClientLocalViewModeMessage, PlayerEntityId};
 use std::collections::{HashMap, HashSet};

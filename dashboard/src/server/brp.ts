@@ -535,10 +535,8 @@ function getEntityGuidFromComponents(
 ): string | null {
   for (const [componentPath, value] of Object.entries(components)) {
     if (
-      !(
-        componentPath.endsWith('::EntityGuid') &&
-        componentPath.includes('::entity_guid::')
-      )
+      !componentPath.endsWith('::EntityGuid') &&
+      !componentPath.includes('entity_guid')
     ) {
       continue
     }
@@ -675,11 +673,15 @@ function getPositionFromComponents(
     return null
   }
 
-  // Authoritative position source: Avian Position only.
+  // Static non-physics world entities use WorldPosition; simulated bodies use Avian Position.
   for (const [componentPath, value] of Object.entries(components)) {
-    if (!componentPath.endsWith('::Position')) continue
-    if (!componentPath.includes('physics_transform::transform::Position'))
-      continue
+    const isAvianPosition =
+      componentPath.endsWith('::Position') &&
+      componentPath.includes('physics_transform::transform::Position')
+    const isWorldPosition =
+      componentPath.endsWith('::WorldPosition') ||
+      componentPath.includes('::world_position::')
+    if (!isAvianPosition && !isWorldPosition) continue
     const xy = readVec2(value)
     if (xy) return xy
   }

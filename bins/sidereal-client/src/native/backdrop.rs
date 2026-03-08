@@ -42,12 +42,17 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
     cache: Res<'_, FullscreenLayerCache>,
     existing: Query<'_, '_, (Entity, &'_ RuntimeFullscreenRenderable)>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
-    mut starfield_materials: ResMut<'_, Assets<StarfieldMaterial>>,
-    mut space_background_materials: ResMut<'_, Assets<SpaceBackgroundMaterial>>,
-    mut space_background_nebula_materials: ResMut<'_, Assets<SpaceBackgroundNebulaMaterial>>,
+    starfield_materials: Option<ResMut<'_, Assets<StarfieldMaterial>>>,
+    space_background_materials: Option<ResMut<'_, Assets<SpaceBackgroundMaterial>>>,
+    space_background_nebula_materials: Option<ResMut<'_, Assets<SpaceBackgroundNebulaMaterial>>>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, assets::LocalAssetManager>,
+    cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
+    shader_assignments: Res<'_, super::shaders::RuntimeShaderAssignments>,
 ) {
+    let mut starfield_materials = starfield_materials;
+    let mut space_background_materials = space_background_materials;
+    let mut space_background_nebula_materials = space_background_nebula_materials;
     let shader_materials_enabled = super::shaders::shader_materials_enabled();
     if !shader_materials_enabled {
         for (entity, renderable) in &existing {
@@ -76,9 +81,12 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
             &asset_root.0,
             &asset_manager,
+            *cache_adapter,
             &selection.shader_asset_id,
         );
-        if fullscreen_material_kind_from_cache(selection).is_none() || !has_streamed_shader {
+        if fullscreen_material_kind_from_cache(selection, &shader_assignments).is_none()
+            || !has_streamed_shader
+        {
             warn!(
                 "fullscreen layer renderable unavailable layer_id={} phase={} shader_asset_id={}",
                 selection.layer_id, selection.phase, selection.shader_asset_id
@@ -104,10 +112,10 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         ));
         attach_runtime_fullscreen_material(
             &mut entity_commands,
-            fullscreen_material_kind_from_cache(selection),
-            &mut starfield_materials,
-            &mut space_background_materials,
-            &mut space_background_nebula_materials,
+            fullscreen_material_kind_from_cache(selection, &shader_assignments),
+            starfield_materials.as_deref_mut(),
+            space_background_materials.as_deref_mut(),
+            space_background_nebula_materials.as_deref_mut(),
         );
     }
 
@@ -124,9 +132,12 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
             &asset_root.0,
             &asset_manager,
+            *cache_adapter,
             &selection.shader_asset_id,
         );
-        if fullscreen_material_kind_from_cache(selection).is_none() || !has_streamed_shader {
+        if fullscreen_material_kind_from_cache(selection, &shader_assignments).is_none()
+            || !has_streamed_shader
+        {
             warn!(
                 "fullscreen layer renderable unavailable layer_id={} phase={} shader_asset_id={}",
                 selection.layer_id, selection.phase, selection.shader_asset_id
@@ -151,10 +162,10 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         ));
         attach_runtime_fullscreen_material(
             &mut entity_commands,
-            fullscreen_material_kind_from_cache(selection),
-            &mut starfield_materials,
-            &mut space_background_materials,
-            &mut space_background_nebula_materials,
+            fullscreen_material_kind_from_cache(selection, &shader_assignments),
+            starfield_materials.as_deref_mut(),
+            space_background_materials.as_deref_mut(),
+            space_background_nebula_materials.as_deref_mut(),
         );
         info!(
             "fullscreen layer renderable ready phase={} order={} shader_asset_id={}",
@@ -227,8 +238,11 @@ struct FullscreenLayerSelection<'a> {
 
 fn fullscreen_material_kind_from_cache(
     entry: &FullscreenLayerCacheEntry,
+    shader_assignments: &super::shaders::RuntimeShaderAssignments,
 ) -> Option<FullscreenMaterialKind> {
-    if let Some(kind) = fullscreen_material_kind_for_shader(&entry.shader_asset_id) {
+    if let Some(kind) =
+        fullscreen_material_kind_for_shader(shader_assignments, &entry.shader_asset_id)
+    {
         return Some(kind);
     }
     if entry.starfield_settings.is_some() {
@@ -275,8 +289,11 @@ fn render_layer_for_phase(phase: &str) -> usize {
     }
 }
 
-fn fullscreen_material_kind_for_shader(shader_asset_id: &str) -> Option<FullscreenMaterialKind> {
-    match super::shaders::fullscreen_shader_kind(shader_asset_id) {
+fn fullscreen_material_kind_for_shader(
+    shader_assignments: &super::shaders::RuntimeShaderAssignments,
+    shader_asset_id: &str,
+) -> Option<FullscreenMaterialKind> {
+    match super::shaders::fullscreen_shader_kind(shader_assignments, shader_asset_id) {
         Some(super::shaders::RuntimeFullscreenShaderKind::Starfield) => {
             Some(FullscreenMaterialKind::Starfield)
         }
@@ -297,12 +314,17 @@ pub(super) fn sync_runtime_post_process_renderables_system(
     stacks: Query<'_, '_, (Entity, &'_ RuntimePostProcessStack)>,
     existing: Query<'_, '_, (Entity, &'_ RuntimeFullscreenRenderable)>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
-    mut starfield_materials: ResMut<'_, Assets<StarfieldMaterial>>,
-    mut space_background_materials: ResMut<'_, Assets<SpaceBackgroundMaterial>>,
-    mut space_background_nebula_materials: ResMut<'_, Assets<SpaceBackgroundNebulaMaterial>>,
+    starfield_materials: Option<ResMut<'_, Assets<StarfieldMaterial>>>,
+    space_background_materials: Option<ResMut<'_, Assets<SpaceBackgroundMaterial>>>,
+    space_background_nebula_materials: Option<ResMut<'_, Assets<SpaceBackgroundNebulaMaterial>>>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, assets::LocalAssetManager>,
+    cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
+    shader_assignments: Res<'_, super::shaders::RuntimeShaderAssignments>,
 ) {
+    let mut starfield_materials = starfield_materials;
+    let mut space_background_materials = space_background_materials;
+    let mut space_background_nebula_materials = space_background_nebula_materials;
     let mut desired = std::collections::HashMap::<(Entity, String), (String, i32)>::new();
     for (owner_entity, stack) in &stacks {
         for pass in &stack.passes {
@@ -327,13 +349,16 @@ pub(super) fn sync_runtime_post_process_renderables_system(
             commands.entity(entity).despawn();
             continue;
         };
-        let Some(material_kind) = fullscreen_material_kind_for_shader(shader_asset_id) else {
+        let Some(material_kind) =
+            fullscreen_material_kind_for_shader(&shader_assignments, shader_asset_id)
+        else {
             commands.entity(entity).despawn();
             continue;
         };
         if !super::shaders::fullscreen_layer_shader_ready(
             &asset_root.0,
             &asset_manager,
+            *cache_adapter,
             shader_asset_id,
         ) {
             continue;
@@ -357,9 +382,9 @@ pub(super) fn sync_runtime_post_process_renderables_system(
         attach_runtime_fullscreen_material(
             &mut entity_commands,
             Some(material_kind),
-            &mut starfield_materials,
-            &mut space_background_materials,
-            &mut space_background_nebula_materials,
+            starfield_materials.as_deref_mut(),
+            space_background_materials.as_deref_mut(),
+            space_background_nebula_materials.as_deref_mut(),
         );
     }
 
@@ -370,12 +395,15 @@ pub(super) fn sync_runtime_post_process_renderables_system(
         }) {
             continue;
         }
-        let Some(material_kind) = fullscreen_material_kind_for_shader(&shader_asset_id) else {
+        let Some(material_kind) =
+            fullscreen_material_kind_for_shader(&shader_assignments, &shader_asset_id)
+        else {
             continue;
         };
         if !super::shaders::fullscreen_layer_shader_ready(
             &asset_root.0,
             &asset_manager,
+            *cache_adapter,
             &shader_asset_id,
         ) {
             continue;
@@ -398,9 +426,9 @@ pub(super) fn sync_runtime_post_process_renderables_system(
         attach_runtime_fullscreen_material(
             &mut entity_commands,
             Some(material_kind),
-            &mut starfield_materials,
-            &mut space_background_materials,
-            &mut space_background_nebula_materials,
+            starfield_materials.as_deref_mut(),
+            space_background_materials.as_deref_mut(),
+            space_background_nebula_materials.as_deref_mut(),
         );
     }
 }
@@ -416,13 +444,17 @@ fn clear_runtime_fullscreen_material(entity_commands: &mut EntityCommands<'_>) {
 fn attach_runtime_fullscreen_material(
     entity_commands: &mut EntityCommands<'_>,
     material_kind: Option<FullscreenMaterialKind>,
-    starfield_materials: &mut Assets<StarfieldMaterial>,
-    space_background_materials: &mut Assets<SpaceBackgroundMaterial>,
-    space_background_nebula_materials: &mut Assets<SpaceBackgroundNebulaMaterial>,
+    starfield_materials: Option<&mut Assets<StarfieldMaterial>>,
+    space_background_materials: Option<&mut Assets<SpaceBackgroundMaterial>>,
+    space_background_nebula_materials: Option<&mut Assets<SpaceBackgroundNebulaMaterial>>,
 ) {
     clear_runtime_fullscreen_material(entity_commands);
     match material_kind {
         Some(FullscreenMaterialKind::Starfield) => {
+            let Some(starfield_materials) = starfield_materials else {
+                warn!("fullscreen starfield material resource missing; skipping renderable attach");
+                return;
+            };
             let material = starfield_materials.add(StarfieldMaterial::default());
             entity_commands.insert((
                 RuntimeFullscreenMaterialBinding::Starfield,
@@ -430,6 +462,12 @@ fn attach_runtime_fullscreen_material(
             ));
         }
         Some(FullscreenMaterialKind::SpaceBackgroundBase) => {
+            let Some(space_background_materials) = space_background_materials else {
+                warn!(
+                    "fullscreen space background base material resource missing; skipping renderable attach"
+                );
+                return;
+            };
             let material = space_background_materials.add(SpaceBackgroundMaterial::default());
             entity_commands.insert((
                 RuntimeFullscreenMaterialBinding::SpaceBackgroundBase,
@@ -437,6 +475,12 @@ fn attach_runtime_fullscreen_material(
             ));
         }
         Some(FullscreenMaterialKind::SpaceBackgroundNebula) => {
+            let Some(space_background_nebula_materials) = space_background_nebula_materials else {
+                warn!(
+                    "fullscreen space background nebula material resource missing; skipping renderable attach"
+                );
+                return;
+            };
             let material =
                 space_background_nebula_materials.add(SpaceBackgroundNebulaMaterial::default());
             entity_commands.insert((
@@ -552,10 +596,9 @@ impl Default for StarfieldMaterial {
 
 impl Material2d for StarfieldMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(
-            super::shaders::runtime_shader_handle("starfield_wgsl")
-                .expect("starfield shader handle must be registered"),
-        )
+        ShaderRef::Handle(super::shaders::runtime_shader_handle(
+            super::shaders::RuntimeShaderSlot::Starfield,
+        ))
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -642,24 +685,18 @@ impl Default for SpaceBackgroundUniforms {
 fn resolve_space_background_flare_asset_id(
     settings: &SpaceBackgroundShaderSettings,
 ) -> Option<String> {
-    if let Some(asset_id) = settings.flare_texture_asset_id.as_deref() {
-        return Some(asset_id.to_string());
-    }
-    match settings.flare_texture_set {
-        0 => Some("space_bg_flare_white_png".to_string()),
-        1 => Some("space_bg_flare_blue_png".to_string()),
-        2 => Some("space_bg_flare_red_png".to_string()),
-        3 => Some("space_bg_flare_sun_png".to_string()),
-        _ => None,
-    }
+    settings
+        .flare_texture_asset_id
+        .as_deref()
+        .filter(|asset_id| !asset_id.trim().is_empty())
+        .map(str::to_string)
 }
 
 impl Material2d for SpaceBackgroundMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(
-            super::shaders::runtime_shader_handle("space_background_base_wgsl")
-                .expect("space background base shader handle must be registered"),
-        )
+        ShaderRef::Handle(super::shaders::runtime_shader_handle(
+            super::shaders::RuntimeShaderSlot::SpaceBackgroundBase,
+        ))
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -678,10 +715,9 @@ pub struct SpaceBackgroundNebulaMaterial {
 
 impl Material2d for SpaceBackgroundNebulaMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(
-            super::shaders::runtime_shader_handle("space_background_nebula_wgsl")
-                .expect("space background nebula shader handle must be registered"),
-        )
+        ShaderRef::Handle(super::shaders::runtime_shader_handle(
+            super::shaders::RuntimeShaderSlot::SpaceBackgroundNebula,
+        ))
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -698,10 +734,9 @@ pub struct StreamedSpriteShaderMaterial {
 
 impl Material2d for StreamedSpriteShaderMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(
-            super::shaders::runtime_shader_handle("sprite_pixel_shader_wgsl")
-                .expect("sprite pixel shader handle must be registered"),
-        )
+        ShaderRef::Handle(super::shaders::runtime_shader_handle(
+            super::shaders::RuntimeShaderSlot::GenericSprite,
+        ))
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -720,10 +755,9 @@ pub struct AsteroidSpriteShaderMaterial {
 
 impl Material2d for AsteroidSpriteShaderMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(
-            super::shaders::runtime_shader_handle("asteroid_wgsl")
-                .expect("asteroid shader handle must be registered"),
-        )
+        ShaderRef::Handle(super::shaders::runtime_shader_handle(
+            super::shaders::RuntimeShaderSlot::AsteroidSprite,
+        ))
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -1365,11 +1399,15 @@ pub fn update_starfield_material_system(
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn update_space_background_material_system(
     world_data: Res<'_, FullscreenExternalWorldData>,
-    asset_server: Res<'_, AssetServer>,
     asset_manager: Res<'_, assets::LocalAssetManager>,
+    cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
     cache: Res<'_, FullscreenLayerCache>,
+    asset_root: Res<'_, AssetRootPath>,
+    mut images: ResMut<'_, Assets<Image>>,
+    mut flare_cache: Local<'_, std::collections::HashMap<String, Handle<Image>>>,
     bg_query: Query<
         '_,
         '_,
@@ -1413,10 +1451,18 @@ pub fn update_space_background_material_system(
             material.params.space_bg_background = settings.background_rgb.extend(1.0);
             let mut flare_enabled = settings.flare_enabled;
             if let Some(flare_asset_id) = resolve_space_background_flare_asset_id(settings) {
-                if let Some(path) =
-                    assets::streamed_visual_asset_path(&flare_asset_id, &asset_manager)
-                {
-                    material.flare_texture = asset_server.load(path);
+                if let Some(handle) = flare_cache.get(&flare_asset_id).cloned().or_else(|| {
+                    let handle = assets::cached_image_handle(
+                        &flare_asset_id,
+                        &asset_manager,
+                        &asset_root.0,
+                        *cache_adapter,
+                        &mut images,
+                    )?;
+                    flare_cache.insert(flare_asset_id.clone(), handle.clone());
+                    Some(handle)
+                }) {
+                    material.flare_texture = handle;
                 } else {
                     flare_enabled = false;
                 }

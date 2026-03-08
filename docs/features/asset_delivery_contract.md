@@ -1,7 +1,7 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract
-Last updated: March 7, 2026
+Last updated: March 8, 2026
 Primary architecture reference: `docs/sidereal_design_document.md`
 Related contract: `docs/features/scripting_support.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
@@ -47,6 +47,7 @@ Core outcomes:
 7. Missing/corrupt assets must fail soft; client must not crash due to missing content.
 8. Cache trust decisions are deterministic via checksum (`sha256`) and version metadata.
 9. Native and WASM clients must implement the same asset state machine and validation logic.
+10. Browser/WASM runtime asset mounting is byte-backed from validated cache or gateway payload bytes; browser code must not depend on filesystem-style `AssetServer` paths.
 
 ## 4. Terminology
 
@@ -108,7 +109,7 @@ Server-side tooling must build a generated catalog from Lua registry entries:
 4. Produce catalog metadata including:
    - `asset_id`
    - `asset_guid`
-   - shader domain/signature/schema compatibility metadata
+   - optional shader-family/domain/signature/schema compatibility metadata
    - `sha256_hex`
    - `byte_len`
    - `content_type`
@@ -119,9 +120,13 @@ Server-side tooling must build a generated catalog from Lua registry entries:
 
 Current implementation note:
 1. Gateway now builds runtime asset catalog entries through the shared `sidereal-asset-runtime` path.
-2. Gateway payload serving resolves `/assets/<asset_guid>` through shared runtime asset materialization into generated published storage (`<asset_root>/published_assets/...`) instead of route-local authoring path access.
-3. Source-tree `source_path` remains authoring input only and is not exposed to the client-facing manifest.
-4. Client bootstrap-required asset gating now fails closed for required assets; stalled required downloads surface dialogs but do not force `InWorld`.
+2. Gateway asset manifest and payload routes resolve the active Lua asset registry from the cached in-memory script catalog / active SQL-backed catalog rather than reloading `assets/registry.lua` from disk on each request.
+3. Gateway payload serving resolves `/assets/<asset_guid>` through shared runtime asset materialization into generated published storage (`<asset_root>/published_assets/...`) instead of route-local authoring path access.
+4. Source-tree `source_path` remains authoring input only and is not exposed to the client-facing manifest.
+5. Runtime catalog entries and manifest entries now carry dependency lists, and gateway expands bootstrap-required dependency closure before returning `required_assets`.
+6. `catalog_version` is now derived deterministically from the generated runtime catalog contents instead of a fixed placeholder string.
+7. Client bootstrap-required asset gating now fails closed for required assets; stalled required downloads surface dialogs but do not force `InWorld`.
+8. Browser/WASM client runtime now mounts streamed shaders, images, and SVGs from validated cached bytes instead of relying on `AssetServer` filesystem paths.
 
 ## 7. Gateway Delivery Contract
 
@@ -143,6 +148,8 @@ Before world entry, client receives a JSON manifest from server (via gateway API
     {
       "asset_id": "sprite.ship.rocinante",
       "asset_guid": "2cf33ea8-3c79-4f24-97a9-72d971dc7f43",
+      "shader_family": "world_sprite_generic",
+      "dependencies": ["shader.sprite.pixel_default"],
       "sha256_hex": "ab12cd34...",
       "url": "/assets/2cf33ea8-3c79-4f24-97a9-72d971dc7f43"
     }
@@ -170,6 +177,7 @@ In `AssetLoading`, client must:
 5. Commit validated assets to local cache.
 6. Transition to `InWorld` only when all required assets validate.
 7. Required-asset stalls may surface warning/error dialogs and retry behavior, but they must not force bootstrap completion in degraded mode.
+8. Browser/WASM implementations may use platform storage primitives behind the cache adapter, but the gameplay/runtime layer must still consume validated asset bytes through the shared cache/index contract.
 
 ### 8.2 Runtime lazy fetch
 
@@ -181,6 +189,8 @@ After entering world:
 4. Visual/audio fallback stays active until asset validates and mounts.
 5. Swap-in remains atomic; failed load keeps fallback and schedules retry.
 6. Runtime shader install uses catalog/cache-provided shader bytes when available; built-in fallback is limited to one emergency shader per generic runtime family rather than a compiled-in WGSL source per named content case.
+7. Runtime lazy fetch expands dependency closure from catalog metadata and fetches unresolved dependencies before attaching the root asset.
+8. Browser/WASM shader/image/SVG attach paths mount from cached payload bytes through runtime loaders, not through direct `data/cache_stream/...` path loads.
 
 ## 9. Runtime Entity Asset Resolution Contract
 
@@ -191,7 +201,7 @@ After entering world:
 
 ## 10. Cache Contract
 
-Target local cache shape remains:
+Target native-desktop cache shape remains:
 
 ```text
 data/cache_stream/
@@ -206,6 +216,13 @@ Minimum guarantees:
 2. Cache read path validates checksum before exposing a ready asset.
 3. Interrupted writes recover safely via transactional temp/journal process.
 4. Missing/corrupt cache state auto-recovers without manual user steps.
+
+Browser/WASM note:
+
+1. Browser storage adapters may not expose a literal `assets.pak` file.
+2. Browser implementations must still preserve the same logical guarantees: authoritative checksum validation, deterministic index metadata, recovery on invalid cached payloads, and byte-backed runtime mounting.
+3. Browser cache/storage layout is an adapter detail; gameplay/runtime systems must not depend on browser-visible file paths.
+4. Current browser implementation uses IndexedDB as the persistent asset/index backend and mirrors validated payload bytes into runtime memory for synchronous render-path reads.
 
 ## 11. Security and Abuse Controls
 

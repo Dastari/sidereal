@@ -188,6 +188,7 @@ pub(super) fn handle_character_select_buttons(
     mut session: ResMut<'_, ClientSession>,
     mut character_selection: ResMut<'_, CharacterSelectionState>,
     mut request_state: ResMut<'_, auth_net::GatewayRequestState>,
+    gateway_http: Res<'_, super::resources::GatewayHttpAdapter>,
     mut status_texts: Query<'_, '_, &mut Text, With<CharacterSelectStatusText>>,
 ) {
     if !app_state
@@ -213,6 +214,7 @@ pub(super) fn handle_character_select_buttons(
                     auth_net::submit_enter_world_request(
                         &mut session,
                         request_state.as_mut(),
+                        *gateway_http,
                         selected_player_entity_id,
                     );
                     *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));

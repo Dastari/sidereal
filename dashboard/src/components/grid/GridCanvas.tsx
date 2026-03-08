@@ -523,8 +523,8 @@ export function GridCanvas({
       zoom: cameraState.zoom,
     }
     setZoomPercent(Math.round(cameraState.zoom * 100))
-    requestRender()
-  }, [cameraState, requestRender])
+    requestRenderRef.current()
+  }, [cameraState])
 
   // Center camera only on explicit center requests, not on live position updates.
   useEffect(() => {

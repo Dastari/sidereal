@@ -6,7 +6,7 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    auth, combat, control, input, lifecycle, owner_manifest, persistence, runtime_scripting,
+    combat, control, input, lifecycle, owner_manifest, persistence, runtime_scripting,
     runtime_state, simulation_entities, tactical, visibility,
 };
 
@@ -28,15 +28,14 @@ impl Plugin for ReplicationLifecyclePlugin {
         );
         app.add_observer(lifecycle::log_replication_client_connected);
         app.add_observer(lifecycle::setup_client_replication_sender);
+        app.add_observer(lifecycle::prime_client_link_transport_on_insert);
     }
 }
 
 pub(crate) struct ReplicationAuthPlugin;
 
 impl Plugin for ReplicationAuthPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, auth::receive_client_auth_messages);
-    }
+    fn build(&self, _app: &mut App) {}
 }
 
 pub(crate) struct ReplicationInputPlugin;

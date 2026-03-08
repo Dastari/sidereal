@@ -5,24 +5,36 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "sidereal_client"
+# Keep the shared lib target rlib-only so native/Windows exe builds do not also
+# try to link a Windows cdylib. If/when we add a dedicated wasm packaging step,
+# that step should emit the browser artifact explicitly instead of assuming the
+# default Cargo lib target produces a cdylib on every platform build.
+crate-type = ["rlib"]
+
 [dependencies]
 avian2d.workspace = true
 bevy = { workspace = true, features = ["webgpu", "mp3"] }
 bevy_svg = "0.18.0"
 sidereal-core = { path = "../../crates/sidereal-core" }
+sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime", default-features = false }
 sidereal-game = { path = "../../crates/sidereal-game" }
+sidereal-net = { path = "../../crates/sidereal-net", features = ["lightyear_protocol"] }
+sidereal-runtime-sync = { path = "../../crates/sidereal-runtime-sync", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy_remote = "0.18.0"
-lightyear.workspace = true
+lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", default-features = false, features = ["std", "client", "raw_connection", "udp", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rand.workspace = true
-sidereal-net = { path = "../../crates/sidereal-net", features = ["lightyear_protocol"] }
-sidereal-runtime-sync = { path = "../../crates/sidereal-runtime-sync" }
-sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime" }
-uuid.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-bevy_remote = { version = "0.18.0", default-features = false, features = ["bevy_asset"] }
+js-sys = "0.3"
+lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", default-features = false, features = ["std", "client", "raw_connection", "webtransport", "websocket", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["DomException", "DomStringList", "Event", "Headers", "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "Request", "RequestInit", "Response", "Window"] }

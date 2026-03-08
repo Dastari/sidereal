@@ -1,4 +1,8 @@
 /target/
 /data/postgresql/
 /data/debug
+/target-codex-dashboard
+/target-codex-validate
+/logs
+
 

@@ -1,7 +1,8 @@
 use bevy::log::{info, warn};
 use bevy::prelude::*;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
-use lightyear::prelude::server::{ClientOf, RawServer};
+use lightyear::prelude::client::Connected;
+use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
     MessageReceiver, NetworkTarget, RemoteId, Replicate, Server, ServerMultiMessageSender, Unlink,
 };
@@ -33,11 +34,25 @@ pub(crate) struct AuthenticatedClientBindings {
     pub by_remote_id: HashMap<lightyear::prelude::PeerId, String>,
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct PendingAuthAuditState {
+    pub last_logged_at_s_by_client_entity: HashMap<Entity, f64>,
+}
+
 pub fn init_resources(app: &mut App) {
     app.insert_resource(AuthenticatedClientBindings::default());
+    app.insert_resource(PendingAuthAuditState::default());
 }
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
+pub(crate) const AUTH_CONFIG_DENIED_REASON: &str = "Replication auth is not configured correctly. Check GATEWAY_JWT_SECRET on the replication server and restart it.";
+
+pub(crate) fn configured_gateway_jwt_secret() -> Result<String, &'static str> {
+    match std::env::var("GATEWAY_JWT_SECRET") {
+        Ok(secret) if secret.len() >= 32 => Ok(secret),
+        _ => Err(AUTH_CONFIG_DENIED_REASON),
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn cleanup_client_auth_bindings(
@@ -166,7 +181,7 @@ pub fn receive_client_disconnect_notify(
 pub fn receive_client_auth_messages(
     mut commands: Commands<'_, '_>,
     mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
-    server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
+    server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     time: Res<'_, Time<Real>>,
     mut last_activity: ResMut<'_, ClientLastActivity>,
@@ -175,6 +190,7 @@ pub fn receive_client_auth_messages(
         '_,
         (
             Entity,
+            &'_ LinkOf,
             &'_ RemoteId,
             &'_ mut MessageReceiver<ClientAuthMessage>,
         ),
@@ -189,26 +205,25 @@ pub fn receive_client_auth_messages(
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
 ) {
     let now_s = time.elapsed_secs_f64();
-    let jwt_secret = match std::env::var("GATEWAY_JWT_SECRET") {
-        Ok(secret) if secret.len() >= 32 => secret,
-        _ => {
-            if MISSING_GATEWAY_JWT_SECRET_WARNED
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
-                warn!(
-                    "replication auth binding disabled: missing/invalid GATEWAY_JWT_SECRET (expected >=32 chars)"
-                );
-            }
-            return;
-        }
-    };
+    let jwt_secret = configured_gateway_jwt_secret().ok();
+    if jwt_secret.is_none()
+        && MISSING_GATEWAY_JWT_SECRET_WARNED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    {
+        warn!(
+            "replication auth binding denied: missing/invalid GATEWAY_JWT_SECRET (expected >=32 chars)"
+        );
+    }
 
-    let Ok(server) = server_query.single() else {
-        return;
-    };
-
-    for (client_entity, remote_id, mut receiver) in &mut auth_receivers {
+    for (client_entity, link_of, remote_id, mut receiver) in &mut auth_receivers {
+        let Ok(server) = server_query.get(link_of.server) else {
+            warn!(
+                "replication auth: missing server entity for client {:?} remote {:?}",
+                client_entity, remote_id.0
+            );
+            continue;
+        };
         for message in receiver.receive() {
             last_activity.0.insert(client_entity, now_s);
             let Some(message_player_id) = PlayerEntityId::parse(message.player_entity_id.as_str())
@@ -220,7 +235,23 @@ pub fn receive_client_auth_messages(
                 continue;
             };
             let message_player_wire = message_player_id.canonical_wire_id();
-            let claims = match decode_access_token(&message.access_token, &jwt_secret) {
+            let Some(jwt_secret) = jwt_secret.as_ref() else {
+                let target = NetworkTarget::Single(remote_id.0);
+                let denied = ServerSessionDeniedMessage {
+                    player_entity_id: message_player_wire.clone(),
+                    reason: AUTH_CONFIG_DENIED_REASON.to_string(),
+                };
+                if let Err(err) = sender
+                    .send::<ServerSessionDeniedMessage, ControlChannel>(&denied, server, &target)
+                {
+                    warn!(
+                        "replication failed sending auth-config session-denied to remote={:?} player={} err={}",
+                        remote_id.0, message_player_wire, err
+                    );
+                }
+                continue;
+            };
+            let claims = match decode_access_token(&message.access_token, jwt_secret) {
                 Some(claims) => claims,
                 None => {
                     warn!(
@@ -458,6 +489,45 @@ fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AuthClaims> {
             warn!("replication rejected client auth token decode: {}", err);
             None
         }
+    }
+}
+
+pub fn audit_pending_client_auth_state(
+    time: Res<'_, Time<Real>>,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    mut audit_state: ResMut<'_, PendingAuthAuditState>,
+    clients: Query<
+        '_,
+        '_,
+        (Entity, &'_ RemoteId, &'_ MessageReceiver<ClientAuthMessage>),
+        (With<ClientOf>, With<Connected>),
+    >,
+) {
+    let now_s = time.elapsed_secs_f64();
+    for (client_entity, remote_id, receiver) in &clients {
+        if bindings.by_client_entity.contains_key(&client_entity) {
+            audit_state
+                .last_logged_at_s_by_client_entity
+                .remove(&client_entity);
+            continue;
+        }
+        let last_logged_at_s = audit_state
+            .last_logged_at_s_by_client_entity
+            .get(&client_entity)
+            .copied()
+            .unwrap_or(f64::NEG_INFINITY);
+        if now_s - last_logged_at_s < 1.0 {
+            continue;
+        }
+        info!(
+            "replication pending auth state: client={:?} remote={:?} queued_auth_messages={}",
+            client_entity,
+            remote_id.0,
+            receiver.num_messages()
+        );
+        audit_state
+            .last_logged_at_s_by_client_entity
+            .insert(client_entity, now_s);
     }
 }
 
