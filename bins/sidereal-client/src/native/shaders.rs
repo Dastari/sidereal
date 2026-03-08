@@ -19,6 +19,130 @@ fn fragment() -> @location(0) vec4<f32> {
 }
 "#;
 
+// Browser WebGPU currently rejects the streamed fullscreen shaders even though the
+// same sources render correctly on native clients. Keep browser world entry
+// usable by installing simple fullscreen shaders for those slots on wasm.
+#[cfg(target_arch = "wasm32")]
+const WASM_STARFIELD_FALLBACK_SHADER_SOURCE: &str = r#"
+#import bevy_sprite::mesh2d_vertex_output::VertexOutput
+
+@group(2) @binding(0) var<uniform> viewport_time: vec4<f32>;
+@group(2) @binding(1) var<uniform> drift_intensity: vec4<f32>;
+@group(2) @binding(2) var<uniform> velocity_dir: vec4<f32>;
+@group(2) @binding(3) var<uniform> starfield_params: vec4<f32>;
+@group(2) @binding(4) var<uniform> starfield_tint: vec4<f32>;
+@group(2) @binding(5) var<uniform> star_core_params: vec4<f32>;
+@group(2) @binding(6) var<uniform> star_core_color: vec4<f32>;
+@group(2) @binding(7) var<uniform> corona_params: vec4<f32>;
+@group(2) @binding(8) var<uniform> corona_color: vec4<f32>;
+
+@fragment
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let uv = in.uv * 2.0 - 1.0;
+    let dist = length(uv);
+    let vignette = clamp(1.0 - dist * 0.8, 0.0, 1.0);
+    let twinkle = 0.85 + 0.15 * sin(viewport_time.z * 0.5 + uv.x * 6.0 + uv.y * 4.0);
+    let rgb = starfield_tint.rgb * twinkle * vignette;
+    let alpha = clamp(starfield_params.w * vignette, 0.0, 1.0);
+    return vec4<f32>(rgb, alpha);
+}
+"#;
+
+#[cfg(target_arch = "wasm32")]
+const WASM_SPACE_BACKGROUND_BASE_FALLBACK_SHADER_SOURCE: &str = r#"
+#import bevy_sprite::mesh2d_vertex_output::VertexOutput
+
+struct SpaceBackgroundParams {
+    viewport_time: vec4<f32>,
+    drift_intensity: vec4<f32>,
+    velocity_dir: vec4<f32>,
+    space_bg_params: vec4<f32>,
+    space_bg_tint: vec4<f32>,
+    space_bg_background: vec4<f32>,
+    space_bg_flare: vec4<f32>,
+    space_bg_noise_a: vec4<f32>,
+    space_bg_noise_b: vec4<f32>,
+    space_bg_star_mask_a: vec4<f32>,
+    space_bg_star_mask_b: vec4<f32>,
+    space_bg_star_mask_c: vec4<f32>,
+    space_bg_blend_a: vec4<f32>,
+    space_bg_blend_b: vec4<f32>,
+    space_bg_section_flags: vec4<f32>,
+    space_bg_nebula_color_a: vec4<f32>,
+    space_bg_nebula_color_b: vec4<f32>,
+    space_bg_nebula_color_c: vec4<f32>,
+    space_bg_star_color: vec4<f32>,
+    space_bg_flare_tint: vec4<f32>,
+    space_bg_depth_a: vec4<f32>,
+    space_bg_light_a: vec4<f32>,
+    space_bg_light_b: vec4<f32>,
+    space_bg_light_flags: vec4<f32>,
+    space_bg_shafts_a: vec4<f32>,
+    space_bg_shafts_b: vec4<f32>,
+    space_bg_backlight_color: vec4<f32>,
+}
+
+@group(2) @binding(0) var<uniform> params: SpaceBackgroundParams;
+@group(2) @binding(1) var flare_texture: texture_2d<f32>;
+@group(2) @binding(2) var flare_sampler: sampler;
+
+@fragment
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let flare = textureSample(flare_texture, flare_sampler, in.uv).rgb;
+    let gradient = mix(params.space_bg_background.rgb, params.space_bg_tint.rgb, in.uv.y);
+    let rgb = clamp(gradient + flare * params.space_bg_flare_tint.rgb * 0.15, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(rgb, 1.0);
+}
+"#;
+
+#[cfg(target_arch = "wasm32")]
+const WASM_SPACE_BACKGROUND_NEBULA_FALLBACK_SHADER_SOURCE: &str = r#"
+#import bevy_sprite::mesh2d_vertex_output::VertexOutput
+
+struct SpaceBackgroundParams {
+    viewport_time: vec4<f32>,
+    drift_intensity: vec4<f32>,
+    velocity_dir: vec4<f32>,
+    space_bg_params: vec4<f32>,
+    space_bg_tint: vec4<f32>,
+    space_bg_background: vec4<f32>,
+    space_bg_flare: vec4<f32>,
+    space_bg_noise_a: vec4<f32>,
+    space_bg_noise_b: vec4<f32>,
+    space_bg_star_mask_a: vec4<f32>,
+    space_bg_star_mask_b: vec4<f32>,
+    space_bg_star_mask_c: vec4<f32>,
+    space_bg_blend_a: vec4<f32>,
+    space_bg_blend_b: vec4<f32>,
+    space_bg_section_flags: vec4<f32>,
+    space_bg_nebula_color_a: vec4<f32>,
+    space_bg_nebula_color_b: vec4<f32>,
+    space_bg_nebula_color_c: vec4<f32>,
+    space_bg_star_color: vec4<f32>,
+    space_bg_flare_tint: vec4<f32>,
+    space_bg_depth_a: vec4<f32>,
+    space_bg_light_a: vec4<f32>,
+    space_bg_light_b: vec4<f32>,
+    space_bg_light_flags: vec4<f32>,
+    space_bg_shafts_a: vec4<f32>,
+    space_bg_shafts_b: vec4<f32>,
+    space_bg_backlight_color: vec4<f32>,
+}
+
+@group(2) @binding(0) var<uniform> params: SpaceBackgroundParams;
+@group(2) @binding(1) var flare_texture: texture_2d<f32>;
+@group(2) @binding(2) var flare_sampler: sampler;
+
+@fragment
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let flare = textureSample(flare_texture, flare_sampler, in.uv).rgb;
+    let nebula = mix(params.space_bg_nebula_color_a.rgb, params.space_bg_nebula_color_c.rgb, in.uv.x);
+    let rgb = clamp(nebula + flare * params.space_bg_flare_tint.rgb * 0.1, vec3<f32>(0.0), vec3<f32>(1.0));
+    let alpha = clamp(params.space_bg_params.w * (0.35 + 0.65 * in.uv.y), 0.0, 1.0);
+    return vec4<f32>(rgb, alpha);
+}
+"#;
+
 pub const STARFIELD_SHADER_HANDLE: Handle<bevy::shader::Shader> =
     bevy::asset::uuid_handle!("ee54757d-14a2-4f84-8fdb-cdf547be8401");
 pub const SPACE_BACKGROUND_BASE_SHADER_HANDLE: Handle<bevy::shader::Shader> =
@@ -202,6 +326,20 @@ fn fallback_shader_source_for_family(_family: RuntimeShaderFamily) -> &'static s
     FALLBACK_FRAGMENT_SHADER_SOURCE
 }
 
+#[cfg(target_arch = "wasm32")]
+fn wasm_browser_safe_shader_source_for_slot(slot: RuntimeShaderSlot) -> Option<&'static str> {
+    match slot {
+        RuntimeShaderSlot::Starfield => Some(WASM_STARFIELD_FALLBACK_SHADER_SOURCE),
+        RuntimeShaderSlot::SpaceBackgroundBase => {
+            Some(WASM_SPACE_BACKGROUND_BASE_FALLBACK_SHADER_SOURCE)
+        }
+        RuntimeShaderSlot::SpaceBackgroundNebula => {
+            Some(WASM_SPACE_BACKGROUND_NEBULA_FALLBACK_SHADER_SOURCE)
+        }
+        _ => None,
+    }
+}
+
 pub fn fullscreen_shader_kind(
     assignments: &RuntimeShaderAssignments,
     shader_asset_id: &str,
@@ -334,6 +472,16 @@ fn install_runtime_shader(
     assignments: &RuntimeShaderAssignments,
     spec: &RuntimeShaderSpec,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(source) = wasm_browser_safe_shader_source_for_slot(spec.slot) {
+        info!(
+            "wasm runtime shader override using browser-safe fallback slot={:?} label={}",
+            spec.slot, spec.label
+        );
+        install_shader(shaders, spec.handle.clone(), spec.label, source);
+        return;
+    }
+
     let Some(shader_asset_id) = assignments.asset_id_for_slot(spec.slot) else {
         install_shader(
             shaders,
