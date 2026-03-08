@@ -1,5 +1,6 @@
 /target/
 /data/postgresql/
+/data/cache-stream
 /data/debug
 /target-codex-dashboard
 /target-codex-validate
