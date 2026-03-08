@@ -31,7 +31,7 @@ avian2d = { version = "0.5.0", features = ["serialize"] }
 base64 = "0.22"
 bevy = { version = "0.18.0" }
 bevy_remote = "0.18.0"
-lightyear = { git = "https://github.com/Dastari/lightyear", rev = "c96ae904", features = ["udp", "raw_connection", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
+lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", features = ["udp", "raw_connection", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d", "webtransport", "webtransport_self_signed"] }
 jsonwebtoken = "9.3"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }

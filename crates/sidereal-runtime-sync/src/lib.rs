@@ -1,9 +1,15 @@
+#[cfg(feature = "persistence")]
 use bevy::ecs::reflect::{AppTypeRegistry, ReflectCommandExt, ReflectComponent};
 use bevy::prelude::*;
+#[cfg(feature = "persistence")]
 use bevy::reflect::serde::{TypedReflectDeserializer, TypedReflectSerializer};
+#[cfg(feature = "persistence")]
 use serde::Serialize as _;
+#[cfg(feature = "persistence")]
 use serde::de::DeserializeSeed;
+#[cfg(feature = "persistence")]
 use sidereal_game::GeneratedComponentRegistry;
+#[cfg(feature = "persistence")]
 use sidereal_persistence::{GraphComponentRecord, encode_reflect_component};
 use std::collections::HashMap;
 
@@ -13,6 +19,7 @@ pub struct RuntimeEntityHierarchy {
     pub pending_children_by_parent_id: HashMap<String, Vec<Entity>>,
 }
 
+#[cfg(feature = "persistence")]
 pub fn component_type_path_map(registry: &GeneratedComponentRegistry) -> HashMap<String, String> {
     registry
         .entries
@@ -26,6 +33,7 @@ pub fn component_type_path_map(registry: &GeneratedComponentRegistry) -> HashMap
         .collect::<HashMap<_, _>>()
 }
 
+#[cfg(feature = "persistence")]
 pub fn decode_component_payload<'a>(
     component_kind: &str,
     properties: &'a serde_json::Value,
@@ -42,6 +50,7 @@ pub fn decode_component_payload<'a>(
         .or(Some(properties))
 }
 
+#[cfg(feature = "persistence")]
 pub fn component_record<'a>(
     components: &'a [GraphComponentRecord],
     kind: &str,
@@ -51,6 +60,7 @@ pub fn component_record<'a>(
         .find(|component| component.component_kind == kind)
 }
 
+#[cfg(feature = "persistence")]
 pub fn decode_graph_component_payload<'a>(
     component: &'a GraphComponentRecord,
     type_paths: &HashMap<String, String>,
@@ -58,6 +68,7 @@ pub fn decode_graph_component_payload<'a>(
     decode_component_payload(&component.component_kind, &component.properties, type_paths)
 }
 
+#[cfg(feature = "persistence")]
 pub fn wrap_component_payload(
     component_kind: &str,
     payload: serde_json::Value,
@@ -70,6 +81,7 @@ pub fn wrap_component_payload(
     }
 }
 
+#[cfg(feature = "persistence")]
 pub fn format_component_id(entity_id: &str, component_kind: &str) -> String {
     format!("{entity_id}:{component_kind}")
 }
@@ -123,6 +135,7 @@ pub fn value_as_f32_recursive(value: &serde_json::Value) -> Option<f32> {
     None
 }
 
+#[cfg(feature = "persistence")]
 pub fn insert_registered_components_from_graph_records(
     commands: &mut Commands<'_, '_>,
     entity: Entity,
@@ -140,6 +153,7 @@ pub fn insert_registered_components_from_graph_records(
     );
 }
 
+#[cfg(feature = "persistence")]
 fn insert_registered_components<T>(
     commands: &mut Commands<'_, '_>,
     entity: Entity,
@@ -183,6 +197,7 @@ pub fn register_runtime_entity(
 /// Uses the `GeneratedComponentRegistry` to discover which components to look for,
 /// then extracts each via `ReflectComponent::reflect()` and serializes with
 /// `TypedReflectSerializer` to produce round-trippable JSON.
+#[cfg(feature = "persistence")]
 pub fn serialize_entity_components_to_graph_records(
     entity_id: &str,
     entity_ref: EntityRef<'_>,

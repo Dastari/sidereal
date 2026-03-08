@@ -71,6 +71,7 @@ pub struct LoadedLuaModule {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScriptAssetRegistryEntry {
     pub asset_id: String,
+    pub shader_family: Option<String>,
     pub source_path: String,
     pub content_type: String,
     pub dependencies: Vec<String>,
@@ -223,6 +224,21 @@ pub fn load_asset_registry_from_root(
 ) -> Result<ScriptAssetRegistry, ScriptError> {
     let policy = LuaSandboxPolicy::from_env();
     let module = load_lua_module_from_root(scripts_root, "assets/registry.lua", &policy)?;
+    decode_asset_registry_module(&module)
+}
+
+pub fn load_asset_registry_from_source(
+    source: &str,
+    script_path: &Path,
+) -> Result<ScriptAssetRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let module = load_lua_module_from_source(source, script_path, &policy)?;
+    decode_asset_registry_module(&module)
+}
+
+fn decode_asset_registry_module(
+    module: &LoadedLuaModule,
+) -> Result<ScriptAssetRegistry, ScriptError> {
     let root = module.root();
     let schema_version_i64 = root.get::<i64>("schema_version").map_err(|err| {
         ScriptError::Contract(format!(
@@ -260,6 +276,26 @@ pub fn load_asset_registry_from_root(
         })?;
         let context = format!("assets[{}]", idx + 1);
         let asset_id = table_get_required_string(&entry, "asset_id", &context)?;
+        let shader_family = match entry.get::<Value>("shader_family").map_err(|err| {
+            ScriptError::Contract(format!("{context}.shader_family read failed: {err}"))
+        })? {
+            Value::Nil => None,
+            Value::String(value) => Some(
+                value
+                    .to_str()
+                    .map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "{context}.shader_family decode failed: {err}"
+                        ))
+                    })?
+                    .to_string(),
+            ),
+            _ => {
+                return Err(ScriptError::Contract(format!(
+                    "{context}.shader_family must be a string when present"
+                )));
+            }
+        };
         let source_path = table_get_required_string(&entry, "source_path", &context)?;
         let content_type = table_get_required_string(&entry, "content_type", &context)?;
         let dependencies = match entry.get::<Value>("dependencies").map_err(|err| {
@@ -296,6 +332,7 @@ pub fn load_asset_registry_from_root(
         };
         assets.push(ScriptAssetRegistryEntry {
             asset_id,
+            shader_family,
             source_path,
             content_type,
             dependencies,
@@ -716,6 +753,36 @@ return {
                 .cloned()
                 .unwrap_or_default(),
             vec!["shader.main".to_string()]
+        );
+    }
+
+    #[test]
+    fn loads_asset_registry_from_source() {
+        let registry = load_asset_registry_from_source(
+            r#"
+return {
+  schema_version = 1,
+  assets = {
+    {
+      asset_id = "shader.main",
+      shader_family = "world_sprite_generic",
+      source_path = "shaders/main.wgsl",
+      content_type = "text/wgsl",
+      dependencies = {},
+      bootstrap_required = true,
+    },
+  },
+}
+"#,
+            Path::new("assets/registry.lua"),
+        )
+        .expect("load registry from source");
+
+        assert_eq!(registry.schema_version, 1);
+        assert_eq!(registry.assets.len(), 1);
+        assert_eq!(
+            registry.assets[0].shader_family.as_deref(),
+            Some("world_sprite_generic")
         );
     }
 

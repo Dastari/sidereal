@@ -12,20 +12,21 @@ use super::app_state::{ClientAppState, ClientSession};
 use super::assets::LocalAssetManager;
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, FullscreenForegroundCamera,
-    GameplayCamera, GameplayHud, HudFpsText, HudFuelBarFill, HudHealthBarFill, HudManifestText,
-    HudPositionValueText, HudSpeedValueText, HudTacticalText, LoadingOverlayRoot,
-    LoadingOverlayText, LoadingProgressBarFill, PostProcessCamera, RuntimeScreenOverlayPass,
-    RuntimeScreenOverlayPassKind, RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle,
-    SegmentedBarValue, SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot,
-    TacticalMapTitle, TopDownCamera, UiOverlayLayer,
+    BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, DebugOverlayCamera,
+    FullscreenForegroundCamera, GameplayCamera, GameplayHud, HudFpsText, HudFuelBarFill,
+    HudHealthBarFill, HudManifestText, HudPositionValueText, HudSpeedValueText, HudTacticalText,
+    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, PostProcessCamera,
+    RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind, RuntimeStreamingIconText,
+    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SpaceBackdropFallback,
+    TacticalMapCursorText, TacticalMapOverlayRoot, TacticalMapTitle, TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{
-    BACKDROP_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER, PLANET_BODY_RENDER_LAYER,
-    POST_PROCESS_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER,
+    BACKDROP_RENDER_LAYER, DEBUG_OVERLAY_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER,
+    PLANET_BODY_RENDER_LAYER, POST_PROCESS_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER,
 };
 use super::resources::{
-    AssetRootPath, CameraMotionState, DebugBlueOverlayEnabled, EmbeddedFonts, StarfieldMotionState,
+    AssetCacheAdapter, AssetRootPath, CameraMotionState, DebugBlueOverlayEnabled, EmbeddedFonts,
+    StarfieldMotionState,
 };
 use super::shaders;
 
@@ -45,11 +46,19 @@ pub(super) fn spawn_world_scene(
     mut camera_motion: ResMut<'_, CameraMotionState>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
+    shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     debug_blue_overlay: Res<'_, DebugBlueOverlayEnabled>,
+    cache_adapter: Res<'_, AssetCacheAdapter>,
 ) {
     *starfield_motion = StarfieldMotionState::default();
     *camera_motion = CameraMotionState::default();
-    shaders::reload_streamed_shaders(&mut shaders_assets, &asset_root.0, &asset_manager);
+    shaders::reload_streamed_shaders(
+        &mut shaders_assets,
+        &asset_root.0,
+        &asset_manager,
+        *cache_adapter,
+        &shader_assignments,
+    );
     commands.spawn((
         Camera2d,
         Camera {
@@ -97,6 +106,21 @@ pub(super) fn spawn_world_scene(
             filtered_focus_xy: Vec2::ZERO,
             focus_initialized: false,
         },
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 50,
+            is_active: true,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, 80.0),
+        RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER),
+        DebugOverlayCamera,
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));

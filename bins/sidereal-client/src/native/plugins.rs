@@ -5,6 +5,7 @@ use sidereal_game::process_character_movement_actions;
 use super::app_state::ClientAppState;
 use super::camera::{
     audit_active_world_cameras_system, gate_gameplay_camera_system, gate_menu_camera_system,
+    sync_debug_overlay_camera_to_gameplay_camera_system,
     sync_player_anchor_render_transform_to_controlled_entity,
     sync_ui_overlay_camera_to_gameplay_camera_system, update_camera_motion_state,
     update_topdown_camera_system,
@@ -20,7 +21,7 @@ use super::resources::LogoutCleanupRequested;
 use super::{
     asset_loading_ui, assets, audio, auth_net, auth_ui, backdrop, bootstrap, control, dev_console,
     dialog_ui, input, lighting, logout, owner_manifest, pause_menu, render_layers, replication,
-    scene, scene_world, tactical, transforms, transport, ui, visuals,
+    scene, scene_world, tactical, transforms, transport, ui, visuals, world_loading_ui,
 };
 
 fn env_flag(name: &str) -> bool {
@@ -64,7 +65,8 @@ impl Plugin for ClientBootstrapPlugin {
             OnEnter(ClientAppState::WorldLoading),
             (
                 transport::ensure_lightyear_client_system,
-                bootstrap::reset_bootstrap_watchdog_on_enter_in_world,
+                bootstrap::reset_bootstrap_watchdog_on_enter_world_loading,
+                world_loading_ui::setup_world_loading_screen,
             )
                 .chain(),
         );
@@ -97,7 +99,8 @@ impl Plugin for ClientTransportPlugin {
                     auth_net::apply_headless_account_switch_system,
                     transport::ensure_client_transport_channels,
                     auth_net::send_lightyear_auth_messages,
-                ),
+                )
+                    .chain(),
             );
         } else {
             app.add_systems(
@@ -109,7 +112,8 @@ impl Plugin for ClientTransportPlugin {
                     auth_net::receive_lightyear_session_ready_messages,
                     auth_net::receive_lightyear_session_denied_messages,
                     auth_net::watch_session_ready_timeout_system,
-                ),
+                )
+                    .chain(),
             );
         }
     }
@@ -295,6 +299,8 @@ impl Plugin for ClientVisualsPlugin {
         app.init_resource::<super::resources::RuntimeRenderLayerRegistry>();
         app.init_resource::<super::resources::FullscreenLayerCache>();
         let in_world_visuals_core = (
+            super::shaders::sync_runtime_shader_assignments_system
+                .after(replication::adopt_native_lightyear_replicated_entities),
             render_layers::sync_runtime_render_layer_registry_system
                 .after(replication::adopt_native_lightyear_replicated_entities),
             render_layers::resolve_runtime_render_layer_assignments_system
@@ -412,6 +418,11 @@ impl Plugin for ClientUiPlugin {
         );
         app.add_systems(
             Update,
+            world_loading_ui::update_world_loading_screen
+                .run_if(in_state(ClientAppState::WorldLoading)),
+        );
+        app.add_systems(
+            Update,
             asset_loading_ui::update_asset_loading_screen
                 .run_if(in_state(ClientAppState::AssetLoading)),
         );
@@ -448,6 +459,12 @@ impl Plugin for ClientUiPlugin {
                 update_debug_manifest_text_system.after(update_debug_fps_text_system),
                 update_debug_tactical_text_system.after(update_debug_manifest_text_system),
             )
+                .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
+            Update,
+            sync_debug_overlay_camera_to_gameplay_camera_system
+                .after(update_topdown_camera_system)
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(

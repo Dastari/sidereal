@@ -5,6 +5,7 @@ This folder contains forward-looking feature plans and exploratory implementatio
 Decision detail docs should use: `dr-XXXX_<slug>.md`.
 
 Current docs:
+- `lightyear_upstream_issue_snapshot.md`
 - `dr-0001_account_character_session_model.md`
 - `projectile_firing_game_loop.md`
 - `thruster_plumes_afterburner_plan.md`
@@ -32,6 +33,7 @@ These are planning references, not authoritative runtime contracts, except:
 Current implementation notes:
 - `shader_editor_dashboard_plan.md` and `shader_editor_dashboard_implementation_spec.md` are active progress-tracking references for the routed `/shader-workshop` tool suite (with `/shader-workbench` redirected for compatibility).
 - `dashboard_route_shell_refactor_note.md` now reflects the implemented routed shell, major tool routes, slug strategy, and shared layout direction.
+- `lightyear_upstream_issue_snapshot.md` is the dated upstream Lightyear issue triage reference for known bugs, gaps, and integration risks that may explain Sidereal behaviour before local workarounds are added.
 
 Source-of-truth architecture remains:
 - `docs/sidereal_design_document.md`

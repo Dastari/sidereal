@@ -1,11 +1,11 @@
 use crate::component_meta::VisibilityScope;
+pub use crate::components::*;
 use crate::editor_schema::{
     ComponentEditorFieldSchema, ComponentEditorSchema, ComponentEditorValueKind,
     default_component_editor_schema, infer_component_editor_schema,
 };
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
-pub use crate::components::*;
 
 #[derive(Debug, Clone, PartialEq, Reflect)]
 pub struct ComponentRegistryEntry {

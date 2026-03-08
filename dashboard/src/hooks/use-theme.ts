@@ -17,6 +17,40 @@ const initialState: ThemeProviderState = {
 export const ThemeProviderContext =
   createContext<ThemeProviderState>(initialState)
 
+function readStoredTheme(storageKey: string): Theme | null {
+  if (typeof window === 'undefined') return null
+  let stored: string | null = null
+  try {
+    stored = localStorage.getItem(storageKey)
+  } catch {
+    return null
+  }
+  if (stored === 'dark' || stored === 'light' || stored === 'system') {
+    return stored
+  }
+  return null
+}
+
+function resolveTheme(theme: Theme): 'dark' | 'light' {
+  if (typeof window === 'undefined') {
+    return theme === 'light' ? 'light' : 'dark'
+  }
+  if (theme === 'system') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light'
+  }
+  return theme
+}
+
+function applyThemeClass(resolved: 'dark' | 'light') {
+  const root = window.document.documentElement
+  root.classList.remove('light', 'dark')
+  root.classList.add(resolved)
+  root.style.colorScheme = resolved
+  root.dataset.theme = resolved
+}
+
 export function useTheme() {
   const context = useContext(ThemeProviderContext)
   // Context is always defined when used within ThemeProvider
@@ -28,35 +62,50 @@ export function useThemeState(
   storageKey = 'sidereal-theme',
 ): ThemeProviderState {
   const [theme, setThemeState] = useState<Theme>(() => {
-    if (typeof window === 'undefined') return defaultTheme
-    const stored = localStorage.getItem(storageKey)
-    if (stored === 'dark' || stored === 'light' || stored === 'system') {
-      return stored
-    }
-    return defaultTheme
+    return readStoredTheme(storageKey) ?? defaultTheme
   })
 
-  const [resolvedTheme, setResolvedTheme] = useState<'dark' | 'light'>('dark')
-
-  useEffect(() => {
-    const root = window.document.documentElement
-    root.classList.remove('light', 'dark')
-
-    let resolved: 'dark' | 'light' = 'dark'
-    if (theme === 'system') {
-      resolved = window.matchMedia('(prefers-color-scheme: dark)').matches
-        ? 'dark'
-        : 'light'
-    } else {
-      resolved = theme
+  const [resolvedTheme, setResolvedTheme] = useState<'dark' | 'light'>(() => {
+    if (typeof window === 'undefined') {
+      return resolveTheme(defaultTheme)
     }
 
-    root.classList.add(resolved)
-    setResolvedTheme(resolved)
+    const root = window.document.documentElement
+    if (root.classList.contains('light')) return 'light'
+    if (root.classList.contains('dark')) return 'dark'
+
+    return resolveTheme(readStoredTheme(storageKey) ?? defaultTheme)
+  })
+
+  useEffect(() => {
+    const applyCurrentTheme = () => {
+      const nextResolvedTheme = resolveTheme(theme)
+      applyThemeClass(nextResolvedTheme)
+      setResolvedTheme(nextResolvedTheme)
+    }
+
+    applyCurrentTheme()
+
+    if (theme !== 'system') {
+      return
+    }
+
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => {
+      applyCurrentTheme()
+    }
+    media.addEventListener('change', onChange)
+    return () => {
+      media.removeEventListener('change', onChange)
+    }
   }, [theme])
 
   const setTheme = (newTheme: Theme) => {
-    localStorage.setItem(storageKey, newTheme)
+    try {
+      localStorage.setItem(storageKey, newTheme)
+    } catch {
+      // Ignore storage write failures (for example, privacy mode).
+    }
     setThemeState(newTheme)
   }
 

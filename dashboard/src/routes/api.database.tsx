@@ -1,16 +1,59 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import type { DatabaseAdminPayload } from '@/features/database/types'
-import { getPostgresPool } from '@/server/postgres'
+import type { PgClient } from '@/server/postgres'
+import { getPostgresPool, safeGraphName } from '@/server/postgres'
 
-async function tableExists(
-  client: Awaited<ReturnType<ReturnType<typeof getPostgresPool>['connect']>>,
+type ResolvedTableRef = {
+  schemaName: string
+  tableName: string
+  qualifiedName: string
+}
+
+function isSafeIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
+}
+
+async function resolveTableRef(
+  client: PgClient,
   tableName: string,
-) {
-  const result = await client.query('SELECT to_regclass($1) IS NOT NULL AS present', [
-    tableName,
-  ])
-  return result.rows[0]?.present === true
+  schemaCandidates: Array<string>,
+): Promise<ResolvedTableRef | null> {
+  if (!isSafeIdentifier(tableName)) {
+    return null
+  }
+  for (const schemaName of schemaCandidates) {
+    if (!isSafeIdentifier(schemaName)) continue
+    const qualified = `${schemaName}.${tableName}`
+    const result = await client.query(
+      'SELECT to_regclass($1) IS NOT NULL AS present',
+      [qualified],
+    )
+    if (result.rows[0]?.present === true) {
+      return {
+        schemaName,
+        tableName,
+        qualifiedName: `"${schemaName}"."${tableName}"`,
+      }
+    }
+  }
+  return null
+}
+
+function parseAgtype(raw: unknown): unknown {
+  if (raw === null || raw === undefined) return null
+  const text = String(raw).trim()
+  const stripped = text.replace(/::[A-Za-z_][A-Za-z0-9_]*$/, '').trim()
+  if (!stripped || stripped === 'null') return null
+  try {
+    return JSON.parse(stripped)
+  } catch {
+    return stripped.replace(/^"(.*)"$/, '$1')
+  }
+}
+
+function escapeCypherString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
 
 export const Route = createFileRoute('/api/database')({
@@ -21,18 +64,100 @@ export const Route = createFileRoute('/api/database')({
         const client = await pool.connect()
 
         try {
-          const hasAccountsTable = await tableExists(client, 'public.auth_accounts')
-          const hasCharactersTable = await tableExists(client, 'public.auth_characters')
-          const hasScriptDocumentsTable = await tableExists(
+          const graphName = safeGraphName(process.env.GRAPH_NAME || 'sidereal')
+          const schemaCandidates = [graphName, 'public']
+          const accountsTableRef = await resolveTableRef(
             client,
-            'public.script_catalog_documents',
+            'auth_accounts',
+            schemaCandidates,
           )
-          const hasScriptDraftsTable = await tableExists(
+          const charactersTableRef = await resolveTableRef(
             client,
-            'public.script_catalog_drafts',
+            'auth_characters',
+            schemaCandidates,
           )
+          const scriptDocumentsTableRef = await resolveTableRef(
+            client,
+            'script_catalog_documents',
+            schemaCandidates,
+          )
+          const scriptDraftsTableRef = await resolveTableRef(
+            client,
+            'script_catalog_drafts',
+            schemaCandidates,
+          )
+          const hasAccountsTable = accountsTableRef !== null
+          const hasCharactersTable = charactersTableRef !== null
+          const hasScriptDocumentsTable = scriptDocumentsTableRef !== null
+          const hasScriptDraftsTable = scriptDraftsTableRef !== null
 
-          const accounts = hasAccountsTable
+          const characterDisplayNameByEntityId = new Map<string, string>()
+          try {
+            await client.query("LOAD 'age'")
+            await client.query('SET search_path = ag_catalog, public')
+            const displayNameRows = await client.query(
+              `SELECT entity_id::text AS entity_id, display_name::text AS display_name
+               FROM ag_catalog.cypher('${escapeCypherString(graphName)}', $$
+                 MATCH (e:Entity)-[:HAS_COMPONENT]->(c:Component {component_kind:'display_name'})
+                 RETURN e.entity_id, c.display_name
+               $$) AS (entity_id agtype, display_name agtype);`,
+            )
+            for (const row of displayNameRows.rows) {
+              const entityId = parseAgtype(row.entity_id)
+              const displayName = parseAgtype(row.display_name)
+              if (
+                typeof entityId === 'string' &&
+                entityId.length > 0 &&
+                typeof displayName === 'string' &&
+                displayName.length > 0
+              ) {
+                characterDisplayNameByEntityId.set(entityId, displayName)
+              }
+            }
+          } catch {
+            // Character names are optional in admin UI; keep payload available without AGE.
+          } finally {
+            try {
+              await client.query('SET search_path = public')
+            } catch {
+              // no-op
+            }
+          }
+
+          const charactersByAccountId = new Map<
+            string,
+            Array<{
+              playerEntityId: string
+              createdAtEpochS: number
+              displayName: string | null
+            }>
+          >()
+          if (charactersTableRef) {
+            const characterRows = await client.query(
+              `
+                SELECT
+                  account_id::text AS account_id,
+                  player_entity_id,
+                  created_at_epoch_s
+                FROM ${charactersTableRef.qualifiedName}
+                ORDER BY created_at_epoch_s DESC, player_entity_id ASC
+              `,
+            )
+            for (const row of characterRows.rows) {
+              const accountId = String(row.account_id)
+              const playerEntityId = String(row.player_entity_id)
+              const accountCharacters = charactersByAccountId.get(accountId) ?? []
+              accountCharacters.push({
+                playerEntityId,
+                createdAtEpochS: Number(row.created_at_epoch_s ?? 0),
+                displayName:
+                  characterDisplayNameByEntityId.get(playerEntityId) ?? null,
+              })
+              charactersByAccountId.set(accountId, accountCharacters)
+            }
+          }
+
+          const accounts = accountsTableRef
             ? (
                 await client.query(
                   `
@@ -42,12 +167,16 @@ export const Route = createFileRoute('/api/database')({
                       a.player_entity_id,
                       a.created_at_epoch_s,
                       COALESCE(characters.character_count, 0) AS character_count
-                    FROM auth_accounts a
-                    LEFT JOIN (
-                      SELECT account_id, COUNT(*)::int AS character_count
-                      FROM auth_characters
-                      GROUP BY account_id
-                    ) characters ON characters.account_id = a.account_id
+                    FROM ${accountsTableRef.qualifiedName} a
+                    ${
+                      charactersTableRef
+                        ? `LEFT JOIN (
+                             SELECT account_id, COUNT(*)::int AS character_count
+                             FROM ${charactersTableRef.qualifiedName}
+                             GROUP BY account_id
+                           ) characters ON characters.account_id = a.account_id`
+                        : 'LEFT JOIN (SELECT NULL::uuid AS account_id, 0::int AS character_count) characters ON FALSE'
+                    }
                     ORDER BY a.email ASC
                   `,
                 )
@@ -57,6 +186,8 @@ export const Route = createFileRoute('/api/database')({
                 primaryPlayerEntityId: String(row.player_entity_id),
                 characterCount: Number(row.character_count ?? 0),
                 createdAtEpochS: Number(row.created_at_epoch_s ?? 0),
+                characters:
+                  charactersByAccountId.get(String(row.account_id)) ?? [],
               }))
             : []
 
@@ -69,14 +200,13 @@ export const Route = createFileRoute('/api/database')({
                   t.table_type,
                   COALESCE(s.n_live_tup::bigint, c.reltuples::bigint, NULL) AS row_estimate
                 FROM information_schema.tables t
+                LEFT JOIN pg_namespace n
+                  ON n.nspname = t.table_schema
                 LEFT JOIN pg_class c
                   ON c.relname = t.table_name
-                LEFT JOIN pg_namespace n
-                  ON n.oid = c.relnamespace
-                  AND n.nspname = t.table_schema
+                  AND c.relnamespace = n.oid
                 LEFT JOIN pg_stat_user_tables s
-                  ON s.relname = t.table_name
-                  AND s.schemaname = t.table_schema
+                  ON s.relid = c.oid
                 WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')
                 ORDER BY t.table_schema ASC, t.table_name ASC
               `,
@@ -89,7 +219,7 @@ export const Route = createFileRoute('/api/database')({
               row.row_estimate == null ? null : Number(row.row_estimate),
           }))
 
-          const scriptDocuments = hasScriptDocumentsTable
+          const scriptDocuments = scriptDocumentsTableRef
             ? (
                 await client.query(
                   `
@@ -98,15 +228,15 @@ export const Route = createFileRoute('/api/database')({
                       script_family AS family,
                       active_revision,
                       ${
-                        hasScriptDraftsTable
+                        scriptDraftsTableRef
                           ? `EXISTS (
                               SELECT 1
-                              FROM script_catalog_drafts drafts
+                              FROM ${scriptDraftsTableRef.qualifiedName} drafts
                               WHERE drafts.script_path = documents.script_path
                             )`
                           : 'FALSE'
                       } AS has_draft
-                    FROM script_catalog_documents documents
+                    FROM ${scriptDocumentsTableRef.qualifiedName} documents
                     ORDER BY script_path ASC
                   `,
                 )

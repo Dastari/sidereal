@@ -1,6 +1,7 @@
 //! App state enums and session-facing resources.
 
 use bevy::prelude::*;
+use sidereal_core::gateway_dtos::ReplicationTransportConfig;
 
 use super::resources::HeadlessTransportMode;
 
@@ -44,6 +45,7 @@ pub(crate) struct ClientSession {
     pub refresh_token: Option<String>,
     pub account_id: Option<String>,
     pub player_entity_id: Option<String>,
+    pub replication_transport: ReplicationTransportConfig,
     pub status: String,
     pub ui_dirty: bool,
 }
@@ -107,6 +109,7 @@ impl Default for ClientSession {
             refresh_token: None,
             account_id: None,
             player_entity_id: None,
+            replication_transport: ReplicationTransportConfig::default(),
             status: "Ready. F1 Login, F2 Register, F3 Forgot Request, F4 Forgot Confirm."
                 .to_string(),
             ui_dirty: true,

@@ -11,6 +11,9 @@ import appCss from '../styles.css?url'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
+const THEME_STORAGE_KEY = 'sidereal-theme'
+const THEME_INIT_SCRIPT = `(function(){try{var key='${THEME_STORAGE_KEY}';var stored=localStorage.getItem(key);var hasExplicit=stored==='light'||stored==='dark';var resolved=hasExplicit?stored:(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');var root=document.documentElement;root.classList.remove('light','dark');root.classList.add(resolved);root.style.colorScheme=resolved;root.dataset.theme=resolved;}catch(_){}})();`
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -58,6 +61,7 @@ export const Route = createRootRoute({
   errorComponent: ({ error }) => (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <HeadContent />
       </head>
       <body>
@@ -88,6 +92,7 @@ function RootComponent() {
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <HeadContent />
       </head>
       <body>

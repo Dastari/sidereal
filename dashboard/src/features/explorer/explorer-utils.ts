@@ -1,4 +1,5 @@
 import { parseAsStringLiteral } from 'nuqs'
+import type { ReactNode } from 'react'
 import type {
   ExpandedNode,
   GraphEdge,
@@ -74,6 +75,8 @@ const FUEL_TANK_SUFFIX = '::FuelTank'
 const AMMO_COUNT_SUFFIX = '::AmmoCount'
 const POSITION_SUFFIX = '::Position'
 const RESOURCE_SELECTION_PREFIX = 'resource:'
+const GENERATED_COMPONENT_REGISTRY_TYPE_PATH =
+  'sidereal_game::generated::components::GeneratedComponentRegistry'
 
 const CAMERA_HIDE_SUBSTRING = 'bevy_camera::camera::Camera'
 const UI_TRANSFORM_TYPE_NAME = 'UiTransform'
@@ -90,6 +93,7 @@ export interface ExplorerWorkspaceProps {
   scope: ExplorerScope
   selectedEntityGuid?: string | null
   onSelectedEntityGuidChange?: (entityGuid: string | null) => void
+  toolbarContent?: ReactNode
 }
 
 /** True if this entity should be hidden from the map (tree still shows it). */
@@ -300,7 +304,9 @@ function extractEntityGuidFromComponentProps(rawProps: unknown): string | null {
   const found = findStringDeep(rawProps)
   if (!found) return null
   const normalized = found.trim().toLowerCase()
-  return looksLikeUuid(normalized) ? normalized : null
+  if (looksLikeUuid(normalized)) return normalized
+  const suffix = normalized.split(':').pop()?.trim() ?? ''
+  return looksLikeUuid(suffix) ? suffix : null
 }
 
 function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
@@ -343,7 +349,9 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
         : null
     }, null)
     const positionProps = componentProps.find(
-      (props) => props.component_kind === 'avian_position',
+      (props) =>
+        props.component_kind === 'avian_position' ||
+        props.component_kind === 'world_position',
     )
     const velocityProps = componentProps.find(
       (props) => props.component_kind === 'avian_linear_velocity',
@@ -352,7 +360,9 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
       (props) => props.component_kind === 'mounted_on',
     )
     const pos = positionProps
-      ? extractAvianPositionFromComponentProps(positionProps)
+      ? positionProps.component_kind === 'avian_position'
+        ? extractAvianPositionFromComponentProps(positionProps)
+        : extractPositionFromComponentProps(positionProps)
       : null
     const vel = velocityProps
       ? extractPositionFromComponentProps(velocityProps)
@@ -982,6 +992,7 @@ export {
   CAMERA_HIDE_SUBSTRING,
   DEFAULT_OWNER_TYPE_PATH,
   FUEL_TANK_SUFFIX,
+  GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
   HEALTH_POOL_SUFFIX,
   POSITION_SUFFIX,
   RESOURCE_SELECTION_PREFIX,

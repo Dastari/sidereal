@@ -3,13 +3,15 @@
 use super::app_state::ClientSession;
 use super::components::{StreamedSpriteShaderAssetId, StreamedVisualAssetId};
 use super::resources::AssetRootPath;
+use super::resources::{AssetCacheAdapter, GatewayHttpAdapter};
 use super::shaders;
-use bevy::log::warn;
+use bevy::asset::RenderAssetUsages;
+use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
+use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task, futures_lite::future};
-use sidereal_asset_runtime::{
-    AssetCacheIndex, AssetCacheIndexRecord, cache_index_path, save_cache_index, sha256_hex,
-};
+use bevy_svg::prelude::Svg;
+use sidereal_asset_runtime::{AssetCacheIndex, AssetCacheIndexRecord, sha256_hex};
 use sidereal_game::{
     FullscreenLayer, RuntimePostProcessStack, RuntimeRenderLayerDefinition, SizeM,
     SpriteShaderAssetId,
@@ -30,6 +32,8 @@ pub(crate) struct LocalAssetRecord {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RuntimeAssetCatalogRecord {
     pub _asset_guid: String,
+    pub shader_family: Option<String>,
+    pub dependencies: Vec<String>,
     pub url: String,
     pub relative_cache_path: String,
     pub content_type: String,
@@ -65,6 +69,7 @@ impl LocalAssetManager {
         (self.bootstrap_ready_bytes as f32 / self.bootstrap_total_bytes as f32).clamp(0.0, 1.0)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn cached_relative_path(&self, asset_id: &str) -> Option<&str> {
         self.records_by_asset_id
             .get(asset_id)
@@ -82,6 +87,7 @@ pub(crate) struct RuntimeAssetNetIndicatorState {
 pub(crate) struct RuntimeAssetHttpFetchState {
     pending: Option<Task<Result<RuntimeAssetFetchResult, String>>>,
     in_flight_asset_ids: HashSet<String>,
+    pending_parent_asset_ids: HashMap<String, String>,
     pub last_request_at_s: f64,
 }
 
@@ -100,32 +106,93 @@ pub(crate) struct RuntimeAssetFetchResult {
     pub asset_version: u64,
     pub sha256_hex: String,
     pub payload: Vec<u8>,
+    pub cache_index: AssetCacheIndex,
 }
 
-pub(super) fn streamed_visual_asset_path(
-    asset_id: &str,
+fn expand_catalog_dependencies(
+    seed_asset_ids: HashSet<String>,
     asset_manager: &LocalAssetManager,
-) -> Option<String> {
-    let relative = asset_manager.cached_relative_path(asset_id)?;
-    if !(relative.ends_with(".png")
-        || relative.ends_with(".jpg")
-        || relative.ends_with(".jpeg")
-        || relative.ends_with(".webp"))
-    {
-        return None;
+) -> HashSet<String> {
+    let mut expanded = seed_asset_ids;
+    let mut stack = expanded.iter().cloned().collect::<Vec<_>>();
+    while let Some(asset_id) = stack.pop() {
+        let Some(entry) = asset_manager.catalog_by_asset_id.get(&asset_id) else {
+            continue;
+        };
+        for dependency in &entry.dependencies {
+            if expanded.insert(dependency.clone()) {
+                stack.push(dependency.clone());
+            }
+        }
     }
-    Some(format!("data/cache_stream/{relative}"))
+    expanded
 }
 
-pub(super) fn streamed_svg_asset_path(
+pub(super) fn cached_asset_bytes(
     asset_id: &str,
     asset_manager: &LocalAssetManager,
+    asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
+) -> Option<Vec<u8>> {
+    let catalog = asset_manager.catalog_by_asset_id.get(asset_id)?;
+    let relative_cache_path = asset_manager
+        .records_by_asset_id
+        .get(asset_id)
+        .map(|record| record.relative_cache_path.as_str())
+        .unwrap_or(catalog.relative_cache_path.as_str());
+    (cache_adapter.read_valid_asset_sync)(asset_root, relative_cache_path, &catalog.sha256_hex)
+}
+
+pub(super) fn cached_shader_source(
+    asset_id: &str,
+    asset_manager: &LocalAssetManager,
+    asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
 ) -> Option<String> {
-    let relative = asset_manager.cached_relative_path(asset_id)?;
-    if !relative.ends_with(".svg") {
-        return None;
-    }
-    Some(format!("data/cache_stream/{relative}"))
+    let bytes = cached_asset_bytes(asset_id, asset_manager, asset_root, cache_adapter)?;
+    String::from_utf8(bytes).ok()
+}
+
+pub(super) fn cached_image_handle(
+    asset_id: &str,
+    asset_manager: &LocalAssetManager,
+    asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
+    images: &mut Assets<Image>,
+) -> Option<Handle<Image>> {
+    let catalog = asset_manager.catalog_by_asset_id.get(asset_id)?;
+    let bytes = cached_asset_bytes(asset_id, asset_manager, asset_root, cache_adapter)?;
+    let image = Image::from_buffer(
+        &bytes,
+        ImageType::MimeType(&catalog.content_type),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::default(),
+        RenderAssetUsages::default(),
+    )
+    .ok()?;
+    Some(images.add(image))
+}
+
+pub(super) fn cached_svg_handle(
+    asset_id: &str,
+    asset_manager: &LocalAssetManager,
+    asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
+    svg_assets: &mut Assets<Svg>,
+    meshes: &mut Assets<Mesh>,
+) -> Option<Handle<Svg>> {
+    let catalog = asset_manager.catalog_by_asset_id.get(asset_id)?;
+    let bytes = cached_asset_bytes(asset_id, asset_manager, asset_root, cache_adapter)?;
+    let mut svg = Svg::from_bytes(
+        &bytes,
+        &catalog.relative_cache_path,
+        None::<&std::path::Path>,
+    )
+    .ok()?;
+    svg.name = catalog.relative_cache_path.clone();
+    svg.mesh = meshes.add(svg.tessellate());
+    Some(svg_assets.add(svg))
 }
 
 pub(super) fn resolved_world_sprite_size(
@@ -144,29 +211,14 @@ pub(super) fn resolved_world_sprite_size(
     }
 }
 
-pub(super) fn read_png_dimensions(path: &std::path::Path) -> Option<UVec2> {
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.len() < 24 {
-        return None;
-    }
-    const PNG_SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-    if bytes[0..8] != PNG_SIG {
-        return None;
-    }
-    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
-    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
-    if width == 0 || height == 0 {
-        return None;
-    }
-    Some(UVec2::new(width, height))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn queue_missing_catalog_assets_system(
     time: Res<'_, Time>,
     mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
     asset_manager: Res<'_, LocalAssetManager>,
     asset_root: Res<'_, AssetRootPath>,
+    gateway_http: Res<'_, GatewayHttpAdapter>,
+    cache_adapter: Res<'_, AssetCacheAdapter>,
     session: Res<'_, ClientSession>,
     fullscreen_layers: Query<'_, '_, &'_ FullscreenLayer>,
     runtime_render_layers: Query<'_, '_, &'_ RuntimeRenderLayerDefinition>,
@@ -240,10 +292,16 @@ pub(super) fn queue_missing_catalog_assets_system(
             candidate_asset_ids.insert(visual.0.clone());
         }
     }
+    let candidate_asset_ids = expand_catalog_dependencies(candidate_asset_ids, &asset_manager);
     let Some(next_asset_id) = candidate_asset_ids
         .into_iter()
         .filter(|asset_id| {
-            !asset_present_in_cache_or_source(asset_id, &asset_manager, &asset_root.0)
+            !asset_present_in_cache_or_source(
+                asset_id,
+                &asset_manager,
+                &asset_root.0,
+                *cache_adapter,
+            )
         })
         .filter(|asset_id| !fetch_state.in_flight_asset_ids.contains(asset_id))
         .find(|asset_id| asset_manager.catalog_by_asset_id.contains_key(asset_id))
@@ -257,6 +315,89 @@ pub(super) fn queue_missing_catalog_assets_system(
     else {
         return;
     };
+    let unresolved_dependency = catalog
+        .dependencies
+        .iter()
+        .find(|dependency| {
+            !asset_present_in_cache_or_source(
+                dependency,
+                &asset_manager,
+                &asset_root.0,
+                *cache_adapter,
+            ) && !fetch_state.in_flight_asset_ids.contains(*dependency)
+        })
+        .cloned();
+    if let Some(dependency_asset_id) = unresolved_dependency {
+        fetch_state
+            .pending_parent_asset_ids
+            .insert(dependency_asset_id.clone(), next_asset_id.clone());
+        fetch_state.last_request_at_s = now;
+        fetch_state
+            .in_flight_asset_ids
+            .insert(dependency_asset_id.clone());
+        let Some(catalog) = asset_manager
+            .catalog_by_asset_id
+            .get(&dependency_asset_id)
+            .cloned()
+        else {
+            fetch_state.in_flight_asset_ids.remove(&dependency_asset_id);
+            fetch_state
+                .pending_parent_asset_ids
+                .remove(&dependency_asset_id);
+            return;
+        };
+        info!(
+            "runtime asset download queued: asset_id={} dependency_for={} relative_cache_path={}",
+            dependency_asset_id, next_asset_id, catalog.relative_cache_path
+        );
+        let url = if catalog.url.starts_with("http://") || catalog.url.starts_with("https://") {
+            catalog.url.clone()
+        } else {
+            format!("{}{}", session.gateway_url, catalog.url)
+        };
+        let access_token = access_token.clone();
+        let gateway_http = *gateway_http;
+        let cache_adapter = *cache_adapter;
+        let asset_root = asset_root.0.clone();
+        let mut cache_index = asset_manager.cache_index.clone();
+        fetch_state.pending = Some(IoTaskPool::get().spawn(async move {
+            let payload = (gateway_http.fetch_asset_bytes)(url, access_token.clone()).await?;
+            let payload_sha = sha256_hex(&payload);
+            if payload_sha != catalog.sha256_hex {
+                return Err(format!(
+                    "runtime asset checksum mismatch asset_id={} expected={} got={}",
+                    dependency_asset_id, catalog.sha256_hex, payload_sha
+                ));
+            }
+            cache_index.by_asset_id.insert(
+                dependency_asset_id.clone(),
+                AssetCacheIndexRecord {
+                    asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(
+                        &payload_sha,
+                    ),
+                    sha256_hex: payload_sha.clone(),
+                },
+            );
+            (cache_adapter.write_asset)(
+                asset_root.clone(),
+                catalog.relative_cache_path.clone(),
+                payload.clone(),
+            )
+            .await?;
+            (cache_adapter.save_index)(asset_root.clone(), cache_index.clone()).await?;
+            Ok(RuntimeAssetFetchResult {
+                asset_id: dependency_asset_id,
+                relative_cache_path: catalog.relative_cache_path,
+                content_type: catalog.content_type,
+                byte_len: payload.len() as u64,
+                asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(&payload_sha),
+                sha256_hex: payload_sha,
+                payload,
+                cache_index,
+            })
+        }));
+        return;
+    }
     let url = if catalog.url.starts_with("http://") || catalog.url.starts_with("https://") {
         catalog.url.clone()
     } else {
@@ -266,38 +407,49 @@ pub(super) fn queue_missing_catalog_assets_system(
         .in_flight_asset_ids
         .insert(next_asset_id.clone());
     fetch_state.last_request_at_s = now;
+    info!(
+        "runtime asset download queued: asset_id={} relative_cache_path={}",
+        next_asset_id, catalog.relative_cache_path
+    );
 
     let access_token = access_token.clone();
+    let gateway_http = *gateway_http;
+    let cache_adapter = *cache_adapter;
+    let asset_root = asset_root.0.clone();
+    let mut cache_index = asset_manager.cache_index.clone();
     fetch_state.pending = Some(IoTaskPool::get().spawn(async move {
-        (|| -> Result<RuntimeAssetFetchResult, String> {
-            let client = reqwest::blocking::Client::new();
-            let response_bytes = client
-                .get(url)
-                .bearer_auth(access_token)
-                .send()
-                .map_err(|err| err.to_string())?
-                .error_for_status()
-                .map_err(|err| err.to_string())?
-                .bytes()
-                .map_err(|err| err.to_string())?;
-            let payload = response_bytes.to_vec();
-            let payload_sha = sha256_hex(&payload);
-            if payload_sha != catalog.sha256_hex {
-                return Err(format!(
-                    "runtime asset checksum mismatch asset_id={} expected={} got={}",
-                    next_asset_id, catalog.sha256_hex, payload_sha
-                ));
-            }
-            Ok(RuntimeAssetFetchResult {
-                asset_id: next_asset_id,
-                relative_cache_path: catalog.relative_cache_path,
-                content_type: catalog.content_type,
-                byte_len: payload.len() as u64,
+        let payload = (gateway_http.fetch_asset_bytes)(url, access_token.clone()).await?;
+        let payload_sha = sha256_hex(&payload);
+        if payload_sha != catalog.sha256_hex {
+            return Err(format!(
+                "runtime asset checksum mismatch asset_id={} expected={} got={}",
+                next_asset_id, catalog.sha256_hex, payload_sha
+            ));
+        }
+        cache_index.by_asset_id.insert(
+            next_asset_id.clone(),
+            AssetCacheIndexRecord {
                 asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(&payload_sha),
-                sha256_hex: payload_sha,
-                payload,
-            })
-        })()
+                sha256_hex: payload_sha.clone(),
+            },
+        );
+        (cache_adapter.write_asset)(
+            asset_root.clone(),
+            catalog.relative_cache_path.clone(),
+            payload.clone(),
+        )
+        .await?;
+        (cache_adapter.save_index)(asset_root.clone(), cache_index.clone()).await?;
+        Ok(RuntimeAssetFetchResult {
+            asset_id: next_asset_id,
+            relative_cache_path: catalog.relative_cache_path,
+            content_type: catalog.content_type,
+            byte_len: payload.len() as u64,
+            asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(&payload_sha),
+            sha256_hex: payload_sha,
+            payload,
+            cache_index,
+        })
     }));
 }
 
@@ -306,6 +458,8 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     mut asset_manager: ResMut<'_, LocalAssetManager>,
     mut session: ResMut<'_, ClientSession>,
     asset_root: Res<'_, AssetRootPath>,
+    cache_adapter: Res<'_, AssetCacheAdapter>,
+    shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
 ) {
     let Some(task) = fetch_state.pending.as_mut() else {
@@ -318,67 +472,53 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
 
     match result {
         Ok(result) => {
-            let target = std::path::PathBuf::from(&asset_root.0)
-                .join("data/cache_stream")
-                .join(&result.relative_cache_path);
-            let write_result = (|| -> Result<(), String> {
-                let payload_sha = sha256_hex(&result.payload);
-                if payload_sha != result.sha256_hex {
-                    return Err(format!(
-                        "runtime asset checksum mismatch asset_id={} expected={} got={}",
-                        result.asset_id, result.sha256_hex, payload_sha
-                    ));
-                }
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-                }
-                std::fs::write(&target, &result.payload).map_err(|err| err.to_string())?;
-                Ok(())
-            })();
-            match write_result {
-                Ok(()) => {
-                    asset_manager.cache_index.by_asset_id.insert(
-                        result.asset_id.clone(),
-                        AssetCacheIndexRecord {
-                            asset_version: result.asset_version,
-                            sha256_hex: result.sha256_hex.clone(),
-                        },
+            let payload_sha = sha256_hex(&result.payload);
+            if payload_sha != result.sha256_hex {
+                warn!(
+                    "runtime asset download failed: runtime asset checksum mismatch asset_id={} expected={} got={}",
+                    result.asset_id, result.sha256_hex, payload_sha
+                );
+                session.status = format!(
+                    "Asset download failed: runtime asset checksum mismatch asset_id={} expected={} got={}",
+                    result.asset_id, result.sha256_hex, payload_sha
+                );
+                session.ui_dirty = true;
+            } else {
+                asset_manager.cache_index = result.cache_index.clone();
+                asset_manager.records_by_asset_id.insert(
+                    result.asset_id.clone(),
+                    LocalAssetRecord {
+                        relative_cache_path: result.relative_cache_path.clone(),
+                        _content_type: result.content_type.clone(),
+                        _byte_len: result.byte_len,
+                        _chunk_count: 1,
+                        _asset_version: result.asset_version,
+                        _sha256_hex: result.sha256_hex.clone(),
+                        ready: true,
+                    },
+                );
+                info!(
+                    "runtime asset cache write complete: asset_id={} relative_cache_path={} bytes={}",
+                    result.asset_id, result.relative_cache_path, result.byte_len
+                );
+                session.status = format!("Asset downloaded: {}", result.asset_id);
+                session.ui_dirty = true;
+                if shaders::shader_materials_enabled()
+                    && result.relative_cache_path.ends_with(".wgsl")
+                {
+                    shaders::reload_streamed_shaders(
+                        &mut shaders_assets,
+                        &asset_root.0,
+                        &asset_manager,
+                        *cache_adapter,
+                        &shader_assignments,
                     );
-                    let index_path = cache_index_path(&asset_root.0);
-                    if let Err(err) = save_cache_index(&index_path, &asset_manager.cache_index) {
-                        warn!("failed saving cache index: {}", err);
-                    }
-                    asset_manager.records_by_asset_id.insert(
-                        result.asset_id.clone(),
-                        LocalAssetRecord {
-                            relative_cache_path: result.relative_cache_path.clone(),
-                            _content_type: result.content_type.clone(),
-                            _byte_len: result.byte_len,
-                            _chunk_count: 1,
-                            _asset_version: result.asset_version,
-                            _sha256_hex: result.sha256_hex.clone(),
-                            ready: true,
-                        },
-                    );
-                    session.status = format!("Asset downloaded: {}", result.asset_id);
-                    session.ui_dirty = true;
-                    if shaders::shader_materials_enabled()
-                        && result.relative_cache_path.ends_with(".wgsl")
-                    {
-                        shaders::reload_streamed_shaders(
-                            &mut shaders_assets,
-                            &asset_root.0,
-                            &asset_manager,
-                        );
-                    }
-                }
-                Err(err) => {
-                    warn!("runtime asset download failed: {}", err);
-                    session.status = format!("Asset download failed: {}", err);
-                    session.ui_dirty = true;
                 }
             }
             fetch_state.in_flight_asset_ids.remove(&result.asset_id);
+            fetch_state
+                .pending_parent_asset_ids
+                .remove(&result.asset_id);
         }
         Err(err) => {
             warn!("runtime asset download failed: {}", err);
@@ -387,6 +527,7 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
             let maybe_id = fetch_state.in_flight_asset_ids.iter().next().cloned();
             if let Some(asset_id) = maybe_id {
                 fetch_state.in_flight_asset_ids.remove(&asset_id);
+                fetch_state.pending_parent_asset_ids.remove(&asset_id);
             }
         }
     }
@@ -396,6 +537,7 @@ fn asset_present_in_cache_or_source(
     asset_id: &str,
     asset_manager: &LocalAssetManager,
     asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
 ) -> bool {
     if asset_manager
         .records_by_asset_id
@@ -415,14 +557,6 @@ fn asset_present_in_cache_or_source(
     else {
         return false;
     };
-    let rooted_stream_path = std::path::PathBuf::from(asset_root)
-        .join("data/cache_stream")
-        .join(relative_cache_path);
-    if !rooted_stream_path.is_file() {
-        return false;
-    }
-    let Ok(bytes) = std::fs::read(rooted_stream_path) else {
-        return false;
-    };
-    sha256_hex(&bytes) == catalog.sha256_hex
+    (cache_adapter.read_valid_asset_sync)(asset_root, relative_cache_path, &catalog.sha256_hex)
+        .is_some()
 }

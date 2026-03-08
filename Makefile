@@ -6,6 +6,7 @@ GATEWAY_BIND ?= 0.0.0.0:8080
 GATEWAY_CLIENT_URL ?= http://127.0.0.1:8080
 GATEWAY_BOOTSTRAP_MODE ?= udp
 GATEWAY_JWT_SECRET ?= 0123456789abcdef0123456789abcdef
+GATEWAY_ALLOWED_ORIGINS ?= http://localhost:3000,http://127.0.0.1:3000
 ASSET_ROOT ?= ./data
 WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER ?= 1
 SIDEREAL_DEBUG_INPUT_LOGS ?= 1
@@ -16,6 +17,10 @@ WGPU_POWER_PREF ?= high
 
 REPLICATION_UDP_BIND ?= 0.0.0.0:7001
 REPLICATION_UDP_ADDR ?= 127.0.0.1:7001
+REPLICATION_WEBTRANSPORT_BIND ?= 0.0.0.0:7003
+REPLICATION_WEBTRANSPORT_PUBLIC_ADDR ?= 127.0.0.1:7003
+REPLICATION_WEBTRANSPORT_CERT_PEM ?= ./data/dev_certs/replication-webtransport-cert.pem
+REPLICATION_WEBTRANSPORT_KEY_PEM ?= ./data/dev_certs/replication-webtransport-key.pem
 SHARD_UDP_BIND ?= 127.0.0.1:7002
 CLIENT_UDP_BIND ?= 127.0.0.1:0
 CLIENT2_UDP_BIND ?= 127.0.0.1:0
@@ -38,7 +43,7 @@ CLIENT2_BRP_URL ?= http://127.0.0.1:$(CLIENT2_BRP_PORT)/
 BRP_DUMP_DIR ?= ./data/debug/brp_dumps
 DASHBOARD_DIR ?= ./dashboard
 
-.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
+.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full ensure-webtransport-cert run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -64,6 +69,7 @@ help:
 	@echo "  make test               Run key crate tests"
 	@echo ""
 	@echo "Runtime:"
+	@echo "  make ensure-webtransport-cert Generate stable local dev WebTransport cert/key"
 	@echo "  make run-replication    Run replication server"
 	@echo "  make run-shard          Run shard server"
 	@echo "  make run-gateway        Run gateway API server"
@@ -114,11 +120,11 @@ windows-check:
 	cargo check -p sidereal-client --target x86_64-pc-windows-gnu
 
 windows-build:
-	cargo build -p sidereal-client --target x86_64-pc-windows-gnu
+	cargo build -p sidereal-client --bin sidereal-client --target x86_64-pc-windows-gnu
 	@echo "Built: target/x86_64-pc-windows-gnu/debug/sidereal-client.exe"
 
 windows-release:
-	cargo build -p sidereal-client --target x86_64-pc-windows-gnu --release
+	cargo build -p sidereal-client --bin sidereal-client --target x86_64-pc-windows-gnu --release
 	@echo "Built: target/x86_64-pc-windows-gnu/release/sidereal-client.exe"
 
 target-size:
@@ -156,9 +162,44 @@ test-replication:
 test-client:
 	cargo test -p sidereal-client
 
-run-replication:
+ensure-webtransport-cert:
+	@mkdir -p "$(dir $(REPLICATION_WEBTRANSPORT_CERT_PEM))"
+	@need_regen=1; \
+	if [ -f "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" ] && [ -f "$(REPLICATION_WEBTRANSPORT_KEY_PEM)" ]; then \
+		not_before="$$(openssl x509 -in "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" -noout -startdate 2>/dev/null | cut -d= -f2)"; \
+		not_after="$$(openssl x509 -in "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" -noout -enddate 2>/dev/null | cut -d= -f2)"; \
+		start_epoch="$$(date -u -d "$$not_before" +%s 2>/dev/null || echo 0)"; \
+		end_epoch="$$(date -u -d "$$not_after" +%s 2>/dev/null || echo 0)"; \
+		if openssl x509 -in "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" -text -noout 2>/dev/null | grep -q "Public Key Algorithm: id-ecPublicKey" \
+			&& openssl x509 -in "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" -text -noout 2>/dev/null | grep -q "ASN1 OID: prime256v1" \
+			&& openssl x509 -in "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" -text -noout 2>/dev/null | grep -q "DNS:localhost" \
+			&& openssl x509 -in "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" -text -noout 2>/dev/null | grep -q "IP Address:127.0.0.1" \
+			&& [ "$$start_epoch" -gt 0 ] && [ "$$end_epoch" -gt "$$start_epoch" ] \
+			&& [ "$$((end_epoch - start_epoch))" -lt 1209600 ]; then \
+			need_regen=0; \
+		fi; \
+	fi; \
+	if [ "$$need_regen" -ne 0 ]; then \
+		rm -f "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" "$(REPLICATION_WEBTRANSPORT_KEY_PEM)"; \
+		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -sha256 -nodes \
+			-keyout "$(REPLICATION_WEBTRANSPORT_KEY_PEM)" \
+			-out "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" \
+			-days 13 \
+			-subj "/CN=localhost" \
+			-addext "basicConstraints=critical,CA:FALSE" \
+			-addext "keyUsage=critical,digitalSignature" \
+			-addext "extendedKeyUsage=serverAuth" \
+			-addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1"; \
+	fi
+	@echo "WebTransport cert ready: $(REPLICATION_WEBTRANSPORT_CERT_PEM)"
+
+run-replication: ensure-webtransport-cert
 	REPLICATION_DATABASE_URL=$(PG_URL) \
 	REPLICATION_UDP_BIND=$(REPLICATION_UDP_BIND) \
+	REPLICATION_WEBTRANSPORT_BIND=$(REPLICATION_WEBTRANSPORT_BIND) \
+	REPLICATION_WEBTRANSPORT_PUBLIC_ADDR=$(REPLICATION_WEBTRANSPORT_PUBLIC_ADDR) \
+	REPLICATION_WEBTRANSPORT_CERT_PEM=$(REPLICATION_WEBTRANSPORT_CERT_PEM) \
+	REPLICATION_WEBTRANSPORT_KEY_PEM=$(REPLICATION_WEBTRANSPORT_KEY_PEM) \
 	REPLICATION_CONTROL_UDP_BIND=$(REPLICATION_CONTROL_UDP_BIND) \
 	SIDEREAL_REPLICATION_BRP_ENABLED=$(REPLICATION_BRP_ENABLED) \
 	SIDEREAL_REPLICATION_BRP_BIND_ADDR=$(REPLICATION_BRP_BIND_ADDR) \
@@ -172,11 +213,14 @@ run-shard:
 	SHARD_UDP_BIND=$(SHARD_UDP_BIND) \
 	cargo run -p sidereal-shard
 
-run-gateway:
+run-gateway: ensure-webtransport-cert
 	GATEWAY_DATABASE_URL=$(PG_URL) \
 	GATEWAY_BIND=$(GATEWAY_BIND) \
 	GATEWAY_BOOTSTRAP_MODE=$(GATEWAY_BOOTSTRAP_MODE) \
 	GATEWAY_JWT_SECRET=$(GATEWAY_JWT_SECRET) \
+	GATEWAY_ALLOWED_ORIGINS=$(GATEWAY_ALLOWED_ORIGINS) \
+	REPLICATION_WEBTRANSPORT_PUBLIC_ADDR=$(REPLICATION_WEBTRANSPORT_PUBLIC_ADDR) \
+	REPLICATION_WEBTRANSPORT_CERT_SHA256=$$(openssl x509 -in "$(REPLICATION_WEBTRANSPORT_CERT_PEM)" -outform der | sha256sum | awk '{print $$1}') \
 	GATEWAY_REPLICATION_CONTROL_UDP_BIND=$(GATEWAY_REPLICATION_CONTROL_UDP_BIND) \
 	REPLICATION_CONTROL_UDP_ADDR=$(REPLICATION_CONTROL_UDP_ADDR) \
 	ASSET_ROOT=$(ASSET_ROOT) \

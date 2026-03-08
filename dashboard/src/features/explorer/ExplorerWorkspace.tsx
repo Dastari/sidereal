@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { faker } from '@faker-js/faker'
 import {
   parseAsBoolean,
-  parseAsFloat,
   parseAsString,
   useQueryStates,
 } from 'nuqs'
@@ -37,6 +36,7 @@ import { Switch } from '@/components/ui/switch'
 import {
   AMMO_COUNT_SUFFIX,
   FUEL_TANK_SUFFIX,
+  GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
   HEALTH_POOL_SUFFIX,
   POSITION_SUFFIX,
   RESOURCE_SELECTION_PREFIX,
@@ -64,6 +64,7 @@ export function ExplorerWorkspace({
   scope,
   selectedEntityGuid = null,
   onSelectedEntityGuidChange,
+  toolbarContent,
 }: ExplorerWorkspaceProps) {
   const scopeIsDatabase = scope === 'database'
   const [routeState, setRouteState] = useQueryStates({
@@ -74,9 +75,6 @@ export function ExplorerWorkspace({
     selectedEntityId: parseAsString,
     selectedResourceTypePath: parseAsString,
     filterMapInvisible: parseAsBoolean.withDefault(true),
-    viewportX: parseAsFloat.withDefault(0),
-    viewportY: parseAsFloat.withDefault(0),
-    viewportZoom: parseAsFloat.withDefault(0.5),
   })
   const sourceMode = scopeIsDatabase
     ? 'database'
@@ -131,10 +129,16 @@ export function ExplorerWorkspace({
     worldY: null,
   })
   const [contextStatusText, setContextStatusText] = useState<string | null>(null)
+  const [cameraState, setCameraState] = useState({
+    x: 0,
+    y: 0,
+    zoom: 0.5,
+  })
   const effectiveSelectedEntityGuid =
     selectedEntityGuid ?? pendingSelectedEntityGuid
   const entitiesRef = useRef<Array<WorldEntity>>([])
   const effectiveSelectedEntityGuidRef = useRef<string | null>(null)
+  const previousSourceModeRef = useRef<DataSourceMode | null>(null)
 
   // Status
   const [graphStatus, setGraphStatus] = useState({
@@ -221,15 +225,6 @@ export function ExplorerWorkspace({
   )
 
   const centerOnPosition = centerRequest.position
-  const routeCameraState = useMemo(
-    () => ({
-      x: routeState.viewportX,
-      y: routeState.viewportY,
-      zoom: routeState.viewportZoom,
-    }),
-    [routeState.viewportX, routeState.viewportY, routeState.viewportZoom],
-  )
-
   // Map-only: exclude camera entities (id/name contains bevy_camera::camera::Camera, or has Camera component). Tree still shows all.
   const { entitiesForMap, cameraEntityIds } = useMemo(() => {
     const cameraIds = new Set<string>()
@@ -375,7 +370,21 @@ export function ExplorerWorkspace({
           ? currentEntities
           : entitiesFromGraph
         setEntities(nextEntities)
-        setBrpResources([])
+        const registryResource = await fetchBrpResourceValue(
+          activeBrpTab.port,
+          'server',
+          GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+        )
+        setBrpResources(
+          registryResource.error
+            ? []
+            : [
+                {
+                  typePath: GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+                  value: registryResource.value,
+                },
+              ],
+        )
         setWorldStatus({
           loaded: true,
           entityCount: nextEntities.length,
@@ -452,7 +461,10 @@ export function ExplorerWorkspace({
         const hydratedResources = await Promise.all(
           listedResources.map(async (resource) => {
             if (resource.error) return resource
-            if (!resource.typePath.includes('EntityRegistryResource')) {
+            if (
+              !resource.typePath.includes('EntityRegistryResource') &&
+              resource.typePath !== GENERATED_COMPONENT_REGISTRY_TYPE_PATH
+            ) {
               return resource
             }
             const loaded = await fetchBrpResourceValue(
@@ -497,15 +509,29 @@ export function ExplorerWorkspace({
   }, [sourceMode, activeBrpTab])
 
   useEffect(() => {
+    const previousSourceMode = previousSourceModeRef.current
+    previousSourceModeRef.current = sourceMode
+
+    if (previousSourceMode === null || previousSourceMode === sourceMode) {
+      return
+    }
+
     setExpandedNodes(new Map())
     setSelectedId(null)
     setPendingSelectedEntityGuid(null)
-    onSelectedEntityGuidChange?.(null)
+    if (!scopeIsDatabase) {
+      onSelectedEntityGuidChange?.(null)
+    }
     void setRouteState({
       selectedEntityId: null,
       selectedResourceTypePath: null,
     })
-  }, [onSelectedEntityGuidChange, setRouteState, sourceMode])
+  }, [
+    onSelectedEntityGuidChange,
+    scopeIsDatabase,
+    setRouteState,
+    sourceMode,
+  ])
 
   useEffect(() => {
     if (!selectedId) return
@@ -774,13 +800,13 @@ export function ExplorerWorkspace({
 
   const handleCameraStateChange = useCallback(
     (camera: { x: number; y: number; zoom: number }) => {
-      void setRouteState({
-        viewportX: Number(camera.x.toFixed(3)),
-        viewportY: Number(camera.y.toFixed(3)),
-        viewportZoom: Number(camera.zoom.toFixed(4)),
+      setCameraState({
+        x: Number(camera.x.toFixed(3)),
+        y: Number(camera.y.toFixed(3)),
+        zoom: Number(camera.zoom.toFixed(4)),
       })
     },
-    [setRouteState],
+    [],
   )
 
   // Handle entity selection from tree
@@ -1082,7 +1108,9 @@ export function ExplorerWorkspace({
               onAddClientTab={handleAddClientTab}
               showDataSourceTabs={!scopeIsDatabase}
               showDatabaseTab={false}
-            />
+            >
+              {toolbarContent}
+            </Toolbar>
           }
           sidebar={
             <Panel>
@@ -1171,7 +1199,7 @@ export function ExplorerWorkspace({
             centerOnPosition={centerOnPosition}
             centerOnRequestSeq={centerRequest.seq}
             selectedPlayerVisibilityOverlay={selectedPlayerVisibilityOverlay}
-            cameraState={routeCameraState}
+            cameraState={cameraState}
             onCameraStateChange={handleCameraStateChange}
             onContextMenuRequest={handleOpenContextMenu}
           />

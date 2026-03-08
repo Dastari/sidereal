@@ -1,4 +1,5 @@
 use anyhow::Context;
+use sidereal_core::logging::{RunLogFile, prepare_timestamped_log_file};
 use sidereal_gateway::api::app_with_service;
 use sidereal_gateway::auth::{
     AuthConfig, AuthService, BootstrapDispatcher, DirectBootstrapDispatcher, PostgresAuthStore,
@@ -7,13 +8,23 @@ use sidereal_gateway::auth::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{Level, info};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let RunLogFile {
+        file: log_file,
+        path: log_path,
+    } = prepare_timestamped_log_file("sidereal-gateway")
+        .context("failed to create gateway log file")?;
     let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new("info,postgres::config=warn"))
         .with_max_level(Level::INFO)
         .with_target(true)
+        .with_writer(std::io::stderr.and(log_file))
         .try_init();
+    info!("sidereal-gateway tracing log file: {}", log_path.display());
     let config = AuthConfig::from_env().context("invalid auth configuration")?;
     let database_url = std::env::var("GATEWAY_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());

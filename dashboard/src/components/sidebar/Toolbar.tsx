@@ -1,4 +1,5 @@
 import { Plus } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
@@ -25,6 +26,7 @@ interface ToolbarProps {
   onAddClientTab: () => void
   showDataSourceTabs?: boolean
   showDatabaseTab?: boolean
+  children?: ReactNode
 }
 
 export function Toolbar({
@@ -36,14 +38,19 @@ export function Toolbar({
   onAddClientTab,
   showDataSourceTabs = true,
   showDatabaseTab = true,
+  children,
 }: ToolbarProps) {
+  if (!showDataSourceTabs && !children) {
+    return null
+  }
+
   const tabValue =
     showDatabaseTab && sourceMode === 'database'
       ? 'database'
       : `live:${activeBrpTabId}`
 
   return (
-    <div className="flex items-center gap-1 px-4 py-2 bg-background">
+    <div className="flex flex-wrap items-center gap-2 bg-background px-4 py-2">
       {showDataSourceTabs ? (
         <>
           <Tabs
@@ -96,6 +103,7 @@ export function Toolbar({
           </Tabs>
         </>
       ) : null}
+      {children}
     </div>
   )
 }

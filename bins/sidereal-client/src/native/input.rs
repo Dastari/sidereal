@@ -363,8 +363,10 @@ pub fn enforce_single_input_marker_owner(
 
     for (entity, controlled) in &input_marked_entities {
         let keep = Some(entity) == target_entity
-            && controlled
-                .is_some_and(|controlled| controlled.player_entity_id == *player_entity_id);
+            && controlled.is_none_or(|controlled| {
+                ids_refer_to_same_guid(&controlled.player_entity_id, player_entity_id)
+                    || controlled.player_entity_id == *player_entity_id
+            });
         if keep {
             continue;
         }

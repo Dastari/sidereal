@@ -3,6 +3,7 @@ import {
   Database,
   FileCode2,
   Gauge,
+  Gamepad2,
   Orbit,
   Settings,
   Sparkles,
@@ -18,14 +19,14 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
-type ToolNavItem = {
+export type ToolNavItem = {
   to: string
   label: string
   description: string
   icon: ComponentType<{ className?: string }>
 }
 
-const toolNavItems: Array<ToolNavItem> = [
+export const toolNavItems: Array<ToolNavItem> = [
   {
     to: '/',
     label: 'Dashboard',
@@ -43,6 +44,12 @@ const toolNavItems: Array<ToolNavItem> = [
     label: 'Game World',
     description: 'Live BRP entity explorer, spawning, and diagnostics.',
     icon: Orbit,
+  },
+  {
+    to: '/game-client',
+    label: 'Game Client',
+    description: 'Dashboard host surface for the browser WASM client runtime.',
+    icon: Gamepad2,
   },
   {
     to: '/shader-workshop',
@@ -64,7 +71,7 @@ const toolNavItems: Array<ToolNavItem> = [
   },
 ]
 
-function getActiveTool(pathname: string): ToolNavItem {
+export function getActiveTool(pathname: string): ToolNavItem {
   return (
     toolNavItems.find((item) =>
       item.to === '/'

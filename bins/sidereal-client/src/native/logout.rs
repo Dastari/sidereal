@@ -6,6 +6,7 @@
 //! avoids dropping the notify in same-frame disconnect races.
 
 use bevy::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::window::WindowCloseRequested;
 use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected, Disconnect, RawClient};

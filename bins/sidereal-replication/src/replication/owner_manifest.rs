@@ -1,7 +1,7 @@
 use avian2d::prelude::Position;
 use bevy::prelude::*;
 use lightyear::prelude::client::Connected;
-use lightyear::prelude::server::{ClientOf, RawServer};
+use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{NetworkTarget, RemoteId, Server, ServerMultiMessageSender};
 use sidereal_game::{
     ControlledEntityGuid, DisplayName, EntityGuid, EntityLabels, HealthPool, OwnerId, PlayerTag,
@@ -72,14 +72,25 @@ fn compute_manifest_diff(
     (upserts, removals)
 }
 
+fn owned_asset_changed(previous: &OwnedAssetEntry, current: &OwnedAssetEntry) -> bool {
+    previous.entity_id != current.entity_id
+        || previous.display_name != current.display_name
+        || previous.kind != current.kind
+        || previous.status != current.status
+        || previous.controlled_by_owner != current.controlled_by_owner
+        || previous.last_known_position_xy != current.last_known_position_xy
+        || previous.health_ratio != current.health_ratio
+        || previous.fuel_ratio != current.fuel_ratio
+}
+
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn stream_owner_asset_manifest_messages(
-    server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
+    server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<Connected>>,
     time: Res<'_, Time<Real>>,
     bindings: Res<'_, AuthenticatedClientBindings>,
-    client_remotes: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
+    client_remotes: Query<'_, '_, (&'_ LinkOf, &'_ RemoteId), With<ClientOf>>,
     mut stream_state: ResMut<'_, OwnerManifestStreamState>,
     player_controlled: Query<
         '_,
@@ -101,9 +112,6 @@ pub fn stream_owner_asset_manifest_messages(
         ),
     >,
 ) {
-    let Ok(server) = server_query.single() else {
-        return;
-    };
     let now_s = time.elapsed_secs_f64();
     stream_state.tick = stream_state.tick.saturating_add(1);
     let generated_at_tick = stream_state.tick;
@@ -163,12 +171,15 @@ pub fn stream_owner_asset_manifest_messages(
         else {
             continue;
         };
-        let Ok(remote_id) = client_remotes.get(*client_entity) else {
+        let Ok((link_of, remote_id)) = client_remotes.get(*client_entity) else {
+            continue;
+        };
+        let Ok(server) = server_query.get(link_of.server) else {
             continue;
         };
         active_players.insert(player_entity_id.clone());
 
-        let current_assets = assets_by_owner
+        let mut current_assets = assets_by_owner
             .remove(player_entity_id.as_str())
             .unwrap_or_default();
         let target = NetworkTarget::Single(remote_id.0);
@@ -187,6 +198,14 @@ pub fn stream_owner_asset_manifest_messages(
                 .by_player_entity_id
                 .entry(player_entity_id.clone())
                 .or_default();
+
+            for (entity_id, current) in &mut current_assets {
+                if let Some(previous) = state.assets_by_entity_id.get(entity_id)
+                    && !owned_asset_changed(previous, current)
+                {
+                    current.updated_at_tick = previous.updated_at_tick;
+                }
+            }
 
             if state.sequence == 0 {
                 state.sequence = 1;
@@ -256,7 +275,7 @@ pub fn stream_owner_asset_manifest_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::compute_manifest_diff;
+    use super::{compute_manifest_diff, owned_asset_changed};
     use sidereal_net::OwnedAssetEntry;
     use std::collections::HashMap;
 
@@ -289,5 +308,14 @@ mod tests {
         assert_eq!(upserts[0].entity_id, "a");
         assert_eq!(upserts[1].entity_id, "c");
         assert_eq!(removals, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn manifest_change_detection_ignores_updated_at_tick_churn() {
+        let previous = entry("a", "A");
+        let mut current = previous.clone();
+        current.updated_at_tick = 99;
+
+        assert!(!owned_asset_changed(&previous, &current));
     }
 }

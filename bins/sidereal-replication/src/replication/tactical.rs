@@ -3,7 +3,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use bevy::prelude::*;
 use lightyear::prelude::client::Connected;
-use lightyear::prelude::server::{ClientOf, RawServer};
+use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
     NetworkTarget, RemoteId, ReplicationState, Server, ServerMultiMessageSender,
 };
@@ -487,12 +487,12 @@ fn compute_contacts_delta(
 #[allow(clippy::too_many_arguments)]
 pub fn stream_tactical_snapshot_messages(
     mut commands: Commands<'_, '_>,
-    server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
+    server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<Connected>>,
     time: Res<'_, Time<Real>>,
     mut stream_state: ResMut<'_, TacticalStreamState>,
     bindings: Res<'_, AuthenticatedClientBindings>,
-    client_remotes: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
+    client_remotes: Query<'_, '_, (&'_ LinkOf, &'_ RemoteId), With<ClientOf>>,
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
     mut player_visibility: Query<
         '_,
@@ -521,9 +521,6 @@ pub fn stream_tactical_snapshot_messages(
         ),
     >,
 ) {
-    let Ok(server) = server_query.single() else {
-        return;
-    };
     stream_state.tick = stream_state.tick.saturating_add(1);
     let generated_at_tick = stream_state.tick;
     let now_s = time.elapsed_secs_f64();
@@ -534,7 +531,10 @@ pub fn stream_tactical_snapshot_messages(
         else {
             continue;
         };
-        let Ok(remote_id) = client_remotes.get(*client_entity) else {
+        let Ok((link_of, remote_id)) = client_remotes.get(*client_entity) else {
+            continue;
+        };
+        let Ok(server) = server_query.get(link_of.server) else {
             continue;
         };
         let Some(&player_entity) = player_entities

@@ -1,4 +1,9 @@
 /target/
 /data/postgresql/
+/data/cache_stream/
+/dashboard/public/wasm/
 /data/debug
+/target-codex-dashboard
+/target-codex-validate
+/logs
 

@@ -66,6 +66,13 @@ Render composition note:
 - Tactical map default icon fallback is now authored through replicated `TacticalPresentationDefaults` data rather than a hardcoded `"map_icon_ship_svg"` client constant.
 - Background shader invariant: fullscreen background layers must always render when enabled and must not rely on normal world-space culling/visibility heuristics.
 
+Implementation update (2026-03-08):
+- The client no longer installs a hardcoded table of concrete authored shader asset IDs on startup.
+- Rust now owns fixed shader handle slots and family/material ABI only; active `shader_asset_id` values are assigned from replicated/authored runtime data (fullscreen layer definitions, world visual usage, and tactical UI settings) before streamed shader reload.
+- The previous live mismatch `sprite_pixel_shader_wgsl` vs `sprite_pixel_effect_wgsl` is removed from the active client path.
+- Space background flare texture selection now uses authored `flare_texture_asset_id` data instead of a Rust-side `flare_texture_set -> asset_id` map in the active backdrop path.
+- Generated asset catalog entries now also carry optional `shader_family` metadata so the client can bind remaining family slots, including the generic runtime effect family, without falling back to exact asset-ID literals.
+
 ## 3. Architecture Contract
 
 ### 3.1 Authority and scripting boundary

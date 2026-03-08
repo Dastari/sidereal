@@ -5,7 +5,6 @@ use bevy::prelude::App;
 use core::time::Duration;
 use lightyear::prediction::prelude::PredictionRegistrationExt;
 use lightyear::prelude::InterpolationRegistrationExt;
-use lightyear::prelude::input::native::InputPlugin as NativeInputPlugin;
 use lightyear::prelude::{
     AppChannelExt, AppComponentExt, AppMessageExt, ChannelMode, ChannelSettings, NetworkDirection,
     ReliableSettings,
@@ -15,7 +14,7 @@ use sidereal_game::component_meta::SiderealComponentRegistration;
 use super::{
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
     ClientLocalViewModeMessage, ClientRealtimeInputMessage, ClientTacticalResnapshotRequestMessage,
-    ControlChannel, InputChannel, ManifestChannel, PlayerInput, ServerControlAckMessage,
+    ControlChannel, InputChannel, ManifestChannel, ServerControlAckMessage,
     ServerControlRejectMessage, ServerOwnerAssetManifestDeltaMessage,
     ServerOwnerAssetManifestSnapshotMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
     ServerTacticalContactsDeltaMessage, ServerTacticalContactsSnapshotMessage,
@@ -61,13 +60,11 @@ fn angular_velocity_should_rollback(this: &AngularVelocity, that: &AngularVeloci
 
 pub fn register_lightyear_client_protocol(app: &mut App) {
     register_lightyear_common_protocol(app);
-    app.add_plugins(NativeInputPlugin::<PlayerInput>::default());
     register_lightyear_replication_components(app, LightyearRuntime::Client);
 }
 
 pub fn register_lightyear_server_protocol(app: &mut App) {
     register_lightyear_common_protocol(app);
-    app.add_plugins(NativeInputPlugin::<PlayerInput>::default());
     register_lightyear_replication_components(app, LightyearRuntime::Server);
 }
 
@@ -136,7 +133,7 @@ fn register_lightyear_common_protocol(app: &mut App) {
     .add_direction(NetworkDirection::Bidirectional);
 
     app.add_channel::<ManifestChannel>(ChannelSettings {
-        mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
+        mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
         send_frequency: Duration::default(),
         priority: 6.0,
     })

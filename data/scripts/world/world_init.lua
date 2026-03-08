@@ -14,6 +14,7 @@ WorldInit.world_defaults = {
       shader_asset_id = "starfield_wgsl",
       order = -190,
       labels = { "Entity", "RenderLayerDefinition", "StarfieldLayer" },
+      entity_labels = { "RenderLayerDefinition", "StarfieldLayer", "StarField" },
     },
     {
       entity_id = "0012ebad-0000-0000-0000-000000000002",
@@ -24,6 +25,7 @@ WorldInit.world_defaults = {
       shader_asset_id = "space_background_base_wgsl",
       order = -200,
       labels = { "Entity", "RenderLayerDefinition", "SpaceBackgroundLayer", "SpaceBackgroundBaseLayer" },
+      entity_labels = { "RenderLayerDefinition", "SpaceBackgroundLayer", "SpaceBackgroundBaseLayer", "SpaceBackgroundBase" },
     },
     {
       entity_id = "0012ebad-0000-0000-0000-000000000014",
@@ -34,6 +36,7 @@ WorldInit.world_defaults = {
       shader_asset_id = "space_background_nebula_wgsl",
       order = -195,
       labels = { "Entity", "RenderLayerDefinition", "SpaceBackgroundLayer", "SpaceBackgroundNebulaLayer" },
+      entity_labels = { "RenderLayerDefinition", "SpaceBackgroundLayer", "SpaceBackgroundNebulaLayer", "SpaceBackgroundNebula" },
     },
     {
       entity_id = "0012ebad-0000-0000-0000-000000000003",
@@ -77,6 +80,7 @@ WorldInit.world_defaults = {
   tactical_presentation_defaults = {
     entity_id = "0012ebad-0000-0000-0000-000000000013",
     display_name = "Tactical Presentation Defaults",
+    entity_labels = { "TacticalPresentationDefaults", "PresentationDefaults", "TacticalPresentation" },
     default_map_icon_asset_id = "map_icon_ship_svg",
     icon_bindings_by_kind = {
       { kind = "ship", asset_id = "map_icon_ship_svg" },
@@ -302,6 +306,7 @@ local function build_tactical_presentation_defaults_records()
       properties = {},
       components = {
         component(defaults.entity_id, "display_name", defaults.display_name or "Tactical Presentation Defaults"),
+        component(defaults.entity_id, "entity_labels", defaults.entity_labels or { "TacticalPresentationDefaults", "PresentationDefaults" }),
         component(defaults.entity_id, "owner_id", "world:system"),
         component(defaults.entity_id, "tactical_presentation_defaults", {
           default_map_icon_asset_id = defaults.default_map_icon_asset_id,
@@ -331,6 +336,10 @@ function WorldInit.build_graph_records(ctx)
     })
     if layer.labels ~= nil then
       record.labels = layer.labels
+    end
+    if layer.entity_labels ~= nil then
+      record.components[#record.components + 1] =
+        component(record.entity_id, "entity_labels", layer.entity_labels)
     end
     records[#records + 1] = record
     layer_by_id[layer.layer_id] = record
@@ -377,6 +386,7 @@ function WorldInit.build_graph_records(ctx)
           flare_intensity = 0.42,
           flare_density = 0.54,
           flare_size = 2.29,
+          flare_texture_asset_id = "space_bg_flare_white_png",
           flare_texture_set = 0,
           nebula_noise_mode = 0,
           nebula_octaves = 5,
@@ -456,6 +466,7 @@ function WorldInit.build_graph_records(ctx)
           flare_intensity = 0.42,
           flare_density = 0.54,
           flare_size = 2.29,
+          flare_texture_asset_id = "space_bg_flare_white_png",
           flare_texture_set = 0,
           nebula_noise_mode = 0,
           nebula_octaves = 5,

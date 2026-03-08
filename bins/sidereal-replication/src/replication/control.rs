@@ -1,7 +1,6 @@
 use bevy::log::{info, warn};
 use bevy::prelude::*;
-use lightyear::prelude::server::ClientOf;
-use lightyear::prelude::server::RawServer;
+use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
     ControlledBy, InterpolationTarget, MessageReceiver, NetworkTarget, PredictionTarget, RemoteId,
     Replicate, Server, ServerMultiMessageSender,
@@ -87,7 +86,7 @@ fn neutralize_control_intent_on_handoff(
 #[allow(clippy::too_many_arguments)]
 pub fn receive_client_control_requests(
     mut commands: Commands<'_, '_>,
-    server_query: Query<'_, '_, &'_ Server, With<RawServer>>,
+    server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     time: Res<'_, Time<Real>>,
     mut last_activity: ResMut<'_, crate::replication::lifecycle::ClientLastActivity>,
@@ -96,6 +95,7 @@ pub fn receive_client_control_requests(
         '_,
         (
             Entity,
+            &'_ LinkOf,
             &'_ RemoteId,
             &'_ mut MessageReceiver<ClientControlRequestMessage>,
         ),
@@ -121,11 +121,15 @@ pub fn receive_client_control_requests(
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
     mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
 ) {
-    let Ok(server) = server_query.single() else {
-        return;
-    };
     let now_s = time.elapsed_secs_f64();
-    for (client_entity, remote_id, mut receiver) in &mut receivers {
+    for (client_entity, link_of, remote_id, mut receiver) in &mut receivers {
+        let Ok(server) = server_query.get(link_of.server) else {
+            warn!(
+                "replication control: missing server entity for client {:?} remote {:?}",
+                client_entity, remote_id.0
+            );
+            continue;
+        };
         for message in receiver.receive() {
             last_activity.0.insert(client_entity, now_s);
             let target = NetworkTarget::Single(remote_id.0);

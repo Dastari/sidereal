@@ -39,6 +39,66 @@ export function useDatabaseAdminData() {
     }
   }, [])
 
+  const requestPasswordReset = useCallback(async (accountId: string) => {
+    const response = await fetch(
+      `/api/database/accounts/${encodeURIComponent(accountId)}/password-reset`,
+      { method: 'POST' },
+    )
+    const payload = (await response.json().catch(() => ({}))) as {
+      accepted?: unknown
+      resetToken?: unknown
+      error?: unknown
+    }
+    if (!response.ok) {
+      throw new Error(
+        typeof payload.error === 'string'
+          ? payload.error
+          : 'Failed to request password reset',
+      )
+    }
+    return {
+      accepted: payload.accepted === true,
+      resetToken:
+        typeof payload.resetToken === 'string' ? payload.resetToken : null,
+    }
+  }, [])
+
+  const renameCharacter = useCallback(
+    async (playerEntityId: string, displayName: string) => {
+      const response = await fetch(
+        `/api/database/characters/${encodeURIComponent(playerEntityId)}/display-name`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ displayName }),
+        },
+      )
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: unknown
+      }
+      if (!response.ok) {
+        throw new Error(
+          typeof payload.error === 'string'
+            ? payload.error
+            : 'Failed to rename character',
+        )
+      }
+
+      setData((current) => ({
+        ...current,
+        accounts: current.accounts.map((account) => ({
+          ...account,
+          characters: account.characters.map((character) =>
+            character.playerEntityId === playerEntityId
+              ? { ...character, displayName }
+              : character,
+          ),
+        })),
+      }))
+    },
+    [],
+  )
+
   useEffect(() => {
     void refresh()
   }, [refresh])
@@ -48,5 +108,7 @@ export function useDatabaseAdminData() {
     loading,
     error,
     refresh,
+    requestPasswordReset,
+    renameCharacter,
   }
 }

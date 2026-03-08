@@ -1,4 +1,4 @@
-type PgClient = {
+export type PgClient = {
   query: (sql: string, params?: Array<unknown>) => Promise<{ rows: Array<any> }>
   release: () => void
 }

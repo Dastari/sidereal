@@ -674,6 +674,7 @@ pub(crate) fn sync_controlled_entity_tags_system(
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
+    let local_player_wire_id = local_player_entity_id.clone();
     let local_player_runtime_id = runtime_entity_id_from_guid(
         &entity_registry,
         local_player_entity_id,
@@ -721,10 +722,10 @@ pub(crate) fn sync_controlled_entity_tags_system(
     for (entity, controlled) in &controlled_query {
         if Some(entity) != target_entity {
             commands.entity(entity).remove::<ControlledEntity>();
-        } else if controlled.player_entity_id != local_player_runtime_id {
+        } else if controlled.player_entity_id != local_player_wire_id {
             commands.entity(entity).insert(ControlledEntity {
                 entity_id: controlled.entity_id.clone(),
-                player_entity_id: local_player_runtime_id.clone(),
+                player_entity_id: local_player_wire_id.clone(),
             });
         }
     }
@@ -738,7 +739,7 @@ pub(crate) fn sync_controlled_entity_tags_system(
         commands.entity(entity).insert((
             ControlledEntity {
                 entity_id: target_entity_id.clone().unwrap_or_default(),
-                player_entity_id: local_player_runtime_id,
+                player_entity_id: local_player_wire_id,
             },
             SimulationMotionWriter,
         ));

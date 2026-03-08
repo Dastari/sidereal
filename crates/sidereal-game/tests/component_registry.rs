@@ -82,19 +82,28 @@ fn generated_registry_resource_infers_editor_schema() {
         .iter()
         .find(|field| field.field_path == "seed")
         .expect("seed field should be inferred");
-    assert_eq!(seed_field.value_kind, ComponentEditorValueKind::UnsignedInteger);
+    assert_eq!(
+        seed_field.value_kind,
+        ComponentEditorValueKind::UnsignedInteger
+    );
     let sun_direction_field = mapping
         .editor_schema
         .fields
         .iter()
         .find(|field| field.field_path == "sun_direction_xy")
         .expect("sun_direction_xy field should be inferred");
-    assert_eq!(sun_direction_field.value_kind, ComponentEditorValueKind::Vec2);
+    assert_eq!(
+        sun_direction_field.value_kind,
+        ComponentEditorValueKind::Vec2
+    );
     let primary_color_field = mapping
         .editor_schema
         .fields
         .iter()
         .find(|field| field.field_path == "color_primary_rgb")
         .expect("color_primary_rgb field should be inferred");
-    assert_eq!(primary_color_field.value_kind, ComponentEditorValueKind::ColorRgb);
+    assert_eq!(
+        primary_color_field.value_kind,
+        ComponentEditorValueKind::ColorRgb
+    );
 }

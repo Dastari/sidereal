@@ -152,12 +152,39 @@ local ENVIRONMENT_LIGHTING_REQUIRED_COMPONENT_KINDS = {
   C.EnvironmentLightingState,
 }
 
+local PLAYER_REQUIRED_COMPONENT_KINDS = {
+  C.DisplayName,
+  C.PlayerTag,
+  C.AccountId,
+  C.ControlledEntityGuid,
+  C.EntityLabels,
+  C.ActionCapabilities,
+  C.CharacterMovementController,
+  C.ActionQueue,
+  C.OwnerId,
+  C.AvianPosition,
+  C.AvianRotation,
+  C.AvianLinearVelocity,
+  C.AvianRigidBody,
+  C.AvianMass,
+  C.AvianAngularInertia,
+  C.AvianLinearDamping,
+  C.AvianAngularDamping,
+  "tactical_map_ui_settings",
+}
+
 BundleRegistry.bundle_classes = {
+  player = { "player.default" },
   ship = { "ship.corvette", "ship.rocinante" },
   world = { "asteroid.field_member", "planet.body", "environment.lighting" },
 }
 
 BundleRegistry.bundles = {
+  ["player.default"] = {
+    bundle_class = "player",
+    graph_records_script = "bundles/starter/player.lua",
+    required_component_kinds = PLAYER_REQUIRED_COMPONENT_KINDS,
+  },
   ["ship.corvette"] = {
     bundle_class = "ship",
     graph_records_script = "bundles/ship/corvette.lua",

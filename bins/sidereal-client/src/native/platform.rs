@@ -1,19 +1,24 @@
 //! Platform and render config: constants, wgpu, viewport.
 
 use bevy::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::render::settings::{Backends, WgpuSettings};
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 
 pub const BACKDROP_RENDER_LAYER: usize = 1;
 pub const PLANET_BODY_RENDER_LAYER: usize = 2;
 pub const FULLSCREEN_FOREGROUND_RENDER_LAYER: usize = 3;
 pub const POST_PROCESS_RENDER_LAYER: usize = 4;
+pub const DEBUG_OVERLAY_RENDER_LAYER: usize = 30;
 pub const UI_OVERLAY_RENDER_LAYER: usize = 31;
 pub const ORTHO_SCALE_PER_DISTANCE: f32 = 0.02;
 /// Not used when UI overlay uses true screen space (scale derived from window height).
 #[allow(dead_code)]
 pub const UI_OVERLAY_ORTHO_SCALE: f32 = 0.6;
+#[cfg(not(target_arch = "wasm32"))]
 pub const MIN_WINDOW_WIDTH: f32 = 960.0;
+#[cfg(not(target_arch = "wasm32"))]
 pub const MIN_WINDOW_HEIGHT: f32 = 540.0;
 
 pub fn safe_viewport_size(window: &bevy::window::Window) -> Option<Vec2> {
@@ -34,6 +39,7 @@ pub fn safe_render_target_size(window: &bevy::window::Window) -> Option<Vec2> {
     Some(Vec2::new(width, height))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn preferred_backends() -> Backends {
     if let Ok(raw_value) = std::env::var("SIDEREAL_CLIENT_WGPU_BACKENDS") {
         let parsed = Backends::from_comma_list(&raw_value);
@@ -58,6 +64,7 @@ pub fn preferred_backends() -> Backends {
     Backends::PRIMARY
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_wsl_runtime() -> bool {
     let osrelease = fs::read_to_string("/proc/sys/kernel/osrelease")
         .or_else(|_| fs::read_to_string("/proc/version"))
@@ -66,6 +73,7 @@ fn is_wsl_runtime() -> bool {
     lowered.contains("microsoft") || lowered.contains("wsl")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn configured_wgpu_settings() -> WgpuSettings {
     let force_fallback_adapter = match std::env::var("SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER") {
         Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => true,

@@ -1,10 +1,12 @@
 use crate::auth::{
     AuthConfig, AuthError, AuthService, InMemoryAuthStore, NoopBootstrapDispatcher,
-    NoopStarterWorldPersister,
+    NoopStarterWorldPersister, ScriptCatalogResource, current_script_catalog, scripts_root_dir,
 };
 use axum::extract::Path;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use axum::http::HeaderValue;
+use axum::http::Method;
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
@@ -12,7 +14,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use sidereal_asset_runtime::{
-    RuntimeAssetCatalogEntry, build_runtime_asset_catalog, materialize_runtime_asset,
+    RuntimeAssetCatalogEntry, build_runtime_asset_catalog, catalog_version, expand_required_assets,
+    materialize_runtime_asset,
 };
 use sidereal_core::gateway_dtos::{
     AdminSpawnEntityRequest, AdminSpawnEntityResponse, AssetBootstrapManifestEntry,
@@ -20,16 +23,28 @@ use sidereal_core::gateway_dtos::{
     DiscardScriptDraftResponse, EnterWorldRequest, EnterWorldResponse, ListScriptsResponse,
     LoginRequest, MeResponse, PasswordResetConfirmRequest, PasswordResetConfirmResponse,
     PasswordResetRequest, PasswordResetResponse, PublishScriptResponse, RefreshRequest,
-    RegisterRequest, ReloadScriptsFromDiskResponse, SaveScriptDraftRequest,
-    SaveScriptDraftResponse, ScriptCatalogDocumentDetailDto,
+    RegisterRequest, ReloadScriptsFromDiskResponse, ReplicationTransportConfig,
+    SaveScriptDraftRequest, SaveScriptDraftResponse, ScriptCatalogDocumentDetailDto,
 };
-use sidereal_scripting::{load_asset_registry_from_root, resolve_scripts_root};
-use std::path::PathBuf;
-use std::sync::Arc;
+use sidereal_scripting::load_asset_registry_from_source;
+use std::path::{Path as FsPath, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio_util::io::ReaderStream;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info, warn};
 
 pub type SharedAuthService = Arc<AuthService>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct RuntimeAssetCatalogCacheState {
+    scripts_root: String,
+    asset_root: String,
+    asset_registry_revision: u64,
+    catalog: Vec<RuntimeAssetCatalogEntry>,
+}
+
+static RUNTIME_ASSET_CATALOG_CACHE: OnceLock<Mutex<RuntimeAssetCatalogCacheState>> =
+    OnceLock::new();
 
 pub fn app(config: AuthConfig) -> Router {
     let service = Arc::new(AuthService::new_with_persister(
@@ -73,7 +88,52 @@ pub fn app_with_service(service: SharedAuthService) -> Router {
         )
         .route("/assets/bootstrap-manifest", get(asset_bootstrap_manifest))
         .route("/assets/{asset_guid}", get(fetch_asset_by_guid))
+        .layer(browser_cors_layer())
         .with_state(service)
+}
+
+fn browser_cors_layer() -> CorsLayer {
+    let allowed_origins = allowed_browser_origins();
+    if allowed_origins.is_empty() {
+        return CorsLayer::new();
+    }
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+}
+
+fn allowed_browser_origins() -> Vec<HeaderValue> {
+    let configured = std::env::var("GATEWAY_ALLOWED_ORIGINS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|origin| !origin.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                "http://localhost:3000".to_string(),
+                "http://127.0.0.1:3000".to_string(),
+            ]
+        });
+
+    configured
+        .into_iter()
+        .filter_map(|origin| match HeaderValue::from_str(&origin) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                warn!(
+                    "ignoring invalid GATEWAY_ALLOWED_ORIGINS entry origin={} err={}",
+                    origin, err
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 async fn health() -> StatusCode {
@@ -170,7 +230,26 @@ async fn enter_world(
     service
         .enter_world(access_token, &req.player_entity_id)
         .await?;
-    Ok(Json(EnterWorldResponse { accepted: true }))
+    Ok(Json(EnterWorldResponse {
+        accepted: true,
+        replication_transport: replication_transport_config_from_env(),
+    }))
+}
+
+fn replication_transport_config_from_env() -> ReplicationTransportConfig {
+    let udp_addr = std::env::var("REPLICATION_UDP_PUBLIC_ADDR")
+        .ok()
+        .or_else(|| std::env::var("REPLICATION_UDP_BIND").ok());
+    let webtransport_addr = std::env::var("REPLICATION_WEBTRANSPORT_PUBLIC_ADDR")
+        .ok()
+        .or_else(|| std::env::var("REPLICATION_WEBTRANSPORT_BIND").ok());
+    let webtransport_certificate_sha256 =
+        std::env::var("REPLICATION_WEBTRANSPORT_CERT_SHA256").ok();
+    ReplicationTransportConfig {
+        udp_addr,
+        webtransport_addr,
+        webtransport_certificate_sha256,
+    }
 }
 
 async fn admin_spawn_entity(
@@ -282,17 +361,24 @@ async fn asset_bootstrap_manifest(
 ) -> Result<Json<AssetBootstrapManifestResponse>, ApiError> {
     let access_token = extract_bearer_token(&headers)?;
     let _ = service.me(access_token).await?;
-    let catalog = load_runtime_asset_catalog()?;
+    let catalog = load_runtime_asset_catalog_async().await?;
     let required_ids = catalog
         .iter()
         .filter(|entry| entry.bootstrap_required)
-        .map(|entry| entry.asset_id.as_str())
+        .map(|entry| entry.asset_id.clone())
         .collect::<std::collections::HashSet<_>>();
+    let dependencies_by_asset_id = catalog
+        .iter()
+        .map(|entry| (entry.asset_id.clone(), entry.dependencies.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let required_ids = expand_required_assets(&required_ids, &dependencies_by_asset_id);
     let mut catalog_entries = catalog
         .iter()
         .map(|entry| AssetBootstrapManifestEntry {
             asset_id: entry.asset_id.clone(),
             asset_guid: entry.asset_guid.clone(),
+            shader_family: entry.shader_family.clone(),
+            dependencies: entry.dependencies.clone(),
             sha256_hex: entry.sha256_hex.clone(),
             relative_cache_path: entry.relative_cache_path.clone(),
             content_type: entry.content_type.clone(),
@@ -303,11 +389,11 @@ async fn asset_bootstrap_manifest(
     catalog_entries.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
     let required_assets = catalog_entries
         .iter()
-        .filter(|entry| required_ids.contains(entry.asset_id.as_str()))
+        .filter(|entry| required_ids.contains(&entry.asset_id))
         .cloned()
         .collect::<Vec<_>>();
     Ok(Json(AssetBootstrapManifestResponse {
-        catalog_version: "lua-registry-v1".to_string(),
+        catalog_version: catalog_version(&catalog),
         required_assets,
         catalog: catalog_entries,
     }))
@@ -321,7 +407,7 @@ async fn fetch_asset_by_guid(
     let access_token = extract_bearer_token(&headers)?;
     let _ = service.me(access_token).await?;
 
-    let catalog = load_runtime_asset_catalog()?;
+    let catalog = load_runtime_asset_catalog_async().await?;
     let Some(entry) = catalog.iter().find(|entry| entry.asset_guid == asset_guid) else {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown asset_guid"));
     };
@@ -457,36 +543,187 @@ fn asset_root_dir() -> PathBuf {
     PathBuf::from(std::env::var("ASSET_ROOT").unwrap_or_else(|_| "./data".to_string()))
 }
 
-fn scripts_root_dir() -> PathBuf {
-    resolve_scripts_root(env!("CARGO_MANIFEST_DIR"))
+async fn load_runtime_asset_catalog_async() -> Result<Vec<RuntimeAssetCatalogEntry>, ApiError> {
+    tokio::task::spawn_blocking(load_runtime_asset_catalog)
+        .await
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("runtime asset catalog task failed: {err}"),
+            )
+        })?
 }
 
 fn load_runtime_asset_catalog() -> Result<Vec<RuntimeAssetCatalogEntry>, ApiError> {
-    let registry_assets = load_registry_assets()?;
     let asset_root = asset_root_dir();
-    build_runtime_asset_catalog(asset_root.as_path(), &registry_assets).map_err(|err| {
+    let scripts_root = scripts_root_dir();
+    let script_catalog = current_script_catalog(&scripts_root)?;
+    let cache = RUNTIME_ASSET_CATALOG_CACHE
+        .get_or_init(|| Mutex::new(RuntimeAssetCatalogCacheState::default()));
+    let mut guard = cache.lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "runtime asset catalog cache lock poisoned",
+        )
+    })?;
+    load_runtime_asset_catalog_from_catalog(&script_catalog, asset_root.as_path(), &mut guard)
+}
+
+fn load_runtime_asset_catalog_from_catalog(
+    script_catalog: &ScriptCatalogResource,
+    asset_root: &FsPath,
+    cache_state: &mut RuntimeAssetCatalogCacheState,
+) -> Result<Vec<RuntimeAssetCatalogEntry>, ApiError> {
+    let registry_entry = script_catalog
+        .entries
+        .iter()
+        .find(|entry| entry.script_path == "assets/registry.lua")
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "script catalog missing assets/registry.lua for root {}",
+                    script_catalog.root_dir
+                ),
+            )
+        })?;
+    let scripts_root = script_catalog.root_dir.clone();
+    let asset_root_display = asset_root.display().to_string();
+    if cache_state.scripts_root == scripts_root
+        && cache_state.asset_root == asset_root_display
+        && cache_state.asset_registry_revision == registry_entry.revision
+    {
+        return Ok(cache_state.catalog.clone());
+    }
+
+    let runtime_catalog =
+        build_runtime_asset_catalog_from_registry_source(&registry_entry.source, asset_root)?;
+    *cache_state = RuntimeAssetCatalogCacheState {
+        scripts_root,
+        asset_root: asset_root_display,
+        asset_registry_revision: registry_entry.revision,
+        catalog: runtime_catalog.clone(),
+    };
+    Ok(runtime_catalog)
+}
+
+fn build_runtime_asset_catalog_from_registry_source(
+    registry_source: &str,
+    asset_root: &FsPath,
+) -> Result<Vec<RuntimeAssetCatalogEntry>, ApiError> {
+    let registry =
+        load_asset_registry_from_source(registry_source, FsPath::new("assets/registry.lua"))
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to load active lua asset registry: {err}"),
+                )
+            })?;
+    build_runtime_asset_catalog(asset_root, &registry.assets).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!(
                 "failed building runtime asset catalog from {}: {}",
                 asset_root.display(),
-                err
+                err,
             ),
         )
     })
 }
 
-fn load_registry_assets() -> Result<Vec<sidereal_scripting::ScriptAssetRegistryEntry>, ApiError> {
-    let scripts_root = scripts_root_dir();
-    let registry = load_asset_registry_from_root(&scripts_root).map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!(
-                "failed to load lua asset registry from {}: {}",
-                scripts_root.display(),
-                err
-            ),
+#[cfg(test)]
+mod tests {
+    use super::{
+        RuntimeAssetCatalogCacheState, load_runtime_asset_catalog_from_catalog, parse_vec3_property,
+    };
+    use crate::auth::{ScriptCatalogEntry, ScriptCatalogResource};
+    use std::path::PathBuf;
+
+    fn temp_asset_root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "sidereal_gateway_asset_api_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+    }
+
+    fn test_asset_registry_source() -> String {
+        r#"
+return {
+  schema_version = 1,
+  assets = {
+    {
+      asset_id = "shader.main",
+      shader_family = "world_sprite_generic",
+      source_path = "shaders/main.wgsl",
+      content_type = "text/wgsl",
+      dependencies = {},
+      bootstrap_required = true,
+    },
+  },
+}
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn parse_vec3_property_returns_zero_for_invalid_inputs() {
+        let value = serde_json::json!({ "position": [1.0, 2.0] });
+        assert_eq!(parse_vec3_property(&value, "position"), [0.0, 0.0, 0.0]);
+        assert_eq!(
+            parse_vec3_property(&serde_json::json!({}), "missing"),
+            [0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn runtime_asset_catalog_cache_reuses_built_catalog_until_revision_changes() {
+        let asset_root = temp_asset_root();
+        let shader_path = asset_root.join("shaders/main.wgsl");
+        std::fs::create_dir_all(shader_path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&shader_path, "first").expect("write first shader payload");
+
+        let make_catalog = |revision| ScriptCatalogResource {
+            entries: vec![ScriptCatalogEntry {
+                script_path: "assets/registry.lua".to_string(),
+                source: test_asset_registry_source(),
+                revision,
+                origin: "test".to_string(),
+            }],
+            revision,
+            root_dir: "/tmp/test-scripts".to_string(),
+        };
+
+        let mut cache_state = RuntimeAssetCatalogCacheState::default();
+        let first_catalog = load_runtime_asset_catalog_from_catalog(
+            &make_catalog(1),
+            &asset_root,
+            &mut cache_state,
         )
-    })?;
-    Ok(registry.assets)
+        .expect("build initial runtime asset catalog");
+        assert_eq!(first_catalog.len(), 1);
+        let first_sha = first_catalog[0].sha256_hex.clone();
+
+        std::fs::write(&shader_path, "second").expect("write second shader payload");
+        let cached_catalog = load_runtime_asset_catalog_from_catalog(
+            &make_catalog(1),
+            &asset_root,
+            &mut cache_state,
+        )
+        .expect("reuse cached runtime asset catalog");
+        assert_eq!(cached_catalog[0].sha256_hex, first_sha);
+
+        let rebuilt_catalog = load_runtime_asset_catalog_from_catalog(
+            &make_catalog(2),
+            &asset_root,
+            &mut cache_state,
+        )
+        .expect("rebuild runtime asset catalog after revision change");
+        assert_ne!(rebuilt_catalog[0].sha256_hex, first_sha);
+
+        let _ = std::fs::remove_dir_all(&asset_root);
+    }
 }

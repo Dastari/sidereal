@@ -1,8 +1,10 @@
 use bevy::prelude::*;
 use lightyear::prelude::PeerId;
 
-use crate::replication::auth::AuthenticatedClientBindings;
-use crate::replication::auth::cleanup_client_auth_bindings;
+use crate::replication::auth::{
+    AUTH_CONFIG_DENIED_REASON, AuthenticatedClientBindings, cleanup_client_auth_bindings,
+    configured_gateway_jwt_secret,
+};
 use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
@@ -67,5 +69,32 @@ fn cleanup_drops_visibility_for_disconnected_client() {
             .resource::<ClientVisibilityRegistry>()
             .player_entity_id_by_client
             .contains_key(&client)
+    );
+}
+
+#[test]
+fn configured_gateway_jwt_secret_rejects_missing_or_short_values() {
+    unsafe {
+        std::env::remove_var("GATEWAY_JWT_SECRET");
+    }
+    assert_eq!(
+        configured_gateway_jwt_secret().unwrap_err(),
+        AUTH_CONFIG_DENIED_REASON
+    );
+
+    unsafe {
+        std::env::set_var("GATEWAY_JWT_SECRET", "too-short");
+    }
+    assert_eq!(
+        configured_gateway_jwt_secret().unwrap_err(),
+        AUTH_CONFIG_DENIED_REASON
+    );
+
+    unsafe {
+        std::env::set_var("GATEWAY_JWT_SECRET", "0123456789abcdef0123456789abcdef");
+    }
+    assert_eq!(
+        configured_gateway_jwt_secret().as_deref(),
+        Ok("0123456789abcdef0123456789abcdef")
     );
 }

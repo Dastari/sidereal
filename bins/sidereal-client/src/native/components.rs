@@ -97,6 +97,9 @@ pub(crate) struct RuntimeScreenOverlayPass {
 pub(crate) struct GameplayCamera;
 
 #[derive(Component)]
+pub(crate) struct DebugOverlayCamera;
+
+#[derive(Component)]
 pub(crate) struct BackdropCamera;
 
 #[derive(Component)]

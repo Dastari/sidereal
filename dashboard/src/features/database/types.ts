@@ -4,6 +4,13 @@ export type DatabaseAccountRecord = {
   primaryPlayerEntityId: string
   characterCount: number
   createdAtEpochS: number
+  characters: Array<DatabaseCharacterRecord>
+}
+
+export type DatabaseCharacterRecord = {
+  playerEntityId: string
+  createdAtEpochS: number
+  displayName: string | null
 }
 
 export type DatabaseTableRecord = {

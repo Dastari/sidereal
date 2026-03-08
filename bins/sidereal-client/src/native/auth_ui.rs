@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
 use super::dev_console::DevConsoleState;
+use super::resources::GatewayHttpAdapter;
 use super::{
     AuthAction, ClientAppState, ClientSession, EmbeddedFonts, FocusField, submit_auth_request,
 };
@@ -413,6 +414,7 @@ fn handle_auth_keyboard_input(
     dev_console_state: Option<Res<'_, DevConsoleState>>,
     mut session: ResMut<'_, ClientSession>,
     mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
+    gateway_http: Res<'_, GatewayHttpAdapter>,
 ) {
     if super::dev_console::is_console_open(dev_console_state.as_deref()) {
         return;
@@ -471,7 +473,7 @@ fn handle_auth_keyboard_input(
     }
 
     if submit {
-        submit_auth_request(&mut session, request_state.as_mut());
+        submit_auth_request(&mut session, request_state.as_mut(), *gateway_http);
     }
 }
 
@@ -489,6 +491,7 @@ fn handle_auth_button_interactions(
     >,
     mut session: ResMut<'_, ClientSession>,
     mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
+    gateway_http: Res<'_, GatewayHttpAdapter>,
     mut app_exit: MessageWriter<'_, AppExit>,
 ) {
     for (interaction, button, mut bg, input_box) in &mut interactions {
@@ -504,7 +507,7 @@ fn handle_auth_button_interactions(
                 match button.0 {
                     AuthButtonKind::Submit => {
                         *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));
-                        submit_auth_request(&mut session, request_state.as_mut());
+                        submit_auth_request(&mut session, request_state.as_mut(), *gateway_http);
                     }
                     AuthButtonKind::SwitchFlow(action) => {
                         session.selected_action = action;

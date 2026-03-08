@@ -177,7 +177,7 @@ pub fn init_resources(app: &mut App) {
     let catalog = app.world().resource::<ScriptCatalogResource>().clone();
     match ScriptRuntime::from_catalog(&catalog) {
         Ok(runtime) => {
-            info!(
+            debug!(
                 "replication runtime scripting initialized root={} handlers={} catalog_revision={}",
                 catalog.root_dir,
                 runtime.handlers.len(),
