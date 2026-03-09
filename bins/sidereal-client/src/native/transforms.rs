@@ -2,14 +2,52 @@
 
 use avian2d::prelude::{Position, Rotation};
 use bevy::prelude::*;
+use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::Confirmed;
 use sidereal_game::{
-    FullscreenLayer, WorldPosition, WorldRotation, resolve_world_position,
-    resolve_world_rotation_rad,
+    FullscreenLayer, RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
+    RENDER_PHASE_FULLSCREEN_FOREGROUND, RuntimeRenderLayerDefinition, WorldPosition, WorldRotation,
+    resolve_world_position, resolve_world_rotation_rad,
 };
 
 use super::components::{PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity};
+
+const INTERPOLATED_TRANSFORM_STALL_THRESHOLD_M: f32 = 12.0;
+const INTERPOLATED_TRANSFORM_STALL_ROTATION_THRESHOLD_RAD: f32 = 0.35;
+
+fn apply_planar_transform(transform: &mut Transform, planar_position: Vec2, heading: f32) {
+    transform.translation.x = planar_position.x;
+    transform.translation.y = planar_position.y;
+    transform.translation.z = 0.0;
+    transform.rotation = Quat::from_rotation_z(heading);
+}
+
+fn resolve_current_planar_pose(
+    position: Option<&Position>,
+    rotation: Option<&Rotation>,
+    world_position: Option<&WorldPosition>,
+    world_rotation: Option<&WorldRotation>,
+) -> Option<(Vec2, f32)> {
+    let planar_position = resolve_world_position(position, world_position)?;
+    let heading = resolve_world_rotation_rad(rotation, world_rotation)?;
+    if !planar_position.is_finite() || !heading.is_finite() {
+        return None;
+    }
+    Some((planar_position, heading))
+}
+
+fn resolve_confirmed_planar_pose(
+    confirmed_position: Option<&Confirmed<Position>>,
+    confirmed_rotation: Option<&Confirmed<Rotation>>,
+) -> Option<(Vec2, f32)> {
+    let planar_position = confirmed_position.map(|value| value.0.0)?;
+    let heading = confirmed_rotation.map(|value| value.0.as_radians())?;
+    if !planar_position.is_finite() || !heading.is_finite() {
+        return None;
+    }
+    Some((planar_position, heading))
+}
 
 /// Fallback sync for Confirmed-only world entities.
 ///
@@ -120,16 +158,10 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
             && rotation.is_none()
             && (world_position.is_some() || world_rotation.is_some());
         if is_static_world_spatial {
-            let planar_position = resolve_world_position(position, world_position)
-                .filter(|p| p.is_finite())
-                .unwrap_or(Vec2::ZERO);
-            let heading = resolve_world_rotation_rad(rotation, world_rotation)
-                .filter(|r| r.is_finite())
-                .unwrap_or(0.0);
-            transform.translation.x = planar_position.x;
-            transform.translation.y = planar_position.y;
-            transform.translation.z = 0.0;
-            transform.rotation = Quat::from_rotation_z(heading);
+            let (planar_position, heading) =
+                resolve_current_planar_pose(position, rotation, world_position, world_rotation)
+                    .unwrap_or((Vec2::ZERO, 0.0));
+            apply_planar_transform(&mut transform, planar_position, heading);
             continue;
         }
         // Interpolation needs at least 2 samples. With only one (or zero), preserve
@@ -139,26 +171,115 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         if history_ready {
             continue;
         }
-        let source_position = confirmed_position
-            .map(|p| p.0.0)
-            .or_else(|| resolve_world_position(position, world_position));
-        let source_heading = confirmed_rotation
-            .map(|r| r.0.as_radians())
-            .or_else(|| resolve_world_rotation_rad(rotation, world_rotation));
-        let planar_position = if source_position.is_some_and(|p| p.is_finite()) {
-            source_position.unwrap_or(Vec2::ZERO)
-        } else {
-            Vec2::ZERO
+        let (planar_position, heading) =
+            resolve_confirmed_planar_pose(confirmed_position, confirmed_rotation)
+                .or_else(|| {
+                    resolve_current_planar_pose(position, rotation, world_position, world_rotation)
+                })
+                .unwrap_or((Vec2::ZERO, 0.0));
+        apply_planar_transform(&mut transform, planar_position, heading);
+    }
+}
+
+/// Keep `FrameInterpolate<Transform>` aligned with the runtime clone types that Lightyear expects.
+///
+/// Sidereal intentionally defers native replicated adoption until enough components exist to avoid
+/// origin flashes, but dynamic relevance/handoff means a world entity can become spatial later in
+/// its lifecycle. Lightyear requires `FrameInterpolate<Transform>` to be present explicitly; if we
+/// only decide that once at adoption time, a valid Interpolated/Predicted clone can miss the visual
+/// interpolation lane entirely.
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_frame_interpolation_markers_for_world_entities(
+    mut commands: Commands<'_, '_>,
+    entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Has<Position>,
+            Has<Rotation>,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+            Option<&'_ FrameInterpolate<Transform>>,
+        ),
+        With<WorldEntity>,
+    >,
+) {
+    for (entity, has_position, has_rotation, is_predicted, is_interpolated, frame_interpolate) in
+        &entities
+    {
+        let should_have_frame_interpolation =
+            (is_predicted || is_interpolated) && has_position && has_rotation;
+        if should_have_frame_interpolation && frame_interpolate.is_none() {
+            commands
+                .entity(entity)
+                .insert(FrameInterpolate::<Transform>::default());
+        } else if !should_have_frame_interpolation && frame_interpolate.is_some() {
+            commands
+                .entity(entity)
+                .remove::<FrameInterpolate<Transform>>();
+        }
+    }
+}
+
+/// Safeguard against observer entities whose visual `Transform` stops advancing while their
+/// interpolated spatial components continue to update.
+///
+/// Lightyear/Avian should normally own this lane. Sidereal keeps this as a narrow fallback only
+/// when the visible `Transform` is clearly stale or frame-interpolation state is still unseeded.
+/// That keeps us aligned with Lightyear by default while avoiding multi-second "freeze then catch
+/// up" stalls for remote observer ships under dynamic relevance/handoff churn.
+#[allow(clippy::type_complexity)]
+pub(crate) fn recover_stalled_interpolated_world_entity_transforms(
+    mut entities: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
+            &'_ mut Transform,
+            &'_ mut FrameInterpolate<Transform>,
+        ),
+        (With<WorldEntity>, With<lightyear::prelude::Interpolated>),
+    >,
+) {
+    for (
+        position,
+        rotation,
+        world_position,
+        world_rotation,
+        mut transform,
+        mut frame_interpolate,
+    ) in &mut entities
+    {
+        let Some((planar_position, heading)) =
+            resolve_current_planar_pose(position, rotation, world_position, world_rotation)
+        else {
+            continue;
         };
-        let heading = if source_heading.is_some_and(|r| r.is_finite()) {
-            source_heading.unwrap_or(0.0)
-        } else {
-            0.0
+
+        let current_translation = transform.translation.truncate();
+        let current_heading = transform.rotation.to_euler(EulerRot::XYZ).2;
+        let positional_drift_m = current_translation.distance(planar_position);
+        let rotational_drift_rad = {
+            let diff = heading - current_heading;
+            ((diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI)
+                .abs()
         };
-        transform.translation.x = planar_position.x;
-        transform.translation.y = planar_position.y;
-        transform.translation.z = 0.0;
-        transform.rotation = Quat::from_rotation_z(heading);
+        let frame_interpolation_uninitialized =
+            frame_interpolate.previous_value.is_none() || frame_interpolate.current_value.is_none();
+        let transform_is_stalled = positional_drift_m > INTERPOLATED_TRANSFORM_STALL_THRESHOLD_M
+            || rotational_drift_rad > INTERPOLATED_TRANSFORM_STALL_ROTATION_THRESHOLD_RAD;
+        if !frame_interpolation_uninitialized && !transform_is_stalled {
+            continue;
+        }
+
+        apply_planar_transform(&mut transform, planar_position, heading);
+        let seeded_transform = *transform;
+        frame_interpolate.previous_value = Some(seeded_transform);
+        frame_interpolate.current_value = Some(seeded_transform);
     }
 }
 
@@ -184,6 +305,7 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
             Option<&'_ ConfirmedHistory<Position>>,
             Option<&'_ ConfirmedHistory<Rotation>>,
             Option<&'_ FullscreenLayer>,
+            Option<&'_ RuntimeRenderLayerDefinition>,
             &'_ mut Transform,
             &'_ mut Visibility,
         ),
@@ -202,6 +324,7 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
         position_history,
         rotation_history,
         fullscreen_layer,
+        runtime_layer,
         mut transform,
         mut visibility,
     ) in &mut entities
@@ -210,9 +333,19 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
         let mut source_position: Option<Vec2> = None;
         let mut source_heading: Option<f32> = None;
 
-        if fullscreen_layer.is_some() {
+        let is_runtime_fullscreen_layer = runtime_layer.is_some_and(|layer| {
+            layer.enabled
+                && layer.material_domain == RENDER_DOMAIN_FULLSCREEN
+                && matches!(
+                    layer.phase.as_str(),
+                    RENDER_PHASE_FULLSCREEN_BACKGROUND | RENDER_PHASE_FULLSCREEN_FOREGROUND
+                )
+        });
+        if fullscreen_layer.is_some() || is_runtime_fullscreen_layer {
             // Fullscreen layers are non-spatial overlay entities: they have no physics
-            // transform history but should render as soon as adopted.
+            // transform history but should render as soon as adopted. Sidereal renders
+            // directly from these authored entities so they must bypass the normal
+            // spatial bootstrap gate instead of falling back to client-local copies.
             ready = true;
         } else if position.is_none()
             && rotation.is_none()
@@ -235,9 +368,20 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
                 && rotation_history.and_then(|h| h.end()).is_some();
             if history_ready {
                 ready = true;
-            } else if let (Some(cp), Some(cr)) = (confirmed_position, confirmed_rotation) {
-                source_position = Some(cp.0.0);
-                source_heading = Some(cr.0.as_radians());
+            } else if let Some((planar_position, heading)) =
+                resolve_current_planar_pose(position, rotation, world_position, world_rotation)
+            {
+                // Interpolated observers can legitimately arrive with one good sampled pose before
+                // they have a second history sample. Keeping them hidden until the source moves
+                // again is what caused "ship is invisible until it moves" on fresh observers.
+                source_position = Some(planar_position);
+                source_heading = Some(heading);
+                ready = true;
+            } else if let Some((planar_position, heading)) =
+                resolve_confirmed_planar_pose(confirmed_position, confirmed_rotation)
+            {
+                source_position = Some(planar_position);
+                source_heading = Some(heading);
                 ready = true;
             }
         } else if let (Some(planar_position), Some(heading)) = (
@@ -258,10 +402,7 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
             && planar_position.is_finite()
             && heading.is_finite()
         {
-            transform.translation.x = planar_position.x;
-            transform.translation.y = planar_position.y;
-            transform.translation.z = 0.0;
-            transform.rotation = Quat::from_rotation_z(heading);
+            apply_planar_transform(&mut transform, planar_position, heading);
         }
 
         *visibility = Visibility::Visible;

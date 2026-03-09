@@ -58,6 +58,10 @@ impl Plugin for ReplicationControlPlugin {
             FixedUpdate,
             (
                 control::sync_player_anchor_replication_mode,
+                combat::mark_new_ballistic_projectiles_prespawned
+                    .after(sidereal_game::process_weapon_fire_actions),
+                combat::configure_ballistic_projectile_replication
+                    .after(combat::mark_new_ballistic_projectiles_prespawned),
                 combat::broadcast_weapon_fired_messages.after(sidereal_game::resolve_shot_impacts),
                 combat::enqueue_runtime_script_events_from_combat_messages
                     .after(sidereal_game::apply_damage_from_shot_impacts),

@@ -5,15 +5,15 @@ Date: 2026-03-05
 Owners: scripting + replication + client rendering + asset streaming
 
 Update note (2026-03-07):
-- Layer composition, default world-layer policy, rule-based entity assignment, and render-time parallax semantics are now defined by `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
+- Layer composition, default world-layer policy, rule-based entity assignment, and render-time parallax semantics are now defined by `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
 - This document remains the shader/material runtime plan, but the newer DR-0027 feature doc is the source of truth for render-layer composition and migration away from fixed fullscreen layer kinds.
 
 Implementation note (2026-03-05):
 - Tactical map now uses a fullscreen shader-material path (`TacticalMapOverlayMaterial`) driven by replicated `TacticalMapUiSettings` component data (owner-visible), with shader source parity in both `data/shaders/` and `data/cache_stream/shaders/`. This is an incremental step toward Phase 2/4 generic fullscreen/post-process runtime paths.
 
 Primary references:
-- `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
-- `docs/features/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
+- `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+- `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
 - `docs/features/scripting_support.md`
 - `docs/features/asset_delivery_contract.md`
 - `docs/sidereal_design_document.md`

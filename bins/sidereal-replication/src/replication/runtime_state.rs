@@ -1,5 +1,9 @@
 use bevy::prelude::*;
 use lightyear::prelude::is_in_rollback;
+use lightyear::prelude::server::ClientOf;
+use lightyear::prelude::{
+    ControlledBy, InterpolationTarget, PredictionTarget, RemoteId, Replicate, ReplicationState,
+};
 use sidereal_game::{
     ControlledEntityGuid, EntityGuid, MountedOn, PlayerTag, VisibilityRangeBuffM, VisibilityRangeM,
     total_visibility_range_for_parent,
@@ -23,6 +27,23 @@ pub fn init_resources(app: &mut App) {
 
 pub fn log_player_control_state_changes(
     players: Query<'_, '_, (&Name, Option<&ControlledEntityGuid>), With<PlayerTag>>,
+    player_entities: Res<'_, PlayerRuntimeEntityMap>,
+    controlled_entity_map: Res<'_, crate::replication::PlayerControlledEntityMap>,
+    controlled_targets: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Has<Replicate>,
+            Has<PredictionTarget>,
+            Has<InterpolationTarget>,
+            Option<&'_ ControlledBy>,
+            Option<&'_ ReplicationState>,
+        ),
+        With<SimulatedControlledEntity>,
+    >,
+    client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
     mut debug_state: ResMut<'_, PlayerControlDebugState>,
 ) {
     if !control_debug_logging_enabled() {
@@ -41,6 +62,72 @@ pub fn log_player_control_state_changes(
                 "replication authoritative control changed player={} previous={:?} current={:?}",
                 player_entity_id, previous, current
             );
+            if let Some(player_entity) = player_entities
+                .by_player_entity_id
+                .get(player_entity_id.as_str())
+            {
+                // Sidereal supports dynamic control handoff between the persisted player anchor
+                // and owned ships. Future audits need this detail because the player anchor and
+                // controlled ship intentionally use different replication modes.
+                let mapped_entity = sidereal_net::PlayerEntityId::parse(player_entity_id.as_str())
+                    .and_then(|parsed_player_id| {
+                        controlled_entity_map
+                            .by_player_entity_id
+                            .get(&parsed_player_id)
+                            .copied()
+                    });
+                let mut detail_logged = false;
+                let effective_target = mapped_entity.unwrap_or(*player_entity);
+                if let Ok((
+                    entity,
+                    guid,
+                    has_replicate,
+                    has_prediction_target,
+                    has_interpolation_target,
+                    controlled_by,
+                    replication_state,
+                )) = controlled_targets.get(effective_target)
+                {
+                    let controlling_remote = controlled_by
+                        .and_then(|binding| client_remote_ids.get(binding.owner).ok())
+                        .map(|remote| format!("{:?}", remote.0))
+                        .unwrap_or_else(|| "<none>".to_string());
+                    let visibility_for_owner = controlled_by
+                        .map(|binding| {
+                            replication_state
+                                .map(|state| state.is_visible(binding.owner))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    let authority_for_owner = controlled_by
+                        .map(|binding| {
+                            replication_state
+                                .map(|state| state.has_authority(binding.owner))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    info!(
+                        "replication authoritative control target detail player={} target_entity={:?} target_guid={} replicate={} prediction_target={} interpolation_target={} controlled_by_client={:?} controlled_by_remote={} visible_for_owner={} authority_for_owner={}",
+                        player_entity_id,
+                        entity,
+                        guid.0,
+                        has_replicate,
+                        has_prediction_target,
+                        has_interpolation_target,
+                        controlled_by.map(|binding| binding.owner),
+                        controlling_remote,
+                        visibility_for_owner,
+                        authority_for_owner,
+                    );
+                    detail_logged = true;
+                }
+                if !detail_logged {
+                    info!(
+                        "replication authoritative control target detail player={} target_entity={:?} detail_unavailable=true",
+                        player_entity_id, effective_target
+                    );
+                }
+            }
         }
         seen.insert(player_entity_id);
     }

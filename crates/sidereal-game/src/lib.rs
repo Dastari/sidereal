@@ -27,9 +27,9 @@ pub use collision_outline_generation::{
     generate_rdp_collision_outline_from_sprite_png,
 };
 pub use combat::{
-    ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent, apply_damage_from_shot_impacts,
-    bootstrap_weapon_cooldown_state, process_weapon_fire_actions, resolve_shot_impacts,
-    tick_weapon_cooldowns,
+    BallisticProjectileSpawnedEvent, ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent,
+    apply_damage_from_shot_impacts, bootstrap_weapon_cooldown_state, process_weapon_fire_actions,
+    resolve_shot_impacts, tick_weapon_cooldowns, update_ballistic_projectiles,
 };
 pub use component_meta::*;
 pub use components::*;
@@ -52,6 +52,15 @@ pub use render_layers::{
 };
 pub use visibility_range::{apply_visibility_range_buff, total_visibility_range_for_parent};
 pub use world_spatial::{resolve_world_position, resolve_world_rotation_rad};
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct CombatAuthorityEnabled(pub bool);
+
+impl Default for CombatAuthorityEnabled {
+    fn default() -> Self {
+        Self(true)
+    }
+}
 
 // Re-export flight systems (not components, those come from generated)
 pub use flight::{
@@ -108,9 +117,17 @@ impl Plugin for SiderealGamePlugin {
         {
             app.insert_resource(HierarchyRebuildEnabled::default());
         }
+        if app
+            .world()
+            .get_resource::<CombatAuthorityEnabled>()
+            .is_none()
+        {
+            app.insert_resource(CombatAuthorityEnabled::default());
+        }
         app.add_message::<ShotFiredEvent>();
         app.add_message::<ShotImpactResolvedEvent>();
         app.add_message::<ShotHitEvent>();
+        app.add_message::<BallisticProjectileSpawnedEvent>();
 
         let add_hierarchy_rebuild = app
             .world()
@@ -146,6 +163,7 @@ impl Plugin for SiderealGamePlugin {
                 bootstrap_weapon_cooldown_state,
                 tick_weapon_cooldowns,
                 process_weapon_fire_actions,
+                update_ballistic_projectiles,
                 resolve_shot_impacts,
                 apply_damage_from_shot_impacts,
                 recompute_total_mass,

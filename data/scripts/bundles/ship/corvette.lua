@@ -307,6 +307,7 @@ function CorvetteBundle.build_graph_records(ctx)
           rpm = 750.0,
           damage_per_shot = 22.0,
           max_range_m = 2200.0,
+          projectile_speed_mps = 360.0,
           spread_rad = 0.0,
           damage_type = "Ballistic",
         }),

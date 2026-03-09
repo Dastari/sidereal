@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
     ControlledBy, InterpolationTarget, MessageReceiver, NetworkTarget, PredictionTarget, RemoteId,
-    Replicate, Server, ServerMultiMessageSender,
+    Replicate, ReplicationState, Server, ServerMultiMessageSender,
 };
 use sidereal_game::{
     ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag,
@@ -39,10 +39,65 @@ fn control_debug_logging_enabled() -> bool {
     debug_env("SIDEREAL_DEBUG_CONTROL_LOGS")
 }
 
+fn control_target_log_label(value: Option<&str>) -> &str {
+    value.unwrap_or("<none>")
+}
+
+pub(crate) fn owner_only_replicate(client_entity: Entity) -> Replicate {
+    // Sidereal dynamic handoff already knows the concrete ReplicationSender entity that owns the
+    // lane. Prefer Manual(sender_entity) over peer-id NetworkTarget here so control rebinding does
+    // not depend on PeerMetadata mapping timing.
+    Replicate::manual(vec![client_entity])
+}
+
+pub(crate) fn owner_prediction_target(client_entity: Entity) -> PredictionTarget {
+    // Same rationale as owner_only_replicate(): dynamic owner prediction is a sender-local concern.
+    // Using the resolved sender entity keeps Sidereal aligned with Lightyear's target model while
+    // avoiding an extra remote-id->sender lookup during handoff/application.
+    PredictionTarget::manual(vec![client_entity])
+}
+
+pub(crate) fn owner_interpolation_target(client_entity: Entity) -> InterpolationTarget {
+    // The persisted player anchor is owner-only. When it is not the active predicted entity we keep
+    // it interpolated only for that owner rather than broadcasting it as a generic observer target.
+    InterpolationTarget::manual(vec![client_entity])
+}
+
+fn force_replication_respawn_for_client(
+    commands: &mut Commands<'_, '_>,
+    entity: Entity,
+    client_entity: Entity,
+    reason: &'static str,
+) {
+    commands.queue(move |world: &mut World| {
+        let mut forced = false;
+        let mut state_snapshot = None;
+        if let Some(mut replication_state) = world.get_mut::<ReplicationState>(entity) {
+            let before_snapshot = format!("before({replication_state:?})");
+            // Lightyear applies Predicted/Interpolated markers from the spawn action it sends to a
+            // given receiver. Sidereal's dynamic control handoff can retarget prediction after the
+            // entity was already visible, so we intentionally re-arm the sender-local spawn path by
+            // cycling visibility through Lost -> Gained for that specific client.
+            replication_state.lose_visibility(client_entity);
+            replication_state.gain_visibility(client_entity);
+            state_snapshot = Some(format!("{before_snapshot} after({replication_state:?})"));
+            forced = true;
+        }
+        if forced && control_debug_logging_enabled() {
+            info!(
+                "server control handover forced sender-local respawn entity={:?} client={:?} reason={} state={}",
+                entity,
+                client_entity,
+                reason,
+                state_snapshot.unwrap_or_else(|| "<missing-state>".to_string())
+            );
+        }
+    });
+}
+
 fn clear_controlled_binding_for_client(
     commands: &mut Commands<'_, '_>,
     client_entity: Entity,
-    remote_id: RemoteId,
     controlled_entities: &Query<'_, '_, (Entity, Option<&'_ ControlledBy>), With<ActionQueue>>,
     player_entities: &Query<'_, '_, &'_ EntityGuid, With<PlayerTag>>,
 ) {
@@ -55,12 +110,18 @@ fn clear_controlled_binding_for_client(
                 commands
                     .entity(entity)
                     .remove::<InterpolationTarget>()
-                    .insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
+                    .insert(owner_only_replicate(client_entity));
             } else {
                 commands
                     .entity(entity)
                     .insert(InterpolationTarget::to_clients(NetworkTarget::All));
             }
+            force_replication_respawn_for_client(
+                commands,
+                entity,
+                client_entity,
+                "handoff_previous_target_mode_change",
+            );
         }
     }
 }
@@ -142,6 +203,11 @@ pub fn receive_client_control_requests(
                 continue;
             };
             let message_player_wire = message_player_id.canonical_wire_id();
+            let requested_raw = message.controlled_entity_id.clone();
+            let requested_control_guid = message
+                .controlled_entity_id
+                .as_deref()
+                .and_then(guid_from_entity_id_like);
             let Some(bound_player) = bindings.by_client_entity.get(&client_entity) else {
                 continue;
             };
@@ -182,8 +248,23 @@ pub fn receive_client_control_requests(
             {
                 if control_debug_logging_enabled() {
                     info!(
-                        "control request dropped stale seq player={} seq={} last_seq={}",
-                        bound_player, message.request_seq, last_seq
+                        "server control handover stale player={} client={:?} remote={} seq={} previous_seq={} requested_raw={} requested_guid={} previous_controlled={} result=reject reason=stale_seq",
+                        bound_player,
+                        client_entity,
+                        remote_id.0,
+                        message.request_seq,
+                        last_seq,
+                        control_target_log_label(requested_raw.as_deref()),
+                        control_target_log_label(requested_control_guid.as_deref()),
+                        control_target_log_label(
+                            player_entities
+                                .by_player_entity_id
+                                .get(bound_player)
+                                .and_then(|player_entity| player_controlled
+                                    .get(*player_entity)
+                                    .ok())
+                                .and_then(|guid| guid.0.as_deref())
+                        ),
                     );
                 }
                 let authoritative_controlled = player_entities
@@ -251,11 +332,23 @@ pub fn receive_client_control_requests(
                 continue;
             };
             let player_runtime_id = player_guid.clone();
-
-            let requested_control_guid = message
-                .controlled_entity_id
-                .as_deref()
-                .and_then(guid_from_entity_id_like);
+            let previous_controlled_guid = player_controlled
+                .get(player_entity)
+                .ok()
+                .and_then(|guid| guid.0.clone())
+                .or_else(|| Some(player_runtime_id.clone()));
+            if control_debug_logging_enabled() {
+                info!(
+                    "server control handover request player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={}",
+                    bound_player,
+                    client_entity,
+                    remote_id.0,
+                    message.request_seq,
+                    control_target_log_label(previous_controlled_guid.as_deref()),
+                    control_target_log_label(requested_raw.as_deref()),
+                    control_target_log_label(requested_control_guid.as_deref()),
+                );
+            }
             let (resolved_control_guid, resolved_target_entity, resolved_runtime_entity_id) =
                 if let Some(control_guid) = requested_control_guid.clone() {
                     if control_guid == player_guid {
@@ -282,6 +375,19 @@ pub fn receive_client_control_requests(
                                 "replication rejected control request for {} -> {} (target not found or not owned)",
                                 bound_player, control_guid
                             );
+                            if control_debug_logging_enabled() {
+                                warn!(
+                                    "server control handover reject player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={} result=reject reason=target_not_owned_or_missing authoritative_controlled={}",
+                                    bound_player,
+                                    client_entity,
+                                    remote_id.0,
+                                    message.request_seq,
+                                    control_target_log_label(previous_controlled_guid.as_deref()),
+                                    control_target_log_label(requested_raw.as_deref()),
+                                    control_target_log_label(requested_control_guid.as_deref()),
+                                    player_runtime_id,
+                                );
+                            }
                             let reject = ServerControlRejectMessage {
                                 player_entity_id: bound_player.clone(),
                                 request_seq: message.request_seq,
@@ -323,7 +429,6 @@ pub fn receive_client_control_requests(
                 clear_controlled_binding_for_client(
                     &mut commands,
                     client_entity,
-                    *remote_id,
                     &controlled_entities,
                     &player_guids,
                 );
@@ -337,16 +442,19 @@ pub fn receive_client_control_requests(
 
             if control_debug_logging_enabled() {
                 info!(
-                    "control route player={} client={:?} seq={} requested_raw={:?} requested_guid={:?} resolved_guid={:?} current_entity={:?} target_entity={:?} rebind_required={}",
+                    "server control handover resolved player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={} resolved_guid={} previous_entity={:?} target_entity={:?} rebind_required={} result=ack authoritative_controlled={}",
                     bound_player,
                     client_entity,
+                    remote_id.0,
                     message.request_seq,
-                    message.controlled_entity_id,
-                    requested_control_guid,
-                    resolved_control_guid,
+                    control_target_log_label(previous_controlled_guid.as_deref()),
+                    control_target_log_label(requested_raw.as_deref()),
+                    control_target_log_label(requested_control_guid.as_deref()),
+                    control_target_log_label(resolved_control_guid.as_deref()),
                     currently_bound_entity,
                     resolved_target_entity,
-                    rebind_required
+                    rebind_required,
+                    control_target_log_label(resolved_runtime_entity_id.as_deref())
                 );
             }
             order_state
@@ -374,16 +482,24 @@ pub fn sync_player_anchor_replication_mode(
             &'_ EntityGuid,
             Option<&'_ ControlledEntityGuid>,
             Option<&'_ ControlledBy>,
+            Option<&'_ Replicate>,
+            Option<&'_ PredictionTarget>,
+            Option<&'_ InterpolationTarget>,
         ),
         With<PlayerTag>,
     >,
-    client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
 ) {
-    for (entity, player_guid, controlled_guid, controlled_by) in &players {
+    for (
+        entity,
+        player_guid,
+        controlled_guid,
+        controlled_by,
+        current_replicate,
+        current_prediction,
+        current_interpolation,
+    ) in &players
+    {
         let Some(controlled_by) = controlled_by else {
-            continue;
-        };
-        let Ok(remote_id) = client_remote_ids.get(controlled_by.owner) else {
             continue;
         };
 
@@ -391,18 +507,38 @@ pub fn sync_player_anchor_replication_mode(
             .and_then(|guid| guid.0.as_deref())
             .and_then(guid_from_entity_id_like)
             .is_none_or(|guid| guid == player_guid.0.to_string());
+        let desired_replicate = owner_only_replicate(controlled_by.owner);
+        let desired_prediction =
+            controls_self.then(|| owner_prediction_target(controlled_by.owner));
+        let desired_interpolation =
+            (!controls_self).then(|| owner_interpolation_target(controlled_by.owner));
+        let current_prediction_mode = current_prediction.map(|target| format!("{target:?}"));
+        let desired_prediction_mode = desired_prediction
+            .as_ref()
+            .map(|target| format!("{target:?}"));
+        let current_interpolation_mode = current_interpolation.map(|target| format!("{target:?}"));
+        let desired_interpolation_mode = desired_interpolation
+            .as_ref()
+            .map(|target| format!("{target:?}"));
+
+        // This system runs continuously to keep the persisted player anchor aligned with the active
+        // handoff state. Do not blindly reinsert Lightyear target components every tick: repeated
+        // replacement fights the hook-driven sender state that Lightyear expects.
+        let needs_update = current_replicate != Some(&desired_replicate)
+            || current_prediction_mode != desired_prediction_mode
+            || current_interpolation_mode != desired_interpolation_mode;
+        if !needs_update {
+            continue;
+        }
+
         let mut entity_commands = commands.entity(entity);
-        entity_commands.insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
+        entity_commands.insert(desired_replicate);
         if controls_self {
-            entity_commands.insert(PredictionTarget::to_clients(NetworkTarget::Single(
-                remote_id.0,
-            )));
+            entity_commands.insert(owner_prediction_target(controlled_by.owner));
             entity_commands.remove::<InterpolationTarget>();
         } else {
             entity_commands.remove::<PredictionTarget>();
-            entity_commands.insert(InterpolationTarget::to_clients(NetworkTarget::Single(
-                remote_id.0,
-            )));
+            entity_commands.insert(owner_interpolation_target(controlled_by.owner));
         }
     }
 }

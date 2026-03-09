@@ -6,8 +6,8 @@ Date: 2026-03-05
 Primary references:
 - `docs/sidereal_design_document.md`
 - `AGENTS.md`
-- `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
-- `docs/features/scan_intel_minimap_spatial_plan.md`
+- `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+- `docs/plans/scan_intel_minimap_spatial_plan.md`
 
 ## 1. Goal
 
@@ -48,6 +48,9 @@ Current implementation baseline:
 8. Delivery range is dynamic per client view and reflected in runtime visibility telemetry.
 9. Fullscreen authored config entities are treated as non-spatial overlays: legacy `FullscreenLayer` entities and fullscreen-phase `RuntimeRenderLayerDefinition` entities bypass delivery-range/visibility-range candidate culling and remain replicated while connected.
 10. Background authoring settings such as `SpaceBackgroundShaderSettings` and `StarfieldShaderSettings` are durable world configuration and remain persistable so hydration recreates the full authored config entity rather than only the layer-definition shell.
+
+2026-03-09 update:
+- The native client renders fullscreen background passes directly from those authored fullscreen entities again. Client-local fullscreen renderable copies were removed because they could diverge from the authored source during zoom/hydration transitions and expose the black fallback layer.
 
 ## 4. Multi-Lane Contract (Current + Approved Direction)
 
@@ -138,5 +141,5 @@ Implementation note:
 2. `VisibilityDisclosure` now carries `visibility_sources`, not `scanner_sources`.
 3. Genre-specific `scanner_*` wording may still exist in content/action names, but not as the engine-owned runtime component names.
 4. See:
-   - `docs/features/dr-0028_generic_visibility_range_components.md`
-   - `docs/features/generic_visibility_range_migration_plan.md`
+   - `docs/decisions/dr-0028_generic_visibility_range_components.md`
+   - `docs/plans/generic_visibility_range_migration_plan.md`

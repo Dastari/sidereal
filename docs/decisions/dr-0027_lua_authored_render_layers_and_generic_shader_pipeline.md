@@ -5,7 +5,7 @@ Date: 2026-03-07
 Owners: client rendering + scripting + replication + asset streaming
 
 Primary references:
-- `docs/features/dynamic_runtime_shader_material_plan.md`
+- `docs/plans/dynamic_runtime_shader_material_plan.md`
 - `docs/features/scripting_support.md`
 - `docs/features/asset_delivery_contract.md`
 - `docs/sidereal_design_document.md`
@@ -504,7 +504,7 @@ Current codebase conflicts with this target contract in the following ways:
 
 This document supersedes or narrows earlier assumptions as follows:
 
-1. `docs/features/dynamic_runtime_shader_material_plan.md`
+1. `docs/plans/dynamic_runtime_shader_material_plan.md`
    - still valid for generic material-schema direction,
    - superseded here for layer composition, rule-based assignment, default world layer policy, and parallax semantics.
 2. `docs/features/scripting_support.md`
@@ -639,7 +639,7 @@ Next migration goal:
 3. preserve fail-soft behavior when shader/catalog metadata is missing or invalid,
 4. ensure fullscreen background execution is explicitly non-cullable so authored background shaders always render.
 
-This step depends on the wider catalog metadata work described in `docs/features/dynamic_runtime_shader_material_plan.md`.
+This step depends on the wider catalog metadata work described in `docs/plans/dynamic_runtime_shader_material_plan.md`.
 
 ## 14.2 Stop Conditions and Non-Goals for the Next Pass
 

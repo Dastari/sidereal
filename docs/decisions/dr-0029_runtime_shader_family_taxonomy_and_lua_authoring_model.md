@@ -5,8 +5,8 @@ Date: 2026-03-07
 Owners: client rendering + scripting + asset streaming
 
 Primary references:
-- `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
-- `docs/features/dynamic_runtime_shader_material_plan.md`
+- `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+- `docs/plans/dynamic_runtime_shader_material_plan.md`
 - `docs/features/asset_delivery_contract.md`
 - `docs/features/scripting_support.md`
 - `docs/sidereal_design_document.md`
@@ -365,4 +365,4 @@ The correct target is:
 
 1. Implement planet family collapse first.
 2. Add a dedicated effect-family ABI doc once Step 2 begins.
-3. Keep `docs/features/dynamic_runtime_shader_material_plan.md` aligned with actual migration progress.
+3. Keep `docs/plans/dynamic_runtime_shader_material_plan.md` aligned with actual migration progress.

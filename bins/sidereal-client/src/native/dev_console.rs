@@ -19,9 +19,14 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(not(target_arch = "wasm32"))]
+use sidereal_core::logging::prepare_timestamped_log_file_in_dir;
 
 use super::ecs_util::queue_despawn_if_exists;
 
@@ -35,6 +40,9 @@ const DEV_CONSOLE_INPUT_ROW_PAD_X: f32 = 8.0;
 const DEV_CONSOLE_LOG_VIEW_BOTTOM_PAD: f32 = 10.0;
 const DEV_CONSOLE_CHAR_WIDTH_FACTOR: f32 = 0.62;
 const DEV_CONSOLE_VISIBLE_LINES_SAFETY_ROWS: usize = 0;
+
+#[cfg(not(target_arch = "wasm32"))]
+static CLIENT_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 fn dev_console_input_row_height_px() -> f32 {
     DEV_CONSOLE_LOG_FONT_SIZE + (DEV_CONSOLE_INPUT_ROW_PAD_Y * 2.0) + 10.0
@@ -271,10 +279,23 @@ impl Write for DualLogWriter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn log_file_path() -> PathBuf {
-    std::env::var("SIDEREAL_CLIENT_LOG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("logs/sidereal-client.log"))
+pub(crate) fn log_file_path() -> PathBuf {
+    CLIENT_LOG_PATH
+        .get_or_init(|| {
+            if let Ok(path) = std::env::var("SIDEREAL_CLIENT_LOG_FILE") {
+                return PathBuf::from(path);
+            }
+            let logs_dir = std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(PathBuf::from))
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("logs");
+            prepare_timestamped_log_file_in_dir("sidereal-client", &logs_dir)
+                .map(|run_log| run_log.path)
+                .unwrap_or_else(|_| PathBuf::from("logs/sidereal-client.log"))
+        })
+        .clone()
 }
 
 #[cfg(not(target_arch = "wasm32"))]

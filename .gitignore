@@ -1,6 +1,7 @@
 /target/
 /data/postgresql/
 /data/cache_stream/
+/data/published_assets/
 /dashboard/public/wasm/
 /data/debug
 /target-codex-dashboard

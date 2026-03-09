@@ -3,12 +3,13 @@
 use avian2d::prelude::*;
 use bevy::ecs::query::Has;
 use bevy::prelude::*;
+use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::input::native::{ActionState, InputMarker};
 use lightyear::prelude::is_in_rollback;
 use sidereal_game::{
-    ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, ControlledEntityGuid,
-    EntityGuid, FlightControlAuthority, Hardpoint, MountedOn, PlayerTag, SimulationMotionWriter,
-    SizeM, TotalMassKg, angular_inertia_from_size, collider_from_collision_shape,
+    ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid,
+    FlightControlAuthority, Hardpoint, MountedOn, PlayerTag, SimulationMotionWriter, SizeM,
+    TotalMassKg, angular_inertia_from_size, collider_from_collision_shape,
     default_flight_action_capabilities,
 };
 use sidereal_net::PlayerInput;
@@ -93,13 +94,15 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             Option<&'_ SizeM>,
             Option<&'_ TotalMassKg>,
             Option<&'_ CollisionProfile>,
-            Has<ControlledEntityGuid>,
+            Option<&'_ ConfirmedHistory<Position>>,
+            Option<&'_ ConfirmedHistory<Rotation>>,
             Has<SuppressedPredictedDuplicateVisual>,
             Has<lightyear::prelude::Predicted>,
             Has<lightyear::prelude::Interpolated>,
         ),
         (With<EntityGuid>, Without<Camera>),
     >,
+    mut missing_predicted_warn_at_s: Local<'_, f64>,
 ) {
     if is_in_rollback(rollback_query) {
         return;
@@ -131,6 +134,13 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
     };
     let mut target_entity: Option<Entity> = None;
     let mut target_entity_score: i32 = -1;
+    let is_player_anchor_target = session
+        .player_entity_id
+        .as_deref()
+        .and_then(parse_guid_from_entity_id)
+        .zip(Some(target_guid))
+        .is_some_and(|(player_guid, control_guid)| player_guid == control_guid);
+    let mut target_entity_is_predicted = false;
     for (
         candidate_entity,
         _,
@@ -142,7 +152,8 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         _size_m,
         _total_mass_kg,
         _collision_profile,
-        has_controlled_entity_guid,
+        _position_history,
+        _rotation_history,
         _is_suppressed,
         is_predicted,
         is_interpolated,
@@ -150,11 +161,8 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
     {
         let is_player_anchor =
             mounted_on.is_none() && hardpoint.is_none() && player_tag.is_some() && guid.is_some();
-        let is_root_entity = mounted_on.is_none()
-            && hardpoint.is_none()
-            && player_tag.is_none()
-            && guid.is_some()
-            && !has_controlled_entity_guid;
+        let is_root_entity =
+            mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none() && guid.is_some();
         let is_control_target_candidate = is_root_entity || is_player_anchor;
         if !is_control_target_candidate || guid.is_none_or(|g| g.0 != target_guid) {
             continue;
@@ -172,11 +180,26 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         {
             target_entity = Some(candidate_entity);
             target_entity_score = score;
+            target_entity_is_predicted = is_predicted;
         }
     }
     let Some(target_entity) = target_entity else {
         return;
     };
+    if !is_player_anchor_target && !target_entity_is_predicted {
+        // Sidereal's dynamic handoff means the desired control GUID can resolve before Lightyear
+        // has spawned the Predicted clone. Do not promote a confirmed/interpolated ship into the
+        // local motion-writer lane: that creates a second simulation writer and makes the runtime
+        // feel "jerky" instead of truly predicted.
+        if now_s - *missing_predicted_warn_at_s >= 1.0 {
+            bevy::log::warn!(
+                "motion ownership waiting for Predicted clone for control target {} before enabling local physics writes",
+                target_guid
+            );
+            *missing_predicted_warn_at_s = now_s;
+        }
+        return;
+    }
 
     let target_position = root_world_entities.iter().find_map(
         |(entity, _, mounted_on, hardpoint, player_tag, _, position, ..)| {
@@ -204,7 +227,8 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             _size_m,
             _total_mass_kg,
             _collision_profile,
-            has_controlled_entity_guid,
+            _position_history,
+            _rotation_history,
             is_suppressed,
             _is_predicted,
             _is_interpolated,
@@ -213,8 +237,7 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             let is_root_entity = mounted_on.is_none()
                 && hardpoint.is_none()
                 && player_tag.is_none()
-                && guid.is_some()
-                && !has_controlled_entity_guid;
+                && guid.is_some();
             if !is_root_entity || controlled.is_some() || entity == target_entity || is_suppressed {
                 continue;
             }
@@ -250,10 +273,11 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         size_m,
         total_mass_kg,
         collision_profile,
-        has_controlled_entity_guid,
+        position_history,
+        rotation_history,
         is_suppressed,
         _is_predicted,
-        _is_interpolated,
+        is_interpolated,
     ) in &root_world_entities
     {
         if entity == target_entity {
@@ -322,11 +346,8 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             commands.entity(entity).remove::<ControlledEntity>();
         }
 
-        let is_root_entity = mounted_on.is_none()
-            && hardpoint.is_none()
-            && player_tag.is_none()
-            && _guid.is_some()
-            && !has_controlled_entity_guid;
+        let is_root_entity =
+            mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none() && _guid.is_some();
         if !is_root_entity {
             continue;
         }
@@ -346,6 +367,25 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
 
         let keep_nearby_proxy = nearby_proxy_entities.contains(&entity);
         if keep_nearby_proxy {
+            let interpolation_history_ready = position_history.and_then(|h| h.end()).is_some()
+                && rotation_history.and_then(|h| h.end()).is_some();
+            if is_interpolated && !interpolation_history_ready {
+                // Lightyear Avian explicitly warns against letting local physics bootstrap
+                // interpolated entities before their observer spatial history exists: Avian can
+                // seed default Position/Rotation/Transform at the origin, which is exactly the
+                // "remote ship appears at 0,0 until it moves" bug Sidereal was hitting.
+                commands.entity(entity).remove::<NearbyCollisionProxy>();
+                commands.entity(entity).remove::<(
+                    RigidBody,
+                    Collider,
+                    Mass,
+                    AngularInertia,
+                    LockedAxes,
+                    LinearDamping,
+                    AngularDamping,
+                )>();
+                continue;
+            }
             let allow_collider = collision_profile
                 .copied()
                 .is_some_and(CollisionProfile::is_collidable);

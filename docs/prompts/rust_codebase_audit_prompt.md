@@ -11,7 +11,7 @@ Perform a complete Rust codebase audit for this repository as a senior Bevy/Avia
   - `docs/features/visibility_replication_contract.md`
   - `docs/features/asset_delivery_contract.md`
   - `docs/features/scripting_support.md`
-  - `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+  - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
   - `AGENTS.md`
 - The long-term direction is a more generic engine/runtime where game/content specifics are increasingly authored in Lua rather than hardcoded in Rust.
 - Client uses Bevy.
@@ -110,3 +110,11 @@ Also provide, at the end of the audit report, a catalog appendix covering:
 10. Startup/Main Loop Flow Maps
 11. Prioritized Remediation Plan
 12. Workspace / Runtime Catalog Appendix
+
+## Deliverable
+
+Write the final report to:
+
+- `docs/reports/rust_codebase_audit_report_YYYY-MM-DD.md`
+
+Do not write the completed report anywhere else. The final report belongs in `docs/reports/`.

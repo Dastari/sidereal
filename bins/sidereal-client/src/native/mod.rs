@@ -76,6 +76,7 @@ use bevy_svg::prelude::SvgPlugin;
 
 use lightyear::avian2d::plugin::AvianReplicationMode;
 use lightyear::avian2d::prelude::LightyearAvianPlugin;
+use lightyear::frame_interpolation::FrameInterpolationPlugin;
 use lightyear::input::native::prelude::NativeStateSequence;
 use lightyear::input::plugin::InputPlugin as LightyearInputProtocolPlugin;
 use lightyear::prelude::client::ClientPlugins;
@@ -85,8 +86,11 @@ use lightyear::prelude::input::native::ClientInputPlugin as NativeClientInputPlu
 #[cfg(not(target_arch = "wasm32"))]
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
-    apply_engine_thrust, clamp_angular_velocity, process_character_movement_actions,
-    process_flight_actions, stabilize_idle_motion, sync_mounted_hierarchy,
+    BallisticProjectileSpawnedEvent, CombatAuthorityEnabled, ShotFiredEvent, ShotHitEvent,
+    ShotImpactResolvedEvent, apply_engine_thrust, bootstrap_weapon_cooldown_state,
+    clamp_angular_velocity, process_character_movement_actions, process_flight_actions,
+    process_weapon_fire_actions, stabilize_idle_motion, sync_mounted_hierarchy,
+    tick_weapon_cooldowns, update_ballistic_projectiles,
 };
 use sidereal_net::register_lightyear_client_protocol;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
@@ -128,15 +132,21 @@ pub(crate) fn configure_client_runtime(
         rollback_resources: false,
         rollback_islands: false,
     });
+    app.add_plugins(FrameInterpolationPlugin::<Transform>::default());
     app.add_plugins(LightyearInputProtocolPlugin::<
         NativeStateSequence<sidereal_net::PlayerInput>,
     >::default());
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(NativeClientInputPlugin::<sidereal_net::PlayerInput>::default());
     register_lightyear_client_protocol(app);
+    app.add_message::<ShotFiredEvent>();
+    app.add_message::<ShotImpactResolvedEvent>();
+    app.add_message::<ShotHitEvent>();
+    app.add_message::<BallisticProjectileSpawnedEvent>();
 
     app.insert_resource(Time::<Fixed>::from_hz(60.0));
     app.insert_resource(AssetRootPath(asset_root));
+    app.insert_resource(CombatAuthorityEnabled(false));
     app.insert_resource(LocalSimulationDebugMode::from_env());
     app.insert_resource(MotionOwnershipAuditEnabled::from_env());
     app.insert_resource(MotionOwnershipAuditState::default());
@@ -185,6 +195,8 @@ pub(crate) fn configure_client_runtime(
     app.insert_resource(FullscreenExternalWorldData::default());
     app.insert_resource(StarfieldMotionState::default());
     app.insert_resource(CameraMotionState::default());
+    app.insert_resource(PredictionLifecycleAuditConfig::from_env());
+    app.insert_resource(PredictionLifecycleAuditState::default());
     app.insert_resource(BootstrapWatchdogState::default());
     app.insert_resource(DeferredPredictedAdoptionState::default());
     app.insert_resource(PredictionBootstrapTuning::from_env());
@@ -203,6 +215,11 @@ pub(crate) fn configure_client_runtime(
                 motion::sync_controlled_mass_from_total_mass,
                 process_character_movement_actions,
                 process_flight_actions,
+                bootstrap_weapon_cooldown_state,
+                tick_weapon_cooldowns,
+                process_weapon_fire_actions,
+                replication::mark_new_ballistic_projectiles_prespawned,
+                update_ballistic_projectiles,
                 apply_engine_thrust,
             )
                 .chain()
@@ -221,6 +238,11 @@ pub(crate) fn configure_client_runtime(
                 motion::sync_controlled_mass_from_total_mass,
                 process_character_movement_actions,
                 process_flight_actions,
+                bootstrap_weapon_cooldown_state,
+                tick_weapon_cooldowns,
+                process_weapon_fire_actions,
+                replication::mark_new_ballistic_projectiles_prespawned,
+                update_ballistic_projectiles,
                 apply_engine_thrust,
             )
                 .chain()
@@ -419,9 +441,7 @@ pub(crate) fn run() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn log_startup_error_line(message: &str) {
-    let path = std::env::var("SIDEREAL_CLIENT_LOG_FILE")
-        .unwrap_or_else(|_| "logs/sidereal-client.log".to_string());
-    let path = std::path::PathBuf::from(path);
+    let path = dev_console::log_file_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

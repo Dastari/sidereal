@@ -5,7 +5,7 @@ Last updated: March 8, 2026
 Primary architecture reference: `docs/sidereal_design_document.md`
 Related contract: `docs/features/scripting_support.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
-Related render-layer contract: `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+Related render-layer contract: `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 
 ## 1. Purpose
 

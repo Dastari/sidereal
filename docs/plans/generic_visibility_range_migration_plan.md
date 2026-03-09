@@ -4,7 +4,7 @@ Status: Implemented reference note
 Date: 2026-03-07
 
 Primary references:
-- `docs/features/dr-0028_generic_visibility_range_components.md`
+- `docs/decisions/dr-0028_generic_visibility_range_components.md`
 - `docs/features/visibility_replication_contract.md`
 - `AGENTS.md`
 

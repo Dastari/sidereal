@@ -5,7 +5,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::ecs::query::Has;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
-use sidereal_game::{EntityGuid, PlayerTag};
+use sidereal_game::EntityGuid;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::app_state::{ClientSession, FreeCameraState, LocalPlayerViewState};
@@ -17,101 +17,9 @@ use super::dev_console::{DevConsoleState, is_console_open};
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
 use super::resources::{CameraMotionState, TacticalMapUiState};
 
-fn resolve_guid_entity_prefer_predicted(
-    guid: uuid::Uuid,
-    candidates: &Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-        ),
-    >,
-) -> Option<Entity> {
-    let mut winner: Option<(Entity, i32)> = None;
-    for (entity, entity_guid, is_predicted, is_interpolated) in candidates {
-        if entity_guid.0 != guid {
-            continue;
-        }
-        let score = if is_predicted {
-            3
-        } else if is_interpolated {
-            2
-        } else {
-            1
-        };
-        if winner.is_none_or(|(_, best_score)| score > best_score) {
-            winner = Some((entity, score));
-        }
-    }
-    winner.map(|(entity, _)| entity)
-}
-
 fn parse_entity_id_guid(raw: &str) -> Option<uuid::Uuid> {
     sidereal_runtime_sync::parse_guid_from_entity_id(raw)
         .or_else(|| uuid::Uuid::parse_str(raw).ok())
-}
-
-/// Client-side visual smoothing helper:
-/// when the player controls another entity, keep the local player anchor Transform
-/// aligned to the controlled entity's rendered Transform, without writing Position.
-///
-/// This preserves server-authoritative player Position for visibility/culling while
-/// avoiding camera lurch from interpolated player-anchor network updates.
-#[allow(clippy::type_complexity)]
-pub(crate) fn sync_player_anchor_render_transform_to_controlled_entity(
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    guid_candidates: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-        ),
-    >,
-    source_transforms: Query<'_, '_, &'_ Transform, (Without<PlayerTag>, Without<Camera>)>,
-    mut player_transforms: Query<'_, '_, &'_ mut Transform, (With<PlayerTag>, Without<Camera>)>,
-) {
-    let Some(player_entity_id) = session.player_entity_id.as_deref() else {
-        return;
-    };
-    let Some(player_guid) = parse_entity_id_guid(player_entity_id) else {
-        return;
-    };
-    let Some(controlled_id) = player_view_state.controlled_entity_id.as_deref() else {
-        return;
-    };
-    let Some(controlled_guid) = parse_entity_id_guid(controlled_id) else {
-        return;
-    };
-    if controlled_guid == player_guid {
-        return;
-    }
-
-    let Some(player_anchor_entity) =
-        resolve_guid_entity_prefer_predicted(player_guid, &guid_candidates)
-    else {
-        return;
-    };
-    let Some(controlled_entity) =
-        resolve_guid_entity_prefer_predicted(controlled_guid, &guid_candidates)
-    else {
-        return;
-    };
-    let Ok(controlled_transform) = source_transforms.get(controlled_entity) else {
-        return;
-    };
-    let Ok(mut player_transform) = player_transforms.get_mut(player_anchor_entity) else {
-        return;
-    };
-
-    player_transform.translation = controlled_transform.translation;
-    player_transform.rotation = controlled_transform.rotation;
 }
 
 #[allow(clippy::type_complexity)]

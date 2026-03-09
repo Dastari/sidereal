@@ -187,7 +187,7 @@ fn summary_logging_enabled() -> bool {
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn receive_latest_realtime_input_messages(
-    time: Res<'_, Time>,
+    time: Res<'_, Time<Real>>,
     mut last_activity: ResMut<'_, ClientLastActivity>,
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,

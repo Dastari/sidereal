@@ -266,7 +266,7 @@ pub fn bootstrap_ship_mass_components(
     }
 }
 
-/// Ensures root dynamic entities with `SizeM` have an Avian collider.
+/// Ensures root collidable entities with `SizeM` have an Avian collider.
 /// This covers hydrated entities that may carry `RigidBody` but miss `Collider`.
 #[allow(clippy::type_complexity)]
 pub fn bootstrap_collision_profiles_from_aabb(
@@ -314,7 +314,7 @@ pub fn collider_from_collision_shape(
     Collider::rectangle(width, length)
 }
 
-/// Ensures root dynamic entities with `SizeM` have an Avian collider.
+/// Ensures root collidable entities with `SizeM` have an Avian collider.
 /// This covers hydrated entities that may carry `RigidBody` but miss `Collider`.
 #[allow(clippy::type_complexity)]
 pub fn bootstrap_root_dynamic_entity_colliders(
@@ -357,7 +357,10 @@ pub fn bootstrap_root_dynamic_entity_colliders(
         let Some(rigid_body) = rigid_body else {
             continue;
         };
-        if !matches!(rigid_body, RigidBody::Dynamic | RigidBody::Kinematic) {
+        if !matches!(
+            rigid_body,
+            RigidBody::Dynamic | RigidBody::Kinematic | RigidBody::Static
+        ) {
             continue;
         }
         commands

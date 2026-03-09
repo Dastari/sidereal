@@ -4,7 +4,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
-    MessageReceiver, NetworkTarget, RemoteId, Replicate, Server, ServerMultiMessageSender, Unlink,
+    MessageReceiver, NetworkTarget, RemoteId, Server, ServerMultiMessageSender, Unlink,
 };
 use serde::Deserialize;
 use sidereal_game::{AccountId, PlayerTag};
@@ -17,7 +17,7 @@ use sidereal_net::{
     PlayerEntityId, ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 
-use crate::replication::control::ClientControlRequestOrder;
+use crate::replication::control::{ClientControlRequestOrder, owner_only_replicate};
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
     canonical_player_entity_id,
@@ -39,9 +39,15 @@ pub(crate) struct PendingAuthAuditState {
     pub last_logged_at_s_by_client_entity: HashMap<Entity, f64>,
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct SessionReadyThrottleState {
+    pub last_sent_at_s_by_client_entity: HashMap<Entity, f64>,
+}
+
 pub fn init_resources(app: &mut App) {
     app.insert_resource(AuthenticatedClientBindings::default());
     app.insert_resource(PendingAuthAuditState::default());
+    app.insert_resource(SessionReadyThrottleState::default());
 }
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
@@ -203,6 +209,7 @@ pub fn receive_client_auth_messages(
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
+    mut ready_throttle: ResMut<'_, SessionReadyThrottleState>,
 ) {
     let now_s = time.elapsed_secs_f64();
     let jwt_secret = configured_gateway_jwt_secret().ok();
@@ -326,7 +333,7 @@ pub fn receive_client_auth_messages(
                 commands
                     .entity(player_entity)
                     .remove::<lightyear::prelude::InterpolationTarget>()
-                    .insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
+                    .insert(owner_only_replicate(client_entity));
             } else {
                 warn!(
                     "replication auth: player entity not found for {}; owner-only player replication target not applied",
@@ -344,8 +351,17 @@ pub fn receive_client_auth_messages(
                     .is_some_and(|bound| bound == &message_player_wire);
             if already_bound_same_player {
                 // Idempotent auth refresh for an already-bound client:
-                // keep current visibility/bindings intact and simply acknowledge readiness.
+                // keep current visibility/bindings intact and only re-send readiness
+                // if enough time has elapsed to make it a meaningful retry.
                 visibility_registry.register_client(client_entity, message_player_wire.clone());
+                let last_ready_sent_at_s = ready_throttle
+                    .last_sent_at_s_by_client_entity
+                    .get(&client_entity)
+                    .copied()
+                    .unwrap_or(f64::NEG_INFINITY);
+                if now_s - last_ready_sent_at_s < 2.0 {
+                    continue;
+                }
                 let target = NetworkTarget::Single(remote_id.0);
                 let ready = ServerSessionReadyMessage {
                     player_entity_id: message_player_wire.clone(),
@@ -358,6 +374,10 @@ pub fn receive_client_auth_messages(
                         "replication failed sending session-ready refresh to remote={:?} player={} err={}",
                         remote_id.0, message_player_wire, err
                     );
+                } else {
+                    ready_throttle
+                        .last_sent_at_s_by_client_entity
+                        .insert(client_entity, now_s);
                 }
                 continue;
             }
@@ -464,6 +484,10 @@ pub fn receive_client_auth_messages(
                     "replication failed sending session-ready message to remote={:?} player={} err={}",
                     remote_id.0, message_player_wire, err
                 );
+            } else {
+                ready_throttle
+                    .last_sent_at_s_by_client_entity
+                    .insert(client_entity, now_s);
             }
         }
     }
@@ -492,6 +516,7 @@ fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AuthClaims> {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn audit_pending_client_auth_state(
     time: Res<'_, Time<Real>>,
     bindings: Res<'_, AuthenticatedClientBindings>,

@@ -303,7 +303,15 @@ fn env_flag_with_default(name: &str, default: bool) -> bool {
 }
 
 pub fn shader_materials_enabled() -> bool {
-    env_flag_with_default("SIDEREAL_ENABLE_SHADER_MATERIALS", true)
+    #[cfg(target_arch = "wasm32")]
+    {
+        env_flag_with_default("SIDEREAL_ENABLE_SHADER_MATERIALS", false)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        env_flag_with_default("SIDEREAL_ENABLE_SHADER_MATERIALS", true)
+    }
 }
 
 pub fn streamed_shader_overrides_enabled() -> bool {

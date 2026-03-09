@@ -1,13 +1,13 @@
 # Projectile Firing and Damage Loop Plan
 
-Status: In progress (first playable slice implemented)  
-Date: 2026-03-03  
+Status: Updated after ballistic projectile refactor  
+Date: 2026-03-08  
 Owners: gameplay runtime + replication + client
 
 Primary architecture references:
 - `docs/sidereal_design_document.md`
 - `docs/features/visibility_replication_contract.md`
-- `docs/features/dr-0013_action_acceptor_control_routing.md`
+- `docs/decisions/dr-0013_action_acceptor_control_routing.md`
 - `docs/component_authoring_guide.md`
 
 ## 1. Goals
@@ -23,7 +23,7 @@ Implement a first playable combat slice with:
 
 ## 1.1 Implementation Status (2026-03-03)
 
-Implemented in this baseline:
+Implemented in the current baseline:
 
 1. Added a new corvette hardpoint `weapon_fore_center` (front-center, forward-oriented).
 2. Added a mounted `Ballistic Gatling` module on that hardpoint.
@@ -32,13 +32,22 @@ Implemented in this baseline:
    - `BallisticWeapon`
    - `AmmoCount`
    - `DamageType::Ballistic`
-4. Added authoritative fixed-step weapon fire system:
-   - consumes `FirePrimary` intent from `ActionQueue`,
-   - enforces per-weapon cooldown and ammo,
-   - resolves hits via Avian `SpatialQuery::cast_ray`,
-   - applies hull damage to `HealthPool`.
+4. Added authoritative fixed-step weapon fire system.
 5. Bound `Space` to `FirePrimary` and moved brake hold to `Ctrl` keys.
 6. Preserved native/WASM parity by wiring fire intent through shared `PlayerInput` protocol (`sidereal-net`) used by both targets.
+
+Current ballistic-gatling behavior:
+
+1. Weapons with `projectile_speed_mps > 0` now spawn true ballistic projectile entities.
+2. Projectile initial velocity inherits shooter inertial velocity:
+   - `projectile_velocity = shooter_linear_velocity + muzzle_forward * projectile_speed_mps`
+3. The local shooter pre-spawns the projectile in fixed-step gameplay.
+4. The replication server also spawns the same projectile in fixed-step gameplay and marks it `PreSpawned`, then:
+   - predicts it for the owning shooter,
+   - interpolates it for observers.
+5. Legacy hitscan `ShotFiredEvent -> ShotImpactResolvedEvent -> tracer message` remains only for weapons with `projectile_speed_mps <= 0`.
+6. Runtime ballistic projectile entities carry a real `EntityGuid` for replication/prediction clone matching.
+7. Replication persistence explicitly excludes ballistic projectile entities because they are ephemeral runtime combat state, not durable world state.
 
 Current constraints in this baseline:
 
@@ -55,21 +64,15 @@ Current constraints in this baseline:
 
 ## 3. Research Summary and Direction
 
-### 3.1 What to use first: pooled bullet entities vs per-shot spawn?
+### 3.1 Updated direction
 
-For MMO-scale realtime combat, do not replicate every short-lived bullet as an authoritative network entity in v1.  
-Use server-authoritative shot queries (ray/shape cast) and replicate compact shot/hit events.
+The original first slice used authoritative hitscan plus cosmetic tracers. That is no longer the right default for Sidereal's ballistic space weapons.
 
-Reasoning:
+Current direction:
 
-1. Bevy can spawn many entities efficiently (`spawn_batch`), but high-rate spawn/despawn still creates structural churn and network payload noise if every bullet is authoritative.
-2. Avian already provides fast query primitives (`SpatialQuery::cast_ray`, `cast_shape`, `ray_hits`) suitable for authoritative fire checks.
-3. Lightyear input model fits intent-driven fire actions well; server should decide shot acceptance, cooldown, and outcomes.
-
-Practical outcome:
-
-1. Authoritative simulation: event/query-driven shots (no replicated bullet entities required).
-2. Client visuals: optional pooled tracer VFX entities (purely cosmetic), safe to reuse/hide client-side.
+1. Weapons intended to behave as real inertial projectiles use authoritative projectile entities.
+2. Hitscan remains valid only for weapon classes that are intentionally instantaneous.
+3. Cosmetic tracer reconstruction should not stand in for real ballistic projectile gameplay when travel time, inertial drift, and dodgeability matter.
 
 ### 3.2 Rectangle cast idea
 
@@ -89,7 +92,7 @@ This is better than spawning full rigid-body bullets for high-RPM cannons in the
 3. Bevy `spawn_batch` efficiency note: <https://docs.rs/bevy/latest/bevy/ecs/system/command/fn.spawn_batch.html>
 4. Lightyear inputs module: <https://docs.rs/lightyear/latest/lightyear/inputs/index.html>
 
-## 4. Authoritative Combat Loop (v1)
+## 4. Authoritative Combat Loop
 
 Fixed tick flow (`FixedUpdate`, server/replication):
 
@@ -101,14 +104,15 @@ Fixed tick flow (`FixedUpdate`, server/replication):
    - optional ammo/fuel/power checks (future extension hook).
 4. For each accepted shot:
    - resolve muzzle world transform from hardpoint/module hierarchy,
-   - compute shot direction from authoritative aiming source (initially controlled-entity forward),
-   - run Avian spatial query (`cast_ray` or `cast_shape`) with collision filters,
-   - choose first valid hit (excluding shooter/mounted children),
-   - compute damage and apply to `HealthPool`.
-5. Emit compact combat events for replication/UI/VFX:
-   - `ShotFiredEvent`,
-   - `ShotHitEvent` (or miss event with end point).
-6. Replicate resulting state deltas (health changes, destruction state later).
+   - compute shot direction from authoritative aiming source,
+   - if the weapon is hitscan: run immediate spatial query and resolve impact,
+   - if the weapon is ballistic: spawn a projectile entity with inherited shooter velocity.
+5. Ballistic projectile loop:
+   - advance projectile position in fixed-step,
+   - raycast over the projectile step each tick,
+   - apply damage on authoritative hit,
+   - despawn on impact or lifetime expiry.
+6. Replicate resulting state deltas and projectile entity state.
 
 ## 5. Data Model Additions (Proposed)
 
@@ -190,11 +194,11 @@ Collision authoring policy:
 
 ## 9. Optimization Plan
 
-## 9.1 Immediate (ship combat slice)
+## 9.1 Immediate
 
-1. Use query-based hit detection (no authoritative bullet entity flood).
-2. Batch server shot processing per controlled entity each fixed tick.
-3. Replicate compact outcomes (fire/hit), not full projectile transform streams.
+1. Keep hitscan only for true hitscan weapons.
+2. Use real projectile entities for ballistic space weapons.
+3. Pre-spawn those ballistic projectiles on the local predicted path and mark matching server projectiles `PreSpawned`.
 
 ## 9.2 Client visual optimization
 

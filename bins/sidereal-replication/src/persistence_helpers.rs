@@ -72,7 +72,7 @@ pub fn flush_pending_updates(
         .collect::<Vec<_>>();
     let removals = pending_removals.drain().collect::<Vec<_>>();
     let count = batch.len() + removals.len();
-    persistence.persist_graph_records(&batch, tick)?;
+    persistence.persist_graph_records_transactional(&batch, tick)?;
     persistence.remove_graph_entities(&removals)?;
     Ok(count)
 }
