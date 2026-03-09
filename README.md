@@ -1,4 +1,4 @@
-# sidereal_v3
+# sidereal
 
 Sidereal rebuild workspace (server-authoritative architecture, Bevy 0.18, Lightyear transport, Postgres+AGE persistence).
 
