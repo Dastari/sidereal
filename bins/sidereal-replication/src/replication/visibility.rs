@@ -1203,7 +1203,7 @@ pub fn update_network_visibility(
             continue;
         }
 
-        // Fullscreen authored config entities are global non-spatial overlays and must not be
+        // Runtime render config entities are global non-spatial authored state and must not be
         // culled by delivery-range / visibility-range candidate logic as players move through the world.
         let is_global_fullscreen_config = fullscreen_layer.is_some()
             || runtime_render_layer.is_some_and(|layer| {
@@ -1213,7 +1213,9 @@ pub fn update_network_visibility(
                         RENDER_PHASE_FULLSCREEN_BACKGROUND | RENDER_PHASE_FULLSCREEN_FOREGROUND
                     )
             });
-        if is_global_fullscreen_config {
+        let is_global_render_config = is_global_fullscreen_config
+            || runtime_render_layer.is_some();
+        if is_global_render_config {
             for client_entity in &scratch.live_clients {
                 if scratch.context_by_client.contains_key(client_entity) {
                     replication_state.gain_visibility(*client_entity);

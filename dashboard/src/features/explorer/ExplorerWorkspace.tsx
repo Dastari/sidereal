@@ -16,7 +16,6 @@ import type {
   ExpandedNode,
   GraphEdge,
   GraphNode,
-  PlayerVisibilityOverlay,
   WorldEntity,
 } from '@/components/grid/types'
 import type { BrpTab, DataSourceMode } from '@/components/sidebar/Toolbar'
@@ -95,6 +94,119 @@ const DEFAULT_CAMERA_STATE: CameraSnapshot = {
   x: 0,
   y: 0,
   zoom: 0.5,
+}
+
+const COMPONENT_EDITOR_METADATA_KEYS = new Set(['component_kind', 'typePath'])
+const AVIAN_LINEAR_VELOCITY_SUFFIX = '::LinearVelocity'
+
+function isPlainObjectRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  )
+}
+
+function sanitizeTypePathKey(typePath: string): string {
+  return typePath.replaceAll('::', '__')
+}
+
+function patchComponentNodeProperties(
+  properties: Record<string, unknown>,
+  typePath: string,
+  value: unknown,
+): Record<string, unknown> {
+  const nextProperties = { ...properties }
+  let patched = false
+
+  if ('value' in nextProperties) {
+    nextProperties.value = value
+    patched = true
+  }
+  if (typePath in nextProperties) {
+    nextProperties[typePath] = value
+    patched = true
+  }
+
+  const sanitizedTypePath = sanitizeTypePathKey(typePath)
+  if (sanitizedTypePath in nextProperties) {
+    nextProperties[sanitizedTypePath] = value
+    patched = true
+  }
+  if ('0' in nextProperties) {
+    nextProperties['0'] = value
+    patched = true
+  }
+
+  if (patched) {
+    return nextProperties
+  }
+
+  const metadataEntries = Object.entries(properties).filter(([key]) =>
+    COMPONENT_EDITOR_METADATA_KEYS.has(key),
+  )
+  if (isPlainObjectRecord(value)) {
+    return {
+      ...Object.fromEntries(metadataEntries),
+      ...value,
+    }
+  }
+
+  return {
+    ...Object.fromEntries(metadataEntries),
+    value,
+  }
+}
+
+function extractOptimisticVec2(value: unknown): [number, number] | null {
+  if (Array.isArray(value) && value.length >= 2) {
+    const x = Number(value[0])
+    const y = Number(value[1])
+    return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null
+  }
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const record = value as Record<string, unknown>
+  if ('value' in record) {
+    const nested = extractOptimisticVec2(record.value)
+    if (nested) return nested
+  }
+  if ('position' in record) {
+    const nested = extractOptimisticVec2(record.position)
+    if (nested) return nested
+  }
+
+  const x = Number(record.x)
+  const y = Number(record.y)
+  return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null
+}
+
+function applyOptimisticEntityComponentValue(
+  entities: Array<WorldEntity>,
+  entityId: string,
+  typePath: string,
+  value: unknown,
+): Array<WorldEntity> {
+  const nextVec2 = extractOptimisticVec2(value)
+  if (!nextVec2) {
+    return entities
+  }
+
+  return entities.map((entity) => {
+    if (entity.id !== entityId) {
+      return entity
+    }
+    if (typePath.endsWith(POSITION_SUFFIX)) {
+      return { ...entity, x: nextVec2[0], y: nextVec2[1] }
+    }
+    if (typePath.endsWith(AVIAN_LINEAR_VELOCITY_SUFFIX)) {
+      return { ...entity, vx: nextVec2[0], vy: nextVec2[1] }
+    }
+    return entity
+  })
 }
 
 export function ExplorerWorkspace({
@@ -848,6 +960,44 @@ export function ExplorerWorkspace({
       componentKind: string,
       value: unknown,
     ) => {
+      const componentNodeId =
+        graphEdges.find((edge) => {
+          if (edge.from !== entityId || edge.label !== 'HAS_COMPONENT') {
+            return false
+          }
+          const componentNode = graphNodes.get(edge.to)
+          if (!componentNode) return false
+          const nodeTypePath = componentNode.properties.typePath
+          if (typeof nodeTypePath === 'string' && nodeTypePath === typePath) {
+            return true
+          }
+          const nodeComponentKind = componentNode.properties.component_kind
+          return (
+            typeof nodeComponentKind === 'string' &&
+            nodeComponentKind === componentKind
+          )
+        })?.to ?? null
+      const previousNode = componentNodeId ? graphNodes.get(componentNodeId) ?? null : null
+      const previousEntities = entities
+
+      if (componentNodeId && previousNode) {
+        setGraphNodes((current) => {
+          const next = new Map(current)
+          next.set(componentNodeId, {
+            ...previousNode,
+            properties: patchComponentNodeProperties(
+              previousNode.properties,
+              typePath,
+              value,
+            ),
+          })
+          return next
+        })
+      }
+      setEntities((current) =>
+        applyOptimisticEntityComponentValue(current, entityId, typePath, value),
+      )
+
       try {
         let res: Response
         if (sourceMode === 'database') {
@@ -886,15 +1036,23 @@ export function ExplorerWorkspace({
           result?: unknown
         }
         if (!res.ok || data.error) {
-          console.error('Component update failed:', data.error ?? res.statusText)
-          return
+          throw new Error(data.error ?? res.statusText)
         }
         void loadData()
       } catch (err) {
+        if (componentNodeId && previousNode) {
+          setGraphNodes((current) => {
+            const next = new Map(current)
+            next.set(componentNodeId, previousNode)
+            return next
+          })
+        }
+        setEntities(previousEntities)
         console.error('Component update request failed:', err)
+        throw err
       }
     },
-    [sourceMode, loadData, activeBrpTab],
+    [sourceMode, loadData, activeBrpTab, entities, graphEdges, graphNodes],
   )
 
   // Handle node collapse

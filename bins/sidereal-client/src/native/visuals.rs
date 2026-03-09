@@ -1207,7 +1207,12 @@ pub(super) fn update_planet_body_visuals_system(
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
     mut materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
-    gameplay_camera: Query<'_, '_, (&'_ Camera, &'_ Projection, &'_ Transform), With<GameplayCamera>>,
+    gameplay_camera: Query<
+        '_,
+        '_,
+        (&'_ Camera, &'_ Projection, &'_ GlobalTransform),
+        With<GameplayCamera>,
+    >,
     planets: Query<
         '_,
         '_,
@@ -1237,7 +1242,7 @@ pub(super) fn update_planet_body_visuals_system(
     let camera_view = gameplay_camera.single().ok();
     let camera_world_position_xy = camera_view
         .as_ref()
-        .map(|(_, _, transform)| transform.translation.truncate())
+        .map(|(_, _, transform)| transform.translation().truncate())
         .unwrap_or(Vec2::ZERO);
     for (
         children,
@@ -1381,7 +1386,7 @@ fn projected_planet_intersects_camera_view(
     buffer_m: f32,
     camera: &Camera,
     projection: &Projection,
-    camera_transform: &Transform,
+    camera_transform: &GlobalTransform,
 ) -> bool {
     let Some(viewport_size) = camera.logical_viewport_size() else {
         return false;
@@ -1391,7 +1396,7 @@ fn projected_planet_intersects_camera_view(
     };
     let half_extents_world = viewport_size * orthographic.scale * 0.5;
     let radius_with_buffer = projected_radius_m.max(0.0) + buffer_m.max(0.0);
-    let delta = projected_center_world - camera_transform.translation.truncate();
+    let delta = projected_center_world - camera_transform.translation().truncate();
     delta.x >= -half_extents_world.x - radius_with_buffer
         && delta.x <= half_extents_world.x + radius_with_buffer
         && delta.y >= -half_extents_world.y - radius_with_buffer

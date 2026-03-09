@@ -4,6 +4,9 @@ Status: Implementation plan
 Date: 2026-03-09  
 Scope: server-authoritative discovery and post-discovery visibility for static celestial landmarks
 
+Status notes:
+- 2026-03-10: Extended the plan with a separate Lua-authored player landmark flow for quest/navigation markers. This is additive to discovered static landmark visibility and follows the scripting authority contract in `docs/features/scripting_support.md`.
+
 Primary references:
 - `docs/features/visibility_replication_contract.md`
 - `docs/sidereal_design_document.md`
@@ -177,6 +180,35 @@ Depending on replication pressure, consider a reduced landmark product lane late
 
 First implementation can likely reuse current world-entity replication for static landmark entities, as long as authorization/delivery are corrected.
 
+### 5.4 Lua-authored player landmark lane for quests and guidance
+
+Quest and scripted guidance landmarks should not directly "push landmarks to clients" as an ad-hoc client API. They need a server-authoritative player-scoped data lane that Lua can drive through validated intents.
+
+Recommended first-pass shape:
+
+1. Add an owner-only persisted or session-scoped player component such as `ScriptedPlayerLandmarks`.
+2. Each entry represents a client-facing landmark marker rather than a world-entity authorization grant.
+3. Lua writes this state through validated script intents, not raw ECS access and not direct replication bypass.
+
+Suggested entry fields:
+
+1. `landmark_id`: stable logical ID for add/update/remove
+2. `target_entity_id: Option<Uuid>` for markers anchored to an entity already known to the server
+3. `world_position: Option<Vec2/Vec3-like payload>` for markers that point at a coordinate instead of an entity
+4. `label` / `short_description`
+5. `icon` or `marker_kind`
+6. `objective_state` or `quest_stage_id`
+7. `expires_at` or `ttl_s` if the marker is temporary
+8. `discoverability_policy` or equivalent validation flag when the target references an undiscovered static landmark
+
+Rules:
+
+1. This lane is owner-scoped replicated UI/navigation state, not a new client authority path.
+2. A scripted landmark may reference an existing discovered static landmark, a dynamic quest target, or a pure coordinate.
+3. When a scripted landmark references an undiscovered hidden world entity, replication must not leak hidden entity payload through the marker. The marker must degrade to a validated coarse pointer, obfuscated coordinate, or be rejected by policy.
+4. The client consumes these entries as HUD/map landmarks only. They do not imply full world-entity replication authorization.
+5. If persistence is not needed for a marker class, session-scoped player landmark state is acceptable; durable quest landmarks should still live on the player ECS entity when they must survive reconnect/restart.
+
 ## 6. Discovery Rules
 
 Discovery should be server-authored and deterministic.
@@ -224,6 +256,16 @@ Important:
 
 1. Discovery-based authorization must not widen payload disclosure for private or dynamic components.
 2. Discovery lane should authorize only the static landmark presence/product, not unrelated hidden entities or hidden internals.
+3. Scripted player landmarks are a separate owner-only replication product and must not reuse discovered-landmark authorization as a backdoor for hidden world state.
+
+### 7.1 Scripted landmark replication rule
+
+For Lua-authored quest/guidance markers:
+
+1. Replicate `ScriptedPlayerLandmarks` owner-only to the bound authenticated player session.
+2. The product contains only client marker metadata needed for UI/navigation.
+3. If the marker targets a world entity, the replication payload uses stable UUID/logical metadata only and does not imply full component/product visibility for that entity.
+4. Validation must reject script requests that would reveal undiscovered/private world state more precisely than policy allows.
 
 ## 8. Culling and Rendering Implications
 
@@ -286,6 +328,7 @@ Update:
 1. component registry generation
 2. persistence/hydration mappings
 3. Lua bundle allowlists and world-authoring paths
+4. script intent and replication schema for owner-scoped `ScriptedPlayerLandmarks`
 
 Tests:
 
@@ -323,6 +366,23 @@ Tests:
 1. discovered landmark remains authorized outside scanner range
 2. undiscovered landmark remains hidden outside live visibility
 3. dynamic entities do not inherit landmark persistence behavior
+4. scripted landmark replication does not widen hidden-entity payload disclosure
+
+### Phase 3A: Lua landmark flow
+
+Scripting/runtime work:
+
+1. add validated script intents such as `upsert_player_landmark` and `remove_player_landmark`
+2. store landmark entries on the player entity or session-scoped player runtime state according to durability requirements
+3. replicate owner-only landmark marker products to the authenticated client
+4. enforce policy checks for entity-backed markers targeting undiscovered/private content
+
+Tests:
+
+1. Lua can add, update, and remove a quest landmark for the owning player
+2. reconnect preserves durable quest landmarks when configured as persisted state
+3. scripted landmark for an undiscovered static landmark does not leak full hidden entity payload
+4. one player's quest landmarks never replicate to another player
 
 ### Phase 4: Client/runtime consumption
 
@@ -362,6 +422,7 @@ Content authoring:
 1. `data/scripts/bundles/starter/planet_body.lua`
 2. future star/black-hole/nebula bundle authoring
 3. bundle allowlists / registry
+4. quest/mission Lua handlers that emit landmark intents
 
 Docs:
 
@@ -392,6 +453,8 @@ Client:
 4. free-roam camera alone does not discover hidden landmark
 5. reconnect/hydration preserves discovered landmarks
 6. multiple player entities on one account keep separate discovery state unless explicitly shared
+7. Lua-authored owner landmark appears only for the targeted player client
+8. Lua-authored landmark update/remove roundtrips through owner-only replication
 
 ### Regression checks
 
@@ -415,6 +478,14 @@ Mitigation:
 
 1. discovery must use legitimate observer/scanner sources, not detached camera alone
 2. keep camera delivery as narrowing only after authorization
+
+### Risk: quest landmark flow leaks hidden targets
+
+Mitigation:
+
+1. keep scripted landmarks as a reduced owner-only marker product
+2. require validation when a marker references an undiscovered or private entity
+3. allow coarse/fuzzy markers or logical labels where exact hidden positions are not authorized
 
 ### Risk: overloading `PublicVisibility`
 
@@ -455,6 +526,8 @@ These should be resolved in the DR or implementation kickoff:
    2. system primary star
 6. Do we want a reduced static-landmark replication product in phase 1, or only after correctness lands
    1. recommended first pass: reuse ordinary world replication where possible
+7. Should scripted quest landmarks always persist, or can some remain session-only
+   1. recommended first pass: support both, defaulting quests that survive reconnect to persisted player-entity state
 
 ## 15. Recommended First-Pass Decisions
 
@@ -470,6 +543,7 @@ To keep implementation tractable:
 5. Detached free-roam camera does not grant discovery.
 6. Discovered landmarks remain deliverable independent of current scanner range, but only within local/system delivery scope.
 7. Environment-lighting config is explicitly excluded from the landmark-discovery lane.
+8. Lua-authored quest/guidance landmarks use a separate owner-only player landmark lane driven by validated script intents, not direct client injection.
 
 ## 16. Success Criteria
 
@@ -483,3 +557,4 @@ This plan is complete when:
    2. explored-memory
    3. discovered static landmark visibility
 5. client world rendering continues to work with authoritative world positions plus client-only projected visual offsets
+6. Lua can add/remove owner-scoped quest landmarks without bypassing visibility/redaction rules

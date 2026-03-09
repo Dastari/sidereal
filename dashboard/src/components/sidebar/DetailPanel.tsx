@@ -47,7 +47,7 @@ interface DetailPanelProps {
     typePath: string,
     componentKind: string,
     value: unknown,
-  ) => void
+  ) => Promise<void> | void
   /** Called when the close button is clicked. Caller should clear selection. */
   onClose?: () => void
 }
@@ -615,7 +615,7 @@ interface ComponentsListProps {
     typePath: string,
     componentKind: string,
     value: unknown,
-  ) => void
+  ) => Promise<void> | void
 }
 
 function ComponentsList({

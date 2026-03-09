@@ -24,7 +24,7 @@ export interface ComponentEditorRendererProps {
     typePath: string,
     componentKind: string,
     value: unknown,
-  ) => void
+  ) => Promise<void> | void
   readOnly?: boolean
 }
 
@@ -36,6 +36,7 @@ export function ComponentEditorRenderer({
   onUpdate,
   readOnly = false,
 }: ComponentEditorRendererProps) {
+  const AUTO_APPLY_DEBOUNCE_MS = 250
   const entry = React.useMemo(
     () => resolveComponentRegistryEntry(node, generatedComponentRegistry),
     [generatedComponentRegistry, node],
@@ -45,10 +46,54 @@ export function ComponentEditorRenderer({
     [entry, node],
   )
   const [draftValue, setDraftValue] = React.useState(payload)
+  const [saveState, setSaveState] = React.useState<
+    'idle' | 'pending' | 'saving' | 'saved' | 'error'
+  >('idle')
+  const [errorText, setErrorText] = React.useState<string | null>(null)
+  const saveSequenceRef = React.useRef(0)
 
   React.useEffect(() => {
     setDraftValue(payload)
   }, [payload])
+
+  React.useEffect(() => {
+    if (readOnly || !entry) {
+      setSaveState('idle')
+      setErrorText(null)
+      return
+    }
+
+    const nextDirty = JSON.stringify(draftValue) !== JSON.stringify(payload)
+    if (!nextDirty) {
+      setSaveState((current) => (current === 'error' ? current : 'idle'))
+      return
+    }
+
+    setSaveState('pending')
+    setErrorText(null)
+    const saveSequence = saveSequenceRef.current + 1
+    saveSequenceRef.current = saveSequence
+    const timeoutId = window.setTimeout(() => {
+      setSaveState('saving')
+      Promise.resolve(onUpdate(entry.type_path, entry.component_kind, draftValue))
+        .then(() => {
+          if (saveSequenceRef.current !== saveSequence) return
+          setSaveState('saved')
+          setErrorText(null)
+        })
+        .catch((error: unknown) => {
+          if (saveSequenceRef.current !== saveSequence) return
+          setSaveState('error')
+          setErrorText(
+            error instanceof Error ? error.message : 'Component update failed',
+          )
+        })
+    }, AUTO_APPLY_DEBOUNCE_MS)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [draftValue, entry, onUpdate, payload, readOnly])
 
   if (!entry) {
     return null
@@ -91,6 +136,19 @@ export function ComponentEditorRenderer({
         ))}
       </div>
       <div className="flex items-center justify-end gap-2">
+        <div className="mr-auto text-[11px] text-muted-foreground">
+          {readOnly
+            ? 'Read only'
+            : saveState === 'pending'
+              ? 'Auto-applying...'
+              : saveState === 'saving'
+                ? 'Saving...'
+                : saveState === 'saved'
+                  ? 'Saved'
+                  : saveState === 'error'
+                    ? errorText ?? 'Save failed'
+                    : 'Auto-apply enabled'}
+        </div>
         <Button
           type="button"
           variant="ghost"
@@ -99,14 +157,6 @@ export function ComponentEditorRenderer({
           onClick={() => setDraftValue(payload)}
         >
           Reset
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          disabled={readOnly || !dirty}
-          onClick={() => onUpdate(entry.type_path, entry.component_kind, draftValue)}
-        >
-          Apply
         </Button>
       </div>
     </div>
@@ -284,6 +334,7 @@ function NumberEditor({
   const min = field.min ?? undefined
   const max = field.max ?? undefined
   const shouldShowSlider = min !== undefined && max !== undefined
+  const displayValue = formatNumericInputValue(safeValue, step)
 
   return (
     <div className="space-y-2">
@@ -304,7 +355,7 @@ function NumberEditor({
         min={min}
         max={max}
         step={step}
-        value={safeValue}
+        value={displayValue}
         onChange={(event) => {
           const next = Number(event.target.value)
           onChange(Number.isFinite(next) ? next : 0)
@@ -336,7 +387,7 @@ function VectorEditor({
           type="number"
           step="0.01"
           disabled={readOnly}
-          value={channelValue}
+          value={formatNumericInputValue(channelValue, 0.01)}
           onChange={(event) => {
             const next = Number(event.target.value)
             if (!Number.isFinite(next)) return
@@ -393,7 +444,7 @@ function ColorEditor({
               step="0.01"
               min={0}
               disabled={readOnly}
-              value={channelValue}
+              value={formatNumericInputValue(channelValue, 0.01)}
               onChange={(event) => {
                 const next = Number(event.target.value)
                 if (!Number.isFinite(next)) return
@@ -449,6 +500,32 @@ function writeVectorValue(
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
+}
+
+function numericStepPrecision(step: number): number {
+  if (!Number.isFinite(step) || step <= 0) {
+    return 2
+  }
+  const normalized = step.toString().toLowerCase()
+  if (normalized.includes('e-')) {
+    const exponent = Number(normalized.split('e-')[1] ?? '0')
+    return Number.isFinite(exponent) ? Math.min(exponent, 6) : 2
+  }
+  const fraction = normalized.split('.')[1] ?? ''
+  return Math.min(fraction.length, 6)
+}
+
+function formatNumericInputValue(value: number, step: number): string {
+  if (!Number.isFinite(value)) {
+    return '0'
+  }
+  const precision = numericStepPrecision(step)
+  if (precision <= 0) {
+    return Math.round(value).toString()
+  }
+  return value
+    .toFixed(precision)
+    .replace(/\.?0+$/, '')
 }
 
 function rgbChannelsToHex([r, g, b]: Array<number>): string {
