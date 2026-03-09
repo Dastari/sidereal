@@ -7,7 +7,7 @@ Owners: dashboard + rendering + runtime toolchain
 Primary references:
 - `docs/sidereal_design_document.md`
 - `docs/features/asset_delivery_contract.md`
-- `docs/features/shader_editor_wgsl_linting_and_diagnostics_plan.md`
+- `docs/plans/shader_editor_wgsl_linting_and_diagnostics_plan.md`
 - `docs/features/visibility_replication_contract.md`
 - `docs/ui_design_guide.md`
 - `AGENTS.md`
@@ -150,7 +150,7 @@ Mandatory features:
 1. Syntax highlight for WGSL.
 2. Line/column diagnostics.
 3. Format command (WGSL formatter service).
-4. WGSL diagnostics architecture should follow `docs/features/shader_editor_wgsl_linting_and_diagnostics_plan.md`:
+4. WGSL diagnostics architecture should follow `docs/plans/shader_editor_wgsl_linting_and_diagnostics_plan.md`:
    - debounced text-in/diagnostics-out flow,
    - validator-backed syntax/semantic diagnostics,
    - project-specific Sidereal shader rules layered on top.

@@ -1,24 +1,24 @@
 //! F3 debug overlay: toggle and draw (AABB, velocity arrows, visibility circle).
 
 use avian2d::prelude::{LinearVelocity, Position, Rotation};
-use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::math::Isometry2d;
 use bevy::prelude::*;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
+use lightyear::prediction::correction::VisualCorrection;
 use lightyear::prediction::prelude::{PredictionHistory, PredictionManager};
 use sidereal_game::{
-    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, SizeM, VisibilityRangeM,
+    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, PlayerTag, SizeM,
+    VisibilityRangeM,
 };
-use sidereal_runtime_sync::RuntimeEntityHierarchy;
+use std::collections::{HashMap, HashSet};
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
-use super::components::{
-    ControlledEntity, HudFpsText, HudManifestText, HudTacticalText, WorldEntity,
-};
+use super::components::{ControlledEntity, WorldEntity};
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::resources::{
     BootstrapWatchdogState, DebugOverlayEnabled, DeferredPredictedAdoptionState,
-    LocalSimulationDebugMode, OwnedAssetManifestCache, PredictionBootstrapTuning,
-    TacticalContactsCache, TacticalFogCache,
+    LocalSimulationDebugMode, PredictionBootstrapTuning, PredictionLifecycleAuditConfig,
+    PredictionLifecycleAuditState,
 };
 
 #[derive(Default)]
@@ -43,140 +43,30 @@ pub(crate) fn toggle_debug_overlay_system(
     }
 }
 
-#[derive(Default)]
-pub(crate) struct DebugFpsSmoothingState {
-    ema_fps: Option<f64>,
-}
-
-pub(crate) fn update_debug_fps_text_system(
-    debug_overlay: Res<'_, DebugOverlayEnabled>,
-    diagnostics: Res<'_, DiagnosticsStore>,
-    mut smoothing: Local<'_, DebugFpsSmoothingState>,
-    mut fps_query: Query<
-        '_,
-        '_,
-        (&'_ mut Text, &'_ mut TextColor, &'_ mut Visibility),
-        With<HudFpsText>,
-    >,
-) {
-    if fps_query.is_empty() {
-        return;
-    }
-
-    if !debug_overlay.enabled {
-        for (mut text, mut text_color, mut visibility) in &mut fps_query {
-            text.0.clear();
-            text_color.0.set_alpha(0.0);
-            *visibility = Visibility::Hidden;
-        }
-        return;
-    }
-
-    let instant_fps = diagnostics
-        .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|fps| fps.smoothed().or_else(|| fps.value()));
-
-    if let Some(sample) = instant_fps {
-        // Additional long-window EMA on top of diagnostics smoothing.
-        let alpha = 0.08_f64;
-        smoothing.ema_fps = Some(match smoothing.ema_fps {
-            Some(previous) => previous + (sample - previous) * alpha,
-            None => sample,
-        });
-    }
-
-    let display = smoothing
-        .ema_fps
-        .map(|fps| format!("FPS {}", fps.round() as i64))
-        .unwrap_or_else(|| "FPS --".to_string());
-    for (mut text, mut text_color, mut visibility) in &mut fps_query {
-        text.0 = display.clone();
-        text_color.0.set_alpha(1.0);
-        *visibility = Visibility::Visible;
-    }
-}
-
-pub(crate) fn update_debug_manifest_text_system(
-    debug_overlay: Res<'_, DebugOverlayEnabled>,
-    manifest_cache: Res<'_, OwnedAssetManifestCache>,
-    mut manifest_query: Query<
-        '_,
-        '_,
-        (&'_ mut Text, &'_ mut TextColor, &'_ mut Visibility),
-        With<HudManifestText>,
-    >,
-) {
-    if manifest_query.is_empty() {
-        return;
-    }
-
-    if !debug_overlay.enabled {
-        for (mut text, mut text_color, mut visibility) in &mut manifest_query {
-            text.0.clear();
-            text_color.0.set_alpha(0.0);
-            *visibility = Visibility::Hidden;
-        }
-        return;
-    }
-
-    let display = format!(
-        "Manifest seq {} assets {} tick {}",
-        manifest_cache.sequence,
-        manifest_cache.assets_by_entity_id.len(),
-        manifest_cache.generated_at_tick
-    );
-    for (mut text, mut text_color, mut visibility) in &mut manifest_query {
-        text.0 = display.clone();
-        text_color.0.set_alpha(1.0);
-        *visibility = Visibility::Visible;
-    }
-}
-
-pub(crate) fn update_debug_tactical_text_system(
-    debug_overlay: Res<'_, DebugOverlayEnabled>,
-    fog_cache: Res<'_, TacticalFogCache>,
-    contacts_cache: Res<'_, TacticalContactsCache>,
-    mut tactical_query: Query<
-        '_,
-        '_,
-        (&'_ mut Text, &'_ mut TextColor, &'_ mut Visibility),
-        With<HudTacticalText>,
-    >,
-) {
-    if tactical_query.is_empty() {
-        return;
-    }
-    if !debug_overlay.enabled {
-        for (mut text, mut text_color, mut visibility) in &mut tactical_query {
-            text.0.clear();
-            text_color.0.set_alpha(0.0);
-            *visibility = Visibility::Hidden;
-        }
-        return;
-    }
-
-    let display = format!(
-        "Tactical fog seq {} live {} explored {} contacts seq {} count {}",
-        fog_cache.sequence,
-        fog_cache.live_cells.len(),
-        fog_cache.explored_cells.len(),
-        contacts_cache.sequence,
-        contacts_cache.contacts_by_entity_id.len()
-    );
-    for (mut text, mut text_color, mut visibility) in &mut tactical_query {
-        text.0 = display.clone();
-        text_color.0.set_alpha(1.0);
-        *visibility = Visibility::Visible;
-    }
-}
-
 #[allow(clippy::type_complexity)]
 pub(crate) fn draw_debug_overlay_system(
     debug_overlay: Res<'_, DebugOverlayEnabled>,
     session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    _player_view_state: Res<'_, LocalPlayerViewState>,
     mut gizmos: Gizmos,
+    controlled_entities: Query<'_, '_, Entity, With<ControlledEntity>>,
+    root_candidates: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Option<&'_ MountedOn>,
+            Option<&'_ Hardpoint>,
+            Option<&'_ PlayerTag>,
+            Option<&'_ ControlledEntity>,
+            Option<&'_ Visibility>,
+            Has<lightyear::prelude::Replicated>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<lightyear::prelude::Predicted>,
+        ),
+        With<WorldEntity>,
+    >,
     entities: Query<
         '_,
         '_,
@@ -210,16 +100,9 @@ pub(crate) fn draw_debug_overlay_system(
     const CONFIRMED_OVERLAY_Z_STEP: f32 = 0.54;
     const CONFIRMED_OVERLAY_POSITION_EPSILON_M: f32 = 0.05;
     const CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD: f32 = 0.01;
-    let local_controlled_entity =
-        player_view_state
-            .controlled_entity_id
-            .as_ref()
-            .and_then(|runtime_id| {
-                entity_registry
-                    .by_entity_id
-                    .get(runtime_id.as_str())
-                    .copied()
-            });
+    let local_controlled_entity = controlled_entities
+        .iter()
+        .min_by_key(|entity| entity.to_bits());
     const VELOCITY_ARROW_SCALE: f32 = 0.5;
     const HARDPOINT_CROSS_HALF_SIZE: f32 = 2.0;
     let collision_color = Color::srgb(0.2, 0.8, 0.2);
@@ -228,6 +111,68 @@ pub(crate) fn draw_debug_overlay_system(
     let controlled_predicted_color = Color::srgb(0.2, 1.0, 1.0);
     let controlled_confirmed_color = Color::srgb(1.0, 0.2, 1.0);
     let prediction_error_color = Color::srgb(1.0, 0.2, 0.2);
+    let mut best_root_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32)>::new();
+
+    // Keep the debug overlay aligned with the displayed runtime clone, not every stable duplicate.
+    // Sidereal intentionally keeps confirmed roots alive beside Predicted/Interpolated clones for
+    // confirmation/correction history, but drawing all of those roots in the debug overlay can
+    // look like AABBs are flickering even when the underlying collision state is stable.
+    for (
+        entity,
+        guid,
+        mounted_on,
+        hardpoint,
+        player_tag,
+        controlled_marker,
+        visibility,
+        is_replicated,
+        is_interpolated,
+        is_predicted,
+    ) in &root_candidates
+    {
+        if mounted_on.is_some() || hardpoint.is_some() || player_tag.is_some() {
+            continue;
+        }
+        if Some(entity) != local_controlled_entity
+            && visibility.is_some_and(|visibility| *visibility == Visibility::Hidden)
+        {
+            continue;
+        }
+
+        let is_local_controlled = Some(entity) == local_controlled_entity
+            || controlled_marker.is_some_and(|controlled| {
+                session
+                    .player_entity_id
+                    .as_deref()
+                    .is_some_and(|player_id| controlled.player_entity_id == player_id)
+            });
+        let score = if is_local_controlled {
+            4
+        } else if is_interpolated {
+            3
+        } else if is_predicted {
+            2
+        } else if is_replicated {
+            1
+        } else {
+            0
+        };
+        match best_root_entity_by_guid.get_mut(&guid.0) {
+            Some((winner, winner_score)) => {
+                if score > *winner_score
+                    || (score == *winner_score && entity.to_bits() < winner.to_bits())
+                {
+                    *winner = entity;
+                    *winner_score = score;
+                }
+            }
+            None => {
+                best_root_entity_by_guid.insert(guid.0, (entity, score));
+            }
+        }
+    }
+    let winner_root_entities =
+        HashSet::<Entity>::from_iter(best_root_entity_by_guid.values().map(|(entity, _)| *entity));
 
     for (
         entity,
@@ -247,6 +192,9 @@ pub(crate) fn draw_debug_overlay_system(
         confirmed_rotation,
     ) in &entities
     {
+        if mounted_on.is_none() && hardpoint.is_none() && !winner_root_entities.contains(&entity) {
+            continue;
+        }
         let world = global_transform.compute_transform();
         let replication_z_step = if is_predicted {
             PREDICTED_OVERLAY_Z_STEP
@@ -311,6 +259,20 @@ pub(crate) fn draw_debug_overlay_system(
                     }
                     gizmos.line(pos, confirmed_pos, prediction_error_color);
                 }
+            } else if is_local_controlled && mounted_on.is_none() && is_replicated && !is_predicted
+            {
+                // Sidereal can temporarily end up with only the confirmed replica visible while a
+                // dynamic handoff is waiting for Lightyear to materialize the Predicted clone.
+                // In that state there is no separate entity carrying Confirmed<T> wrappers, so the
+                // normal predicted-vs-confirmed ghost comparison disappears. Draw the confirmed
+                // shape anyway so debugging still shows the authoritative ghost lane explicitly.
+                for idx in 0..outline.points.len() {
+                    let a = outline.points[idx];
+                    let b = outline.points[(idx + 1) % outline.points.len()];
+                    let world_a = pos + (rot * a.extend(0.0));
+                    let world_b = pos + (rot * b.extend(0.0));
+                    gizmos.line(world_a, world_b, controlled_confirmed_color);
+                }
             }
         } else if let Some(half_extents) = half_extents {
             let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, half_extents);
@@ -341,6 +303,12 @@ pub(crate) fn draw_debug_overlay_system(
                     gizmos.aabb_3d(aabb, confirmed_transform, controlled_confirmed_color);
                     gizmos.line(pos, confirmed_pos, prediction_error_color);
                 }
+            } else if is_local_controlled && mounted_on.is_none() && is_replicated && !is_predicted
+            {
+                // Same confirmed-only fallback as the outline path above: keep the authoritative
+                // ghost visible even when the runtime has not yet produced a distinct Predicted
+                // clone for this control target.
+                gizmos.aabb_3d(aabb, transform, controlled_confirmed_color);
             }
         }
 
@@ -396,6 +364,7 @@ pub(crate) fn log_prediction_runtime_state(
             Entity,
             Option<&'_ EntityGuid>,
             Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
             Option<&'_ lightyear::prelude::Confirmed<Position>>,
             Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
             Option<&'_ lightyear::prelude::Confirmed<LinearVelocity>>,
@@ -406,6 +375,7 @@ pub(crate) fn log_prediction_runtime_state(
             Option<&'_ Position>,
             Option<&'_ Rotation>,
             Option<&'_ LinearVelocity>,
+            Option<&'_ VisualCorrection<Isometry2d>>,
         ),
         With<ControlledEntity>,
     >,
@@ -511,6 +481,7 @@ pub(crate) fn log_prediction_runtime_state(
         controlled_entity,
         guid,
         is_predicted_marker,
+        is_interpolated_marker,
         confirmed_position,
         confirmed_rotation,
         confirmed_velocity,
@@ -521,18 +492,24 @@ pub(crate) fn log_prediction_runtime_state(
         current_position,
         current_rotation,
         current_velocity,
+        visual_correction,
     )) = controlled_prediction_state.single()
     {
         let confirmed_tick_value = confirmed_tick.map(|tick| tick.tick.0);
         let confirmed_tick_advanced = confirmed_tick_value
             .zip(rollback_sample.last_confirmed_tick)
             .is_some_and(|(current, previous)| current != previous);
+        let correction_translation_magnitude =
+            visual_correction.map(|value| value.error.translation.length());
+        let correction_rotation_rad =
+            visual_correction.map(|value| value.error.rotation.as_radians());
         bevy::log::info!(
-            "prediction controlled entity={} guid={} predicted_marker={} confirmed_pos={} confirmed_rot={} confirmed_vel={} confirmed_tick={:?} confirmed_tick_advanced={} hist_pos={} hist_rot={} hist_vel={} current_pos={:?} current_rot_rad={:?} current_vel={:?}",
+            "prediction controlled entity={} guid={} predicted_marker={} interpolated_marker={} confirmed_pos={} confirmed_rot={} confirmed_vel={} confirmed_tick={:?} confirmed_tick_advanced={} hist_pos={} hist_rot={} hist_vel={} current_pos={:?} current_rot_rad={:?} current_vel={:?} visual_correction_active={} visual_correction_translation_m={:?} visual_correction_rotation_rad={:?}",
             controlled_entity,
             guid.map(|v| v.0.to_string())
                 .unwrap_or_else(|| "<none>".to_string()),
             is_predicted_marker,
+            is_interpolated_marker,
             confirmed_position.is_some(),
             confirmed_rotation.is_some(),
             confirmed_velocity.is_some(),
@@ -544,7 +521,16 @@ pub(crate) fn log_prediction_runtime_state(
             current_position.map(|v| v.0),
             current_rotation.map(|v| v.as_radians()),
             current_velocity.map(|v| v.0),
+            visual_correction.is_some(),
+            correction_translation_magnitude,
+            correction_rotation_rad,
         );
+        if !is_predicted_marker && is_interpolated_marker {
+            bevy::log::warn!(
+                "prediction runtime anomaly: controlled entity {} is interpolated instead of predicted; local motion should stay disabled until a Predicted clone exists",
+                controlled_entity
+            );
+        }
         rollback_sample.last_confirmed_tick = confirmed_tick_value;
     }
     rollback_sample.entries_since_log = 0;
@@ -570,5 +556,96 @@ pub(crate) fn log_prediction_runtime_state(
                 interpolated_count
             );
         }
+        if let Some(missing_predicted) = adoption_state
+            .missing_predicted_control_entity_id
+            .as_deref()
+        {
+            bevy::log::warn!(
+                "prediction runtime waiting for predicted control clone for {}",
+                missing_predicted
+            );
+        }
     }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn audit_prediction_entity_lifecycle(
+    time: Res<'_, Time>,
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    config: Res<'_, PredictionLifecycleAuditConfig>,
+    mut state: ResMut<'_, PredictionLifecycleAuditState>,
+    world_entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<ControlledEntity>,
+            Has<super::components::SuppressedPredictedDuplicateVisual>,
+            &'_ Visibility,
+            Option<&'_ Transform>,
+        ),
+        With<WorldEntity>,
+    >,
+) {
+    if !config.enabled {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if now - state.last_logged_at_s < config.interval_s {
+        return;
+    }
+    state.last_logged_at_s = now;
+
+    let target_guid = config.target_guid.or_else(|| {
+        player_view_state
+            .controlled_entity_id
+            .as_deref()
+            .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
+            .or_else(|| {
+                session
+                    .player_entity_id
+                    .as_deref()
+                    .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
+            })
+    });
+    let Some(target_guid) = target_guid else {
+        return;
+    };
+
+    let mut lines = Vec::new();
+    for (
+        entity,
+        guid,
+        is_predicted,
+        is_interpolated,
+        is_controlled,
+        is_suppressed,
+        visibility,
+        transform,
+    ) in &world_entities
+    {
+        if guid.0 != target_guid {
+            continue;
+        }
+        let pos = transform.map(|value| value.translation.truncate());
+        lines.push(format!(
+            "entity={entity:?} predicted={is_predicted} interpolated={is_interpolated} controlled={is_controlled} suppressed={is_suppressed} visibility={visibility:?} pos={pos:?}"
+        ));
+    }
+    if lines.is_empty() {
+        info!(
+            "lifecycle_audit guid={} no runtime entity candidates",
+            target_guid
+        );
+        return;
+    }
+    info!(
+        "lifecycle_audit guid={} candidates={}",
+        target_guid,
+        lines.join(" | ")
+    );
 }

@@ -63,5 +63,5 @@ The repo's development WebTransport certificate generation must preserve those c
 - `AGENTS.md`
 - `docs/sidereal_design_document.md`
 - `docs/sidereal_implementation_checklist.md`
-- `docs/features/wasm_parity_implementation_plan.md`
+- `docs/plans/wasm_parity_implementation_plan.md`
 - `docs/features/asset_delivery_contract.md`

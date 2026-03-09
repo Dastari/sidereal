@@ -9,7 +9,6 @@ use sidereal_core::gateway_dtos::{
     PasswordResetRequest, PasswordResetResponse, RegisterRequest,
 };
 use sidereal_game::EntityAction;
-use sidereal_game::{SpaceBackgroundShaderSettings, StarfieldShaderSettings};
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -108,6 +107,9 @@ pub(crate) struct ClientControlDebugState {
     pub last_controlled_entity_id: Option<String>,
     pub last_pending_controlled_entity_id: Option<String>,
     pub last_detached_free_camera: bool,
+    pub handover_audit_entity_id: Option<String>,
+    pub handover_audit_started_at_s: Option<f64>,
+    pub last_handover_audit_log_at_s: f64,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -257,6 +259,38 @@ impl Default for CameraMotionState {
     }
 }
 
+#[derive(Debug, Resource, Clone)]
+pub(crate) struct PredictionLifecycleAuditConfig {
+    pub enabled: bool,
+    pub target_guid: Option<uuid::Uuid>,
+    pub interval_s: f64,
+}
+
+impl PredictionLifecycleAuditConfig {
+    pub fn from_env() -> Self {
+        let raw = std::env::var("SIDEREAL_CLIENT_LIFECYCLE_AUDIT_GUID").ok();
+        let enabled = raw.is_some();
+        let target_guid = raw.as_deref().and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("controlled") {
+                None
+            } else {
+                uuid::Uuid::parse_str(trimmed).ok()
+            }
+        });
+        Self {
+            enabled,
+            target_guid,
+            interval_s: 0.5,
+        }
+    }
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct PredictionLifecycleAuditState {
+    pub last_logged_at_s: f64,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledRuntimeRenderLayerRule {
     pub rule_id: String,
@@ -286,22 +320,6 @@ impl Default for RuntimeRenderLayerRegistry {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct FullscreenLayerCacheEntry {
-    pub layer_id: String,
-    pub enabled: bool,
-    pub phase: String,
-    pub shader_asset_id: String,
-    pub order: i32,
-    pub starfield_settings: Option<StarfieldShaderSettings>,
-    pub space_background_settings: Option<SpaceBackgroundShaderSettings>,
-}
-
-#[derive(Debug, Resource, Default, Clone)]
-pub(crate) struct FullscreenLayerCache {
-    pub entries_by_layer_id: HashMap<String, FullscreenLayerCacheEntry>,
-}
-
 #[derive(Debug, Resource, Default)]
 pub(crate) struct BootstrapWatchdogState {
     pub in_world_entered_at_s: Option<f64>,
@@ -326,6 +344,12 @@ pub(crate) struct DeferredPredictedAdoptionState {
     pub resolved_max_wait_s: f64,
     pub last_summary_at_s: f64,
     pub last_runtime_summary_at_s: f64,
+    // Sidereal supports dynamic control handoff and free-roam via the persisted player
+    // anchor. If the intended controlled ship never gets a Predicted clone, we must not
+    // silently bind local control to an Interpolated fallback because that breaks the
+    // single-writer motion invariant and feels "jerky" rather than truly predicted.
+    pub missing_predicted_control_entity_id: Option<String>,
+    pub last_missing_predicted_warn_at_s: f64,
 }
 
 #[derive(Debug, Resource, Clone, Copy)]
@@ -418,7 +442,12 @@ impl NearbyCollisionProxyTuning {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v > 0)
-            .unwrap_or(0);
+            // Sidereal's locally predicted ship should not phase through nearby asteroids and
+            // only learn about the collision one server round-trip later. We therefore keep a
+            // small local collision-proxy set enabled by default for native prediction, even
+            // though many Lightyear examples omit this because they do not support our
+            // free-roam-to-ship handoff and dense local obstacle fields.
+            .unwrap_or(8);
         let reconcile_interval_s =
             std::env::var("SIDEREAL_CLIENT_MOTION_OWNERSHIP_RECONCILE_INTERVAL_S")
                 .ok()

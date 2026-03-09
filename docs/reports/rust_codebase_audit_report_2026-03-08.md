@@ -33,7 +33,7 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   - `bins/sidereal-client/src/wasm.rs:15`
   - `bins/sidereal-client/Cargo.toml:17`
   - `bins/sidereal-client/Cargo.toml:27`
-  - `docs/features/wasm_parity_implementation_plan.md:32`
+  - `docs/plans/wasm_parity_implementation_plan.md:32`
 - Details:
   The WASM target only adds `DefaultPlugins`, `RenderPlugin`, and `configure_shared_client_core()`, then logs a scaffold startup line. The target-specific dependency section for `wasm32` does not include `lightyear`, `sidereal-net`, `sidereal-runtime-sync`, or `sidereal-asset-runtime`.
 - Recommendation:
@@ -130,8 +130,8 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
 - Why it matters:
   The current client bootstrap and runtime fetch path still depends on `reqwest::blocking`, `std::fs`, and native local-path assumptions. This is one of the main reasons the WASM state machine is not actually shared.
 - Evidence:
-  - `docs/features/wasm_parity_implementation_plan.md:35`
-  - `docs/features/wasm_parity_implementation_plan.md:40`
+  - `docs/plans/wasm_parity_implementation_plan.md:35`
+  - `docs/plans/wasm_parity_implementation_plan.md:40`
   - `bins/sidereal-client/src/native/auth_net.rs:345`
   - `bins/sidereal-client/src/native/assets.rs:273`
   - `bins/sidereal-client/Cargo.toml:20`

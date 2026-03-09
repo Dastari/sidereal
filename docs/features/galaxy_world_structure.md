@@ -670,8 +670,8 @@ Entity shard handoff at system boundaries is a future concern and is orthogonal 
 
 - `docs/sidereal_design_document.md` -- architecture principles, visibility pipeline (sections 7.x).
 - `docs/features/visibility_replication_contract.md` -- authorization-first visibility.
-- `docs/features/scan_intel_minimap_spatial_plan.md` -- spatial indexing direction.
-- `docs/features/dr-0007_entity_variant_framework.md` -- variant/archetype framework.
+- `docs/plans/scan_intel_minimap_spatial_plan.md` -- spatial indexing direction.
+- `docs/decisions/dr-0007_entity_variant_framework.md` -- variant/archetype framework.
 - `docs/features/scripting_support.md` -- scripting architecture and world init.
 - `docs/component_authoring_guide.md` -- component registration workflow.
 

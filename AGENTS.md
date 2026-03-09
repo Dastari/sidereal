@@ -16,10 +16,23 @@ Project operating contract for human and AI contributors working in this reposit
 - Visibility/replication implementation contract: `docs/features/visibility_replication_contract.md`
 - Asset delivery implementation contract: `docs/features/asset_delivery_contract.md`
 - Lightyear upstream issue triage reference: `docs/features/lightyear_upstream_issue_snapshot.md`
+- Native client/server transform and ownership audit: `docs/reports/native_runtime_system_ownership_audit_2026-03-09.md`
 - UI design system and component patterns: `docs/ui_design_guide.md`
 - Repo overview: `README.md`
 
 If any code change conflicts with docs, update docs in the same change or stop and resolve ambiguity first.
+
+## 2.1 Documentation Taxonomy and Placement Rules
+
+- Audit reports always live under `docs/reports/`.
+- Implementation and investigation plans always live under `docs/plans/`.
+- Active feature contracts, implementation contracts, feature references, and feature-scoped notes live under `docs/features/`.
+- Decision detail documents for decision-register entries live under `docs/decisions/` using `dr-XXXX_<slug>.md`.
+- Prompts live under `docs/prompts/`.
+- Samples live under `docs/samples/`.
+- Do not place new audit reports, plans, or decision detail docs under `docs/features/`.
+- When updating or adding substantive documentation, include a dated status/update note using `YYYY-MM-DD` so later readers can determine which conflicting text is more recent.
+- When updating an existing doc that already contains status/update notes, append a new dated note instead of replacing older dated context silently unless the old text is clearly incorrect and being directly superseded.
 
 ## 3. Non-Negotiable Technical Rules
 
@@ -43,8 +56,8 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Hydration/persistence must preserve hierarchy semantics: persist parent-child and mount relationships, then rebuild Bevy hierarchy deterministically during hydration so child transform offsets remain correct.
 - Inventory-bearing entities must feed dynamic mass derivation (`CargoMassKg`/`ModuleMassKg`/`TotalMassKg`) and runtime physics mass updates so acceleration behavior reflects mounted modules and nested inventories.
 - Avian runtime-only transient internals are excluded from persistence; durable gameplay state must be mirrored into persistable components.
-- Native and WASM client builds are co-maintained; WASM is never a deferred concern. Both must build and pass quality gates at every change, not just when "the WASM phase" arrives.
-- Native may be the current delivery priority, but that never relaxes WASM parity requirements; client behavior and protocol changes must keep WASM in lockstep in the same change.
+- Native client stabilization is the current delivery priority. Remaining live WASM parity follow-through is temporarily deferred until native in-world controls, prediction, and motion stability are in a usable state.
+- During this defer period, do not introduce native-only architecture that would make later WASM parity recovery harder; keep shared gameplay/prediction/runtime logic in shared code and keep transport/browser differences at the platform boundary.
 - The client is one workspace member (`bins/sidereal-client`) with a native `[[bin]]` target and a WASM `[lib]` target. There is no separate `sidereal-client-web` crate.
 - Use generic entity terminology in systems/resources/APIs that are not inherently domain-specific. Avoid naming generic runtime structures with `Ship*` prefixes (for example visibility maps, control maps, authority registries). Reserve ship-specific names only for truly ship-only behavior.
 - Enforce single-writer motion ownership per runtime mode: for controlled predicted entities, only one fixed-tick pipeline may write authoritative motion state (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`). Visual interpolation/camera systems must not feed render transforms back into simulation state.
@@ -77,7 +90,7 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - For scripting-connected components (for example `FlightComputer`), script APIs may emit intent only; scripts must not directly authoritatively mutate transforms/velocities/ownership or bypass Rust authority systems.
 - Keep boundaries explicit between crates/services (no persistence/network leakage into gameplay core).
 - If Lightyear behaviour appears unexplained, check `docs/features/lightyear_upstream_issue_snapshot.md` before assuming the issue is local-only or introducing a workaround. If the behaviour matches an upstream issue, reference it in the change; if not, update the snapshot with the new upstream search result.
-- When adding or changing client-side code: verify both native and WASM targets still build. If a change breaks the WASM target, fix it in the same PR before marking complete. Do not defer WASM build failures.
+- When adding or changing client-side code during the native-stabilization period: prioritize native validation first. Run WASM target builds when the change touches shared client/runtime code, transport/bootstrap boundaries, dependency wiring, or browser-relevant asset/loading paths; otherwise document the WASM impact and defer live parity follow-up.
 - WASM client validation must include WebGPU support in the build configuration (`bevy/webgpu`), not only default WASM feature sets.
 - When changing client behavior, transport contracts, prediction/reconciliation flow, or client runtime defaults: update docs to note native impact and WASM impact (or explicitly state "no WASM impact").
 - When adding a new client-side dependency: verify it is either WASM-compatible or correctly gated behind `cfg(not(target_arch = "wasm32"))` with a WASM-compatible alternative also provided.
@@ -90,6 +103,7 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Initialization SQL for AGE/graph lives under `docker/init/`.
 - Asset root default is `./data`.
 - Replication and gateway tracing output is written to both the console and workspace-relative `./logs/` with a fresh timestamped file per process start; use the persisted log files for debugging service startup, transport, auth, and runtime behavior.
+- BRP snapshot debugging workflow lives in `docs/features/brp_debugging_workflow.md`. When using the dashboard BRP proxy, prefer targeted `curl` + `jq` filters over full JSON dumps. Default local ports are replication `15713`, client 1 `15714`, and client 2 `15715`.
 - Follow runtime defaults and env vars listed in `docs/sidereal_design_document.md`.
 
 ## 6. Quality Gates (Minimum)
@@ -118,7 +132,7 @@ Run targeted tests for touched crates; run broader integration tests when flow b
 When adding any new **critical or enforceable** behavior (security rule, protocol contract, transport rule, runtime default, operational requirement), you must:
 
 1. Update the relevant docs under `docs/`.
-2. If this is an in-depth/project-wide decision, add or update a dedicated decision detail file under `docs/features/` using `dr-XXXX_<slug>.md`, and link it from `docs/decision_register.md`.
+2. If this is an in-depth/project-wide decision, add or update a dedicated decision detail file under `docs/decisions/` using `dr-XXXX_<slug>.md`, and link it from `docs/decision_register.md`.
 3. Update this `AGENTS.md` if the new rule changes contributor/agent behavior or enforcement expectations.
 
 Do not defer this to a later PR.

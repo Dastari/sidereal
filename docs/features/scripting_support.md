@@ -118,7 +118,7 @@ Integration points:
 
 - `bins/sidereal-gateway`: account-registration-time script hooks (starter bundle selection, world init config).
 - `bins/sidereal-replication`: authoritative host boot world orchestration, and (future) runtime event-driven script execution.
-- Script-driven runtime shader binding and render-layer composition for 2D visuals now runs through Lua-authored `RuntimeRenderLayerDefinition`, `RuntimeRenderLayerRule`, `RuntimeRenderLayerOverride`, `RuntimePostProcessStack`, and `RuntimeWorldVisualStack` component data. Replication and gateway validate those authored records server-side, the client builds a runtime layer registry from replicated state, world entities resolve layer assignment as `override -> highest-priority rule -> default main_world`, fullscreen background/foreground plus camera-scoped post-process overlay passes execute from those authored definitions, and layered world visuals such as the current planet body/cloud/ring stack now consume an authored `RuntimeWorldVisualStack` instead of inferring pass composition client-side. The remaining migration gap is removal of the last content-specific shader adapters and continued reduction of the dedicated Rust `Material2d` families that still exist because Bevy material schemas are type-static (see `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`, `docs/features/dynamic_runtime_shader_material_plan.md`, and `docs/features/asset_delivery_contract.md`).
+- Script-driven runtime shader binding and render-layer composition for 2D visuals now runs through Lua-authored `RuntimeRenderLayerDefinition`, `RuntimeRenderLayerRule`, `RuntimeRenderLayerOverride`, `RuntimePostProcessStack`, and `RuntimeWorldVisualStack` component data. Replication and gateway validate those authored records server-side, the client builds a runtime layer registry from replicated state, world entities resolve layer assignment as `override -> highest-priority rule -> default main_world`, fullscreen background/foreground plus camera-scoped post-process overlay passes execute from those authored definitions, and layered world visuals such as the current planet body/cloud/ring stack now consume an authored `RuntimeWorldVisualStack` instead of inferring pass composition client-side. The remaining migration gap is removal of the last content-specific shader adapters and continued reduction of the dedicated Rust `Material2d` families that still exist because Bevy material schemas are type-static (see `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`, `docs/plans/dynamic_runtime_shader_material_plan.md`, and `docs/features/asset_delivery_contract.md`).
 - Procedural visual tuning payloads for authored world content are Lua-owned. Current examples include asteroid procedural sprite profiles and planet body shader settings emitted from Lua bundles, while Rust owns the validated component schema and render/runtime implementation.
 - Shared environment-lighting defaults are also Lua-authored now via the `environment.lighting` bundle and replicated `EnvironmentLightingState` component, while the client derives its render-time lighting resource from that ECS state.
 
@@ -194,7 +194,7 @@ When a handler fires, it can read any component on any entity on the authoritati
 
 Read API returns point-in-time snapshots. Scripts cannot hold references across ticks.
 
-**Snapshot boundary**: The script world snapshot is built at the start of each FixedUpdate tick, after the previous tick's physics writeback has propagated. Scripts see world state as of the prior tick's physics resolution. Intent application occurs before the current tick's physics step, so script-driven motion is reflected in the same tick's physics. The replication visibility system evaluates positions after the current tick's physics writeback. Net effect: no one-tick visibility lag for script-driven motion. See `docs/features/spatial_partitioning_implementation_plan.md` section 10.3 for the full schedule diagram.
+**Snapshot boundary**: The script world snapshot is built at the start of each FixedUpdate tick, after the previous tick's physics writeback has propagated. Scripts see world state as of the prior tick's physics resolution. Intent application occurs before the current tick's physics step, so script-driven motion is reflected in the same tick's physics. The replication visibility system evaluates positions after the current tick's physics writeback. Net effect: no one-tick visibility lag for script-driven motion. See `docs/plans/spatial_partitioning_implementation_plan.md` section 10.3 for the full schedule diagram.
 
 #### 2.7.3 Mutations: Intent-Only (Including Privileged Script Actions)
 
@@ -539,7 +539,7 @@ When the spatial partition tracks entity cell membership across ticks, derived e
 
 Throttle policy is enforced in the Rust event emitter, not in the Lua handler. Oscillation across a boundary within the cooldown window emits at most one event pair.
 
-These events are gated behind the spatial partition cell-tracking data structure (see `docs/features/spatial_partitioning_implementation_plan.md` section 10.6). They are not available until the partition implementation includes persistent cell assignment tracking.
+These events are gated behind the spatial partition cell-tracking data structure (see `docs/plans/spatial_partitioning_implementation_plan.md` section 10.6). They are not available until the partition implementation includes persistent cell assignment tracking.
 
 Additional events are added by extending the Rust-side event emitter allowlist. Scripts cannot subscribe to events not in the allowlist.
 
@@ -628,7 +628,7 @@ AGE graph persistence remains canonical for entity/component state. Script table
 Migration note:
 - `world_init.lua` no longer depends on fixed `space_background_shader_asset_id` / `starfield_shader_asset_id` fields. It authors the background, world, and rule definitions directly through `ctx.render:define_layer(...)` / `ctx.render:define_rule(...)`.
 - Fullscreen background and fullscreen foreground layer execution now comes from those authored layer definitions. Camera-scoped post-process stacks are also authored data, but their currently supported shader adapters are limited to the existing fullscreen shader families until the fully generic runtime material path replaces the remaining content-specific adapters.
-- The next render-scripting migration step is not "more fullscreen layers"; it is authored multi-pass visual stacks so layered content like planets/clouds/rings can be expressed as script-authored pass composition rather than bespoke Rust child-pass orchestration. That path is tracked in `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
+- The next render-scripting migration step is not "more fullscreen layers"; it is authored multi-pass visual stacks so layered content like planets/clouds/rings can be expressed as script-authored pass composition rather than bespoke Rust child-pass orchestration. That path is tracked in `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
 
 The replication host reads and applies these records at boot with idempotent guard key `script_world_init_state`, and the gateway uses the same script payload for first-time persistence when records are missing.
 
@@ -748,7 +748,7 @@ local stations = ctx.world:query_nearby(pos, 50000, {
 
 ##### Spatial Query Implementation Contract
 
-`query_nearby` uses the replication spatial partition grid (see `docs/features/spatial_partitioning_implementation_plan.md`). It does NOT iterate the full world entity set. The pipeline is:
+`query_nearby` uses the replication spatial partition grid (see `docs/plans/spatial_partitioning_implementation_plan.md`). It does NOT iterate the full world entity set. The pipeline is:
 
 ```
 1. Cell lookup: walk grid cells within ceil(radius / cell_size) of center
@@ -1936,7 +1936,7 @@ This chain executes before physics prepare.
 - [ ] Extend `ScriptEntitySnapshot` with `component_kinds: HashSet<String>`, `faction_id: Option<String>`, and `labels: Vec<String>` so filter predicates can be evaluated without ECS queries.
 - [ ] Implement `ScriptEntity` read-only wrapper: `guid()`, `position()`, `velocity()`, `rotation()`, `get(kind)`, `has(kind)`, `labels()`.
 - [ ] Implement `ctx.world:find_entity(uuid)` via entity GUID lookup.
-- [ ] Add spatial index (`entities_by_cell`) to `ScriptWorldSnapshot` using the shared `cell_key` function from the visibility/partition module. See `docs/features/spatial_partitioning_implementation_plan.md` section 10.1.
+- [ ] Add spatial index (`entities_by_cell`) to `ScriptWorldSnapshot` using the shared `cell_key` function from the visibility/partition module. See `docs/plans/spatial_partitioning_implementation_plan.md` section 10.1.
 - [ ] Implement `ctx.world:query_nearby(pos, radius, filter)` using the snapshot spatial index (cell walk, distance filter, component/faction/label filter, nearest-first sort, limit truncation).
 - [ ] Implement query budget guardrails (max radius, max queries per handler, max results per handler) enforced in Rust. See section 8.2 of this document.
 - [ ] Add `entities_by_system: HashMap<Uuid, Vec<String>>` index to `ScriptWorldSnapshot` for `query_in_system`.
@@ -1956,7 +1956,7 @@ This chain executes before physics prepare.
 - [ ] Add persisted mission state model with graph persistence roundtrip (mission state survives restart).
 - [ ] Add integration tests for mission start/update/complete/fail lifecycle across restart.
 - [ ] Add script API version field to bundle manifest for forward compatibility checks.
-- [ ] Verify hydration invariant: `EntityGuid` → entity → partition cell mapping is complete before first script interval tick fires. See `docs/features/spatial_partitioning_implementation_plan.md` section 10.7.
+- [ ] Verify hydration invariant: `EntityGuid` → entity → partition cell mapping is complete before first script interval tick fires. See `docs/plans/spatial_partitioning_implementation_plan.md` section 10.7.
 
 ### Phase D1: Genre-Agnostic Content Runtime + Quest System (Immediate Priority)
 
@@ -2154,11 +2154,11 @@ Optimization strategies:
 
 - `docs/sidereal_design_document.md` -- architecture principles.
 - `docs/component_authoring_guide.md` -- component registry and generation workflow.
-- `docs/features/dr-0007_entity_variant_framework.md` -- variant/archetype framework.
+- `docs/decisions/dr-0007_entity_variant_framework.md` -- variant/archetype framework.
 - `docs/features/visibility_replication_contract.md` -- visibility and replication policy.
 - `docs/features/asset_delivery_contract.md` -- Lua registry-driven asset catalog and gateway asset delivery.
 - `docs/features/galaxy_world_structure.md` -- galaxy/solar system world model and scripting integration.
-- `docs/features/spatial_partitioning_implementation_plan.md` -- spatial partition grid, cell sizing, script query integration (section 10).
+- `docs/plans/spatial_partitioning_implementation_plan.md` -- spatial partition grid, cell sizing, script query integration (section 10).
 
 ### Code Paths
 

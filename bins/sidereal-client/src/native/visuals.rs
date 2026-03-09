@@ -10,11 +10,12 @@ use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::MessageReceiver;
 use lightyear::prelude::input::native::ActionState;
 use sidereal_game::{
-    AfterburnerCapability, AfterburnerState, AmmoCount, BallisticWeapon, ControlledEntityGuid,
-    Engine, EntityAction, EntityGuid, FlightComputer, Hardpoint, MountedOn, ParentGuid,
-    PlanetBodyShaderSettings, PlayerTag, ProceduralSprite, RuntimeRenderLayerDefinition,
-    RuntimeWorldVisualPassDefinition, RuntimeWorldVisualStack, SizeM, ThrusterPlumeShaderSettings,
-    WorldPosition, generate_procedural_sprite_image_set, resolve_world_position,
+    AfterburnerCapability, AfterburnerState, AmmoCount, BallisticProjectile, BallisticWeapon,
+    ControlledEntityGuid, Engine, EntityAction, EntityGuid, FlightComputer, Hardpoint, MountedOn,
+    ParentGuid, PlanetBodyShaderSettings, PlayerTag, ProceduralSprite,
+    RuntimeRenderLayerDefinition, RuntimeWorldVisualPassDefinition, RuntimeWorldVisualStack, SizeM,
+    ThrusterPlumeShaderSettings, WorldPosition, generate_procedural_sprite_image_set,
+    resolve_world_position,
 };
 use sidereal_net::PlayerInput;
 use sidereal_net::ServerWeaponFiredMessage;
@@ -29,12 +30,12 @@ use super::backdrop::{
     RuntimeEffectUniforms, SharedWorldLightingUniforms, StreamedSpriteShaderMaterial,
 };
 use super::components::{
-    ControlledEntity, PendingInitialVisualReady, PendingVisibilityFadeIn,
-    ResolvedRuntimeRenderLayer, RuntimeWorldVisualFamily, RuntimeWorldVisualPass,
-    RuntimeWorldVisualPassKind, RuntimeWorldVisualPassSet, StreamedSpriteShaderAssetId,
-    StreamedVisualAssetId, StreamedVisualAttached, StreamedVisualChild,
-    SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WeaponTracerBolt, WeaponTracerCooldowns,
-    WeaponTracerPool, WorldEntity,
+    BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
+    PendingVisibilityFadeIn, ResolvedRuntimeRenderLayer, RuntimeWorldVisualFamily,
+    RuntimeWorldVisualPass, RuntimeWorldVisualPassKind, RuntimeWorldVisualPassSet,
+    StreamedSpriteShaderAssetId, StreamedVisualAssetId, StreamedVisualAttached,
+    StreamedVisualChild, SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WeaponTracerBolt,
+    WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
 };
 use super::ecs_util::{queue_despawn_if_exists, queue_despawn_if_exists_force};
 use super::lighting::{CameraLocalLightSet, WorldLightingState};
@@ -60,6 +61,9 @@ const PLANET_BODY_LAYER_Z_OFFSET: f32 = 0.0;
 const PLANET_RING_BACK_LAYER_Z_OFFSET: f32 = -0.45;
 const PLANET_RING_FRONT_LAYER_Z_OFFSET: f32 = 0.65;
 const STREAMED_VISUAL_BASE_LAYER_Z: f32 = 0.2;
+const PROJECTILE_VISUAL_WIDTH_M: f32 = 0.45;
+const PROJECTILE_VISUAL_LENGTH_M: f32 = 2.8;
+const PROJECTILE_VISUAL_Z: f32 = 0.38;
 
 enum StreamedVisualMaterialKind {
     Plain,
@@ -1439,6 +1443,41 @@ pub(super) fn ensure_weapon_tracer_pool_system(
 }
 
 #[allow(clippy::type_complexity)]
+pub(super) fn attach_ballistic_projectile_visuals_system(
+    mut commands: Commands<'_, '_>,
+    projectiles: Query<
+        '_,
+        '_,
+        (Entity, Has<SuppressedPredictedDuplicateVisual>),
+        (
+            With<BallisticProjectile>,
+            With<WorldEntity>,
+            Without<BallisticProjectileVisualAttached>,
+        ),
+    >,
+) {
+    for (entity, is_suppressed) in &projectiles {
+        commands.entity(entity).insert((
+            BallisticProjectileVisualAttached,
+            Sprite {
+                color: Color::srgb(1.0, 0.84, 0.3),
+                custom_size: Some(Vec2::new(
+                    PROJECTILE_VISUAL_WIDTH_M,
+                    PROJECTILE_VISUAL_LENGTH_M,
+                )),
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.0, PROJECTILE_VISUAL_Z),
+            if is_suppressed {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
+            },
+        ));
+    }
+}
+
+#[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_weapon_tracer_visuals_system(
     time: Res<'_, Time>,
@@ -1532,6 +1571,9 @@ pub(super) fn emit_weapon_tracer_visuals_system(
 
         for (weapon_entity, mounted_on, weapon, ammo) in &weapons {
             if mounted_on.parent_entity_id != ship_guid.0 {
+                continue;
+            }
+            if weapon.uses_projectile_entities() {
                 continue;
             }
             if ammo.is_some_and(|value| value.current == 0) {

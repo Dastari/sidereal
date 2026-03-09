@@ -1,9 +1,16 @@
 # WASM Parity Implementation Plan
 
-Status: Active execution plan  
+Status: Deferred after native runtime stabilization  
 Date: 2026-03-07  
 Owners: Client/runtime team  
-Primary references: `AGENTS.md`, `docs/sidereal_design_document.md`, `docs/sidereal_implementation_checklist.md`, `docs/features/asset_delivery_contract.md`, `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+Primary references: `AGENTS.md`, `docs/sidereal_design_document.md`, `docs/sidereal_implementation_checklist.md`, `docs/features/asset_delivery_contract.md`, `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+
+## 0.0 Priority Status (2026-03-08)
+
+- Native client now reaches in-world state and renders replicated ships.
+- That native path is not yet playable: controls are currently non-functional and motion/correction still intermittently jumps.
+- Because native control/prediction/camera stability is the immediate blocker, the remaining WASM parity work is intentionally back-burnered for now.
+- This document remains the parked follow-up plan once native in-world behavior is stable again.
 
 ## 0.1 Current Progress Snapshot (2026-03-08)
 
@@ -18,8 +25,9 @@ Primary references: `AGENTS.md`, `docs/sidereal_design_document.md`, `docs/sider
 - Browser/WASM runtime asset attachment now mounts streamed shaders, images, and SVGs from validated cached bytes instead of filesystem-style `AssetServer` paths.
 - Gateway enter-world bootstrap now publishes replication transport metadata and replication can expose a WebTransport listener alongside native UDP.
 - Local browser WebTransport validation depends on a certificate that satisfies browser `serverCertificateHashes` constraints: short-lived X.509v3 cert, ECDSA P-256 key, and SAN coverage for the advertised local host/IPs.
+- Browser/WASM currently defaults `SIDEREAL_ENABLE_SHADER_MATERIALS=0` unless explicitly overridden so browser validation can continue while active browser-only WebGPU shader-material failures are isolated. Native and Windows keep shader materials enabled by default.
 
-The remaining work is no longer architectural bootstrap. It is live end-to-end browser validation plus the longer-running cache-packaging follow-through tracked separately by the asset delivery contract.
+The remaining work is no longer architectural bootstrap. It is live end-to-end browser validation plus the longer-running cache-packaging follow-through tracked separately by the asset delivery contract. That work is currently deferred until native runtime stability is good enough to make parity validation meaningful.
 
 ## 0.2 Actual Remaining Work (2026-03-08)
 
@@ -71,6 +79,7 @@ This is not "just add another Lightyear transport." The current native client st
 - `bins/sidereal-client/src/native/remote.rs` remains native-only by design for now; BRP is intentionally absent from wasm.
 - Browser transport/caching now compiles end to end, but parity-critical runtime behavior still needs integration coverage.
 - The asset delivery contract’s long-term physical packed-cache target is still follow-up work; the current browser adapter exposes the required byte-backed/indexed semantics through platform storage.
+- Browser/WASM currently runs with shader materials disabled by default as a temporary mitigation for browser-only WebGPU/Bevy fullscreen/material shader failures; use `SIDEREAL_ENABLE_SHADER_MATERIALS=1` only for focused browser shader debugging.
 
 ### 2.3 Conclusion
 
@@ -106,6 +115,12 @@ Transport work is necessary, but it is not enough. A parity implementation also 
 4. browser-safe asset/cache persistence,
 5. removal of native-only dependency placement,
 6. verification that rendering/asset/runtime code compiles for wasm.
+
+Current browser runtime note:
+
+- Native and Windows render the streamed shader-material path successfully.
+- Browser/WASM should currently be validated first for authoritative session flow, world entry, replication, and baseline scene/runtime behavior with shader materials disabled by default.
+- Shader-material parity on browser remains active follow-up debugging behind the explicit env override.
 
 ## 4.2 File-level follow-up areas still worth checking
 

@@ -170,6 +170,7 @@ fn webtransport_server_config_from_env() -> Option<(SocketAddr, Identity)> {
     Some((bind_addr, certificate))
 }
 
+#[allow(clippy::type_complexity)]
 pub fn log_replication_client_connected(
     trigger: On<Add, Connected>,
     clients: Query<

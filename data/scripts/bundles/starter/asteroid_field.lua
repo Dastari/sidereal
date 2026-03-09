@@ -95,8 +95,13 @@ local function build_single_asteroid(ctx, opts)
     component(asteroid_id, "avian_position", { spawn_position[1] or 0.0, spawn_position[2] or 0.0 }),
     component(asteroid_id, "avian_rotation", { cos = math.cos(rotation_rad), sin = math.sin(rotation_rad) }),
     component(asteroid_id, "avian_linear_velocity", { 0.0, 0.0 }),
-    component(asteroid_id, "avian_angular_velocity", spin_rad_s),
-    component(asteroid_id, "avian_rigid_body", "Kinematic"),
+    -- Asteroid field members currently collide via AABB/outline hulls and do not translate.
+    -- Running them as continuously rotating kinematic Avian bodies forces unnecessary broadphase,
+    -- replication, and persistence churn for motion that does not materially change collision.
+    -- Keep the randomized initial heading, but pin the physics body static until we introduce a
+    -- separate visual-only spin lane.
+    component(asteroid_id, "avian_angular_velocity", 0.0),
+    component(asteroid_id, "avian_rigid_body", "Static"),
     component(asteroid_id, "avian_linear_damping", 0.0),
     component(asteroid_id, "avian_angular_damping", 0.0),
   }

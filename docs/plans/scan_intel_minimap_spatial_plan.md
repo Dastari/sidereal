@@ -5,8 +5,8 @@ Date: 2026-03-05
 
 Primary contract docs:
 - `docs/features/visibility_replication_contract.md`
-- `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
-- `docs/features/dr-0018_fog_of_war_and_intel_memory_model.md`
+- `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+- `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`
 
 ## 1. Scope
 

@@ -1,13 +1,15 @@
-use avian2d::prelude::{Position, Rotation, SpatialQuery, SpatialQueryFilter};
+use avian2d::prelude::{LinearVelocity, Position, Rotation, SpatialQuery, SpatialQueryFilter};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
-    ActionQueue, AmmoCount, BallisticWeapon, DamageType, EntityAction, EntityGuid,
-    FlightControlAuthority, Hardpoint, HealthPool, MountedOn, ParentGuid, SimulationMotionWriter,
-    WeaponCooldownState,
+    ActionQueue, AmmoCount, BallisticProjectile, BallisticWeapon, CombatAuthorityEnabled,
+    DamageType, EntityAction, EntityGuid, Hardpoint, HealthPool, MountedOn, OwnerId, ParentGuid,
+    PlayerTag, PublicVisibility, SimulationMotionWriter, WeaponCooldownState,
 };
+
+const PROJECTILE_COLLISION_RADIUS_M: f32 = 0.35;
 
 #[derive(Debug, Clone, Message)]
 pub struct ShotFiredEvent {
@@ -46,6 +48,13 @@ pub struct ShotHitEvent {
     pub damage_type: DamageType,
 }
 
+#[derive(Debug, Clone, Message)]
+pub struct BallisticProjectileSpawnedEvent {
+    pub projectile_entity: Entity,
+    pub shooter_guid: Uuid,
+    pub owner_id: Option<String>,
+}
+
 pub fn bootstrap_weapon_cooldown_state(
     mut commands: Commands<'_, '_>,
     needs_cooldown: Query<'_, '_, Entity, (With<BallisticWeapon>, Without<WeaponCooldownState>)>,
@@ -72,11 +81,21 @@ pub fn tick_weapon_cooldowns(
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn process_weapon_fire_actions(
+    mut commands: Commands<'_, '_>,
     mut shooter_entities: Query<
         '_,
         '_,
-        (Entity, &EntityGuid, &Position, &Rotation, &mut ActionQueue),
-        (With<FlightControlAuthority>, With<SimulationMotionWriter>),
+        (
+            Entity,
+            &EntityGuid,
+            &Position,
+            &Rotation,
+            Option<&LinearVelocity>,
+            Option<&OwnerId>,
+            Option<&PlayerTag>,
+            &mut ActionQueue,
+        ),
+        With<SimulationMotionWriter>,
     >,
     hardpoints: Query<'_, '_, (&'_ ParentGuid, &'_ Hardpoint)>,
     mut weapons: Query<
@@ -92,6 +111,7 @@ pub fn process_weapon_fire_actions(
         ),
     >,
     mut shot_fired_events: MessageWriter<'_, ShotFiredEvent>,
+    mut projectile_spawned_events: MessageWriter<'_, BallisticProjectileSpawnedEvent>,
 ) {
     let mut hardpoint_by_mount = HashMap::<(Uuid, String), (Vec2, Quat)>::new();
     for (parent_guid, hardpoint) in &hardpoints {
@@ -101,18 +121,18 @@ pub fn process_weapon_fire_actions(
         );
     }
 
-    for (_shooter_entity, shooter_guid, shooter_position, shooter_rotation, mut queue) in
-        &mut shooter_entities
+    for (
+        _shooter_entity,
+        shooter_guid,
+        shooter_position,
+        shooter_rotation,
+        shooter_linear_velocity,
+        shooter_owner_id,
+        shooter_player_tag,
+        mut queue,
+    ) in &mut shooter_entities
     {
-        let mut wants_fire_primary = false;
-        let pending = std::mem::take(&mut queue.pending);
-        for action in pending {
-            if action == EntityAction::FirePrimary {
-                wants_fire_primary = true;
-            } else {
-                queue.pending.push(action);
-            }
-        }
+        let wants_fire_primary = drain_fire_primary_action(&mut queue);
         if !wants_fire_primary {
             continue;
         }
@@ -147,22 +167,178 @@ pub fn process_weapon_fire_actions(
             }
             let direction = local_forward.normalize();
             let origin = shooter_position.0 + rotate_vec2(shooter_quat, *hardpoint_offset);
+
             if let Some(ammo) = ammo_opt.as_deref_mut() {
                 let _ = ammo.consume(1);
             }
 
-            shot_fired_events.write(ShotFiredEvent {
-                shooter_guid: shooter_guid.0,
-                weapon_entity,
-                weapon_guid: weapon_guid.0,
-                origin,
-                direction,
-                max_range_m: weapon.max_range_m.max(1.0),
-                damage_per_shot: weapon.damage_per_shot,
-                damage_type: weapon.damage_type,
-            });
+            if weapon.uses_projectile_entities() {
+                let shooter_velocity = shooter_linear_velocity
+                    .map(|value| value.0)
+                    .unwrap_or(Vec2::ZERO);
+                let projectile_velocity =
+                    shooter_velocity + direction * weapon.projectile_speed_mps;
+                let projectile_entity = commands
+                    .spawn((
+                        Name::new("BallisticProjectile"),
+                        EntityGuid(Uuid::new_v4()),
+                        Position(origin),
+                        Rotation::from(muzzle_quat),
+                        LinearVelocity(projectile_velocity),
+                        BallisticProjectile::new(
+                            shooter_guid.0,
+                            weapon_guid.0,
+                            weapon.damage_per_shot,
+                            weapon.damage_type,
+                            weapon.projectile_lifetime_s(),
+                            PROJECTILE_COLLISION_RADIUS_M,
+                        ),
+                        PublicVisibility,
+                    ))
+                    .id();
+                if let Some(owner_id) = shooter_owner_id {
+                    commands.entity(projectile_entity).insert(owner_id.clone());
+                } else if shooter_player_tag.is_some() {
+                    commands
+                        .entity(projectile_entity)
+                        .insert(OwnerId(shooter_guid.0.to_string()));
+                }
+                projectile_spawned_events.write(BallisticProjectileSpawnedEvent {
+                    projectile_entity,
+                    shooter_guid: shooter_guid.0,
+                    owner_id: shooter_owner_id.map(|value| value.0.clone()),
+                });
+            } else {
+                shot_fired_events.write(ShotFiredEvent {
+                    shooter_guid: shooter_guid.0,
+                    weapon_entity,
+                    weapon_guid: weapon_guid.0,
+                    origin,
+                    direction,
+                    max_range_m: weapon.max_range_m.max(1.0),
+                    damage_per_shot: weapon.damage_per_shot,
+                    damage_type: weapon.damage_type,
+                });
+            }
 
             cooldown.remaining_s = weapon.cooldown_seconds();
+        }
+    }
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn update_ballistic_projectiles(
+    mut commands: Commands<'_, '_>,
+    time: Res<'_, Time<Fixed>>,
+    authority_enabled: Option<Res<'_, CombatAuthorityEnabled>>,
+    guid_entities: Query<'_, '_, (Entity, &'_ EntityGuid)>,
+    mut projectile_params: ParamSet<
+        '_,
+        '_,
+        (
+            SpatialQuery<'_, '_>,
+            Query<
+                '_,
+                '_,
+                (
+                    Entity,
+                    &'_ Position,
+                    &'_ LinearVelocity,
+                    &'_ BallisticProjectile,
+                ),
+            >,
+            Query<'_, '_, (&'_ mut Position, &'_ mut BallisticProjectile)>,
+        ),
+    >,
+    mut health_pools: Query<'_, '_, &'_ mut HealthPool>,
+    mut impact_events: MessageWriter<'_, ShotImpactResolvedEvent>,
+    mut shot_hit_events: MessageWriter<'_, ShotHitEvent>,
+) {
+    let dt_s = time.delta_secs();
+    if dt_s <= 0.0 {
+        return;
+    }
+    let authority_enabled = authority_enabled.map(|value| value.0).unwrap_or(true);
+
+    let mut entity_by_guid = HashMap::<Uuid, Entity>::new();
+    for (entity, guid) in &guid_entities {
+        entity_by_guid.insert(guid.0, entity);
+    }
+
+    let projectile_snapshots = projectile_params
+        .p1()
+        .iter()
+        .map(|(entity, position, linear_velocity, projectile)| {
+            (entity, position.0, linear_velocity.0, projectile.clone())
+        })
+        .collect::<Vec<_>>();
+
+    for (entity, start, velocity, projectile_snapshot) in projectile_snapshots {
+        let remaining_lifetime_s = projectile_snapshot.remaining_lifetime_s - dt_s;
+        if remaining_lifetime_s <= 0.0 || velocity.length_squared() <= f32::EPSILON {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        let step = velocity * dt_s;
+        let travel_distance = step.length();
+        if travel_distance <= f32::EPSILON {
+            continue;
+        }
+        let direction = step / travel_distance;
+        let Ok(ray_direction) = Dir2::new(direction) else {
+            continue;
+        };
+
+        let filter = entity_by_guid
+            .get(&projectile_snapshot.shooter_guid)
+            .copied()
+            .map_or_else(SpatialQueryFilter::default, |excluded| {
+                SpatialQueryFilter::from_excluded_entities([excluded, entity])
+            });
+
+        let hit = projectile_params.p0().cast_ray(
+            start,
+            ray_direction,
+            travel_distance + projectile_snapshot.collision_radius_m.max(0.0),
+            true,
+            &filter,
+        );
+        if let Some(hit) = hit {
+            let impact_pos = start + ray_direction.as_vec2() * hit.distance;
+            let target_guid = guid_entities.get(hit.entity).ok().map(|(_, guid)| guid.0);
+            impact_events.write(ShotImpactResolvedEvent {
+                shooter_guid: projectile_snapshot.shooter_guid,
+                weapon_entity: entity,
+                weapon_guid: projectile_snapshot.weapon_guid,
+                origin: start,
+                impact_pos,
+                max_range_m: travel_distance,
+                damage_per_shot: projectile_snapshot.damage_per_hit.max(0.0),
+                damage_type: projectile_snapshot.damage_type,
+                target_entity: Some(hit.entity),
+                target_guid,
+            });
+            if authority_enabled && let Ok(mut health_pool) = health_pools.get_mut(hit.entity) {
+                health_pool.current =
+                    (health_pool.current - projectile_snapshot.damage_per_hit.max(0.0)).max(0.0);
+                shot_hit_events.write(ShotHitEvent {
+                    shooter_guid: projectile_snapshot.shooter_guid,
+                    target_entity: hit.entity,
+                    target_guid,
+                    weapon_entity: entity,
+                    weapon_guid: projectile_snapshot.weapon_guid,
+                    damage: projectile_snapshot.damage_per_hit.max(0.0),
+                    damage_type: projectile_snapshot.damage_type,
+                });
+            }
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        if let Ok((mut position, mut projectile)) = projectile_params.p2().get_mut(entity) {
+            position.0 += step;
+            projectile.remaining_lifetime_s = remaining_lifetime_s;
         }
     }
 }
@@ -247,6 +423,19 @@ pub fn apply_damage_from_shot_impacts(
     }
 }
 
-fn rotate_vec2(rotation: Quat, input: Vec2) -> Vec2 {
-    (rotation * input.extend(0.0)).truncate()
+fn drain_fire_primary_action(queue: &mut ActionQueue) -> bool {
+    let mut wants_fire_primary = false;
+    let pending = std::mem::take(&mut queue.pending);
+    for action in pending {
+        if action == EntityAction::FirePrimary {
+            wants_fire_primary = true;
+        } else {
+            queue.pending.push(action);
+        }
+    }
+    wants_fire_primary
+}
+
+fn rotate_vec2(rotation: Quat, vector: Vec2) -> Vec2 {
+    (rotation * vector.extend(0.0)).truncate()
 }

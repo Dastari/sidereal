@@ -2,6 +2,10 @@
 
 Status: Active  
 Audience: engineering and design contributors
+Update note (2026-03-09):
+- Decision detail docs now live under `docs/decisions/`.
+- Plan docs now live under `docs/plans/`.
+- Broken DR-0014 links to missing 2D migration docs were removed; the decision now points at the active architecture/checklist docs.
 
 ## Purpose
 
@@ -12,12 +16,12 @@ Use this file to:
 - record tradeoffs and alternatives,
 - prevent accidental regressions in future refactors.
 
-When a decision needs a dedicated detail document, store it under `docs/features/` using:
+When a decision needs a dedicated detail document, store it under `docs/decisions/` using:
 - `dr-XXXX_<slug>.md`
 
 Not every decision requires a dedicated detail doc (for example when an existing feature contract already fully covers it), but every decision must link either:
 - a dedicated decision doc, or
-- the existing feature contract/plan that is its source-of-truth.
+- the existing feature contract or plan that is its source-of-truth.
 
 ## Process
 
@@ -25,8 +29,8 @@ For each decision:
 1. Add a new entry with a stable ID (`DR-XXXX`).
 2. Set `Status` (`Proposed`, `Accepted`, `Superseded`, `Deprecated`).
 3. Document rationale and alternatives.
-4. For in-depth decisions, create/update `docs/features/dr-XXXX_<slug>.md`.
-5. If a dedicated doc is not needed, link the existing source-of-truth feature contract/plan under `docs/features/`.
+4. For in-depth decisions, create/update `docs/decisions/dr-XXXX_<slug>.md`.
+5. If a dedicated doc is not needed, link the existing source-of-truth feature contract under `docs/features/` or plan under `docs/plans/`.
 6. Link impacted docs/code/tests.
 7. If superseded, keep the old entry and reference the replacement.
 
@@ -51,9 +55,10 @@ For each decision:
     - <...>
 - Follow-up:
   - <required tasks/docs/tests>
-- Feature doc:
-  - `docs/features/dr-XXXX_<slug>.md` (preferred for in-depth decisions)
+- Decision doc:
+  - `docs/decisions/dr-XXXX_<slug>.md` (preferred for in-depth decisions)
   - or an existing source-of-truth `docs/features/<feature_doc>.md`
+  - or an existing source-of-truth `docs/plans/<plan_doc>.md`
 - References:
   - <docs/code paths>
 ```
@@ -83,7 +88,7 @@ For each decision:
   - Track upstream Lightyear issue `#1200`.
   - Reassess whether replication should ever re-enable native server input after upstream fixes land.
 - Decision doc:
-  - `docs/features/dr-0031_lightyear_native_input_runtime_split_followup.md`
+  - `docs/decisions/dr-0031_lightyear_native_input_runtime_split_followup.md`
 
 ## DR-0029: Runtime Shader Family Taxonomy and Lua Authoring Model
 - Status: Accepted
@@ -111,10 +116,10 @@ For each decision:
   - Collapse the planet trio first.
   - Define and implement the generic effect-family ABI next.
 - Decision doc:
-  - `docs/features/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
+  - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
 - References:
-  - `docs/features/dynamic_runtime_shader_material_plan.md`
-  - `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+  - `docs/plans/dynamic_runtime_shader_material_plan.md`
+  - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 
 ## DR-0030: Non-Physics World Spatial Components
 - Status: Accepted
@@ -137,7 +142,7 @@ For each decision:
   - Negative:
     - Requires dual-lane spatial consumers until the migration is complete.
 - Decision doc:
-  - `docs/features/dr-0030_non_physics_world_spatial_components.md`
+  - `docs/decisions/dr-0030_non_physics_world_spatial_components.md`
 
 ## DR-0001: Account / Character / Session Terminology
 - Status: Accepted
@@ -161,10 +166,10 @@ For each decision:
 - Follow-up:
   - Prefer `Character`/`Session` naming in new test and protocol docs.
 - Decision doc:
-  - `docs/features/dr-0001_account_character_session_model.md`
+  - `docs/decisions/dr-0001_account_character_session_model.md`
 - References:
   - `docs/sidereal_design_document.md`
-  - `docs/features/test_topology_and_resilience_plan.md`
+  - `docs/plans/test_topology_and_resilience_plan.md`
 
 ## DR-0002: Explicit World Entry Lifecycle
 - Status: Accepted
@@ -187,7 +192,7 @@ For each decision:
 - Follow-up:
   - Keep coverage for ownership validation and missing-entity rejection paths.
 - Decision doc:
-  - `docs/features/dr-0002_explicit_world_entry_flow.md`
+  - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
 - References:
   - `docs/sidereal_design_document.md`
   - `bins/sidereal-gateway/src/api.rs`
@@ -218,9 +223,9 @@ For each decision:
   - Define exploit and abuse constraints (combat logging, dock abuse, reconnect reclaim).
   - Add resilience tests once accepted.
 - Decision doc:
-  - `docs/features/dr-0003_logout_presence_policy.md`
+  - `docs/decisions/dr-0003_logout_presence_policy.md`
 - References:
-  - `docs/features/test_topology_and_resilience_plan.md`
+  - `docs/plans/test_topology_and_resilience_plan.md`
   - `docs/sidereal_design_document.md`
 
 ## DR-0004: Asset Catalog as Authoritative Source of Truth
@@ -336,9 +341,9 @@ For each decision:
   - Implement generic variant components/registry and spawn integration.
   - Promote to Accepted after first production use across at least 3 entity families.
 - Decision doc:
-  - `docs/features/dr-0007_entity_variant_framework.md`
+  - `docs/decisions/dr-0007_entity_variant_framework.md`
 - References:
-  - `docs/features/dr-0007_entity_variant_framework.md`
+  - `docs/decisions/dr-0007_entity_variant_framework.md`
 
 ## DR-0017: Dual-Lane Replication and Owner Asset Manifest
 - Status: Proposed
@@ -367,10 +372,10 @@ For each decision:
   - Define message schemas and pacing for tactical and owner-manifest lanes.
   - Add sequence/staleness telemetry and tests for lane behavior and ownership isolation.
 - Decision doc:
-  - `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+  - `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
 - References:
   - `docs/features/visibility_replication_contract.md`
-  - `docs/features/scan_intel_minimap_spatial_plan.md`
+  - `docs/plans/scan_intel_minimap_spatial_plan.md`
   - `docs/features/tactical_and_owner_lane_protocol_contract.md`
   - `docs/sidereal_design_document.md`
 
@@ -398,10 +403,10 @@ For each decision:
   - Define message schemas + sequence semantics.
   - Add tests for exploration growth, stale/live transitions, and disclosure safety.
 - Decision doc:
-  - `docs/features/dr-0018_fog_of_war_and_intel_memory_model.md`
+  - `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`
 - References:
   - `docs/features/visibility_replication_contract.md`
-  - `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+  - `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
   - `docs/features/tactical_and_owner_lane_protocol_contract.md`
   - `docs/sidereal_design_document.md`
 
@@ -428,9 +433,9 @@ For each decision:
     - Schema reset required for local/dev persisted data.
     - Full fog snapshot still materializes chunked memory when requested.
 - Decision doc:
-  - `docs/features/dr-0019_fog_memory_chunk_storage.md`
+  - `docs/decisions/dr-0019_fog_memory_chunk_storage.md`
 - References:
-  - `docs/features/dr-0018_fog_of_war_and_intel_memory_model.md`
+  - `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`
   - `docs/features/tactical_and_owner_lane_protocol_contract.md`
   - `docs/features/visibility_replication_contract.md`
 
@@ -458,10 +463,10 @@ For each decision:
   - Keep ownership rejection-path tests in gateway and replication suites.
   - Keep auth token/test fixture generation aligned with current claims validation.
 - Decision doc:
-  - `docs/features/dr-0002_explicit_world_entry_flow.md`
+  - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
 - References:
-  - `docs/features/dr-0002_explicit_world_entry_flow.md`
-  - `docs/features/dr-0001_account_character_session_model.md`
+  - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
+  - `docs/decisions/dr-0001_account_character_session_model.md`
   - `bins/sidereal-gateway/src/auth.rs`
   - `bins/sidereal-replication/src/replication/auth.rs`
   - `bins/sidereal-replication/src/bootstrap.rs`
@@ -490,9 +495,9 @@ For each decision:
   - Add compensation/transaction strategy to avoid stranded account rows on persistence failure.
   - Add explicit test coverage for partial-failure remediation.
 - Decision doc:
-  - `docs/features/dr-0002_explicit_world_entry_flow.md`
+  - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
 - References:
-  - `docs/features/dr-0002_explicit_world_entry_flow.md`
+  - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
   - `bins/sidereal-gateway/src/auth.rs`
   - `docs/sidereal_design_document.md`
 
@@ -518,10 +523,10 @@ For each decision:
 - Note:
   - The gateway previously exposed `/world/me`; it was removed (unused by clients; world state and asset manifests are delivered via the replication stream). Any future world-read endpoint must follow character-scoped resolution per this decision.
 - Decision doc:
-  - `docs/features/dr-0001_account_character_session_model.md`
+  - `docs/decisions/dr-0001_account_character_session_model.md`
 - References:
-  - `docs/features/dr-0001_account_character_session_model.md`
-  - `docs/features/dr-0002_explicit_world_entry_flow.md`
+  - `docs/decisions/dr-0001_account_character_session_model.md`
+  - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
   - `docs/sidereal_design_document.md`
 
 ## DR-0011: Headless Client/Test Runtime Must Preserve Core Bevy Resource Invariants
@@ -547,10 +552,10 @@ For each decision:
   - Update headless bootstrap/plugin wiring to satisfy transform resource requirements.
   - Update transport e2e token/fixture generation to satisfy current claims + ownership validation.
 - Decision doc:
-  - `docs/features/test_topology_and_resilience_plan.md`
+  - `docs/plans/test_topology_and_resilience_plan.md`
 - References:
-  - `docs/features/test_topology_and_resilience_plan.md`
-  - `docs/features/dr-0002_explicit_world_entry_flow.md`
+  - `docs/plans/test_topology_and_resilience_plan.md`
+  - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
   - `bins/sidereal-client/src/native.rs`
   - `bins/sidereal-replication/tests/transport_lightyear_e2e.rs`
 
@@ -585,7 +590,7 @@ For each decision:
 - References:
   - `docs/sidereal_design_document.md`
   - `docs/features/visibility_replication_contract.md`
-  - `docs/features/scan_intel_minimap_spatial_plan.md`
+  - `docs/plans/scan_intel_minimap_spatial_plan.md`
 
 ## DR-0013: Component-Driven Action Acceptors and Control-Context Routing
 - Status: Proposed
@@ -620,18 +625,21 @@ For each decision:
   - Add control handoff and multi-acceptor determinism tests.
   - Maintain native/WASM parity through each phase.
 - Decision doc:
-  - `docs/features/dr-0013_action_acceptor_control_routing.md`
+  - `docs/decisions/dr-0013_action_acceptor_control_routing.md`
 - References:
-  - `docs/features/dr-0013_action_acceptor_control_routing.md`
+  - `docs/decisions/dr-0013_action_acceptor_control_routing.md`
   - `crates/sidereal-game/src/actions.rs`
   - `crates/sidereal-game/src/flight.rs`
   - `bins/sidereal-replication/src/replication/input.rs`
   - `bins/sidereal-client/src/native.rs`
 
 ## DR-0014: Project-Wide Migration to Server-Authoritative 2D Runtime (Avian2D + Sprites)
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-02-25
 - Owners: Gameplay runtime + replication + client runtime + asset pipeline
+- Update note (2026-03-09):
+  - The old linked `2d_migration_plan` and dedicated DR doc are not present in the repo.
+  - The decision itself has effectively been absorbed into the active architecture baseline and implementation checklist.
 - Context:
   - Current runtime assumptions are 3D-centric (Avian3D, 3D camera flow, GLTF runtime visuals).
   - Project direction is top-down 2D gameplay with sprite-based rendering.
@@ -641,7 +649,7 @@ For each decision:
     - Avian2D authoritative simulation/prediction,
     - top-down orthographic gameplay camera,
     - sprite-based visual pipeline with GLTF removed from runtime paths.
-  - Use `docs/features/2d_migration_plan.md` as the execution plan and acceptance framework.
+  - Treat the active execution baseline as `docs/sidereal_design_document.md` plus `docs/sidereal_implementation_checklist.md`.
 - Alternatives considered:
   - Keep Avian3D and only render sprites in pseudo-2D: rejected (retains unnecessary 3D runtime complexity).
   - Big-bang rewrite in one change: rejected (high regression risk and poor rollback safety).
@@ -654,15 +662,14 @@ For each decision:
     - Migration touches multiple crates/contracts and requires staged rollout discipline.
     - Persistence/protocol compatibility must be managed carefully through transition.
 - Follow-up:
-  - Execute phases and quality gates in `docs/features/2d_migration_plan.md`.
+  - Keep the architecture and checklist docs aligned with remaining 2D-runtime cleanup work.
   - Update impacted source-of-truth docs/contracts in the same changes that alter behavior.
   - Remove Avian3D/GLTF runtime paths only after replacement coverage is validated.
 - Decision doc:
-  - `docs/features/dr-0014_2d_runtime_migration.md`
+  - No dedicated detail doc retained in-tree; use the architecture and checklist docs as the active source of truth.
 - References:
-  - `docs/features/dr-0014_2d_runtime_migration.md`
-  - `docs/features/2d_migration_plan.md`
   - `docs/sidereal_design_document.md`
+  - `docs/sidereal_implementation_checklist.md`
   - `docs/features/asset_delivery_contract.md`
   - `docs/features/visibility_replication_contract.md`
 
@@ -723,11 +730,11 @@ For each decision:
     - Requires robust schema validation, fallback handling, and compile-thrash guardrails.
     - Some advanced shader binding patterns may need planned extensions to generic material schemas.
 - Follow-up:
-  - Implement phased plan in `docs/features/dynamic_runtime_shader_material_plan.md`.
+  - Implement phased plan in `docs/plans/dynamic_runtime_shader_material_plan.md`.
   - Add tests for authorization, fallback behavior, cache invalidation, and native/WASM parity.
   - Promote to Accepted after end-to-end runtime path is implemented and validated.
 - Decision doc:
-  - `docs/features/dynamic_runtime_shader_material_plan.md`
+  - `docs/plans/dynamic_runtime_shader_material_plan.md`
 - References:
   - `docs/features/scripting_support.md`
   - `docs/features/asset_delivery_contract.md`
@@ -760,9 +767,9 @@ For each decision:
   - Implement phased plan and tests in updated asset delivery contract.
   - Align scripting/runtime docs and AGENTS enforcement rules in same change.
 - Decision doc:
-  - `docs/features/dr-0019_lua_asset_registry_and_gateway_http_delivery.md`
+  - `docs/decisions/dr-0019_lua_asset_registry_and_gateway_http_delivery.md`
 - References:
-  - `docs/features/dr-0019_lua_asset_registry_and_gateway_http_delivery.md`
+  - `docs/decisions/dr-0019_lua_asset_registry_and_gateway_http_delivery.md`
   - `docs/features/asset_delivery_contract.md`
   - `docs/features/scripting_support.md`
   - `docs/sidereal_design_document.md`
@@ -912,10 +919,10 @@ For each decision:
   - Add richer publish/draft/rollback flow on top of the active catalog.
   - Add first-class dashboard/API write path for gateway-visible edits.
 - Decision doc:
-  - `docs/features/dr-0025_runtime_script_catalog_authority.md`
+  - `docs/decisions/dr-0025_runtime_script_catalog_authority.md`
 - References:
   - `docs/features/scripting_support.md`
-  - `docs/features/dr-0025_runtime_script_catalog_authority.md`
+  - `docs/decisions/dr-0025_runtime_script_catalog_authority.md`
   - `bins/sidereal-replication/src/replication/scripting.rs`
 
 ## DR-0026: SQL Tables for Durable Script Catalog Persistence
@@ -944,10 +951,10 @@ For each decision:
   - Add dashboard/API write flows for script publishing.
   - Extend active-version model into richer publish/rollback semantics if needed.
 - Decision doc:
-  - `docs/features/dr-0026_sql_script_catalog_persistence.md`
+  - `docs/decisions/dr-0026_sql_script_catalog_persistence.md`
 - References:
   - `docs/features/scripting_support.md`
-  - `docs/features/dr-0026_sql_script_catalog_persistence.md`
+  - `docs/decisions/dr-0026_sql_script_catalog_persistence.md`
   - `crates/sidereal-persistence/src/lib.rs`
 
 ## DR-0027: Lua-Authored Render Layers and Generic Shader Pipeline
@@ -977,10 +984,10 @@ For each decision:
   - Implement the phased plan and validation/model changes in the dedicated feature doc.
   - Update shader/material, scripting, asset, and design docs to align with the new render-layer model.
 - Decision doc:
-  - `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+  - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 - References:
-  - `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
-  - `docs/features/dynamic_runtime_shader_material_plan.md`
+  - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+  - `docs/plans/dynamic_runtime_shader_material_plan.md`
   - `docs/features/scripting_support.md`
   - `docs/features/asset_delivery_contract.md`
   - `docs/sidereal_design_document.md`
@@ -1014,10 +1021,10 @@ For each decision:
   - Follow-up:
   - Migration implemented in runtime systems, Lua bundles, and docs.
 - Decision doc:
-  - `docs/features/dr-0028_generic_visibility_range_components.md`
+  - `docs/decisions/dr-0028_generic_visibility_range_components.md`
 - References:
-  - `docs/features/dr-0028_generic_visibility_range_components.md`
-  - `docs/features/generic_visibility_range_migration_plan.md`
+  - `docs/decisions/dr-0028_generic_visibility_range_components.md`
+  - `docs/plans/generic_visibility_range_migration_plan.md`
   - `docs/features/visibility_replication_contract.md`
   - `AGENTS.md`
 
@@ -1047,10 +1054,10 @@ For each decision:
   - Keep wasm parity docs/checklists aligned with this decision.
   - Add live browser validation coverage for login, world-entry, asset bootstrap, and in-world replication.
 - Decision doc:
-  - `docs/features/dr-0029_webtransport_first_browser_transport.md`
+  - `docs/decisions/dr-0029_webtransport_first_browser_transport.md`
 - References:
-  - `docs/features/dr-0029_webtransport_first_browser_transport.md`
-  - `docs/features/wasm_parity_implementation_plan.md`
+  - `docs/decisions/dr-0029_webtransport_first_browser_transport.md`
+  - `docs/plans/wasm_parity_implementation_plan.md`
   - `docs/features/asset_delivery_contract.md`
   - `docs/sidereal_design_document.md`
   - `AGENTS.md`

@@ -1,19 +1,78 @@
 use bevy::prelude::*;
 use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
-    NetworkTarget, RemoteId, ReplicationState, Server, ServerMultiMessageSender,
+    InterpolationTarget, NetworkTarget, PreSpawned, RemoteId, Replicate, ReplicationState, Server,
+    ServerMultiMessageSender,
 };
 use serde_json::json;
-use sidereal_game::{EntityGuid, OwnerId, ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent};
+use sidereal_game::{
+    BallisticProjectile, BallisticProjectileSpawnedEvent, EntityGuid, OwnerId, PublicVisibility,
+    ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent,
+};
 use sidereal_net::{InputChannel, PlayerEntityId, ServerWeaponFiredMessage};
 
 use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::control::owner_prediction_target;
 use crate::replication::runtime_scripting::{ScriptEvent, ScriptEventQueue};
 
 const TRACER_VISUAL_SPEED_MPS: f32 = 1800.0;
 const TRACER_VISUAL_MIN_TTL_S: f32 = 0.01;
 
 pub fn init_resources(_app: &mut App) {}
+
+#[allow(clippy::type_complexity)]
+pub fn mark_new_ballistic_projectiles_prespawned(
+    mut commands: Commands<'_, '_>,
+    projectiles: Query<
+        '_,
+        '_,
+        Entity,
+        (
+            With<BallisticProjectile>,
+            Added<BallisticProjectile>,
+            Without<PreSpawned>,
+        ),
+    >,
+) {
+    for entity in &projectiles {
+        commands.entity(entity).insert(PreSpawned::default());
+    }
+}
+
+pub fn configure_ballistic_projectile_replication(
+    mut commands: Commands<'_, '_>,
+    mut spawned_events: MessageReader<'_, '_, BallisticProjectileSpawnedEvent>,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
+    client_player_ids: Query<'_, '_, Entity, With<ClientOf>>,
+    projectiles: Query<'_, '_, (), With<BallisticProjectile>>,
+) {
+    let mut client_entity_by_player_id = std::collections::HashMap::<String, Entity>::new();
+    for client_entity in &client_player_ids {
+        if let Some(player_entity_id) = bindings.by_client_entity.get(&client_entity) {
+            client_entity_by_player_id.insert(player_entity_id.clone(), client_entity);
+        }
+    }
+
+    for spawned in spawned_events.read() {
+        if projectiles.get(spawned.projectile_entity).is_err() {
+            continue;
+        }
+        let mut entity_commands = commands.entity(spawned.projectile_entity);
+        entity_commands.insert((Replicate::to_clients(NetworkTarget::All), PublicVisibility));
+        if let Some(owner_id) = spawned.owner_id.as_ref()
+            && let Some(client_entity) = client_entity_by_player_id.get(owner_id)
+            && let Ok(remote_id) = client_remote_ids.get(*client_entity)
+        {
+            entity_commands.insert(owner_prediction_target(*client_entity));
+            entity_commands.insert(InterpolationTarget::to_clients(
+                NetworkTarget::AllExceptSingle(remote_id.0),
+            ));
+            continue;
+        }
+        entity_commands.insert(InterpolationTarget::to_clients(NetworkTarget::All));
+    }
+}
 
 pub fn broadcast_weapon_fired_messages(
     server_query: Query<'_, '_, &'_ Server>,

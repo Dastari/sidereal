@@ -29,18 +29,35 @@ use super::platform::{
     self, BACKDROP_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER, POST_PROCESS_RENDER_LAYER,
 };
 use super::resources::AssetRootPath;
-use super::resources::{
-    FullscreenExternalWorldData, FullscreenLayerCache, FullscreenLayerCacheEntry,
-    StarfieldMotionState,
-};
+use super::resources::{FullscreenExternalWorldData, StarfieldMotionState};
 use bevy::state::state_scoped::DespawnOnExit;
 
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_fullscreen_layer_renderables_system(
     mut commands: Commands<'_, '_>,
-    cache: Res<'_, FullscreenLayerCache>,
-    existing: Query<'_, '_, (Entity, &'_ RuntimeFullscreenRenderable)>,
+    layers: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ FullscreenLayer>,
+            Option<&'_ RuntimeRenderLayerDefinition>,
+            Option<&'_ StarfieldShaderSettings>,
+            Option<&'_ SpaceBackgroundShaderSettings>,
+            Option<&'_ RuntimeFullscreenRenderable>,
+        ),
+    >,
+    stale_runtime_copies: Query<
+        '_,
+        '_,
+        Entity,
+        (
+            With<RuntimeFullscreenRenderable>,
+            Without<FullscreenLayer>,
+            Without<RuntimeRenderLayerDefinition>,
+        ),
+    >,
     mut meshes: ResMut<'_, Assets<Mesh>>,
     starfield_materials: Option<ResMut<'_, Assets<StarfieldMaterial>>>,
     space_background_materials: Option<ResMut<'_, Assets<SpaceBackgroundMaterial>>>,
@@ -53,174 +70,102 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
     let mut starfield_materials = starfield_materials;
     let mut space_background_materials = space_background_materials;
     let mut space_background_nebula_materials = space_background_nebula_materials;
+    let fullscreen_mesh = meshes.add(Rectangle::new(1.0, 1.0));
     let shader_materials_enabled = super::shaders::shader_materials_enabled();
-    if !shader_materials_enabled {
-        for (entity, renderable) in &existing {
-            if renderable.pass_id.is_none() && renderable.layer_id.is_some() {
-                commands.entity(entity).despawn();
-            }
-        }
-        return;
+    for entity in &stale_runtime_copies {
+        commands.entity(entity).despawn();
     }
 
-    for (entity, renderable) in &existing {
-        if renderable.pass_id.is_some() || renderable.layer_id.is_none() {
-            continue;
-        }
-        let Some(layer_id) = renderable.layer_id.as_ref() else {
-            continue;
-        };
-        let Some(selection) = cache.entries_by_layer_id.get(layer_id) else {
-            commands.entity(entity).despawn();
-            continue;
-        };
-        if !selection.enabled {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
-            &asset_root.0,
-            &asset_manager,
-            *cache_adapter,
-            &selection.shader_asset_id,
-        );
-        if fullscreen_material_kind_from_cache(selection, &shader_assignments).is_none()
-            || !has_streamed_shader
-        {
-            warn!(
-                "fullscreen layer renderable unavailable layer_id={} phase={} shader_asset_id={}",
-                selection.layer_id, selection.phase, selection.shader_asset_id
-            );
-            continue;
-        }
-        let render_layer = render_layer_for_phase(&selection.phase);
-        let mesh = meshes.add(Rectangle::new(1.0, 1.0));
-        let mut entity_commands = commands.entity(entity);
-        entity_commands.insert((
-            RuntimeFullscreenRenderable {
-                layer_id: Some(selection.layer_id.clone()),
-                owner_entity: None,
-                pass_id: None,
-            },
-            Mesh2d(mesh),
-            Transform::from_xyz(0.0, 0.0, selection.order as f32),
-            RenderLayers::layer(render_layer),
-            NoFrustumCulling,
-            Visibility::Visible,
-            ClientSceneEntity,
-            DespawnOnExit(ClientAppState::InWorld),
-        ));
-        attach_runtime_fullscreen_material(
-            &mut entity_commands,
-            fullscreen_material_kind_from_cache(selection, &shader_assignments),
-            starfield_materials.as_deref_mut(),
-            space_background_materials.as_deref_mut(),
-            space_background_nebula_materials.as_deref_mut(),
-        );
-    }
-
-    for selection in cache.entries_by_layer_id.values() {
-        if !selection.enabled {
-            continue;
-        }
-        if existing.iter().any(|(_, renderable)| {
-            renderable.layer_id.as_deref() == Some(selection.layer_id.as_str())
-                && renderable.pass_id.is_none()
-        }) {
-            continue;
-        }
-        let has_streamed_shader = super::shaders::fullscreen_layer_shader_ready(
-            &asset_root.0,
-            &asset_manager,
-            *cache_adapter,
-            &selection.shader_asset_id,
-        );
-        if fullscreen_material_kind_from_cache(selection, &shader_assignments).is_none()
-            || !has_streamed_shader
-        {
-            warn!(
-                "fullscreen layer renderable unavailable layer_id={} phase={} shader_asset_id={}",
-                selection.layer_id, selection.phase, selection.shader_asset_id
-            );
-            continue;
-        }
-        let render_layer = render_layer_for_phase(&selection.phase);
-        let mesh = meshes.add(Rectangle::new(1.0, 1.0));
-        let mut entity_commands = commands.spawn((
-            RuntimeFullscreenRenderable {
-                layer_id: Some(selection.layer_id.clone()),
-                owner_entity: None,
-                pass_id: None,
-            },
-            Mesh2d(mesh),
-            Transform::from_xyz(0.0, 0.0, selection.order as f32),
-            RenderLayers::layer(render_layer),
-            NoFrustumCulling,
-            Visibility::Visible,
-            ClientSceneEntity,
-            DespawnOnExit(ClientAppState::InWorld),
-        ));
-        attach_runtime_fullscreen_material(
-            &mut entity_commands,
-            fullscreen_material_kind_from_cache(selection, &shader_assignments),
-            starfield_materials.as_deref_mut(),
-            space_background_materials.as_deref_mut(),
-            space_background_nebula_materials.as_deref_mut(),
-        );
-        info!(
-            "fullscreen layer renderable ready phase={} order={} shader_asset_id={}",
-            selection.phase, selection.order, selection.shader_asset_id
-        );
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub(super) fn refresh_fullscreen_layer_cache_system(
-    mut cache: ResMut<'_, FullscreenLayerCache>,
-    layers: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Option<&FullscreenLayer>,
-            Option<&RuntimeRenderLayerDefinition>,
-            Option<&StarfieldShaderSettings>,
-            Option<&SpaceBackgroundShaderSettings>,
-        ),
-    >,
-) {
-    let mut seen_layer_ids = std::collections::HashSet::new();
-    for (entity, legacy_layer, runtime_layer, starfield_settings, space_background_settings) in
-        &layers
+    for (
+        entity,
+        legacy_layer,
+        runtime_layer,
+        starfield_settings,
+        space_background_settings,
+        existing_renderable,
+    ) in &layers
     {
         let Some(selection) = resolve_fullscreen_layer_selection(
+            entity,
             legacy_layer,
             runtime_layer,
             starfield_settings,
             space_background_settings,
         ) else {
+            if existing_renderable.is_some_and(|renderable| {
+                renderable.pass_id.is_none() && renderable.layer_id.is_some()
+            }) {
+                let mut entity_commands = commands.entity(entity);
+                clear_runtime_fullscreen_material(&mut entity_commands);
+                entity_commands.remove::<(
+                    RuntimeFullscreenRenderable,
+                    Mesh2d,
+                    RenderLayers,
+                    NoFrustumCulling,
+                )>();
+            }
             continue;
         };
-        let layer_id = runtime_layer
-            .map(|layer| layer.layer_id.clone())
-            .unwrap_or_else(|| format!("legacy:{}", entity.to_bits()));
-        seen_layer_ids.insert(layer_id.clone());
-        cache.entries_by_layer_id.insert(
-            layer_id.clone(),
-            FullscreenLayerCacheEntry {
-                layer_id,
-                enabled: runtime_layer.map(|layer| layer.enabled).unwrap_or(true),
-                phase: selection.phase.to_string(),
-                shader_asset_id: selection.shader_asset_id.to_string(),
-                order: selection.order,
-                starfield_settings: starfield_settings.cloned(),
-                space_background_settings: space_background_settings.cloned(),
-            },
+
+        let has_streamed_shader = shader_materials_enabled
+            && super::shaders::fullscreen_layer_shader_ready(
+                &asset_root.0,
+                &asset_manager,
+                *cache_adapter,
+                selection.shader_asset_id,
+            );
+        let material_kind = fullscreen_material_kind_for_selection(
+            &selection,
+            starfield_settings,
+            space_background_settings,
+            &shader_assignments,
         );
+        if material_kind.is_none() || !has_streamed_shader {
+            let mut entity_commands = commands.entity(entity);
+            clear_runtime_fullscreen_material(&mut entity_commands);
+            entity_commands.remove::<(
+                RuntimeFullscreenRenderable,
+                Mesh2d,
+                RenderLayers,
+                NoFrustumCulling,
+            )>();
+            if shader_materials_enabled {
+                warn!(
+                    "fullscreen layer renderable unavailable layer_id={} phase={} shader_asset_id={}",
+                    selection.layer_id, selection.phase, selection.shader_asset_id
+                );
+            }
+            continue;
+        }
+
+        let render_layer = render_layer_for_phase(selection.phase);
+        let mut entity_commands = commands.entity(entity);
+        entity_commands.insert((
+            RuntimeFullscreenRenderable {
+                layer_id: Some(selection.layer_id.to_string()),
+                owner_entity: None,
+                pass_id: None,
+            },
+            Mesh2d(fullscreen_mesh.clone()),
+            Transform::from_xyz(0.0, 0.0, selection.order as f32),
+            RenderLayers::layer(render_layer),
+            NoFrustumCulling,
+            Visibility::Visible,
+        ));
+        attach_runtime_fullscreen_material(
+            &mut entity_commands,
+            material_kind,
+            starfield_materials.as_deref_mut(),
+            space_background_materials.as_deref_mut(),
+            space_background_nebula_materials.as_deref_mut(),
+        );
+        if existing_renderable.is_none() {
+            info!(
+                "fullscreen layer renderable ready phase={} order={} shader_asset_id={}",
+                selection.phase, selection.order, selection.shader_asset_id
+            );
+        }
     }
-    cache
-        .entries_by_layer_id
-        .retain(|layer_id, entry| entry.enabled || seen_layer_ids.contains(layer_id));
 }
 
 #[derive(Clone, Copy)]
@@ -231,23 +176,26 @@ enum FullscreenMaterialKind {
 }
 
 struct FullscreenLayerSelection<'a> {
+    layer_id: String,
     phase: &'a str,
     shader_asset_id: &'a str,
     order: i32,
 }
 
-fn fullscreen_material_kind_from_cache(
-    entry: &FullscreenLayerCacheEntry,
+fn fullscreen_material_kind_for_selection(
+    selection: &FullscreenLayerSelection<'_>,
+    starfield_settings: Option<&StarfieldShaderSettings>,
+    space_background_settings: Option<&SpaceBackgroundShaderSettings>,
     shader_assignments: &super::shaders::RuntimeShaderAssignments,
 ) -> Option<FullscreenMaterialKind> {
     if let Some(kind) =
-        fullscreen_material_kind_for_shader(shader_assignments, &entry.shader_asset_id)
+        fullscreen_material_kind_for_shader(shader_assignments, selection.shader_asset_id)
     {
         return Some(kind);
     }
-    if entry.starfield_settings.is_some() {
+    if starfield_settings.is_some() {
         Some(FullscreenMaterialKind::Starfield)
-    } else if entry.space_background_settings.is_some() {
+    } else if space_background_settings.is_some() {
         Some(FullscreenMaterialKind::SpaceBackgroundBase)
     } else {
         None
@@ -255,6 +203,7 @@ fn fullscreen_material_kind_from_cache(
 }
 
 fn resolve_fullscreen_layer_selection<'a>(
+    entity: Entity,
     legacy_layer: Option<&'a FullscreenLayer>,
     runtime_layer: Option<&'a RuntimeRenderLayerDefinition>,
     _starfield_settings: Option<&'a StarfieldShaderSettings>,
@@ -269,6 +218,7 @@ fn resolve_fullscreen_layer_selection<'a>(
         && layer.material_domain == RENDER_DOMAIN_FULLSCREEN
     {
         return Some(FullscreenLayerSelection {
+            layer_id: layer.layer_id.clone(),
             phase: layer.phase.as_str(),
             shader_asset_id: layer.shader_asset_id.as_str(),
             order: layer.order,
@@ -276,6 +226,7 @@ fn resolve_fullscreen_layer_selection<'a>(
     }
 
     legacy_layer.map(|layer| FullscreenLayerSelection {
+        layer_id: format!("legacy:{}", entity.to_bits()),
         phase: RENDER_PHASE_FULLSCREEN_BACKGROUND,
         shader_asset_id: layer.shader_asset_id.as_str(),
         order: layer.layer_order,
@@ -1339,33 +1290,23 @@ pub fn compute_fullscreen_external_world_system(
 #[allow(clippy::type_complexity)]
 pub fn update_starfield_material_system(
     world_data: Res<'_, FullscreenExternalWorldData>,
-    cache: Res<'_, FullscreenLayerCache>,
     starfield_query: Query<
         '_,
         '_,
         (
             &'_ MeshMaterial2d<StarfieldMaterial>,
-            &'_ RuntimeFullscreenRenderable,
+            &'_ StarfieldShaderSettings,
             Option<&'_ mut Visibility>,
         ),
         With<RuntimeFullscreenMaterialBinding>,
     >,
     mut materials: ResMut<'_, Assets<StarfieldMaterial>>,
 ) {
-    for (material_handle, renderable, maybe_visibility) in starfield_query {
+    for (material_handle, settings, maybe_visibility) in starfield_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
             material.viewport_time = world_data.viewport_time;
             material.drift_intensity = world_data.drift_intensity;
             material.velocity_dir = world_data.velocity_dir;
-            let Some(layer_id) = renderable.layer_id.as_ref() else {
-                continue;
-            };
-            let Some(entry) = cache.entries_by_layer_id.get(layer_id) else {
-                continue;
-            };
-            let Some(settings) = entry.starfield_settings.as_ref() else {
-                continue;
-            };
             if let Some(mut visibility) = maybe_visibility {
                 *visibility = if settings.enabled {
                     Visibility::Visible
@@ -1404,7 +1345,6 @@ pub fn update_space_background_material_system(
     world_data: Res<'_, FullscreenExternalWorldData>,
     asset_manager: Res<'_, assets::LocalAssetManager>,
     cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
-    cache: Res<'_, FullscreenLayerCache>,
     asset_root: Res<'_, AssetRootPath>,
     mut images: ResMut<'_, Assets<Image>>,
     mut flare_cache: Local<'_, std::collections::HashMap<String, Handle<Image>>>,
@@ -1413,27 +1353,18 @@ pub fn update_space_background_material_system(
         '_,
         (
             &'_ MeshMaterial2d<SpaceBackgroundMaterial>,
-            &'_ RuntimeFullscreenRenderable,
+            &'_ SpaceBackgroundShaderSettings,
             Option<&'_ mut Visibility>,
         ),
         With<RuntimeFullscreenMaterialBinding>,
     >,
     mut materials: ResMut<'_, Assets<SpaceBackgroundMaterial>>,
 ) {
-    for (material_handle, renderable, maybe_visibility) in bg_query {
+    for (material_handle, settings, maybe_visibility) in bg_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
             material.params.viewport_time = world_data.viewport_time;
             material.params.drift_intensity = world_data.drift_intensity;
             material.params.velocity_dir = world_data.velocity_dir;
-            let Some(layer_id) = renderable.layer_id.as_ref() else {
-                continue;
-            };
-            let Some(entry) = cache.entries_by_layer_id.get(layer_id) else {
-                continue;
-            };
-            let Some(settings) = entry.space_background_settings.as_ref() else {
-                continue;
-            };
             if let Some(mut visibility) = maybe_visibility {
                 *visibility = if settings.enabled {
                     Visibility::Visible

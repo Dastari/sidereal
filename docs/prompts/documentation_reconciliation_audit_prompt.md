@@ -78,6 +78,16 @@ It should not try to duplicate the full design document.
 - `README.md`
 - `AGENTS.md`
 
+## Hard Exclusions
+
+The audit may read `docs/prompts/`, `docs/reports/`, and `docs/samples/` for context if needed, but it must never modify, rewrite, move, delete, or create files in:
+
+- `docs/prompts/`
+- `docs/reports/`
+- `docs/samples/`
+
+Those folders are out of scope for documentation reconciliation edits.
+
 ## Audit Objectives
 
 Review the entire documentation set and identify all places where documentation should be:
@@ -193,3 +203,11 @@ The audit should evaluate and, if appropriate, recommend a structure like:
 ## Final Requirement
 
 End with a prioritized step-by-step documentation cleanup sequence that can be executed in order with minimal confusion and minimal churn.
+
+## Deliverable
+
+Write the final report to:
+
+- `docs/reports/documentation_reconciliation_audit_report_YYYY-MM-DD.md`
+
+Do not write the completed report anywhere else. The final report belongs in `docs/reports/`.

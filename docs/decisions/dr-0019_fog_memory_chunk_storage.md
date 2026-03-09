@@ -55,6 +55,6 @@ Negative:
 
 ## 6. References
 
-1. `docs/features/dr-0018_fog_of_war_and_intel_memory_model.md`
+1. `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`
 2. `docs/features/tactical_and_owner_lane_protocol_contract.md`
 3. `docs/features/visibility_replication_contract.md`

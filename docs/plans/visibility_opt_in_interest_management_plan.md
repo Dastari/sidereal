@@ -5,8 +5,8 @@ Date: 2026-03-05 (refreshed)
 
 Primary source-of-truth docs:
 - `docs/features/visibility_replication_contract.md`
-- `docs/features/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
-- `docs/features/scan_intel_minimap_spatial_plan.md`
+- `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
+- `docs/plans/scan_intel_minimap_spatial_plan.md`
 
 ## 1. Purpose
 

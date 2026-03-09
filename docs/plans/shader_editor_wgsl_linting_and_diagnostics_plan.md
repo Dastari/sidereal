@@ -6,7 +6,7 @@ Owners: dashboard + rendering + tooling
 
 Primary references:
 - `docs/features/shader_editor_dashboard_implementation_spec.md`
-- `docs/features/shader_editor_dashboard_plan.md`
+- `docs/plans/shader_editor_dashboard_plan.md`
 - `docs/features/asset_delivery_contract.md`
 - `docs/ui_design_guide.md`
 - `AGENTS.md`

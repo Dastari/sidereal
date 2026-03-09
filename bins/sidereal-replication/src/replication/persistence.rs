@@ -2,7 +2,9 @@
 
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
-use sidereal_game::{EntityGuid, EntityLabels, GeneratedComponentRegistry, MountedOn};
+use sidereal_game::{
+    BallisticProjectile, EntityGuid, EntityLabels, GeneratedComponentRegistry, MountedOn,
+};
 use sidereal_persistence::{GraphEntityRecord, GraphPersistence};
 use sidereal_runtime_sync::serialize_entity_components_to_graph_records;
 use std::collections::{HashMap, HashSet};
@@ -22,19 +24,20 @@ struct PersistenceWriteBatch {
 /// Tick counter for throttling simulation state persistence.
 #[derive(Resource)]
 pub struct SimulationPersistenceTimer {
-    pub interval_ticks: u32,
-    pub current_tick: u32,
+    pub interval_s: f64,
+    pub last_flush_at_s: Option<f64>,
 }
 
 impl Default for SimulationPersistenceTimer {
     fn default() -> Self {
-        let interval = std::env::var("SIDEREAL_PERSIST_INTERVAL_TICKS")
+        let interval = std::env::var("SIDEREAL_PERSIST_INTERVAL_S")
             .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(300); // 300 ticks @ 30Hz = 10 seconds
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(30.0)
+            .max(1.0);
         Self {
-            interval_ticks: interval,
-            current_tick: 0,
+            interval_s: interval,
+            last_flush_at_s: None,
         }
     }
 }
@@ -201,8 +204,8 @@ mod tests {
         }
         {
             let mut timer = app.world_mut().resource_mut::<SimulationPersistenceTimer>();
-            timer.interval_ticks = 1;
-            timer.current_tick = 0;
+            timer.interval_s = 0.0;
+            timer.last_flush_at_s = None;
         }
         {
             let mut dirty = app.world_mut().resource_mut::<PersistenceDirtyState>();
@@ -259,12 +262,15 @@ mod tests {
 /// structural metadata (parent_entity_id for graph relationship traversal).
 pub fn flush_simulation_state_persistence(world: &mut World) {
     {
+        let now_s = world.resource::<Time<Real>>().elapsed_secs_f64();
         let mut timer = world.resource_mut::<SimulationPersistenceTimer>();
-        timer.current_tick += 1;
-        if timer.current_tick < timer.interval_ticks {
+        if timer
+            .last_flush_at_s
+            .is_some_and(|last_flush_at_s| now_s - last_flush_at_s < timer.interval_s)
+        {
             return;
         }
-        timer.current_tick = 0;
+        timer.last_flush_at_s = Some(now_s);
     }
 
     let component_registry = world.resource::<GeneratedComponentRegistry>().clone();
@@ -288,10 +294,30 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
         &'_ EntityGuid,
         Option<&'_ EntityLabels>,
         Option<&'_ MountedOn>,
+        Option<&'_ BallisticProjectile>,
     )>();
 
-    for (entity, guid, entity_labels, mounted_on) in entity_query.iter(world) {
+    for (entity, guid, entity_labels, mounted_on, ballistic_projectile) in entity_query.iter(world)
+    {
         let entity_id = guid.0.to_string();
+
+        if guid.0.is_nil() {
+            // Defensive guard: runtime-only entities must never persist under a nil GUID because
+            // persistence treats `entity_id` as the canonical durable identity. Skip and warn so
+            // the worker does not get stuck retrying the same invalid batch forever.
+            warn!(
+                "skipping persistence for entity {:?}: EntityGuid is nil; this entity is missing a valid runtime identity",
+                entity
+            );
+            continue;
+        }
+
+        if ballistic_projectile.is_some() {
+            // Ballistic projectiles are replicated/predicted runtime entities, but they are
+            // intentionally not durable world state. They still carry EntityGuid for client-side
+            // clone matching, so persistence must explicitly exclude them here.
+            continue;
+        }
 
         let mut labels = vec!["Entity".to_string()];
         if let Some(el) = entity_labels {
@@ -442,7 +468,10 @@ fn persistence_worker_loop(
             let batch = pending
                 .take()
                 .expect("pending persistence batch should be present");
-            match persistence.persist_graph_records(&batch.records, batch.tick) {
+            // Use the transactional persistence path so one worker batch commits atomically.
+            // Sidereal still emits one AGE Cypher statement per entity/component/edge, but
+            // retries now happen around whole snapshots instead of partially-applied batches.
+            match persistence.persist_graph_records_transactional(&batch.records, batch.tick) {
                 Ok(()) => {
                     if persistence_summary_logging_enabled() {
                         info!(

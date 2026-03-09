@@ -1,20 +1,20 @@
 use bevy::log::info;
 use bevy::prelude::*;
+use lightyear::frame_interpolation::FrameInterpolationSystems;
+use lightyear::prelude::RollbackSystems;
 use sidereal_game::process_character_movement_actions;
 
 use super::app_state::ClientAppState;
 use super::camera::{
     audit_active_world_cameras_system, gate_gameplay_camera_system, gate_menu_camera_system,
     sync_debug_overlay_camera_to_gameplay_camera_system,
-    sync_player_anchor_render_transform_to_controlled_entity,
     sync_ui_overlay_camera_to_gameplay_camera_system, update_camera_motion_state,
     update_topdown_camera_system,
 };
 use super::components::{WeaponTracerCooldowns, WeaponTracerPool};
 use super::debug_overlay::{
-    draw_debug_overlay_system, log_prediction_runtime_state, toggle_debug_overlay_system,
-    update_debug_fps_text_system, update_debug_manifest_text_system,
-    update_debug_tactical_text_system,
+    audit_prediction_entity_lifecycle, draw_debug_overlay_system, log_prediction_runtime_state,
+    toggle_debug_overlay_system,
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
@@ -172,8 +172,10 @@ impl Plugin for ClientReplicationPlugin {
                     replication::adopt_native_lightyear_replicated_entities
                         .after(replication::prune_runtime_entity_registry_system)
                         .run_if(move || !disable_adoption),
-                    transforms::sync_confirmed_world_entity_transforms_from_physics
+                    transforms::sync_frame_interpolation_markers_for_world_entities
                         .after(replication::adopt_native_lightyear_replicated_entities),
+                    transforms::sync_confirmed_world_entity_transforms_from_physics
+                        .after(transforms::sync_frame_interpolation_markers_for_world_entities),
                     transforms::sync_confirmed_world_entity_transforms_from_world_space
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     transforms::sync_interpolated_world_entity_transforms_without_history
@@ -181,10 +183,16 @@ impl Plugin for ClientReplicationPlugin {
                     transforms::reveal_world_entities_when_initial_transform_ready.after(
                         transforms::sync_interpolated_world_entity_transforms_without_history,
                     ),
-                    replication::sync_local_player_view_state_system
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
-                    replication::sync_controlled_entity_tags_system
-                        .after(replication::sync_local_player_view_state_system),
+                    (
+                        replication::sync_local_player_view_state_system.after(
+                            transforms::sync_confirmed_world_entity_transforms_from_world_space,
+                        ),
+                        replication::sanitize_conflicting_prediction_interpolation_markers_system
+                            .after(replication::sync_local_player_view_state_system),
+                        replication::sync_controlled_entity_tags_system.after(
+                            replication::sanitize_conflicting_prediction_interpolation_markers_system,
+                        ),
+                    ),
                     control::send_local_view_mode_updates
                         .after(replication::sync_local_player_view_state_system),
                     control::send_lightyear_control_requests
@@ -192,8 +200,10 @@ impl Plugin for ClientReplicationPlugin {
                         .after(control::send_local_view_mode_updates),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
-                    owner_manifest::receive_owner_asset_manifest_messages
+                    control::audit_client_control_handover_resolution
                         .after(control::receive_lightyear_control_results),
+                    owner_manifest::receive_owner_asset_manifest_messages
+                        .after(control::audit_client_control_handover_resolution),
                     tactical::receive_tactical_snapshot_messages
                         .after(owner_manifest::receive_owner_asset_manifest_messages),
                     control::log_client_control_state_changes
@@ -216,8 +226,10 @@ impl Plugin for ClientReplicationPlugin {
                     replication::adopt_native_lightyear_replicated_entities
                         .after(replication::prune_runtime_entity_registry_system)
                         .run_if(move || !disable_adoption),
-                    transforms::sync_confirmed_world_entity_transforms_from_physics
+                    transforms::sync_frame_interpolation_markers_for_world_entities
                         .after(replication::adopt_native_lightyear_replicated_entities),
+                    transforms::sync_confirmed_world_entity_transforms_from_physics
+                        .after(transforms::sync_frame_interpolation_markers_for_world_entities),
                     transforms::sync_confirmed_world_entity_transforms_from_world_space
                         .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
                     transforms::sync_interpolated_world_entity_transforms_without_history
@@ -229,10 +241,21 @@ impl Plugin for ClientReplicationPlugin {
                         .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
                     replication::transition_asset_loading_to_in_world
                         .after(replication::transition_world_loading_to_in_world),
-                    replication::sync_local_player_view_state_system
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
-                    replication::sync_controlled_entity_tags_system
-                        .after(replication::sync_local_player_view_state_system),
+                ),
+            );
+            app.add_systems(
+                Update,
+                (
+                    (
+                        replication::sync_local_player_view_state_system.after(
+                            transforms::sync_confirmed_world_entity_transforms_from_world_space,
+                        ),
+                        replication::sanitize_conflicting_prediction_interpolation_markers_system
+                            .after(replication::sync_local_player_view_state_system),
+                        replication::sync_controlled_entity_tags_system.after(
+                            replication::sanitize_conflicting_prediction_interpolation_markers_system,
+                        ),
+                    ),
                     control::send_local_view_mode_updates
                         .after(replication::sync_local_player_view_state_system),
                     control::send_lightyear_control_requests
@@ -240,8 +263,10 @@ impl Plugin for ClientReplicationPlugin {
                         .after(control::send_local_view_mode_updates),
                     control::receive_lightyear_control_results
                         .after(control::send_lightyear_control_requests),
-                    owner_manifest::receive_owner_asset_manifest_messages
+                    control::audit_client_control_handover_resolution
                         .after(control::receive_lightyear_control_results),
+                    owner_manifest::receive_owner_asset_manifest_messages
+                        .after(control::audit_client_control_handover_resolution),
                     tactical::receive_tactical_snapshot_messages
                         .after(owner_manifest::receive_owner_asset_manifest_messages),
                     control::log_client_control_state_changes
@@ -297,7 +322,6 @@ impl Plugin for ClientVisualsPlugin {
         app.init_resource::<WeaponTracerPool>();
         app.init_resource::<WeaponTracerCooldowns>();
         app.init_resource::<super::resources::RuntimeRenderLayerRegistry>();
-        app.init_resource::<super::resources::FullscreenLayerCache>();
         let in_world_visuals_core = (
             super::shaders::sync_runtime_shader_assignments_system
                 .after(replication::adopt_native_lightyear_replicated_entities),
@@ -317,6 +341,8 @@ impl Plugin for ClientVisualsPlugin {
                 .after(visuals::attach_planet_visual_stack_system),
             visuals::update_planet_body_visuals_system
                 .after(visuals::ensure_planet_body_root_visibility_system),
+            visuals::attach_ballistic_projectile_visuals_system
+                .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
             visuals::attach_thruster_plume_visuals_system
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
         );
@@ -345,10 +371,8 @@ impl Plugin for ClientVisualsPlugin {
                 .after(visuals::ensure_planet_body_root_visibility_system),
         );
         let in_world_backdrop = (
-            backdrop::refresh_fullscreen_layer_cache_system
-                .after(replication::adopt_native_lightyear_replicated_entities),
             backdrop::sync_fullscreen_layer_renderables_system
-                .after(backdrop::refresh_fullscreen_layer_cache_system),
+                .after(replication::adopt_native_lightyear_replicated_entities),
             backdrop::sync_runtime_post_process_renderables_system
                 .after(replication::adopt_native_lightyear_replicated_entities),
             backdrop::sync_backdrop_camera_system
@@ -436,35 +460,47 @@ impl Plugin for ClientUiPlugin {
                     .after(owner_manifest::receive_owner_asset_manifest_messages),
                 ui::handle_owned_entities_panel_buttons,
                 ui::update_tactical_map_overlay_system
-                    .after(tactical::receive_tactical_snapshot_messages)
-                    .after(update_camera_motion_state),
+                    .after(tactical::receive_tactical_snapshot_messages),
                 ui::update_loading_overlay_system,
                 ui::update_runtime_stream_icon_system,
                 bootstrap::watch_in_world_bootstrap_failures,
-                sync_player_anchor_render_transform_to_controlled_entity
-                    .after(replication::sync_controlled_entity_tags_system)
-                    .after(transforms::sync_interpolated_world_entity_transforms_without_history),
-                update_topdown_camera_system
-                    .after(sync_player_anchor_render_transform_to_controlled_entity)
-                    .after(replication::sync_controlled_entity_tags_system)
-                    .after(transforms::sync_interpolated_world_entity_transforms_without_history),
-                sync_ui_overlay_camera_to_gameplay_camera_system
-                    .after(update_topdown_camera_system),
-                update_camera_motion_state.after(update_topdown_camera_system),
+                audit_prediction_entity_lifecycle,
                 ui::propagate_ui_overlay_layer_system,
                 ui::update_hud_system,
                 ui::sync_entity_nameplates_system,
                 toggle_debug_overlay_system,
-                update_debug_fps_text_system,
-                update_debug_manifest_text_system.after(update_debug_fps_text_system),
-                update_debug_tactical_text_system.after(update_debug_manifest_text_system),
             )
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(
-            Update,
-            sync_debug_overlay_camera_to_gameplay_camera_system
-                .after(update_topdown_camera_system)
+            PostUpdate,
+            (
+                // Lightyear still owns observer interpolation by default. This fallback only
+                // snaps a remote visual root back onto its interpolated spatial pose if the
+                // visual Transform lane is obviously stale or never got seeded.
+                transforms::recover_stalled_interpolated_world_entity_transforms
+                    .after(FrameInterpolationSystems::Interpolate)
+                    .after(RollbackSystems::VisualCorrection),
+                // Follow the same post-frame-interpolation ship transform that will actually be
+                // rendered this frame. Running camera follow earlier in Update can make a
+                // hard-locked camera disagree with the predicted ship after Lightyear applies
+                // FrameInterpolate<Transform> and then VisualCorrection in PostUpdate.
+                //
+                // Sidereal's controlled ship can remain visually corrected for multiple render
+                // frames after a rollback/correction event, so sampling after interpolation alone
+                // is still too early for a truly locked camera.
+                update_topdown_camera_system
+                    .after(FrameInterpolationSystems::Interpolate)
+                    .after(RollbackSystems::VisualCorrection)
+                    .after(transforms::recover_stalled_interpolated_world_entity_transforms)
+                    .after(transforms::sync_interpolated_world_entity_transforms_without_history),
+                sync_ui_overlay_camera_to_gameplay_camera_system
+                    .after(update_topdown_camera_system),
+                sync_debug_overlay_camera_to_gameplay_camera_system
+                    .after(update_topdown_camera_system),
+                update_camera_motion_state.after(update_topdown_camera_system),
+            )
+                .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(

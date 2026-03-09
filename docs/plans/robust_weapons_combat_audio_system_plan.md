@@ -7,7 +7,7 @@ Owners: gameplay runtime + replication + client audio/visuals
 Primary architecture references:
 - `docs/sidereal_design_document.md`
 - `docs/features/visibility_replication_contract.md`
-- `docs/features/dr-0013_action_acceptor_control_routing.md`
+- `docs/decisions/dr-0013_action_acceptor_control_routing.md`
 - `docs/component_authoring_guide.md`
 
 ## 1. Goal

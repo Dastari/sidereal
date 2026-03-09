@@ -51,18 +51,17 @@ fn main() {
 
     let mut app = App::new();
     app.init_resource::<bevy::transform::StaticTransformOptimizations>();
-    // Cap main loop at ~100 Hz so Update (message drain, transport) doesn't spin at full CPU.
-    // FixedUpdate remains time-based at 60 Hz. See docs/features/replication_server_cpu_report.md.
-    let update_cap_hz = std::env::var("REPLICATION_UPDATE_CAP_HZ")
+    // Run Update uncapped by default so transport/message drain does not artificially bunch work
+    // behind a scheduler sleep while FixedUpdate is still trying to maintain 60 Hz simulation.
+    // Sidereal can opt back into a cap via REPLICATION_UPDATE_CAP_HZ if profiling shows a real
+    // idle-spin issue, but the default should not throttle replication responsiveness.
+    let update_runner = std::env::var("REPLICATION_UPDATE_CAP_HZ")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(100.0)
-        .clamp(10.0, 1000.0);
-    app.add_plugins(
-        MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
-            1.0 / update_cap_hz,
-        ))),
-    );
+        .filter(|hz| hz.is_finite() && *hz > 0.0)
+        .map(|hz| ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / hz)))
+        .unwrap_or_default();
+    app.add_plugins(MinimalPlugins.set(update_runner));
     app.add_plugins(AssetPlugin::default());
     app.add_plugins(ScenePlugin);
     app.add_plugins(LogPlugin {

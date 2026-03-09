@@ -13,12 +13,12 @@ use super::assets::LocalAssetManager;
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, DebugOverlayCamera,
-    FullscreenForegroundCamera, GameplayCamera, GameplayHud, HudFpsText, HudFuelBarFill,
-    HudHealthBarFill, HudManifestText, HudPositionValueText, HudSpeedValueText, HudTacticalText,
-    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, PostProcessCamera,
-    RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind, RuntimeStreamingIconText,
-    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SpaceBackdropFallback,
-    TacticalMapCursorText, TacticalMapOverlayRoot, TacticalMapTitle, TopDownCamera, UiOverlayLayer,
+    FullscreenForegroundCamera, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
+    HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
+    LoadingProgressBarFill, PostProcessCamera, RuntimeScreenOverlayPass,
+    RuntimeScreenOverlayPassKind, RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle,
+    SegmentedBarValue, SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot,
+    TacticalMapTitle, TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{
     BACKDROP_RENDER_LAYER, DEBUG_OVERLAY_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER,
@@ -163,72 +163,6 @@ pub(super) fn spawn_world_scene(
         DespawnOnExit(ClientAppState::InWorld),
     ));
 
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(12),
-            top: px(12),
-            ..default()
-        },
-        Text::new(""),
-        TextFont {
-            font: fonts.bold.clone(),
-            font_size: 18.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.85, 0.92, 1.0)),
-        Visibility::Hidden,
-        HudFpsText,
-        GameplayHud,
-        UiOverlayLayer,
-        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-        ClientSceneEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(12),
-            top: px(54),
-            ..default()
-        },
-        Text::new(""),
-        TextFont {
-            font: fonts.regular.clone(),
-            font_size: 14.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.67, 0.79, 0.93)),
-        Visibility::Hidden,
-        HudTacticalText,
-        GameplayHud,
-        UiOverlayLayer,
-        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-        ClientSceneEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(12),
-            top: px(34),
-            ..default()
-        },
-        Text::new(""),
-        TextFont {
-            font: fonts.regular.clone(),
-            font_size: 14.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.72, 0.84, 0.97)),
-        Visibility::Hidden,
-        HudManifestText,
-        GameplayHud,
-        UiOverlayLayer,
-        RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-        ClientSceneEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
     commands
         .spawn((
             Node {

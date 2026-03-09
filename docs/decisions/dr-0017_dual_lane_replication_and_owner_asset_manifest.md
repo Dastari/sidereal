@@ -157,6 +157,6 @@ Server behavior:
 ## 11. References
 
 1. `docs/features/visibility_replication_contract.md`
-2. `docs/features/scan_intel_minimap_spatial_plan.md`
+2. `docs/plans/scan_intel_minimap_spatial_plan.md`
 3. `docs/sidereal_design_document.md`
 4. `docs/features/tactical_and_owner_lane_protocol_contract.md`

@@ -4,13 +4,16 @@ use avian2d::prelude::{LinearVelocity, Position, Rotation};
 use bevy::ecs::query::Has;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::prediction::correction::CorrectionPolicy;
 use lightyear::prediction::prelude::{PredictionManager, RollbackMode};
+use lightyear::prelude::PreSpawned;
 use lightyear::prelude::client::Client;
 use sidereal_game::{
-    ActionQueue, CollisionOutlineM, ControlledEntityGuid, EntityGuid, Hardpoint, MountedOn,
-    PlayerTag, SimulationMotionWriter, SizeM, SpriteShaderAssetId, VisualAssetId, WorldPosition,
-    WorldRotation,
+    ActionQueue, BallisticProjectile, CollisionOutlineM, ControlledEntityGuid, EntityGuid,
+    Hardpoint, MountedOn, PlayerTag, SimulationMotionWriter, SizeM, SpriteShaderAssetId,
+    VisualAssetId, WorldPosition, WorldRotation, resolve_world_position,
+    resolve_world_rotation_rad,
 };
 use sidereal_runtime_sync::{
     RuntimeEntityHierarchy, parse_guid_from_entity_id, register_runtime_entity,
@@ -29,12 +32,37 @@ use super::resources::{
     RemoteEntityRegistry,
 };
 
+#[allow(clippy::type_complexity)]
+pub(crate) fn mark_new_ballistic_projectiles_prespawned(
+    mut commands: Commands<'_, '_>,
+    projectiles: Query<
+        '_,
+        '_,
+        Entity,
+        (
+            With<BallisticProjectile>,
+            Added<BallisticProjectile>,
+            Without<PreSpawned>,
+        ),
+    >,
+) {
+    for entity in &projectiles {
+        commands.entity(entity).insert(PreSpawned::default());
+    }
+}
+
 pub(crate) fn ensure_replicated_entity_spatial_components(
     mut commands: Commands<'_, '_>,
     missing_transform: Query<
         '_,
         '_,
-        Entity,
+        (
+            Entity,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
+        ),
         (With<lightyear::prelude::Replicated>, Without<Transform>),
     >,
     missing_visibility: Query<
@@ -44,12 +72,23 @@ pub(crate) fn ensure_replicated_entity_spatial_components(
         (With<lightyear::prelude::Replicated>, Without<Visibility>),
     >,
 ) {
-    for entity in &missing_transform {
-        commands.entity(entity).insert((
-            Transform::default(),
-            GlobalTransform::default(),
-            Visibility::default(),
-        ));
+    for (entity, position, rotation, world_position, world_rotation) in &missing_transform {
+        let mut transform = Transform::default();
+        if let (Some(planar_position), Some(heading)) = (
+            resolve_world_position(position, world_position),
+            resolve_world_rotation_rad(rotation, world_rotation),
+        ) && planar_position.is_finite()
+            && heading.is_finite()
+        {
+            transform.translation.x = planar_position.x;
+            transform.translation.y = planar_position.y;
+            transform.translation.z = 0.0;
+            transform.rotation = Quat::from_rotation_z(heading);
+        }
+        let global_transform = GlobalTransform::from(transform);
+        commands
+            .entity(entity)
+            .insert((transform, global_transform, Visibility::default()));
     }
     for entity in &missing_visibility {
         commands.entity(entity).insert(Visibility::default());
@@ -319,6 +358,9 @@ pub(crate) fn ensure_prediction_manager_present_system(
     let Ok(client_entity) = clients.single() else {
         return;
     };
+    // This is a defensive bootstrap guard for the native client runtime, not the desired
+    // steady-state architecture. If prediction markers are still missing after this runs,
+    // the real bug is elsewhere in the Lightyear spawn/target lifecycle.
     commands
         .entity(client_entity)
         .insert(PredictionManager::default());
@@ -535,6 +577,11 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             DespawnOnExit(ClientAppState::InWorld),
             Visibility::Hidden,
         ));
+        if position.is_some() && rotation.is_some() {
+            entity_commands.insert(FrameInterpolate::<Transform>::default());
+        } else {
+            entity_commands.remove::<FrameInterpolate<Transform>>();
+        }
 
         if player_tag.is_none() {
             if let Some(visual_asset_id) = visual_asset_id {
@@ -613,6 +660,7 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
 pub(crate) fn sync_local_player_view_state_system(
     session: Res<'_, ClientSession>,
     mut player_view_state: ResMut<'_, LocalPlayerViewState>,
+    request_state: Res<'_, super::resources::ClientControlRequestState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
     player_query: Query<'_, '_, Option<&'_ ControlledEntityGuid>, With<PlayerTag>>,
 ) {
@@ -642,21 +690,98 @@ pub(crate) fn sync_local_player_view_state_system(
         local_player_entity_id,
         controlled,
     ) {
+        let authoritative_changed = player_view_state.controlled_entity_id.as_deref()
+            != Some(authoritative_controlled_id.as_str());
         if player_view_state.controlled_entity_id.as_deref()
             != Some(authoritative_controlled_id.as_str())
         {
             player_view_state.controlled_entity_id = Some(authoritative_controlled_id.clone());
         }
-        if player_view_state.desired_controlled_entity_id.is_none() {
+        if request_state.pending_request_seq.is_none()
+            && (player_view_state.desired_controlled_entity_id.is_none() || authoritative_changed)
+        {
+            // During bootstrap, the persisted authoritative control target may arrive after the
+            // client has already defaulted its desired target to the player anchor. If we do not
+            // realign desired control here, the client immediately asks the server to switch back
+            // to self and appears to "forget" the last controlled ship on spawn.
             player_view_state.desired_controlled_entity_id = Some(authoritative_controlled_id);
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_system(
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    conflicting_entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            Has<ControlledEntity>,
+            Has<SimulationMotionWriter>,
+        ),
+        (
+            With<lightyear::prelude::Predicted>,
+            With<lightyear::prelude::Interpolated>,
+        ),
+    >,
+) {
+    let target_guid = player_view_state
+        .controlled_entity_id
+        .as_deref()
+        .and_then(parse_guid_from_entity_id)
+        .or_else(|| {
+            session
+                .player_entity_id
+                .as_deref()
+                .and_then(parse_guid_from_entity_id)
+        });
+
+    for (entity, entity_guid, is_controlled, is_motion_writer) in &conflicting_entities {
+        let keep_predicted = is_controlled
+            || is_motion_writer
+            || target_guid
+                .zip(entity_guid)
+                .is_some_and(|(target_guid, entity_guid)| entity_guid.0 == target_guid);
+
+        if keep_predicted {
+            // Sidereal's dynamic handoff can legitimately promote an already-visible confirmed or
+            // interpolated replica into the owner-predicted lane. Lightyear inserts the new
+            // marker from the respawned spawn action, but it does not automatically clear the
+            // old observer marker from the reused local entity. That leaves a single runtime copy
+            // acting as both Predicted and Interpolated, which produces exactly the kind of
+            // mixed rotation/position correction the audit was trying to eliminate.
+            commands
+                .entity(entity)
+                .remove::<lightyear::prelude::Interpolated>();
+            bevy::log::warn!(
+                "sanitized conflicting prediction markers on local control entity {:?}: kept Predicted and removed Interpolated",
+                entity
+            );
+        } else {
+            // For non-controlled entities, observer interpolation is the authoritative visual lane.
+            // If a previous owner-predicted entity falls back to observer mode, keep Interpolated
+            // and remove the stale Predicted marker so local-only writers cannot linger.
+            commands
+                .entity(entity)
+                .remove::<lightyear::prelude::Predicted>();
+            bevy::log::warn!(
+                "sanitized conflicting prediction markers on observer entity {:?}: kept Interpolated and removed Predicted",
+                entity
+            );
         }
     }
 }
 
 pub(crate) fn sync_controlled_entity_tags_system(
     mut commands: Commands<'_, '_>,
+    time: Res<'_, Time>,
     session: Res<'_, ClientSession>,
-    player_view_state: ResMut<'_, LocalPlayerViewState>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
     controlled_query: Query<'_, '_, (Entity, &'_ ControlledEntity)>,
     writer_query: Query<'_, '_, Entity, With<SimulationMotionWriter>>,
@@ -666,6 +791,7 @@ pub(crate) fn sync_controlled_entity_tags_system(
         (
             Entity,
             &'_ EntityGuid,
+            Has<PlayerTag>,
             Has<lightyear::prelude::Predicted>,
             Has<lightyear::prelude::Interpolated>,
         ),
@@ -690,34 +816,73 @@ pub(crate) fn sync_controlled_entity_tags_system(
     let target_guid = target_entity_id
         .as_ref()
         .and_then(|id| parse_guid_from_entity_id(id));
-    let target_entity = target_guid
-        .and_then(|guid| {
-            let mut best: Option<(Entity, i32)> = None;
-            for (entity, entity_guid, is_predicted, is_interpolated) in &guid_candidates {
-                if entity_guid.0 != guid {
-                    continue;
-                }
-                let score = if is_predicted {
-                    3
-                } else if is_interpolated {
-                    2
-                } else {
-                    1
-                };
-                match best {
-                    Some((winner, winner_score))
-                        if score < winner_score
-                            || (score == winner_score && winner.to_bits() <= entity.to_bits()) => {}
-                    _ => best = Some((entity, score)),
-                }
+    let local_player_guid = parse_guid_from_entity_id(local_player_entity_id);
+    let is_player_anchor_target = target_guid
+        .zip(local_player_guid)
+        .is_some_and(|(target, player)| target == player);
+    let target_entity = target_guid.and_then(|guid| {
+        let mut best_predicted: Option<Entity> = None;
+        let mut best_interpolated: Option<Entity> = None;
+        let mut best_confirmed: Option<Entity> = None;
+        let mut best_player_anchor: Option<Entity> = None;
+        for (entity, entity_guid, is_player_anchor, is_predicted, is_interpolated) in
+            &guid_candidates
+        {
+            if entity_guid.0 != guid {
+                continue;
             }
-            best.map(|(entity, _)| entity)
-        })
-        .or_else(|| {
-            target_entity_id
-                .as_ref()
-                .and_then(|id| entity_registry.by_entity_id.get(id.as_str()).copied())
-        });
+            if is_player_anchor {
+                best_player_anchor = match best_player_anchor {
+                    Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
+                    _ => Some(entity),
+                };
+            }
+            if is_predicted {
+                best_predicted = match best_predicted {
+                    Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
+                    _ => Some(entity),
+                };
+                continue;
+            }
+            if is_interpolated {
+                best_interpolated = match best_interpolated {
+                    Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
+                    _ => Some(entity),
+                };
+                continue;
+            }
+            best_confirmed = match best_confirmed {
+                Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
+                _ => Some(entity),
+            };
+        }
+
+        if let Some(predicted) = best_predicted {
+            adoption_state.missing_predicted_control_entity_id = None;
+            return Some(predicted);
+        }
+
+        if is_player_anchor_target {
+            // Free-roam is routed through the persisted player anchor. That entity is a
+            // Sidereal-specific control lane and can temporarily remain confirmed-only while
+            // the camera and UI stay usable. This is intentionally different from a stock
+            // "always predict the controlled pawn" example.
+            adoption_state.missing_predicted_control_entity_id = None;
+            return best_player_anchor.or(best_confirmed).or(best_interpolated);
+        }
+
+        let missing_id = target_entity_id.clone().unwrap_or_else(|| guid.to_string());
+        adoption_state.missing_predicted_control_entity_id = Some(missing_id.clone());
+        let now_s = time.elapsed_secs_f64();
+        if now_s - adoption_state.last_missing_predicted_warn_at_s >= 1.0 {
+            bevy::log::warn!(
+                "controlled runtime target {} has no Predicted clone yet; refusing to bind local control to confirmed/interpolated fallback",
+                missing_id
+            );
+            adoption_state.last_missing_predicted_warn_at_s = now_s;
+        }
+        None
+    });
 
     for (entity, controlled) in &controlled_query {
         if Some(entity) != target_entity {

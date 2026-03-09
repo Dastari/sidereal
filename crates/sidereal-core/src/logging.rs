@@ -18,7 +18,7 @@ pub fn prepare_timestamped_log_file(service_name: &str) -> io::Result<RunLogFile
     prepare_timestamped_log_file_in_dir(service_name, &workspace_logs_dir())
 }
 
-fn prepare_timestamped_log_file_in_dir(
+pub fn prepare_timestamped_log_file_in_dir(
     service_name: &str,
     logs_dir: &Path,
 ) -> io::Result<RunLogFile> {

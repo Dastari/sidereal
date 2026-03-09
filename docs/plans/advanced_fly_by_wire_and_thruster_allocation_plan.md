@@ -6,8 +6,8 @@ Owners: gameplay runtime + replication simulation + AI runtime + client predicti
 
 Primary references:
 - `docs/sidereal_design_document.md`
-- `docs/features/dr-0013_action_acceptor_control_routing.md`
-- `docs/features/thruster_plumes_afterburner_plan.md`
+- `docs/decisions/dr-0013_action_acceptor_control_routing.md`
+- `docs/plans/thruster_plumes_afterburner_plan.md`
 - `docs/component_authoring_guide.md`
 
 ## 1. Goal

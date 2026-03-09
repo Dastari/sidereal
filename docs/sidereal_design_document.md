@@ -54,6 +54,7 @@ Core player loop:
 - Production native runtime transport is currently UDP (`UdpIo` / `ServerUdpIo`).
 - Browser/WASM transport now targets a WebTransport-first browser boundary through Lightyear-compatible adapters, with WebSocket allowed only as an explicit fallback.
 - The WASM client still does not implement the full native runtime, but it now shares the fixed-step gameplay core bootstrap with native instead of being a completely separate render-only shell.
+- Native client currently reaches `InWorld` and renders replicated entities, but in-world controls and motion stability remain unresolved; native control/prediction stabilization is the immediate runtime priority before more WASM parity validation work resumes.
 - Gateway HTTP must answer browser CORS preflight for local dashboard/client origins. The runtime default allows `http://localhost:3000` and `http://127.0.0.1:3000`; set comma-separated `GATEWAY_ALLOWED_ORIGINS` when the browser host origin differs.
 - Gateway and replication tracing output is written to both the console and workspace-relative `./logs/`, using a fresh timestamped log file for each process start.
 
@@ -92,6 +93,7 @@ WASM client direction is WebTransport-first:
 - WebSocket may exist only as an explicit fallback path; it is not the default browser runtime transport.
 
 Gameplay/simulation systems remain shared between native and WASM; only transport and browser I/O adapters differ at the boundary.
+Live browser parity validation beyond the current bootstrap state is temporarily deferred while native in-world control and correction issues are being stabilized.
 
 ## 4. Bevy ECS Gameplay Model
 
@@ -136,8 +138,8 @@ Visual identity (2D migration path):
 
 - `VisualAssetId` (entity-generic sprite asset identity)
 - `SpriteShaderAssetId` (optional sprite pixel-shader asset identity)
-- Render composition is migrating to Lua-authored render-layer definitions and rule-based world-layer assignment executed through a fixed set of generic client material schemas; see `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
-- Runtime shader/material ownership follows a family taxonomy rather than one Rust material type per effect; see `docs/features/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`.
+- Render composition is migrating to Lua-authored render-layer definitions and rule-based world-layer assignment executed through a fixed set of generic client material schemas; see `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`.
+- Runtime shader/material ownership follows a family taxonomy rather than one Rust material type per effect; see `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`.
 
 ### 4.2.1 Render Layer Contract (Planned Direction)
 
@@ -457,7 +459,7 @@ Implementation note:
 - Runtime missing assets are fetched lazily by `asset_guid` when new `asset_id` references appear in replicated data.
 - Target cache shape remains `assets.pak` + `assets.index`; rollout and schema details are tracked in `docs/features/asset_delivery_contract.md`.
 - Missing assets must fail soft (no gameplay crash).
-- Shader asset metadata should evolve toward domain/signature/schema compatibility metadata rather than singleton hard-coded runtime role dispatch; details live in `docs/features/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md` and `docs/features/asset_delivery_contract.md`.
+- Shader asset metadata should evolve toward domain/signature/schema compatibility metadata rather than singleton hard-coded runtime role dispatch; details live in `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md` and `docs/features/asset_delivery_contract.md`.
 
 ## 10. Client Platform Model
 

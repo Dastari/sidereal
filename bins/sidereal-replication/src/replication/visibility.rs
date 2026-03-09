@@ -18,6 +18,7 @@ use std::time::Instant;
 use crate::replication::PlayerRuntimeEntityMap;
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::debug_env;
+use crate::replication::lifecycle::ClientLastActivity;
 
 pub const DEFAULT_VIEW_RANGE_M: f32 = 300.0;
 const DEFAULT_VISIBILITY_CELL_SIZE_M: f32 = 2000.0;
@@ -242,6 +243,7 @@ pub fn init_resources(app: &mut App) {
 
 #[allow(clippy::type_complexity)]
 pub fn receive_client_local_view_mode_messages(
+    time: Res<'_, Time<Real>>,
     mut receivers: Query<
         '_,
         '_,
@@ -249,8 +251,10 @@ pub fn receive_client_local_view_mode_messages(
         With<ClientOf>,
     >,
     bindings: Res<'_, AuthenticatedClientBindings>,
+    mut last_activity: ResMut<'_, ClientLastActivity>,
     mut registry: ResMut<'_, ClientLocalViewModeRegistry>,
 ) {
+    let now_s = time.elapsed_secs_f64();
     for (client_entity, mut receiver) in &mut receivers {
         for message in receiver.receive() {
             let Some(bound_player_id) = bindings.by_client_entity.get(&client_entity) else {
@@ -266,6 +270,7 @@ pub fn receive_client_local_view_mode_messages(
             if bound_player_id != message_player_id {
                 continue;
             }
+            last_activity.0.insert(client_entity, now_s);
             registry.by_client_entity.insert(
                 client_entity,
                 ClientLocalViewSettings {

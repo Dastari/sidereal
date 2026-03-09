@@ -7,7 +7,7 @@ Owners: dashboard + client rendering + asset streaming + replication
 Primary references:
 - `docs/sidereal_design_document.md`
 - `docs/features/asset_delivery_contract.md`
-- `docs/features/wasm_parity_implementation_plan.md`
+- `docs/plans/wasm_parity_implementation_plan.md`
 - `docs/ui_design_guide.md`
 - `AGENTS.md`
 

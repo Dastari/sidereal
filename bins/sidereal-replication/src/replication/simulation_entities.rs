@@ -30,6 +30,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::bootstrap_runtime::BootstrapEntityCommandPayload;
 use crate::bootstrap_runtime::{self, BootstrapEntityReceiver};
 use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::control::{owner_only_replicate, owner_prediction_target};
 use crate::replication::lifecycle::{HydratedEntityCount, HydratedGraphEntity};
 use crate::replication::persistence::PersistenceSchemaInitState;
 use crate::replication::scripting::{
@@ -1075,6 +1076,7 @@ pub fn apply_pending_controlled_by_bindings(
     mut pending: ResMut<'_, PendingControlledByBindings>,
     client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
     player_tags: Query<'_, '_, (), With<sidereal_game::PlayerTag>>,
+    entity_guids: Query<'_, '_, &'_ EntityGuid>,
 ) {
     for (client_entity, controlled_entity) in pending.bindings.drain(..) {
         let mut entity_commands = commands.entity(controlled_entity);
@@ -1083,15 +1085,13 @@ pub fn apply_pending_controlled_by_bindings(
             lifetime: Lifetime::Persistent,
         });
         let is_player_anchor = player_tags.get(controlled_entity).is_ok();
+        if is_player_anchor {
+            entity_commands.insert(owner_only_replicate(client_entity));
+        } else {
+            entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
+        }
+        entity_commands.insert(owner_prediction_target(client_entity));
         if let Ok(remote_id) = client_remote_ids.get(client_entity) {
-            if is_player_anchor {
-                entity_commands.insert(Replicate::to_clients(NetworkTarget::Single(remote_id.0)));
-            } else {
-                entity_commands.insert(Replicate::to_clients(NetworkTarget::All));
-            }
-            entity_commands.insert(PredictionTarget::to_clients(NetworkTarget::Single(
-                remote_id.0,
-            )));
             if is_player_anchor {
                 entity_commands.remove::<InterpolationTarget>();
             } else {
@@ -1106,6 +1106,60 @@ pub fn apply_pending_controlled_by_bindings(
             } else {
                 entity_commands.insert(InterpolationTarget::to_clients(NetworkTarget::All));
             }
+        }
+
+        commands.queue(move |world: &mut World| {
+            if let Some(mut replication_state) =
+                world.get_mut::<lightyear::prelude::ReplicationState>(controlled_entity)
+            {
+                let before_snapshot = format!("before({replication_state:?})");
+                // Sidereal can promote an already-visible entity into the predicted owner lane
+                // during dynamic handoff. Lightyear attaches Predicted/Interpolated on the
+                // receiver from the spawn action, so we intentionally re-arm a sender-local spawn
+                // by cycling the visibility state for that client after the new mode is applied.
+                replication_state.lose_visibility(client_entity);
+                replication_state.gain_visibility(client_entity);
+                if crate::replication::debug_env("SIDEREAL_DEBUG_CONTROL_LOGS") {
+                    let after_snapshot = format!("after({replication_state:?})");
+                    bevy::log::info!(
+                        "replication applied controlled binding forced sender-local respawn client={:?} target_entity={:?} state={} {}",
+                        client_entity,
+                        controlled_entity,
+                        before_snapshot,
+                        after_snapshot
+                    );
+                }
+            }
+        });
+
+        if crate::replication::debug_env("SIDEREAL_DEBUG_CONTROL_LOGS") {
+            let target_guid = entity_guids
+                .get(controlled_entity)
+                .map(|guid| guid.0.to_string())
+                .unwrap_or_else(|_| "<missing-guid>".to_string());
+            let remote_label = client_remote_ids
+                .get(client_entity)
+                .map(|remote_id| format!("{:?}", remote_id.0))
+                .unwrap_or_else(|_| "<missing-remote>".to_string());
+            // This log is intentionally emitted at the exact PostUpdate binding point where
+            // Sidereal converts an authoritative handover decision into Lightyear replication
+            // targets. Future audits should prefer this over assuming the earlier request/ack
+            // logs prove that PredictionTarget/InterpolationTarget were actually applied.
+            bevy::log::info!(
+                "replication applied controlled binding client={:?} remote={} target_entity={:?} target_guid={} is_player_anchor={} prediction_target=true interpolation_mode={}",
+                client_entity,
+                remote_label,
+                controlled_entity,
+                target_guid,
+                is_player_anchor,
+                if is_player_anchor {
+                    "disabled"
+                } else if client_remote_ids.get(client_entity).is_ok() {
+                    "all_except_owner"
+                } else {
+                    "all"
+                }
+            );
         }
     }
 }

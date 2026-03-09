@@ -10,15 +10,6 @@ pub(crate) struct WorldEntity;
 pub(crate) struct ClientSceneEntity;
 
 #[derive(Component)]
-pub(crate) struct HudFpsText;
-
-#[derive(Component)]
-pub(crate) struct HudManifestText;
-
-#[derive(Component)]
-pub(crate) struct HudTacticalText;
-
-#[derive(Component)]
 pub(crate) struct HudSpeedValueText;
 
 #[derive(Component)]
@@ -174,6 +165,9 @@ pub(crate) struct StreamedVisualAttached;
 
 #[derive(Component)]
 pub(crate) struct StreamedVisualChild;
+
+#[derive(Component)]
+pub(crate) struct BallisticProjectileVisualAttached;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeWorldVisualFamily {

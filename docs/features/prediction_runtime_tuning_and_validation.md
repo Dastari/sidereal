@@ -17,7 +17,14 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - Legacy mirror-motion components are removed from runtime simulation/replication flow.
 - Fixed-step simulation remains authoritative at 30 Hz.
 
-## 2.1 Runtime Safeguards (2026-02-26)
+## 2.1 Current Native Runtime Status (2026-03-08)
+
+- Native client now reaches in-world state and can render replicated ships after world entry.
+- In-world controls are not yet functioning reliably for the controlled entity.
+- Motion/correction behavior still shows intermittent jumping/snapping and needs focused native debugging before feel tuning can be considered complete.
+- Native runtime stabilization is the immediate priority; resumed browser/WASM parity validation should wait until these native control and motion issues are under control.
+
+## 2.2 Runtime Safeguards (2026-02-26)
 
 - Client realtime input sending is change-driven with heartbeat:
   - send immediately when action set changes,
@@ -58,10 +65,25 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - no target-specific branching introduced,
   - interpolation registration and scheduling behavior are shared between native and WASM builds.
 
+## 2.3 Dynamic Handoff Lightyear Exception (2026-03-09)
+
+- Lightyear applies `Predicted` / `Interpolated` classification from the spawn action delivered to a receiver.
+- Sidereal's dynamic control handoff can promote an already-visible entity into the owner-predicted lane after initial replication.
+- For that Sidereal-specific case, the replication server intentionally forces a sender-local respawn transition on handoff by cycling visibility for the affected receiver after updating `PredictionTarget` / `InterpolationTarget`.
+- For owner-specific control lanes, Sidereal prefers `manual(vec![client_sender_entity])` targets once the concrete `ClientOf` sender entity is known.
+  - This is narrower than the generic peer-id `NetworkTarget` form used in many Lightyear examples.
+  - The reason is Sidereal's runtime can retarget ownership after connect/auth/hydration, and sender-entity targeting avoids depending on a second remote-id-to-sender resolution step during those handoff transitions.
+- The persisted player-anchor replication sync is intentionally idempotent.
+  - Sidereal keeps reevaluating anchor-vs-ship control mode every fixed tick, but it must not blindly reinsert Lightyear target components each frame.
+  - Replacing `PredictionTarget` / `InterpolationTarget` unnecessarily can fight the hook-driven per-sender replication state that Lightyear maintains.
+- This is an intentional exception to the simpler "predict on first spawn and never retarget" model used by many Lightyear examples.
+
 ## 3. Remaining Work
 
 1. Validate prediction/interpolation behavior under gameplay load:
    - confirmed/predicted/interpolated entity behavior remains stable under connect/disconnect churn.
+   - controlled entity input path actually produces authoritative in-world motion.
+   - intermittent correction/jump behavior is removed or reduced to intentional correction cases only.
 2. Validate and lock correction/rollback defaults:
    - `SIDEREAL_CLIENT_MAX_ROLLBACK_TICKS`
    - `SIDEREAL_CLIENT_INSTANT_CORRECTION`

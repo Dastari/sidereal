@@ -686,6 +686,7 @@ pub fn send_lightyear_auth_messages(
         With<lightyear::prelude::client::Client>,
     >,
 ) {
+    const AUTH_RESEND_INTERVAL_S: f64 = 2.0;
     let active_world_state = is_active_world_state(&app_state, &headless_mode);
     if !active_world_state {
         return;
@@ -727,7 +728,7 @@ pub fn send_lightyear_auth_messages(
             .copied()
             .unwrap_or(0.0);
         let should_resend_while_unbound =
-            !session_ready_for_player && now_s - last_sent_at_s >= 0.5;
+            !session_ready_for_player && now_s - last_sent_at_s >= AUTH_RESEND_INTERVAL_S;
         if sent_before && !should_resend_while_unbound {
             continue;
         }

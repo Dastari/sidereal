@@ -70,5 +70,5 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 ## References
 
 - `docs/decision_register.md` (`DR-0002`)
-- `docs/features/test_topology_and_resilience_plan.md`
+- `docs/plans/test_topology_and_resilience_plan.md`
 - `docs/sidereal_design_document.md`

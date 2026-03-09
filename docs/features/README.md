@@ -1,40 +1,48 @@
-# Features Planning Docs
+# Feature Docs
 
-This folder contains forward-looking feature plans and exploratory implementation guides.
+Status: Active index
+Date: 2026-03-09
 
-Decision detail docs should use: `dr-XXXX_<slug>.md`.
+This folder is for active feature-scoped documentation, not for decision records, audit reports, or general implementation plans.
 
-Current docs:
-- `lightyear_upstream_issue_snapshot.md`
-- `dr-0001_account_character_session_model.md`
-- `projectile_firing_game_loop.md`
-- `thruster_plumes_afterburner_plan.md`
-- `lighting_model_and_dynamic_space_events_plan.md`
-- `advanced_fly_by_wire_and_thruster_allocation_plan.md`
-- `bevy_features.md`
-- `dr-0002_explicit_world_entry_flow.md`
-- `universe_building_plan.md`
-- `dr-0003_logout_presence_policy.md`
-- `prediction_runtime_tuning_and_validation.md`
-- `robust_weapons_combat_audio_system_plan.md`
-- `dashboard_route_shell_refactor_note.md`
-- `shader_editor_dashboard_plan.md`
-- `shader_editor_dashboard_implementation_spec.md`
-- `quickstart_first_solar_system.md`
-- `visibility_replication_contract.md`
-- `asset_delivery_contract.md`
-- `dr-0007_entity_variant_framework.md`
-- `test_topology_and_resilience_plan.md`
+Update note (2026-03-09):
+- Decision detail docs were moved to `docs/decisions/`.
+- Plan-style docs were moved to `docs/plans/`.
+- This folder now focuses on active contracts, active feature references, and feature-scoped implementation notes/specs.
 
-These are planning references, not authoritative runtime contracts, except:
-- `visibility_replication_contract.md` (active implementation contract)
-- `asset_delivery_contract.md` (active implementation contract)
+## What Belongs Here
 
-Current implementation notes:
-- `shader_editor_dashboard_plan.md` and `shader_editor_dashboard_implementation_spec.md` are active progress-tracking references for the routed `/shader-workshop` tool suite (with `/shader-workbench` redirected for compatibility).
-- `dashboard_route_shell_refactor_note.md` now reflects the implemented routed shell, major tool routes, slug strategy, and shared layout direction.
-- `lightyear_upstream_issue_snapshot.md` is the dated upstream Lightyear issue triage reference for known bugs, gaps, and integration risks that may explain Sidereal behaviour before local workarounds are added.
+1. Active implementation contracts:
+   - `asset_delivery_contract.md`
+   - `visibility_replication_contract.md`
+   - `tactical_and_owner_lane_protocol_contract.md`
+2. Active feature references:
+   - `asset-packs.md`
+   - `brp_debugging_workflow.md`
+   - `galaxy_world_structure.md`
+   - `procedural_asteroids.md`
+   - `procedural_planets.md`
+   - `projectile_firing_game_loop.md`
+   - `prediction_runtime_tuning_and_validation.md`
+   - `lightyear_upstream_issue_snapshot.md`
+3. Active feature-scoped notes/specs:
+   - `dashboard_route_shell_refactor_note.md`
+   - `shader_editor_dashboard_implementation_spec.md`
+   - `lightyear_integration_analysis.md`
+   - `scripting_support.md`
 
-Source-of-truth architecture remains:
-- `docs/sidereal_design_document.md`
-- `docs/sidereal_implementation_checklist.md`
+## What Does Not Belong Here
+
+1. Decision detail docs:
+   - use `docs/decisions/dr-XXXX_<slug>.md`
+2. Plans and migration roadmaps:
+   - use `docs/plans/`
+3. Audit outputs and generated reports:
+   - use `docs/reports/`
+
+## Related Indexes
+
+1. Docs root index: `docs/README.md`
+2. Decision register: `docs/decision_register.md`
+3. Architecture baseline: `docs/sidereal_design_document.md`
+4. Implementation tracker: `docs/sidereal_implementation_checklist.md`

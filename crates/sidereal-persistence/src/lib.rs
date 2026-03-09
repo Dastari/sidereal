@@ -61,6 +61,41 @@ pub struct GraphPersistence {
     graph_name: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct StaleComponentCleanupRow {
+    entity_id: String,
+    incoming_component_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EntityComponentEdgeRow {
+    entity_id: String,
+    component_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChildEdgeRow {
+    parent_entity_id: String,
+    child_entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct EntityIdRow {
+    entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HardpointEdgeRow {
+    owner_entity_id: String,
+    hardpoint_entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MountedOnEdgeRow {
+    module_entity_id: String,
+    mount_entity_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScriptCatalogRecord {
     pub script_path: String,
@@ -274,6 +309,30 @@ impl GraphPersistence {
             .batch_execute("SET search_path = public;")
             .map_err(db_err("reset search_path after graph persist"))?;
 
+        Ok(())
+    }
+
+    /// Persists a graph batch atomically under one SQL transaction.
+    ///
+    /// This keeps the existing AGE persistence shape, so it does not magically turn the batch
+    /// into one Cypher statement. It does ensure the replication worker commits a whole snapshot
+    /// or none of it, which is the right baseline before attempting deeper batching work.
+    pub fn persist_graph_records_transactional(
+        &mut self,
+        records: &[GraphEntityRecord],
+        tick: u64,
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self
+            .client
+            .transaction()
+            .map_err(db_err("start graph persist transaction"))?;
+        persist_graph_records_in_transaction(&mut tx, &self.graph_name, records, tick)?;
+        tx.commit()
+            .map_err(db_err("commit graph persist transaction"))?;
         Ok(())
     }
 
@@ -975,77 +1034,56 @@ pub fn persist_graph_records_in_transaction(
     tx.batch_execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
         .map_err(db_err("prep age for graph persist"))?;
 
+    let mut entity_rows = Vec::<JsonValue>::with_capacity(records.len());
+    let mut stale_component_rows = Vec::<StaleComponentCleanupRow>::with_capacity(records.len());
+    let mut component_rows = Vec::<JsonValue>::new();
+    let mut entity_component_rows = Vec::<EntityComponentEdgeRow>::new();
+    let mut child_edge_rows = Vec::<ChildEdgeRow>::new();
+    let mut root_entity_rows = Vec::<EntityIdRow>::new();
+    let mut hardpoint_edge_rows = Vec::<HardpointEdgeRow>::new();
+    let mut mounted_on_edge_rows = Vec::<MountedOnEdgeRow>::new();
+
     for record in records {
         let labels = sanitize_labels(&record.labels);
-        let mut set_parts = vec![format!("e.last_tick={tick}")];
-        set_parts.push(format!(
-            "e.entity_labels={}",
-            cypher_literal(&JsonValue::Array(
-                labels
-                    .iter()
-                    .cloned()
-                    .map(JsonValue::String)
-                    .collect::<Vec<_>>()
-            ))
+        entity_rows.push(flatten_row_properties(
+            [
+                ("entity_id", JsonValue::String(record.entity_id.clone())),
+                ("last_tick", JsonValue::from(tick)),
+                (
+                    "entity_labels",
+                    JsonValue::Array(labels.into_iter().map(JsonValue::String).collect()),
+                ),
+            ],
+            &record.properties,
         ));
-        set_parts.extend(cypher_set_clauses("e", &record.properties));
-
-        run_cypher_in_transaction(
-            tx,
-            graph_name,
-            &format!(
-                "MERGE (e:Entity {{entity_id:'{}'}}) SET {}",
-                escape_cypher_string(&record.entity_id),
-                set_parts.join(", "),
-            ),
-        )?;
-
-        let incoming_component_ids = JsonValue::Array(
-            record
+        stale_component_rows.push(StaleComponentCleanupRow {
+            entity_id: record.entity_id.clone(),
+            incoming_component_ids: record
                 .components
                 .iter()
-                .map(|c| JsonValue::String(c.component_id.clone()))
-                .collect::<Vec<_>>(),
-        );
-        run_cypher_in_transaction(
-            tx,
-            graph_name,
-            &format!(
-                "MATCH (e:Entity {{entity_id:'{}'}}) \
-                 OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(c:Component) \
-                 WHERE c IS NOT NULL AND NOT c.component_id IN {} \
-                 DETACH DELETE c",
-                escape_cypher_string(&record.entity_id),
-                cypher_literal(&incoming_component_ids),
-            ),
-        )?;
+                .map(|component| component.component_id.clone())
+                .collect(),
+        });
 
         for component in &record.components {
-            let reset_props_clause = format!(
-                "c = {{component_id:{}, component_kind:{}, last_tick:{tick}}}",
-                cypher_literal(&JsonValue::String(component.component_id.clone())),
-                cypher_literal(&JsonValue::String(component.component_kind.clone())),
-            );
-            let mut comp_set = vec![reset_props_clause];
-            append_component_property_clauses(&mut comp_set, &component.properties);
-            run_cypher_in_transaction(
-                tx,
-                graph_name,
-                &format!(
-                    "MERGE (c:Component {{component_id:'{}'}}) SET {}",
-                    escape_cypher_string(&component.component_id),
-                    comp_set.join(", ")
-                ),
-            )?;
-            run_cypher_in_transaction(
-                tx,
-                graph_name,
-                &format!(
-                    "MATCH (e:Entity {{entity_id:'{}'}}), (c:Component {{component_id:'{}'}}) MERGE (e)-[:HAS_COMPONENT]->(c)",
-                    escape_cypher_string(&record.entity_id),
-                    escape_cypher_string(&component.component_id),
-                ),
-            )?;
+            component_rows.push(flatten_row_properties(
+                [
+                    (
+                        "component_id",
+                        JsonValue::String(component.component_id.clone()),
+                    ),
+                    (
+                        "component_kind",
+                        JsonValue::String(component.component_kind.clone()),
+                    ),
+                    ("last_tick", JsonValue::from(tick)),
+                ],
+                &component_properties_object(&component.properties),
+            ));
+            entity_component_rows.push(EntityComponentEdgeRow {
+                entity_id: record.entity_id.clone(),
+                component_id: component.component_id.clone(),
+            });
         }
 
         if let Some(parent_id) = record
@@ -1053,40 +1091,14 @@ pub fn persist_graph_records_in_transaction(
             .get("parent_entity_id")
             .and_then(JsonValue::as_str)
         {
-            // Keep HAS_CHILD single-parent: remove stale incoming parent edges first.
-            run_cypher_in_transaction(
-                tx,
-                graph_name,
-                &format!(
-                    "MATCH (e:Entity {{entity_id:'{}'}}) \
-                     OPTIONAL MATCH (old:Entity)-[r:HAS_CHILD]->(e) \
-                     WHERE old.entity_id <> '{}' \
-                     DELETE r",
-                    escape_cypher_string(&record.entity_id),
-                    escape_cypher_string(parent_id),
-                ),
-            )?;
-            run_cypher_in_transaction(
-                tx,
-                graph_name,
-                &format!(
-                    "MATCH (p:Entity {{entity_id:'{}'}}), (e:Entity {{entity_id:'{}'}}) MERGE (p)-[:HAS_CHILD]->(e)",
-                    escape_cypher_string(parent_id),
-                    escape_cypher_string(&record.entity_id),
-                ),
-            )?;
+            child_edge_rows.push(ChildEdgeRow {
+                parent_entity_id: parent_id.to_string(),
+                child_entity_id: record.entity_id.clone(),
+            });
         } else {
-            // Root entities should not keep stale HAS_CHILD incoming edges.
-            run_cypher_in_transaction(
-                tx,
-                graph_name,
-                &format!(
-                    "MATCH (e:Entity {{entity_id:'{}'}}) \
-                     OPTIONAL MATCH (:Entity)-[r:HAS_CHILD]->(e) \
-                     DELETE r",
-                    escape_cypher_string(&record.entity_id),
-                ),
-            )?;
+            root_entity_rows.push(EntityIdRow {
+                entity_id: record.entity_id.clone(),
+            });
         }
 
         if record.labels.iter().any(|l| l == "Hardpoint")
@@ -1095,15 +1107,10 @@ pub fn persist_graph_records_in_transaction(
                 .get("owner_entity_id")
                 .and_then(JsonValue::as_str)
         {
-            run_cypher_in_transaction(
-                tx,
-                graph_name,
-                &format!(
-                    "MATCH (s:Entity {{entity_id:'{}'}}), (h:Entity {{entity_id:'{}'}}) MERGE (s)-[:HAS_HARDPOINT]->(h)",
-                    escape_cypher_string(owner_id),
-                    escape_cypher_string(&record.entity_id),
-                ),
-            )?;
+            hardpoint_edge_rows.push(HardpointEdgeRow {
+                owner_entity_id: owner_id.to_string(),
+                hardpoint_entity_id: record.entity_id.clone(),
+            });
         }
 
         if let Some(mounted_on) = record
@@ -1111,17 +1118,90 @@ pub fn persist_graph_records_in_transaction(
             .get("mounted_on_entity_id")
             .and_then(JsonValue::as_str)
         {
-            run_cypher_in_transaction(
-                tx,
-                graph_name,
-                &format!(
-                    "MATCH (m:Entity {{entity_id:'{}'}}), (h:Entity {{entity_id:'{}'}}) MERGE (m)-[:MOUNTED_ON]->(h)",
-                    escape_cypher_string(&record.entity_id),
-                    escape_cypher_string(mounted_on),
-                ),
-            )?;
+            mounted_on_edge_rows.push(MountedOnEdgeRow {
+                module_entity_id: record.entity_id.clone(),
+                mount_entity_id: mounted_on.to_string(),
+            });
         }
     }
+
+    run_batched_cypher_in_transaction(tx, graph_name, &entity_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MERGE (e:Entity {{entity_id: row.entity_id}}) \
+                 SET e += row",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &stale_component_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MATCH (e:Entity {{entity_id: row.entity_id}}) \
+                 OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(c:Component) \
+                 WHERE c IS NOT NULL AND NOT c.component_id IN row.incoming_component_ids \
+                 DETACH DELETE c",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &component_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MERGE (c:Component {{component_id: row.component_id}}) \
+                 SET c += row",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &entity_component_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MATCH (e:Entity {{entity_id: row.entity_id}}), (c:Component {{component_id: row.component_id}}) \
+                 MERGE (e)-[:HAS_COMPONENT]->(c)",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &child_edge_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MATCH (e:Entity {{entity_id: row.child_entity_id}}) \
+                 OPTIONAL MATCH (old:Entity)-[r:HAS_CHILD]->(e) \
+                 WHERE old.entity_id <> row.parent_entity_id \
+                 DELETE r",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &child_edge_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MATCH (p:Entity {{entity_id: row.parent_entity_id}}), (e:Entity {{entity_id: row.child_entity_id}}) \
+                 MERGE (p)-[:HAS_CHILD]->(e)",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &root_entity_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MATCH (e:Entity {{entity_id: row.entity_id}}) \
+                 OPTIONAL MATCH (:Entity)-[r:HAS_CHILD]->(e) \
+                 DELETE r",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &hardpoint_edge_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MATCH (s:Entity {{entity_id: row.owner_entity_id}}), (h:Entity {{entity_id: row.hardpoint_entity_id}}) \
+                 MERGE (s)-[:HAS_HARDPOINT]->(h)",
+            cypher_literal(&rows)
+        )
+    })?;
+    run_batched_cypher_in_transaction(tx, graph_name, &mounted_on_edge_rows, |rows| {
+        format!(
+            "UNWIND {} AS row \
+                 MATCH (m:Entity {{entity_id: row.module_entity_id}}), (h:Entity {{entity_id: row.mount_entity_id}}) \
+                 MERGE (m)-[:MOUNTED_ON]->(h)",
+            cypher_literal(&rows)
+        )
+    })?;
 
     tx.batch_execute("SET search_path = public;")
         .map_err(db_err("reset search_path after graph persist"))?;
@@ -1141,6 +1221,26 @@ fn run_cypher_in_transaction(
         PersistenceError::Database(format!("cypher execution failed: {err}; query={cypher}"))
     })?;
     Ok(())
+}
+
+fn run_batched_cypher_in_transaction<T, F>(
+    tx: &mut Transaction<'_>,
+    graph_name: &str,
+    rows: &[T],
+    build_cypher: F,
+) -> Result<()>
+where
+    T: Serialize,
+    F: FnOnce(JsonValue) -> String,
+{
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let rows = serde_json::to_value(rows).map_err(|err| {
+        PersistenceError::Serialization(format!("serialize batched rows failed: {err}"))
+    })?;
+    let cypher = build_cypher(rows);
+    run_cypher_in_transaction(tx, graph_name, &cypher)
 }
 
 fn sanitize_labels(labels: &[String]) -> Vec<String> {
@@ -1171,6 +1271,33 @@ fn append_component_property_clauses(comp_set: &mut Vec<String>, properties: &Js
         let json_str = serde_json::to_string(properties).unwrap_or_default();
         comp_set.push(format!("c.value='{}'", escape_cypher_string(&json_str)));
     }
+}
+
+fn component_properties_object(properties: &JsonValue) -> JsonValue {
+    if properties.is_object() {
+        properties.clone()
+    } else {
+        JsonValue::Object(JsonMap::from_iter([(
+            "value".to_string(),
+            JsonValue::String(serde_json::to_string(properties).unwrap_or_default()),
+        )]))
+    }
+}
+
+fn flatten_row_properties<const N: usize>(
+    base_fields: [(&str, JsonValue); N],
+    properties: &JsonValue,
+) -> JsonValue {
+    let mut object = JsonMap::new();
+    for (key, value) in base_fields {
+        object.insert(key.to_string(), value);
+    }
+    if let Some(map) = properties.as_object() {
+        for (key, value) in map {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    JsonValue::Object(object)
 }
 
 /// Recovers component properties that were stored as non-object JSON.

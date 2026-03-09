@@ -2,6 +2,11 @@
 
 Status: Active implementation tracker  
 Primary spec: `docs/sidereal_design_document.md`
+Update note (2026-03-09):
+- Documentation taxonomy normalized:
+  - plans live under `docs/plans/`,
+  - decisions live under `docs/decisions/`,
+  - reports live under `docs/reports/`.
 
 ## 1. Current Architecture Baseline
 
@@ -12,6 +17,11 @@ Primary spec: `docs/sidereal_design_document.md`
 - [x] Graph-record persistence/hydration path active (`GraphEntityRecord` / `GraphComponentRecord`).
 
 ## 2. Vertical Slice Gameplay Readiness
+
+Status note (2026-03-08):
+- Native client can now authenticate, enter world, and render replicated ships in-world.
+- Current blocking issues are native control/input failure in-world and intermittent motion/correction jumping.
+- Native control/prediction/camera stabilization is the active priority; remaining WASM parity follow-through is deferred until this baseline is stable.
 
 - [ ] Login/register/logout loop remains stable across repeated sessions.
 - [ ] Player consistently enters world with controlled ship and active HUD.
@@ -85,7 +95,12 @@ Primary spec: `docs/sidereal_design_document.md`
 
 ## 6. WASM and Transport Direction
 
-- [ ] Keep native and WASM builds green on each client/runtime change.
+Status note (2026-03-08):
+- Browser transport direction and shared-runtime architecture remain the intended target.
+- End-to-end WASM parity validation is temporarily back-burnered while native in-world control and motion stability are unresolved.
+- New work should avoid introducing native-only architecture that would make later WASM parity recovery harder.
+
+- [ ] Resume full native/WASM parity validation after native control/prediction stability is restored.
 - [x] Maintain WebTransport-first direction for WASM transport boundary implementation.
 - [ ] Keep gameplay/prediction logic shared between native and WASM builds.
 - [ ] Restrict platform differences to transport/bootstrap boundary code only.
@@ -106,8 +121,10 @@ Primary spec: `docs/sidereal_design_document.md`
 
 - [ ] Keep `docs/sidereal_design_document.md` aligned with implemented runtime behavior.
 - [ ] Keep `docs/features/prediction_runtime_tuning_and_validation.md` updated as the prediction tuning tracker.
-- [ ] Store future feature proposals under `docs/features/`.
-- [ ] Keep old audits historical only under `docs/archive/`.
+- [ ] Store future feature contracts/references under `docs/features/`.
+- [ ] Store future implementation and migration plans under `docs/plans/`.
+- [ ] Store future audit outputs under `docs/reports/`.
+- [ ] Store future decision detail docs under `docs/decisions/`.
 
 ## 8. Quality Gates
 
