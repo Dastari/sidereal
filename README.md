@@ -1,9 +1,11 @@
 # sidereal
 
-Sidereal rebuild workspace (server-authoritative architecture, Bevy 0.18, Lightyear transport, Postgres+AGE persistence).
+Sidereal is a server-authoritative multiplayer space RPG built around:
 
-Update note (2026-03-09):
-- Documentation entry points were expanded so the repo root explains where active contracts, decisions, plans, and reports now live.
+- deterministic fixed-step simulation,
+- capability-driven Bevy ECS gameplay,
+- persistent world state,
+- smooth client prediction/interpolation for responsive control.
 
 ## What This Repo Currently Contains
 
@@ -41,8 +43,6 @@ make dev-stack
 ```bash
 make dev-stack-client
 ```
-
-Gateway and replication tracing logs are written to both the console and workspace-relative `./logs/`, with a new timestamped file per process start.
 
 ## Documentation Map
 
