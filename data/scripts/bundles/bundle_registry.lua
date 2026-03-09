@@ -145,7 +145,6 @@ local PLANET_REQUIRED_COMPONENT_KINDS = {
   C.WorldPosition,
   C.WorldRotation,
   C.PlanetBodyShaderSettings,
-  C.StaticLandmark,
 }
 
 local ENVIRONMENT_LIGHTING_REQUIRED_COMPONENT_KINDS = {

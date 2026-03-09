@@ -404,7 +404,7 @@ async fn open_cache_db() -> Result<web_sys::IdbDatabase, String> {
     let request = factory
         .open_with_u32(WASM_CACHE_DB_NAME, WASM_CACHE_DB_VERSION)
         .map_err(js_error_to_string)?;
-    let upgrade = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |event| {
+    let upgrade = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |event: web_sys::Event| {
         let Some(target) = event.target() else {
             return;
         };

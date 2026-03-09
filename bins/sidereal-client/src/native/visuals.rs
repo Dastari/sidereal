@@ -886,10 +886,10 @@ pub(super) fn attach_planet_visual_stack_system(
     mut meshes: ResMut<'_, Assets<Mesh>>,
     mut planet_materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
     time: Res<'_, Time>,
-    camera_motion: Res<'_, CameraMotionState>,
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
+    gameplay_camera: Query<'_, '_, &'_ GlobalTransform, With<GameplayCamera>>,
     mut candidates: Query<
         '_,
         '_,
@@ -915,6 +915,10 @@ pub(super) fn attach_planet_visual_stack_system(
     if !shader_materials_enabled() {
         return;
     }
+    let camera_world_position_xy = gameplay_camera
+        .single()
+        .map(|transform| transform.translation().truncate())
+        .unwrap_or(Vec2::ZERO);
     for (
         entity,
         settings,
@@ -943,7 +947,7 @@ pub(super) fn attach_planet_visual_stack_system(
         let local_offset = planet_visual_local_offset(
             resolved_render_layer,
             world_position,
-            camera_motion.world_position_xy,
+            camera_world_position_xy,
         );
         let layer_screen_scale = resolved_render_layer
             .map(|layer| runtime_layer_screen_scale_factor(&layer.definition))
@@ -1200,12 +1204,10 @@ pub(super) fn ensure_planet_body_root_visibility_system(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn update_planet_body_visuals_system(
     time: Res<'_, Time>,
-    camera_motion: Res<'_, CameraMotionState>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
     mut materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
-    gameplay_camera: Query<'_, '_, (&'_ Camera, &'_ GlobalTransform), With<GameplayCamera>>,
-    windows: Query<'_, '_, &'_ Window, With<bevy::window::PrimaryWindow>>,
+    gameplay_camera: Query<'_, '_, (&'_ Camera, &'_ Projection, &'_ Transform), With<GameplayCamera>>,
     planets: Query<
         '_,
         '_,
@@ -1232,7 +1234,11 @@ pub(super) fn update_planet_body_visuals_system(
     >,
 ) {
     let time_s = time.elapsed_secs();
-    let camera_view = gameplay_camera.single().ok().zip(windows.single().ok());
+    let camera_view = gameplay_camera.single().ok();
+    let camera_world_position_xy = camera_view
+        .as_ref()
+        .map(|(_, _, transform)| transform.translation.truncate())
+        .unwrap_or(Vec2::ZERO);
     for (
         children,
         settings,
@@ -1254,7 +1260,7 @@ pub(super) fn update_planet_body_visuals_system(
         let local_offset = planet_visual_local_offset(
             resolved_render_layer,
             world_position,
-            camera_motion.world_position_xy,
+            camera_world_position_xy,
         );
         let projected_center_world = world_position + local_offset;
         let layer_screen_scale = resolved_render_layer
@@ -1317,14 +1323,14 @@ pub(super) fn update_planet_body_visuals_system(
                 transform.translation.x = local_offset.x;
                 transform.translation.y = local_offset.y;
                 let in_projected_view =
-                    camera_view.is_none_or(|((camera, camera_global), window)| {
+                    camera_view.is_none_or(|(camera, projection, camera_transform)| {
                         projected_planet_intersects_camera_view(
                             projected_center_world,
                             projected_radius_m,
                             PLANET_PROJECTED_CULL_BUFFER_M,
                             camera,
-                            camera_global,
-                            window,
+                            projection,
+                            camera_transform,
                         )
                     });
                 *visibility = if in_projected_view {
@@ -1374,30 +1380,22 @@ fn projected_planet_intersects_camera_view(
     projected_radius_m: f32,
     buffer_m: f32,
     camera: &Camera,
-    camera_global: &GlobalTransform,
-    window: &Window,
+    projection: &Projection,
+    camera_transform: &Transform,
 ) -> bool {
+    let Some(viewport_size) = camera.logical_viewport_size() else {
+        return false;
+    };
+    let Projection::Orthographic(orthographic) = projection else {
+        return true;
+    };
+    let half_extents_world = viewport_size * orthographic.scale * 0.5;
     let radius_with_buffer = projected_radius_m.max(0.0) + buffer_m.max(0.0);
-    let center_world = projected_center_world.extend(0.0);
-    let top_world = (projected_center_world + Vec2::new(0.0, radius_with_buffer)).extend(0.0);
-    let right_world = (projected_center_world + Vec2::new(radius_with_buffer, 0.0)).extend(0.0);
-
-    let Ok(viewport_pos) = camera.world_to_viewport(camera_global, center_world) else {
-        return false;
-    };
-    let Ok(top_viewport_pos) = camera.world_to_viewport(camera_global, top_world) else {
-        return false;
-    };
-    let Ok(right_viewport_pos) = camera.world_to_viewport(camera_global, right_world) else {
-        return false;
-    };
-
-    let extent_px_x = (right_viewport_pos.x - viewport_pos.x).abs().max(1.0);
-    let extent_px_y = (top_viewport_pos.y - viewport_pos.y).abs().max(1.0);
-    viewport_pos.x >= -extent_px_x
-        && viewport_pos.x <= window.width() + extent_px_x
-        && viewport_pos.y >= -extent_px_y
-        && viewport_pos.y <= window.height() + extent_px_y
+    let delta = projected_center_world - camera_transform.translation.truncate();
+    delta.x >= -half_extents_world.x - radius_with_buffer
+        && delta.x <= half_extents_world.x + radius_with_buffer
+        && delta.y >= -half_extents_world.y - radius_with_buffer
+        && delta.y <= half_extents_world.y + radius_with_buffer
 }
 
 fn streamed_visual_layer_transform(
