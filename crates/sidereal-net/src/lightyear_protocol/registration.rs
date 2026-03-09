@@ -14,8 +14,8 @@ use sidereal_game::component_meta::SiderealComponentRegistration;
 use super::{
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
     ClientLocalViewModeMessage, ClientRealtimeInputMessage, ClientTacticalResnapshotRequestMessage,
-    ControlChannel, InputChannel, ManifestChannel, ServerControlAckMessage,
-    ServerControlRejectMessage, ServerOwnerAssetManifestDeltaMessage,
+    ControlChannel, InputChannel, ManifestChannel, ServerAssetCatalogVersionMessage,
+    ServerControlAckMessage, ServerControlRejectMessage, ServerOwnerAssetManifestDeltaMessage,
     ServerOwnerAssetManifestSnapshotMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
     ServerTacticalContactsDeltaMessage, ServerTacticalContactsSnapshotMessage,
     ServerTacticalFogDeltaMessage, ServerTacticalFogSnapshotMessage, ServerWeaponFiredMessage,
@@ -92,6 +92,8 @@ fn register_lightyear_common_protocol(app: &mut App) {
     app.register_message::<ServerOwnerAssetManifestSnapshotMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerOwnerAssetManifestDeltaMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerAssetCatalogVersionMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerSessionReadyMessage>()
         .add_direction(NetworkDirection::Bidirectional);

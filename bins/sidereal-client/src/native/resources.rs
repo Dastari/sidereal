@@ -196,10 +196,102 @@ impl Default for TacticalMapUiState {
 #[derive(Debug, Resource, Default)]
 pub(crate) struct DebugBlueOverlayEnabled(pub bool);
 
-/// When true, F3 debug overlay is active: collision AABB wireframes, ship AABB + velocity arrow, hardpoint markers.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DebugOverlayMode {
+    #[default]
+    Minimal,
+    Full,
+}
+
+/// Toggle state and display mode for the native debug overlay.
+#[allow(dead_code)]
 #[derive(Debug, Resource, Default)]
-pub(crate) struct DebugOverlayEnabled {
+pub(crate) struct DebugOverlayState {
     pub enabled: bool,
+    pub mode: DebugOverlayMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DebugSeverity {
+    Normal,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DebugEntityLane {
+    Predicted,
+    Confirmed,
+    Interpolated,
+    ConfirmedGhost,
+    Auxiliary,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) enum DebugCollisionShape {
+    #[default]
+    None,
+    Aabb {
+        half_extents: Vec3,
+    },
+    Outline {
+        points: Vec<Vec2>,
+    },
+    HardpointMarker,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DebugOverlayEntity {
+    pub entity: Entity,
+    pub lane: DebugEntityLane,
+    pub position_xy: Vec2,
+    pub rotation_rad: f32,
+    pub velocity_xy: Vec2,
+    pub angular_velocity_rps: f32,
+    pub collision: DebugCollisionShape,
+    pub is_controlled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DebugControlledLane {
+    pub guid: uuid::Uuid,
+    pub primary_lane: DebugEntityLane,
+    pub has_confirmed_ghost: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DebugOverlayStats {
+    pub predicted_count: usize,
+    pub confirmed_count: usize,
+    pub interpolated_count: usize,
+    pub auxiliary_count: usize,
+    pub duplicate_guid_groups: usize,
+    pub anomaly_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DebugTextRow {
+    pub label: String,
+    pub value: String,
+    pub severity: DebugSeverity,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct DebugOverlaySnapshot {
+    pub frame_index: u64,
+    pub entities: Vec<DebugOverlayEntity>,
+    pub controlled_lane: Option<DebugControlledLane>,
+    pub stats: DebugOverlayStats,
+    pub text_rows: Vec<DebugTextRow>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DebugOverlayDisplayMetrics {
+    pub sampled_fps: Option<f64>,
+    pub sampled_frame_ms: Option<f64>,
+    pub last_sample_at_s: f64,
+    pub initialized: bool,
 }
 
 #[derive(Debug, Resource, Default)]

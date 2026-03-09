@@ -20,7 +20,11 @@ export interface ComponentEditorRendererProps {
   entityId: string
   node: GraphNode
   generatedComponentRegistry: GeneratedComponentRegistryResource | null
-  onUpdate: (typePath: string, value: unknown) => void
+  onUpdate: (
+    typePath: string,
+    componentKind: string,
+    value: unknown,
+  ) => void
   readOnly?: boolean
 }
 
@@ -100,7 +104,7 @@ export function ComponentEditorRenderer({
           type="button"
           size="sm"
           disabled={readOnly || !dirty}
-          onClick={() => onUpdate(entry.type_path, draftValue)}
+          onClick={() => onUpdate(entry.type_path, entry.component_kind, draftValue)}
         >
           Apply
         </Button>

@@ -1,7 +1,7 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract
-Last updated: March 8, 2026
+Last updated: March 9, 2026
 Primary architecture reference: `docs/sidereal_design_document.md`
 Related contract: `docs/features/scripting_support.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
@@ -48,6 +48,7 @@ Core outcomes:
 8. Cache trust decisions are deterministic via checksum (`sha256`) and version metadata.
 9. Native and WASM clients must implement the same asset state machine and validation logic.
 10. Browser/WASM runtime asset mounting is byte-backed from validated cache or gateway payload bytes; browser code must not depend on filesystem-style `AssetServer` paths.
+11. Active script sources and asset source files must be polled for hot-reload changes on a bounded cadence (default 5 seconds via `SIDEREAL_ASSET_HOT_RELOAD_INTERVAL_S`), and authoritative catalog changes must invalidate connected clients through the existing manifest/bootstrap path.
 
 ## 4. Terminology
 
@@ -130,6 +131,10 @@ Current implementation note:
 
 ## 7. Gateway Delivery Contract
 
+2026-03-09 update:
+1. Gateway script-catalog and runtime asset-catalog caches are no longer process-lifetime sticky.
+2. Gateway must re-check the active script catalog and rebuild the runtime asset catalog after the hot-reload poll interval elapses, even when `assets/registry.lua` revision is unchanged, so source-byte edits for textures, shaders, SVGs, audio, and other payloads become visible without a process restart.
+
 ### 7.1 Payload route
 
 - Route: `GET /assets/<asset_guid>`
@@ -191,6 +196,20 @@ After entering world:
 6. Runtime shader install uses catalog/cache-provided shader bytes when available; built-in fallback is limited to one emergency shader per generic runtime family rather than a compiled-in WGSL source per named content case.
 7. Runtime lazy fetch expands dependency closure from catalog metadata and fetches unresolved dependencies before attaching the root asset.
 8. Browser/WASM shader/image/SVG attach paths mount from cached payload bytes through runtime loaders, not through direct `data/cache_stream/...` path loads.
+
+### 8.3 Live asset hot reload
+
+2026-03-09 native impact: native client now listens for authoritative catalog-version invalidations and refreshes manifest/cache state live while already in-world.
+2026-03-09 WASM impact: no WASM-specific contract change; browser clients are expected to follow the same manifest invalidation and byte-backed cache refresh path when the shared runtime path is enabled.
+
+After the initial bootstrap completes:
+
+1. Replication sends authoritative asset-catalog version invalidations over the manifest channel when the server detects script or source-asset changes.
+2. Client must re-fetch the gateway bootstrap manifest when the pushed `catalog_version` differs from the local catalog version.
+3. Required assets still flow through the normal bootstrap validation/download path; do not invent a second authoritative download path for hot reload.
+4. Changed optional assets may be eagerly refreshed in the background after the manifest refresh completes.
+5. Runtime shader, image, and SVG attach paths must invalidate local handle caches and rebind from validated bytes when the catalog version changes.
+6. If an asset disappears from the authoritative catalog, client must fall back safely rather than continue treating the removed asset as authoritative.
 
 ## 9. Runtime Entity Asset Resolution Contract
 

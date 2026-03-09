@@ -410,14 +410,14 @@ pub fn apply_engine_thrust(
                 .unwrap_or(0.0)
                 <= 0.0
         {
-            let exhausted = fuel_exhausted_count.get(&guid.0).copied().unwrap_or(0);
-            if exhausted > 0 {
-                debug!(
-                    entity_guid = %guid.0,
-                    exhausted_engines = exhausted,
-                    "throttle applied but all engines out of fuel"
-                );
-            }
+            // let exhausted = fuel_exhausted_count.get(&guid.0).copied().unwrap_or(0);
+            // if exhausted > 0 {
+            //     debug!(
+            //         entity_guid = %guid.0,
+            //         exhausted_engines = exhausted,
+            //         "throttle applied but all engines out of fuel"
+            //     );
+            // }
         }
     }
 }

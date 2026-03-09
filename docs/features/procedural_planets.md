@@ -1,7 +1,15 @@
 # Procedural Planets
 
 **Status:** Active implementation (phase 1 live)
-**Last updated:** 2026-03-07
+**Last updated:** 2026-03-09
+
+## 0. Status Notes
+
+- 2026-03-09: Native client planet visuals no longer apply camera-driven x/y parallax offsets on top of the authoritative planet root transform. Planets still render on a lower z/depth layer, but the visible disc center now remains aligned with the replicated world position so AABB/debug overlays and selection stay correct away from camera center. WASM impact: shared client visual behavior change; no platform-specific divergence intended.
+- 2026-03-09: Native client planet visuals now use a client-only projected render-center offset derived from the authoritative planet world position plus camera position. The authoritative planet root remains fixed at the real world center for visibility/exploration/culling decisions, while the visual child offset restores layer parallax for drawing only. WASM impact: shared client visual behavior change; no platform-specific divergence intended.
+- 2026-03-09: Runtime world layers now also support an optional `screen_scale_factor` used by the native planet visual path. This changes apparent planet size for the layer without changing authoritative world position or adding extra parallax. It does not by itself fix projected render-frustum culling; projected visual bounds still need a dedicated follow-up.
+- 2026-03-09: Native client planet passes now opt out of Bevy frustum culling and use client-side projected landmark bounds against the gameplay camera viewport plus buffer instead. That keeps parallaxed planets, rings, and clouds visible until their projected disc actually leaves the buffered view, while still allowing planet-local lighting and other `ViewVisibility` consumers to drop out once the projected landmark is offscreen. WASM impact: shared client visual behavior change; no platform-specific divergence intended.
+- 2026-03-09: Replication delivery for discovered parallaxed planets now widens landmark delivery by the authored layer `parallax_factor` and bypasses the normal spatial candidate prefilter for already-discovered landmarks. This keeps the server from dropping a planet while its projected render center is still inside the buffered gameplay viewport. WASM impact: transport-agnostic authoritative visibility behavior change; no platform-specific divergence intended.
 
 ## 1. Runtime Model
 
@@ -72,7 +80,8 @@ Planets render as layered procedural billboards on quads:
 - the client spawns a body child on `PLANET_BODY_RENDER_LAYER`
 - optional cloud and ring/accretion children are attached as separate renderables
 - the planet family is offset to a lower z plane than normal world sprites
-- planets use parallax against camera motion so they read as a deeper world layer than ships
+- planets render behind ships using z/depth layering and a client-only projected visual offset, while the authoritative root remains centered on the true world position
+- optional layer `screen_scale_factor` can enlarge or reduce apparent planet screen size independently of parallax motion
 
 The gameplay camera renders both:
 - default world layer `0`

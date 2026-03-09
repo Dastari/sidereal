@@ -38,6 +38,26 @@ function PlanetBody.build_graph_records(ctx)
   local spawn_position = ctx.spawn_position or { 0.0, 0.0 }
   local spawn_rotation_rad = ctx.spawn_rotation_rad or 0.0
   local planet_visual_shader_asset_id = ctx.planet_visual_shader_asset_id or "planet_visual_wgsl"
+  local runtime_render_layer_override = {
+    layer_id = ctx.runtime_render_layer_id or "midground_planets",
+  }
+  local landmark_kind = ctx.landmark_kind
+  if landmark_kind == nil or landmark_kind == "" then
+    if (ctx.body_kind or 0) == 1 then
+      landmark_kind = "Star"
+    elseif (ctx.body_kind or 0) == 2 then
+      landmark_kind = "BlackHole"
+    else
+      landmark_kind = "Planet"
+    end
+  end
+  local static_landmark = {
+    kind = landmark_kind,
+    discoverable = ctx.discoverable ~= false,
+    always_known = ctx.always_known == true,
+    discovery_radius_m = ctx.discovery_radius_m,
+    use_extent_for_discovery = ctx.use_extent_for_discovery ~= false,
+  }
   local shader_settings = {
     enabled = ctx.enabled ~= false,
     enable_surface_detail = ctx.enable_surface_detail ~= false,
@@ -184,12 +204,13 @@ function PlanetBody.build_graph_records(ctx)
         component(entity_id, "display_name", display_name),
         component(entity_id, "entity_labels", labels),
         component(entity_id, "owner_id", owner_id),
-        component(entity_id, "public_visibility", {}),
         component(entity_id, "size_m", {
           length = body_size_m,
           width = body_size_m,
           height = body_size_m,
         }),
+        component(entity_id, "static_landmark", static_landmark),
+        component(entity_id, "runtime_render_layer_override", runtime_render_layer_override),
         component(entity_id, "map_icon", {
           asset_id = ctx.map_icon_asset_id or "map_icon_planet_svg",
         }),

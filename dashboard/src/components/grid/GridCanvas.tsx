@@ -83,6 +83,10 @@ export function GridCanvas({
   const rafRef = useRef<number>(0)
   const renderQueuedRef = useRef(false)
   const requestRenderRef = useRef<() => void>(() => {})
+  const queueCameraStateSyncRef = useRef<() => void>(() => {})
+  const markerIconsRef = useRef<
+    Partial<Record<'ship' | 'planet' | 'star', HTMLImageElement>>
+  >({})
   const cameraSyncTimerRef = useRef<number | null>(null)
   const resizeDebounceTimerRef = useRef<number | null>(null)
   const lastAppliedCameraKeyRef = useRef<string | null>(null)
@@ -294,8 +298,43 @@ export function GridCanvas({
     ctx.textBaseline = 'middle'
 
     const cam = cameraRef.current
-
-    for (const [id, node] of renderNodesRef.current) {
+    const resolveIconKey = (
+      entityLabels: Array<string> | undefined,
+      kind: string,
+    ): 'ship' | 'planet' | 'star' | null => {
+      const labels = (entityLabels ?? []).map((label) => String(label).toLowerCase())
+      if (labels.some((label) => label.includes('star'))) return 'star'
+      if (
+        labels.some(
+          (label) =>
+            label.includes('planet') ||
+            label.includes('celestialbody') ||
+            label.includes('asteroid'),
+        )
+      ) {
+        return 'planet'
+      }
+      if (
+        labels.some(
+          (label) => label.includes('ship') || label.includes('player'),
+        )
+      ) {
+        return 'ship'
+      }
+      const kindNormalized = kind.toLowerCase()
+      if (kindNormalized.includes('star')) return 'star'
+      if (kindNormalized.includes('planet')) return 'planet'
+      if (kindNormalized.includes('asteroid')) return 'planet'
+      if (kindNormalized.includes('ship') || kindNormalized.includes('player')) return 'ship'
+      return null
+    }
+    const resolveIconColor = (entityLabels: Array<string> | undefined) => {
+      const labels = (entityLabels ?? []).map((label) => String(label).toLowerCase())
+      // Match tactical map marker roles: self/friendly blue, contact yellow.
+      if (labels.includes('player')) return [0.22, 0.62, 1.0] as const
+      return [1.0, 0.9, 0.34] as const
+    }
+    const drawNodeMarker = (id: string, node: ExpandedNode) => {
       const screenPos = worldToScreen(node.x, node.y)
       const entityLabels = node.properties.entity_labels as
         | Array<string>
@@ -310,26 +349,47 @@ export function GridCanvas({
         Math.min(20, (node.depth === 0 ? 20 : 12) * 0.45 + 5 + zoomBoost),
       )
       const radius = pointSize * 0.5
+      const iconKey = resolveIconKey(entityLabels, node.kind)
+      const iconImage = iconKey ? markerIconsRef.current[iconKey] : undefined
+      const [iconR, iconG, iconB] = resolveIconColor(entityLabels)
+      const iconSize = Math.max(8, Math.min(96, cam.zoom * 18))
+      const markerRadius = iconImage ? iconSize * 0.5 : radius
 
-      ctx.beginPath()
-      ctx.arc(screenPos.x, screenPos.y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, 0.95)`
-      ctx.fill()
+      if (iconImage) {
+        ctx.save()
+        ctx.translate(screenPos.x, screenPos.y)
+        const iconX = -iconSize * 0.5
+        const iconY = -iconSize * 0.5
+        ctx.drawImage(iconImage, iconX, iconY, iconSize, iconSize)
+        ctx.globalCompositeOperation = 'source-atop'
+        ctx.fillStyle = `rgba(${Math.round(iconR * 255)}, ${Math.round(iconG * 255)}, ${Math.round(iconB * 255)}, 0.95)`
+        ctx.fillRect(iconX, iconY, iconSize, iconSize)
+        ctx.restore()
+      } else {
+        ctx.beginPath()
+        ctx.arc(screenPos.x, screenPos.y, radius, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, 0.95)`
+        ctx.fill()
+      }
 
       if (id === selectedId) {
         const [sr, sg, sb] = themeColors.selectionRing
         ctx.lineWidth = Math.max(1.5, 2 * dpr)
         ctx.strokeStyle = `rgba(${Math.round(sr * 255)}, ${Math.round(sg * 255)}, ${Math.round(sb * 255)}, 0.95)`
         ctx.beginPath()
-        ctx.arc(screenPos.x, screenPos.y, radius + 2.5 * dpr, 0, Math.PI * 2)
+        ctx.arc(screenPos.x, screenPos.y, markerRadius + 2.5 * dpr, 0, Math.PI * 2)
         ctx.stroke()
       } else if (id === hoveredId) {
         ctx.lineWidth = Math.max(1, 1.5 * dpr)
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)'
         ctx.beginPath()
-        ctx.arc(screenPos.x, screenPos.y, radius + 1.5 * dpr, 0, Math.PI * 2)
+        ctx.arc(screenPos.x, screenPos.y, markerRadius + 1.5 * dpr, 0, Math.PI * 2)
         ctx.stroke()
       }
+    }
+
+    for (const [id, node] of renderNodesRef.current) {
+      drawNodeMarker(id, node)
     }
 
     const exploredCellSizeM = selectedPlayerVisibilityOverlay?.explored_cell_size_m
@@ -355,37 +415,47 @@ export function GridCanvas({
         if (!Number.isFinite(widthPx) || !Number.isFinite(heightPx)) continue
         ctx.fillRect(rectX, rectY, widthPx, heightPx)
       }
+      for (const source of selectedPlayerVisibilityOverlay.visibility_sources) {
+        if (
+          !Number.isFinite(source.x) ||
+          !Number.isFinite(source.y) ||
+          !Number.isFinite(source.range_m)
+        ) {
+          continue
+        }
+        const center = worldToScreen(source.x, source.y)
+        const radiusPx = Math.max(0, source.range_m * cam.zoom)
+        if (!Number.isFinite(radiusPx) || radiusPx <= 0) continue
+        ctx.beginPath()
+        ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2)
+        ctx.fill()
+      }
       ctx.restore()
-    }
 
-    if (!showNamePlates) {
-      return
-    }
-
-    for (const [id, node] of renderNodesRef.current) {
-      const screenPos = worldToScreen(node.x, node.y)
-
-      // Skip if off-screen
-      if (
-        screenPos.x < -50 ||
-        screenPos.x > labelsCanvas.width + 50 ||
-        screenPos.y < -20 ||
-        screenPos.y > labelsCanvas.height + 20
-      ) {
-        continue
+      const visibleSourceNodes = new Set<string>()
+      for (const [id, node] of renderNodesRef.current) {
+        for (const source of selectedPlayerVisibilityOverlay.visibility_sources) {
+          if (
+            !Number.isFinite(source.x) ||
+            !Number.isFinite(source.y) ||
+            !Number.isFinite(source.range_m)
+          ) {
+            continue
+          }
+          const dx = node.x - source.x
+          const dy = node.y - source.y
+          if (dx * dx + dy * dy <= source.range_m * source.range_m) {
+            visibleSourceNodes.add(id)
+            break
+          }
+        }
       }
 
-      // Only show labels when zoomed in enough or for selected/hovered
-      if (cam.zoom < 0.3 && id !== selectedId && id !== hoveredId) {
-        continue
+      for (const id of visibleSourceNodes) {
+        const node = renderNodesRef.current.get(id)
+        if (!node) continue
+        drawNodeMarker(id, node)
       }
-
-      const offset = node.depth === 0 ? 14 : 10
-      ctx.fillText(
-        node.label,
-        screenPos.x + offset * dpr,
-        screenPos.y - offset * dpr,
-      )
     }
 
     if (
@@ -437,7 +507,7 @@ export function GridCanvas({
       // Draw scanner sources as circles + center point.
       ctx.strokeStyle = 'rgba(255, 166, 77, 0.8)'
       ctx.fillStyle = 'rgba(255, 166, 77, 0.95)'
-      for (const source of selectedPlayerVisibilityOverlay.scanner_sources) {
+      for (const source of selectedPlayerVisibilityOverlay.visibility_sources) {
         if (
           !Number.isFinite(source.x) ||
           !Number.isFinite(source.y) ||
@@ -457,6 +527,36 @@ export function GridCanvas({
       }
 
       ctx.restore()
+    }
+
+    if (!showNamePlates) {
+      return
+    }
+
+    for (const [id, node] of renderNodesRef.current) {
+      const screenPos = worldToScreen(node.x, node.y)
+
+      // Skip if off-screen
+      if (
+        screenPos.x < -50 ||
+        screenPos.x > labelsCanvas.width + 50 ||
+        screenPos.y < -20 ||
+        screenPos.y > labelsCanvas.height + 20
+      ) {
+        continue
+      }
+
+      // Only show labels when zoomed in enough or for selected/hovered
+      if (cam.zoom < 0.3 && id !== selectedId && id !== hoveredId) {
+        continue
+      }
+
+      const offset = node.depth === 0 ? 14 : 10
+      ctx.fillText(
+        node.label,
+        screenPos.x + offset * dpr,
+        screenPos.y - offset * dpr,
+      )
     }
   }, [
     worldToScreen,
@@ -504,6 +604,37 @@ export function GridCanvas({
   }, [requestRender])
 
   useEffect(() => {
+    queueCameraStateSyncRef.current = queueCameraStateSync
+  }, [queueCameraStateSync])
+
+  useEffect(() => {
+    let cancelled = false
+    const markerIcons: Array<{ key: 'ship' | 'planet' | 'star'; path: string }> = [
+      { key: 'ship', path: '/icons/ship.svg' },
+      { key: 'planet', path: '/icons/planet.svg' },
+      { key: 'star', path: '/icons/star.svg' },
+    ]
+
+    for (const icon of markerIcons) {
+      const image = new Image()
+      image.onload = () => {
+        if (cancelled) return
+        markerIconsRef.current[icon.key] = image
+        requestRenderRef.current()
+      }
+      image.onerror = () => {
+        if (cancelled) return
+        markerIconsRef.current[icon.key] = undefined
+      }
+      image.src = icon.path
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     if (
       !cameraState ||
       !Number.isFinite(cameraState.x) ||
@@ -535,10 +666,10 @@ export function GridCanvas({
     ) {
       cameraRef.current.x = centerOnPosition.x
       cameraRef.current.y = centerOnPosition.y
-      queueCameraStateSync()
-      requestRender()
+      queueCameraStateSyncRef.current()
+      requestRenderRef.current()
     }
-  }, [centerOnRequestSeq, centerOnPosition, queueCameraStateSync, requestRender])
+  }, [centerOnRequestSeq, centerOnPosition])
 
   // Initialize renderer and size handling.
   useEffect(() => {

@@ -5,6 +5,7 @@ use sidereal_scripting::ScriptAssetRegistryEntry;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct AssetCatalogEntry {
@@ -256,6 +257,16 @@ pub fn cache_index_path(asset_root: &str) -> PathBuf {
     PathBuf::from(asset_root)
         .join("data/cache_stream")
         .join("index.json")
+}
+
+pub fn hot_reload_poll_interval() -> Duration {
+    let seconds = std::env::var("SIDEREAL_ASSET_HOT_RELOAD_INTERVAL_S")
+        .ok()
+        .and_then(|raw| raw.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(1.0, 30.0))
+        .unwrap_or(5.0);
+    Duration::from_secs_f64(seconds)
 }
 
 pub fn load_cache_index(path: &Path) -> io::Result<AssetCacheIndex> {

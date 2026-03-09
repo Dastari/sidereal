@@ -13,8 +13,8 @@ use super::camera::{
 };
 use super::components::{WeaponTracerCooldowns, WeaponTracerPool};
 use super::debug_overlay::{
-    audit_prediction_entity_lifecycle, draw_debug_overlay_system, log_prediction_runtime_state,
-    toggle_debug_overlay_system,
+    audit_prediction_entity_lifecycle, collect_debug_overlay_snapshot_system,
+    draw_debug_overlay_system, log_prediction_runtime_state, toggle_debug_overlay_system,
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
@@ -202,8 +202,10 @@ impl Plugin for ClientReplicationPlugin {
                         .after(control::send_lightyear_control_requests),
                     control::audit_client_control_handover_resolution
                         .after(control::receive_lightyear_control_results),
-                    owner_manifest::receive_owner_asset_manifest_messages
+                    assets::receive_asset_catalog_version_messages
                         .after(control::audit_client_control_handover_resolution),
+                    owner_manifest::receive_owner_asset_manifest_messages
+                        .after(assets::receive_asset_catalog_version_messages),
                     tactical::receive_tactical_snapshot_messages
                         .after(owner_manifest::receive_owner_asset_manifest_messages),
                     control::log_client_control_state_changes
@@ -265,8 +267,10 @@ impl Plugin for ClientReplicationPlugin {
                         .after(control::send_lightyear_control_requests),
                     control::audit_client_control_handover_resolution
                         .after(control::receive_lightyear_control_results),
-                    owner_manifest::receive_owner_asset_manifest_messages
+                    assets::receive_asset_catalog_version_messages
                         .after(control::audit_client_control_handover_resolution),
+                    owner_manifest::receive_owner_asset_manifest_messages
+                        .after(assets::receive_asset_catalog_version_messages),
                     tactical::receive_tactical_snapshot_messages
                         .after(owner_manifest::receive_owner_asset_manifest_messages),
                     control::log_client_control_state_changes
@@ -436,6 +440,7 @@ impl Plugin for ClientUiPlugin {
         app.add_systems(Update, scene::handle_character_select_buttons);
         app.add_systems(Update, auth_net::poll_gateway_request_results);
         app.add_systems(Update, auth_net::poll_asset_bootstrap_request_results);
+        app.add_systems(Update, auth_net::trigger_asset_catalog_refresh_requests);
         app.add_systems(
             Update,
             gate_menu_camera_system.run_if(not(in_state(ClientAppState::InWorld))),
@@ -504,6 +509,19 @@ impl Plugin for ClientUiPlugin {
                 .run_if(in_state(ClientAppState::InWorld)),
         );
         app.add_systems(
+            PostUpdate,
+            (
+                collect_debug_overlay_snapshot_system
+                    .after(FrameInterpolationSystems::Interpolate)
+                    .after(RollbackSystems::VisualCorrection)
+                    .after(transforms::recover_stalled_interpolated_world_entity_transforms)
+                    .after(bevy::transform::TransformSystems::Propagate),
+                ui::update_debug_overlay_text_ui_system
+                    .after(collect_debug_overlay_snapshot_system),
+            )
+                .run_if(in_state(ClientAppState::InWorld)),
+        );
+        app.add_systems(
             Update,
             ui::toggle_nameplates_system.run_if(in_state(ClientAppState::InWorld)),
         );
@@ -567,6 +585,8 @@ impl Plugin for ClientUiPlugin {
             logout::send_disconnect_notify_and_trigger_system,
             logout::reset_asset_bootstrap_state_system
                 .run_if(resource_equals(LogoutCleanupRequested(true))),
+            logout::reset_asset_hot_reload_state_system
+                .run_if(resource_equals(LogoutCleanupRequested(true))),
             logout::reset_logout_ui_flags_system
                 .run_if(resource_equals(LogoutCleanupRequested(true))),
             logout::logout_cleanup_system.run_if(resource_equals(LogoutCleanupRequested(true))),
@@ -579,6 +599,8 @@ impl Plugin for ClientUiPlugin {
             logout::request_logout_system.run_if(in_state(ClientAppState::CharacterSelect)),
             logout::send_disconnect_notify_and_trigger_system,
             logout::reset_asset_bootstrap_state_system
+                .run_if(resource_equals(LogoutCleanupRequested(true))),
+            logout::reset_asset_hot_reload_state_system
                 .run_if(resource_equals(LogoutCleanupRequested(true))),
             logout::reset_logout_ui_flags_system
                 .run_if(resource_equals(LogoutCleanupRequested(true))),

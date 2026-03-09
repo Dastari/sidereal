@@ -30,6 +30,8 @@ interface EntityTreeProps {
   sourceMode: DataSourceMode
   onDelete: (entityId: string) => Promise<void>
   onContextMenuRequest?: (entityId: string, point: { x: number; y: number }) => void
+  uiState?: EntityTreeUiState
+  onUiStateChange?: (next: EntityTreeUiState) => void
 }
 
 const ENTITY_ROOT_GROUP_KEY = '__entity_root__'
@@ -37,6 +39,22 @@ const RESOURCE_ROOT_GROUP_KEY = '__resource_root__'
 const DEFAULT_GROUP_KEY = 'Entity'
 const RESOURCE_SELECTION_PREFIX = 'resource:'
 const LIVE_RESOURCE_PREVIEW_LIMIT = 100
+
+export interface EntityTreeUiState {
+  openGroups: Record<string, boolean>
+  openNodes: Record<string, boolean>
+  showAllResources: boolean
+  search: string
+}
+
+export function createDefaultEntityTreeUiState(): EntityTreeUiState {
+  return {
+    openGroups: {},
+    openNodes: {},
+    showAllResources: false,
+    search: '',
+  }
+}
 
 const kindIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   ship: Rocket,
@@ -79,13 +97,37 @@ function EntityTree({
   sourceMode,
   onDelete,
   onContextMenuRequest,
+  uiState,
+  onUiStateChange,
 }: EntityTreeProps) {
-  const [openGroups, setOpenGroups] = React.useState<Record<string, boolean>>(
-    {},
+  const [localUiState, setLocalUiState] = React.useState<EntityTreeUiState>(
+    () => uiState ?? createDefaultEntityTreeUiState(),
   )
-  const [openNodes, setOpenNodes] = React.useState<Record<string, boolean>>({})
-  const [showAllResources, setShowAllResources] = React.useState(false)
-  const [search, setSearch] = React.useState('')
+
+  React.useEffect(() => {
+    if (!uiState) return
+    setLocalUiState(uiState)
+  }, [uiState])
+
+  const effectiveUiState = uiState ?? localUiState
+  const openGroups = effectiveUiState.openGroups
+  const openNodes = effectiveUiState.openNodes
+  const showAllResources = effectiveUiState.showAllResources
+  const search = effectiveUiState.search
+
+  const updateUiState = React.useCallback(
+    (
+      updater: (prev: EntityTreeUiState) => EntityTreeUiState,
+    ) => {
+      setLocalUiState((prev) => {
+        const baseline = uiState ?? prev
+        const next = updater(baseline)
+        onUiStateChange?.(next)
+        return next
+      })
+    },
+    [onUiStateChange, uiState],
+  )
 
   const { rootsByGroupKey, childrenByParent } = React.useMemo(() => {
     const byId = new Map<string, WorldEntity>()
@@ -218,12 +260,6 @@ function EntityTree({
       .filter(([, items]) => items.length > 0)
   }, [entities, search, sortedGroups])
 
-  React.useEffect(() => {
-    setOpenGroups({})
-    setOpenNodes({})
-    setShowAllResources(false)
-  }, [sourceMode])
-
   const isGroupOpen = React.useCallback(
     (kind: string) => {
       if (Object.hasOwn(openGroups, kind)) {
@@ -241,8 +277,11 @@ function EntityTree({
   )
 
   const toggleGroup = React.useCallback((kind: string) => {
-    setOpenGroups((prev) => ({ ...prev, [kind]: !(prev[kind] ?? true) }))
-  }, [])
+    updateUiState((prev) => ({
+      ...prev,
+      openGroups: { ...prev.openGroups, [kind]: !(prev.openGroups[kind] ?? true) },
+    }))
+  }, [updateUiState])
 
   const isNodeOpen = React.useCallback(
     (entityId: string) => openNodes[entityId] ?? true,
@@ -250,8 +289,14 @@ function EntityTree({
   )
 
   const toggleNode = React.useCallback((entityId: string) => {
-    setOpenNodes((prev) => ({ ...prev, [entityId]: !(prev[entityId] ?? true) }))
-  }, [])
+    updateUiState((prev) => ({
+      ...prev,
+      openNodes: {
+        ...prev.openNodes,
+        [entityId]: !(prev.openNodes[entityId] ?? true),
+      },
+    }))
+  }, [updateUiState])
 
   const worldRootOpen = isGroupOpen(ENTITY_ROOT_GROUP_KEY)
   const resourcesRootOpen = isGroupOpen(RESOURCE_ROOT_GROUP_KEY)
@@ -273,7 +318,13 @@ function EntityTree({
         <div className="pb-2">
           <Input
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              const nextSearch = event.target.value
+              updateUiState((prev) => ({
+                ...prev,
+                search: nextSearch,
+              }))
+            }}
             placeholder="Search entities"
             className="h-8"
           />
@@ -362,7 +413,12 @@ function EntityTree({
                   {hasHiddenResources ? (
                     <button
                       type="button"
-                      onClick={() => setShowAllResources(true)}
+                      onClick={() => {
+                        updateUiState((prev) => ({
+                          ...prev,
+                          showAllResources: true,
+                        }))
+                      }}
                       className="w-full rounded px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
                     >
                       Show {sortedResources.length - visibleResources.length} more resources

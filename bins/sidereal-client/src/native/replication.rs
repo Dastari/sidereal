@@ -24,7 +24,7 @@ use super::app_state::{ClientAppState, ClientSession, LocalPlayerViewState, Sess
 use super::components::{
     ControlledEntity, PendingInitialVisualReady, RemoteEntity, RemoteVisibleEntity,
     ReplicatedAdoptionHandled, StreamedSpriteShaderAssetId, StreamedVisualAssetId,
-    StreamedVisualAttached, WorldEntity,
+    StreamedVisualAttached, StreamedVisualAttachmentKind, WorldEntity,
 };
 use super::resources::{
     BootstrapWatchdogState, DeferredPredictedAdoptionState, LocalSimulationDebugMode,
@@ -587,12 +587,17 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             if let Some(visual_asset_id) = visual_asset_id {
                 entity_commands.insert(StreamedVisualAssetId(visual_asset_id.0.clone()));
             } else {
-                entity_commands.remove::<(StreamedVisualAssetId, StreamedVisualAttached)>();
+                entity_commands.remove::<(
+                    StreamedVisualAssetId,
+                    StreamedVisualAttached,
+                    StreamedVisualAttachmentKind,
+                )>();
             }
         } else {
             entity_commands.remove::<(
                 StreamedVisualAssetId,
                 StreamedVisualAttached,
+                StreamedVisualAttachmentKind,
                 StreamedSpriteShaderAssetId,
             )>();
         }

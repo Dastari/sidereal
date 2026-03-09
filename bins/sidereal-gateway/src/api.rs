@@ -15,7 +15,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 use sidereal_asset_runtime::{
     RuntimeAssetCatalogEntry, build_runtime_asset_catalog, catalog_version, expand_required_assets,
-    materialize_runtime_asset,
+    hot_reload_poll_interval, materialize_runtime_asset,
 };
 use sidereal_core::gateway_dtos::{
     AdminSpawnEntityRequest, AdminSpawnEntityResponse, AssetBootstrapManifestEntry,
@@ -29,6 +29,7 @@ use sidereal_core::gateway_dtos::{
 use sidereal_scripting::load_asset_registry_from_source;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info, warn};
@@ -41,6 +42,7 @@ struct RuntimeAssetCatalogCacheState {
     asset_root: String,
     asset_registry_revision: u64,
     catalog: Vec<RuntimeAssetCatalogEntry>,
+    built_at: Option<Instant>,
 }
 
 static RUNTIME_ASSET_CATALOG_CACHE: OnceLock<Mutex<RuntimeAssetCatalogCacheState>> =
@@ -592,6 +594,9 @@ fn load_runtime_asset_catalog_from_catalog(
     if cache_state.scripts_root == scripts_root
         && cache_state.asset_root == asset_root_display
         && cache_state.asset_registry_revision == registry_entry.revision
+        && cache_state
+            .built_at
+            .is_some_and(|built_at| built_at.elapsed() < hot_reload_poll_interval())
     {
         return Ok(cache_state.catalog.clone());
     }
@@ -603,6 +608,7 @@ fn load_runtime_asset_catalog_from_catalog(
         asset_root: asset_root_display,
         asset_registry_revision: registry_entry.revision,
         catalog: runtime_catalog.clone(),
+        built_at: Some(Instant::now()),
     };
     Ok(runtime_catalog)
 }

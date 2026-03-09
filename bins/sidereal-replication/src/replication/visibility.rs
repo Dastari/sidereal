@@ -5,10 +5,12 @@ use lightyear::prelude::{
     ControlledBy, MessageReceiver, NetworkVisibility, Replicate, ReplicationState,
 };
 use sidereal_game::{
-    EntityGuid, FactionId, FactionVisibility, FullscreenLayer, MountedOn, OwnerId, ParentGuid,
-    PlayerTag, PublicVisibility, RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
-    RENDER_PHASE_FULLSCREEN_FOREGROUND, RuntimeRenderLayerDefinition, VisibilityDisclosure,
-    VisibilityGridCell, VisibilityRangeM, VisibilityRangeSource, VisibilitySpatialGrid,
+    DiscoveredStaticLandmarks, EntityGuid, FactionId, FactionVisibility, FullscreenLayer,
+    MountedOn, OwnerId, ParentGuid, PlayerTag, PublicVisibility, RENDER_DOMAIN_FULLSCREEN,
+    RENDER_PHASE_FULLSCREEN_BACKGROUND, RENDER_PHASE_FULLSCREEN_FOREGROUND,
+    RuntimeRenderLayerDefinition, RuntimeRenderLayerOverride, RuntimeWorldVisualStack, SizeM,
+    StaticLandmark, VisibilityDisclosure, VisibilityGridCell, VisibilityRangeM,
+    VisibilityRangeSource, VisibilitySpatialGrid, default_main_world_render_layer,
 };
 use sidereal_net::{ClientLocalViewMode, ClientLocalViewModeMessage, PlayerEntityId};
 use std::collections::{HashMap, HashSet};
@@ -158,6 +160,7 @@ pub(crate) struct PlayerVisibilityContext {
     pub player_entity_id: String,
     pub observer_anchor_position: Option<Vec3>,
     pub visibility_sources: Vec<(Vec3, f32)>,
+    pub discovered_static_landmarks: HashSet<uuid::Uuid>,
     pub player_faction_id: Option<String>,
     pub view_mode: ClientLocalViewMode,
 }
@@ -175,6 +178,9 @@ pub struct VisibilityScratch {
     /// Effective visibility position used by candidate/auth/delivery checks.
     /// For mounted entities this is inherited from their mount root.
     visibility_position_by_entity: HashMap<Entity, Vec3>,
+    /// Effective visibility extent (radius) used by candidate/auth/delivery checks.
+    /// For mounted entities this is inherited from their mount root.
+    visibility_extent_m_by_entity: HashMap<Entity, f32>,
     /// Parent entity in mount chain (MountedOn.parent_entity_id -> entity). Used to resolve root.
     parent_entity_by_entity: HashMap<Entity, Entity>,
     /// Mount root entity for inheritance (owner/public/faction). Resolved by traversing MountedOn.
@@ -182,6 +188,7 @@ pub struct VisibilityScratch {
     root_public_by_entity: HashMap<Entity, bool>,
     root_owner_by_entity: HashMap<Entity, String>,
     root_faction_by_entity: HashMap<Entity, String>,
+    resolved_world_layer_by_entity: HashMap<Entity, RuntimeRenderLayerDefinition>,
     visibility_sources_by_owner: HashMap<String, Vec<(Vec3, f32)>>,
     player_faction_by_owner: HashMap<String, String>,
     context_by_client: HashMap<Entity, PlayerVisibilityContext>,
@@ -300,11 +307,13 @@ impl VisibilityScratch {
         self.entity_by_guid.clear();
         self.world_position_by_entity.clear();
         self.visibility_position_by_entity.clear();
+        self.visibility_extent_m_by_entity.clear();
         self.parent_entity_by_entity.clear();
         self.root_entity_by_entity.clear();
         self.root_public_by_entity.clear();
         self.root_owner_by_entity.clear();
         self.root_faction_by_entity.clear();
+        self.resolved_world_layer_by_entity.clear();
         self.visibility_sources_by_owner.clear();
         self.player_faction_by_owner.clear();
         self.context_by_client.clear();
@@ -454,19 +463,25 @@ fn build_candidate_set_for_client(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn should_bypass_candidate_filter(
     player_entity_id: &str,
     owner_player_id: Option<&str>,
     is_public_visibility: bool,
     is_faction_visibility: bool,
+    is_discovered_static_landmark: bool,
     entity_faction_id: Option<&str>,
     entity_position: Option<Vec3>,
+    entity_extent_m: f32,
     visibility_context: &PlayerVisibilityContext,
 ) -> bool {
     if owner_player_id.is_some_and(|owner| owner == player_entity_id) {
         return true;
     }
     if is_public_visibility {
+        return true;
+    }
+    if is_discovered_static_landmark {
         return true;
     }
     if is_faction_visibility
@@ -485,7 +500,92 @@ pub(crate) fn should_bypass_candidate_filter(
         .visibility_sources
         .iter()
         .any(|(visibility_pos, visibility_range_m)| {
-            (target_position - *visibility_pos).length() <= *visibility_range_m
+            (target_position - *visibility_pos).length() <= *visibility_range_m + entity_extent_m
+        })
+}
+
+fn entity_visibility_extent_m(size: Option<&SizeM>) -> f32 {
+    let Some(size) = size else {
+        return 0.0;
+    };
+    let max_dimension = size.length.max(size.width).max(size.height);
+    if max_dimension.is_finite() && max_dimension > 0.0 {
+        max_dimension * 0.5
+    } else {
+        0.0
+    }
+}
+
+fn runtime_layer_parallax_factor(definition: Option<&RuntimeRenderLayerDefinition>) -> f32 {
+    definition
+        .and_then(|value| value.parallax_factor)
+        .unwrap_or(1.0)
+        .clamp(0.01, 4.0)
+}
+
+fn discovered_landmark_delivery_range_m(
+    base_delivery_range_m: f32,
+    resolved_render_layer: Option<&RuntimeRenderLayerDefinition>,
+) -> f32 {
+    base_delivery_range_m / runtime_layer_parallax_factor(resolved_render_layer)
+}
+
+fn runtime_layer_screen_scale_factor(definition: Option<&RuntimeRenderLayerDefinition>) -> f32 {
+    definition
+        .and_then(|value| value.screen_scale_factor)
+        .unwrap_or(1.0)
+        .clamp(0.01, 64.0)
+}
+
+fn max_visual_scale_multiplier(visual_stack: Option<&RuntimeWorldVisualStack>) -> f32 {
+    visual_stack
+        .map(|stack| {
+            stack.passes.iter().fold(1.0_f32, |max_scale, pass| {
+                if !pass.enabled {
+                    return max_scale;
+                }
+                max_scale.max(pass.scale_multiplier.unwrap_or(1.0))
+            })
+        })
+        .unwrap_or(1.0)
+}
+
+fn effective_discovered_landmark_extent_m(
+    entity_extent_m: f32,
+    resolved_render_layer: Option<&RuntimeRenderLayerDefinition>,
+    visual_stack: Option<&RuntimeWorldVisualStack>,
+) -> f32 {
+    entity_extent_m
+        * runtime_layer_screen_scale_factor(resolved_render_layer)
+        * max_visual_scale_multiplier(visual_stack)
+}
+
+fn landmark_discovery_overlap(
+    entity_position: Option<Vec3>,
+    entity_extent_m: f32,
+    static_landmark: &StaticLandmark,
+    visibility_context: &PlayerVisibilityContext,
+) -> bool {
+    if static_landmark.always_known {
+        return true;
+    }
+    if !static_landmark.discoverable {
+        return false;
+    }
+    let Some(target_position) = entity_position else {
+        return false;
+    };
+    visibility_context
+        .visibility_sources
+        .iter()
+        .any(|(visibility_pos, visibility_range_m)| {
+            let extra_radius = static_landmark.discovery_radius_m.unwrap_or(0.0).max(0.0)
+                + if static_landmark.use_extent_for_discovery {
+                    entity_extent_m
+                } else {
+                    0.0
+                };
+            (target_position - *visibility_pos).length() <= *visibility_range_m + extra_radius
         })
 }
 
@@ -511,6 +611,12 @@ pub fn update_network_visibility(
         ),
         With<PlayerTag>,
     >,
+    mut player_landmark_state: Query<
+        '_,
+        '_,
+        Option<&'_ mut DiscoveredStaticLandmarks>,
+        With<PlayerTag>,
+    >,
     all_replicated: Query<
         '_,
         '_,
@@ -525,6 +631,10 @@ pub fn update_network_visibility(
             Option<&'_ FactionVisibility>,
             Option<&'_ FactionId>,
             Option<&'_ MountedOn>,
+            Option<&'_ SizeM>,
+            Option<&'_ RuntimeRenderLayerDefinition>,
+            Option<&'_ RuntimeRenderLayerOverride>,
+            Option<&'_ StaticLandmark>,
         ),
         With<Replicate>,
     >,
@@ -550,6 +660,9 @@ pub fn update_network_visibility(
             Option<&'_ FactionVisibility>,
             Option<&'_ FactionId>,
             Option<&'_ MountedOn>,
+            Option<&'_ RuntimeWorldVisualStack>,
+            Option<&'_ RuntimeRenderLayerOverride>,
+            Option<&'_ StaticLandmark>,
         ),
         With<Replicate>,
     >,
@@ -578,6 +691,13 @@ pub fn update_network_visibility(
         .collect::<Vec<_>>();
     scratch.registered_clients.extend(registered_clients);
 
+    let mut runtime_layer_definitions_by_id =
+        HashMap::<String, RuntimeRenderLayerDefinition>::new();
+    runtime_layer_definitions_by_id.insert(
+        sidereal_game::DEFAULT_MAIN_WORLD_LAYER_ID.to_string(),
+        default_main_world_render_layer(),
+    );
+
     // 1) Build entity_by_guid and world position from GlobalTransform for all replicated entities.
     for (
         entity,
@@ -590,8 +710,15 @@ pub fn update_network_visibility(
         _faction_visibility,
         faction_id,
         mounted_on,
+        size,
+        runtime_render_layer_definition,
+        runtime_render_layer_override,
+        _static_landmark,
     ) in &all_replicated
     {
+        if let Some(definition) = runtime_render_layer_definition {
+            runtime_layer_definitions_by_id.insert(definition.layer_id.clone(), definition.clone());
+        }
         scratch.all_replicated_entities.push(entity);
         // Contract: all visibility range/delivery checks are world-space; prefer GlobalTransform.
         let world_pos = global_transform.translation();
@@ -604,6 +731,9 @@ pub fn update_network_visibility(
         scratch
             .world_position_by_entity
             .insert(entity, effective_world_pos);
+        scratch
+            .visibility_extent_m_by_entity
+            .insert(entity, entity_visibility_extent_m(size));
         scratch
             .entities_by_cell
             .entry(cell_key(effective_world_pos, runtime_cfg.cell_size_m))
@@ -637,7 +767,43 @@ pub fn update_network_visibility(
                     .or_insert_with(|| faction.0.clone());
             }
         }
+        if let Some(override_layer) = runtime_render_layer_override
+            && let Some(definition) = runtime_layer_definitions_by_id.get(&override_layer.layer_id)
+        {
+            scratch
+                .resolved_world_layer_by_entity
+                .insert(entity, definition.clone());
+        }
         let _ = mounted_on;
+    }
+
+    for (
+        entity,
+        _position,
+        _global_transform,
+        _entity_guid,
+        _owner_id,
+        _visibility_range,
+        _public_visibility,
+        _faction_visibility,
+        _faction_id,
+        _mounted_on,
+        _size,
+        _runtime_render_layer_definition,
+        runtime_render_layer_override,
+        _static_landmark,
+    ) in &all_replicated
+    {
+        if scratch.resolved_world_layer_by_entity.contains_key(&entity) {
+            continue;
+        }
+        if let Some(override_layer) = runtime_render_layer_override
+            && let Some(definition) = runtime_layer_definitions_by_id.get(&override_layer.layer_id)
+        {
+            scratch
+                .resolved_world_layer_by_entity
+                .insert(entity, definition.clone());
+        }
     }
 
     // 2) Build parent map (entity -> parent entity) for entities with MountedOn.
@@ -659,7 +825,7 @@ pub fn update_network_visibility(
     }
 
     // 3) Resolve mount root for each entity (traverse parent chain).
-    for (entity, _, _, _, _, _, _, _, _, _) in &all_replicated {
+    for (entity, _, _, _, _, _, _, _, _, _, _, _, _, _) in &all_replicated {
         let root = resolve_mount_root(entity, &scratch.parent_entity_by_entity);
         scratch.root_entity_by_entity.insert(entity, root);
     }
@@ -668,7 +834,7 @@ pub fn update_network_visibility(
     // Mounted children inherit root world position for visibility checks to avoid
     // false positives from unhydrated child transforms at origin.
     scratch.entities_by_cell.clear();
-    for (entity, _, _, _, _, _, _, _, _, _) in &all_replicated {
+    for (entity, _, _, _, _, _, _, _, _, _, _, _, _, _) in &all_replicated {
         let root = scratch
             .root_entity_by_entity
             .get(&entity)
@@ -683,6 +849,15 @@ pub fn update_network_visibility(
         scratch
             .visibility_position_by_entity
             .insert(entity, effective);
+        let effective_extent_m = scratch
+            .visibility_extent_m_by_entity
+            .get(&root)
+            .copied()
+            .or_else(|| scratch.visibility_extent_m_by_entity.get(&entity).copied())
+            .unwrap_or(0.0);
+        scratch
+            .visibility_extent_m_by_entity
+            .insert(entity, effective_extent_m);
         scratch
             .entities_by_cell
             .entry(cell_key(effective, runtime_cfg.cell_size_m))
@@ -703,6 +878,10 @@ pub fn update_network_visibility(
         _faction_vis,
         _faction_id,
         _mounted_on,
+        _size,
+        _runtime_render_layer_definition,
+        _runtime_render_layer_override,
+        _static_landmark,
     ) in &all_replicated
     {
         let is_root = scratch
@@ -755,12 +934,100 @@ pub fn update_network_visibility(
             });
         let local_view_mode = local_view_settings.view_mode;
         let client_delivery_range_m = local_view_settings.delivery_range_m;
+        let player_entity = player_entities
+            .by_player_entity_id
+            .get(canonical_player_id.as_str())
+            .copied()
+            .or_else(|| {
+                player_entities
+                    .by_player_entity_id
+                    .get(player_entity_id.as_str())
+                    .copied()
+            });
+        let mut discovered_static_landmarks = HashSet::<uuid::Uuid>::new();
+        if let Some(player_entity) = player_entity
+            && let Ok(discovered_component) = player_landmark_state.get_mut(player_entity)
+        {
+            let mut discovered_component = discovered_component;
+            if let Some(component) = discovered_component.as_deref() {
+                discovered_static_landmarks.extend(component.landmark_entity_ids.iter().copied());
+            }
+            let mut newly_discovered = Vec::<uuid::Uuid>::new();
+            for (
+                target_entity,
+                _position,
+                _global_transform,
+                target_guid,
+                _owner_id,
+                _visibility_range,
+                _public_visibility,
+                _faction_visibility,
+                _faction_id,
+                _mounted_on,
+                _size,
+                _runtime_render_layer_definition,
+                _runtime_render_layer_override,
+                static_landmark,
+            ) in &all_replicated
+            {
+                let (Some(target_guid), Some(static_landmark)) = (target_guid, static_landmark)
+                else {
+                    continue;
+                };
+                if discovered_static_landmarks.contains(&target_guid.0) {
+                    continue;
+                }
+                let target_position = scratch
+                    .visibility_position_by_entity
+                    .get(&target_entity)
+                    .copied();
+                let entity_extent_m = scratch
+                    .visibility_extent_m_by_entity
+                    .get(&target_entity)
+                    .copied()
+                    .unwrap_or(0.0);
+                let discovery_context = PlayerVisibilityContext {
+                    player_entity_id: canonical_player_id.clone(),
+                    observer_anchor_position,
+                    visibility_sources: visibility_sources.clone(),
+                    discovered_static_landmarks: HashSet::new(),
+                    player_faction_id: player_faction_id.clone(),
+                    view_mode: local_view_mode,
+                };
+                if landmark_discovery_overlap(
+                    target_position,
+                    entity_extent_m,
+                    static_landmark,
+                    &discovery_context,
+                ) {
+                    newly_discovered.push(target_guid.0);
+                }
+            }
+            if !newly_discovered.is_empty() {
+                if let Some(component) = discovered_component.as_deref_mut() {
+                    for landmark_id in newly_discovered {
+                        if component.insert(landmark_id) {
+                            discovered_static_landmarks.insert(landmark_id);
+                        }
+                    }
+                } else {
+                    let mut component = DiscoveredStaticLandmarks::default();
+                    for landmark_id in newly_discovered {
+                        if component.insert(landmark_id) {
+                            discovered_static_landmarks.insert(landmark_id);
+                        }
+                    }
+                    commands.entity(player_entity).insert(component);
+                }
+            }
+        }
         scratch.context_by_client.insert(
             *client_entity,
             PlayerVisibilityContext {
                 player_entity_id: canonical_player_id.clone(),
                 observer_anchor_position,
                 visibility_sources: visibility_sources.clone(),
+                discovered_static_landmarks,
                 player_faction_id,
                 view_mode: local_view_mode,
             },
@@ -867,6 +1134,9 @@ pub fn update_network_visibility(
         faction_visibility,
         faction_id,
         _mounted_on,
+        runtime_world_visual_stack,
+        runtime_render_layer_override,
+        static_landmark,
     ) in &mut replicated_entities
     {
         let tracked_guid = entity_guid.map(|guid| guid.0);
@@ -880,6 +1150,11 @@ pub fn update_network_visibility(
 
         // Use world position from GlobalTransform (same as all_replicated); fallback from scratch.
         let entity_position = scratch.visibility_position_by_entity.get(&entity).copied();
+        let entity_extent_m = scratch
+            .visibility_extent_m_by_entity
+            .get(&entity)
+            .copied()
+            .unwrap_or(0.0);
         let is_public = public_visibility.is_some()
             || scratch
                 .root_public_by_entity
@@ -980,14 +1255,47 @@ pub fn update_network_visibility(
                 .get(client_entity)
                 .map(|settings| settings.delivery_range_m)
                 .unwrap_or(runtime_cfg.delivery_range_m);
+            let is_discovered_static_landmark = static_landmark.is_some_and(|landmark| {
+                landmark.always_known
+                    || entity_guid.is_some_and(|guid| {
+                        visibility_context
+                            .discovered_static_landmarks
+                            .contains(&guid.0)
+                    })
+            });
+            let resolved_world_layer = scratch
+                .resolved_world_layer_by_entity
+                .get(&entity)
+                .or_else(|| scratch.resolved_world_layer_by_entity.get(&root_entity))
+                .or_else(|| {
+                    runtime_render_layer_override.and_then(|override_layer| {
+                        runtime_layer_definitions_by_id.get(&override_layer.layer_id)
+                    })
+                });
+            let landmark_delivery_range_m = if is_discovered_static_landmark {
+                discovered_landmark_delivery_range_m(client_delivery_range_m, resolved_world_layer)
+            } else {
+                client_delivery_range_m
+            };
+            let effective_entity_extent_m = if is_discovered_static_landmark {
+                effective_discovered_landmark_extent_m(
+                    entity_extent_m,
+                    resolved_world_layer,
+                    runtime_world_visual_stack,
+                )
+            } else {
+                entity_extent_m
+            };
             let in_candidates = candidates.contains(&entity);
             let bypass_candidate = should_bypass_candidate_filter(
                 visibility_context.player_entity_id.as_str(),
                 owner_player_id,
                 is_public,
                 is_faction_visible,
+                is_discovered_static_landmark,
                 entity_faction_id,
                 entity_position,
+                effective_entity_extent_m,
                 visibility_context,
             );
             if !in_candidates && !bypass_candidate {
@@ -1018,23 +1326,31 @@ pub fn update_network_visibility(
                 owner_player_id,
                 is_public,
                 is_faction_visible,
+                is_discovered_static_landmark,
                 entity_faction_id,
                 entity_position,
+                entity_extent_m,
                 visibility_context,
             );
             let delivery_ok =
-                passes_delivery_scope(entity_position, visibility_context, client_delivery_range_m)
-                    || (matches!(visibility_context.view_mode, ClientLocalViewMode::Map)
-                        && matches!(authorization, Some(VisibilityAuthorization::Owner)));
+                passes_delivery_scope(
+                    entity_position,
+                    effective_entity_extent_m,
+                    visibility_context,
+                    landmark_delivery_range_m,
+                ) || (matches!(visibility_context.view_mode, ClientLocalViewMode::Map)
+                    && matches!(authorization, Some(VisibilityAuthorization::Owner)));
             let should_be_visible = is_entity_visible_to_player(
                 visibility_context.player_entity_id.as_str(),
                 owner_player_id,
                 is_public,
                 is_faction_visible,
+                is_discovered_static_landmark,
                 entity_faction_id,
                 entity_position,
+                effective_entity_extent_m,
                 visibility_context,
-                client_delivery_range_m,
+                landmark_delivery_range_m,
                 matches!(visibility_context.view_mode, ClientLocalViewMode::Map),
             );
             if should_be_visible {
@@ -1152,8 +1468,10 @@ pub(crate) fn is_entity_visible_to_player(
     owner_player_id: Option<&str>,
     is_public_visibility: bool,
     is_faction_visibility: bool,
+    is_discovered_static_landmark: bool,
     entity_faction_id: Option<&str>,
     entity_position: Option<Vec3>,
+    entity_extent_m: f32,
     visibility_context: &PlayerVisibilityContext,
     delivery_range_m: f32,
     owner_bypasses_delivery_scope: bool,
@@ -1168,8 +1486,10 @@ pub(crate) fn is_entity_visible_to_player(
         owner_player_id,
         is_public_visibility,
         is_faction_visibility,
+        is_discovered_static_landmark,
         entity_faction_id,
         entity_position,
+        entity_extent_m,
         visibility_context,
     );
     if authorization.is_none() {
@@ -1182,7 +1502,12 @@ pub(crate) fn is_entity_visible_to_player(
         return true;
     }
 
-    passes_delivery_scope(entity_position, visibility_context, delivery_range_m)
+    passes_delivery_scope(
+        entity_position,
+        entity_extent_m,
+        visibility_context,
+        delivery_range_m,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1190,16 +1515,20 @@ pub(crate) enum VisibilityAuthorization {
     Owner,
     Public,
     Faction,
+    DiscoveredStaticLandmark,
     Range,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn authorize_visibility(
     player_entity_id: &str,
     owner_player_id: Option<&str>,
     is_public_visibility: bool,
     is_faction_visibility: bool,
+    is_discovered_static_landmark: bool,
     entity_faction_id: Option<&str>,
     entity_position: Option<Vec3>,
+    entity_extent_m: f32,
     visibility_context: &PlayerVisibilityContext,
 ) -> Option<VisibilityAuthorization> {
     // Ownership/public/faction are policy exceptions and must be evaluated
@@ -1219,18 +1548,22 @@ pub(crate) fn authorize_visibility(
     if is_public_visibility {
         return Some(VisibilityAuthorization::Public);
     }
+    if is_discovered_static_landmark {
+        return Some(VisibilityAuthorization::DiscoveredStaticLandmark);
+    }
     let target_position = entity_position?;
     visibility_context
         .visibility_sources
         .iter()
         .find(|(visibility_pos, visibility_range_m)| {
-            (target_position - *visibility_pos).length() <= *visibility_range_m
+            (target_position - *visibility_pos).length() <= *visibility_range_m + entity_extent_m
         })
         .map(|_| VisibilityAuthorization::Range)
 }
 
 fn passes_delivery_scope(
     entity_position: Option<Vec3>,
+    entity_extent_m: f32,
     visibility_context: &PlayerVisibilityContext,
     delivery_range_m: f32,
 ) -> bool {
@@ -1239,7 +1572,7 @@ fn passes_delivery_scope(
     else {
         return false;
     };
-    (target_position - observer_anchor_position).length() <= delivery_range_m
+    (target_position - observer_anchor_position).length() <= delivery_range_m + entity_extent_m
 }
 
 #[cfg(test)]
@@ -1357,5 +1690,51 @@ mod tests {
         assert!(cells.contains(&(0, 0)));
         assert!(cells.contains(&(1, 0)));
         assert!(!cells.contains(&(2, 0)));
+    }
+
+    #[test]
+    fn delivery_scope_includes_entity_extent() {
+        let visibility_context = PlayerVisibilityContext {
+            player_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            observer_anchor_position: Some(Vec3::ZERO),
+            visibility_sources: Vec::new(),
+            discovered_static_landmarks: HashSet::new(),
+            player_faction_id: None,
+            view_mode: ClientLocalViewMode::Tactical,
+        };
+
+        assert!(passes_delivery_scope(
+            Some(Vec3::new(1000.0, 0.0, 0.0)),
+            100.0,
+            &visibility_context,
+            900.0,
+        ));
+    }
+
+    #[test]
+    fn authorization_range_includes_entity_extent() {
+        let visibility_context = PlayerVisibilityContext {
+            player_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            observer_anchor_position: Some(Vec3::ZERO),
+            visibility_sources: vec![(Vec3::ZERO, 900.0)],
+            discovered_static_landmarks: HashSet::new(),
+            player_faction_id: None,
+            view_mode: ClientLocalViewMode::Tactical,
+        };
+
+        assert_eq!(
+            authorize_visibility(
+                "11111111-1111-1111-1111-111111111111",
+                None,
+                false,
+                false,
+                false,
+                None,
+                Some(Vec3::new(1000.0, 0.0, 0.0)),
+                100.0,
+                &visibility_context,
+            ),
+            Some(VisibilityAuthorization::Range)
+        );
     }
 }

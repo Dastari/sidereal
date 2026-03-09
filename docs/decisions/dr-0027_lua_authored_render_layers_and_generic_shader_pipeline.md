@@ -226,7 +226,8 @@ For world-space layers, use:
 
 1. `order: i32`
 2. `parallax_factor: f32`
-3. optional `depth_bias_z: f32`
+3. optional `screen_scale_factor: f32`
+4. optional `depth_bias_z: f32`
 4. optional `follow_camera_rotation: bool`
 
 Interpretation:
@@ -234,6 +235,8 @@ Interpretation:
 1. `parallax_factor = 1.0` means normal world-space motion.
 2. `parallax_factor < 1.0` means the layer appears farther back.
 3. `parallax_factor > 1.0` is allowed only if intentionally used for foreground exaggeration.
+4. `screen_scale_factor = 1.0` means no additional apparent-size adjustment for that layer.
+5. `screen_scale_factor` changes visual size only; it must not be treated as authoritative world scale or visibility radius.
 
 ## 8. Generic Runtime Rendering Boundary
 

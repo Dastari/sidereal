@@ -1,25 +1,37 @@
-//! F3 debug overlay: toggle and draw (AABB, velocity arrows, visibility circle).
+//! F3 debug overlay: toggle, snapshot collection, and snapshot-driven gizmo drawing.
 
-use avian2d::prelude::{LinearVelocity, Position, Rotation};
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::math::Isometry2d;
 use bevy::prelude::*;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prediction::correction::VisualCorrection;
 use lightyear::prediction::prelude::{PredictionHistory, PredictionManager};
 use sidereal_game::{
-    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, PlayerTag, SizeM,
-    VisibilityRangeM,
+    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ParentGuid, PlayerTag,
+    SizeM,
 };
-use std::collections::{HashMap, HashSet};
+use sidereal_runtime_sync::parse_guid_from_entity_id;
+use std::collections::HashMap;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
-use super::components::{ControlledEntity, WorldEntity};
+use super::components::{ControlledEntity, SuppressedPredictedDuplicateVisual, WorldEntity};
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::resources::{
-    BootstrapWatchdogState, DebugOverlayEnabled, DeferredPredictedAdoptionState,
-    LocalSimulationDebugMode, PredictionBootstrapTuning, PredictionLifecycleAuditConfig,
-    PredictionLifecycleAuditState,
+    BootstrapWatchdogState, DebugCollisionShape, DebugControlledLane, DebugEntityLane,
+    DebugOverlayEntity, DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DebugSeverity,
+    DebugTextRow, DeferredPredictedAdoptionState, LocalSimulationDebugMode,
+    PredictionBootstrapTuning, PredictionLifecycleAuditConfig, PredictionLifecycleAuditState,
 };
+
+const DEBUG_OVERLAY_Z_OFFSET: f32 = 6.0;
+const REPLICATED_OVERLAY_Z_STEP: f32 = 0.0;
+const INTERPOLATED_OVERLAY_Z_STEP: f32 = 0.18;
+const PREDICTED_OVERLAY_Z_STEP: f32 = 0.36;
+const CONFIRMED_OVERLAY_Z_STEP: f32 = 0.54;
+const CONFIRMED_OVERLAY_POSITION_EPSILON_M: f32 = 0.05;
+const CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD: f32 = 0.01;
+const VELOCITY_ARROW_SCALE: f32 = 0.5;
+const HARDPOINT_CROSS_HALF_SIZE: f32 = 2.0;
 
 #[derive(Default)]
 pub(crate) struct RollbackSampleState {
@@ -33,7 +45,7 @@ pub(crate) struct RollbackSampleState {
 pub(crate) fn toggle_debug_overlay_system(
     input: Res<'_, ButtonInput<KeyCode>>,
     dev_console_state: Option<Res<'_, DevConsoleState>>,
-    mut debug_overlay: ResMut<'_, DebugOverlayEnabled>,
+    mut debug_overlay: ResMut<'_, DebugOverlayState>,
 ) {
     if is_console_open(dev_console_state.as_deref()) {
         return;
@@ -44,292 +56,647 @@ pub(crate) fn toggle_debug_overlay_system(
 }
 
 #[allow(clippy::type_complexity)]
-pub(crate) fn draw_debug_overlay_system(
-    debug_overlay: Res<'_, DebugOverlayEnabled>,
+pub(crate) fn collect_debug_overlay_snapshot_system(
+    debug_overlay: Res<'_, DebugOverlayState>,
     session: Res<'_, ClientSession>,
-    _player_view_state: Res<'_, LocalPlayerViewState>,
-    mut gizmos: Gizmos,
-    controlled_entities: Query<'_, '_, Entity, With<ControlledEntity>>,
-    root_candidates: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Option<&'_ MountedOn>,
-            Option<&'_ Hardpoint>,
-            Option<&'_ PlayerTag>,
-            Option<&'_ ControlledEntity>,
-            Option<&'_ Visibility>,
-            Has<lightyear::prelude::Replicated>,
-            Has<lightyear::prelude::Interpolated>,
-            Has<lightyear::prelude::Predicted>,
-        ),
-        With<WorldEntity>,
-    >,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    mut snapshot: ResMut<'_, DebugOverlaySnapshot>,
     entities: Query<
         '_,
         '_,
         (
             Entity,
+            &'_ EntityGuid,
             &'_ GlobalTransform,
-            Option<&'_ SizeM>,
-            Option<&'_ CollisionAabbM>,
-            Option<&'_ CollisionOutlineM>,
-            Option<&'_ LinearVelocity>,
-            Option<&'_ MountedOn>,
-            Option<&'_ Hardpoint>,
-            Option<&'_ ControlledEntity>,
-            Option<&'_ VisibilityRangeM>,
-            Has<lightyear::prelude::Replicated>,
-            Has<lightyear::prelude::Interpolated>,
-            Has<lightyear::prelude::Predicted>,
-            Option<&'_ lightyear::prelude::Confirmed<Position>>,
-            Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
+            (
+                Option<&'_ SizeM>,
+                Option<&'_ CollisionAabbM>,
+                Option<&'_ CollisionOutlineM>,
+                Option<&'_ LinearVelocity>,
+                Option<&'_ AngularVelocity>,
+            ),
+            (
+                Option<&'_ MountedOn>,
+                Option<&'_ Hardpoint>,
+                Option<&'_ ParentGuid>,
+                Option<&'_ PlayerTag>,
+                Option<&'_ ControlledEntity>,
+                Option<&'_ Visibility>,
+            ),
+            (
+                Has<lightyear::prelude::Replicated>,
+                Has<lightyear::prelude::Interpolated>,
+                Has<lightyear::prelude::Predicted>,
+                Has<SuppressedPredictedDuplicateVisual>,
+                Option<&'_ lightyear::prelude::Confirmed<Position>>,
+                Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
+            ),
         ),
         With<WorldEntity>,
     >,
 ) {
+    snapshot.frame_index = snapshot.frame_index.saturating_add(1);
+    snapshot.entities.clear();
+    snapshot.controlled_lane = None;
+    snapshot.stats = DebugOverlayStats::default();
+    snapshot.text_rows.clear();
+
     if !debug_overlay.enabled {
         return;
     }
-    const DEBUG_OVERLAY_Z_OFFSET: f32 = 6.0;
-    const REPLICATED_OVERLAY_Z_STEP: f32 = 0.0;
-    const INTERPOLATED_OVERLAY_Z_STEP: f32 = 0.18;
-    const PREDICTED_OVERLAY_Z_STEP: f32 = 0.36;
-    const CONFIRMED_OVERLAY_Z_STEP: f32 = 0.54;
-    const CONFIRMED_OVERLAY_POSITION_EPSILON_M: f32 = 0.05;
-    const CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD: f32 = 0.01;
-    let local_controlled_entity = controlled_entities
-        .iter()
-        .min_by_key(|entity| entity.to_bits());
-    const VELOCITY_ARROW_SCALE: f32 = 0.5;
-    const HARDPOINT_CROSS_HALF_SIZE: f32 = 2.0;
-    let collision_color = Color::srgb(0.2, 0.8, 0.2);
-    let velocity_color = Color::srgb(0.2, 0.5, 1.0);
-    let hardpoint_color = Color::srgb(1.0, 0.8, 0.2);
-    let controlled_predicted_color = Color::srgb(0.2, 1.0, 1.0);
-    let controlled_confirmed_color = Color::srgb(1.0, 0.2, 1.0);
-    let prediction_error_color = Color::srgb(1.0, 0.2, 0.2);
-    let mut best_root_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32)>::new();
 
-    // Keep the debug overlay aligned with the displayed runtime clone, not every stable duplicate.
-    // Sidereal intentionally keeps confirmed roots alive beside Predicted/Interpolated clones for
-    // confirmation/correction history, but drawing all of those roots in the debug overlay can
-    // look like AABBs are flickering even when the underlying collision state is stable.
+    let logical_control_guid = player_view_state
+        .controlled_entity_id
+        .as_deref()
+        .and_then(parse_guid_from_entity_id)
+        .or_else(|| {
+            session
+                .player_entity_id
+                .as_deref()
+                .and_then(parse_guid_from_entity_id)
+        });
+
+    let mut root_candidates_by_guid = HashMap::<uuid::Uuid, Vec<RootDebugCandidate>>::new();
+    let mut auxiliary_entities = Vec::new();
+    let mut anomaly_messages = Vec::<String>::new();
+
     for (
         entity,
         guid,
-        mounted_on,
-        hardpoint,
-        player_tag,
-        controlled_marker,
-        visibility,
-        is_replicated,
-        is_interpolated,
-        is_predicted,
-    ) in &root_candidates
-    {
-        if mounted_on.is_some() || hardpoint.is_some() || player_tag.is_some() {
-            continue;
-        }
-        if Some(entity) != local_controlled_entity
-            && visibility.is_some_and(|visibility| *visibility == Visibility::Hidden)
-        {
-            continue;
-        }
-
-        let is_local_controlled = Some(entity) == local_controlled_entity
-            || controlled_marker.is_some_and(|controlled| {
-                session
-                    .player_entity_id
-                    .as_deref()
-                    .is_some_and(|player_id| controlled.player_entity_id == player_id)
-            });
-        let score = if is_local_controlled {
-            4
-        } else if is_interpolated {
-            3
-        } else if is_predicted {
-            2
-        } else if is_replicated {
-            1
-        } else {
-            0
-        };
-        match best_root_entity_by_guid.get_mut(&guid.0) {
-            Some((winner, winner_score)) => {
-                if score > *winner_score
-                    || (score == *winner_score && entity.to_bits() < winner.to_bits())
-                {
-                    *winner = entity;
-                    *winner_score = score;
-                }
-            }
-            None => {
-                best_root_entity_by_guid.insert(guid.0, (entity, score));
-            }
-        }
-    }
-    let winner_root_entities =
-        HashSet::<Entity>::from_iter(best_root_entity_by_guid.values().map(|(entity, _)| *entity));
-
-    for (
-        entity,
         global_transform,
-        size_m,
-        collision_aabb,
-        collision_outline,
-        linear_velocity,
-        mounted_on,
-        hardpoint,
-        controlled_marker,
-        scanner_range,
-        is_replicated,
-        is_interpolated,
-        is_predicted,
-        confirmed_position,
-        confirmed_rotation,
+        (size_m, collision_aabb, collision_outline, linear_velocity, angular_velocity),
+        (mounted_on, hardpoint, parent_guid, player_tag, controlled_marker, _visibility),
+        (
+            is_replicated,
+            is_interpolated,
+            is_predicted,
+            is_suppressed_duplicate,
+            confirmed_position,
+            confirmed_rotation,
+        ),
     ) in &entities
     {
-        if mounted_on.is_none() && hardpoint.is_none() && !winner_root_entities.contains(&entity) {
+        if player_tag.is_some() {
             continue;
         }
-        let world = global_transform.compute_transform();
-        let replication_z_step = if is_predicted {
-            PREDICTED_OVERLAY_Z_STEP
-        } else if is_interpolated {
-            INTERPOLATED_OVERLAY_Z_STEP
-        } else if is_replicated {
-            REPLICATED_OVERLAY_Z_STEP
-        } else {
-            0.0
-        };
-        let pos =
-            world.translation + Vec3::new(0.0, 0.0, DEBUG_OVERLAY_Z_OFFSET + replication_z_step);
-        let rot = world.rotation;
-        let half_extents = collision_aabb.map(|aabb| aabb.half_extents).or_else(|| {
-            size_m.map(|size| Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5))
-        });
+        if is_suppressed_duplicate {
+            continue;
+        }
 
-        let is_local_controlled = (mounted_on.is_none()
-            && hardpoint.is_none()
-            && Some(entity) == local_controlled_entity)
-            || controlled_marker.is_some_and(|controlled| {
-                session
-                    .player_entity_id
-                    .as_deref()
-                    .is_some_and(|player_id| controlled.player_entity_id == player_id)
+        let is_local_controlled = logical_control_guid
+            .map(|control_guid| {
+                mounted_on.is_none() && hardpoint.is_none() && guid.0 == control_guid
+            })
+            .unwrap_or_else(|| {
+                controlled_marker.is_some_and(|controlled| {
+                    session
+                        .player_entity_id
+                        .as_deref()
+                        .is_some_and(|player_id| controlled.player_entity_id == player_id)
+                })
             });
+        let collision = build_collision_shape(
+            size_m,
+            collision_aabb,
+            collision_outline,
+            hardpoint.is_some(),
+        );
+        let world = global_transform.compute_transform();
+        let overlay_entity = DebugOverlayEntity {
+            entity,
+            lane: DebugEntityLane::Auxiliary,
+            position_xy: world.translation.truncate(),
+            rotation_rad: world.rotation.to_euler(EulerRot::XYZ).2,
+            velocity_xy: linear_velocity.map(|value| value.0).unwrap_or(Vec2::ZERO),
+            angular_velocity_rps: angular_velocity.map(|value| value.0).unwrap_or_default(),
+            collision,
+            is_controlled: is_local_controlled,
+        };
 
-        if let Some(outline) = collision_outline {
-            let draw_color = if is_local_controlled && mounted_on.is_none() {
-                controlled_predicted_color
-            } else {
-                collision_color
-            };
-            for idx in 0..outline.points.len() {
-                let a = outline.points[idx];
-                let b = outline.points[(idx + 1) % outline.points.len()];
-                let world_a = pos + (rot * a.extend(0.0));
-                let world_b = pos + (rot * b.extend(0.0));
-                gizmos.line(world_a, world_b, draw_color);
-            }
+        if is_predicted && is_interpolated {
+            anomaly_messages.push(format!(
+                "entity {} ({}) has both Predicted and Interpolated markers",
+                entity, guid.0
+            ));
+        }
+        if is_local_controlled && !is_predicted && (is_interpolated || is_replicated) {
+            anomaly_messages.push(format!(
+                "controlled guid {} resolved without a Predicted root",
+                guid.0
+            ));
+        }
+        if !is_local_controlled && is_predicted {
+            anomaly_messages.push(format!("remote guid {} resolved as Predicted", guid.0));
+        }
 
-            if is_local_controlled
-                && mounted_on.is_none()
-                && let (Some(confirmed_position), Some(confirmed_rotation)) =
-                    (confirmed_position, confirmed_rotation)
-            {
-                let confirmed_pos = confirmed_position
-                    .0
-                    .0
-                    .extend(DEBUG_OVERLAY_Z_OFFSET + CONFIRMED_OVERLAY_Z_STEP);
-                let confirmed_rot: Quat = confirmed_rotation.0.into();
-                let should_draw_confirmed = pos.distance(confirmed_pos)
-                    > CONFIRMED_OVERLAY_POSITION_EPSILON_M
-                    || rot.angle_between(confirmed_rot) > CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD;
-                if should_draw_confirmed {
-                    for idx in 0..outline.points.len() {
-                        let a = outline.points[idx];
-                        let b = outline.points[(idx + 1) % outline.points.len()];
-                        let world_a = confirmed_pos + (confirmed_rot * a.extend(0.0));
-                        let world_b = confirmed_pos + (confirmed_rot * b.extend(0.0));
-                        gizmos.line(world_a, world_b, controlled_confirmed_color);
-                    }
-                    gizmos.line(pos, confirmed_pos, prediction_error_color);
-                }
-            } else if is_local_controlled && mounted_on.is_none() && is_replicated && !is_predicted
-            {
-                // Sidereal can temporarily end up with only the confirmed replica visible while a
-                // dynamic handoff is waiting for Lightyear to materialize the Predicted clone.
-                // In that state there is no separate entity carrying Confirmed<T> wrappers, so the
-                // normal predicted-vs-confirmed ghost comparison disappears. Draw the confirmed
-                // shape anyway so debugging still shows the authoritative ghost lane explicitly.
-                for idx in 0..outline.points.len() {
-                    let a = outline.points[idx];
-                    let b = outline.points[(idx + 1) % outline.points.len()];
-                    let world_a = pos + (rot * a.extend(0.0));
-                    let world_b = pos + (rot * b.extend(0.0));
-                    gizmos.line(world_a, world_b, controlled_confirmed_color);
-                }
-            }
-        } else if let Some(half_extents) = half_extents {
-            let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, half_extents);
-            let transform = Transform::from_translation(pos).with_rotation(rot);
-            let draw_color = if is_local_controlled && mounted_on.is_none() {
-                controlled_predicted_color
-            } else {
-                collision_color
-            };
-            gizmos.aabb_3d(aabb, transform, draw_color);
+        if let Some(parent_root_guid) = mounted_on
+            .map(|mounted_on| mounted_on.parent_entity_id)
+            .or_else(|| parent_guid.map(|parent_guid| parent_guid.0))
+        {
+            auxiliary_entities.push(AuxiliaryDebugCandidate {
+                guid: guid.0,
+                parent_root_guid,
+                overlay_entity,
+                is_replicated,
+                is_interpolated,
+                is_predicted,
+            });
+            continue;
+        }
 
-            if is_local_controlled
-                && mounted_on.is_none()
-                && let (Some(confirmed_position), Some(confirmed_rotation)) =
-                    (confirmed_position, confirmed_rotation)
-            {
-                let confirmed_rot: Quat = confirmed_rotation.0.into();
-                let confirmed_pos = confirmed_position
-                    .0
-                    .0
-                    .extend(DEBUG_OVERLAY_Z_OFFSET + CONFIRMED_OVERLAY_Z_STEP);
-                let should_draw_confirmed = pos.distance(confirmed_pos)
-                    > CONFIRMED_OVERLAY_POSITION_EPSILON_M
-                    || rot.angle_between(confirmed_rot) > CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD;
-                if should_draw_confirmed {
-                    let confirmed_transform =
-                        Transform::from_translation(confirmed_pos).with_rotation(confirmed_rot);
-                    gizmos.aabb_3d(aabb, confirmed_transform, controlled_confirmed_color);
-                    gizmos.line(pos, confirmed_pos, prediction_error_color);
-                }
-            } else if is_local_controlled && mounted_on.is_none() && is_replicated && !is_predicted
-            {
-                // Same confirmed-only fallback as the outline path above: keep the authoritative
-                // ghost visible even when the runtime has not yet produced a distinct Predicted
-                // clone for this control target.
-                gizmos.aabb_3d(aabb, transform, controlled_confirmed_color);
+        root_candidates_by_guid
+            .entry(guid.0)
+            .or_default()
+            .push(RootDebugCandidate {
+                overlay_entity,
+                is_replicated,
+                is_interpolated,
+                is_predicted,
+                has_confirmed_wrappers: confirmed_position.is_some()
+                    && confirmed_rotation.is_some(),
+                confirmed_pose: confirmed_position.zip(confirmed_rotation).map(
+                    |(position, rotation)| ConfirmedGhostPose {
+                        position_xy: position.0.0,
+                        rotation_rad: rotation.0.as_radians(),
+                    },
+                ),
+            });
+    }
+
+    snapshot.stats.duplicate_guid_groups = root_candidates_by_guid
+        .values()
+        .filter(|candidates| candidates.len() > 1)
+        .count();
+
+    let mut resolved_root_lanes = HashMap::<uuid::Uuid, DebugEntityLane>::new();
+
+    for (guid, candidates) in root_candidates_by_guid {
+        if candidates.len() > 1 {
+            let predicted_count = candidates
+                .iter()
+                .filter(|candidate| candidate.is_predicted)
+                .count();
+            let interpolated_count = candidates
+                .iter()
+                .filter(|candidate| candidate.is_interpolated)
+                .count();
+            let confirmed_count = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.is_replicated && !candidate.is_predicted && !candidate.is_interpolated
+                })
+                .count();
+            if predicted_count > 1 || interpolated_count > 1 || confirmed_count > 1 {
+                anomaly_messages.push(format!(
+                    "guid {} has duplicate lane winners p={} i={} c={}",
+                    guid, predicted_count, interpolated_count, confirmed_count
+                ));
             }
         }
 
-        let _ = scanner_range;
+        let resolved = resolve_root_candidates(&candidates);
+        if let Some(primary) = resolved.primary {
+            let has_confirmed_ghost = resolved.confirmed_ghost.is_some();
+            resolved_root_lanes.insert(guid, resolved.primary_lane);
+            if primary.overlay_entity.is_controlled {
+                snapshot.controlled_lane = Some(DebugControlledLane {
+                    guid,
+                    primary_lane: resolved.primary_lane,
+                    has_confirmed_ghost,
+                });
+            }
+            push_snapshot_entity(
+                &mut snapshot,
+                &primary.overlay_entity,
+                resolved.primary_lane,
+            );
+        }
+        if let Some(confirmed_ghost) = resolved.confirmed_ghost {
+            push_snapshot_entity(
+                &mut snapshot,
+                &confirmed_ghost.overlay_entity,
+                DebugEntityLane::ConfirmedGhost,
+            );
+        }
+    }
 
-        if mounted_on.is_none()
-            && is_local_controlled
-            && let Some(vel) = linear_velocity
+    let mut auxiliary_candidates_by_guid =
+        HashMap::<uuid::Uuid, Vec<AuxiliaryDebugCandidate>>::new();
+    for candidate in auxiliary_entities {
+        if resolved_root_lanes.contains_key(&candidate.parent_root_guid) {
+            auxiliary_candidates_by_guid
+                .entry(candidate.guid)
+                .or_default()
+                .push(candidate);
+        }
+    }
+
+    for candidates in auxiliary_candidates_by_guid.into_values() {
+        let Some(entity) = resolve_auxiliary_candidate(&candidates, &resolved_root_lanes) else {
+            continue;
+        };
+        push_snapshot_entity(
+            &mut snapshot,
+            &entity.overlay_entity,
+            DebugEntityLane::Auxiliary,
+        );
+    }
+
+    snapshot.stats.anomaly_count = anomaly_messages.len();
+    snapshot.text_rows =
+        build_debug_text_rows(&snapshot.stats, snapshot.controlled_lane, &anomaly_messages);
+}
+
+pub(crate) fn draw_debug_overlay_system(
+    debug_overlay: Res<'_, DebugOverlayState>,
+    snapshot: Res<'_, DebugOverlaySnapshot>,
+    mut gizmos: Gizmos,
+) {
+    if !debug_overlay.enabled {
+        return;
+    }
+
+    let velocity_color = Color::srgb(0.2, 0.5, 1.0);
+    let hardpoint_color = Color::srgb(1.0, 0.8, 0.2);
+    let prediction_error_color = Color::srgb(1.0, 0.2, 0.2);
+
+    let mut controlled_predicted = None;
+    let mut controlled_confirmed_ghost = None;
+
+    for entity in &snapshot.entities {
+        let pos = overlay_world_position(entity.position_xy, entity.lane);
+        let rot = Quat::from_rotation_z(entity.rotation_rad);
+        let draw_color = lane_color(entity.lane, entity.is_controlled);
+
+        match &entity.collision {
+            DebugCollisionShape::Outline { points } if points.len() >= 2 => {
+                for idx in 0..points.len() {
+                    let a = points[idx];
+                    let b = points[(idx + 1) % points.len()];
+                    let world_a = pos + (rot * a.extend(0.0));
+                    let world_b = pos + (rot * b.extend(0.0));
+                    gizmos.line(world_a, world_b, draw_color);
+                }
+            }
+            DebugCollisionShape::Aabb { half_extents } => {
+                let aabb = bevy::math::bounding::Aabb3d::new(Vec3::ZERO, *half_extents);
+                let transform = Transform::from_translation(pos).with_rotation(rot);
+                gizmos.aabb_3d(aabb, transform, draw_color);
+            }
+            DebugCollisionShape::HardpointMarker => {
+                let isometry = bevy::math::Isometry3d::new(pos, rot);
+                gizmos.cross(isometry, HARDPOINT_CROSS_HALF_SIZE, hardpoint_color);
+            }
+            DebugCollisionShape::None => {}
+            DebugCollisionShape::Outline { .. } => {}
+        }
+
+        if entity.is_controlled
+            && entity.lane != DebugEntityLane::Auxiliary
+            && entity.lane != DebugEntityLane::ConfirmedGhost
         {
-            let len = vel.0.length();
+            let len = entity.velocity_xy.length();
             if len > 0.01 {
-                let end = pos + vel.0.extend(0.0) * VELOCITY_ARROW_SCALE;
+                let end = pos + entity.velocity_xy.extend(0.0) * VELOCITY_ARROW_SCALE;
                 gizmos.arrow(pos, end, velocity_color);
             }
         }
 
-        if hardpoint.is_some() {
-            let isometry = bevy::math::Isometry3d::new(pos, rot);
-            gizmos.cross(isometry, HARDPOINT_CROSS_HALF_SIZE, hardpoint_color);
+        if entity.is_controlled && entity.lane == DebugEntityLane::Predicted {
+            controlled_predicted = Some((entity.position_xy, entity.rotation_rad));
+        } else if entity.is_controlled && entity.lane == DebugEntityLane::ConfirmedGhost {
+            controlled_confirmed_ghost = Some((entity.position_xy, entity.rotation_rad));
         }
     }
+
+    if let Some((predicted_pos, predicted_rot)) = controlled_predicted
+        && let Some((confirmed_pos, confirmed_rot)) = controlled_confirmed_ghost
+    {
+        let predicted_pos = overlay_world_position(predicted_pos, DebugEntityLane::Predicted);
+        let confirmed_pos = overlay_world_position(confirmed_pos, DebugEntityLane::ConfirmedGhost);
+        if predicted_pos.distance(confirmed_pos) > CONFIRMED_OVERLAY_POSITION_EPSILON_M
+            || angle_delta_rad(predicted_rot, confirmed_rot)
+                > CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD
+        {
+            gizmos.line(predicted_pos, confirmed_pos, prediction_error_color);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RootDebugCandidate {
+    overlay_entity: DebugOverlayEntity,
+    is_replicated: bool,
+    is_interpolated: bool,
+    is_predicted: bool,
+    has_confirmed_wrappers: bool,
+    confirmed_pose: Option<ConfirmedGhostPose>,
+}
+
+#[derive(Clone)]
+struct AuxiliaryDebugCandidate {
+    guid: uuid::Uuid,
+    parent_root_guid: uuid::Uuid,
+    overlay_entity: DebugOverlayEntity,
+    is_replicated: bool,
+    is_interpolated: bool,
+    is_predicted: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ConfirmedGhostPose {
+    position_xy: Vec2,
+    rotation_rad: f32,
+}
+
+struct ResolvedRootCandidates<'a> {
+    primary: Option<&'a RootDebugCandidate>,
+    primary_lane: DebugEntityLane,
+    confirmed_ghost: Option<RootDebugCandidate>,
+}
+
+fn build_collision_shape(
+    size_m: Option<&SizeM>,
+    collision_aabb: Option<&CollisionAabbM>,
+    collision_outline: Option<&CollisionOutlineM>,
+    is_hardpoint: bool,
+) -> DebugCollisionShape {
+    if is_hardpoint {
+        return DebugCollisionShape::HardpointMarker;
+    }
+    if let Some(outline) = collision_outline {
+        return DebugCollisionShape::Outline {
+            points: outline.points.clone(),
+        };
+    }
+    collision_aabb
+        .map(|aabb| DebugCollisionShape::Aabb {
+            half_extents: aabb.half_extents,
+        })
+        .or_else(|| {
+            size_m.map(|size| DebugCollisionShape::Aabb {
+                half_extents: Vec3::new(size.width * 0.5, size.length * 0.5, size.height * 0.5),
+            })
+        })
+        .unwrap_or(DebugCollisionShape::None)
+}
+
+fn resolve_root_candidates(candidates: &[RootDebugCandidate]) -> ResolvedRootCandidates<'_> {
+    let controlled = candidates
+        .iter()
+        .any(|candidate| candidate.overlay_entity.is_controlled);
+    let primary = if controlled {
+        pick_best_candidate(candidates, |candidate| candidate.is_predicted)
+            .or_else(|| {
+                pick_best_candidate(candidates, |candidate| {
+                    candidate.is_replicated && !candidate.is_interpolated
+                })
+            })
+            .or_else(|| pick_best_candidate(candidates, |candidate| candidate.is_interpolated))
+    } else {
+        pick_best_candidate(candidates, |candidate| candidate.is_interpolated)
+            .or_else(|| {
+                pick_best_candidate(candidates, |candidate| {
+                    candidate.is_replicated && !candidate.is_predicted
+                })
+            })
+            .or_else(|| pick_best_candidate(candidates, |candidate| candidate.is_predicted))
+    };
+
+    let primary_lane = primary
+        .map(|candidate| candidate_primary_lane(candidate, controlled))
+        .unwrap_or(DebugEntityLane::Confirmed);
+    let confirmed_ghost = if controlled {
+        primary.and_then(build_confirmed_ghost_entity)
+    } else {
+        None
+    };
+
+    ResolvedRootCandidates {
+        primary,
+        primary_lane,
+        confirmed_ghost,
+    }
+}
+
+fn pick_best_candidate(
+    candidates: &[RootDebugCandidate],
+    predicate: impl Fn(&RootDebugCandidate) -> bool,
+) -> Option<&RootDebugCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| predicate(candidate))
+        .min_by_key(|candidate| candidate.overlay_entity.entity.to_bits())
+}
+
+fn resolve_auxiliary_candidate<'a>(
+    candidates: &'a [AuxiliaryDebugCandidate],
+    resolved_root_lanes: &HashMap<uuid::Uuid, DebugEntityLane>,
+) -> Option<&'a AuxiliaryDebugCandidate> {
+    let parent_lane = candidates
+        .first()
+        .and_then(|candidate| resolved_root_lanes.get(&candidate.parent_root_guid))
+        .copied()
+        .unwrap_or(DebugEntityLane::Confirmed);
+
+    pick_best_auxiliary_candidate(candidates, |candidate| match parent_lane {
+        DebugEntityLane::Predicted => candidate.is_predicted,
+        DebugEntityLane::Interpolated => candidate.is_interpolated,
+        DebugEntityLane::Confirmed
+        | DebugEntityLane::ConfirmedGhost
+        | DebugEntityLane::Auxiliary => {
+            candidate.is_replicated && !candidate.is_predicted && !candidate.is_interpolated
+        }
+    })
+    .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_predicted))
+    .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_interpolated))
+    .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_replicated))
+}
+
+fn pick_best_auxiliary_candidate<'a>(
+    candidates: &'a [AuxiliaryDebugCandidate],
+    predicate: impl Fn(&AuxiliaryDebugCandidate) -> bool,
+) -> Option<&'a AuxiliaryDebugCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| predicate(candidate))
+        .min_by_key(|candidate| candidate.overlay_entity.entity.to_bits())
+}
+
+fn candidate_primary_lane(candidate: &RootDebugCandidate, controlled: bool) -> DebugEntityLane {
+    if controlled {
+        if candidate.is_predicted {
+            DebugEntityLane::Predicted
+        } else {
+            DebugEntityLane::Confirmed
+        }
+    } else if candidate.is_interpolated {
+        DebugEntityLane::Interpolated
+    } else {
+        DebugEntityLane::Confirmed
+    }
+}
+
+fn build_confirmed_ghost_entity(primary: &RootDebugCandidate) -> Option<RootDebugCandidate> {
+    if primary.is_predicted {
+        return primary.confirmed_pose.map(|pose| {
+            let mut overlay_entity = primary.overlay_entity.clone();
+            overlay_entity.position_xy = pose.position_xy;
+            overlay_entity.rotation_rad = pose.rotation_rad;
+            overlay_entity.velocity_xy = Vec2::ZERO;
+            overlay_entity.angular_velocity_rps = 0.0;
+            RootDebugCandidate {
+                overlay_entity,
+                is_replicated: true,
+                is_interpolated: false,
+                is_predicted: false,
+                has_confirmed_wrappers: true,
+                confirmed_pose: None,
+            }
+        });
+    }
+
+    if primary.is_replicated && !primary.has_confirmed_wrappers {
+        let mut overlay_entity = primary.overlay_entity.clone();
+        overlay_entity.velocity_xy = Vec2::ZERO;
+        overlay_entity.angular_velocity_rps = 0.0;
+        return Some(RootDebugCandidate {
+            overlay_entity,
+            is_replicated: true,
+            is_interpolated: false,
+            is_predicted: false,
+            has_confirmed_wrappers: false,
+            confirmed_pose: None,
+        });
+    }
+
+    None
+}
+
+fn push_snapshot_entity(
+    snapshot: &mut DebugOverlaySnapshot,
+    overlay_entity: &DebugOverlayEntity,
+    lane: DebugEntityLane,
+) {
+    let mut overlay_entity = overlay_entity.clone();
+    overlay_entity.lane = lane;
+    match lane {
+        DebugEntityLane::Predicted => snapshot.stats.predicted_count += 1,
+        DebugEntityLane::Confirmed | DebugEntityLane::ConfirmedGhost => {
+            snapshot.stats.confirmed_count += 1;
+        }
+        DebugEntityLane::Interpolated => snapshot.stats.interpolated_count += 1,
+        DebugEntityLane::Auxiliary => snapshot.stats.auxiliary_count += 1,
+    }
+    snapshot.entities.push(overlay_entity);
+}
+
+fn build_debug_text_rows(
+    stats: &DebugOverlayStats,
+    controlled_lane: Option<DebugControlledLane>,
+    anomaly_messages: &[String],
+) -> Vec<DebugTextRow> {
+    let mut rows = vec![
+        DebugTextRow {
+            label: "Predicted".to_string(),
+            value: format!("{:>4}", stats.predicted_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Confirmed".to_string(),
+            value: format!("{:>4}", stats.confirmed_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Interpolated".to_string(),
+            value: format!("{:>4}", stats.interpolated_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Duplicate GUIDs".to_string(),
+            value: format!("{:>4}", stats.duplicate_guid_groups),
+            severity: if stats.duplicate_guid_groups > 0 {
+                DebugSeverity::Warn
+            } else {
+                DebugSeverity::Normal
+            },
+        },
+        DebugTextRow {
+            label: "Anomalies".to_string(),
+            value: format!("{:>4}", stats.anomaly_count),
+            severity: if stats.anomaly_count > 0 {
+                DebugSeverity::Warn
+            } else {
+                DebugSeverity::Normal
+            },
+        },
+    ];
+    if let Some(controlled_lane) = controlled_lane {
+        rows.push(DebugTextRow {
+            label: "Control Lane".to_string(),
+            value: format!("{:?}", controlled_lane.primary_lane),
+            severity: if controlled_lane.primary_lane == DebugEntityLane::Predicted {
+                DebugSeverity::Normal
+            } else {
+                DebugSeverity::Warn
+            },
+        });
+        rows.push(DebugTextRow {
+            label: "Control GUID".to_string(),
+            value: controlled_lane.guid.to_string(),
+            severity: DebugSeverity::Normal,
+        });
+        rows.push(DebugTextRow {
+            label: "Confirmed Ghost".to_string(),
+            value: if controlled_lane.has_confirmed_ghost {
+                "yes".to_string()
+            } else {
+                "no".to_string()
+            },
+            severity: if controlled_lane.has_confirmed_ghost {
+                DebugSeverity::Normal
+            } else {
+                DebugSeverity::Warn
+            },
+        });
+    }
+    if let Some(message) = anomaly_messages.first() {
+        rows.push(DebugTextRow {
+            label: "Alert".to_string(),
+            value: message.clone(),
+            severity: DebugSeverity::Error,
+        });
+    }
+    rows
+}
+
+fn overlay_world_position(position_xy: Vec2, lane: DebugEntityLane) -> Vec3 {
+    let z_step = match lane {
+        DebugEntityLane::Predicted => PREDICTED_OVERLAY_Z_STEP,
+        DebugEntityLane::Interpolated => INTERPOLATED_OVERLAY_Z_STEP,
+        DebugEntityLane::Confirmed => REPLICATED_OVERLAY_Z_STEP,
+        DebugEntityLane::ConfirmedGhost => CONFIRMED_OVERLAY_Z_STEP,
+        DebugEntityLane::Auxiliary => REPLICATED_OVERLAY_Z_STEP,
+    };
+    position_xy.extend(DEBUG_OVERLAY_Z_OFFSET + z_step)
+}
+
+fn lane_color(lane: DebugEntityLane, is_controlled: bool) -> Color {
+    match lane {
+        DebugEntityLane::Predicted if is_controlled => Color::srgb(0.2, 1.0, 1.0),
+        DebugEntityLane::Predicted => Color::srgb(0.3, 0.85, 0.85),
+        DebugEntityLane::Interpolated => Color::srgb(0.2, 0.8, 0.2),
+        DebugEntityLane::ConfirmedGhost => Color::srgb(1.0, 0.2, 1.0),
+        DebugEntityLane::Confirmed if is_controlled => Color::srgb(1.0, 0.75, 0.2),
+        DebugEntityLane::Confirmed => Color::srgb(1.0, 0.75, 0.2),
+        DebugEntityLane::Auxiliary => Color::srgb(0.2, 0.8, 0.2),
+    }
+}
+
+fn angle_delta_rad(a: f32, b: f32) -> f32 {
+    let delta =
+        (a - b + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    delta.abs()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -648,4 +1015,144 @@ pub(crate) fn audit_prediction_entity_lifecycle(
         target_guid,
         lines.join(" | ")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AuxiliaryDebugCandidate, ConfirmedGhostPose, RootDebugCandidate, angle_delta_rad,
+        resolve_auxiliary_candidate, resolve_root_candidates,
+    };
+    use crate::native::resources::{DebugCollisionShape, DebugEntityLane, DebugOverlayEntity};
+    use bevy::prelude::*;
+    use std::collections::HashMap;
+
+    fn root_candidate(
+        raw: u32,
+        _guid: uuid::Uuid,
+        is_controlled: bool,
+        is_replicated: bool,
+        is_interpolated: bool,
+        is_predicted: bool,
+        confirmed_pose: Option<ConfirmedGhostPose>,
+    ) -> RootDebugCandidate {
+        RootDebugCandidate {
+            overlay_entity: DebugOverlayEntity {
+                entity: Entity::from_bits(raw as u64),
+                lane: DebugEntityLane::Auxiliary,
+                position_xy: Vec2::new(raw as f32, 0.0),
+                rotation_rad: 0.0,
+                velocity_xy: Vec2::ZERO,
+                angular_velocity_rps: 0.0,
+                collision: DebugCollisionShape::None,
+                is_controlled,
+            },
+            is_replicated,
+            is_interpolated,
+            is_predicted,
+            has_confirmed_wrappers: confirmed_pose.is_some(),
+            confirmed_pose,
+        }
+    }
+
+    fn auxiliary_candidate(
+        raw: u32,
+        guid: uuid::Uuid,
+        parent_root_guid: uuid::Uuid,
+        is_replicated: bool,
+        is_interpolated: bool,
+        is_predicted: bool,
+    ) -> AuxiliaryDebugCandidate {
+        AuxiliaryDebugCandidate {
+            guid,
+            parent_root_guid,
+            overlay_entity: DebugOverlayEntity {
+                entity: Entity::from_bits(raw as u64),
+                lane: DebugEntityLane::Auxiliary,
+                position_xy: Vec2::new(raw as f32, 0.0),
+                rotation_rad: 0.0,
+                velocity_xy: Vec2::ZERO,
+                angular_velocity_rps: 0.0,
+                collision: DebugCollisionShape::HardpointMarker,
+                is_controlled: false,
+            },
+            is_replicated,
+            is_interpolated,
+            is_predicted,
+        }
+    }
+
+    #[test]
+    fn controlled_guid_prefers_predicted_lane_and_confirmed_ghost() {
+        let guid = uuid::Uuid::nil();
+        let candidates = vec![
+            root_candidate(
+                2,
+                guid,
+                true,
+                true,
+                false,
+                true,
+                Some(ConfirmedGhostPose {
+                    position_xy: Vec2::new(10.0, 20.0),
+                    rotation_rad: 0.3,
+                }),
+            ),
+            root_candidate(1, guid, true, true, false, false, None),
+        ];
+
+        let resolved = resolve_root_candidates(&candidates);
+
+        assert_eq!(resolved.primary_lane, DebugEntityLane::Predicted);
+        assert_eq!(
+            resolved.primary.unwrap().overlay_entity.entity,
+            Entity::from_bits(2)
+        );
+        assert!(resolved.confirmed_ghost.is_some());
+        assert_eq!(
+            resolved.confirmed_ghost.unwrap().overlay_entity.position_xy,
+            Vec2::new(10.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn remote_guid_prefers_interpolated_over_confirmed() {
+        let guid = uuid::Uuid::new_v4();
+        let candidates = vec![
+            root_candidate(4, guid, false, true, false, false, None),
+            root_candidate(3, guid, false, true, true, false, None),
+        ];
+
+        let resolved = resolve_root_candidates(&candidates);
+
+        assert_eq!(resolved.primary_lane, DebugEntityLane::Interpolated);
+        assert_eq!(
+            resolved.primary.unwrap().overlay_entity.entity,
+            Entity::from_bits(3)
+        );
+        assert!(resolved.confirmed_ghost.is_none());
+    }
+
+    #[test]
+    fn angle_delta_wraps_across_tau() {
+        let delta = angle_delta_rad(0.05, std::f32::consts::TAU - 0.05);
+        assert!(delta < 0.11, "delta was {delta}");
+    }
+
+    #[test]
+    fn auxiliary_guid_follows_parent_predicted_lane() {
+        let parent_guid = uuid::Uuid::new_v4();
+        let child_guid = uuid::Uuid::new_v4();
+        let mut resolved_root_lanes = HashMap::new();
+        resolved_root_lanes.insert(parent_guid, DebugEntityLane::Predicted);
+        let candidates = vec![
+            auxiliary_candidate(4, child_guid, parent_guid, true, false, false),
+            auxiliary_candidate(3, child_guid, parent_guid, true, false, true),
+        ];
+
+        let resolved = resolve_auxiliary_candidate(&candidates, &resolved_root_lanes)
+            .expect("predicted auxiliary winner");
+
+        assert_eq!(resolved.overlay_entity.entity, Entity::from_bits(3));
+    }
 }

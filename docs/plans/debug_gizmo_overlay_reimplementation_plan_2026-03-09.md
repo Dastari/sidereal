@@ -12,6 +12,17 @@ Update note (2026-03-09):
   - text overlays whose layout shifts too much under changing numeric values.
 - This plan is intentionally broader than "fix F3 flicker". It is meant to produce a stable long-term debugging surface for prediction, interpolation, camera, visibility, and render/runtime ownership issues.
 
+Update note (2026-03-09, implementation start):
+- Initial implementation work has started in the native client.
+- Landed first slice:
+  - `DebugOverlayState` / `DebugOverlaySnapshot` resources,
+  - snapshot collection after interpolation/correction/transform propagation,
+  - snapshot-driven gizmo rendering,
+  - deterministic primary-lane winner resolution tests for controlled and remote roots,
+  - top-left debug text panel with FPS / frame time and snapshot-derived rows.
+- Native impact: F3 now gates both the snapshot-driven gizmo layer and a top-left text panel.
+- WASM impact: no native-only architecture added; shared client compilation still needs verification because this touches shared native-client Rust modules.
+
 ## 1. Purpose
 
 The current debug overlay has accumulated too many responsibilities in one place:

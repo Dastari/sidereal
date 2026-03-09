@@ -1,7 +1,9 @@
 //! Gateway auth API, Lightyear auth/session-ready messages, headless session config.
 
 use super::app_state::*;
-use super::assets::{LocalAssetManager, LocalAssetRecord, RuntimeAssetCatalogRecord};
+use super::assets::{
+    AssetCatalogHotReloadState, LocalAssetManager, LocalAssetRecord, RuntimeAssetCatalogRecord,
+};
 use super::resources::AssetRootPath;
 use super::resources::{
     AssetCacheAdapter, ClientAuthSyncState, GatewayHttpAdapter, HeadlessAccountSwitchPlan,
@@ -551,6 +553,7 @@ pub fn poll_asset_bootstrap_request_results(
     mut request_state: ResMut<'_, AssetBootstrapRequestState>,
     mut session: ResMut<'_, ClientSession>,
     mut asset_manager: ResMut<'_, LocalAssetManager>,
+    mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
 ) {
     let Some(task) = request_state.pending.as_mut() else {
@@ -563,6 +566,15 @@ pub fn poll_asset_bootstrap_request_results(
 
     match result {
         Ok(payload) => {
+            let previous_catalog_version = asset_manager.catalog_version.clone();
+            let previous_catalog = asset_manager.catalog_by_asset_id.clone();
+            let next_catalog_version = payload.manifest.catalog_version.clone();
+            let next_catalog_ids = payload
+                .manifest
+                .catalog
+                .iter()
+                .map(|entry| entry.asset_id.clone())
+                .collect::<std::collections::HashSet<_>>();
             request_state.completed = true;
             request_state.failed = false;
             asset_manager.bootstrap_manifest_seen = true;
@@ -570,7 +582,12 @@ pub fn poll_asset_bootstrap_request_results(
             asset_manager.bootstrap_ready_bytes = payload.bootstrap_ready_bytes;
             asset_manager.bootstrap_phase_complete = true;
             asset_manager.cache_index = payload.cache_index;
+            asset_manager
+                .cache_index
+                .by_asset_id
+                .retain(|asset_id, _| next_catalog_ids.contains(asset_id));
             asset_manager.cache_index_loaded = true;
+            asset_manager.catalog_version = Some(next_catalog_version.clone());
             asset_manager.catalog_by_asset_id.clear();
             for entry in &payload.manifest.catalog {
                 asset_manager.catalog_by_asset_id.insert(
@@ -587,6 +604,9 @@ pub fn poll_asset_bootstrap_request_results(
                     },
                 );
             }
+            asset_manager
+                .records_by_asset_id
+                .retain(|asset_id, _| next_catalog_ids.contains(asset_id));
             for record in payload.records {
                 asset_manager.records_by_asset_id.insert(
                     record.asset_id,
@@ -600,6 +620,32 @@ pub fn poll_asset_bootstrap_request_results(
                         ready: record.ready,
                     },
                 );
+            }
+            let mut changed_asset_ids = asset_manager
+                .catalog_by_asset_id
+                .iter()
+                .filter_map(|(asset_id, next)| match previous_catalog.get(asset_id) {
+                    Some(previous)
+                        if previous.sha256_hex == next.sha256_hex
+                            && previous.relative_cache_path == next.relative_cache_path =>
+                    {
+                        None
+                    }
+                    _ => Some(asset_id.clone()),
+                })
+                .collect::<std::collections::HashSet<_>>();
+            if previous_catalog_version.as_deref() != Some(next_catalog_version.as_str()) {
+                asset_manager.reload_generation = asset_manager.reload_generation.saturating_add(1);
+            }
+            hot_reload
+                .forced_asset_ids
+                .retain(|asset_id| asset_manager.catalog_by_asset_id.contains_key(asset_id));
+            hot_reload
+                .forced_asset_ids
+                .extend(changed_asset_ids.drain());
+            if hot_reload.pending_catalog_version.as_deref() == Some(next_catalog_version.as_str())
+            {
+                hot_reload.pending_catalog_version = None;
             }
             session.status = format!(
                 "Asset bootstrap complete ({} required assets).",
@@ -617,6 +663,29 @@ pub fn poll_asset_bootstrap_request_results(
             dialog_queue.push_error("Asset Bootstrap Failed", err);
         }
     }
+}
+
+pub fn trigger_asset_catalog_refresh_requests(
+    mut session: ResMut<'_, ClientSession>,
+    mut request_state: ResMut<'_, AssetBootstrapRequestState>,
+    hot_reload: Res<'_, AssetCatalogHotReloadState>,
+    asset_root: Res<'_, AssetRootPath>,
+    gateway_http: Res<'_, GatewayHttpAdapter>,
+    cache_adapter: Res<'_, AssetCacheAdapter>,
+) {
+    let Some(_pending_catalog_version) = hot_reload.pending_catalog_version.as_ref() else {
+        return;
+    };
+    if request_state.pending.is_some() {
+        return;
+    }
+    submit_asset_bootstrap_request(
+        session.as_mut(),
+        request_state.as_mut(),
+        *gateway_http,
+        *cache_adapter,
+        &asset_root.0,
+    );
 }
 
 pub fn configure_headless_session_from_env(

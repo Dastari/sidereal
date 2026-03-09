@@ -45,6 +45,8 @@ pub struct RuntimeRenderLayerDefinition {
     #[serde(default)]
     pub parallax_factor: Option<f32>,
     #[serde(default)]
+    pub screen_scale_factor: Option<f32>,
+    #[serde(default)]
     pub depth_bias_z: Option<f32>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,

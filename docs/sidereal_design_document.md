@@ -217,6 +217,7 @@ pub struct PlayerInput {
 
 Server input routing is bound to authenticated session identity and controlled entity mapping.
 Authoritative replication input is carried by Sidereal's authenticated realtime input lane; Lightyear native input remains client-local prediction support and native-client protocol compatibility, not the server's authoritative input source.
+Authoritative realtime input snapshots are short-lived: the replication server expires them after `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`) so stale held input cannot persist across focus loss or background throttling.
 
 ### 5.2.1 Control and Camera Chain (Normative)
 

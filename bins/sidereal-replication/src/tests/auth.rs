@@ -8,6 +8,7 @@ use crate::replication::auth::{
 use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
+    RealtimeInputActivityByPlayer,
 };
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::visibility::ClientVisibilityRegistry;
@@ -22,6 +23,7 @@ fn cleanup_drops_visibility_for_disconnected_client() {
     app.init_resource::<ClientInputTickTracker>();
     app.init_resource::<InputRateLimitState>();
     app.init_resource::<LatestRealtimeInputsByPlayer>();
+    app.init_resource::<RealtimeInputActivityByPlayer>();
     app.init_resource::<ClientVisibilityRegistry>();
     app.init_resource::<ClientControlRequestOrder>();
     app.init_resource::<ClientLastActivity>();

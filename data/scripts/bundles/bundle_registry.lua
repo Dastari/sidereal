@@ -26,6 +26,7 @@ local C = {
   VisibilityRangeBuffM = "visibility_range_buff_m",
   VisualAssetId = "visual_asset_id",
   SpriteShaderAssetId = "sprite_shader_asset_id",
+  RuntimeRenderLayerOverride = "runtime_render_layer_override",
   MapIcon = "map_icon",
   WorldPosition = "world_position",
   WorldRotation = "world_rotation",
@@ -47,6 +48,7 @@ local C = {
   ParentGuid = "parent_guid",
   MountedOn = "mounted_on",
   PlanetBodyShaderSettings = "planet_body_shader_settings",
+  StaticLandmark = "static_landmark",
   PublicVisibility = "public_visibility",
   Engine = "engine",
   EnvironmentLightingState = "environment_lighting_state",
@@ -135,13 +137,15 @@ local PLANET_REQUIRED_COMPONENT_KINDS = {
   C.DisplayName,
   C.EntityLabels,
   C.OwnerId,
-  C.PublicVisibility,
   C.SizeM,
+  C.StaticLandmark,
   C.MapIcon,
+  C.RuntimeRenderLayerOverride,
   C.SpriteShaderAssetId,
   C.WorldPosition,
   C.WorldRotation,
   C.PlanetBodyShaderSettings,
+  C.StaticLandmark,
 }
 
 local ENVIRONMENT_LIGHTING_REQUIRED_COMPONENT_KINDS = {

@@ -13,7 +13,7 @@ use lightyear::prelude::client::{Client, Connected, Disconnect, RawClient};
 use sidereal_net::{ClientDisconnectNotifyMessage, ControlChannel};
 
 use super::app_state::*;
-use super::assets::LocalAssetManager;
+use super::assets::{AssetCatalogHotReloadState, LocalAssetManager};
 use super::auth_net::AssetBootstrapRequestState;
 use super::ecs_util::queue_despawn_if_exists;
 use super::resources::{
@@ -141,6 +141,8 @@ pub fn logout_cleanup_system(
     asset_manager.bootstrap_phase_complete = false;
     asset_manager.bootstrap_total_bytes = 0;
     asset_manager.bootstrap_ready_bytes = 0;
+    asset_manager.catalog_version = None;
+    asset_manager.reload_generation = 0;
     auth_state.sent_for_client_entities.clear();
     auth_state.last_sent_at_s_by_client_entity.clear();
     auth_state.last_player_entity_id = None;
@@ -173,6 +175,15 @@ pub fn reset_asset_bootstrap_state_system(
 ) {
     if cleanup_requested.0 {
         *asset_bootstrap_state = AssetBootstrapRequestState::default();
+    }
+}
+
+pub fn reset_asset_hot_reload_state_system(
+    cleanup_requested: Res<'_, LogoutCleanupRequested>,
+    mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
+) {
+    if cleanup_requested.0 {
+        *hot_reload = AssetCatalogHotReloadState::default();
     }
 }
 

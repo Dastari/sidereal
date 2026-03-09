@@ -85,7 +85,7 @@ export interface PlayerVisibilityOverlay {
   cell_size_m: number
   delivery_range_m: number
   queried_cells: Array<VisibilityGridCellOverlay>
-  scanner_sources: Array<VisibilityScannerSourceOverlay>
+  visibility_sources: Array<VisibilityScannerSourceOverlay>
   explored_cell_size_m: number | null
   explored_cells: Array<VisibilityGridCellOverlay>
 }

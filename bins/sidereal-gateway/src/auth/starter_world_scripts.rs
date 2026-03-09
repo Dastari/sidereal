@@ -1,5 +1,6 @@
 use crate::auth::error::AuthError;
 use mlua::{Function, Table, Value};
+use sidereal_asset_runtime::hot_reload_poll_interval;
 use sidereal_game::generated_component_registry;
 use sidereal_game::{
     ProceduralSprite, RuntimeWorldVisualStack,
@@ -26,6 +27,7 @@ use sidereal_scripting::{
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -228,6 +230,7 @@ pub struct ScriptCatalogEntry {
 #[derive(Default)]
 struct ScriptCatalogCacheState {
     catalog: Option<ScriptCatalogResource>,
+    loaded_at: Option<Instant>,
 }
 
 static SCRIPT_CATALOG_CACHE: OnceLock<Mutex<ScriptCatalogCacheState>> = OnceLock::new();
@@ -356,6 +359,7 @@ pub fn reload_script_catalog_from_disk(root: &Path) -> Result<ScriptCatalogResou
         AuthError::Internal("gateway script catalog cache lock poisoned".to_string())
     })?;
     guard.catalog = Some(catalog.clone());
+    guard.loaded_at = Some(Instant::now());
     Ok(catalog)
 }
 
@@ -364,13 +368,18 @@ pub fn current_script_catalog(root: &Path) -> Result<ScriptCatalogResource, Auth
     let mut guard = cache.lock().map_err(|_| {
         AuthError::Internal("gateway script catalog cache lock poisoned".to_string())
     })?;
+    let cache_still_fresh = guard
+        .loaded_at
+        .is_some_and(|loaded_at| loaded_at.elapsed() < hot_reload_poll_interval());
     if let Some(catalog) = guard.catalog.as_ref()
+        && cache_still_fresh
         && catalog.root_dir == root.display().to_string()
     {
         return Ok(catalog.clone());
     }
     let catalog = load_script_catalog_from_database_or_seed(root)?;
     guard.catalog = Some(catalog.clone());
+    guard.loaded_at = Some(Instant::now());
     Ok(catalog)
 }
 

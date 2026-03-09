@@ -1,7 +1,11 @@
 # Procedural Asteroids
 
 **Status:** Active implementation (phase 1 live)
-**Last updated:** 2026-03-06
+**Last updated:** 2026-03-09
+
+## 0. Status Notes
+
+- 2026-03-09: Native client streamed asteroid visuals now rebuild when replicated `sprite_shader_asset_id` or `procedural_sprite` data arrives after the initial `visual_asset_id`. This prevents some asteroids from remaining on the `asteroid_texture_red_png` fallback after late component adoption. WASM impact: no architecture change; shared streamed-visual retry behavior should match once parity work resumes.
 
 ## 1. What Is Implemented
 

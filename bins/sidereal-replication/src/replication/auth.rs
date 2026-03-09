@@ -20,7 +20,7 @@ use sidereal_net::{
 use crate::replication::control::{ClientControlRequestOrder, owner_only_replicate};
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
-    canonical_player_entity_id,
+    RealtimeInputActivityByPlayer, canonical_player_entity_id,
 };
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::visibility::ClientVisibilityRegistry;
@@ -68,6 +68,7 @@ pub fn cleanup_client_auth_bindings(
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_rate_limit_state: ResMut<'_, InputRateLimitState>,
     mut latest_realtime_inputs: ResMut<'_, LatestRealtimeInputsByPlayer>,
+    mut realtime_input_activity: ResMut<'_, RealtimeInputActivityByPlayer>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
     mut last_activity: ResMut<'_, ClientLastActivity>,
@@ -115,6 +116,11 @@ pub fn cleanup_client_auth_bindings(
         });
     latest_realtime_inputs
         .by_player_entity_id
+        .retain(|player_entity_id, _| {
+            live_canonical.contains(&player_entity_id.canonical_wire_id())
+        });
+    realtime_input_activity
+        .last_received_at_s_by_player_entity_id
         .retain(|player_entity_id, _| {
             live_canonical.contains(&player_entity_id.canonical_wire_id())
         });

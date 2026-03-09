@@ -13,12 +13,14 @@ use super::assets::LocalAssetManager;
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, DebugOverlayCamera,
-    FullscreenForegroundCamera, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
-    HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
-    LoadingProgressBarFill, PostProcessCamera, RuntimeScreenOverlayPass,
-    RuntimeScreenOverlayPassKind, RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle,
-    SegmentedBarValue, SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot,
-    TacticalMapTitle, TopDownCamera, UiOverlayLayer,
+    DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
+    DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, FullscreenForegroundCamera,
+    GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill, HudPositionValueText,
+    HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill,
+    PostProcessCamera, RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind,
+    RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
+    SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot, TacticalMapTitle,
+    TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{
     BACKDROP_RENDER_LAYER, DEBUG_OVERLAY_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER,
@@ -162,6 +164,83 @@ pub(super) fn spawn_world_scene(
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(14),
+                top: px(14),
+                width: px(680),
+                ..default()
+            },
+            Visibility::Hidden,
+            DebugOverlayPanelRoot,
+            UiOverlayLayer,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+            ClientSceneEntity,
+            DespawnOnExit(ClientAppState::InWorld),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(1),
+                    top: px(1),
+                    ..default()
+                },
+                Text::new("FPS\nFrame"),
+                TextFont {
+                    font: fonts.regular.clone(),
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelLabelShadowText,
+            ));
+            panel.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(221),
+                    top: px(1),
+                    ..default()
+                },
+                Text::new("--\n--.-- ms"),
+                TextFont {
+                    font: fonts.regular.clone(),
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelValueShadowText,
+            ));
+            panel.spawn((
+                Text::new("FPS\nFrame"),
+                TextFont {
+                    font: fonts.regular.clone(),
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelLabelText,
+            ));
+            panel.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(220),
+                    top: px(0),
+                    ..default()
+                },
+                Text::new("--\n--.-- ms"),
+                TextFont {
+                    font: fonts.regular.clone(),
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelValueText,
+            ));
+        });
 
     commands
         .spawn((

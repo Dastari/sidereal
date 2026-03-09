@@ -11,11 +11,14 @@ use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task, futures_lite::future};
 use bevy_svg::prelude::Svg;
+use lightyear::prelude::MessageReceiver;
+use lightyear::prelude::client::{Client, Connected};
 use sidereal_asset_runtime::{AssetCacheIndex, AssetCacheIndexRecord, sha256_hex};
 use sidereal_game::{
     FullscreenLayer, RuntimePostProcessStack, RuntimeRenderLayerDefinition, SizeM,
     SpriteShaderAssetId,
 };
+use sidereal_net::ServerAssetCatalogVersionMessage;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
@@ -45,12 +48,14 @@ pub(crate) struct RuntimeAssetCatalogRecord {
 pub(crate) struct LocalAssetManager {
     pub records_by_asset_id: HashMap<String, LocalAssetRecord>,
     pub catalog_by_asset_id: HashMap<String, RuntimeAssetCatalogRecord>,
+    pub catalog_version: Option<String>,
     pub cache_index: AssetCacheIndex,
     pub cache_index_loaded: bool,
     pub bootstrap_manifest_seen: bool,
     pub bootstrap_phase_complete: bool,
     pub bootstrap_total_bytes: u64,
     pub bootstrap_ready_bytes: u64,
+    pub reload_generation: u64,
 }
 
 impl LocalAssetManager {
@@ -76,6 +81,12 @@ impl LocalAssetManager {
             .filter(|record| record.ready)
             .map(|record| record.relative_cache_path.as_str())
     }
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct AssetCatalogHotReloadState {
+    pub pending_catalog_version: Option<String>,
+    pub forced_asset_ids: HashSet<String>,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -126,6 +137,26 @@ fn expand_catalog_dependencies(
         }
     }
     expanded
+}
+
+pub(super) fn receive_asset_catalog_version_messages(
+    asset_manager: Res<'_, LocalAssetManager>,
+    mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
+    mut receivers: Query<
+        '_,
+        '_,
+        &mut MessageReceiver<ServerAssetCatalogVersionMessage>,
+        (With<Client>, With<Connected>),
+    >,
+) {
+    for mut receiver in &mut receivers {
+        for message in receiver.receive() {
+            if asset_manager.catalog_version.as_deref() == Some(message.catalog_version.as_str()) {
+                continue;
+            }
+            hot_reload.pending_catalog_version = Some(message.catalog_version);
+        }
+    }
 }
 
 pub(super) fn cached_asset_bytes(
@@ -216,6 +247,7 @@ pub(super) fn queue_missing_catalog_assets_system(
     time: Res<'_, Time>,
     mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
     asset_manager: Res<'_, LocalAssetManager>,
+    mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
     asset_root: Res<'_, AssetRootPath>,
     gateway_http: Res<'_, GatewayHttpAdapter>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
@@ -238,6 +270,16 @@ pub(super) fn queue_missing_catalog_assets_system(
         return;
     }
     let mut candidate_asset_ids = std::collections::HashSet::<String>::new();
+    hot_reload.forced_asset_ids.retain(|asset_id| {
+        asset_manager.catalog_by_asset_id.contains_key(asset_id)
+            && !asset_present_in_cache_or_source(
+                asset_id,
+                &asset_manager,
+                &asset_root.0,
+                *cache_adapter,
+            )
+    });
+    candidate_asset_ids.extend(hot_reload.forced_asset_ids.iter().cloned());
     for layer in &fullscreen_layers {
         if !layer.shader_asset_id.trim().is_empty() {
             candidate_asset_ids.insert(layer.shader_asset_id.clone());
@@ -453,9 +495,11 @@ pub(super) fn queue_missing_catalog_assets_system(
     }));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn poll_runtime_asset_http_fetches_system(
     mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
     mut asset_manager: ResMut<'_, LocalAssetManager>,
+    mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
     mut session: ResMut<'_, ClientSession>,
     asset_root: Res<'_, AssetRootPath>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
@@ -501,6 +545,7 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
                     "runtime asset cache write complete: asset_id={} relative_cache_path={} bytes={}",
                     result.asset_id, result.relative_cache_path, result.byte_len
                 );
+                hot_reload.forced_asset_ids.remove(&result.asset_id);
                 session.status = format!("Asset downloaded: {}", result.asset_id);
                 session.ui_dirty = true;
                 if shaders::shader_materials_enabled()

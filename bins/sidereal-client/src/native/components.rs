@@ -52,6 +52,21 @@ pub(crate) struct EntityNameplateHealthBar {
 pub(crate) struct LoadingOverlayText;
 
 #[derive(Component)]
+pub(crate) struct DebugOverlayPanelRoot;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelLabelText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelValueText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelLabelShadowText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelValueShadowText;
+
+#[derive(Component)]
 pub(crate) struct LoadingProgressBarFill;
 
 #[derive(Component)]
@@ -162,6 +177,13 @@ pub(crate) struct StreamedVisualAssetId(pub String);
 
 #[derive(Component)]
 pub(crate) struct StreamedVisualAttached;
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamedVisualAttachmentKind {
+    Plain,
+    GenericShader,
+    AsteroidShader,
+}
 
 #[derive(Component)]
 pub(crate) struct StreamedVisualChild;

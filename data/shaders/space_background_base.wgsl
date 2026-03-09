@@ -54,6 +54,11 @@ fn sat3(v: vec3<f32>) -> vec3<f32> {
     return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn aspect_corrected_centered_uv(uv: vec2<f32>, viewport: vec2<f32>) -> vec2<f32> {
+    let aspect = viewport.x / max(viewport.y, 1.0);
+    return (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+}
+
 fn hash21(p: vec2<f32>, seed: f32) -> f32 {
     var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031 + seed * vec3<f32>(0.0973, 0.1099, 0.13787));
     p3 += dot(p3, p3.yzx + 33.33);
@@ -485,8 +490,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let backlight_color = max(params.space_bg_backlight_color.rgb, vec3<f32>(0.0));
 
     let aspect = res.x / res.y;
+    let centered_uv = aspect_corrected_centered_uv(in.uv, res);
     let uv_n = in.uv * 2.0 - 1.0;
-    let uv = vec2<f32>(uv_n.x * aspect, uv_n.y);
+    let uv = centered_uv * 2.0;
 
     let render_zoom_scale = clamp(params.velocity_dir.z, 0.25, 4.0);
     let background_zoom = clamp(1.0 + (render_zoom_scale - 1.0) * zoom_rate * 0.12, 0.82, 1.18);
@@ -511,7 +517,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         background_grad
     );
     let deep_space = select(base_background, gradient_space, enable_background_gradient);
-    let vignette = clamp(1.08 - dot(uv_n, uv_n) * 0.09, 0.80, 1.0);
+    let vignette = clamp(1.08 - dot(centered_uv, centered_uv) * 0.36, 0.80, 1.0);
 
     var lit_nebula_layer = vec3<f32>(0.0);
     var star_mask = 1.0;

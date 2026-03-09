@@ -38,10 +38,12 @@ const WASM_STARFIELD_FALLBACK_SHADER_SOURCE: &str = r#"
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = in.uv * 2.0 - 1.0;
-    let dist = length(uv);
+    let viewport = max(viewport_time.xy, vec2<f32>(1.0, 1.0));
+    let aspect = viewport.x / max(viewport.y, 1.0);
+    let centered = (in.uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+    let dist = length(centered);
     let vignette = clamp(1.0 - dist * 0.8, 0.0, 1.0);
-    let twinkle = 0.85 + 0.15 * sin(viewport_time.z * 0.5 + uv.x * 6.0 + uv.y * 4.0);
+    let twinkle = 0.85 + 0.15 * sin(viewport_time.z * 0.5 + centered.x * 12.0 + centered.y * 8.0);
     let rgb = starfield_tint.rgb * twinkle * vignette;
     let alpha = clamp(starfield_params.w * vignette, 0.0, 1.0);
     return vec4<f32>(rgb, alpha);
@@ -88,9 +90,17 @@ struct SpaceBackgroundParams {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let viewport = max(params.viewport_time.xy, vec2<f32>(1.0, 1.0));
+    let aspect = viewport.x / max(viewport.y, 1.0);
+    let centered = (in.uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+    let vignette = clamp(1.0 - dot(centered, centered) * 0.8, 0.0, 1.0);
     let flare = textureSample(flare_texture, flare_sampler, in.uv).rgb;
     let gradient = mix(params.space_bg_background.rgb, params.space_bg_tint.rgb, in.uv.y);
-    let rgb = clamp(gradient + flare * params.space_bg_flare_tint.rgb * 0.15, vec3<f32>(0.0), vec3<f32>(1.0));
+    let rgb = clamp(
+        (gradient + flare * params.space_bg_flare_tint.rgb * 0.15) * vignette,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+    );
     return vec4<f32>(rgb, 1.0);
 }
 "#;
@@ -135,10 +145,18 @@ struct SpaceBackgroundParams {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let viewport = max(params.viewport_time.xy, vec2<f32>(1.0, 1.0));
+    let aspect = viewport.x / max(viewport.y, 1.0);
+    let centered = (in.uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+    let vignette = clamp(1.0 - dot(centered, centered) * 0.8, 0.0, 1.0);
     let flare = textureSample(flare_texture, flare_sampler, in.uv).rgb;
     let nebula = mix(params.space_bg_nebula_color_a.rgb, params.space_bg_nebula_color_c.rgb, in.uv.x);
-    let rgb = clamp(nebula + flare * params.space_bg_flare_tint.rgb * 0.1, vec3<f32>(0.0), vec3<f32>(1.0));
-    let alpha = clamp(params.space_bg_params.w * (0.35 + 0.65 * in.uv.y), 0.0, 1.0);
+    let rgb = clamp(
+        (nebula + flare * params.space_bg_flare_tint.rgb * 0.1) * vignette,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+    );
+    let alpha = clamp(params.space_bg_params.w * (0.35 + 0.65 * in.uv.y) * vignette, 0.0, 1.0);
     return vec4<f32>(rgb, alpha);
 }
 "#;
@@ -644,6 +662,7 @@ pub fn sync_runtime_shader_assignments_system(
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
+    mut last_reload_generation: Local<'_, u64>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
 ) {
     let mut next = RuntimeShaderAssignments::default();
@@ -751,7 +770,9 @@ pub fn sync_runtime_shader_assignments_system(
         )
     });
 
-    if *assignments != next {
+    let catalog_reloaded = *last_reload_generation != asset_manager.reload_generation;
+    *last_reload_generation = asset_manager.reload_generation;
+    if *assignments != next || catalog_reloaded {
         *assignments = next;
         reload_streamed_shaders(
             &mut shaders_assets,
@@ -760,5 +781,72 @@ pub fn sync_runtime_shader_assignments_system(
             *cache_adapter,
             &assignments,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::from_str;
+    use sidereal_asset_runtime::{
+        AssetCacheIndex, asset_version_from_sha256_hex, generated_asset_guid,
+        generated_relative_cache_path, sha256_hex,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn asset_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data")
+    }
+
+    #[test]
+    fn fullscreen_shader_cache_entries_match_sources() {
+        let asset_root = asset_root();
+        let index_path = asset_root.join("cache_stream/index.json");
+        let index: AssetCacheIndex =
+            from_str(&fs::read_to_string(index_path).expect("cache index should be readable"))
+                .expect("cache index should decode");
+
+        for (asset_id, source_path) in [
+            ("starfield_wgsl", "shaders/starfield.wgsl"),
+            (
+                "space_background_base_wgsl",
+                "shaders/space_background_base.wgsl",
+            ),
+            (
+                "space_background_nebula_wgsl",
+                "shaders/space_background_nebula.wgsl",
+            ),
+            (
+                "tactical_map_overlay_wgsl",
+                "shaders/tactical_map_overlay.wgsl",
+            ),
+        ] {
+            let source_bytes =
+                fs::read(asset_root.join(source_path)).expect("shader source should exist");
+            let sha256 = sha256_hex(&source_bytes);
+            let guid = generated_asset_guid(asset_id, &sha256);
+            let relative_cache_path =
+                generated_relative_cache_path(&guid, source_path, "text/wgsl");
+            let cached_bytes = fs::read(asset_root.join("cache_stream").join(&relative_cache_path))
+                .expect("cached shader should exist");
+            let index_record = index
+                .by_asset_id
+                .get(asset_id)
+                .expect("cache index record should exist");
+
+            assert_eq!(
+                cached_bytes, source_bytes,
+                "cached shader payload diverged for {asset_id}"
+            );
+            assert_eq!(
+                index_record.sha256_hex, sha256,
+                "sha mismatch for {asset_id}"
+            );
+            assert_eq!(
+                index_record.asset_version,
+                asset_version_from_sha256_hex(&sha256),
+                "asset version mismatch for {asset_id}"
+            );
+        }
     }
 }

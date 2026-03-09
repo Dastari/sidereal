@@ -48,9 +48,20 @@ Current implementation baseline:
 8. Delivery range is dynamic per client view and reflected in runtime visibility telemetry.
 9. Fullscreen authored config entities are treated as non-spatial overlays: legacy `FullscreenLayer` entities and fullscreen-phase `RuntimeRenderLayerDefinition` entities bypass delivery-range/visibility-range candidate culling and remain replicated while connected.
 10. Background authoring settings such as `SpaceBackgroundShaderSettings` and `StarfieldShaderSettings` are durable world configuration and remain persistable so hydration recreates the full authored config entity rather than only the layer-definition shell.
+11. Discoverable static landmarks use explicit landmark classification plus player-scoped durable discovery state; they are not modeled as generic public-visibility entities.
 
 2026-03-09 update:
 - The native client renders fullscreen background passes directly from those authored fullscreen entities again. Client-local fullscreen renderable copies were removed because they could diverge from the authored source during zoom/hydration transitions and expose the black fallback layer.
+- Delivery-scope and visibility-range distance checks must account for entity extent, not only entity center position. Large bodies such as stars and planets remain delivered/authorized while any visible portion overlaps the active delivery or visibility radius; center-point-only culling is not runtime-correct.
+
+2026-03-09 update:
+- Static discoverable landmarks now have a distinct post-discovery authorization lane. Once a player legitimately discovers a qualifying landmark, replication may authorize that landmark without requiring current scanner/visibility-range overlap, but local delivery narrowing still applies.
+- Landmark discovery state is persisted on the player ECS entity, not inferred ad hoc from free-roam camera position and not stored in account-side tables.
+- Discovery-based authorization grants only landmark presence for qualifying static entities; it does not widen payload disclosure for unrelated entities or turn landmarks into generic public visibility.
+
+2026-03-09 update:
+- For parallaxed discovered landmarks, delivery narrowing must account for the authored world-layer parallax factor rather than using the authoritative center alone. Otherwise the server can cull a landmark before its projected render center leaves the buffered viewport.
+- Candidate prefiltering must not reject already-discovered static landmarks before the landmark-specific delivery check runs.
 
 ## 4. Multi-Lane Contract (Current + Approved Direction)
 

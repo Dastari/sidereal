@@ -47,6 +47,7 @@ WorldInit.world_defaults = {
       shader_asset_id = "",
       order = 0,
       parallax_factor = 1.0,
+      screen_scale_factor = 1.0,
       depth_bias_z = 0.0,
       labels = { "Entity", "RenderLayerDefinition", "WorldLayer" },
     },
@@ -59,6 +60,7 @@ WorldInit.world_defaults = {
       shader_asset_id = "planet_visual_wgsl",
       order = -100,
       parallax_factor = 0.18,
+      screen_scale_factor = 1.0,
       depth_bias_z = -100.0,
       labels = { "Entity", "RenderLayerDefinition", "WorldLayer" },
     },
@@ -331,6 +333,7 @@ function WorldInit.build_graph_records(ctx)
       shader_asset_id = layer.shader_asset_id,
       order = layer.order,
       parallax_factor = layer.parallax_factor,
+      screen_scale_factor = layer.screen_scale_factor,
       depth_bias_z = layer.depth_bias_z,
       enabled = layer.enabled ~= false,
     })

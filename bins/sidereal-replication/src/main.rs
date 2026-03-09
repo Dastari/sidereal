@@ -152,6 +152,8 @@ fn register_plugins(app: &mut App) {
             auth::audit_pending_client_auth_state,
             auth::receive_client_disconnect_notify,
             auth::cleanup_client_auth_bindings,
+            assets::request_script_catalog_reload_on_disk_changes_system,
+            assets::poll_runtime_asset_catalog_changes_system,
             input::receive_latest_realtime_input_messages,
             control::receive_client_control_requests,
             visibility::receive_client_local_view_mode_messages,

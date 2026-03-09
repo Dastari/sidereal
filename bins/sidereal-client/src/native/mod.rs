@@ -175,12 +175,14 @@ pub(crate) fn configure_client_runtime(
     app.insert_resource(ClientViewModeState::default());
     app.insert_resource(SessionReadyState::default());
     app.insert_resource(assets::LocalAssetManager::default());
+    app.insert_resource(assets::AssetCatalogHotReloadState::default());
     app.insert_resource(assets::RuntimeAssetNetIndicatorState::default());
     app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
     let debug_blue_overlay = std::env::var("SIDEREAL_DEBUG_BLUE_FULLSCREEN")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     app.insert_resource(DebugBlueOverlayEnabled(debug_blue_overlay));
-    app.insert_resource(DebugOverlayEnabled { enabled: false });
+    app.insert_resource(DebugOverlayState::default());
+    app.insert_resource(DebugOverlaySnapshot::default());
     app.insert_resource(NameplateUiState { enabled: false });
     app.insert_resource(LocalPlayerViewState::default());
     app.insert_resource(CharacterSelectionState::default());

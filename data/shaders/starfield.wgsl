@@ -24,6 +24,11 @@ fn hash22(p_in: vec2<f32>) -> vec2<f32> {
     return fract(vec2<f32>(p.x * p.y, p.y * p.x * 1.5));
 }
 
+fn aspect_corrected_centered_uv(uv: vec2<f32>, viewport: vec2<f32>) -> vec2<f32> {
+    let aspect = viewport.x / max(viewport.y, 1.0);
+    return (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+}
+
 fn star(local: vec2<f32>, radius: f32, dir: vec2<f32>, elongation: f32) -> f32 {
     if (elongation < 0.08) {
         let d = length(local);
@@ -108,7 +113,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         vel_dir = normalize(vec2<f32>(-heading.x, heading.y));
     }
 
-    var uv = (in.uv - 0.5) * vec2<f32>(aspect, 1.0);
+    let centered_uv = aspect_corrected_centered_uv(in.uv, viewport);
+    var uv = centered_uv * 2.0;
 
     var col = vec3<f32>(0.0);
     // Scroll factors: far = slow (0.12), near = 1.2. Layer alpha: far 25%, near 100%.
@@ -138,7 +144,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     col = min(col * starfield_tint.rgb, vec3<f32>(1.9));
 
-    let vignette = 1.0 - length(in.uv - 0.5) * 0.29;
+    let vignette = 1.0 - length(centered_uv) * 0.29;
     col *= vignette * intensity;
 
     let luma = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));

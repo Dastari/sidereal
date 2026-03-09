@@ -6,7 +6,7 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    combat, control, input, lifecycle, owner_manifest, persistence, runtime_scripting,
+    assets, combat, control, input, lifecycle, owner_manifest, persistence, runtime_scripting,
     runtime_state, simulation_entities, tactical, visibility,
 };
 
@@ -85,6 +85,7 @@ impl Plugin for ReplicationVisibilityPlugin {
                 runtime_state::compute_controlled_entity_visibility_ranges,
                 visibility::ensure_network_visibility_for_replicated_entities,
                 visibility::update_network_visibility,
+                assets::stream_asset_catalog_version_messages,
                 owner_manifest::stream_owner_asset_manifest_messages,
                 tactical::receive_tactical_resnapshot_requests,
                 tactical::stream_tactical_snapshot_messages,

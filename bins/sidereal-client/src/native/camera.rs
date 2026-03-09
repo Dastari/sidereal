@@ -15,7 +15,7 @@ use super::components::{
 };
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
-use super::resources::{CameraMotionState, TacticalMapUiState};
+use super::resources::{CameraMotionState, DebugOverlayState, TacticalMapUiState};
 
 fn parse_entity_id_guid(raw: &str) -> Option<uuid::Uuid> {
     sidereal_runtime_sync::parse_guid_from_entity_id(raw)
@@ -300,6 +300,7 @@ pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
 
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_debug_overlay_camera_to_gameplay_camera_system(
+    debug_overlay: Res<'_, DebugOverlayState>,
     gameplay_camera: Query<
         '_,
         '_,
@@ -309,7 +310,7 @@ pub(crate) fn sync_debug_overlay_camera_to_gameplay_camera_system(
     mut debug_camera: Query<
         '_,
         '_,
-        (&'_ mut Transform, &'_ mut Projection),
+        (&'_ mut Camera, &'_ mut Transform, &'_ mut Projection),
         (With<DebugOverlayCamera>, Without<GameplayCamera>),
     >,
 ) {
@@ -317,7 +318,11 @@ pub(crate) fn sync_debug_overlay_camera_to_gameplay_camera_system(
         return;
     };
 
-    for (mut debug_transform, mut debug_projection) in &mut debug_camera {
+    for (mut debug_camera, mut debug_transform, mut debug_projection) in &mut debug_camera {
+        debug_camera.is_active = debug_overlay.enabled;
+        if !debug_overlay.enabled {
+            continue;
+        }
         *debug_transform = *gameplay_transform;
         *debug_projection = gameplay_projection.clone();
     }

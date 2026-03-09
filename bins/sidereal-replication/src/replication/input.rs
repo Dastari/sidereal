@@ -54,6 +54,14 @@ pub struct LatestRealtimeInputsByPlayer {
 }
 
 #[derive(Resource, Debug, Default)]
+pub struct RealtimeInputActivityByPlayer {
+    pub last_received_at_s_by_player_entity_id: HashMap<PlayerEntityId, f64>,
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct RealtimeInputTimeoutSeconds(pub f64);
+
+#[derive(Resource, Debug, Default)]
 pub struct InputRateLimitState {
     pub current_window_index_by_player_entity_id: HashMap<String, u64>,
     pub message_count_in_window_by_player_entity_id: HashMap<String, u32>,
@@ -68,6 +76,16 @@ pub(crate) enum InputValidationFailure {
 }
 
 pub(crate) const MAX_ACTIONS_PER_PACKET: usize = 32;
+pub(crate) const DEFAULT_REALTIME_INPUT_TIMEOUT_SECONDS: f64 = 0.35;
+
+fn configured_realtime_input_timeout_seconds() -> f64 {
+    std::env::var("REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.1)
+        .unwrap_or(DEFAULT_REALTIME_INPUT_TIMEOUT_SECONDS)
+}
+
 pub fn init_resources(app: &mut App) {
     app.insert_resource(ClientInputTickTracker::default());
     app.insert_resource(ClientInputDropMetrics::default());
@@ -75,6 +93,10 @@ pub fn init_resources(app: &mut App) {
     app.insert_resource(InputActivityLogState::default());
     app.insert_resource(InputRateLimitState::default());
     app.insert_resource(LatestRealtimeInputsByPlayer::default());
+    app.insert_resource(RealtimeInputActivityByPlayer::default());
+    app.insert_resource(RealtimeInputTimeoutSeconds(
+        configured_realtime_input_timeout_seconds(),
+    ));
 }
 
 const MAX_TICKS_AHEAD: u64 = 6;
@@ -194,6 +216,7 @@ pub fn receive_latest_realtime_input_messages(
     mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
     mut rate_limit_state: ResMut<'_, InputRateLimitState>,
     mut latest: ResMut<'_, LatestRealtimeInputsByPlayer>,
+    mut realtime_input_activity: ResMut<'_, RealtimeInputActivityByPlayer>,
     mut receivers: Query<
         '_,
         '_,
@@ -333,6 +356,9 @@ pub fn receive_latest_realtime_input_messages(
             entry.tick = best.tick;
             entry.controlled_entity_id = controlled_id;
             entry.actions = best.actions;
+            realtime_input_activity
+                .last_received_at_s_by_player_entity_id
+                .insert(bound_player_id, now_s);
             if input_debug_logging_enabled() {
                 info!(
                     "replication received client input: player_entity_id={} controlled_entity_id={} tick={} actions={:?}",
@@ -361,10 +387,13 @@ pub fn drain_native_player_inputs_to_action_queue(
     time: Res<'_, Time>,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     latest_realtime_inputs: Res<'_, LatestRealtimeInputsByPlayer>,
+    realtime_input_activity: Res<'_, RealtimeInputActivityByPlayer>,
+    realtime_input_timeout: Res<'_, RealtimeInputTimeoutSeconds>,
     mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
     mut input_log_state: ResMut<'_, InputActivityLogState>,
 ) {
     const ACTIVE_INPUT_LOG_INTERVAL_S: f64 = 0.15;
+    let now_s = time.elapsed_secs_f64();
     for (entity, guid, simulated, player_tag, controlled_entity_guid, mut queue) in entities {
         if simulated.is_none() && player_tag.is_some() {
             let own_guid = guid.0.to_string();
@@ -396,7 +425,14 @@ pub fn drain_native_player_inputs_to_action_queue(
         }
         let controlled_entity_id = RuntimeEntityId(guid.0);
         let latest_for_player = latest_realtime_inputs.by_player_entity_id.get(&player_id);
+        let latest_is_fresh = realtime_input_activity
+            .last_received_at_s_by_player_entity_id
+            .get(&player_id)
+            .is_some_and(|last_received_at_s| {
+                now_s - *last_received_at_s <= realtime_input_timeout.0
+            });
         let (actions, action_source) = match latest_for_player {
+            Some(_) if !latest_is_fresh => (&[][..], "stale_realtime"),
             Some(latest) if latest.controlled_entity_id == controlled_entity_id => {
                 (latest.actions.as_slice(), "realtime")
             }
@@ -449,12 +485,11 @@ pub fn drain_native_player_inputs_to_action_queue(
             .map(|latest| latest.tick)
             .unwrap_or(0);
         if input_debug_logging_enabled() {
-            let now = time.elapsed_secs_f64();
             let last_logged_at_s = *input_log_state
                 .last_logged_at_s_by_player_entity_id
                 .get(player_entity_id.as_str())
                 .unwrap_or(&f64::NEG_INFINITY);
-            let time_due = now - last_logged_at_s >= ACTIVE_INPUT_LOG_INTERVAL_S;
+            let time_due = now_s - last_logged_at_s >= ACTIVE_INPUT_LOG_INTERVAL_S;
             let actions_changed = input_log_state
                 .last_logged_actions_by_player_entity_id
                 .get(player_entity_id.as_str())
@@ -473,7 +508,7 @@ pub fn drain_native_player_inputs_to_action_queue(
                 );
                 input_log_state
                     .last_logged_at_s_by_player_entity_id
-                    .insert(player_entity_id.clone(), now);
+                    .insert(player_entity_id.clone(), now_s);
                 input_log_state
                     .last_logged_actions_by_player_entity_id
                     .insert(player_entity_id.clone(), actions.to_vec());

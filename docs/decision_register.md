@@ -65,6 +65,32 @@ For each decision:
 
 ## Decisions
 
+## DR-0032: Discovered Static Landmark Visibility
+- Status: Accepted
+- Date: 2026-03-09
+- Owners: gameplay / replication / world-authoring
+- Context:
+  - Static celestial landmarks should remain visible after legitimate discovery, but ordinary scanner-range visibility was causing already-known planets and similar bodies to disappear.
+  - Discovery knowledge must remain server-authored and player-scoped without turning landmarks into globally public entities.
+- Decision:
+  - Add an explicit static-landmark classification lane and player-scoped discovered-landmark persistence.
+  - Authorize qualifying discovered landmarks independently of current scanner range, while still applying local delivery narrowing after authorization.
+  - Keep static world configuration entities such as environment lighting out of the discovered-landmark lane.
+- Consequences:
+  - Positive:
+    - Persistent landmark knowledge is explicit and debuggable on the player ECS entity.
+    - The visibility rule generalizes beyond planets to other immobile celestial landmarks.
+  - Negative:
+    - Landmark discovery/persistence becomes a separate replication contract to maintain.
+- Follow-up:
+  - Continue with projected render-bounds/client culling follow-up for parallaxed landmarks.
+  - Define the separate replication policy for static world-config entities where needed.
+- Decision doc:
+  - `docs/decisions/dr-0032_discovered_static_landmark_visibility.md`
+- References:
+  - `docs/features/visibility_replication_contract.md`
+  - `docs/plans/discovered_static_landmark_visibility_plan_2026-03-09.md`
+
 ## DR-0031: Lightyear Native Input Runtime Split Follow-Up
 - Status: Accepted
 - Date: 2026-03-08

@@ -3,6 +3,7 @@
 use avian2d::prelude::{LinearVelocity, Rotation};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -23,8 +24,10 @@ use super::app_state::{
 use super::assets::{LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetNetIndicatorState};
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    ControlledEntity, EntityNameplateHealthBar, EntityNameplateRoot, GameplayCamera, GameplayHud,
-    HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
+    ControlledEntity, DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText,
+    DebugOverlayPanelRoot, DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText,
+    EntityNameplateHealthBar, EntityNameplateRoot, GameplayCamera, GameplayHud, HudFuelBarFill,
+    HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
     LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
     OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind,
     SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SuppressedPredictedDuplicateVisual,
@@ -35,8 +38,9 @@ use super::dev_console::{DevConsoleState, is_console_open};
 use super::ecs_util::queue_despawn_if_exists;
 use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
-    CameraMotionState, ClientControlRequestState, EmbeddedFonts, NameplateUiState,
-    OwnedAssetManifestCache, TacticalContactsCache, TacticalFogCache, TacticalMapUiState,
+    CameraMotionState, ClientControlRequestState, DebugOverlayDisplayMetrics, DebugOverlaySnapshot,
+    DebugOverlayState, DebugSeverity, EmbeddedFonts, NameplateUiState, OwnedAssetManifestCache,
+    TacticalContactsCache, TacticalFogCache, TacticalMapUiState,
 };
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
@@ -122,6 +126,100 @@ pub(super) fn update_runtime_stream_icon_system(
     } else {
         Color::srgba(0.35, 0.9, 1.0, 0.2)
     };
+}
+
+pub(super) fn update_debug_overlay_text_ui_system(
+    time: Res<'_, Time>,
+    debug_overlay: Res<'_, DebugOverlayState>,
+    snapshot: Res<'_, DebugOverlaySnapshot>,
+    diagnostics: Res<'_, DiagnosticsStore>,
+    mut display_metrics: Local<'_, DebugOverlayDisplayMetrics>,
+    mut root_query: Query<'_, '_, &mut Visibility, With<DebugOverlayPanelRoot>>,
+    mut text_queries: ParamSet<
+        '_,
+        '_,
+        (
+            Query<'_, '_, &mut Text, With<DebugOverlayPanelLabelText>>,
+            Query<'_, '_, &mut Text, With<DebugOverlayPanelLabelShadowText>>,
+            Query<'_, '_, (&mut Text, &mut TextColor), With<DebugOverlayPanelValueText>>,
+            Query<'_, '_, &mut Text, With<DebugOverlayPanelValueShadowText>>,
+        ),
+    >,
+) {
+    let Ok(mut root_visibility) = root_query.single_mut() else {
+        return;
+    };
+
+    if !debug_overlay.enabled {
+        *root_visibility = Visibility::Hidden;
+        return;
+    }
+
+    *root_visibility = Visibility::Visible;
+
+    let now_s = time.elapsed_secs_f64();
+    if !display_metrics.initialized || now_s - display_metrics.last_sample_at_s >= 1.0 {
+        display_metrics.sampled_fps = diagnostics
+            .get(&FrameTimeDiagnosticsPlugin::FPS)
+            .and_then(|diagnostic| diagnostic.average().or_else(|| diagnostic.smoothed()));
+        display_metrics.sampled_frame_ms = diagnostics
+            .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+            .and_then(|diagnostic| diagnostic.average().or_else(|| diagnostic.smoothed()));
+        display_metrics.last_sample_at_s = now_s;
+        display_metrics.initialized = true;
+    }
+
+    let mut labels = Vec::with_capacity(snapshot.text_rows.len() + 2);
+    let mut values = Vec::with_capacity(snapshot.text_rows.len() + 2);
+    labels.push("FPS".to_string());
+    values.push(
+        display_metrics
+            .sampled_fps
+            .map(|value| format!("{value:.0}"))
+            .unwrap_or_else(|| "--".to_string()),
+    );
+    labels.push("Frame Time".to_string());
+    values.push(
+        display_metrics
+            .sampled_frame_ms
+            .map(|value| format!("{value:.2} ms"))
+            .unwrap_or_else(|| "--.-- ms".to_string()),
+    );
+    for row in &snapshot.text_rows {
+        labels.push(row.label.clone());
+        values.push(row.value.clone());
+    }
+    let labels_text = labels.join("\n");
+    let values_text = values.join("\n");
+
+    let highest_severity = snapshot
+        .text_rows
+        .iter()
+        .map(|row| row.severity)
+        .max_by_key(|severity| match severity {
+            DebugSeverity::Normal => 0,
+            DebugSeverity::Warn => 1,
+            DebugSeverity::Error => 2,
+        })
+        .unwrap_or(DebugSeverity::Normal);
+
+    if let Ok(mut label_text) = text_queries.p0().single_mut() {
+        label_text.0 = labels_text.clone();
+    }
+    if let Ok(mut label_shadow_text) = text_queries.p1().single_mut() {
+        label_shadow_text.0 = labels_text;
+    }
+    if let Ok((mut value_text, mut value_text_color)) = text_queries.p2().single_mut() {
+        value_text.0 = values_text.clone();
+        value_text_color.0 = match highest_severity {
+            DebugSeverity::Normal => Color::srgb(0.85, 0.92, 1.0),
+            DebugSeverity::Warn => Color::srgb(1.0, 0.85, 0.45),
+            DebugSeverity::Error => Color::srgb(1.0, 0.55, 0.5),
+        };
+    }
+    if let Ok(mut value_shadow_text) = text_queries.p3().single_mut() {
+        value_shadow_text.0 = values_text;
+    }
 }
 
 pub(super) fn toggle_tactical_map_mode_system(
@@ -315,6 +413,10 @@ pub(super) fn update_tactical_map_overlay_system(
     >,
 ) {
     let (asset_root, cache_adapter) = asset_io;
+    if icon_cache.reload_generation != asset_manager.reload_generation {
+        *icon_cache = TacticalMapIconSvgCache::default();
+        icon_cache.reload_generation = asset_manager.reload_generation;
+    }
     let map_settings = map_settings_query
         .iter()
         .next()
@@ -741,6 +843,7 @@ fn tactical_icon_centered_translation(
 
 #[derive(Default)]
 pub(super) struct TacticalMapIconSvgCache {
+    reload_generation: u64,
     base_by_asset_id: HashMap<String, Handle<Svg>>,
     tinted_by_variant_key: HashMap<String, Handle<Svg>>,
 }

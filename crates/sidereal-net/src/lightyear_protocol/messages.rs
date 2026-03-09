@@ -191,3 +191,9 @@ pub struct ServerOwnerAssetManifestDeltaMessage {
     pub removals: Vec<String>,
     pub generated_at_tick: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerAssetCatalogVersionMessage {
+    pub catalog_version: String,
+    pub generated_at_tick: u64,
+}

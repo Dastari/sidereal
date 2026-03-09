@@ -50,7 +50,12 @@ fn apply_contrast(color: vec3<f32>, contrast: f32) -> vec3<f32> {
 }
 
 fn tone_map(color: vec3<f32>) -> vec3<f32> {
-    return color / (vec3<f32>(1.0) + color);
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((color * (a * color + vec3<f32>(b))) / (color * (c * color + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn rand4(p: vec4<f32>) -> f32 {
@@ -468,23 +473,131 @@ fn atmosphere_response(dist: f32, radius: f32, atmosphere_radius: f32, light_ter
 
 fn star_surface_color(sphere_p: vec3<f32>) -> vec3<f32> {
     let time_s = params.identity_a.w;
-    let flow = sphere_p + vec3<f32>(time_s * 0.024, -time_s * 0.016, time_s * 0.012);
-    let cell_primary = fbm4_time(flow * 3.2, time_s * 0.34 + params.identity_a.z * 3.3, 4);
-    let cell_secondary = fbm4_time(flow.yzx * 6.1 + vec3<f32>(2.3, -1.4, 0.9), time_s * 0.58 + 3.8, 3);
-    let cell_shape = saturate(cell_primary * 0.68 + cell_secondary * 0.32);
-    let granules = 1.0 - abs(cell_shape * 2.0 - 1.0);
-    let lane_mask = smoothstep(0.1, 0.38, granules);
-    let cell_mask = 1.0 - smoothstep(0.18, 0.68, granules);
-    let plume_noise = fbm4_time(flow * 8.8, time_s * 0.92 + 7.1, 3);
-    let turbulence = fbm4_time(flow.zxy * 4.6, time_s * 0.44 + 11.7, 4);
-    let hot_lanes = smoothstep(0.46, 0.86, lane_mask * 0.82 + plume_noise * 0.18);
-    let warm_cells = smoothstep(0.34, 0.88, cell_mask * 0.84 + turbulence * 0.16);
+    let longitude = atan2(sphere_p.x, sphere_p.z);
+    let latitude = sphere_p.y;
+    let equator = 1.0 - abs(latitude);
 
-    var color = mix(params.color_secondary.rgb, params.color_primary.rgb, warm_cells);
-    color = mix(color, params.color_tertiary.rgb, hot_lanes * 0.42);
-    color += params.color_emissive.rgb * (0.16 + params.color_emissive.a * 0.22) * hot_lanes;
-    color *= 0.82 + turbulence * 0.12;
+    // Bias the star toward horizontal/equatorial flow so the disc reads side-on.
+    let shear_p = vec3<f32>(
+        longitude * 1.55 + time_s * (0.2 + params.clouds_a.z * 0.12),
+        latitude * (2.4 + params.clouds_a.x * 0.08),
+        equator * 1.2,
+    );
+    let convection = fbm4_time(shear_p * 2.8, time_s * 0.37 + params.identity_a.z * 5.7, 4);
+    let convection_detail = fbm4_time(shear_p.zxy * 5.4 + vec3<f32>(1.8, -0.7, 2.4), time_s * 0.63 + 2.9, 3);
+    let lateral_ribbons = fbm4_time(
+        vec3<f32>(longitude * 2.6 + time_s * 0.34, latitude * 7.8, equator * 2.1),
+        time_s * 0.58 + 9.1,
+        3,
+    );
+    let plume_noise = fbm4_time(
+        vec3<f32>(sphere_p.xz * 6.4, latitude * 3.2),
+        time_s * 0.82 + 13.4,
+        3,
+    );
+
+    let cell_shape = saturate(convection * 0.64 + convection_detail * 0.36);
+    let granules = 1.0 - abs(cell_shape * 2.0 - 1.0);
+    let dark_lanes = smoothstep(0.18, 0.72, granules * 0.72 + lateral_ribbons * 0.28);
+    let warm_cells = smoothstep(0.26, 0.86, cell_shape * 0.84 + equator * 0.16);
+    let bright_filaments = smoothstep(
+        0.48,
+        0.9,
+        lateral_ribbons * 0.56 + plume_noise * 0.24 + equator * 0.2,
+    );
+    let flare_knots = smoothstep(
+        0.68,
+        0.95,
+        plume_noise * 0.58 + bright_filaments * 0.22 + warm_cells * 0.2,
+    );
+    let molten_flow = fbm4_time(
+        vec3<f32>(
+            longitude * 4.1 + time_s * 0.41,
+            latitude * 6.4 + lateral_ribbons * 0.9,
+            equator * 2.8 + plume_noise * 0.4,
+        ),
+        time_s * 0.92 + 21.6,
+        4,
+    );
+    let molten_detail = fbm4_time(
+        vec3<f32>(
+            longitude * 8.8 - time_s * 0.56,
+            latitude * 10.6,
+            equator * 3.7,
+        ),
+        time_s * 1.14 + 4.8,
+        3,
+    );
+    let caustic_flow = 1.0 - abs((molten_flow * 0.72 + molten_detail * 0.28) * 2.0 - 1.0);
+    let orange_channels = smoothstep(0.34, 0.74, caustic_flow * 0.82 + dark_lanes * 0.18);
+    let ember_pockets = smoothstep(0.58, 0.92, molten_detail * 0.68 + plume_noise * 0.32);
+
+    var color = mix(params.color_tertiary.rgb * 0.58, params.color_secondary.rgb * 0.9, warm_cells);
+    color = mix(color, params.color_tertiary.rgb * 0.34, dark_lanes * 0.54 + orange_channels * 0.22);
+    color = mix(color, params.color_secondary.rgb * 0.54 + params.color_tertiary.rgb * 0.34, orange_channels * 0.72);
+    color = mix(color, params.color_primary.rgb * 0.98, bright_filaments * 0.42 + ember_pockets * 0.08);
+    color += params.color_emissive.rgb * (0.14 + params.color_emissive.a * 0.22) * flare_knots;
+    color += params.color_secondary.rgb * 0.08 * ember_pockets;
+    color *= 0.66 + bright_filaments * 0.14 + equator * 0.08 + orange_channels * 0.06;
     return color;
+}
+
+fn star_corona_color(
+    quad_uv: vec2<f32>,
+    dist: f32,
+    atmosphere_radius: f32,
+    body_kind: f32,
+    sphere_p: vec3<f32>,
+    view_n: vec3<f32>,
+) -> vec4<f32> {
+    if body_kind < 0.5 || body_kind > 1.5 {
+        return vec4<f32>(0.0);
+    }
+
+    let corona_band = 0.22 + params.clouds_a.w * 0.26;
+    let corona_mask = 1.0 - smoothstep(atmosphere_radius, atmosphere_radius + corona_band, dist);
+    if corona_mask <= 0.0001 {
+        return vec4<f32>(0.0);
+    }
+
+    let longitude = atan2(sphere_p.x, sphere_p.z);
+    let latitude = sphere_p.y;
+    let equator = 1.0 - abs(latitude);
+    let radial = saturate((dist - atmosphere_radius) / max(corona_band, 0.0001));
+    let time_s = params.identity_a.w;
+    let base_noise = fbm4_time(
+        vec3<f32>(longitude * 1.9 + time_s * 0.16, latitude * 5.0, radial * 3.2),
+        time_s * 0.46 + params.identity_a.z * 9.3,
+        4,
+    );
+    let streamer_noise = fbm4_time(
+        vec3<f32>(longitude * 3.8 + time_s * 0.28, latitude * 9.4, radial * 8.8 - time_s * 0.38),
+        time_s * 0.64 + params.identity_a.z * 13.7,
+        3,
+    );
+    let cme_noise = fbm4_time(
+        vec3<f32>(longitude * 1.55 + 4.0, latitude * 3.2 + equator * 2.6, radial * 4.8 - time_s * 0.18),
+        time_s * 0.38 + params.identity_a.z * 17.1,
+        3,
+    );
+
+    let wisps = smoothstep(0.38, 0.9, streamer_noise * 0.72 + base_noise * 0.28);
+    let turbulence = smoothstep(0.3, 0.9, base_noise);
+    let cme = smoothstep(0.8, 0.96, cme_noise + wisps * 0.14 + equator * 0.08);
+    let radial_falloff = pow(1.0 - radial, 2.4);
+    let limb = pow(1.0 - saturate(view_n.z), 0.65);
+    let density = corona_mask
+        * radial_falloff
+        * limb
+        * (0.06 + wisps * 0.24 + turbulence * 0.08 + equator * 0.08)
+        * (1.0 + cme * 0.85);
+
+    let corona_color = mix(params.color_tertiary.rgb * 0.78, params.color_secondary.rgb * 0.96, wisps * 0.62 + equator * 0.12);
+    let hot_filaments = mix(params.color_emissive.rgb, params.color_primary.rgb, 0.22);
+    let color = corona_color * (0.28 + wisps * 0.26 + turbulence * 0.08)
+        + hot_filaments * cme * (0.18 + params.color_emissive.a * 0.12);
+    let alpha = density * (0.12 + params.clouds_a.w * 0.08 + params.color_emissive.a * 0.04);
+    return vec4<f32>(color, alpha);
 }
 
 fn black_hole_surface_color(view_n: vec3<f32>, dist_norm: f32) -> vec3<f32> {
@@ -647,7 +760,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let atmosphere_radius = radius + mix(0.04, 0.16, saturate(params.emissive_a.x + params.clouds_a.w * 0.2));
     let quad_uv = mesh.uv * 2.0 - vec2<f32>(1.0, 1.0);
     let dist = length(quad_uv);
-    let extra_outer = select(0.0, 0.12, body_kind > 0.5);
+    let extra_outer = select(0.0, 0.38 + params.clouds_a.w * 0.12, body_kind > 0.5);
     if dist > atmosphere_radius + extra_outer {
         discard;
     }
@@ -715,17 +828,17 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         }
     } else if body_kind < 1.5 {
         color = star_surface_color(sphere_p);
-        let stellar_core = 0.82 + params.color_emissive.a * 0.38;
+        let stellar_core = 0.52 + params.color_emissive.a * 0.18;
         color *= stellar_core;
-        color += params.color_emissive.rgb * (0.08 + fresnel * 0.12);
-        color += backlight_color * backlight_strength * rim * 0.06;
+        color += params.color_emissive.rgb * (0.04 + fresnel * 0.08);
+        color += backlight_color * backlight_strength * rim * 0.02;
         if params.feature_flags_a.w > 0.5 {
-            color += (params.color_atmosphere.rgb * 0.82 + params.color_secondary.rgb * 0.24)
+            color += (params.color_atmosphere.rgb * 0.32 + params.color_secondary.rgb * 0.14)
                 * rim
-                * (0.18 + params.clouds_a.w * 0.42);
+                * (0.08 + params.clouds_a.w * 0.18);
         }
         if params.feature_flags_b.z > 0.5 {
-            color += params.color_emissive.rgb * params.color_emissive.a * (0.16 + fresnel * 0.22);
+            color += params.color_emissive.rgb * params.color_emissive.a * (0.08 + fresnel * 0.12);
         }
     } else {
         color = black_hole_surface_color(view_n, dist / max(radius, 0.0001));
@@ -747,7 +860,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         } else if body_kind < 1.5 {
             atmosphere_alpha = max(
                 atmosphere_alpha,
-                atmosphere_mask * (0.32 + params.clouds_a.w * 0.54 + params.color_emissive.a * 0.2),
+                atmosphere_mask * (0.16 + params.clouds_a.w * 0.18 + params.color_emissive.a * 0.08),
             );
         } else {
             atmosphere_alpha = max(atmosphere_alpha, atmosphere_mask * (0.12 + params.clouds_a.w * 0.18));
@@ -755,32 +868,21 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let out_alpha = max(body_mask, atmosphere_alpha);
-    let corona_band = 0.13 + params.clouds_a.w * 0.18;
-    let corona_mask = 1.0 - smoothstep(atmosphere_radius, atmosphere_radius + corona_band, dist);
-    let corona_noise = fbm4_time(
-        vec3<f32>(quad_uv * 3.6, atan2(quad_uv.y, quad_uv.x) * 0.6),
-        params.identity_a.w * 0.42 + params.identity_a.z * 9.3,
-        3,
-    );
-    let corona_rim = pow(corona_mask, 2.1) * mix(0.78, 1.24, corona_noise);
+    let star_corona = star_corona_color(quad_uv, dist, atmosphere_radius, body_kind, sphere_p, view_n);
     let out_color = mix(
         select(vec3<f32>(0.0), atmo_response, params.feature_flags_a.w > 0.5),
         color + atmo_response * (0.45 + rim * 0.3) + flash_color * flash_strength,
         body_mask,
     );
-    let star_corona = select(
-        vec3<f32>(0.0),
-        mix(params.color_secondary.rgb, params.color_primary.rgb, 0.38)
-            * corona_rim
-            * (0.42 + params.clouds_a.w * 0.44 + params.color_emissive.a * 0.22),
-        body_kind > 0.5 && body_kind < 1.5
-    );
-    let total_alpha = max(out_alpha, select(0.0, corona_mask * 0.72, body_kind > 0.5 && body_kind < 1.5));
+    let total_alpha = max(out_alpha, star_corona.a);
     var graded_color = mix(out_color, out_color * out_color, 0.12);
     if body_kind < 0.5 {
         graded_color = apply_saturation(graded_color, params.identity_b.y);
         graded_color = apply_contrast(graded_color, params.identity_b.z);
+    } else if body_kind < 1.5 {
+        graded_color = apply_saturation(graded_color, 1.28);
+        graded_color = apply_contrast(graded_color, 1.14);
     }
-    let final_color = tone_map(max(graded_color + star_corona, vec3<f32>(0.0)));
+    let final_color = tone_map(max(graded_color + star_corona.rgb, vec3<f32>(0.0)));
     return vec4<f32>(saturate(final_color.r), saturate(final_color.g), saturate(final_color.b), total_alpha);
 }

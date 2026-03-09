@@ -1347,6 +1347,7 @@ pub fn update_space_background_material_system(
     cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
     asset_root: Res<'_, AssetRootPath>,
     mut images: ResMut<'_, Assets<Image>>,
+    mut last_reload_generation: Local<'_, u64>,
     mut flare_cache: Local<'_, std::collections::HashMap<String, Handle<Image>>>,
     bg_query: Query<
         '_,
@@ -1360,6 +1361,10 @@ pub fn update_space_background_material_system(
     >,
     mut materials: ResMut<'_, Assets<SpaceBackgroundMaterial>>,
 ) {
+    if *last_reload_generation != asset_manager.reload_generation {
+        flare_cache.clear();
+        *last_reload_generation = asset_manager.reload_generation;
+    }
     for (material_handle, settings, maybe_visibility) in bg_query {
         if let Some(material) = materials.get_mut(&material_handle.0) {
             material.params.viewport_time = world_data.viewport_time;

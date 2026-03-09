@@ -23,6 +23,13 @@ type GraphPayload = {
   edges: Array<GraphEdge>
 }
 
+type GraphComponentUpdateBody = {
+  entityId?: unknown
+  typePath?: unknown
+  componentKind?: unknown
+  value?: unknown
+}
+
 function labelName(name: string): string {
   const parts = String(name).split('.')
   return parts[parts.length - 1] || name
@@ -46,6 +53,42 @@ function titleFromSnakeCase(value: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
+}
+
+function escapeCypherString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "''")
+}
+
+function toCypherLiteral(value: unknown): string {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error('Non-finite numbers are not supported in component values')
+    }
+    return String(value)
+  }
+  if (typeof value === 'string') {
+    return `'${escapeCypherString(value)}'`
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => toCypherLiteral(entry)).join(', ')}]`
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const entries = Object.entries(record).map(([key, entryValue]) => {
+      const cypherKey = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)
+        ? key
+        : `\`${key.replace(/`/g, '``')}\``
+      return `${cypherKey}: ${toCypherLiteral(entryValue)}`
+    })
+    return `{${entries.join(', ')}}`
+  }
+  throw new Error(`Unsupported component payload value type: ${typeof value}`)
+}
+
+function sanitizePayloadKey(typePath: string): string {
+  return typePath.replaceAll('::', '__')
 }
 
 export const Route = createFileRoute('/api/graph')({
@@ -138,6 +181,75 @@ export const Route = createFileRoute('/api/graph')({
         } catch (error) {
           const message =
             error instanceof Error ? error.message : 'Unknown error'
+          return json({ error: message }, { status: 500 })
+        } finally {
+          client.release()
+        }
+      },
+      POST: async ({ request }) => {
+        let body: GraphComponentUpdateBody
+        try {
+          body = (await request.json()) as GraphComponentUpdateBody
+        } catch {
+          return json({ error: 'Invalid JSON body' }, { status: 400 })
+        }
+
+        const entityId = typeof body.entityId === 'string' ? body.entityId : null
+        const typePath = typeof body.typePath === 'string' ? body.typePath : null
+        const componentKind =
+          typeof body.componentKind === 'string' ? body.componentKind : null
+
+        if (!entityId || !typePath || !componentKind) {
+          return json(
+            {
+              error:
+                'Body must include entityId, typePath, and componentKind as strings',
+            },
+            { status: 400 },
+          )
+        }
+
+        const graphName = safeGraphName(process.env.GRAPH_NAME || 'sidereal')
+        const pool = await getPostgresPool()
+        const client = await pool.connect()
+
+        try {
+          await client.query("LOAD 'age'")
+          await client.query('SET search_path = ag_catalog, public')
+
+          const payloadKey = sanitizePayloadKey(typePath)
+          const payloadLiteral = toCypherLiteral(body.value)
+          const escapedEntityId = escapeCypherString(entityId)
+          const escapedComponentKind = escapeCypherString(componentKind)
+
+          const result = await client.query(
+            `SELECT component_id::text AS component_id
+             FROM ag_catalog.cypher('${escapeCypherString(graphName)}', $$
+               MATCH (e:Entity {entity_id:'${escapedEntityId}'})-[:HAS_COMPONENT]->(c:Component {component_kind:'${escapedComponentKind}'})
+               SET c.${payloadKey} = ${payloadLiteral}
+               RETURN c.component_id
+             $$) AS (component_id agtype);`,
+          )
+
+          if (result.rows.length === 0) {
+            return json(
+              {
+                error: `Component not found for entity ${entityId} and kind ${componentKind}`,
+              },
+              { status: 404 },
+            )
+          }
+
+          return json({
+            success: true,
+            entityId,
+            componentKind,
+            typePath,
+            payloadKey,
+          })
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Unknown database error'
           return json({ error: message }, { status: 500 })
         } finally {
           client.release()

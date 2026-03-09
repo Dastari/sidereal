@@ -20,6 +20,7 @@ import type {
   WorldEntity,
 } from '@/components/grid/types'
 import type { BrpTab, DataSourceMode } from '@/components/sidebar/Toolbar'
+import type { EntityTreeUiState } from '@/components/sidebar/EntityTree'
 import { useSessionStorageNumber } from '@/hooks/use-session-storage-number'
 import {
   AppLayout,
@@ -28,7 +29,10 @@ import {
   PanelHeader,
 } from '@/components/layout/AppLayout'
 import { GridCanvas } from '@/components/grid/GridCanvas'
-import { EntityTree } from '@/components/sidebar/EntityTree'
+import {
+  EntityTree,
+  createDefaultEntityTreeUiState,
+} from '@/components/sidebar/EntityTree'
 import { DetailPanel } from '@/components/sidebar/DetailPanel'
 import { StatusBar } from '@/components/sidebar/StatusBar'
 import { Toolbar } from '@/components/sidebar/Toolbar'
@@ -47,7 +51,6 @@ import {
   fetchBrpResourceValue,
   fetchBrpResources,
   findComponentBySuffix,
-  hasUiTransformComponent,
   isCameraEntity,
   isPlayerEntity,
   isShipEntity,
@@ -60,12 +63,47 @@ import {
   resolveOwnerTypePath,
 } from '@/features/explorer/explorer-utils'
 
+type CameraSnapshot = {
+  x: number
+  y: number
+  zoom: number
+}
+
+type LiveTabWorkspaceSnapshot = {
+  entities: Array<WorldEntity>
+  brpResources: Array<BrpResourceRecord>
+  graphNodes: Map<string, GraphNode>
+  graphEdges: Array<GraphEdge>
+  expandedNodes: Map<string, ExpandedNode>
+  selectedId: string | null
+  pendingSelectedEntityGuid: string | null
+  cameraState: CameraSnapshot
+  graphStatus: {
+    connected: boolean
+    nodeCount: number
+    edgeCount: number
+    graphName: string
+  }
+  worldStatus: {
+    loaded: boolean
+    entityCount: number
+  }
+  entityTreeUiState: EntityTreeUiState
+}
+
+const DEFAULT_CAMERA_STATE: CameraSnapshot = {
+  x: 0,
+  y: 0,
+  zoom: 0.5,
+}
+
 export function ExplorerWorkspace({
   scope,
   selectedEntityGuid = null,
   onSelectedEntityGuidChange,
   toolbarContent,
 }: ExplorerWorkspaceProps) {
+  const DEFAULT_FILTER_MAP_INVISIBLE = true
   const scopeIsDatabase = scope === 'database'
   const [routeState, setRouteState] = useQueryStates({
     sourceMode: explorerSourceParser.withDefault(
@@ -74,7 +112,7 @@ export function ExplorerWorkspace({
     activeBrpTabId: parseAsString.withDefault('server'),
     selectedEntityId: parseAsString,
     selectedResourceTypePath: parseAsString,
-    filterMapInvisible: parseAsBoolean.withDefault(true),
+    filterMapInvisible: parseAsBoolean.withDefault(DEFAULT_FILTER_MAP_INVISIBLE),
   })
   const sourceMode = scopeIsDatabase
     ? 'database'
@@ -119,7 +157,10 @@ export function ExplorerWorkspace({
     `dashboard:${scope}:detail-panel-width`,
     320,
   )
-  const filterMapInvisible = routeState.filterMapInvisible
+  const [hasHydrated, setHasHydrated] = useState(false)
+  const filterMapInvisible = hasHydrated
+    ? routeState.filterMapInvisible
+    : DEFAULT_FILTER_MAP_INVISIBLE
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     open: false,
     x: 0,
@@ -129,16 +170,20 @@ export function ExplorerWorkspace({
     worldY: null,
   })
   const [contextStatusText, setContextStatusText] = useState<string | null>(null)
-  const [cameraState, setCameraState] = useState({
-    x: 0,
-    y: 0,
-    zoom: 0.5,
-  })
+  const [cameraState, setCameraState] = useState(DEFAULT_CAMERA_STATE)
+  const [entityTreeUiState, setEntityTreeUiState] = useState<EntityTreeUiState>(
+    () => createDefaultEntityTreeUiState(),
+  )
   const effectiveSelectedEntityGuid =
     selectedEntityGuid ?? pendingSelectedEntityGuid
   const entitiesRef = useRef<Array<WorldEntity>>([])
   const effectiveSelectedEntityGuidRef = useRef<string | null>(null)
   const previousSourceModeRef = useRef<DataSourceMode | null>(null)
+  const liveTabSnapshotsRef = useRef<Map<string, LiveTabWorkspaceSnapshot>>(
+    new Map(),
+  )
+  const previousLiveTabIdRef = useRef<string | null>(null)
+  const isLiveMode = !scopeIsDatabase && sourceMode !== 'database'
 
   // Status
   const [graphStatus, setGraphStatus] = useState({
@@ -180,7 +225,7 @@ export function ExplorerWorkspace({
   )
   const isServerBrpMode =
     sourceMode === 'liveServer' && activeBrpTab.kind === 'server'
-  const resourceSelectionId = routeState.selectedResourceTypePath
+  const resourceSelectionId = scopeIsDatabase && routeState.selectedResourceTypePath
     ? `${RESOURCE_SELECTION_PREFIX}${routeState.selectedResourceTypePath}`
     : null
   const selectedEntityId = useMemo(
@@ -216,19 +261,13 @@ export function ExplorerWorkspace({
     [entities, filterMapInvisible],
   )
 
-  const entitiesWithoutUiTransform = useMemo(
-    () =>
-      filteredEntities.filter(
-        (entity) => !hasUiTransformComponent(entity.id, graphNodes, graphEdges),
-      ),
-    [filteredEntities, graphNodes, graphEdges],
-  )
+  const entitiesForTree = filteredEntities
 
   const centerOnPosition = centerRequest.position
   // Map-only: exclude camera entities (id/name contains bevy_camera::camera::Camera, or has Camera component). Tree still shows all.
   const { entitiesForMap, cameraEntityIds } = useMemo(() => {
     const cameraIds = new Set<string>()
-    const forMap = entitiesWithoutUiTransform.filter((entity) => {
+    const forMap = filteredEntities.filter((entity) => {
       // Never render entities without source position on the map.
       if (entity.hasPosition === false) {
         return false
@@ -238,7 +277,7 @@ export function ExplorerWorkspace({
       return !hide
     })
     return { entitiesForMap: forMap, cameraEntityIds: cameraIds }
-  }, [entitiesWithoutUiTransform, graphNodes, graphEdges])
+  }, [filteredEntities, graphNodes, graphEdges])
 
   const selectedPlayerVisibilityOverlay = useMemo(
     () =>
@@ -253,6 +292,10 @@ export function ExplorerWorkspace({
     () => extractEntityRegistryTemplateIds(brpResources),
     [brpResources],
   )
+
+  useEffect(() => {
+    setHasHydrated(true)
+  }, [])
 
   useEffect(() => {
     entitiesRef.current = entities
@@ -272,6 +315,20 @@ export function ExplorerWorkspace({
   }, [selectedEntityGuid])
 
   useEffect(() => {
+    if (!scopeIsDatabase) {
+      if (!effectiveSelectedEntityGuid) {
+        return
+      }
+      const selectedEntity =
+        entities.find(
+          (entity) => entity.entityGuid === effectiveSelectedEntityGuid,
+        ) ?? null
+      if (selectedEntity) {
+        setSelectedId(selectedEntity.id)
+      }
+      return
+    }
+
     if (resourceSelectionId) {
       setSelectedId(resourceSelectionId)
       return
@@ -297,6 +354,93 @@ export function ExplorerWorkspace({
     effectiveSelectedEntityGuid,
     resourceSelectionId,
     routeState.selectedEntityId,
+    scopeIsDatabase,
+  ])
+
+  useEffect(() => {
+    if (!isLiveMode) {
+      previousLiveTabIdRef.current = null
+      return
+    }
+
+    const activeTabId = activeBrpTab.id
+    const previousTabId = previousLiveTabIdRef.current
+    if (previousTabId && previousTabId !== activeTabId) {
+      // Persist outgoing tab before restoring incoming tab state.
+      liveTabSnapshotsRef.current.set(previousTabId, {
+        entities,
+        brpResources,
+        graphNodes: new Map(graphNodes),
+        graphEdges: [...graphEdges],
+        expandedNodes: new Map(expandedNodes),
+        selectedId,
+        pendingSelectedEntityGuid,
+        cameraState,
+        graphStatus,
+        worldStatus,
+        entityTreeUiState,
+      })
+    }
+
+    if (previousTabId === activeTabId) {
+      return
+    }
+
+    const snapshot = liveTabSnapshotsRef.current.get(activeTabId)
+    if (snapshot) {
+      setEntities(snapshot.entities)
+      setBrpResources(snapshot.brpResources)
+      setGraphNodes(new Map(snapshot.graphNodes))
+      setGraphEdges([...snapshot.graphEdges])
+      setExpandedNodes(new Map(snapshot.expandedNodes))
+      setSelectedId(snapshot.selectedId)
+      setPendingSelectedEntityGuid(snapshot.pendingSelectedEntityGuid)
+      setCameraState(snapshot.cameraState)
+      setGraphStatus(snapshot.graphStatus)
+      setWorldStatus(snapshot.worldStatus)
+      setEntityTreeUiState(snapshot.entityTreeUiState)
+      onSelectedEntityGuidChange?.(snapshot.pendingSelectedEntityGuid)
+      previousLiveTabIdRef.current = activeTabId
+      return
+    }
+
+    // New live tab starts with an empty local workspace until first poll.
+    setEntities([])
+    setBrpResources([])
+    setGraphNodes(new Map())
+    setGraphEdges([])
+    setExpandedNodes(new Map())
+    setSelectedId(null)
+    setPendingSelectedEntityGuid(null)
+    setCameraState(DEFAULT_CAMERA_STATE)
+    setGraphStatus({
+      connected: false,
+      nodeCount: 0,
+      edgeCount: 0,
+      graphName: '',
+    })
+    setWorldStatus({
+      loaded: false,
+      entityCount: 0,
+    })
+    setEntityTreeUiState(createDefaultEntityTreeUiState())
+    onSelectedEntityGuidChange?.(null)
+    previousLiveTabIdRef.current = activeTabId
+  }, [
+    activeBrpTab.id,
+    brpResources,
+    cameraState,
+    entities,
+    entityTreeUiState,
+    expandedNodes,
+    graphEdges,
+    graphNodes,
+    graphStatus,
+    isLiveMode,
+    onSelectedEntityGuidChange,
+    pendingSelectedEntityGuid,
+    selectedId,
+    worldStatus,
   ])
 
   // Load data
@@ -516,6 +660,12 @@ export function ExplorerWorkspace({
       return
     }
 
+    const crossedDatabaseBoundary =
+      (previousSourceMode === 'database') !== (sourceMode === 'database')
+    if (!crossedDatabaseBoundary) {
+      return
+    }
+
     setExpandedNodes(new Map())
     setSelectedId(null)
     setPendingSelectedEntityGuid(null)
@@ -555,15 +705,18 @@ export function ExplorerWorkspace({
     if (!selectedExists) {
       setSelectedId(null)
       onSelectedEntityGuidChange?.(null)
-      void setRouteState({
-        selectedEntityId: null,
-        selectedResourceTypePath: null,
-      })
+      if (scopeIsDatabase) {
+        void setRouteState({
+          selectedEntityId: null,
+          selectedResourceTypePath: null,
+        })
+      }
     }
   }, [
     entities,
     onSelectedEntityGuidChange,
     selectedId,
+    scopeIsDatabase,
     setRouteState,
     effectiveSelectedEntityGuid,
   ])
@@ -635,13 +788,13 @@ export function ExplorerWorkspace({
         const next = new Map(prev)
 
         // Find the base entity or existing node position
-        const baseEntity = entitiesWithoutUiTransform.find((e) => e.id === id)
+        const baseEntity = entitiesForMap.find((e) => e.id === id)
         const existingNode = prev.get(id)
         const centerX = baseEntity?.x || existingNode?.x || 0
         const centerY = baseEntity?.y || existingNode?.y || 0
 
         // Only explode child entities in the map graph view.
-        const childEntities = entitiesWithoutUiTransform.filter(
+        const childEntities = entitiesForMap.filter(
           (entity) => entity.parentEntityId === id,
         )
         const hiddenChildren = childEntities.filter(
@@ -684,35 +837,49 @@ export function ExplorerWorkspace({
         return next
       })
     },
-    [entitiesWithoutUiTransform],
+    [entitiesForMap],
   )
 
   // Update a component value via BRP (Server BRP or Client BRP only)
   const handleComponentUpdate = useCallback(
-    async (entityId: string, typePath: string, value: unknown) => {
-      if (
-        sourceMode !== 'liveServer' &&
-        sourceMode !== 'liveClient'
-      )
-        return
-      const numericEntityId = Number(entityId)
-      if (!Number.isFinite(numericEntityId)) {
-        console.error('Component update failed: entity ID must be numeric for BRP')
-        return
-      }
-      const url = `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`
+    async (
+      entityId: string,
+      typePath: string,
+      componentKind: string,
+      value: unknown,
+    ) => {
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            method: 'world.insert_components',
-            params: {
-              entity: numericEntityId,
-              components: { [typePath]: value },
-            },
-          }),
-        })
+        let res: Response
+        if (sourceMode === 'database') {
+          res = await fetch('/api/graph', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              entityId,
+              typePath,
+              componentKind,
+              value,
+            }),
+          })
+        } else {
+          const numericEntityId = Number(entityId)
+          if (!Number.isFinite(numericEntityId)) {
+            console.error('Component update failed: entity ID must be numeric for BRP')
+            return
+          }
+          const url = `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              method: 'world.insert_components',
+              params: {
+                entity: numericEntityId,
+                components: { [typePath]: value },
+              },
+            }),
+          })
+        }
         const data = (await res.json()) as {
           error?: string
           ok?: boolean
@@ -769,20 +936,24 @@ export function ExplorerWorkspace({
       if (!nextId) {
         setPendingSelectedEntityGuid(null)
         onSelectedEntityGuidChange?.(null)
-        void setRouteState({
-          selectedEntityId: null,
-          selectedResourceTypePath: null,
-        })
+        if (scopeIsDatabase) {
+          void setRouteState({
+            selectedEntityId: null,
+            selectedResourceTypePath: null,
+          })
+        }
         return
       }
 
       if (nextId.startsWith(RESOURCE_SELECTION_PREFIX)) {
         setPendingSelectedEntityGuid(null)
         onSelectedEntityGuidChange?.(null)
-        void setRouteState({
-          selectedEntityId: null,
-          selectedResourceTypePath: nextId.slice(RESOURCE_SELECTION_PREFIX.length),
-        })
+        if (scopeIsDatabase) {
+          void setRouteState({
+            selectedEntityId: null,
+            selectedResourceTypePath: nextId.slice(RESOURCE_SELECTION_PREFIX.length),
+          })
+        }
         return
       }
 
@@ -790,12 +961,14 @@ export function ExplorerWorkspace({
       const entityGuid = selectedEntity?.entityGuid ?? null
       setPendingSelectedEntityGuid(entityGuid)
       onSelectedEntityGuidChange?.(entityGuid)
-      void setRouteState({
-        selectedEntityId: entityGuid ? null : nextId,
-        selectedResourceTypePath: null,
-      })
+      if (scopeIsDatabase) {
+        void setRouteState({
+          selectedEntityId: entityGuid ? null : nextId,
+          selectedResourceTypePath: null,
+        })
+      }
     },
-    [entities, onSelectedEntityGuidChange, setRouteState],
+    [entities, onSelectedEntityGuidChange, scopeIsDatabase, setRouteState],
   )
 
   const handleCameraStateChange = useCallback(
@@ -815,7 +988,7 @@ export function ExplorerWorkspace({
     if (id.startsWith(RESOURCE_SELECTION_PREFIX)) {
       return
     }
-    const entity = entitiesWithoutUiTransform.find((e) => e.id === id)
+    const entity = entitiesForMap.find((e) => e.id === id)
     if (
       entity &&
       entity.hasPosition !== false &&
@@ -827,7 +1000,7 @@ export function ExplorerWorkspace({
         seq: prev.seq + 1,
       }))
     }
-  }, [entitiesWithoutUiTransform, updateSelection])
+  }, [entitiesForMap, updateSelection])
 
   const handleSelectFromGrid = useCallback((id: string | null) => {
     updateSelection(id)
@@ -848,8 +1021,8 @@ export function ExplorerWorkspace({
           throw new Error(result.error || 'Failed to delete entity')
         }
       } else {
-        if (sourceMode !== 'liveServer' || activeBrpTab.kind !== 'server') {
-          throw new Error('Delete is disabled for client BRP mode')
+        if (sourceMode !== 'liveServer' && sourceMode !== 'liveClient') {
+          throw new Error('Delete is disabled for database mode')
         }
         const numericEntityId = Number(entityId)
         if (!Number.isFinite(numericEntityId)) {
@@ -1133,10 +1306,12 @@ export function ExplorerWorkspace({
               </PanelHeader>
               <PanelContent>
                 <EntityTree
-                  entities={entitiesWithoutUiTransform}
+                  entities={entitiesForTree}
                   resources={brpResources.filter(
                     (resource) => resource.typePath !== '__error__',
                   )}
+                  uiState={entityTreeUiState}
+                  onUiStateChange={setEntityTreeUiState}
                   selectedId={selectedId}
                   onSelect={handleSelectFromTree}
                   sourceMode={sourceMode}

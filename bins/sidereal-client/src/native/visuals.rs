@@ -2,7 +2,7 @@
 
 use avian2d::prelude::{Position, SpatialQuery, SpatialQueryFilter};
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::RenderLayers;
+use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::state::state_scoped::DespawnOnExit;
@@ -30,12 +30,12 @@ use super::backdrop::{
     RuntimeEffectUniforms, SharedWorldLightingUniforms, StreamedSpriteShaderMaterial,
 };
 use super::components::{
-    BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
+    BallisticProjectileVisualAttached, ControlledEntity, GameplayCamera, PendingInitialVisualReady,
     PendingVisibilityFadeIn, ResolvedRuntimeRenderLayer, RuntimeWorldVisualFamily,
     RuntimeWorldVisualPass, RuntimeWorldVisualPassKind, RuntimeWorldVisualPassSet,
     StreamedSpriteShaderAssetId, StreamedVisualAssetId, StreamedVisualAttached,
-    StreamedVisualChild, SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WeaponTracerBolt,
-    WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
+    StreamedVisualAttachmentKind, StreamedVisualChild, SuppressedPredictedDuplicateVisual,
+    WeaponImpactSpark, WeaponTracerBolt, WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
 };
 use super::ecs_util::{queue_despawn_if_exists, queue_despawn_if_exists_force};
 use super::lighting::{CameraLocalLightSet, WorldLightingState};
@@ -54,12 +54,12 @@ const WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ: f32 = 18.0;
 const WEAPON_TRACER_WIGGLE_MAX_AMP_MPS: f32 = 120.0;
 const WEAPON_IMPACT_SPARK_TTL_S: f32 = 0.12;
 const WEAPON_TRACER_MIN_TTL_S: f32 = 0.01;
-const PLANET_BODY_PARALLAX_FACTOR: f32 = 0.18;
 const PLANET_CLOUD_BACK_LAYER_Z_OFFSET: f32 = -0.2;
 const PLANET_CLOUD_FRONT_LAYER_Z_OFFSET: f32 = 0.5;
 const PLANET_BODY_LAYER_Z_OFFSET: f32 = 0.0;
 const PLANET_RING_BACK_LAYER_Z_OFFSET: f32 = -0.45;
 const PLANET_RING_FRONT_LAYER_Z_OFFSET: f32 = 0.65;
+const PLANET_PROJECTED_CULL_BUFFER_M: f32 = 120.0;
 const STREAMED_VISUAL_BASE_LAYER_Z: f32 = 0.2;
 const PROJECTILE_VISUAL_WIDTH_M: f32 = 0.45;
 const PROJECTILE_VISUAL_LENGTH_M: f32 = 2.8;
@@ -69,6 +69,16 @@ enum StreamedVisualMaterialKind {
     Plain,
     GenericShader,
     AsteroidShader,
+}
+
+impl StreamedVisualMaterialKind {
+    const fn attachment_kind(self) -> StreamedVisualAttachmentKind {
+        match self {
+            Self::Plain => StreamedVisualAttachmentKind::Plain,
+            Self::GenericShader => StreamedVisualAttachmentKind::GenericShader,
+            Self::AsteroidShader => StreamedVisualAttachmentKind::AsteroidShader,
+        }
+    }
 }
 
 fn pass_tag(
@@ -184,6 +194,14 @@ fn image_from_rgba(width: u32, height: u32, data: Vec<u8>) -> Image {
     )
 }
 
+fn ensure_visual_parent_spatial_components(entity_commands: &mut EntityCommands<'_>) {
+    entity_commands.try_insert((
+        Transform::default(),
+        GlobalTransform::default(),
+        Visibility::default(),
+    ));
+}
+
 fn resolve_streamed_visual_material_kind(
     use_shader_materials: bool,
     world_sprite_kind: Option<shaders::RuntimeWorldSpriteShaderKind>,
@@ -204,6 +222,13 @@ fn resolve_streamed_visual_material_kind(
         }
         _ => StreamedVisualMaterialKind::Plain,
     }
+}
+
+fn streamed_visual_needs_rebuild(
+    attached_kind: Option<StreamedVisualAttachmentKind>,
+    desired_kind: StreamedVisualMaterialKind,
+) -> bool {
+    attached_kind != Some(desired_kind.attachment_kind())
 }
 
 /// TODO: add symmetric fade-out on relevance loss via a short-lived visual ghost entity.
@@ -348,8 +373,14 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn cleanup_streamed_visual_children_system(
     mut commands: Commands<'_, '_>,
+    asset_root: Res<'_, AssetRootPath>,
+    asset_manager: Res<'_, LocalAssetManager>,
+    mut last_reload_generation: Local<'_, u64>,
+    cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
+    shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     parents: Query<
         '_,
         '_,
@@ -357,8 +388,11 @@ pub(super) fn cleanup_streamed_visual_children_system(
             Entity,
             &'_ Children,
             Option<&'_ StreamedVisualAssetId>,
+            Option<&'_ StreamedSpriteShaderAssetId>,
+            Option<&'_ ProceduralSprite>,
             Has<PlanetBodyShaderSettings>,
             Has<StreamedVisualAttached>,
+            Option<&'_ StreamedVisualAttachmentKind>,
             Has<SuppressedPredictedDuplicateVisual>,
             Option<&'_ PlayerTag>,
             Has<ControlledEntityGuid>,
@@ -367,22 +401,53 @@ pub(super) fn cleanup_streamed_visual_children_system(
     >,
     visual_children: Query<'_, '_, (), With<StreamedVisualChild>>,
 ) {
+    let catalog_reloaded = *last_reload_generation != asset_manager.reload_generation;
+    *last_reload_generation = asset_manager.reload_generation;
     for (
         parent_entity,
         children,
         visual_asset_id,
+        sprite_shader_asset_id,
+        procedural_sprite,
         has_planet_shader,
         has_visual_attached,
+        attached_kind,
         is_suppressed,
         player_tag,
         has_controlled_entity_guid,
     ) in &parents
     {
+        let world_sprite_kind = sprite_shader_asset_id
+            .and_then(|shader| shaders::world_sprite_shader_kind(&shader_assignments, &shader.0));
+        let has_streamed_sprite_shader_path = sprite_shader_asset_id.is_some_and(|shader| {
+            shaders::world_sprite_shader_ready(
+                &asset_root.0,
+                &asset_manager,
+                *cache_adapter,
+                &shader.0,
+            )
+        });
+        let desired_kind = if sprite_shader_asset_id.is_some()
+            || procedural_sprite.is_some()
+            || attached_kind.is_some()
+        {
+            Some(resolve_streamed_visual_material_kind(
+                shader_materials_enabled(),
+                world_sprite_kind,
+                has_streamed_sprite_shader_path,
+            ))
+        } else {
+            None
+        };
         let should_clear_visual = visual_asset_id.is_none()
+            || catalog_reloaded
             || has_planet_shader
             || is_suppressed
             || player_tag.is_some()
-            || has_controlled_entity_guid;
+            || has_controlled_entity_guid
+            || desired_kind.is_some_and(|desired| {
+                streamed_visual_needs_rebuild(attached_kind.copied(), desired)
+            });
         if !should_clear_visual {
             continue;
         }
@@ -396,7 +461,7 @@ pub(super) fn cleanup_streamed_visual_children_system(
         if (has_visual_attached || removed_any_child)
             && let Ok(mut parent_commands) = commands.get_entity(parent_entity)
         {
-            parent_commands.remove::<StreamedVisualAttached>();
+            parent_commands.remove::<(StreamedVisualAttached, StreamedVisualAttachmentKind)>();
         }
     }
 }
@@ -407,6 +472,7 @@ pub(super) fn attach_streamed_visual_assets_system(
     mut images: ResMut<'_, Assets<Image>>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
+    mut last_reload_generation: Local<'_, u64>,
     cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
@@ -443,6 +509,10 @@ pub(super) fn attach_streamed_visual_assets_system(
         ),
     >,
 ) {
+    if *last_reload_generation != asset_manager.reload_generation {
+        streamed_image_cache.clear();
+        *last_reload_generation = asset_manager.reload_generation;
+    }
     let use_shader_materials = shader_materials_enabled();
     for (
         entity,
@@ -463,11 +533,7 @@ pub(super) fn attach_streamed_visual_assets_system(
         let Ok(mut entity_commands) = commands.get_entity(entity) else {
             continue;
         };
-        entity_commands.try_insert((
-            Transform::default(),
-            GlobalTransform::default(),
-            Visibility::default(),
-        ));
+        ensure_visual_parent_spatial_components(&mut entity_commands);
 
         let world_sprite_kind = sprite_shader
             .and_then(|shader| shaders::world_sprite_shader_kind(&shader_assignments, &shader.0));
@@ -574,7 +640,10 @@ pub(super) fn attach_streamed_visual_assets_system(
                         )),
                     ));
                 });
-                entity_commands.try_insert(StreamedVisualAttached);
+                entity_commands.try_insert((
+                    StreamedVisualAttached,
+                    StreamedVisualAttachmentKind::AsteroidShader,
+                ));
                 continue;
             }
             StreamedVisualMaterialKind::GenericShader => {
@@ -596,7 +665,10 @@ pub(super) fn attach_streamed_visual_assets_system(
                         )),
                     ));
                 });
-                entity_commands.try_insert(StreamedVisualAttached);
+                entity_commands.try_insert((
+                    StreamedVisualAttached,
+                    StreamedVisualAttachmentKind::GenericShader,
+                ));
                 continue;
             }
             StreamedVisualMaterialKind::Plain => {}
@@ -618,7 +690,121 @@ pub(super) fn attach_streamed_visual_assets_system(
                 Transform::from_xyz(x, y, z),
             ));
         });
-        entity_commands.try_insert(StreamedVisualAttached);
+        entity_commands.try_insert((StreamedVisualAttached, StreamedVisualAttachmentKind::Plain));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::{
+        StreamedVisualMaterialKind, ensure_planet_body_root_visibility_system,
+        ensure_visual_parent_spatial_components, planet_visual_local_offset,
+        runtime_layer_screen_scale_factor, streamed_visual_needs_rebuild,
+    };
+    use crate::native::components::{
+        PendingInitialVisualReady, StreamedVisualAttachmentKind, WorldEntity,
+    };
+    use bevy::prelude::*;
+    use sidereal_game::PlanetBodyShaderSettings;
+
+    #[test]
+    fn streamed_visual_rebuilds_when_material_kind_changes() {
+        assert!(streamed_visual_needs_rebuild(
+            Some(StreamedVisualAttachmentKind::Plain),
+            StreamedVisualMaterialKind::AsteroidShader,
+        ));
+        assert!(streamed_visual_needs_rebuild(
+            Some(StreamedVisualAttachmentKind::GenericShader),
+            StreamedVisualMaterialKind::Plain,
+        ));
+        assert!(!streamed_visual_needs_rebuild(
+            Some(StreamedVisualAttachmentKind::AsteroidShader),
+            StreamedVisualMaterialKind::AsteroidShader,
+        ));
+    }
+
+    #[test]
+    fn planet_root_visibility_waits_for_initial_visual_ready() {
+        let mut app = App::new();
+        app.add_systems(Update, ensure_planet_body_root_visibility_system);
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                PlanetBodyShaderSettings::default(),
+                Visibility::Visible,
+                PendingInitialVisualReady,
+            ))
+            .id();
+
+        app.update();
+
+        let entity_ref = app.world().entity(entity);
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Hidden
+        );
+        assert!(
+            entity_ref.contains::<PendingInitialVisualReady>(),
+            "planet root should stay pending until visuals are actually ready"
+        );
+    }
+
+    #[test]
+    fn visual_parent_spatial_components_are_backfilled() {
+        let mut app = App::new();
+        let entity = app.world_mut().spawn_empty().id();
+
+        let mut commands = app.world_mut().commands();
+        let mut entity_commands = commands.entity(entity);
+        ensure_visual_parent_spatial_components(&mut entity_commands);
+
+        app.update();
+
+        let entity_ref = app.world().entity(entity);
+        assert!(entity_ref.contains::<Transform>());
+        assert!(entity_ref.contains::<GlobalTransform>());
+        assert!(entity_ref.contains::<Visibility>());
+    }
+
+    #[test]
+    fn planet_visual_local_offset_projects_from_authoritative_center() {
+        let offset =
+            planet_visual_local_offset(None, Vec2::new(100.0, 50.0), Vec2::new(300.0, 90.0));
+        assert_eq!(offset, Vec2::ZERO);
+
+        let layer = crate::native::components::ResolvedRuntimeRenderLayer {
+            layer_id: "midground_planets".to_string(),
+            definition: sidereal_game::RuntimeRenderLayerDefinition {
+                layer_id: "midground_planets".to_string(),
+                phase: "world".to_string(),
+                material_domain: "world_polygon".to_string(),
+                shader_asset_id: "planet_visual_wgsl".to_string(),
+                parallax_factor: Some(0.25),
+                ..Default::default()
+            },
+        };
+        let offset = planet_visual_local_offset(
+            Some(&layer),
+            Vec2::new(100.0, 50.0),
+            Vec2::new(300.0, 90.0),
+        );
+        assert_eq!(offset, Vec2::new(150.0, 30.0));
+    }
+
+    #[test]
+    fn runtime_layer_screen_scale_defaults_and_clamps() {
+        let default_layer = sidereal_game::RuntimeRenderLayerDefinition::default();
+        assert_eq!(runtime_layer_screen_scale_factor(&default_layer), 1.0);
+
+        let mut authored = sidereal_game::RuntimeRenderLayerDefinition::default();
+        authored.screen_scale_factor = Some(1.5);
+        assert_eq!(runtime_layer_screen_scale_factor(&authored), 1.5);
+
+        authored.screen_scale_factor = Some(1000.0);
+        assert_eq!(runtime_layer_screen_scale_factor(&authored), 64.0);
     }
 }
 
@@ -700,6 +886,7 @@ pub(super) fn attach_planet_visual_stack_system(
     mut meshes: ResMut<'_, Assets<Mesh>>,
     mut planet_materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
     time: Res<'_, Time>,
+    camera_motion: Res<'_, CameraMotionState>,
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
@@ -746,12 +933,21 @@ pub(super) fn attach_planet_visual_stack_system(
         let Ok(mut entity_commands) = commands.get_entity(entity) else {
             continue;
         };
+        ensure_visual_parent_spatial_components(&mut entity_commands);
         let time_s = time.elapsed_secs();
         let world_position = resolve_world_position(position, world_position).unwrap_or(Vec2::ZERO);
         let diameter_m = size_m
             .map(|v| v.length.max(v.width).max(1.0))
             .unwrap_or(256.0);
         let layer_base_z = planet_layer_base_z(resolved_render_layer);
+        let local_offset = planet_visual_local_offset(
+            resolved_render_layer,
+            world_position,
+            camera_motion.world_position_xy,
+        );
+        let layer_screen_scale = resolved_render_layer
+            .map(|layer| runtime_layer_screen_scale_factor(&layer.definition))
+            .unwrap_or(1.0);
         let mut next_pass_set = pass_set.copied().unwrap_or_default();
         let Some(body_pass) =
             find_world_visual_pass(visual_stack, RuntimeWorldVisualPassKind::PlanetBody)
@@ -780,17 +976,18 @@ pub(super) fn attach_planet_visual_stack_system(
                         RuntimeWorldVisualFamily::Planet,
                         RuntimeWorldVisualPassKind::PlanetBody,
                     ),
+                    NoFrustumCulling,
                     Mesh2d(mesh),
                     MeshMaterial2d(material),
                     RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                     Transform::from_xyz(
-                        0.0,
-                        0.0,
+                        local_offset.x,
+                        local_offset.y,
                         layer_base_z + PLANET_BODY_LAYER_Z_OFFSET + depth_bias_z,
                     )
                     .with_scale(Vec3::new(
-                        diameter_m * scale_multiplier,
-                        diameter_m * scale_multiplier,
+                        diameter_m * scale_multiplier * layer_screen_scale,
+                        diameter_m * scale_multiplier * layer_screen_scale,
                         1.0,
                     )),
                 ));
@@ -838,17 +1035,18 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualFamily::Planet,
                             RuntimeWorldVisualPassKind::PlanetCloudBack,
                         ),
+                        NoFrustumCulling,
                         Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
                         MeshMaterial2d(back_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            0.0,
-                            0.0,
+                            local_offset.x,
+                            local_offset.y,
                             layer_base_z + PLANET_CLOUD_BACK_LAYER_Z_OFFSET + back_depth,
                         )
                         .with_scale(Vec3::new(
-                            diameter_m * back_scale,
-                            diameter_m * back_scale,
+                            diameter_m * back_scale * layer_screen_scale,
+                            diameter_m * back_scale * layer_screen_scale,
                             1.0,
                         )),
                     ));
@@ -859,17 +1057,18 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualFamily::Planet,
                             RuntimeWorldVisualPassKind::PlanetCloudFront,
                         ),
+                        NoFrustumCulling,
                         Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
                         MeshMaterial2d(front_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            0.0,
-                            0.0,
+                            local_offset.x,
+                            local_offset.y,
                             layer_base_z + PLANET_CLOUD_FRONT_LAYER_Z_OFFSET + front_depth,
                         )
                         .with_scale(Vec3::new(
-                            diameter_m * front_scale,
-                            diameter_m * front_scale,
+                            diameter_m * front_scale * layer_screen_scale,
+                            diameter_m * front_scale * layer_screen_scale,
                             1.0,
                         )),
                     ));
@@ -919,17 +1118,18 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualFamily::Planet,
                             RuntimeWorldVisualPassKind::PlanetRingBack,
                         ),
+                        NoFrustumCulling,
                         Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
                         MeshMaterial2d(back_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            0.0,
-                            0.0,
+                            local_offset.x,
+                            local_offset.y,
                             layer_base_z + PLANET_RING_BACK_LAYER_Z_OFFSET + back_depth,
                         )
                         .with_scale(Vec3::new(
-                            diameter_m * back_scale,
-                            diameter_m * back_scale,
+                            diameter_m * back_scale * layer_screen_scale,
+                            diameter_m * back_scale * layer_screen_scale,
                             1.0,
                         )),
                     ));
@@ -940,17 +1140,18 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualFamily::Planet,
                             RuntimeWorldVisualPassKind::PlanetRingFront,
                         ),
+                        NoFrustumCulling,
                         Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
                         MeshMaterial2d(front_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            0.0,
-                            0.0,
+                            local_offset.x,
+                            local_offset.y,
                             layer_base_z + PLANET_RING_FRONT_LAYER_Z_OFFSET + front_depth,
                         )
                         .with_scale(Vec3::new(
-                            diameter_m * front_scale,
-                            diameter_m * front_scale,
+                            diameter_m * front_scale * layer_screen_scale,
+                            diameter_m * front_scale * layer_screen_scale,
                             1.0,
                         )),
                     ));
@@ -966,12 +1167,10 @@ pub(super) fn attach_planet_visual_stack_system(
 
 #[allow(clippy::type_complexity)]
 pub(super) fn ensure_planet_body_root_visibility_system(
-    mut commands: Commands<'_, '_>,
     mut planets: Query<
         '_,
         '_,
         (
-            Entity,
             &'_ PlanetBodyShaderSettings,
             &'_ mut Visibility,
             Option<&'_ PendingInitialVisualReady>,
@@ -984,17 +1183,16 @@ pub(super) fn ensure_planet_body_root_visibility_system(
         ),
     >,
 ) {
-    for (entity, settings, mut visibility, pending_initial_visual_ready) in &mut planets {
+    for (settings, mut visibility, pending_initial_visual_ready) in &mut planets {
         if !settings.enabled {
+            continue;
+        }
+        if pending_initial_visual_ready.is_some() {
+            *visibility = Visibility::Hidden;
             continue;
         }
         if *visibility != Visibility::Visible {
             *visibility = Visibility::Visible;
-        }
-        if pending_initial_visual_ready.is_some()
-            && let Ok(mut entity_commands) = commands.get_entity(entity)
-        {
-            entity_commands.remove::<PendingInitialVisualReady>();
         }
     }
 }
@@ -1006,6 +1204,8 @@ pub(super) fn update_planet_body_visuals_system(
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
     mut materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
+    gameplay_camera: Query<'_, '_, (&'_ Camera, &'_ GlobalTransform), With<GameplayCamera>>,
+    windows: Query<'_, '_, &'_ Window, With<bevy::window::PrimaryWindow>>,
     planets: Query<
         '_,
         '_,
@@ -1026,11 +1226,13 @@ pub(super) fn update_planet_body_visuals_system(
             &'_ RuntimeWorldVisualPass,
             Option<&'_ MeshMaterial2d<PlanetVisualMaterial>>,
             &'_ mut Transform,
+            &'_ mut Visibility,
         ),
         (),
     >,
 ) {
     let time_s = time.elapsed_secs();
+    let camera_view = gameplay_camera.single().ok().zip(windows.single().ok());
     for (
         children,
         settings,
@@ -1048,16 +1250,24 @@ pub(super) fn update_planet_body_visuals_system(
         let diameter_m = size_m
             .map(|v| v.length.max(v.width).max(1.0))
             .unwrap_or(256.0);
-        let layer_parallax = resolved_render_layer
-            .map(|layer| runtime_layer_parallax_factor(&layer.definition))
-            .unwrap_or(PLANET_BODY_PARALLAX_FACTOR);
         let layer_base_z = planet_layer_base_z(resolved_render_layer);
-        let parallax_offset = -camera_motion.world_position_xy * (1.0 - layer_parallax);
+        let local_offset = planet_visual_local_offset(
+            resolved_render_layer,
+            world_position,
+            camera_motion.world_position_xy,
+        );
+        let projected_center_world = world_position + local_offset;
+        let layer_screen_scale = resolved_render_layer
+            .map(|layer| runtime_layer_screen_scale_factor(&layer.definition))
+            .unwrap_or(1.0);
         for child in children.iter() {
-            if let Ok((pass, planet_material, mut transform)) = planet_visuals.get_mut(child) {
+            if let Ok((pass, planet_material, mut transform, mut visibility)) =
+                planet_visuals.get_mut(child)
+            {
                 if pass.family != RuntimeWorldVisualFamily::Planet {
                     continue;
                 }
+                let mut projected_radius_m = 0.0;
                 if let Some(material_handle) = planet_material
                     && let Some(material) = materials.get_mut(&material_handle.0)
                 {
@@ -1100,14 +1310,28 @@ pub(super) fn update_planet_body_visuals_system(
                         base_z + visual_pass_depth_bias_z(pass_definition, 0.0);
                     let scale_multiplier =
                         visual_pass_scale_multiplier(pass_definition, base_scale);
-                    transform.scale = Vec3::new(
-                        diameter_m * scale_multiplier,
-                        diameter_m * scale_multiplier,
-                        1.0,
-                    );
+                    let projected_diameter_m = diameter_m * scale_multiplier * layer_screen_scale;
+                    transform.scale = Vec3::new(projected_diameter_m, projected_diameter_m, 1.0);
+                    projected_radius_m = projected_diameter_m * 0.5;
                 }
-                transform.translation.x = parallax_offset.x;
-                transform.translation.y = parallax_offset.y;
+                transform.translation.x = local_offset.x;
+                transform.translation.y = local_offset.y;
+                let in_projected_view =
+                    camera_view.is_none_or(|((camera, camera_global), window)| {
+                        projected_planet_intersects_camera_view(
+                            projected_center_world,
+                            projected_radius_m,
+                            PLANET_PROJECTED_CULL_BUFFER_M,
+                            camera,
+                            camera_global,
+                            window,
+                        )
+                    });
+                *visibility = if in_projected_view {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
             }
         }
     }
@@ -1121,10 +1345,59 @@ fn runtime_layer_z_bias(definition: &RuntimeRenderLayerDefinition) -> f32 {
     definition.depth_bias_z.unwrap_or(definition.order as f32)
 }
 
+fn runtime_layer_screen_scale_factor(definition: &RuntimeRenderLayerDefinition) -> f32 {
+    definition
+        .screen_scale_factor
+        .unwrap_or(1.0)
+        .clamp(0.01, 64.0)
+}
+
 fn planet_layer_base_z(resolved_render_layer: Option<&ResolvedRuntimeRenderLayer>) -> f32 {
     resolved_render_layer
         .map(|layer| runtime_layer_z_bias(&layer.definition))
         .unwrap_or(-60.0)
+}
+
+fn planet_visual_local_offset(
+    resolved_render_layer: Option<&ResolvedRuntimeRenderLayer>,
+    planet_world_position: Vec2,
+    camera_world_position_xy: Vec2,
+) -> Vec2 {
+    let parallax_factor = resolved_render_layer
+        .map(|layer| runtime_layer_parallax_factor(&layer.definition))
+        .unwrap_or(1.0);
+    (camera_world_position_xy - planet_world_position) * (1.0 - parallax_factor)
+}
+
+fn projected_planet_intersects_camera_view(
+    projected_center_world: Vec2,
+    projected_radius_m: f32,
+    buffer_m: f32,
+    camera: &Camera,
+    camera_global: &GlobalTransform,
+    window: &Window,
+) -> bool {
+    let radius_with_buffer = projected_radius_m.max(0.0) + buffer_m.max(0.0);
+    let center_world = projected_center_world.extend(0.0);
+    let top_world = (projected_center_world + Vec2::new(0.0, radius_with_buffer)).extend(0.0);
+    let right_world = (projected_center_world + Vec2::new(radius_with_buffer, 0.0)).extend(0.0);
+
+    let Ok(viewport_pos) = camera.world_to_viewport(camera_global, center_world) else {
+        return false;
+    };
+    let Ok(top_viewport_pos) = camera.world_to_viewport(camera_global, top_world) else {
+        return false;
+    };
+    let Ok(right_viewport_pos) = camera.world_to_viewport(camera_global, right_world) else {
+        return false;
+    };
+
+    let extent_px_x = (right_viewport_pos.x - viewport_pos.x).abs().max(1.0);
+    let extent_px_y = (top_viewport_pos.y - viewport_pos.y).abs().max(1.0);
+    viewport_pos.x >= -extent_px_x
+        && viewport_pos.x <= window.width() + extent_px_x
+        && viewport_pos.y >= -extent_px_y
+        && viewport_pos.y <= window.height() + extent_px_y
 }
 
 fn streamed_visual_layer_transform(

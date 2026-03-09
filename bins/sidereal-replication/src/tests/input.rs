@@ -1,10 +1,14 @@
-use sidereal_game::EntityAction;
-use sidereal_net::{ClientRealtimeInputMessage, PlayerEntityId, RuntimeEntityId};
-
+use crate::replication::PlayerControlledEntityMap;
 use crate::replication::input::{
-    InputRateLimitState, InputValidationFailure, MAX_ACTIONS_PER_PACKET, MAX_MESSAGES_PER_SECOND,
-    canonical_controlled_entity_id, validate_input_message,
+    ClientInputDropMetrics, InputActivityLogState, InputRateLimitState, InputValidationFailure,
+    LatestRealtimeInput, LatestRealtimeInputsByPlayer, MAX_ACTIONS_PER_PACKET,
+    MAX_MESSAGES_PER_SECOND, RealtimeInputActivityByPlayer, RealtimeInputTimeoutSeconds,
+    canonical_controlled_entity_id, drain_native_player_inputs_to_action_queue,
+    validate_input_message,
 };
+use bevy::prelude::*;
+use sidereal_game::{ActionQueue, EntityAction, EntityGuid, PlayerTag};
+use sidereal_net::{ClientRealtimeInputMessage, PlayerEntityId, RuntimeEntityId};
 
 fn message_with(tick: u64, actions: usize) -> ClientRealtimeInputMessage {
     ClientRealtimeInputMessage {
@@ -66,4 +70,98 @@ fn canonical_controlled_entity_id_accepts_only_canonical_uuids() {
         canonical_controlled_entity_id("22222222-2222-2222-2222-222222222222", player_id),
         RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222")
     );
+}
+
+#[test]
+fn drain_keeps_fresh_realtime_input_before_timeout() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(LatestRealtimeInputsByPlayer::default());
+    app.insert_resource(RealtimeInputActivityByPlayer::default());
+    app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
+    app.insert_resource(ClientInputDropMetrics::default());
+    app.insert_resource(InputActivityLogState::default());
+    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+
+    let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+    let player_guid = player_id.0;
+    let player_entity = app
+        .world_mut()
+        .spawn((EntityGuid(player_guid), PlayerTag, ActionQueue::default()))
+        .id();
+    app.world_mut()
+        .resource_mut::<PlayerControlledEntityMap>()
+        .by_player_entity_id
+        .insert(player_id, player_entity);
+    app.world_mut()
+        .resource_mut::<LatestRealtimeInputsByPlayer>()
+        .by_player_entity_id
+        .insert(
+            player_id,
+            LatestRealtimeInput {
+                tick: 7,
+                controlled_entity_id: RuntimeEntityId(player_guid),
+                actions: vec![EntityAction::Forward],
+            },
+        );
+    app.world_mut()
+        .resource_mut::<RealtimeInputActivityByPlayer>()
+        .last_received_at_s_by_player_entity_id
+        .insert(player_id, 0.0);
+
+    app.update();
+
+    let queue = app.world().get::<ActionQueue>(player_entity).unwrap();
+    assert_eq!(queue.pending, vec![EntityAction::Forward]);
+}
+
+#[test]
+fn drain_clears_stale_realtime_input_after_timeout() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(LatestRealtimeInputsByPlayer::default());
+    app.insert_resource(RealtimeInputActivityByPlayer::default());
+    app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
+    app.insert_resource(ClientInputDropMetrics::default());
+    app.insert_resource(InputActivityLogState::default());
+    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+
+    let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+    let player_guid = player_id.0;
+    let player_entity = app
+        .world_mut()
+        .spawn((
+            EntityGuid(player_guid),
+            PlayerTag,
+            ActionQueue {
+                pending: vec![EntityAction::Forward],
+            },
+        ))
+        .id();
+    app.world_mut()
+        .resource_mut::<PlayerControlledEntityMap>()
+        .by_player_entity_id
+        .insert(player_id, player_entity);
+    app.world_mut()
+        .resource_mut::<LatestRealtimeInputsByPlayer>()
+        .by_player_entity_id
+        .insert(
+            player_id,
+            LatestRealtimeInput {
+                tick: 7,
+                controlled_entity_id: RuntimeEntityId(player_guid),
+                actions: vec![EntityAction::Forward],
+            },
+        );
+    app.world_mut()
+        .resource_mut::<RealtimeInputActivityByPlayer>()
+        .last_received_at_s_by_player_entity_id
+        .insert(player_id, -1.0);
+
+    app.update();
+
+    let queue = app.world().get::<ActionQueue>(player_entity).unwrap();
+    assert!(queue.pending.is_empty());
 }

@@ -41,6 +41,16 @@ fn sample_fog_explored(uv: vec2<f32>) -> f32 {
     return center * 0.5 + (sxp + sxn + syp + syn) * 0.125;
 }
 
+fn aspect_corrected_centered_uv(uv: vec2<f32>, viewport: vec2<f32>) -> vec2<f32> {
+    let aspect = viewport.x / max(viewport.y, 1.0);
+    return (uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
+}
+
+fn screen_uv_from_centered(centered_uv: vec2<f32>, viewport: vec2<f32>) -> vec2<f32> {
+    let aspect = viewport.x / max(viewport.y, 1.0);
+    return vec2<f32>(0.5) + centered_uv / vec2<f32>(aspect, 1.0);
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = clamp(viewport_time.w, 0.0, 1.0);
@@ -55,9 +65,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 
     // Retro mode gets slight barrel distortion before world projection.
     if mode >= 2.0 {
-        let centered = uv - vec2<f32>(0.5, 0.5);
+        let centered = aspect_corrected_centered_uv(uv, viewport);
         let r2 = dot(centered, centered);
-        uv = vec2<f32>(0.5, 0.5) + centered * (1.0 + fx_params_b.x * r2);
+        uv = screen_uv_from_centered(centered * (1.0 + fx_params_b.x * r2), viewport);
     }
 
     let screen_px = uv * viewport;
@@ -153,7 +163,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         color *= 1.0 - scan_mix + scan * scan_mix;
 
         let vignette = clamp(fx_params_b.y, 0.0, 1.0);
-        let centered = uv - vec2<f32>(0.5, 0.5);
+        let centered = aspect_corrected_centered_uv(uv, viewport);
         let edge = clamp(length(centered) * 1.8, 0.0, 1.0);
         color *= 1.0 - edge * edge * vignette * 0.5;
 

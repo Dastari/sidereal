@@ -38,6 +38,7 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - Server ingress keeps latest-intent semantics:
   - validates tick ordering and rate limits per authenticated player,
   - stores latest input snapshot by player/tick,
+  - expires realtime input snapshots after `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`) so authoritative motion cannot stay latched if the client loses focus, background-throttles, or misses the neutral heartbeat,
   - drains into `ActionQueue` by replace/overwrite (`queue.clear()` then push latest actions), never backlog append.
 - Remote/non-controlled visual smoothing path:
   - replicated Avian motion components (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`) are registered with Lightyear interpolation functions in protocol registration.
@@ -64,6 +65,16 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - WASM impact:
   - no target-specific branching introduced,
   - interpolation registration and scheduling behavior are shared between native and WASM builds.
+
+## 2.4 Input Liveness Guard (2026-03-09)
+
+- Sidereal now treats realtime input snapshots as short-lived intent, not durable movement state.
+- The replication server clears authoritative input for a player when no fresh realtime snapshot has arrived within `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`).
+- This guard is intentionally longer than the client heartbeat interval (`0.1s`) so ordinary jitter does not zero live controls, but short enough to stop stale held-key motion when a native client is alt-tabbed or OS-throttled before it can deliver an unfocused neutral snapshot.
+- Native impact:
+  - losing window focus should no longer leave the server simulating old movement/fire intent indefinitely if the client stops running its fixed input send path in the background.
+- WASM impact:
+  - no WASM-specific branching; the same authoritative stale-input expiry applies to browser clients.
 
 ## 2.3 Dynamic Handoff Lightyear Exception (2026-03-09)
 

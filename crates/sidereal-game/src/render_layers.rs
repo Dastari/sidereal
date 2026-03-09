@@ -19,6 +19,7 @@ pub fn default_main_world_render_layer() -> RuntimeRenderLayerDefinition {
         texture_bindings: Vec::new(),
         order: 0,
         parallax_factor: Some(1.0),
+        screen_scale_factor: Some(1.0),
         depth_bias_z: Some(0.0),
         enabled: true,
     }
@@ -90,6 +91,15 @@ pub fn validate_runtime_render_layer_definition(
     {
         return Err(format!(
             "parallax_factor must be finite and within (0, 4], got {parallax_factor}"
+        ));
+    }
+    if let Some(screen_scale_factor) = definition.screen_scale_factor
+        && (!screen_scale_factor.is_finite()
+            || screen_scale_factor <= 0.0
+            || screen_scale_factor > 64.0)
+    {
+        return Err(format!(
+            "screen_scale_factor must be finite and within (0, 64], got {screen_scale_factor}"
         ));
     }
     if let Some(depth_bias_z) = definition.depth_bias_z

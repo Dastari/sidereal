@@ -45,6 +45,7 @@ interface DetailPanelProps {
   onComponentUpdate?: (
     entityId: string,
     typePath: string,
+    componentKind: string,
     value: unknown,
   ) => void
   /** Called when the close button is clicked. Caller should clear selection. */
@@ -249,13 +250,13 @@ export function DetailPanel({
                 </>
               )}
 
-              {/* Entity GUID: ID on same line as heading with copy button */}
+              {/* Identity: show Bevy entity ID and gameplay EntityGuid separately. */}
               <div>
                 <div className="flex items-center justify-between gap-2 mb-2 w-full">
                   <div className="flex items-center gap-2 min-w-0">
                     <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Entity Guid
+                      Bevy ID
                     </h3>
                   </div>
                   <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
@@ -266,13 +267,42 @@ export function DetailPanel({
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                      aria-label="Copy entity ID"
+                      aria-label="Copy Bevy ID"
                       onClick={() => {
                         void navigator.clipboard.writeText(selectedId)
                       }}
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </Button>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2 w-full">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      Entity Guid
+                    </h3>
+                  </div>
+                  <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
+                    <span className="text-xs text-foreground font-mono tabular-nums min-w-0 break-all text-right">
+                      {worldEntity?.entityGuid ?? '—'}
+                    </span>
+                    {worldEntity?.entityGuid ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        aria-label="Copy Entity Guid"
+                        onClick={() => {
+                          if (!worldEntity.entityGuid) return
+                          void navigator.clipboard.writeText(worldEntity.entityGuid)
+                        }}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -583,6 +613,7 @@ interface ComponentsListProps {
   onComponentUpdate?: (
     entityId: string,
     typePath: string,
+    componentKind: string,
     value: unknown,
   ) => void
 }
@@ -592,7 +623,7 @@ function ComponentsList({
   graphNodes,
   graphEdges,
   generatedComponentRegistry,
-  sourceMode,
+  sourceMode: _sourceMode,
   onComponentUpdate,
 }: ComponentsListProps) {
   const [expandedComponents, setExpandedComponents] = React.useState<
@@ -777,10 +808,10 @@ function ComponentsList({
                       entityId={entityId}
                       node={node}
                       generatedComponentRegistry={generatedComponentRegistry}
-                      onUpdate={(typePath, value) => {
-                        onComponentUpdate?.(entityId, typePath, value)
+                      onUpdate={(typePath, componentKind, value) => {
+                        onComponentUpdate?.(entityId, typePath, componentKind, value)
                       }}
-                      readOnly={sourceMode === 'database' || !onComponentUpdate}
+                      readOnly={!onComponentUpdate}
                     />
                   </div>
                 </div>

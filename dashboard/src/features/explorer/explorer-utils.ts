@@ -154,7 +154,7 @@ function asObjectRecord(value: unknown): Record<string, unknown> | null {
 }
 
 const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function looksLikeUuid(value: string): boolean {
   return UUID_REGEX.test(value.trim())
@@ -774,14 +774,18 @@ function parseSelectedPlayerVisibilityOverlay(
         )
     : []
 
-  const scannerSourcesRaw = disclosureValue
-    ? Array.isArray(disclosureValue.scanner_sources)
-      ? disclosureValue.scanner_sources
-      : Array.isArray(disclosureValue.scannerSources)
-        ? disclosureValue.scannerSources
-        : []
+  const visibilitySourcesRaw = disclosureValue
+    ? Array.isArray(disclosureValue.visibility_sources)
+      ? disclosureValue.visibility_sources
+      : Array.isArray(disclosureValue.visibilitySources)
+        ? disclosureValue.visibilitySources
+        : Array.isArray(disclosureValue.scanner_sources)
+          ? disclosureValue.scanner_sources
+          : Array.isArray(disclosureValue.scannerSources)
+            ? disclosureValue.scannerSources
+            : []
     : []
-  const scannerSources = scannerSourcesRaw
+  const visibilitySources = visibilitySourcesRaw
     .map((entry) => {
       if (!isObjectRecord(entry)) return null
       const x = asFiniteNumber(entry.x)
@@ -810,7 +814,7 @@ function parseSelectedPlayerVisibilityOverlay(
     cell_size_m: cellSizeM !== null && cellSizeM > 0 ? cellSizeM : 0,
     delivery_range_m: Math.max(0, deliveryRangeM),
     queried_cells: queriedCells,
-    scanner_sources: scannerSources,
+    visibility_sources: visibilitySources,
     explored_cell_size_m:
       exploredCellSizeM !== null && exploredCellSizeM > 0
         ? exploredCellSizeM
