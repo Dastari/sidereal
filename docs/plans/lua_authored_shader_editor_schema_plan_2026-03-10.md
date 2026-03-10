@@ -369,6 +369,38 @@ Dashboard schema support should include:
 
 Dashboard optimistic state should continue to operate locally, but the source of widget shape and validation hints must come from the generated shader schema rather than local heuristics.
 
+## 8.5 Shader settings export workflow
+
+The main dashboard component editor must support the existing shader-settings tuning workflow where an operator edits a live component and then copies a canonical JSON payload back into the Rust default constant.
+
+This is specifically required for components such as:
+
+1. `PlanetBodyShaderSettings`
+2. `SpaceBackgroundShaderSettings`
+3. `StarfieldShaderSettings`
+4. `ThrusterPlumeShaderSettings`
+5. other shader-settings-style gameplay components that currently use `DEFAULT_*_SHADER_SETTINGS_JSON`
+
+Accepted UX:
+
+1. add `Copy Default JSON` to the component editor for shader settings components,
+2. optionally add `Copy Rust Const` as a convenience wrapper later,
+3. keep the export shape identical to the JSON consumed by the Rust default constants rather than inventing a dashboard-only serialization format.
+
+Export rules:
+
+1. export from the currently edited component payload,
+2. serialize `Vec2` / `Vec3` / `Vec4` in the same JSON shape expected by the Rust component default constants,
+3. round floats to stable schema-driven precision so floating-point noise is not copied into defaults,
+4. preserve deterministic field ordering, preferably schema order,
+5. exclude dashboard-only metadata and transient editor state.
+
+Relationship to Lua shader schema work:
+
+1. this export flow is for gameplay component defaults,
+2. it is not a replacement for Lua-authored shader presets,
+3. later the dashboard may also support `Copy Lua Preset`, but that must remain a separate output path from `Copy Default JSON`.
+
 ## 9. Migration Plan
 
 ## 9.1 Phase 1: Resource shape extension
@@ -409,12 +441,14 @@ Exit criteria:
 
 1. Update dashboard shader workbench to prefer generated shader schema.
 2. Add enum and preset UI controls.
-3. Keep a fallback path only for shaders not yet present in the generated resource.
+3. Add schema-aware `Copy Default JSON` export support for shader settings components in the main dashboard editor.
+4. Keep a fallback path only for shaders not yet present in the generated resource.
 
 Exit criteria:
 
 1. shader inspector controls are driven by generated metadata,
-2. presets can be applied without dashboard-only configuration.
+2. presets can be applied without dashboard-only configuration,
+3. shader settings edited in the main dashboard can be copied back into Rust `DEFAULT_*_SHADER_SETTINGS_JSON` constants without manual cleanup.
 
 ## 9.5 Phase 5: Cleanup
 
@@ -437,8 +471,10 @@ Required dashboard coverage:
 1. parsing/reading of `shader_entries` from the resource,
 2. enum control rendering,
 3. preset apply behavior,
-4. fallback behavior when generated schema is absent,
-5. schema-driven precision/range UI tests.
+4. `Copy Default JSON` export for shader settings components,
+5. schema-driven float normalization in exported JSON,
+6. fallback behavior when generated schema is absent,
+7. schema-driven precision/range UI tests.
 
 ## 11. Documentation Follow-Through
 
@@ -465,6 +501,7 @@ The highest-leverage first slice is:
 2. add Lua-side `editor_schema` parsing for one shader asset,
 3. add Rust-side WGSL uniform extraction for scalar/vector uniforms only,
 4. merge Lua `min` / `max` / `step` and one preset,
-5. update the dashboard shader workbench to read and render that schema from the resource.
+5. update the dashboard shader workbench to read and render that schema from the resource,
+6. add `Copy Default JSON` for one existing shader-settings component to prove the export path and precision normalization rules.
 
 That slice proves the architecture without needing full shader-family coverage on day one.
