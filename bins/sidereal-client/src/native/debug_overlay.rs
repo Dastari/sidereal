@@ -1,26 +1,37 @@
 //! F3 debug overlay: toggle, snapshot collection, and snapshot-driven gizmo drawing.
 
 use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
+use bevy::ecs::system::SystemParam;
 use bevy::math::Isometry2d;
 use bevy::prelude::*;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prediction::correction::VisualCorrection;
 use lightyear::prediction::prelude::{PredictionHistory, PredictionManager};
 use sidereal_game::{
-    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ParentGuid, PlayerTag,
-    SizeM,
+    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ParentGuid,
+    PlanetBodyShaderSettings, PlayerTag, SizeM,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::HashMap;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
-use super::components::{ControlledEntity, SuppressedPredictedDuplicateVisual, WorldEntity};
+use super::assets::{LocalAssetManager, RuntimeAssetDependencyState, RuntimeAssetHttpFetchState};
+use super::backdrop::{
+    AsteroidSpriteShaderMaterial, PlanetVisualMaterial, RuntimeEffectMaterial,
+    StreamedSpriteShaderMaterial,
+};
+use super::components::{
+    ControlledEntity, DebugVelocityArrowMesh, RuntimeWorldVisualFamily, RuntimeWorldVisualPass,
+    StreamedVisualChild, SuppressedPredictedDuplicateVisual, WeaponImpactSpark,
+    WeaponImpactSparkPool, WeaponTracerBolt, WeaponTracerPool, WorldEntity,
+};
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::resources::{
     BootstrapWatchdogState, DebugCollisionShape, DebugControlledLane, DebugEntityLane,
     DebugOverlayEntity, DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DebugSeverity,
-    DebugTextRow, DeferredPredictedAdoptionState, LocalSimulationDebugMode,
-    PredictionBootstrapTuning, PredictionLifecycleAuditConfig, PredictionLifecycleAuditState,
+    DebugTextRow, DebugVelocityArrowAsMesh, DeferredPredictedAdoptionState,
+    DuplicateVisualResolutionState, LocalSimulationDebugMode, PredictionBootstrapTuning,
+    PredictionLifecycleAuditConfig, PredictionLifecycleAuditState, RenderLayerPerfCounters,
 };
 
 const DEBUG_OVERLAY_Z_OFFSET: f32 = 6.0;
@@ -32,6 +43,27 @@ const CONFIRMED_OVERLAY_POSITION_EPSILON_M: f32 = 0.05;
 const CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD: f32 = 0.01;
 const VELOCITY_ARROW_SCALE: f32 = 0.5;
 const HARDPOINT_CROSS_HALF_SIZE: f32 = 2.0;
+
+#[derive(SystemParam)]
+pub(crate) struct DebugOverlayStatsInputs<'w, 's> {
+    tracer_pool: Res<'w, WeaponTracerPool>,
+    spark_pool: Res<'w, WeaponImpactSparkPool>,
+    asset_manager: Res<'w, LocalAssetManager>,
+    runtime_asset_dependency_state: Res<'w, RuntimeAssetDependencyState>,
+    runtime_asset_fetch_state: Res<'w, RuntimeAssetHttpFetchState>,
+    render_layer_perf: Res<'w, RenderLayerPerfCounters>,
+    duplicate_resolution: Res<'w, DuplicateVisualResolutionState>,
+    mesh_assets: Res<'w, Assets<Mesh>>,
+    generic_sprite_materials: Res<'w, Assets<StreamedSpriteShaderMaterial>>,
+    asteroid_materials: Res<'w, Assets<AsteroidSpriteShaderMaterial>>,
+    planet_materials: Res<'w, Assets<PlanetVisualMaterial>>,
+    effect_materials: Res<'w, Assets<RuntimeEffectMaterial>>,
+    cameras: Query<'w, 's, &'static Camera>,
+    visual_passes: Query<'w, 's, &'static RuntimeWorldVisualPass>,
+    streamed_visual_children: Query<'w, 's, (), With<StreamedVisualChild>>,
+    tracer_entities: Query<'w, 's, &'static Visibility, With<WeaponTracerBolt>>,
+    spark_entities: Query<'w, 's, &'static Visibility, With<WeaponImpactSpark>>,
+}
 
 #[derive(Default)]
 pub(crate) struct RollbackSampleState {
@@ -55,7 +87,12 @@ pub(crate) fn toggle_debug_overlay_system(
     }
 }
 
+pub(crate) fn debug_overlay_enabled(debug_overlay: Res<'_, DebugOverlayState>) -> bool {
+    debug_overlay.enabled
+}
+
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_debug_overlay_snapshot_system(
     debug_overlay: Res<'_, DebugOverlayState>,
     session: Res<'_, ClientSession>,
@@ -88,12 +125,16 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 Has<lightyear::prelude::Interpolated>,
                 Has<lightyear::prelude::Predicted>,
                 Has<SuppressedPredictedDuplicateVisual>,
+                Has<PlanetBodyShaderSettings>,
+                Has<ConfirmedHistory<Position>>,
+                Has<ConfirmedHistory<Rotation>>,
                 Option<&'_ lightyear::prelude::Confirmed<Position>>,
                 Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
             ),
         ),
         With<WorldEntity>,
     >,
+    stats_inputs: DebugOverlayStatsInputs<'_, '_>,
 ) {
     snapshot.frame_index = snapshot.frame_index.saturating_add(1);
     snapshot.entities.clear();
@@ -104,6 +145,55 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
     if !debug_overlay.enabled {
         return;
     }
+
+    snapshot.stats.mesh_asset_count = stats_inputs.mesh_assets.iter().count();
+    snapshot.stats.active_camera_count = stats_inputs.cameras.iter().count();
+    snapshot.stats.generic_sprite_material_count =
+        stats_inputs.generic_sprite_materials.iter().count();
+    snapshot.stats.asteroid_material_count = stats_inputs.asteroid_materials.iter().count();
+    snapshot.stats.planet_material_count = stats_inputs.planet_materials.iter().count();
+    snapshot.stats.effect_material_count = stats_inputs.effect_materials.iter().count();
+    snapshot.stats.streamed_visual_child_count =
+        stats_inputs.streamed_visual_children.iter().count();
+    snapshot.stats.planet_pass_count = stats_inputs
+        .visual_passes
+        .iter()
+        .filter(|pass| pass.family == RuntimeWorldVisualFamily::Planet)
+        .count();
+    snapshot.stats.tracer_pool_size = stats_inputs.tracer_pool.bolts.len();
+    snapshot.stats.active_tracers = stats_inputs
+        .tracer_entities
+        .iter()
+        .filter(|visibility| **visibility != Visibility::Hidden)
+        .count();
+    snapshot.stats.spark_pool_size = stats_inputs.spark_pool.sparks.len();
+    snapshot.stats.active_sparks = stats_inputs
+        .spark_entities
+        .iter()
+        .filter(|visibility| **visibility != Visibility::Hidden)
+        .count();
+    snapshot.stats.bootstrap_ready_bytes = stats_inputs.asset_manager.bootstrap_ready_bytes;
+    snapshot.stats.bootstrap_total_bytes = stats_inputs.asset_manager.bootstrap_total_bytes;
+    snapshot.stats.runtime_dependency_candidate_count = stats_inputs
+        .runtime_asset_dependency_state
+        .candidate_asset_ids
+        .len();
+    snapshot.stats.runtime_dependency_graph_rebuilds = stats_inputs
+        .runtime_asset_dependency_state
+        .dependency_graph_rebuilds;
+    snapshot.stats.runtime_dependency_scan_runs = stats_inputs
+        .runtime_asset_dependency_state
+        .dependency_scan_runs;
+    snapshot.stats.runtime_in_flight_fetch_count = stats_inputs
+        .runtime_asset_fetch_state
+        .as_ref()
+        .in_flight_asset_ids_len();
+    snapshot.stats.render_layer_registry_rebuilds =
+        stats_inputs.render_layer_perf.registry_rebuilds;
+    snapshot.stats.render_layer_assignment_recomputes =
+        stats_inputs.render_layer_perf.assignment_recomputes;
+    snapshot.stats.render_layer_assignment_skips = stats_inputs.render_layer_perf.assignment_skips;
+    snapshot.stats.duplicate_winner_swaps = stats_inputs.duplicate_resolution.winner_swap_count;
 
     let logical_control_guid = player_view_state
         .controlled_entity_id
@@ -125,12 +215,15 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         guid,
         global_transform,
         (size_m, collision_aabb, collision_outline, linear_velocity, angular_velocity),
-        (mounted_on, hardpoint, parent_guid, player_tag, controlled_marker, _visibility),
+        (mounted_on, hardpoint, parent_guid, player_tag, controlled_marker, visibility),
         (
             is_replicated,
             is_interpolated,
             is_predicted,
             is_suppressed_duplicate,
+            is_planet,
+            has_position_history,
+            has_rotation_history,
             confirmed_position,
             confirmed_rotation,
         ),
@@ -140,6 +233,12 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             continue;
         }
         if is_suppressed_duplicate {
+            continue;
+        }
+        if is_planet {
+            continue;
+        }
+        if !debug_overlay_candidate_visible(visibility) {
             continue;
         }
 
@@ -200,6 +299,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 is_replicated,
                 is_interpolated,
                 is_predicted,
+                interpolated_ready: has_position_history && has_rotation_history,
             });
             continue;
         }
@@ -212,6 +312,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 is_replicated,
                 is_interpolated,
                 is_predicted,
+                interpolated_ready: has_position_history && has_rotation_history,
                 has_confirmed_wrappers: confirmed_position.is_some()
                     && confirmed_rotation.is_some(),
                 confirmed_pose: confirmed_position.zip(confirmed_rotation).map(
@@ -309,6 +410,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
 
 pub(crate) fn draw_debug_overlay_system(
     debug_overlay: Res<'_, DebugOverlayState>,
+    debug_velocity_arrow_as_mesh: Res<'_, DebugVelocityArrowAsMesh>,
     snapshot: Res<'_, DebugOverlaySnapshot>,
     mut gizmos: Gizmos,
 ) {
@@ -354,6 +456,7 @@ pub(crate) fn draw_debug_overlay_system(
         if entity.is_controlled
             && entity.lane != DebugEntityLane::Auxiliary
             && entity.lane != DebugEntityLane::ConfirmedGhost
+            && !debug_velocity_arrow_as_mesh.0
         {
             let len = entity.velocity_xy.length();
             if len > 0.01 {
@@ -383,12 +486,64 @@ pub(crate) fn draw_debug_overlay_system(
     }
 }
 
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_debug_velocity_arrow_mesh_system(
+    debug_overlay: Res<'_, DebugOverlayState>,
+    debug_velocity_arrow_as_mesh: Res<'_, DebugVelocityArrowAsMesh>,
+    snapshot: Res<'_, DebugOverlaySnapshot>,
+    mut arrows: Query<
+        '_,
+        '_,
+        (
+            &'_ mut Transform,
+            &'_ mut GlobalTransform,
+            &'_ mut Visibility,
+        ),
+        With<DebugVelocityArrowMesh>,
+    >,
+) {
+    let Ok((mut transform, mut global_transform, mut visibility)) = arrows.single_mut() else {
+        return;
+    };
+
+    if !debug_overlay.enabled || !debug_velocity_arrow_as_mesh.0 {
+        *visibility = Visibility::Hidden;
+        return;
+    }
+
+    let Some(entity) = snapshot.entities.iter().find(|entity| {
+        entity.is_controlled
+            && entity.lane != DebugEntityLane::Auxiliary
+            && entity.lane != DebugEntityLane::ConfirmedGhost
+            && entity.velocity_xy.length() > 0.01
+    }) else {
+        *visibility = Visibility::Hidden;
+        return;
+    };
+
+    let start = overlay_world_position(entity.position_xy, entity.lane);
+    let velocity_world = entity.velocity_xy.extend(0.0) * VELOCITY_ARROW_SCALE;
+    let len = velocity_world.length();
+    if len <= 0.01 {
+        *visibility = Visibility::Hidden;
+        return;
+    }
+
+    let end = start + velocity_world;
+    *transform = Transform::from_translation((start + end) * 0.5)
+        .with_rotation(Quat::from_rotation_z(entity.velocity_xy.to_angle()))
+        .with_scale(Vec3::new(len, 0.35, 1.0));
+    *global_transform = GlobalTransform::from(*transform);
+    *visibility = Visibility::Visible;
+}
+
 #[derive(Clone)]
 struct RootDebugCandidate {
     overlay_entity: DebugOverlayEntity,
     is_replicated: bool,
     is_interpolated: bool,
     is_predicted: bool,
+    interpolated_ready: bool,
     has_confirmed_wrappers: bool,
     confirmed_pose: Option<ConfirmedGhostPose>,
 }
@@ -401,6 +556,7 @@ struct AuxiliaryDebugCandidate {
     is_replicated: bool,
     is_interpolated: bool,
     is_predicted: bool,
+    interpolated_ready: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -441,26 +597,30 @@ fn build_collision_shape(
         .unwrap_or(DebugCollisionShape::None)
 }
 
+fn debug_overlay_candidate_visible(visibility: Option<&Visibility>) -> bool {
+    !matches!(visibility, Some(Visibility::Hidden))
+}
+
 fn resolve_root_candidates(candidates: &[RootDebugCandidate]) -> ResolvedRootCandidates<'_> {
     let controlled = candidates
         .iter()
         .any(|candidate| candidate.overlay_entity.is_controlled);
     let primary = if controlled {
         pick_best_candidate(candidates, |candidate| candidate.is_predicted)
+            .or_else(|| pick_best_candidate(candidates, root_candidate_is_confirmed_lane))
             .or_else(|| {
                 pick_best_candidate(candidates, |candidate| {
-                    candidate.is_replicated && !candidate.is_interpolated
+                    candidate.is_interpolated && candidate.interpolated_ready
                 })
             })
             .or_else(|| pick_best_candidate(candidates, |candidate| candidate.is_interpolated))
     } else {
-        pick_best_candidate(candidates, |candidate| candidate.is_interpolated)
-            .or_else(|| {
-                pick_best_candidate(candidates, |candidate| {
-                    candidate.is_replicated && !candidate.is_predicted
-                })
-            })
-            .or_else(|| pick_best_candidate(candidates, |candidate| candidate.is_predicted))
+        pick_best_candidate(candidates, |candidate| {
+            candidate.is_interpolated && candidate.interpolated_ready
+        })
+        .or_else(|| pick_best_candidate(candidates, root_candidate_is_confirmed_lane))
+        .or_else(|| pick_best_candidate(candidates, |candidate| candidate.is_predicted))
+        .or_else(|| pick_best_candidate(candidates, |candidate| candidate.is_interpolated))
     };
 
     let primary_lane = primary
@@ -489,6 +649,10 @@ fn pick_best_candidate(
         .min_by_key(|candidate| candidate.overlay_entity.entity.to_bits())
 }
 
+fn root_candidate_is_confirmed_lane(candidate: &RootDebugCandidate) -> bool {
+    candidate.is_replicated && !candidate.is_predicted && !candidate.is_interpolated
+}
+
 fn resolve_auxiliary_candidate<'a>(
     candidates: &'a [AuxiliaryDebugCandidate],
     resolved_root_lanes: &HashMap<uuid::Uuid, DebugEntityLane>,
@@ -501,26 +665,34 @@ fn resolve_auxiliary_candidate<'a>(
 
     pick_best_auxiliary_candidate(candidates, |candidate| match parent_lane {
         DebugEntityLane::Predicted => candidate.is_predicted,
-        DebugEntityLane::Interpolated => candidate.is_interpolated,
+        DebugEntityLane::Interpolated => candidate.is_interpolated && candidate.interpolated_ready,
         DebugEntityLane::Confirmed
         | DebugEntityLane::ConfirmedGhost
-        | DebugEntityLane::Auxiliary => {
-            candidate.is_replicated && !candidate.is_predicted && !candidate.is_interpolated
-        }
+        | DebugEntityLane::Auxiliary => auxiliary_candidate_is_confirmed_lane(candidate),
     })
     .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_predicted))
+    .or_else(|| pick_best_auxiliary_candidate(candidates, auxiliary_candidate_is_confirmed_lane))
+    .or_else(|| {
+        pick_best_auxiliary_candidate(candidates, |candidate| {
+            candidate.is_interpolated && candidate.interpolated_ready
+        })
+    })
     .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_interpolated))
     .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_replicated))
 }
 
-fn pick_best_auxiliary_candidate<'a>(
-    candidates: &'a [AuxiliaryDebugCandidate],
+fn pick_best_auxiliary_candidate(
+    candidates: &[AuxiliaryDebugCandidate],
     predicate: impl Fn(&AuxiliaryDebugCandidate) -> bool,
-) -> Option<&'a AuxiliaryDebugCandidate> {
+) -> Option<&AuxiliaryDebugCandidate> {
     candidates
         .iter()
         .filter(|candidate| predicate(candidate))
         .min_by_key(|candidate| candidate.overlay_entity.entity.to_bits())
+}
+
+fn auxiliary_candidate_is_confirmed_lane(candidate: &AuxiliaryDebugCandidate) -> bool {
+    candidate.is_replicated && !candidate.is_predicted && !candidate.is_interpolated
 }
 
 fn candidate_primary_lane(candidate: &RootDebugCandidate, controlled: bool) -> DebugEntityLane {
@@ -550,6 +722,7 @@ fn build_confirmed_ghost_entity(primary: &RootDebugCandidate) -> Option<RootDebu
                 is_replicated: true,
                 is_interpolated: false,
                 is_predicted: false,
+                interpolated_ready: false,
                 has_confirmed_wrappers: true,
                 confirmed_pose: None,
             }
@@ -565,6 +738,7 @@ fn build_confirmed_ghost_entity(primary: &RootDebugCandidate) -> Option<RootDebu
             is_replicated: true,
             is_interpolated: false,
             is_predicted: false,
+            interpolated_ready: false,
             has_confirmed_wrappers: false,
             confirmed_pose: None,
         });
@@ -622,6 +796,11 @@ fn build_debug_text_rows(
             },
         },
         DebugTextRow {
+            label: "Winner Swaps".to_string(),
+            value: format!("{:>4}", stats.duplicate_winner_swaps),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
             label: "Anomalies".to_string(),
             value: format!("{:>4}", stats.anomaly_count),
             severity: if stats.anomaly_count > 0 {
@@ -629,6 +808,99 @@ fn build_debug_text_rows(
             } else {
                 DebugSeverity::Normal
             },
+        },
+        DebugTextRow {
+            label: "Active Cameras".to_string(),
+            value: format!("{:>4}", stats.active_camera_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Mesh Assets".to_string(),
+            value: format!("{:>4}", stats.mesh_asset_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Gen Sprite Mats".to_string(),
+            value: format!("{:>4}", stats.generic_sprite_material_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Asteroid Mats".to_string(),
+            value: format!("{:>4}", stats.asteroid_material_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Planet Mats".to_string(),
+            value: format!("{:>4}", stats.planet_material_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Effect Mats".to_string(),
+            value: format!("{:>4}", stats.effect_material_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Visual Children".to_string(),
+            value: format!("{:>4}", stats.streamed_visual_child_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Planet Passes".to_string(),
+            value: format!("{:>4}", stats.planet_pass_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Tracer Pool".to_string(),
+            value: format!("{:>3}/{:>3}", stats.active_tracers, stats.tracer_pool_size),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Spark Pool".to_string(),
+            value: format!("{:>3}/{:>3}", stats.active_sparks, stats.spark_pool_size),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Bootstrap".to_string(),
+            value: format!(
+                "{:>6}/{:>6}",
+                stats.bootstrap_ready_bytes, stats.bootstrap_total_bytes
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Asset Candidates".to_string(),
+            value: format!("{:>4}", stats.runtime_dependency_candidate_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Asset Rebuilds".to_string(),
+            value: format!("{:>4}", stats.runtime_dependency_graph_rebuilds),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Asset Scans".to_string(),
+            value: format!("{:>4}", stats.runtime_dependency_scan_runs),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Fetch InFlight".to_string(),
+            value: format!("{:>4}", stats.runtime_in_flight_fetch_count),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Layer Rebuilds".to_string(),
+            value: format!("{:>4}", stats.render_layer_registry_rebuilds),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Layer Recompute".to_string(),
+            value: format!("{:>4}", stats.render_layer_assignment_recomputes),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Layer Skips".to_string(),
+            value: format!("{:>4}", stats.render_layer_assignment_skips),
+            severity: DebugSeverity::Normal,
         },
     ];
     if let Some(controlled_lane) = controlled_lane {
@@ -697,6 +969,25 @@ fn angle_delta_rad(a: f32, b: f32) -> f32 {
     let delta =
         (a - b + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
     delta.abs()
+}
+
+fn prediction_audit_target_guid(
+    config: &PredictionLifecycleAuditConfig,
+    session: &ClientSession,
+    player_view_state: &LocalPlayerViewState,
+) -> Option<uuid::Uuid> {
+    config.target_guid.or_else(|| {
+        player_view_state
+            .controlled_entity_id
+            .as_deref()
+            .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
+            .or_else(|| {
+                session
+                    .player_entity_id
+                    .as_deref()
+                    .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
+            })
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -942,14 +1233,21 @@ pub(crate) fn audit_prediction_entity_lifecycle(
     player_view_state: Res<'_, LocalPlayerViewState>,
     config: Res<'_, PredictionLifecycleAuditConfig>,
     mut state: ResMut<'_, PredictionLifecycleAuditState>,
+    duplicate_visuals: Res<'_, DuplicateVisualResolutionState>,
     world_entities: Query<
         '_,
         '_,
         (
             Entity,
             &'_ EntityGuid,
+            Option<&'_ MountedOn>,
+            Option<&'_ ParentGuid>,
+            Option<&'_ PlayerTag>,
             Has<lightyear::prelude::Predicted>,
             Has<lightyear::prelude::Interpolated>,
+            Has<lightyear::prelude::Replicated>,
+            Has<ConfirmedHistory<Position>>,
+            Has<ConfirmedHistory<Rotation>>,
             Has<ControlledEntity>,
             Has<super::components::SuppressedPredictedDuplicateVisual>,
             &'_ Visibility,
@@ -967,28 +1265,24 @@ pub(crate) fn audit_prediction_entity_lifecycle(
     }
     state.last_logged_at_s = now;
 
-    let target_guid = config.target_guid.or_else(|| {
-        player_view_state
-            .controlled_entity_id
-            .as_deref()
-            .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
-            .or_else(|| {
-                session
-                    .player_entity_id
-                    .as_deref()
-                    .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
-            })
-    });
+    let target_guid = prediction_audit_target_guid(&config, &session, &player_view_state);
     let Some(target_guid) = target_guid else {
         return;
     };
 
     let mut lines = Vec::new();
+    let mut root_candidates = Vec::new();
     for (
         entity,
         guid,
+        mounted_on,
+        parent_guid,
+        player_tag,
         is_predicted,
         is_interpolated,
+        is_replicated,
+        has_position_history,
+        has_rotation_history,
         is_controlled,
         is_suppressed,
         visibility,
@@ -1000,8 +1294,41 @@ pub(crate) fn audit_prediction_entity_lifecycle(
         }
         let pos = transform.map(|value| value.translation.truncate());
         lines.push(format!(
-            "entity={entity:?} predicted={is_predicted} interpolated={is_interpolated} controlled={is_controlled} suppressed={is_suppressed} visibility={visibility:?} pos={pos:?}"
+            "entity={entity:?} replicated={is_replicated} predicted={is_predicted} interpolated={is_interpolated} interp_ready={} controlled={is_controlled} suppressed={is_suppressed} visibility={visibility:?} mounted={} parent_guid={} pos={pos:?}",
+            has_position_history && has_rotation_history,
+            mounted_on.is_some(),
+            parent_guid.map(|value| value.0).is_some(),
         ));
+
+        if player_tag.is_some()
+            || mounted_on.is_some()
+            || parent_guid.is_some()
+            || is_suppressed
+            || !debug_overlay_candidate_visible(Some(visibility))
+        {
+            continue;
+        }
+
+        root_candidates.push(RootDebugCandidate {
+            overlay_entity: DebugOverlayEntity {
+                entity,
+                lane: DebugEntityLane::Auxiliary,
+                position_xy: pos.unwrap_or(Vec2::ZERO),
+                rotation_rad: transform
+                    .map(|value| value.rotation.to_euler(EulerRot::XYZ).2)
+                    .unwrap_or_default(),
+                velocity_xy: Vec2::ZERO,
+                angular_velocity_rps: 0.0,
+                collision: DebugCollisionShape::None,
+                is_controlled,
+            },
+            is_replicated,
+            is_interpolated,
+            is_predicted,
+            interpolated_ready: has_position_history && has_rotation_history,
+            has_confirmed_wrappers: false,
+            confirmed_pose: None,
+        });
     }
     if lines.is_empty() {
         info!(
@@ -1010,29 +1337,73 @@ pub(crate) fn audit_prediction_entity_lifecycle(
         );
         return;
     }
+
+    let overlay_resolution = resolve_root_candidates(&root_candidates);
+    let overlay_winner = overlay_resolution
+        .primary
+        .map(|candidate| candidate.overlay_entity.entity);
+    let overlay_lane = overlay_resolution.primary.map(|candidate| {
+        candidate_primary_lane(
+            candidate,
+            root_candidates
+                .iter()
+                .any(|value| value.overlay_entity.is_controlled),
+        )
+    });
+    let visual_winner = duplicate_visuals.winner_by_guid.get(&target_guid).copied();
+    let overlay_changed =
+        state.last_overlay_winner != overlay_winner || state.last_overlay_lane != overlay_lane;
+    let visual_changed = state.last_visual_winner != visual_winner
+        || state.last_visual_winner_swap_count != duplicate_visuals.winner_swap_count;
     info!(
-        "lifecycle_audit guid={} candidates={}",
+        "lifecycle_audit guid={} overlay_winner={overlay_winner:?} overlay_lane={overlay_lane:?} overlay_changed={} visual_winner={visual_winner:?} visual_changed={} duplicate_visual_swaps={} candidates={}",
         target_guid,
+        overlay_changed,
+        visual_changed,
+        duplicate_visuals.winner_swap_count,
         lines.join(" | ")
     );
+    state.last_overlay_winner = overlay_winner;
+    state.last_overlay_lane = overlay_lane;
+    state.last_visual_winner = visual_winner;
+    state.last_visual_winner_swap_count = duplicate_visuals.winner_swap_count;
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         AuxiliaryDebugCandidate, ConfirmedGhostPose, RootDebugCandidate, angle_delta_rad,
-        resolve_auxiliary_candidate, resolve_root_candidates,
+        collect_debug_overlay_snapshot_system, resolve_auxiliary_candidate,
+        resolve_root_candidates,
     };
-    use crate::native::resources::{DebugCollisionShape, DebugEntityLane, DebugOverlayEntity};
+    use crate::native::app_state::{ClientSession, LocalPlayerViewState};
+    use crate::native::assets::{
+        LocalAssetManager, RuntimeAssetDependencyState, RuntimeAssetHttpFetchState,
+    };
+    use crate::native::backdrop::{
+        AsteroidSpriteShaderMaterial, PlanetVisualMaterial, RuntimeEffectMaterial,
+        StreamedSpriteShaderMaterial,
+    };
+    use crate::native::components::{WeaponImpactSparkPool, WeaponTracerPool, WorldEntity};
+    use crate::native::resources::{
+        DebugCollisionShape, DebugEntityLane, DebugOverlayEntity, DebugOverlayMode,
+        DebugOverlaySnapshot, DebugOverlayState, DuplicateVisualResolutionState,
+        RenderLayerPerfCounters,
+    };
+    use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
+    use lightyear::prelude::{Interpolated, Replicated};
+    use sidereal_game::EntityGuid;
     use std::collections::HashMap;
 
+    #[allow(clippy::too_many_arguments)]
     fn root_candidate(
         raw: u32,
         _guid: uuid::Uuid,
         is_controlled: bool,
         is_replicated: bool,
         is_interpolated: bool,
+        interpolated_ready: bool,
         is_predicted: bool,
         confirmed_pose: Option<ConfirmedGhostPose>,
     ) -> RootDebugCandidate {
@@ -1050,6 +1421,7 @@ mod tests {
             is_replicated,
             is_interpolated,
             is_predicted,
+            interpolated_ready,
             has_confirmed_wrappers: confirmed_pose.is_some(),
             confirmed_pose,
         }
@@ -1061,6 +1433,7 @@ mod tests {
         parent_root_guid: uuid::Uuid,
         is_replicated: bool,
         is_interpolated: bool,
+        interpolated_ready: bool,
         is_predicted: bool,
     ) -> AuxiliaryDebugCandidate {
         AuxiliaryDebugCandidate {
@@ -1079,6 +1452,7 @@ mod tests {
             is_replicated,
             is_interpolated,
             is_predicted,
+            interpolated_ready,
         }
     }
 
@@ -1092,13 +1466,14 @@ mod tests {
                 true,
                 true,
                 false,
+                false,
                 true,
                 Some(ConfirmedGhostPose {
                     position_xy: Vec2::new(10.0, 20.0),
                     rotation_rad: 0.3,
                 }),
             ),
-            root_candidate(1, guid, true, true, false, false, None),
+            root_candidate(1, guid, true, true, false, false, false, None),
         ];
 
         let resolved = resolve_root_candidates(&candidates);
@@ -1119,8 +1494,8 @@ mod tests {
     fn remote_guid_prefers_interpolated_over_confirmed() {
         let guid = uuid::Uuid::new_v4();
         let candidates = vec![
-            root_candidate(4, guid, false, true, false, false, None),
-            root_candidate(3, guid, false, true, true, false, None),
+            root_candidate(4, guid, false, true, false, false, false, None),
+            root_candidate(3, guid, false, true, true, true, false, None),
         ];
 
         let resolved = resolve_root_candidates(&candidates);
@@ -1129,6 +1504,24 @@ mod tests {
         assert_eq!(
             resolved.primary.unwrap().overlay_entity.entity,
             Entity::from_bits(3)
+        );
+        assert!(resolved.confirmed_ghost.is_none());
+    }
+
+    #[test]
+    fn remote_guid_prefers_confirmed_over_unready_interpolated() {
+        let guid = uuid::Uuid::new_v4();
+        let candidates = vec![
+            root_candidate(4, guid, false, true, false, false, false, None),
+            root_candidate(3, guid, false, true, true, false, false, None),
+        ];
+
+        let resolved = resolve_root_candidates(&candidates);
+
+        assert_eq!(resolved.primary_lane, DebugEntityLane::Confirmed);
+        assert_eq!(
+            resolved.primary.unwrap().overlay_entity.entity,
+            Entity::from_bits(4)
         );
         assert!(resolved.confirmed_ghost.is_none());
     }
@@ -1146,13 +1539,86 @@ mod tests {
         let mut resolved_root_lanes = HashMap::new();
         resolved_root_lanes.insert(parent_guid, DebugEntityLane::Predicted);
         let candidates = vec![
-            auxiliary_candidate(4, child_guid, parent_guid, true, false, false),
-            auxiliary_candidate(3, child_guid, parent_guid, true, false, true),
+            auxiliary_candidate(4, child_guid, parent_guid, true, false, false, false),
+            auxiliary_candidate(3, child_guid, parent_guid, true, false, false, true),
         ];
 
         let resolved = resolve_auxiliary_candidate(&candidates, &resolved_root_lanes)
             .expect("predicted auxiliary winner");
 
         assert_eq!(resolved.overlay_entity.entity, Entity::from_bits(3));
+    }
+
+    #[test]
+    fn auxiliary_guid_prefers_confirmed_over_unready_interpolated_for_interpolated_parent() {
+        let parent_guid = uuid::Uuid::new_v4();
+        let child_guid = uuid::Uuid::new_v4();
+        let mut resolved_root_lanes = HashMap::new();
+        resolved_root_lanes.insert(parent_guid, DebugEntityLane::Interpolated);
+        let candidates = vec![
+            auxiliary_candidate(4, child_guid, parent_guid, true, false, false, false),
+            auxiliary_candidate(3, child_guid, parent_guid, true, true, false, false),
+        ];
+
+        let resolved = resolve_auxiliary_candidate(&candidates, &resolved_root_lanes)
+            .expect("confirmed auxiliary winner");
+
+        assert_eq!(resolved.overlay_entity.entity, Entity::from_bits(4));
+    }
+
+    #[test]
+    fn snapshot_skips_explicitly_hidden_root_candidates() {
+        let mut app = App::new();
+        app.insert_resource(DebugOverlayState {
+            enabled: true,
+            mode: DebugOverlayMode::Minimal,
+        });
+        app.insert_resource(ClientSession::default());
+        app.insert_resource(LocalPlayerViewState::default());
+        app.insert_resource(WeaponTracerPool::default());
+        app.insert_resource(WeaponImpactSparkPool::default());
+        app.insert_resource(LocalAssetManager::default());
+        app.insert_resource(RuntimeAssetDependencyState::default());
+        app.insert_resource(RuntimeAssetHttpFetchState::default());
+        app.insert_resource(RenderLayerPerfCounters::default());
+        app.insert_resource(DuplicateVisualResolutionState::default());
+        app.insert_resource(DebugOverlaySnapshot::default());
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StreamedSpriteShaderMaterial>::default());
+        app.insert_resource(Assets::<AsteroidSpriteShaderMaterial>::default());
+        app.insert_resource(Assets::<PlanetVisualMaterial>::default());
+        app.insert_resource(Assets::<RuntimeEffectMaterial>::default());
+
+        let receiver = app.world_mut().spawn_empty().id();
+        let guid = uuid::Uuid::new_v4();
+
+        app.world_mut().spawn((
+            WorldEntity,
+            EntityGuid(guid),
+            GlobalTransform::from(Transform::from_xyz(10.0, 0.0, 0.0)),
+            Visibility::Hidden,
+            Replicated { receiver },
+            Interpolated,
+        ));
+        app.world_mut().spawn((
+            WorldEntity,
+            EntityGuid(guid),
+            GlobalTransform::from(Transform::from_xyz(20.0, 0.0, 0.0)),
+            Visibility::Visible,
+            Replicated { receiver },
+        ));
+
+        let result = app
+            .world_mut()
+            .run_system_once(collect_debug_overlay_snapshot_system);
+        assert!(
+            result.is_ok(),
+            "snapshot collection should succeed: {result:?}"
+        );
+
+        let snapshot = app.world().resource::<DebugOverlaySnapshot>();
+        assert_eq!(snapshot.entities.len(), 1);
+        assert_eq!(snapshot.entities[0].lane, DebugEntityLane::Confirmed);
+        assert_eq!(snapshot.entities[0].position_xy, Vec2::new(20.0, 0.0));
     }
 }

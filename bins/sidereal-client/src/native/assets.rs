@@ -6,6 +6,8 @@ use super::resources::AssetRootPath;
 use super::resources::{AssetCacheAdapter, GatewayHttpAdapter};
 use super::shaders;
 use bevy::asset::RenderAssetUsages;
+use bevy::ecs::lifecycle::RemovedComponentEntity;
+use bevy::ecs::message::MessageCursor;
 use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
@@ -20,6 +22,7 @@ use sidereal_game::{
 };
 use sidereal_net::ServerAssetCatalogVersionMessage;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LocalAssetRecord {
@@ -44,7 +47,7 @@ pub(crate) struct RuntimeAssetCatalogRecord {
     pub sha256_hex: String,
 }
 
-#[derive(Debug, Resource, Default)]
+#[derive(Debug, Resource, Default, Clone)]
 pub(crate) struct LocalAssetManager {
     pub records_by_asset_id: HashMap<String, LocalAssetRecord>,
     pub catalog_by_asset_id: HashMap<String, RuntimeAssetCatalogRecord>,
@@ -83,7 +86,7 @@ impl LocalAssetManager {
     }
 }
 
-#[derive(Debug, Resource, Default)]
+#[derive(Debug, Resource, Default, Clone)]
 pub(crate) struct AssetCatalogHotReloadState {
     pub pending_catalog_version: Option<String>,
     pub forced_asset_ids: HashSet<String>,
@@ -106,6 +109,10 @@ impl RuntimeAssetHttpFetchState {
     pub fn has_in_flight_fetch(&self) -> bool {
         !self.in_flight_asset_ids.is_empty()
     }
+
+    pub fn in_flight_asset_ids_len(&self) -> usize {
+        self.in_flight_asset_ids.len()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +125,21 @@ pub(crate) struct RuntimeAssetFetchResult {
     pub sha256_hex: String,
     pub payload: Vec<u8>,
     pub cache_index: AssetCacheIndex,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct RuntimeAssetDependencyState {
+    pub candidate_asset_ids: HashSet<String>,
+    pub catalog_reload_generation: u64,
+    pub forced_asset_ids_signature: u64,
+    pub dependency_graph_rebuilds: u64,
+    pub dependency_scan_runs: u64,
+    fullscreen_layer_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    runtime_render_layer_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    runtime_post_process_stack_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    sprite_shader_asset_id_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    streamed_sprite_shader_asset_id_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    streamed_visual_asset_id_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
 }
 
 fn expand_catalog_dependencies(
@@ -137,6 +159,76 @@ fn expand_catalog_dependencies(
         }
     }
     expanded
+}
+
+pub(super) fn sync_runtime_asset_dependency_state_system(world: &mut World) {
+    let mut dependency_state = world
+        .remove_resource::<RuntimeAssetDependencyState>()
+        .unwrap_or_default();
+    dependency_state.dependency_scan_runs = dependency_state.dependency_scan_runs.saturating_add(1);
+    let catalog_reload_generation = world
+        .get_resource::<LocalAssetManager>()
+        .map(|asset_manager| asset_manager.reload_generation)
+        .unwrap_or_default();
+    let forced_asset_ids_signature = world
+        .get_resource::<AssetCatalogHotReloadState>()
+        .map(|hot_reload| hash_asset_ids(&hot_reload.forced_asset_ids))
+        .unwrap_or_default();
+    let dependency_inputs_changed = catalog_reload_generation
+        != dependency_state.catalog_reload_generation
+        || forced_asset_ids_signature != dependency_state.forced_asset_ids_signature
+        || has_any_component_changes::<FullscreenLayer>(world)
+        || has_any_component_changes::<RuntimeRenderLayerDefinition>(world)
+        || has_any_component_changes::<RuntimePostProcessStack>(world)
+        || has_any_component_changes::<SpriteShaderAssetId>(world)
+        || has_any_component_changes::<StreamedSpriteShaderAssetId>(world)
+        || has_any_component_changes::<StreamedVisualAssetId>(world)
+        || has_any_removed_components::<FullscreenLayer>(
+            world,
+            &mut dependency_state.fullscreen_layer_removal_cursor,
+        )
+        || has_any_removed_components::<RuntimeRenderLayerDefinition>(
+            world,
+            &mut dependency_state.runtime_render_layer_removal_cursor,
+        )
+        || has_any_removed_components::<RuntimePostProcessStack>(
+            world,
+            &mut dependency_state.runtime_post_process_stack_removal_cursor,
+        )
+        || has_any_removed_components::<SpriteShaderAssetId>(
+            world,
+            &mut dependency_state.sprite_shader_asset_id_removal_cursor,
+        )
+        || has_any_removed_components::<StreamedSpriteShaderAssetId>(
+            world,
+            &mut dependency_state.streamed_sprite_shader_asset_id_removal_cursor,
+        )
+        || has_any_removed_components::<StreamedVisualAssetId>(
+            world,
+            &mut dependency_state.streamed_visual_asset_id_removal_cursor,
+        );
+    if !dependency_inputs_changed {
+        world.insert_resource(dependency_state);
+        return;
+    }
+
+    let candidate_asset_ids = {
+        let asset_manager = world
+            .get_resource::<LocalAssetManager>()
+            .expect("local asset manager should be initialized")
+            .clone();
+        let hot_reload = world
+            .get_resource::<AssetCatalogHotReloadState>()
+            .expect("asset hot reload state should be initialized")
+            .clone();
+        collect_runtime_asset_dependency_candidates(world, &asset_manager, &hot_reload)
+    };
+    dependency_state.candidate_asset_ids = candidate_asset_ids;
+    dependency_state.catalog_reload_generation = catalog_reload_generation;
+    dependency_state.forced_asset_ids_signature = forced_asset_ids_signature;
+    dependency_state.dependency_graph_rebuilds =
+        dependency_state.dependency_graph_rebuilds.saturating_add(1);
+    world.insert_resource(dependency_state);
 }
 
 pub(super) fn receive_asset_catalog_version_messages(
@@ -247,17 +339,11 @@ pub(super) fn queue_missing_catalog_assets_system(
     time: Res<'_, Time>,
     mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
     asset_manager: Res<'_, LocalAssetManager>,
-    mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
+    dependency_state: Res<'_, RuntimeAssetDependencyState>,
     asset_root: Res<'_, AssetRootPath>,
     gateway_http: Res<'_, GatewayHttpAdapter>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
     session: Res<'_, ClientSession>,
-    fullscreen_layers: Query<'_, '_, &'_ FullscreenLayer>,
-    runtime_render_layers: Query<'_, '_, &'_ RuntimeRenderLayerDefinition>,
-    runtime_post_process_stacks: Query<'_, '_, &'_ RuntimePostProcessStack>,
-    sprite_shader_asset_ids: Query<'_, '_, &'_ SpriteShaderAssetId>,
-    streamed_sprite_shader_asset_ids: Query<'_, '_, &'_ StreamedSpriteShaderAssetId>,
-    streamed_visual_asset_ids: Query<'_, '_, &'_ StreamedVisualAssetId>,
 ) {
     let Some(access_token) = session.access_token.as_ref() else {
         return;
@@ -269,85 +355,13 @@ pub(super) fn queue_missing_catalog_assets_system(
     if now - fetch_state.last_request_at_s < 0.05 {
         return;
     }
-    let mut candidate_asset_ids = std::collections::HashSet::<String>::new();
-    hot_reload.forced_asset_ids.retain(|asset_id| {
-        asset_manager.catalog_by_asset_id.contains_key(asset_id)
-            && !asset_present_in_cache_or_source(
-                asset_id,
-                &asset_manager,
-                &asset_root.0,
-                *cache_adapter,
-            )
-    });
-    candidate_asset_ids.extend(hot_reload.forced_asset_ids.iter().cloned());
-    for layer in &fullscreen_layers {
-        if !layer.shader_asset_id.trim().is_empty() {
-            candidate_asset_ids.insert(layer.shader_asset_id.clone());
-        }
-    }
-    for layer in &runtime_render_layers {
-        if !layer.shader_asset_id.trim().is_empty() {
-            candidate_asset_ids.insert(layer.shader_asset_id.clone());
-        }
-        if let Some(params_asset_id) = layer.params_asset_id.as_ref()
-            && !params_asset_id.trim().is_empty()
-        {
-            candidate_asset_ids.insert(params_asset_id.clone());
-        }
-        for binding in &layer.texture_bindings {
-            if !binding.asset_id.trim().is_empty() {
-                candidate_asset_ids.insert(binding.asset_id.clone());
-            }
-        }
-    }
-    for stack in &runtime_post_process_stacks {
-        for pass in &stack.passes {
-            if !pass.shader_asset_id.trim().is_empty() {
-                candidate_asset_ids.insert(pass.shader_asset_id.clone());
-            }
-            if let Some(params_asset_id) = pass.params_asset_id.as_ref()
-                && !params_asset_id.trim().is_empty()
-            {
-                candidate_asset_ids.insert(params_asset_id.clone());
-            }
-            for binding in &pass.texture_bindings {
-                if !binding.asset_id.trim().is_empty() {
-                    candidate_asset_ids.insert(binding.asset_id.clone());
-                }
-            }
-        }
-    }
-    for sprite_shader_asset_id in &sprite_shader_asset_ids {
-        if let Some(asset_id) = sprite_shader_asset_id.0.as_ref()
-            && !asset_id.trim().is_empty()
-        {
-            candidate_asset_ids.insert(asset_id.clone());
-        }
-    }
-    for streamed in &streamed_sprite_shader_asset_ids {
-        if !streamed.0.trim().is_empty() {
-            candidate_asset_ids.insert(streamed.0.clone());
-        }
-    }
-    for visual in &streamed_visual_asset_ids {
-        if !visual.0.trim().is_empty() {
-            candidate_asset_ids.insert(visual.0.clone());
-        }
-    }
-    let candidate_asset_ids = expand_catalog_dependencies(candidate_asset_ids, &asset_manager);
-    let Some(next_asset_id) = candidate_asset_ids
-        .into_iter()
-        .filter(|asset_id| {
-            !asset_present_in_cache_or_source(
-                asset_id,
-                &asset_manager,
-                &asset_root.0,
-                *cache_adapter,
-            )
-        })
-        .filter(|asset_id| !fetch_state.in_flight_asset_ids.contains(asset_id))
-        .find(|asset_id| asset_manager.catalog_by_asset_id.contains_key(asset_id))
-    else {
+    let Some(next_asset_id) = next_runtime_asset_fetch_candidate(
+        &dependency_state.candidate_asset_ids,
+        &asset_manager,
+        &asset_root.0,
+        *cache_adapter,
+        &fetch_state.in_flight_asset_ids,
+    ) else {
         return;
     };
     let Some(catalog) = asset_manager
@@ -604,4 +618,255 @@ fn asset_present_in_cache_or_source(
     };
     (cache_adapter.read_valid_asset_sync)(asset_root, relative_cache_path, &catalog.sha256_hex)
         .is_some()
+}
+
+fn collect_runtime_asset_dependency_candidates(
+    world: &mut World,
+    asset_manager: &LocalAssetManager,
+    hot_reload: &AssetCatalogHotReloadState,
+) -> HashSet<String> {
+    let mut candidate_asset_ids = hot_reload
+        .forced_asset_ids
+        .iter()
+        .filter(|asset_id| asset_manager.catalog_by_asset_id.contains_key(*asset_id))
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    let mut fullscreen_layers = world.query::<&FullscreenLayer>();
+    for layer in fullscreen_layers.iter(world) {
+        insert_asset_id(
+            &mut candidate_asset_ids,
+            Some(layer.shader_asset_id.as_str()),
+        );
+    }
+
+    let mut runtime_render_layers = world.query::<&RuntimeRenderLayerDefinition>();
+    for layer in runtime_render_layers.iter(world) {
+        insert_asset_id(
+            &mut candidate_asset_ids,
+            Some(layer.shader_asset_id.as_str()),
+        );
+        insert_asset_id(&mut candidate_asset_ids, layer.params_asset_id.as_deref());
+        for binding in &layer.texture_bindings {
+            insert_asset_id(&mut candidate_asset_ids, Some(binding.asset_id.as_str()));
+        }
+    }
+
+    let mut runtime_post_process_stacks = world.query::<&RuntimePostProcessStack>();
+    for stack in runtime_post_process_stacks.iter(world) {
+        for pass in &stack.passes {
+            insert_asset_id(
+                &mut candidate_asset_ids,
+                Some(pass.shader_asset_id.as_str()),
+            );
+            insert_asset_id(&mut candidate_asset_ids, pass.params_asset_id.as_deref());
+            for binding in &pass.texture_bindings {
+                insert_asset_id(&mut candidate_asset_ids, Some(binding.asset_id.as_str()));
+            }
+        }
+    }
+
+    let mut sprite_shader_asset_ids = world.query::<&SpriteShaderAssetId>();
+    for sprite_shader_asset_id in sprite_shader_asset_ids.iter(world) {
+        insert_asset_id(
+            &mut candidate_asset_ids,
+            sprite_shader_asset_id.0.as_deref(),
+        );
+    }
+
+    let mut streamed_sprite_shader_asset_ids = world.query::<&StreamedSpriteShaderAssetId>();
+    for streamed in streamed_sprite_shader_asset_ids.iter(world) {
+        insert_asset_id(&mut candidate_asset_ids, Some(streamed.0.as_str()));
+    }
+
+    let mut streamed_visual_asset_ids = world.query::<&StreamedVisualAssetId>();
+    for visual in streamed_visual_asset_ids.iter(world) {
+        insert_asset_id(&mut candidate_asset_ids, Some(visual.0.as_str()));
+    }
+
+    expand_catalog_dependencies(candidate_asset_ids, asset_manager)
+}
+
+fn insert_asset_id(asset_ids: &mut HashSet<String>, maybe_asset_id: Option<&str>) {
+    if let Some(asset_id) = maybe_asset_id
+        && !asset_id.trim().is_empty()
+    {
+        asset_ids.insert(asset_id.to_string());
+    }
+}
+
+fn next_runtime_asset_fetch_candidate(
+    candidate_asset_ids: &HashSet<String>,
+    asset_manager: &LocalAssetManager,
+    asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
+    in_flight_asset_ids: &HashSet<String>,
+) -> Option<String> {
+    let next_asset_id = candidate_asset_ids
+        .iter()
+        .filter(|asset_id| asset_manager.catalog_by_asset_id.contains_key(*asset_id))
+        .filter(|asset_id| !in_flight_asset_ids.contains(*asset_id))
+        .find(|asset_id| {
+            !asset_present_in_cache_or_source(asset_id, asset_manager, asset_root, cache_adapter)
+        })?
+        .clone();
+    let catalog = asset_manager.catalog_by_asset_id.get(&next_asset_id)?;
+    catalog
+        .dependencies
+        .iter()
+        .find(|dependency| {
+            !asset_present_in_cache_or_source(dependency, asset_manager, asset_root, cache_adapter)
+                && !in_flight_asset_ids.contains(*dependency)
+        })
+        .cloned()
+        .or(Some(next_asset_id))
+}
+
+fn has_any_component_changes<T: Component>(world: &mut World) -> bool {
+    let mut query = world.query_filtered::<Entity, Or<(Added<T>, Changed<T>)>>();
+    query.iter(world).next().is_some()
+}
+
+fn has_any_removed_components<T: Component>(
+    world: &mut World,
+    cursor: &mut Option<MessageCursor<RemovedComponentEntity>>,
+) -> bool {
+    let Some(component_id) = world.component_id::<T>() else {
+        return false;
+    };
+    let Some(events) = world.removed_components().get(component_id) else {
+        return false;
+    };
+    let reader = cursor.get_or_insert_with(Default::default);
+    reader.read(events).next().is_some()
+}
+
+fn hash_asset_ids(asset_ids: &HashSet<String>) -> u64 {
+    let mut sorted = asset_ids.iter().collect::<Vec<_>>();
+    sorted.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for asset_id in sorted {
+        asset_id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AssetCatalogHotReloadState, LocalAssetManager, RuntimeAssetCatalogRecord,
+        RuntimeAssetDependencyState, next_runtime_asset_fetch_candidate,
+        sync_runtime_asset_dependency_state_system,
+    };
+    use crate::native::components::StreamedVisualAssetId;
+    use crate::native::resources::AssetCacheAdapter;
+    use bevy::prelude::*;
+    use sidereal_asset_runtime::AssetCacheIndex;
+    use sidereal_game::RuntimeRenderLayerDefinition;
+    use std::collections::{HashMap, HashSet};
+
+    fn test_asset_manager(entries: &[(&str, &[&str])]) -> LocalAssetManager {
+        let mut catalog_by_asset_id = HashMap::new();
+        for (asset_id, dependencies) in entries {
+            catalog_by_asset_id.insert(
+                (*asset_id).to_string(),
+                RuntimeAssetCatalogRecord {
+                    _asset_guid: format!("{asset_id}-guid"),
+                    shader_family: None,
+                    dependencies: dependencies
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect(),
+                    url: format!("/assets/{asset_id}"),
+                    relative_cache_path: format!("cache/{asset_id}"),
+                    content_type: "text/plain".to_string(),
+                    _byte_len: 1,
+                    sha256_hex: format!("sha-{asset_id}"),
+                },
+            );
+        }
+        LocalAssetManager {
+            catalog_by_asset_id,
+            reload_generation: 1,
+            ..default()
+        }
+    }
+
+    #[test]
+    fn dependency_state_tracks_new_and_removed_asset_references() {
+        let mut app = App::new();
+        app.insert_resource(test_asset_manager(&[("planet_shader", &[])]));
+        app.insert_resource(AssetCatalogHotReloadState::default());
+        app.insert_resource(RuntimeAssetDependencyState::default());
+        app.add_systems(Update, sync_runtime_asset_dependency_state_system);
+
+        let entity = app
+            .world_mut()
+            .spawn(RuntimeRenderLayerDefinition {
+                shader_asset_id: "planet_shader".to_string(),
+                ..default()
+            })
+            .id();
+
+        app.update();
+        assert!(
+            app.world()
+                .resource::<RuntimeAssetDependencyState>()
+                .candidate_asset_ids
+                .contains("planet_shader")
+        );
+
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<RuntimeRenderLayerDefinition>();
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<RuntimeAssetDependencyState>()
+                .candidate_asset_ids
+                .contains("planet_shader")
+        );
+    }
+
+    #[test]
+    fn dependency_state_expands_catalog_closure() {
+        let mut app = App::new();
+        app.insert_resource(test_asset_manager(&[
+            ("visual_root", &["visual_dep"]),
+            ("visual_dep", &[]),
+        ]));
+        app.insert_resource(AssetCatalogHotReloadState::default());
+        app.insert_resource(RuntimeAssetDependencyState::default());
+        app.add_systems(Update, sync_runtime_asset_dependency_state_system);
+
+        app.world_mut()
+            .spawn(StreamedVisualAssetId("visual_root".to_string()));
+
+        app.update();
+
+        let dependency_state = app.world().resource::<RuntimeAssetDependencyState>();
+        assert!(dependency_state.candidate_asset_ids.contains("visual_root"));
+        assert!(dependency_state.candidate_asset_ids.contains("visual_dep"));
+    }
+
+    #[test]
+    fn fetch_candidate_prefers_unresolved_dependency_before_parent() {
+        let asset_manager = test_asset_manager(&[("root", &["dep"]), ("dep", &[])]);
+        let candidate_asset_ids = HashSet::from(["root".to_string(), "dep".to_string()]);
+        let selected = next_runtime_asset_fetch_candidate(
+            &candidate_asset_ids,
+            &asset_manager,
+            "data",
+            AssetCacheAdapter {
+                prepare_root: |_| Box::pin(async { Ok(()) }),
+                load_index: |_| Box::pin(async { Ok(AssetCacheIndex::default()) }),
+                save_index: |_, _| Box::pin(async { Ok(()) }),
+                read_valid_asset: |_, _, _| Box::pin(async { Ok(None) }),
+                write_asset: |_, _, _| Box::pin(async { Ok(()) }),
+                read_valid_asset_sync: |_, _, _| None,
+            },
+            &HashSet::new(),
+        );
+        assert_eq!(selected.as_deref(), Some("dep"));
+    }
 }

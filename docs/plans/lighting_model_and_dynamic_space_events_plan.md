@@ -4,6 +4,12 @@ Status: Active implementation contract and phased plan
 Date: 2026-03-06
 Owners: client rendering + gameplay runtime + asset/shader authoring
 
+Update note (2026-03-10):
+- The core lighting direction in this document remains current: Sidereal still uses a client-derived shared world-lighting resource consumed by `Material2d` world shaders rather than Bevy 3D PBR as the primary gameplay-world lighting model.
+- This is no longer a speculative plan in several areas. `EnvironmentLightingState`, `WorldLightingState`, shared lighting uniforms, star-position-derived primary light resolution, and thruster-seeded local emitters are implemented in the native client.
+- The document's oldest "immediate next steps" list is partly stale. The remaining material gaps are now narrower: ships still need their lit-world-sprite upgrade path, local-emitter coverage should expand beyond thrusters to impacts/muzzle flashes/explosions, and backdrop radiance plus dynamic event inputs still need to feed the shared lighting state.
+- Conclusion: keep this document as the active lighting contract, but treat it as an implementation-status document that needs continued dated progress notes rather than a ground-up redesign.
+
 Primary references:
 - `docs/sidereal_design_document.md`
 - `docs/features/asset_delivery_contract.md`

@@ -1,7 +1,7 @@
 //! World scene bootstrap systems.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::RenderLayers;
+use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::log::info;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -14,13 +14,13 @@ use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, DebugOverlayCamera,
     DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
-    DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, FullscreenForegroundCamera,
-    GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill, HudPositionValueText,
-    HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill,
-    PostProcessCamera, RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind,
-    RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
-    SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot, TacticalMapTitle,
-    TopDownCamera, UiOverlayLayer,
+    DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, DebugVelocityArrowMesh,
+    FullscreenForegroundCamera, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
+    HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
+    LoadingProgressBarFill, PlanetBodyCamera, PostProcessCamera, RuntimeScreenOverlayPass,
+    RuntimeScreenOverlayPassKind, RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle,
+    SegmentedBarValue, SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot,
+    TacticalMapTitle, TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{
     BACKDROP_RENDER_LAYER, DEBUG_OVERLAY_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER,
@@ -52,6 +52,13 @@ pub(super) fn spawn_world_scene(
     debug_blue_overlay: Res<'_, DebugBlueOverlayEnabled>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
 ) {
+    let debug_gizmos_on_gameplay_camera =
+        std::env::var("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA")
+            .ok()
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    let debug_velocity_arrow_as_mesh = std::env::var("SIDEREAL_CLIENT_DEBUG_ARROW_AS_MESH")
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     *starfield_motion = StarfieldMotionState::default();
     *camera_motion = CameraMotionState::default();
     shaders::reload_streamed_shaders(
@@ -86,6 +93,28 @@ pub(super) fn spawn_world_scene(
         DespawnOnExit(ClientAppState::InWorld),
     ));
 
+    if debug_velocity_arrow_as_mesh {
+        let arrow_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+        let arrow_material = color_materials.add(ColorMaterial::from(Color::srgb(0.2, 0.5, 1.0)));
+        let arrow_layers = if debug_gizmos_on_gameplay_camera {
+            RenderLayers::layer(0)
+        } else {
+            RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER)
+        };
+        commands.spawn((
+            Mesh2d(arrow_mesh),
+            MeshMaterial2d(arrow_material),
+            Transform::from_xyz(0.0, 0.0, -500.0),
+            GlobalTransform::default(),
+            Visibility::Hidden,
+            NoFrustumCulling,
+            arrow_layers,
+            DebugVelocityArrowMesh,
+            ClientSceneEntity,
+            DespawnOnExit(ClientAppState::InWorld),
+        ));
+    }
+
     commands.spawn((
         Camera2d,
         Camera {
@@ -95,7 +124,7 @@ pub(super) fn spawn_world_scene(
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, 80.0),
-        RenderLayers::from_layers(&[0, PLANET_BODY_RENDER_LAYER]),
+        RenderLayers::layer(0),
         GameplayCamera,
         TopDownCamera {
             distance: 30.0,
@@ -115,8 +144,23 @@ pub(super) fn spawn_world_scene(
     commands.spawn((
         Camera2d,
         Camera {
+            order: 0,
+            is_active: false,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, 80.0),
+        RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
+        PlanetBodyCamera,
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+
+    commands.spawn((
+        Camera2d,
+        Camera {
             order: 50,
-            is_active: true,
+            is_active: !debug_gizmos_on_gameplay_camera,
             clear_color: ClearColorConfig::None,
             ..default()
         },

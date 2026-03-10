@@ -22,11 +22,17 @@ import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ComponentEditorRenderer } from '@/components/brp-editors'
+import {
+  ComponentEditorRenderer,
+  getComponentValue,
+  getEditableComponentTypeKey,
+  getEditorForNode,
+} from '@/components/brp-editors'
 import {
   findGeneratedComponentRegistryResource,
   isGeneratedComponentRegistryTypePath,
   parseGeneratedComponentRegistryResource,
+  resolveComponentRegistryEntry,
 } from '@/features/component-schema/registry'
 
 interface DetailPanelProps {
@@ -66,6 +72,9 @@ export function DetailPanel({
   onComponentUpdate,
   onClose,
 }: DetailPanelProps) {
+  const detailScrollAreaRef = React.useRef<HTMLDivElement | null>(null)
+  const detailScrollTopRef = React.useRef(0)
+  const lastSelectedIdRef = React.useRef<string | null>(null)
   const generatedComponentRegistry = React.useMemo(
     () => findGeneratedComponentRegistryResource(resources),
     [resources],
@@ -73,6 +82,52 @@ export function DetailPanel({
   const selectedResourceTypePath = selectedId?.startsWith('resource:')
     ? selectedId.slice('resource:'.length)
     : null
+
+  // Resolve entity details unconditionally so hook dependencies remain stable
+  // across resource/entity/empty states.
+  const worldEntity = selectedId ? entities.find((e) => e.id === selectedId) : undefined
+  const expandedNode = selectedId ? expandedNodes.get(selectedId) : undefined
+  const graphNode = selectedId ? graphNodes.get(selectedId) : undefined
+  const name =
+    worldEntity?.name || expandedNode?.label || graphNode?.label || selectedId || ''
+  const kind =
+    worldEntity?.kind || expandedNode?.kind || graphNode?.kind || 'unknown'
+  const entityLabels = worldEntity?.entity_labels
+
+  React.useLayoutEffect(() => {
+    const root = detailScrollAreaRef.current
+    const viewport = root?.querySelector(
+      '[data-radix-scroll-area-viewport]',
+    ) as HTMLDivElement | null
+    if (!viewport) return
+
+    if (lastSelectedIdRef.current !== selectedId) {
+      detailScrollTopRef.current = 0
+      viewport.scrollTop = 0
+      lastSelectedIdRef.current = selectedId
+      return
+    }
+
+    viewport.scrollTop = detailScrollTopRef.current
+  }, [selectedId, graphEdges, graphNodes, expandedNodes, resources, worldEntity?.componentCount])
+
+  React.useEffect(() => {
+    const root = detailScrollAreaRef.current
+    const viewport = root?.querySelector(
+      '[data-radix-scroll-area-viewport]',
+    ) as HTMLDivElement | null
+    if (!viewport) return
+
+    const handleScroll = () => {
+      detailScrollTopRef.current = viewport.scrollTop
+    }
+
+    viewport.addEventListener('scroll', handleScroll)
+    return () => {
+      viewport.removeEventListener('scroll', handleScroll)
+    }
+  }, [selectedId])
+
   if (selectedResourceTypePath) {
     const selectedResource =
       resources.find((resource) => resource.typePath === selectedResourceTypePath) ??
@@ -153,17 +208,6 @@ export function DetailPanel({
     )
   }
 
-  // Find entity in world entities or expanded nodes
-  const worldEntity = entities.find((e) => e.id === selectedId)
-  const expandedNode = expandedNodes.get(selectedId)
-  const graphNode = graphNodes.get(selectedId)
-
-  const name =
-    worldEntity?.name || expandedNode?.label || graphNode?.label || selectedId
-  const kind =
-    worldEntity?.kind || expandedNode?.kind || graphNode?.kind || 'unknown'
-  const entityLabels = worldEntity?.entity_labels
-
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -209,7 +253,7 @@ export function DetailPanel({
       </div>
 
       {/* Content - single scrollable properties view */}
-      <ScrollArea className="flex-1 ml-1">
+      <ScrollArea ref={detailScrollAreaRef} className="flex-1 ml-1">
         <div className="p-5 space-y-4">
               {/* Position: X/Y on same line as heading, no unit. Speed: magnitude with m/s. */}
               {worldEntity && (
@@ -532,7 +576,10 @@ function GeneratedComponentRegistryView({ value }: { value: unknown }) {
     [value],
   )
 
-  if (!registry || registry.entries.length === 0) {
+  if (
+    !registry ||
+    (registry.entries.length === 0 && registry.shader_entries.length === 0)
+  ) {
     return (
       <div className="text-sm text-muted-foreground">
         GeneratedComponentRegistry has no entries in this snapshot.
@@ -542,6 +589,14 @@ function GeneratedComponentRegistryView({ value }: { value: unknown }) {
 
   return (
     <div className="space-y-1">
+      {registry.shader_entries.length > 0 ? (
+        <div className="rounded-md border border-border px-3 py-2 text-xs">
+          <div className="font-medium text-foreground">Shader editor entries</div>
+          <div className="mt-1 text-muted-foreground">
+            {registry.shader_entries.length} shader assets
+          </div>
+        </div>
+      ) : null}
       {registry.entries.map((entry) => (
         <div
           key={entry.type_path}
@@ -646,13 +701,28 @@ function ComponentsList({
       )
   }, [entityId, graphEdges, graphNodes])
 
-  const toggleComponent = (componentId: string) => {
+  const getStableComponentKey = React.useCallback(
+    (id: string, node: GraphNode) => {
+      const typePath = node.properties.typePath
+      if (typeof typePath === 'string' && typePath.length > 0) {
+        return `${entityId}::${typePath}`
+      }
+      const componentKind = node.properties.component_kind
+      if (typeof componentKind === 'string' && componentKind.length > 0) {
+        return `${entityId}::${componentKind}`
+      }
+      return `${entityId}::${node.label}::${id}`
+    },
+    [entityId],
+  )
+
+  const toggleComponent = (componentKey: string) => {
     setExpandedComponents((prev) => {
       const next = new Set(prev)
-      if (next.has(componentId)) {
-        next.delete(componentId)
+      if (next.has(componentKey)) {
+        next.delete(componentKey)
       } else {
-        next.add(componentId)
+        next.add(componentKey)
       }
       return next
     })
@@ -742,21 +812,39 @@ function ComponentsList({
       {components
         .sort((a, b) => a.node.label.localeCompare(b.node.label))
         .map(({ id, node }) => {
-          const isExpanded = expandedComponents.has(id)
+          const componentKey = getStableComponentKey(id, node)
+          const isExpanded = expandedComponents.has(componentKey)
           const hasProperties = Object.keys(node.properties).length > 0
           const previewValue = hasProperties
             ? getPreviewValue(node.properties)
             : ''
+          const componentEntry = resolveComponentRegistryEntry(
+            node,
+            generatedComponentRegistry,
+          )
+          const legacyEditor = getEditorForNode(node)
+          const shouldUseLegacyEditor =
+            Boolean(legacyEditor) &&
+            (!componentEntry || componentEntry.editor_schema.fields.length === 0)
+          const hasStructuredEditor = Boolean(legacyEditor) || Boolean(componentEntry)
+          const legacyTypePath =
+            (typeof node.properties.typePath === 'string'
+              ? node.properties.typePath
+              : getEditableComponentTypeKey(node)) ?? null
+          const legacyComponentKind =
+            (typeof node.properties.component_kind === 'string'
+              ? node.properties.component_kind
+              : componentEntry?.component_kind) ?? null
 
           return (
             <div
-              key={id}
+              key={componentKey}
               className="border border-border rounded-md overflow-hidden"
             >
               <button
                 onClick={() => {
                   if (hasProperties) {
-                    toggleComponent(id)
+                    toggleComponent(componentKey)
                   }
                 }}
                 className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left"
@@ -781,38 +869,67 @@ function ComponentsList({
 
               {isExpanded && hasProperties && (
                 <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-3 flex flex-col ">
-                  <div className="space-y-1 flex flex-row">
-                    <div className="space-y-1 flex flex-col grow">
-                      {flattenProperties(node.properties).map(
-                        ({ keyPath, value }) => (
-                          <div
-                            key={keyPath}
-                            className="flex items-start gap-2 py-0.5 min-w-0 w-full"
-                          >
-                            <span className="text-xs text-muted-foreground truncate shrink-0">
-                              {keyPath.split('.').pop() ?? keyPath}
-                            </span>
-                            <ValueField
-                              value={formatDisplayValue(value)}
-                              mono
-                              className="text-xs text-foreground/90 min-w-0 flex-1 truncate grow w-0"
-                            />
-                          </div>
-                        ),
-                      )}
+                  {!hasStructuredEditor ? (
+                    <div className="space-y-1 flex flex-row">
+                      <div className="space-y-1 flex flex-col grow">
+                        {flattenProperties(node.properties).map(
+                          ({ keyPath, value }) => (
+                            <div
+                              key={keyPath}
+                              className="flex items-start gap-2 py-0.5 min-w-0 w-full"
+                            >
+                              <span className="text-xs text-muted-foreground truncate shrink-0">
+                                {keyPath.split('.').pop() ?? keyPath}
+                              </span>
+                              <ValueField
+                                value={formatDisplayValue(value)}
+                                mono
+                                className="text-xs text-foreground/90 min-w-0 flex-1 truncate grow w-0"
+                              />
+                            </div>
+                          ),
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  ) : null}
                   <div className="space-y-1 grow">
-                    <ComponentEditorRenderer
-                      componentNodeId={id}
-                      entityId={entityId}
-                      node={node}
-                      generatedComponentRegistry={generatedComponentRegistry}
-                      onUpdate={(typePath, componentKind, value) => {
-                        onComponentUpdate?.(entityId, typePath, componentKind, value)
-                      }}
-                      readOnly={!onComponentUpdate}
-                    />
+                    {shouldUseLegacyEditor && legacyEditor ? (
+                      <React.Suspense
+                        fallback={
+                          <div className="rounded border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                            Loading editor...
+                          </div>
+                        }
+                      >
+                        {React.createElement(legacyEditor, {
+                          componentNodeId: id,
+                          entityId,
+                          node,
+                          value: getComponentValue(node),
+                          onChange: (value: unknown) => {
+                            if (!legacyTypePath || !legacyComponentKind) return
+                            onComponentUpdate?.(
+                              entityId,
+                              legacyTypePath,
+                              legacyComponentKind,
+                              value,
+                            )
+                          },
+                          readOnly: !onComponentUpdate,
+                        })}
+                      </React.Suspense>
+                    ) : (
+                      <ComponentEditorRenderer
+                        componentNodeId={id}
+                        entityId={entityId}
+                        node={node}
+                        generatedComponentRegistry={generatedComponentRegistry}
+                        onUpdate={(typePath, componentKind, value) => {
+                          onComponentUpdate?.(entityId, typePath, componentKind, value)
+                        }}
+                        readOnly={!onComponentUpdate}
+                      />
+                    )}
                   </div>
                 </div>
               )}

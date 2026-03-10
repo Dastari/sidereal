@@ -1,406 +1,620 @@
 # Bevy 2D Rendering Optimization Audit Report
 
-Status: Active
-Date: 2026-03-10
-Prompt source: `docs/prompts/bevy_2d_rendering_optimization_audit_prompt.md`
-Scope: Native client render smoothness, render-adjacent ECS/runtime cost, replication/visibility delivery cadence, and asset/shader/material behavior that affects perceived or actual 2D rendering performance.
-Limitations: Static code audit only. No live GPU captures, renderdoc traces, puffin/tracy captures, packet captures, or long-session memory graphs were available. Any GPU-bound or frame-spike conclusions not directly proven by code are labeled as inference.
+Status: Active  
+Report date: 2026-03-10  
+Prompt source path: `docs/prompts/bevy_2d_rendering_optimization_audit_prompt.md`  
+Scope: Client-visible render smoothness across Bevy 2D rendering, camera/layer/material/shader paths, ECS scheduling, Lightyear prediction/interpolation handoff, asset/bootstrap behavior, and replication/visibility delivery that affects perceived render performance.  
+Limitations: Static code audit only. No live frame captures, RenderDoc traces, Tracy/Puffin captures, packet captures, or GPU timing data were available. Any conclusion about GPU saturation or percentile frame spikes is inference unless explicitly tied to code behavior.  
 
 Update note (2026-03-10):
-- The major March 9 client churn findings are still present in the current codebase.
-- The highest-ROI work is still to remove per-frame fullscreen/post-process mesh and material churn, then convert whole-world render-layer and asset-dependency polling into change-driven invalidation.
-- The current render-layer direction from `DR-0027` remains correct; the problem is hot-path execution cost, not the data-driven composition model itself.
+- This report supersedes the earlier same-day draft.
+- After re-auditing the client and replication code, the strongest bottlenecks are broad ECS polling, serialized asset delivery, per-instance material pressure, UI/per-view update cost, and replication visibility cadence. The prior claim that fullscreen quads are reallocated every frame was incorrect; fullscreen quad caching already exists in `bins/sidereal-client/src/native/backdrop.rs:643`.
 
 ## 1. Executive Summary
 
-The game does not read like a normal-play 2D renderer that is mainly GPU-bound. It reads like a client CPU and frame-pacing problem, amplified by replication cadence pressure and a few expensive render-path design choices.
+The game does not read like a normal-play 2D client that is primarily GPU-bound. It reads like a mixed frame-pacing and CPU scheduling problem, with a meaningful server-side cadence problem upstream of the renderer.
 
-The strongest current findings are:
+The most likely reasons the game feels slow are:
 
-1. Fullscreen and post-process renderables still allocate new quad meshes and new material assets every `Update`, even for unchanged passes. This is a live churn bug, not a tuning issue, in `bins/sidereal-client/src/native/backdrop.rs:37-168` and `bins/sidereal-client/src/native/backdrop.rs:263-444`.
-2. The client still recompiles render-layer registry state and re-resolves world-layer assignments by cloning and rescanning ECS state every frame in `bins/sidereal-client/src/native/render_layers.rs:15-200`.
-3. Runtime optional asset discovery still polls the entire visible render dependency surface every frame in `bins/sidereal-client/src/native/assets.rs:246-360`.
-4. Duplicate predicted/interpolated visual suppression still does a full-world GUID arbitration pass every frame in `bins/sidereal-client/src/native/visuals.rs:268-360`.
-5. The replication server still rebuilds scratch maps, candidate sets, landmark discovery scans, and per-client visibility decisions every tick in `bins/sidereal-replication/src/replication/visibility.rs:594-1425`, which can indirectly hurt client render smoothness by making authoritative update cadence uneven under load.
+1. The replication server rebuilds visibility scratch state and reevaluates visibility for every replicated entity against every client every fixed tick in `bins/sidereal-replication/src/replication/visibility.rs:594`.
+2. Client asset readiness is serialized twice: required bootstrap assets are downloaded one-by-one in `bins/sidereal-client/src/native/auth_net.rs:308`, and runtime optional assets are fetched one-at-a-time in `bins/sidereal-client/src/native/assets.rs:334`.
+3. The client still has several broad polling systems in the hot path, especially shader assignment inference in `bins/sidereal-client/src/native/shaders.rs:640`, render-layer registry/assignment maintenance in `bins/sidereal-client/src/native/render_layers.rs:20` and `bins/sidereal-client/src/native/render_layers.rs:195`, and UI/world overlay work in `bins/sidereal-client/src/native/ui.rs:356` and `bins/sidereal-client/src/native/ui.rs:1696`.
+4. The renderer is still paying for many custom `Material2d` instances for planet passes, effect passes, asteroid passes, and fullscreen/post-process bindings in `bins/sidereal-client/src/native/visuals.rs:1357`, `bins/sidereal-client/src/native/visuals.rs:1892`, `bins/sidereal-client/src/native/visuals.rs:2139`, `bins/sidereal-client/src/native/visuals.rs:2192`, and `bins/sidereal-client/src/native/backdrop.rs:502`.
+5. The runtime clearly still has presentation-lifecycle instability around prediction/interpolation handoff, which hurts smoothness even though the project already made the correct decision to render after Lightyear interpolation/correction in `bins/sidereal-client/src/native/plugins.rs`.
 
-One important smoothness path is correct and should be kept:
+The architecture that should be preserved:
 
-1. The client uses Lightyear transform frame interpolation in `bins/sidereal-client/src/native/mod.rs:129-147`.
-2. The runtime explicitly keeps `FrameInterpolate<Transform>` aligned for replicated world entities in `bins/sidereal-client/src/native/transforms.rs:184-223`.
-3. Camera follow was intentionally moved to the post-interpolation/post-correction lane in `bins/sidereal-client/src/native/plugins.rs:480-509`.
-
-That means the top issue is not "add interpolation." The top issue is "stop doing obviously expensive work every frame around the interpolation path."
+1. Render-derived parallax and layer depth rather than mutating authoritative world positions.
+2. Post-interpolation/post-correction camera follow.
+3. Server-authored visibility with `Authorization -> Delivery -> Payload`.
+4. HTTP asset payload delivery rather than streaming asset bytes over replication.
+5. Lua-authored render layers and shader families as the long-term direction.
 
 ## 2. What Most Likely Makes The Game Feel Slow
 
-Ordered by expected impact:
-
-1. Per-frame fullscreen/post-process mesh and material churn causes render-world churn, allocations, and likely long-tail frame spikes.
-2. Client `Update` still carries too much always-on render-adjacent bookkeeping, including render-layer rebuilds, asset dependency scans, duplicate arbitration, visual attachment/update, UI propagation, and backdrop sync.
-3. Replication visibility work can produce bursty or uneven authoritative delivery cadence, which makes the renderer feel worse even when average FPS is acceptable.
-4. Shader-backed 2D visuals are still material-heavy and mesh-heavy enough to reduce batching materially in large scenes.
-5. Multiple always-on cameras and overlay passes increase extraction/pass overhead before the scene is cheap enough to justify them.
-
-## 3. Findings
-
-### C1. Fullscreen and post-process renderables are still rebuilt every frame
-
-Severity: Critical
-Confidence: Proven
-Primary impact: Client CPU, allocator churn, frame pacing, likely long-session slowdown
-
-Evidence:
-
-1. `sync_fullscreen_layer_renderables_system()` creates a new fullscreen quad handle every run and reinserts fullscreen render components for selected entities in `bins/sidereal-client/src/native/backdrop.rs:37-168`.
-2. `sync_runtime_post_process_renderables_system()` creates a fresh quad for existing post-process renderables as well as new ones in `bins/sidereal-client/src/native/backdrop.rs:263-385`.
-3. `attach_runtime_fullscreen_material()` always clears material bindings and allocates a fresh `Material2d` asset in `bins/sidereal-client/src/native/backdrop.rs:395-444`.
-
-Why it matters:
-
-1. Fullscreen entities are few, so they should be cheap.
-2. The current path makes them expensive every frame even when authored state is unchanged.
-3. This is exactly the kind of bug that creates "feels worse after a while" reports because the renderer is constantly asked to process changed mesh/material state that is not actually new content.
-
-Recommendation:
-
-1. Introduce one cached fullscreen quad handle resource.
-2. Split fullscreen/post-process sync into create, mutate-in-place, and stale-removal paths.
-3. Cache material handles by stable binding key and only rebuild when shader family, params asset, or texture bindings actually change.
-
-### C2. Render-layer registry compilation and world-layer assignment are still frame-polled
-
-Severity: High
-Confidence: Proven
-Primary impact: Client CPU, schedule pressure, change-detection noise
-
-Evidence:
-
-1. `sync_runtime_render_layer_registry_system()` clones generated component metadata, layer definitions, rules, and post-process stacks into temporary `Vec`s every run in `bins/sidereal-client/src/native/render_layers.rs:15-149`.
-2. `resolve_runtime_render_layer_assignments_system()` clones per-entity labels, overrides, and current resolved state into another `Vec`, then revisits each entity to re-resolve assignments in `bins/sidereal-client/src/native/render_layers.rs:151-200`.
-
-Why it matters:
-
-1. `DR-0027` explicitly wants bounded, deterministic rule evaluation rather than arbitrary per-frame callbacks.
-2. The current direction is architecturally correct, but the implementation is still "recompute from whole-world snapshots each frame."
-3. This is likely one of the largest avoidable CPU costs in authored-heavy scenes.
-
-Recommendation:
-
-1. Rebuild registry state only on `Added`, `Changed`, and removed-component signals for `RuntimeRenderLayerDefinition`, `RuntimeRenderLayerRule`, and `RuntimePostProcessStack`.
-2. Resolve world-layer assignments only for entities whose relevant labels/components/overrides changed.
-3. Persist compiled component-ID lookups until generated registry contents change.
-
-### C3. Runtime optional asset discovery is still a whole-world polling loop
-
-Severity: High
-Confidence: Proven
-Primary impact: Client CPU, startup and hot-reload hitching, asset-fetch latency
-
-Evidence:
-
-1. `queue_missing_catalog_assets_system()` scans fullscreen layers, runtime render layers, post-process stacks, sprite shader asset IDs, streamed shader asset IDs, and streamed visual asset IDs every frame in `bins/sidereal-client/src/native/assets.rs:246-360`.
-2. The system rebuilds a `HashSet`, expands dependency closure, then chooses a single next asset fetch candidate each run.
-
-Why it matters:
-
-1. The asset delivery contract says runtime fetch is lazy and authoritative, but not that dependency discovery must be frame-polled.
-2. This polling shape is especially bad when world authoring state is stable but the client is just waiting for a few assets.
-3. It also increases the chance that hot reloads and optional asset attachment feel hitchy because discovery work and presentation work share the same frame budget.
-
-Recommendation:
-
-1. Build a dirty dependency graph resource keyed by authored render-layer, post-process, and visual components.
-2. Maintain a pending asset queue resource that the HTTP fetch system consumes without rescanning the world.
-3. Emit explicit invalidation when catalog generation or shader assignment generation changes.
-
-### C4. Duplicate predicted/interpolated visual arbitration still scans the whole replicated world every frame
-
-Severity: Medium
-Confidence: Proven
-Primary impact: Client CPU, presentation churn, architecture complexity
-
-Evidence:
-
-1. `suppress_duplicate_predicted_interpolated_visuals_system()` scores every `WorldEntity` with a GUID, then performs a second pass to hide non-winners in `bins/sidereal-client/src/native/visuals.rs:268-360`.
-
-Why it matters:
-
-1. This is a symptom of noisy entity lifecycle and presentation handoff, not a long-term steady-state render architecture.
-2. Even if the query is not the top hot path, it keeps duplicate presentation cost alive every frame.
-
-Recommendation:
-
-1. Move winner selection closer to replication adoption and control-handoff transitions.
-2. Maintain one displayed winner per GUID class in a dedicated resource instead of rescoring the full world every frame.
-3. Add counters for duplicate-GUID groups and winner swaps so the team can prove whether lifecycle work is actually improving.
-
-### C5. Shader-backed streamed visuals and planet passes still trade batching away aggressively
-
-Severity: High
-Confidence: Strong inference
-Primary impact: Client CPU draw submission, client GPU state churn
-
-Evidence:
-
-1. Streamed asteroid and generic shader-backed sprite paths allocate per-entity quad meshes and per-entity materials in `bins/sidereal-client/src/native/visuals.rs:618-672`.
-2. Planet body/cloud/ring passes allocate separate meshes and separate materials per pass in `bins/sidereal-client/src/native/visuals.rs:955-1160`.
-3. Several planet and fullscreen passes are marked `NoFrustumCulling`, which is correct for some paths but increases the cost of material-heavy passes if entity counts grow.
-
-Why it matters:
-
-1. Plain sprites can batch well; custom `Material2d` paths batch much less effectively when each entity or pass owns a unique material instance.
-2. This does not mean the data-driven shader direction is wrong.
-3. It means the remaining transitional Rust-owned material families need stronger pooling, instancing, or content-budget discipline.
-
-Recommendation:
-
-1. Reuse a shared unit quad mesh resource across shader-backed 2D visuals.
-2. Collapse material diversity where parameters can be moved into textures, atlases, or shared uniform buckets.
-3. Budget planet multi-pass visuals more explicitly and avoid treating every large body as an unconstrained multi-pass material stack.
-
-### C6. The client still keeps too many always-on views and render-adjacent systems active
-
-Severity: Medium
-Confidence: Proven
-Primary impact: Client CPU, client GPU, pass overhead
-
-Evidence:
-
-1. World scene spawn creates separate backdrop, gameplay, debug overlay, fullscreen foreground, and post-process cameras in `bins/sidereal-client/src/native/scene_world.rs:64-156`.
-2. The debug overlay camera starts active by default in `bins/sidereal-client/src/native/scene_world.rs:115-128`.
-3. UI systems still propagate `RenderLayers` to descendants every frame in `bins/sidereal-client/src/native/ui.rs:51-64`.
-4. Debug overlay collection and text update systems still run every in-world frame even when the overlay is disabled, though they early-return after entering the systems in `bins/sidereal-client/src/native/plugins.rs:511-523`, `bins/sidereal-client/src/native/debug_overlay.rs:59-99`, and `bins/sidereal-client/src/native/ui.rs:131-220`.
-
-Why it matters:
-
-1. A few separate cameras are acceptable if the scene is otherwise cheap.
-2. This scene is not otherwise cheap yet.
-3. The cheapest overlay system is the one that does not enter the schedule that frame.
-
-Recommendation:
-
-1. Gate the debug overlay camera and debug overlay systems behind `DebugOverlayState.enabled`.
-2. Revisit whether fullscreen foreground and post-process need separate always-on cameras.
-3. Make UI render-layer propagation event-driven or spawn-time-only.
-
-### C7. Startup shader reload is still coarse-grained but not the primary current problem
-
-Severity: Medium
-Confidence: Proven plus inference
-Primary impact: Startup hitching, hot-reload hitching
-
-Evidence:
-
-1. `spawn_world_scene()` reloads streamed shaders during scene entry in `bins/sidereal-client/src/native/scene_world.rs:55-63`.
-2. `reload_streamed_shaders()` reinstalls runtime shader handles from current assignments in `bins/sidereal-client/src/native/shaders.rs:569-583`.
-3. Fullscreen readiness currently returns `true` even if a streamed shader asset is absent because fullscreen material handles always have a fallback installed in `bins/sidereal-client/src/native/shaders.rs:585-598`.
-
-Why it matters:
-
-1. Startup reload cost is real, but it is not as severe as the proven per-frame churn.
-2. The current path is directionally compatible with the asset/shader contracts because fallback shaders are allowed.
-3. The main remaining risk is hitching around coarse reload boundaries, not a steady-state render bottleneck.
-
-Recommendation:
-
-1. Keep the authored shader pipeline.
-2. Add prewarm timing and reload-generation counters before attempting deeper redesign.
-3. Defer larger shader-pipeline changes until per-frame churn is removed.
-
-### C8. Server visibility work is still expensive enough to degrade render smoothness indirectly
-
-Severity: High
-Confidence: Proven
-Primary impact: Authoritative update cadence, client frame pacing under load
-
-Evidence:
-
-1. `update_network_visibility()` clears and rebuilds scratch state each tick in `bins/sidereal-replication/src/replication/visibility.rs:670-910`.
-2. It rescans replicated entities for landmark discovery per client in `bins/sidereal-replication/src/replication/visibility.rs:912-1060`.
-3. It then loops all replicated entities and all live clients again to mutate `ReplicationState` in `bins/sidereal-replication/src/replication/visibility.rs:1124-1389`.
-
-Why it matters:
-
-1. This is not in the renderer, but it can absolutely make rendering feel bad by producing bursty delivery and frequent client-side adoption/correction churn.
-2. The visibility contract is still correct: authorization then delivery then payload.
-3. The implementation is doing too much repeated work per tick.
-
-Recommendation:
-
-1. Persist more spatial/ownership/layer-resolution caches across ticks instead of rebuilding them from scratch.
-2. Separate low-frequency landmark discovery from per-tick visibility delivery.
-3. Add timing, candidate-count, and visible-entity-count telemetry before changing policy.
-
-## 4. Required Confirm / Refute Set
-
-1. The game is GPU-bound in normal gameplay: Not proven and unlikely to be the primary bottleneck from code inspection alone.
-2. The game is CPU-bound on the client in normal gameplay: Likely true.
-3. The game is bottlenecked by ECS scheduling/query work more than actual draw submission: Likely true today.
-4. The game is bottlenecked by replication/update churn more than rendering itself: Partly true. Replication cadence is a major indirect contributor, but there are also direct client render-path bugs.
-5. The game feels slow mainly because of frame pacing/interpolation issues rather than raw frame time: Likely true in practice. The interpolation lane is present; the remaining problem is uneven surrounding work.
-6. Shader/material diversity is defeating batching enough to matter: Likely true in authored-heavy scenes.
-7. Too many fullscreen or post-process passes are active for the current visual payoff: Likely true.
-8. Off-screen or non-visible entities are still paying too much render-related cost: Likely true, mostly via schedule work and non-cullable effect paths.
-9. Asset/shader compilation or loading hitching is a meaningful source of stalls: Plausible, but secondary to the proven per-frame churn.
-10. Server-side visibility/replication behavior is causing client render instability or overload: Likely true under load.
-11. The current render-layer architecture is directionally correct and should be kept: Yes.
-12. The current render-layer/material implementation has avoidable transitional cost that should be simplified: Yes.
-
-## 5. End-to-End Render Flow Map
-
-### 5.1 Asset/bootstrap to client-ready rendering
-
-1. Client starts with streamed shader/material plugins and frame-time diagnostics in `bins/sidereal-client/src/native/mod.rs:336-363`.
-2. World-scene entry reloads streamed shader handles and spawns the active camera stack in `bins/sidereal-client/src/native/scene_world.rs:55-156`.
-3. Runtime asset polling discovers referenced shader, params, texture, and visual asset IDs in `bins/sidereal-client/src/native/assets.rs:246-360`.
-4. Visual attach systems bind sprites, shader-backed visuals, fullscreen passes, and overlay passes during `Update` in `bins/sidereal-client/src/native/plugins.rs:324-398` and `bins/sidereal-client/src/native/plugins.rs:458-523`.
-
-### 5.2 Replicated entity arrival to visible draw
-
-1. Lightyear/Avian replication is configured in `bins/sidereal-client/src/native/mod.rs:126-147`.
-2. Replicated entities are adopted, spatial components are bootstrapped, and transform interpolation markers are synchronized in client replication/update systems before visuals run.
-3. Render-layer rules resolve world-layer assignment for world entities in `bins/sidereal-client/src/native/render_layers.rs:151-225`.
-4. Visual attach systems spawn streamed visual children, shader-backed quads, and planet pass children in `bins/sidereal-client/src/native/visuals.rs:520-695` and `bins/sidereal-client/src/native/visuals.rs:955-1160`.
-5. PostUpdate interpolation/correction and camera follow then drive the final rendered transforms in `bins/sidereal-client/src/native/plugins.rs:480-509`.
-
-### 5.3 Camera-relative/world-layer transform derivation
-
-1. Authoritative world positions remain unchanged.
-2. Client render systems derive local offsets and screen-scale from resolved layer definitions when updating streamed visuals and planet passes.
-3. This matches `DR-0027`: render-layer parallax is render-time behavior, not gameplay-space mutation.
-
-### 5.4 Fullscreen background/foreground/post-process execution
-
-1. Authored fullscreen definitions and authored post-process stacks are replicated as ECS data.
-2. Client fullscreen sync systems turn that authored state into renderable fullscreen quads every frame in `bins/sidereal-client/src/native/backdrop.rs:37-168` and `bins/sidereal-client/src/native/backdrop.rs:263-385`.
-3. Backdrop cameras are normalized in `sync_backdrop_camera_system()` and fullscreen quads are scaled to viewport size in `sync_backdrop_fullscreen_system()`.
-
-### 5.5 Prediction/reconciliation/interpolation to final motion
-
-1. Fixed-step gameplay and prediction run at 60 Hz in `bins/sidereal-client/src/native/mod.rs:147` and client prediction plugins.
-2. Lightyear frame interpolation is enabled in `bins/sidereal-client/src/native/mod.rs:135`.
-3. Sidereal keeps `FrameInterpolate<Transform>` markers aligned for relevant entities in `bins/sidereal-client/src/native/transforms.rs:184-223`.
-4. Camera follow runs after interpolation and rollback visual correction in `bins/sidereal-client/src/native/plugins.rs:480-509`.
-
-## 6. Performance Budget Map
-
-This section is partly inferential.
-
-### 6.1 Client CPU
-
-Highest likely costs:
-
-1. Fullscreen/post-process sync churn.
-2. Render-layer registry rebuild and assignment resolution.
-3. Runtime asset dependency polling.
-4. Duplicate visual arbitration.
-5. Visual attach/update systems for shader-backed sprites, planets, plumes, tracers, and overlays.
-
-### 6.2 Client GPU
-
-Highest likely costs:
-
-1. Multiple always-on cameras and overlay passes.
-2. Material-heavy fullscreen, shader-backed sprite, planet, and effect passes.
-3. Alpha-blended fullscreen and effect layers.
-4. Reduced batching from per-entity/per-pass material diversity.
-
-### 6.3 Client main-thread stalls
-
-Highest likely costs:
-
-1. Mesh/material asset allocation churn.
-2. Shader reload/install work on scene entry or hot reload.
-3. Runtime asset cache/mount checks in frame-sensitive systems.
-
-### 6.4 Server tick cost affecting visual smoothness
-
-Highest likely costs:
-
-1. Visibility scratch rebuilds.
-2. Per-client candidate-set construction.
-3. Landmark discovery rescans.
-4. Per-entity x per-client visibility mutation loop.
-
-### 6.5 Network/replication delivery cost affecting render churn
-
-Highest likely costs:
-
-1. Uneven delivery cadence from visibility work.
-2. Duplicate presentation lifecycles during handoff/relevance changes.
-3. Asset-driven visual attach churn when newly relevant entities reference not-yet-ready content.
-
-## 7. Top Remediation Plan
-
-### 7.1 Top 5 highest-ROI changes
-
-1. Remove per-frame fullscreen/post-process mesh and material churn.
-2. Make render-layer registry compilation and assignment incremental.
-3. Replace runtime asset dependency polling with change-driven invalidation plus a pending fetch queue.
-4. Reduce duplicate predicted/interpolated visual arbitration to event-driven lifecycle changes.
-5. Add visibility tick telemetry, then reduce scratch rebuild and per-client rescans on the replication server.
-
-### 7.2 Quick wins
-
-1. Cache one shared fullscreen quad mesh.
-2. Cache one shared unit quad mesh for shader-backed 2D visuals where geometry is identical.
-3. Gate debug overlay camera and systems behind the enabled flag.
-4. Make UI overlay layer propagation spawn-time or dirty-only.
-
-### 7.3 Medium refactors
-
-1. Incremental render-layer registry/resource invalidation.
-2. Dirty asset-dependency graph and fetch queue.
-3. Winner-per-GUID presentation registry.
-4. Persisted visibility scratch indices across ticks.
-
-### 7.4 Large architectural changes
+The game can feel slow even when raw FPS is acceptable because several costs affect cadence and presentation quality more than average frame time:
+
+1. Authoritative update cadence can become uneven when replication visibility work spikes on the server.
+2. The client still performs broad ECS polling and UI/view bookkeeping every frame, even when authored render state is mostly stable.
+3. Control handoff, duplicate-entity suppression, and transform recovery logic show that the main pain is not “missing interpolation,” but instability around the interpolation path.
+4. Asset bootstrap and lazy streaming are serialized, so the game can feel slow to become visually complete even after input/render are technically running.
+5. The active scene uses multiple cameras and several custom material families before the scene is cheap enough to comfortably afford them.
+
+## 3. Critical Findings
+
+### F1. Replication visibility is still a full scratch rebuild plus per-client fanout every fixed tick
+
+- Severity: Critical
+- Confidence: Proven
+- Main impact: `replication churn`, `frame pacing`, `client CPU` indirectly via unstable delivery cadence
+- Exact references:
+  - `bins/sidereal-replication/src/replication/visibility.rs:594`
+  - `bins/sidereal-replication/src/replication/visibility.rs:670`
+  - `bins/sidereal-replication/src/replication/visibility.rs:913`
+  - `bins/sidereal-replication/src/replication/visibility.rs:1124`
+- Why it matters:
+  - `update_network_visibility()` clears and rebuilds `VisibilityScratch` every tick.
+  - It rebuilds candidate sets per client.
+  - It rescans replicated entities for newly discovered landmarks per player.
+  - It then loops replicated entities against live clients and mutates `ReplicationState` one client at a time.
+  - Even if GPU load is moderate, bursty or delayed authoritative delivery makes the client look jittery, correction-heavy, or “laggy.”
+- Concrete recommendation:
+  - Persist scratch indices across ticks instead of rebuilding them wholesale.
+  - Move landmark discovery to a lower-frequency lane or dirty spatial trigger.
+  - Separate “entity metadata/index upkeep” from “per-client visibility decisions.”
+  - Add per-tick timings for scratch build, candidate generation, discovery scan, and per-client apply.
+- Expected payoff:
+  - Largest likely improvement in overall smoothness under multi-entity or multi-client load.
+  - Reduced client-side adoption/correction churn.
+- Risk/complexity of fixing: High
+- Disposition: Must fix
+
+### F2. Asset delivery is serialized in both bootstrap and lazy runtime fetch paths
+
+- Severity: Critical
+- Confidence: Proven
+- Main impact: `startup hitching`, `memory/bandwidth`, `frame pacing` indirectly via late visual completion
+- Exact references:
+  - `bins/sidereal-client/src/native/auth_net.rs:308`
+  - `bins/sidereal-client/src/native/auth_net.rs:552`
+  - `bins/sidereal-client/src/native/assets.rs:334`
+  - `bins/sidereal-client/src/native/assets.rs:509`
+- Why it matters:
+  - Required bootstrap assets are checked and, if needed, fetched and written one-by-one inside a single async task.
+  - Optional runtime fetches allow only one in-flight asset task because `RuntimeAssetHttpFetchState` stores a single `pending` task and the queue path early-returns while it exists.
+  - This does not just delay content; it prolongs the period where the game feels incomplete, soft-stalled, or visually inconsistent.
+- Concrete recommendation:
+  - Allow bounded parallel bootstrap downloads for required assets.
+  - Allow a bounded N-way runtime lazy fetch queue instead of one-at-a-time fetch.
+  - Track per-asset priority so shaders/visual roots win over optional secondary art.
+- Expected payoff:
+  - Faster world-ready time.
+  - Less runtime pop-in and fewer “renderer is slow” false positives caused by missing content.
+- Risk/complexity of fixing: Medium
+- Disposition: Must fix
+
+## 4. Client Render Pipeline Findings
+
+### F3. The client still has broad hot-path polling around shader assignment and render-layer state
+
+- Severity: High
+- Confidence: Proven
+- Main impact: `client CPU`, `architecture/maintainability`
+- Exact references:
+  - `bins/sidereal-client/src/native/shaders.rs:640`
+  - `bins/sidereal-client/src/native/render_layers.rs:20`
+  - `bins/sidereal-client/src/native/render_layers.rs:195`
+  - `bins/sidereal-client/src/native/render_layers.rs:530`
+- Why it matters:
+  - `sync_runtime_shader_assignments_system()` scans layer definitions and sprite shader references every `Update`.
+  - Render-layer registry sync still polls for authored changes every frame.
+  - The “targeted” render-layer assignment path still iterates archetypes/entities for watched component changes in `collect_watched_component_dirty_entities()`.
+  - This is better than a naive full rescan, but it is still broad enough to matter in authored-heavy scenes.
+- Concrete recommendation:
+  - Convert shader assignment resolution to a change-driven registry keyed by shader family/domain.
+  - Precompute watched-entity membership once instead of walking all relevant archetypes each frame.
+  - Separate “authored render state changed” from “nothing changed, skip immediately.”
+- Expected payoff:
+  - Lower client CPU cost in normal gameplay.
+  - Cleaner render-layer hot path as authored content grows.
+- Risk/complexity of fixing: Medium
+- Disposition: Should fix
+
+### F4. In-world rendering currently pays for too many active view lanes before the scene is cheap enough
+
+- Severity: High
+- Confidence: Proven
+- Main impact: `client CPU`, `client GPU`, `frame pacing`
+- Exact references:
+  - `bins/sidereal-client/src/native/scene.rs:13`
+  - `bins/sidereal-client/src/native/scene_world.rs:38`
+  - `bins/sidereal-client/src/native/scene_world.rs:65`
+  - `bins/sidereal-client/src/native/scene_world.rs:90`
+  - `bins/sidereal-client/src/native/scene_world.rs:116`
+  - `bins/sidereal-client/src/native/scene_world.rs:131`
+  - `bins/sidereal-client/src/native/scene_world.rs:145`
+- Why it matters:
+  - In-world uses backdrop, gameplay, fullscreen foreground, post-process, and UI overlay cameras, with a debug overlay camera available on top.
+  - Extra cameras are not automatically wrong, but they multiply extraction/pass overhead.
+  - This cost is harder to justify while the project still has high CPU overhead elsewhere.
+- Concrete recommendation:
+  - Treat camera count and fullscreen/post-process pass count as budgeted runtime metrics.
+  - Verify whether fullscreen foreground and post-process need separate always-on cameras or can be collapsed.
+  - Keep the debug overlay camera disabled unless the overlay is actually enabled.
+- Expected payoff:
+  - Lower baseline render cost and clearer per-pass budgeting.
+- Risk/complexity of fixing: Medium
+- Disposition: Should fix
+
+### F5. Custom material instance pressure is still high enough to hurt batching and submission efficiency
+
+- Severity: High
+- Confidence: Strong inference
+- Main impact: `client CPU`, `client GPU`
+- Exact references:
+  - `bins/sidereal-client/src/native/backdrop.rs:502`
+  - `bins/sidereal-client/src/native/visuals.rs:1357`
+  - `bins/sidereal-client/src/native/visuals.rs:1676`
+  - `bins/sidereal-client/src/native/visuals.rs:1892`
+  - `bins/sidereal-client/src/native/visuals.rs:2139`
+  - `bins/sidereal-client/src/native/visuals.rs:2192`
+- Why it matters:
+  - Shared quad mesh caching already exists, which is correct.
+  - The remaining pressure comes from per-pass and per-entity `Material2d` instances for planets, thrusters, tracers, sparks, asteroid variants, and fullscreen/post-process bindings.
+  - This is the real batching blocker now, not mesh duplication.
+- Concrete recommendation:
+  - Pool/reuse material handles where the uniform payload can be shared.
+  - Budget planet multi-pass counts explicitly.
+  - Prefer a smaller number of effect/material buckets over entity-unique handles when the effect does not truly need unique uniforms.
+- Expected payoff:
+  - Fewer draw-state changes and lower CPU submission pressure.
+- Risk/complexity of fixing: Medium to High
+- Disposition: Should fix
+
+### F6. Off-screen and overlay-heavy UI paths still do a lot of per-frame work
+
+- Severity: High
+- Confidence: Proven
+- Main impact: `client CPU`, `frame pacing`
+- Exact references:
+  - `bins/sidereal-client/src/native/ui.rs:356`
+  - `bins/sidereal-client/src/native/ui.rs:949`
+  - `bins/sidereal-client/src/native/ui.rs:1590`
+  - `bins/sidereal-client/src/native/ui.rs:1696`
+- Why it matters:
+  - Tactical overlay rebuilds dynamic markers and smooths all contacts every frame.
+  - Runtime screen overlay material state is updated every frame.
+  - Nameplate positioning rebuilds a `HashMap` of world entity data each frame and then walks roots again.
+  - This is render-adjacent work that directly competes with the world render budget.
+- Concrete recommendation:
+  - Gate nameplate updates by enable state and visible count budget.
+  - Split tactical overlay into lower-frequency data sync plus per-frame interpolation only for visible contacts.
+  - Add per-frame counters for contact marker count, nameplate count, and tactical overlay time.
+- Expected payoff:
+  - Better frame consistency in HUD-heavy scenes and tactical-map mode.
+- Risk/complexity of fixing: Medium
+- Disposition: Should fix
+
+### F7. Fullscreen and planet culling choices are mostly correct, but they need budget guardrails
+
+- Severity: Medium
+- Confidence: Proven
+- Main impact: `client GPU`, `client CPU`
+- Exact references:
+  - `bins/sidereal-client/src/native/backdrop.rs:59`
+  - `bins/sidereal-client/src/native/backdrop.rs:580`
+  - `bins/sidereal-client/src/native/visuals.rs:1357`
+  - `bins/sidereal-client/src/native/visuals.rs:1676`
+  - `bins/sidereal-client/src/native/visuals.rs:1760`
+- Why it matters:
+  - Fullscreen layers and planet passes deliberately use `NoFrustumCulling` where a world-frustum test is incorrect or insufficient.
+  - Planet visuals then apply manual projected-view culling, which is directionally right.
+  - The missing piece is not “turn culling back on,” but “track how many fullscreen and large-body passes are active.”
+- Concrete recommendation:
+  - Keep the current fullscreen/parallax approach.
+  - Add counters for fullscreen pass count, planet pass count, and visible planet pass count.
+- Expected payoff:
+  - Better profiling clarity without breaking the render-layer contract.
+- Risk/complexity of fixing: Low
+- Disposition: Optional improvement
+
+## 5. ECS / Schedule / Transform Findings
+
+### F8. The project already made the right interpolation/camera decision, which means remaining slowness is around that lane, not the absence of that lane
+
+- Severity: High
+- Confidence: Proven
+- Main impact: `frame pacing`
+- Exact references:
+  - `bins/sidereal-client/src/native/mod.rs:129`
+  - `bins/sidereal-client/src/native/transforms.rs:111`
+  - `bins/sidereal-client/src/native/transforms.rs:174`
+  - `bins/sidereal-client/src/native/plugins.rs`
+- Why it matters:
+  - Lightyear frame interpolation is enabled.
+  - The client seeds interpolation markers and recovers obviously stalled interpolated transforms.
+  - Camera follow is intentionally scheduled after interpolation and visual correction.
+  - This strongly suggests that “game feels slow” is currently more about cadence, handoff churn, or broad schedule cost than missing interpolation fundamentals.
+- Concrete recommendation:
+  - Preserve this schedule order.
+  - Measure correction frequency, predicted/adopted entity delay, and stalled-transform recovery count before changing the camera/interpolation model again.
+- Expected payoff:
+  - Avoids regressing the correct part of the render-smoothness architecture.
+- Risk/complexity of fixing: Low
+- Disposition: Preserve; instrument further
+
+### F9. Duplicate predicted/interpolated visual suppression is still a transitional runtime tax
+
+- Severity: Medium
+- Confidence: Proven
+- Main impact: `frame pacing`, `architecture/maintainability`
+- Exact references:
+  - `bins/sidereal-client/src/native/visuals.rs:356`
+  - `bins/sidereal-client/src/native/replication.rs:781`
+  - `bins/sidereal-client/src/native/replication.rs:847`
+  - `bins/sidereal-client/src/native/resources.rs:301`
+- Why it matters:
+  - The client still keeps duplicate-lifecycle machinery alive and hides the loser rather than preventing the duplicate from being a render concern in the first place.
+  - The path is more incremental than a naive full rescan, but it remains transitional complexity in the hot path.
+- Concrete recommendation:
+  - Move duplicate winner selection closer to adoption/control-handoff transitions.
+  - Keep one winner-per-GUID registry and surface winner-swap metrics in debug/profiling tools.
+- Expected payoff:
+  - Lower presentation churn and simpler render ownership.
+- Risk/complexity of fixing: Medium
+- Disposition: Should fix
+
+### F10. Client-side runtime still mixes too many concerns inside a few monolithic files, which directly blocks optimization
+
+- Severity: Medium
+- Confidence: Proven
+- Main impact: `architecture/maintainability`
+- Exact references:
+  - `bins/sidereal-client/src/native/visuals.rs` (2687 lines)
+  - `bins/sidereal-client/src/native/backdrop.rs` (1930 lines)
+  - `bins/sidereal-client/src/native/ui.rs` (1847 lines)
+  - `bins/sidereal-replication/src/replication/visibility.rs` (1741 lines)
+- Why it matters:
+  - The repo explicitly says large runtime refactors should split mixed concerns into domain modules.
+  - These files now mix lifecycle, rendering, visibility, effect simulation, UI, profiling, and migration logic.
+  - That makes it much harder to isolate hot paths and reason about invariants.
+- Concrete recommendation:
+  - Split these files by domain hot path before attempting deeper optimization passes.
+  - Keep entrypoints focused on wiring, and move per-feature logic behind narrower modules.
+- Expected payoff:
+  - Faster profiling/iteration and lower risk of optimization regressions.
+- Risk/complexity of fixing: Medium
+- Disposition: Should fix
+
+## 6. Asset / Shader / Material Findings
+
+### F11. Shader-family assignment is still inferred from hardcoded layer IDs and first-match heuristics
+
+- Severity: High
+- Confidence: Proven
+- Main impact: `architecture/maintainability`, `startup hitching`
+- Exact references:
+  - `bins/sidereal-client/src/native/shaders.rs:640`
+  - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+  - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
+- Why it matters:
+  - The runtime still special-cases names like `bg_starfield`, `bg_space_background_base`, and `bg_space_background_nebula`.
+  - It also falls back to “first matching sprite shader” style inference for some families.
+  - That is valid transitional code, but it is not the intended steady-state generic family registry.
+- Concrete recommendation:
+  - Move shader-slot assignment into explicit authored family/domain metadata from the authoritative catalog or layer definition.
+  - Stop inferring family slots from special layer names.
+- Expected payoff:
+  - Cleaner runtime shader registry and fewer unnecessary reloads/inferences.
+- Risk/complexity of fixing: Medium
+- Disposition: Should fix
+
+### F12. Shader reload boundaries are coarse, but this is secondary to the scheduling/cadence issues
+
+- Severity: Medium
+- Confidence: Proven plus inference
+- Main impact: `startup hitching`
+- Exact references:
+  - `bins/sidereal-client/src/native/scene_world.rs:38`
+  - `bins/sidereal-client/src/native/shaders.rs:569`
+  - `bins/sidereal-client/src/native/shaders.rs:640`
+- Why it matters:
+  - Streamed shaders are reinstalled on scene entry and when assignment generation changes.
+  - That can cause hitches around world entry or hot reload.
+  - It is not the strongest steady-state bottleneck, but it will be visible during iteration and initial load.
+- Concrete recommendation:
+  - Add timing and generation counters first.
+  - Defer deeper shader-pipeline redesign until server cadence and client polling costs are under control.
+- Expected payoff:
+  - Better startup profiling and less blind shader-pipeline churn.
+- Risk/complexity of fixing: Low to Medium
+- Disposition: Optional improvement
+
+## 7. Lightyear / Replication / Visibility Findings
+
+### F13. The codebase still shows presentation churn around control handoff and relevance changes
+
+- Severity: High
+- Confidence: Strong inference
+- Main impact: `frame pacing`, `replication churn`
+- Exact references:
+  - `bins/sidereal-client/src/native/replication.rs:520`
+  - `bins/sidereal-client/src/native/replication.rs:781`
+  - `bins/sidereal-client/src/native/transforms.rs:174`
+  - `bins/sidereal-client/src/native/bootstrap.rs:86`
+- Why it matters:
+  - Deferred predicted adoption, conflicting marker cleanup, initial-visual gating, and stalled-transform recovery all exist for good reasons, but together they indicate a lifecycle that can still get noisy under churn.
+  - That kind of noise often feels like render slowness even when the GPU is not the limiting factor.
+- Concrete recommendation:
+  - Add counters for adoption wait time, conflicting marker sanitization, stalled-transform recoveries, and winner swaps.
+  - Use those metrics to decide whether the next fix belongs in Lightyear lifecycle handling or presentation ownership.
+- Expected payoff:
+  - Better root-cause separation between networking churn and rendering cost.
+- Risk/complexity of fixing: Medium
+- Disposition: Should fix
+
+### F14. The server-side visibility contract is directionally correct and should be preserved
+
+- Severity: Low
+- Confidence: Proven
+- Main impact: `architecture/maintainability`
+- Exact references:
+  - `docs/features/visibility_replication_contract.md`
+  - `bins/sidereal-replication/src/replication/visibility.rs:1467`
+  - `bins/sidereal-replication/src/replication/visibility.rs:1524`
+- Why it matters:
+  - The code still respects the right conceptual order: authorize first, then narrow delivery.
+  - The performance problem is implementation cost, not the contract itself.
+- Concrete recommendation:
+  - Keep the authorization/delivery separation.
+  - Optimize indices and cadence, not policy correctness.
+- Expected payoff:
+  - Preserves security/runtime correctness while optimizing hot paths.
+- Risk/complexity of fixing: Low
+- Disposition: Preserve
+
+## 8. Server-Side Contributors To Render Slowness
+
+The main server-side contributors are:
+
+1. Visibility scratch rebuild and per-client fanout in `bins/sidereal-replication/src/replication/visibility.rs:594`.
+2. Per-player landmark discovery scanning inside the visibility tick in `bins/sidereal-replication/src/replication/visibility.rs:913`.
+3. Visibility-source construction and candidate-cell/candidate-entity rebuilding each tick in `bins/sidereal-replication/src/replication/visibility.rs:382` and `bins/sidereal-replication/src/replication/visibility.rs:418`.
+4. Asset hot-reload catalog polling in `bins/sidereal-replication/src/replication/assets.rs:45` and `bins/sidereal-replication/src/replication/assets.rs:92`, which is not a steady-state render bottleneck but can add noise during live authoring/testing.
+
+## 9. Documentation / Architecture Divergence
+
+### D1. `DR-0027` still describes cached client-only fullscreen copies, but current code and newer docs no longer do that
+
+- Evidence:
+  - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md` section 5.0 item 8 still describes client-only cached fullscreen renderable copies.
+  - `docs/features/visibility_replication_contract.md` 2026-03-09 update says those client-local fullscreen copies were removed.
+  - Current runtime matches the newer contract: fullscreen renderables are attached to the authored fullscreen entities in `bins/sidereal-client/src/native/backdrop.rs:59` and `bins/sidereal-client/src/native/backdrop.rs:580`.
+- Recommendation:
+  - Update `DR-0027` with a dated 2026-03-10 note so the active runtime path is not ambiguous.
+
+### D2. Runtime shader assignment is still more hardcoded than `DR-0029` implies
+
+- Evidence:
+  - `bins/sidereal-client/src/native/shaders.rs:640` still infers families from special layer IDs and first-match query order.
+- Recommendation:
+  - Document this as an explicit transitional state in `DR-0029` or close the gap in code.
+
+## 10. End-to-End Render Flow Map
+
+### 10.1 Asset/bootstrap to client-ready rendering
+
+1. Client runtime boots Bevy/Avian/Lightyear and registers material families in `bins/sidereal-client/src/native/mod.rs`.
+2. Gateway bootstrap manifest is requested and processed in `bins/sidereal-client/src/native/auth_net.rs:308` and `bins/sidereal-client/src/native/auth_net.rs:552`.
+3. World scene spawn reloads streamed shaders and creates the in-world camera/pass stack in `bins/sidereal-client/src/native/scene_world.rs:38`.
+4. Runtime optional asset discovery watches authored layer/visual references in `bins/sidereal-client/src/native/assets.rs:160`.
+5. Visual systems attach streamed sprites, planet passes, effects, overlays, and fullscreen layers in `bins/sidereal-client/src/native/plugins.rs` via `visuals`, `backdrop`, and `ui`.
+
+### 10.2 Replicated entity arrival to visible draw
+
+1. Lightyear/Avian replication clones arrive and are adopted in `bins/sidereal-client/src/native/replication.rs:520`.
+2. Spatial/visibility/bootstrap components are ensured in `bins/sidereal-client/src/native/replication.rs:48`.
+3. Frame interpolation markers and fallback transform seeding are maintained in `bins/sidereal-client/src/native/transforms.rs:111` and `bins/sidereal-client/src/native/transforms.rs:174`.
+4. Render-layer assignment resolves in `bins/sidereal-client/src/native/render_layers.rs:195`.
+5. Visual children/materials attach in `bins/sidereal-client/src/native/visuals.rs:763` and `bins/sidereal-client/src/native/visuals.rs:1357`.
+
+### 10.3 Camera-relative/world-layer transform derivation
+
+1. Authoritative world positions remain in physics/world-space components.
+2. Camera follow resolves after interpolation/correction.
+3. Layer parallax and screen-scale derive render-local offsets in `bins/sidereal-client/src/native/visuals.rs:1822` and related helpers.
+
+### 10.4 Fullscreen background/foreground/post-process execution
+
+1. Fullscreen authored ECS entities are synchronized into renderable fullscreen state in `bins/sidereal-client/src/native/backdrop.rs:59`.
+2. Authored post-process stacks spawn/maintain client renderable passes in `bins/sidereal-client/src/native/backdrop.rs:317`.
+3. Backdrop/fullscreen transforms are normalized to the current viewport in `bins/sidereal-client/src/native/backdrop.rs:692` and `bins/sidereal-client/src/native/backdrop.rs:723`.
+
+### 10.5 Prediction/reconciliation/interpolation to final presented motion
+
+1. Fixed-step simulation and client prediction run at 60 Hz.
+2. Lightyear frame interpolation is active.
+3. Sidereal seeds/fixes transform interpolation where clone lifecycles arrive incomplete.
+4. Camera follow runs after interpolation/correction, then layered visuals update from the final same-frame camera state.
+
+## 11. Performance Budget Map
+
+Inference labels are explicit below.
+
+### 11.1 Client CPU
+
+Most likely hot paths:
+
+1. Proven: UI tactical/nameplate loops.
+2. Proven: Shader assignment inference plus render-layer maintenance.
+3. Proven: Duplicate lifecycle and transform bootstrap bookkeeping.
+4. Strong inference: High custom-material counts increasing draw submission overhead.
+
+### 11.2 Client GPU
+
+Most likely hot paths:
+
+1. Strong inference: Multiple active camera/pass lanes.
+2. Strong inference: Fullscreen and large alpha-blended effects.
+3. Strong inference: Planet multi-pass materials and effect materials defeating batching.
+
+### 11.3 Client main-thread stalls
+
+Most likely hot paths:
+
+1. Proven: Serialized asset bootstrap and lazy fetch.
+2. Proven: Coarse shader reinstall boundaries.
+3. Strong inference: Effect/planet material churn during entity creation and content changes.
+
+### 11.4 Server tick cost that affects visual smoothness
+
+Most likely hot paths:
+
+1. Proven: Visibility scratch rebuild.
+2. Proven: Candidate-set rebuilds.
+3. Proven: Landmark discovery rescans.
+4. Proven: Per-entity per-client replication visibility mutation.
+
+### 11.5 Network/replication delivery cost that affects render churn
+
+Most likely hot paths:
+
+1. Strong inference: Uneven visibility tick duration creates uneven delivery cadence.
+2. Proven: Controlled-entity adoption can be delayed on missing replicated motion components.
+3. Strong inference: Duplicate relevance/prediction handoff keeps presentation churn alive longer than ideal.
+
+## 12. Prioritized Remediation Plan
+
+### 12.1 Top 5 highest-ROI changes
+
+1. Incrementalize server visibility scratch/index work and remove per-tick landmark rescans.
+2. Parallelize required asset bootstrap downloads and allow bounded parallel runtime lazy fetches.
+3. Replace per-frame shader assignment inference with explicit family/domain registration.
+4. Reduce UI overlay/nameplate/tactical per-frame work and measure it separately.
+5. Reduce custom material instance pressure for planet/effect/fullscreen families.
+
+### 12.2 Quick wins
+
+1. Add timings and counters before changing architecture again.
+2. Disable debug overlay camera unless the overlay is enabled.
+3. Add pass-count, camera-count, and material-count diagnostics to the debug overlay/BRP.
+4. Move landmark discovery off the main visibility tick.
+
+### 12.3 Medium-size refactors
+
+1. Dedicated shader-family assignment registry.
+2. Bounded async asset fetch pool with prioritization.
+3. Winner-per-GUID presentation registry near replication adoption.
+4. Split `visuals.rs`, `backdrop.rs`, `ui.rs`, and replication `visibility.rs` by domain.
+
+### 12.4 Large architectural changes
 
 Only after measurement:
 
-1. Reduce material family fragmentation for world sprite/effect families.
-2. Revisit pass/camera composition after client CPU hot paths are fixed.
+1. Collapse or redesign some custom material families if batching data proves it matters more than schedule work.
+2. Revisit pass/camera composition if camera/pass metrics show it is a top-3 runtime cost after the CPU/server work is reduced.
 
-### 7.5 Order of operations
+### 12.5 Dependencies / order of operations
 
 1. Instrument first.
-2. Fix fullscreen/post-process churn.
-3. Remove frame-polled render-layer and asset discovery loops.
-4. Simplify duplicate visual lifecycle.
-5. Optimize replication visibility cadence.
-6. Re-measure before attempting broader material-family redesign.
+2. Fix server visibility cadence.
+3. Fix asset serialization bottlenecks.
+4. Remove client hot-path polling where possible.
+5. Re-measure.
+6. Only then decide how much material-family redesign is justified.
 
-### 7.6 Before/after measurements required per major fix
+### 12.6 What to measure before and after each major fix
 
-1. Frame-time average and 95th/99th percentile.
-2. Per-system timings for the named hotspots.
-3. Mesh/material allocation counts per frame.
-4. Draw-call count and active-view count.
-5. Visibility tick duration, candidate count, and visible entity count per client.
+1. Frame time average, p95, and p99.
+2. Visibility tick duration and per-stage breakdown.
+3. Candidate count, visible entity count, and adoption delay count.
+4. Camera count, fullscreen/post-process pass count, draw count, and active custom material count.
+5. Bootstrap time to first render and time to fully ready assets.
 
-## 8. Instrumentation and Profiling Gaps
+## 13. Instrumentation / Profiling Gaps
 
 Missing telemetry that should be added:
 
 1. Per-system timers for:
-   - `sync_fullscreen_layer_renderables_system`
-   - `sync_runtime_post_process_renderables_system`
-   - `sync_runtime_render_layer_registry_system`
-   - `resolve_runtime_render_layer_assignments_system`
-   - `queue_missing_catalog_assets_system`
-   - `suppress_duplicate_predicted_interpolated_visuals_system`
-   - `update_network_visibility`
-2. Counters for fullscreen mesh allocations, fullscreen material allocations, and post-process material rebinds.
-3. Counters for render-layer registry rebuild count and per-frame assignment resolution count.
-4. Counters for runtime asset dependency rescan count and pending-queue size.
-5. Counters for duplicate GUID groups and winner swaps.
-6. Replication visibility timing plus candidate counts, queried-cell counts, and visible-entity counts per client.
-7. A render-budget overlay or BRP-readable resource that exposes current active cameras, fullscreen passes, post-process passes, shader-backed sprite count, and planet pass count.
-8. Startup/hot-reload shader install timing.
-9. GPU-side pass timing if Bevy/WGPU diagnostics make it available.
+  - `update_network_visibility`
+  - `submit_asset_bootstrap_request` result processing
+  - `queue_missing_catalog_assets_system`
+  - `sync_runtime_shader_assignments_system`
+  - `sync_runtime_render_layer_registry_system`
+  - `resolve_runtime_render_layer_assignments_system`
+  - `update_tactical_map_overlay_system`
+  - `update_entity_nameplate_positions_system`
+2. Per-frame counts for:
+  - active cameras
+  - fullscreen passes
+  - post-process passes
+  - streamed visual children
+  - planet passes
+  - active tracer/spark/effect entities
+3. Material counters for:
+  - `PlanetVisualMaterial`
+  - `RuntimeEffectMaterial`
+  - `AsteroidSpriteShaderMaterial`
+  - fullscreen material bindings
+4. Asset/shader telemetry for:
+  - bootstrap queue size
+  - runtime fetch queue size
+  - in-flight fetch count
+  - shader reload generation/time
+5. Replication/visibility telemetry for:
+  - per-client candidate counts
+  - per-client visible counts
+  - discovery scan time
+  - visibility scratch rebuild time
+  - adoption wait duration
+  - duplicate winner swaps
 
-## 9. Final Assessment
+## 14. Runtime Catalog Appendix
 
-The current render architecture should not be thrown away. The authored render-layer, streamed asset, and interpolation direction is sound and matches the repo's current design docs.
+### 14.1 Client runtime plugins/systems/resources
 
-The current implementation still has several hot-path execution bugs and whole-world polling loops that are large enough to dominate perceived performance. The first pass should be ruthless about removing those frame-polled rebuilds before attempting bigger visual-system redesigns.
+- `ClientVisualsPlugin` in `bins/sidereal-client/src/native/plugins.rs`: active runtime
+- `ClientLightingPlugin` in `bins/sidereal-client/src/native/plugins.rs`: active runtime
+- `ClientUiPlugin` in `bins/sidereal-client/src/native/plugins.rs`: active runtime
+- `RuntimeShaderAssignments` in `bins/sidereal-client/src/native/shaders.rs`: active runtime, transitional implementation
+- `DuplicateVisualResolutionState` in `bins/sidereal-client/src/native/resources.rs`: transitional/migration code
+- `DebugOverlayState`, `DebugOverlaySnapshot` in `bins/sidereal-client/src/native/resources.rs`: debug/diagnostic
+- `UiOverlayCamera`, backdrop/gameplay/post-process camera stack in `bins/sidereal-client/src/native/scene.rs` and `bins/sidereal-client/src/native/scene_world.rs`: active runtime
+
+### 14.2 Replication server plugins/systems/resources
+
+- `ReplicationVisibilityPlugin` in `bins/sidereal-replication/src/plugins.rs`: active runtime
+- `VisibilityScratch` and `VisibilityRuntimeConfig` in `bins/sidereal-replication/src/replication/visibility.rs`: active runtime
+- `ClientObserverAnchorPositionMap` in `bins/sidereal-replication/src/replication/visibility.rs`: active runtime
+- `AssetHotReloadState` in `bins/sidereal-replication/src/replication/assets.rs`: active runtime, tooling-heavy during authoring
+- `PlayerControlDebugState` in `bins/sidereal-replication/src/replication/runtime_state.rs`: debug/diagnostic
+
+### 14.3 Gateway/bootstrap/asset-delivery pieces
+
+- Asset bootstrap manifest fetch path in `bins/sidereal-client/src/native/auth_net.rs`: active runtime
+- Runtime asset cache/index in `bins/sidereal-client/src/native/assets.rs` and `crates/sidereal-asset-runtime`: active runtime
+- Gateway asset manifest/payload routes and runtime catalog build path: active runtime
+- Catalog hot reload invalidation path in replication `assets.rs`: active runtime
+
+### 14.4 Shared gameplay/render-support crates and modules
+
+- `sidereal-game` render-layer/world-visual/fullscreen/post-process components: active runtime
+- `sidereal-runtime-sync` hierarchy/runtime-entity mapping: active runtime
+- `sidereal-net` Lightyear protocol/messages: active runtime
+- Hardcoded layer-name shader slot inference in client shader sync: transitional/migration code
+- Duplicate visual suppression path: likely removable after lifecycle stabilization
+
+## 15. Confirm / Refute Summary
+
+1. The game is GPU-bound in normal gameplay: Not proven; unlikely to be the primary current bottleneck.
+2. The game is CPU-bound on the client in normal gameplay: Likely true.
+3. ECS scheduling/query work matters more than raw draw submission right now: Likely true.
+4. Replication/update churn matters more than rendering itself: Often true under load; it is a top-tier contributor.
+5. The game feels slow mainly because of frame pacing/interpolation-adjacent issues rather than raw FPS: Likely true.
+6. Shader/material diversity is defeating batching enough to matter: Likely true for planet/effect/fullscreen custom material paths.
+7. Too many fullscreen or post-process passes are active for the current payoff: Likely true.
+8. Off-screen or non-visible entities still pay too much render-related cost: Yes, mostly via schedule/UI/material/update work rather than pure draw cost.
+9. Asset/shader compilation or loading hitching is meaningful: Yes, but secondary to server cadence and client polling.
+10. Server-side visibility/replication behavior is causing client render instability or overload: Likely true.
+11. The render-layer architecture is directionally correct and should be kept: Yes.
+12. The current render-layer/material implementation has avoidable transitional cost that should be simplified: Yes.

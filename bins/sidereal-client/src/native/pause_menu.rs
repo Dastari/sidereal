@@ -6,6 +6,7 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::log::info;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 
 use super::app_state::ClientAppState;
 use super::dev_console::{DevConsoleState, is_console_open};
@@ -17,6 +18,7 @@ pub(super) struct PauseMenuRoot;
 
 #[derive(Component, Clone, Copy)]
 enum PauseMenuAction {
+    ToggleFullscreen,
     Disconnect,
     Quit,
     Settings,
@@ -101,6 +103,12 @@ pub(super) fn sync_pause_menu_ui_system(
                     spawn_menu_button(
                         panel,
                         &font_regular,
+                        "Toggle Fullscreen",
+                        PauseMenuAction::ToggleFullscreen,
+                    );
+                    spawn_menu_button(
+                        panel,
+                        &font_regular,
                         "Disconnect",
                         PauseMenuAction::Disconnect,
                     );
@@ -132,11 +140,23 @@ pub(super) fn handle_pause_menu_interactions_system(
     mut pause_menu_state: ResMut<'_, PauseMenuState>,
     mut disconnect_request: ResMut<'_, DisconnectRequest>,
     mut app_exit: MessageWriter<'_, AppExit>,
+    mut primary_window: Query<'_, '_, &'_ mut Window, With<PrimaryWindow>>,
 ) {
     for (interaction, button, mut bg, mut border) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
                 match button.0 {
+                    PauseMenuAction::ToggleFullscreen => {
+                        if let Ok(mut window) = primary_window.single_mut() {
+                            window.mode = match window.mode {
+                                WindowMode::Windowed => {
+                                    WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+                                }
+                                WindowMode::BorderlessFullscreen(_)
+                                | WindowMode::Fullscreen(_, _) => WindowMode::Windowed,
+                            };
+                        }
+                    }
                     PauseMenuAction::Disconnect => {
                         disconnect_request.0 = true;
                         pause_menu_state.open = false;

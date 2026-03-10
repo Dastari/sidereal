@@ -1,6 +1,8 @@
 //! Shared ECS resources (network, assets, tuning, debug, etc.).
 
 use bevy::ecs::component::ComponentId;
+use bevy::ecs::lifecycle::RemovedComponentEntity;
+use bevy::ecs::message::MessageCursor;
 use bevy::prelude::*;
 use sidereal_asset_runtime::AssetCacheIndex;
 use sidereal_core::gateway_dtos::{
@@ -9,7 +11,7 @@ use sidereal_core::gateway_dtos::{
     PasswordResetRequest, PasswordResetResponse, RegisterRequest,
 };
 use sidereal_game::EntityAction;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -196,6 +198,32 @@ impl Default for TacticalMapUiState {
 #[derive(Debug, Resource, Default)]
 pub(crate) struct DebugBlueOverlayEnabled(pub bool);
 
+#[derive(Debug, Resource, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DebugGizmoOnGameplayCamera(pub bool);
+
+impl DebugGizmoOnGameplayCamera {
+    pub fn from_env() -> Self {
+        Self(
+            std::env::var("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA")
+                .ok()
+                .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+        )
+    }
+}
+
+#[derive(Debug, Resource, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DebugVelocityArrowAsMesh(pub bool);
+
+impl DebugVelocityArrowAsMesh {
+    pub fn from_env() -> Self {
+        Self(
+            std::env::var("SIDEREAL_CLIENT_DEBUG_ARROW_AS_MESH")
+                .ok()
+                .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+        )
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum DebugOverlayMode {
@@ -267,7 +295,29 @@ pub(crate) struct DebugOverlayStats {
     pub interpolated_count: usize,
     pub auxiliary_count: usize,
     pub duplicate_guid_groups: usize,
+    pub duplicate_winner_swaps: u64,
     pub anomaly_count: usize,
+    pub active_camera_count: usize,
+    pub mesh_asset_count: usize,
+    pub generic_sprite_material_count: usize,
+    pub asteroid_material_count: usize,
+    pub planet_material_count: usize,
+    pub effect_material_count: usize,
+    pub streamed_visual_child_count: usize,
+    pub planet_pass_count: usize,
+    pub tracer_pool_size: usize,
+    pub active_tracers: usize,
+    pub spark_pool_size: usize,
+    pub active_sparks: usize,
+    pub bootstrap_ready_bytes: u64,
+    pub bootstrap_total_bytes: u64,
+    pub runtime_dependency_candidate_count: usize,
+    pub runtime_dependency_graph_rebuilds: u64,
+    pub runtime_dependency_scan_runs: u64,
+    pub runtime_in_flight_fetch_count: usize,
+    pub render_layer_registry_rebuilds: u64,
+    pub render_layer_assignment_recomputes: u64,
+    pub render_layer_assignment_skips: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +334,49 @@ pub(crate) struct DebugOverlaySnapshot {
     pub controlled_lane: Option<DebugControlledLane>,
     pub stats: DebugOverlayStats,
     pub text_rows: Vec<DebugTextRow>,
+}
+
+#[derive(Debug, Resource)]
+pub(crate) struct DuplicateVisualResolutionState {
+    pub guid_by_entity: HashMap<Entity, uuid::Uuid>,
+    pub entities_by_guid: HashMap<uuid::Uuid, HashSet<Entity>>,
+    pub winner_by_guid: HashMap<uuid::Uuid, Entity>,
+    pub dirty_guids: HashSet<uuid::Uuid>,
+    pub dirty_all: bool,
+    pub duplicate_guid_groups: usize,
+    pub winner_swap_count: u64,
+    pub entity_guid_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub world_entity_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub controlled_entity_guid_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub player_tag_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub controlled_entity_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub interpolated_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub predicted_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub position_history_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub rotation_history_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+}
+
+impl Default for DuplicateVisualResolutionState {
+    fn default() -> Self {
+        Self {
+            guid_by_entity: HashMap::new(),
+            entities_by_guid: HashMap::new(),
+            winner_by_guid: HashMap::new(),
+            dirty_guids: HashSet::new(),
+            dirty_all: true,
+            duplicate_guid_groups: 0,
+            winner_swap_count: 0,
+            entity_guid_removal_cursor: None,
+            world_entity_removal_cursor: None,
+            controlled_entity_guid_removal_cursor: None,
+            player_tag_removal_cursor: None,
+            controlled_entity_removal_cursor: None,
+            interpolated_removal_cursor: None,
+            predicted_removal_cursor: None,
+            position_history_removal_cursor: None,
+            rotation_history_removal_cursor: None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -332,6 +425,7 @@ impl Default for FullscreenExternalWorldData {
 pub(crate) struct CameraMotionState {
     pub world_position_xy: Vec2,
     pub smoothed_position_xy: Vec2,
+    pub parallax_position_xy: Vec2,
     pub prev_position_xy: Vec2,
     pub frame_delta_xy: Vec2,
     pub smoothed_velocity_xy: Vec2,
@@ -343,6 +437,7 @@ impl Default for CameraMotionState {
         Self {
             world_position_xy: Vec2::ZERO,
             smoothed_position_xy: Vec2::ZERO,
+            parallax_position_xy: Vec2::ZERO,
             prev_position_xy: Vec2::ZERO,
             frame_delta_xy: Vec2::ZERO,
             smoothed_velocity_xy: Vec2::ZERO,
@@ -381,6 +476,10 @@ impl PredictionLifecycleAuditConfig {
 #[derive(Debug, Resource, Default)]
 pub(crate) struct PredictionLifecycleAuditState {
     pub last_logged_at_s: f64,
+    pub last_overlay_winner: Option<Entity>,
+    pub last_overlay_lane: Option<DebugEntityLane>,
+    pub last_visual_winner: Option<Entity>,
+    pub last_visual_winner_swap_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +498,7 @@ pub(crate) struct CompiledRuntimeRenderLayerRule {
 pub(crate) struct RuntimeRenderLayerRegistry {
     pub definitions_by_id: HashMap<String, sidereal_game::RuntimeRenderLayerDefinition>,
     pub world_rules: Vec<CompiledRuntimeRenderLayerRule>,
+    pub watched_component_ids: Vec<ComponentId>,
     pub default_world_layer: sidereal_game::RuntimeRenderLayerDefinition,
 }
 
@@ -407,9 +507,56 @@ impl Default for RuntimeRenderLayerRegistry {
         Self {
             definitions_by_id: HashMap::new(),
             world_rules: Vec::new(),
+            watched_component_ids: Vec::new(),
             default_world_layer: sidereal_game::default_main_world_render_layer(),
         }
     }
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct RuntimeRenderLayerRegistryState {
+    pub generation: u64,
+    pub generated_registry_signature: u64,
+    pub definition_count: usize,
+    pub rule_count: usize,
+    pub post_process_stack_count: usize,
+    pub definition_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub rule_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub post_process_stack_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CachedRuntimeRenderLayerAssignment {
+    pub registry_generation: u64,
+    pub input_hash: u64,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct RuntimeRenderLayerAssignmentCache {
+    pub by_entity: HashMap<Entity, CachedRuntimeRenderLayerAssignment>,
+    pub last_world_entity_count: usize,
+    pub label_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub override_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+    pub watched_component_removal_cursors:
+        HashMap<ComponentId, MessageCursor<RemovedComponentEntity>>,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct RenderLayerPerfCounters {
+    pub registry_sync_runs: u64,
+    pub registry_rebuilds: u64,
+    pub assignment_sync_runs: u64,
+    pub assignment_full_scans: u64,
+    pub assignment_targeted_scans: u64,
+    pub assignment_entities_considered: u64,
+    pub assignment_recomputes: u64,
+    pub assignment_skips: u64,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct RuntimeSharedQuadMesh {
+    pub unit_quad: Option<Handle<Mesh>>,
+    pub allocations: u64,
 }
 
 #[derive(Debug, Resource, Default)]

@@ -6,6 +6,7 @@ use crate::editor_schema::{
 };
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Reflect)]
 pub struct ComponentRegistryEntry {
@@ -15,10 +16,50 @@ pub struct ComponentRegistryEntry {
     pub editor_schema: ComponentEditorSchema,
 }
 
+#[derive(Debug, Clone, PartialEq, Reflect, Serialize, Deserialize, Default)]
+pub struct ShaderEditorOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Reflect, Serialize, Deserialize, Default)]
+pub struct ShaderEditorFieldSchema {
+    pub field_path: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub value_kind: ComponentEditorValueKind,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub options: Vec<ShaderEditorOption>,
+    pub default_value_json: Option<String>,
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Reflect, Serialize, Deserialize, Default)]
+pub struct ShaderEditorPreset {
+    pub preset_id: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub values_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Reflect, Serialize, Deserialize, Default)]
+pub struct ShaderEditorRegistryEntry {
+    pub asset_id: String,
+    pub source_path: String,
+    pub shader_family: Option<String>,
+    pub dependencies: Vec<String>,
+    pub bootstrap_required: bool,
+    pub uniform_schema: Vec<ShaderEditorFieldSchema>,
+    pub presets: Vec<ShaderEditorPreset>,
+}
+
 #[derive(Debug, Resource, Clone, Reflect)]
 #[reflect(Resource)]
 pub struct GeneratedComponentRegistry {
     pub entries: Vec<ComponentRegistryEntry>,
+    pub shader_entries: Vec<ShaderEditorRegistryEntry>,
 }
 
 pub fn register_generated_components(app: &mut App) {
@@ -39,13 +80,20 @@ pub fn register_generated_components(app: &mut App) {
     app.register_type::<ComponentEditorFieldSchema>();
     app.register_type::<ComponentEditorSchema>();
     app.register_type::<ComponentRegistryEntry>();
+    app.register_type::<ShaderEditorOption>();
+    app.register_type::<ShaderEditorFieldSchema>();
+    app.register_type::<ShaderEditorPreset>();
+    app.register_type::<ShaderEditorRegistryEntry>();
     app.register_type::<GeneratedComponentRegistry>();
 
     let entries = {
         let app_type_registry = app.world().resource::<AppTypeRegistry>().clone();
         generated_component_registry_with_type_registry(&app_type_registry)
     };
-    app.insert_resource(GeneratedComponentRegistry { entries });
+    app.insert_resource(GeneratedComponentRegistry {
+        entries,
+        shader_entries: Vec::new(),
+    });
 }
 
 /// Avian component entries appended to the macro-collected registry so that

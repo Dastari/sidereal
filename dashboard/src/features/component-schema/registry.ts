@@ -3,7 +3,28 @@ import type {
   ComponentEditorFieldSchema,
   GeneratedComponentRegistryEntry,
   GeneratedComponentRegistryResource,
+  ShaderEditorFieldSchema,
+  ShaderEditorRegistryEntry,
 } from './types'
+
+export const GENERATED_COMPONENT_REGISTRY_TYPE_PATH =
+  'sidereal_game::generated::components::GeneratedComponentRegistry'
+
+const COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS =
+  'sidereal_game::components::starfield_shader_settings::StarfieldShaderSettings'
+const COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS =
+  'sidereal_game::components::space_background_shader_settings::SpaceBackgroundShaderSettings'
+const COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS =
+  'sidereal_game::components::planet_body_shader_settings::PlanetBodyShaderSettings'
+
+const COMPONENT_SHADER_ASSET_IDS: Record<string, Array<string>> = {
+  [COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS]: ['starfield_wgsl'],
+  [COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS]: [
+    'space_background_base_wgsl',
+    'space_background_nebula_wgsl',
+  ],
+  [COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS]: ['planet_visual_wgsl'],
+}
 
 const GENERATED_COMPONENT_REGISTRY_SUFFIX =
   '::generated::components::GeneratedComponentRegistry'
@@ -30,6 +51,9 @@ export function parseGeneratedComponentRegistryResource(
   const wrapped = asObjectRecord(root.value) ?? root
   const entriesRaw = wrapped.entries
   if (!Array.isArray(entriesRaw)) return null
+  const shaderEntriesRaw = Array.isArray(wrapped.shader_entries)
+    ? wrapped.shader_entries
+    : []
 
   const entries = entriesRaw.flatMap((entry): Array<GeneratedComponentRegistryEntry> => {
     const record = asObjectRecord(entry)
@@ -99,7 +123,113 @@ export function parseGeneratedComponentRegistryResource(
     ]
   })
 
-  return { entries }
+  const shader_entries = shaderEntriesRaw.flatMap(
+    (entry): Array<ShaderEditorRegistryEntry> => {
+      const record = asObjectRecord(entry)
+      const assetId = record?.asset_id
+      const sourcePath = record?.source_path
+      if (typeof assetId !== 'string' || typeof sourcePath !== 'string') {
+        return []
+      }
+
+      const uniformSchemaRaw = Array.isArray(record?.uniform_schema)
+        ? record.uniform_schema
+        : []
+      const presetsRaw = Array.isArray(record?.presets) ? record.presets : []
+
+      return [
+        {
+          asset_id: assetId,
+          source_path: sourcePath,
+          shader_family:
+            typeof record?.shader_family === 'string' ? record.shader_family : null,
+          dependencies: Array.isArray(record?.dependencies)
+            ? record.dependencies.filter(
+                (dependency): dependency is string => typeof dependency === 'string',
+              )
+            : [],
+          bootstrap_required: record?.bootstrap_required === true,
+          uniform_schema: uniformSchemaRaw.flatMap(
+            (field): Array<ShaderEditorFieldSchema> => {
+              const fieldRecord = asObjectRecord(field)
+              const fieldPath = fieldRecord?.field_path
+              const displayName = fieldRecord?.display_name
+              const valueKind = fieldRecord?.value_kind
+              if (
+                typeof fieldPath !== 'string' ||
+                typeof displayName !== 'string' ||
+                typeof valueKind !== 'string'
+              ) {
+                return []
+              }
+              const optionsRaw = Array.isArray(fieldRecord?.options)
+                ? fieldRecord.options
+                : []
+              return [
+                {
+                  field_path: fieldPath,
+                  display_name: displayName,
+                  description:
+                    typeof fieldRecord?.description === 'string'
+                      ? fieldRecord.description
+                      : null,
+                  value_kind: valueKind as ShaderEditorFieldSchema['value_kind'],
+                  min:
+                    typeof fieldRecord?.min === 'number' ? fieldRecord.min : null,
+                  max:
+                    typeof fieldRecord?.max === 'number' ? fieldRecord.max : null,
+                  step:
+                    typeof fieldRecord?.step === 'number' ? fieldRecord.step : null,
+                  options: optionsRaw.flatMap((option) => {
+                    const optionRecord = asObjectRecord(option)
+                    const optionValue = optionRecord?.value
+                    const label = optionRecord?.label
+                    if (
+                      typeof optionValue !== 'string' ||
+                      typeof label !== 'string'
+                    ) {
+                      return []
+                    }
+                    return [{ value: optionValue, label }]
+                  }),
+                  default_value_json:
+                    typeof fieldRecord?.default_value_json === 'string'
+                      ? fieldRecord.default_value_json
+                      : null,
+                  group:
+                    typeof fieldRecord?.group === 'string' ? fieldRecord.group : null,
+                },
+              ]
+            },
+          ),
+          presets: presetsRaw.flatMap((preset) => {
+            const presetRecord = asObjectRecord(preset)
+            const presetId = presetRecord?.preset_id
+            const displayName = presetRecord?.display_name
+            if (typeof presetId !== 'string' || typeof displayName !== 'string') {
+              return []
+            }
+            return [
+              {
+                preset_id: presetId,
+                display_name: displayName,
+                description:
+                  typeof presetRecord?.description === 'string'
+                    ? presetRecord.description
+                    : null,
+                values_json:
+                  typeof presetRecord?.values_json === 'string'
+                    ? presetRecord.values_json
+                    : 'null',
+              },
+            ]
+          }),
+        },
+      ]
+    },
+  )
+
+  return { entries, shader_entries }
 }
 
 export function findGeneratedComponentRegistryResource(
@@ -110,6 +240,49 @@ export function findGeneratedComponentRegistryResource(
   )
   if (!match) return null
   return parseGeneratedComponentRegistryResource(match.value)
+}
+
+function normalizeShaderRegistrySourcePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^data\//, '')
+}
+
+export function resolveShaderRegistryEntry(
+  registry: GeneratedComponentRegistryResource | null,
+  shader: { assetId?: string | null; sourcePath?: string | null } | null,
+): ShaderEditorRegistryEntry | null {
+  if (!registry || !shader) return null
+  if (typeof shader.assetId === 'string' && shader.assetId.length > 0) {
+    const direct = registry.shader_entries.find(
+      (entry) => entry.asset_id === shader.assetId,
+    )
+    if (direct) return direct
+  }
+  if (typeof shader.sourcePath !== 'string' || shader.sourcePath.length === 0) {
+    return null
+  }
+  const normalizedSourcePath = normalizeShaderRegistrySourcePath(shader.sourcePath)
+  return (
+    registry.shader_entries.find(
+      (entry) =>
+        normalizeShaderRegistrySourcePath(entry.source_path) ===
+        normalizedSourcePath,
+    ) ?? null
+  )
+}
+
+export function resolveShaderRegistryEntryForComponent(
+  registry: GeneratedComponentRegistryResource | null,
+  componentTypePath: string,
+): ShaderEditorRegistryEntry | null {
+  if (!registry) return null
+  const assetIds = COMPONENT_SHADER_ASSET_IDS[componentTypePath] ?? []
+  for (const assetId of assetIds) {
+    const match = registry.shader_entries.find((entry) => entry.asset_id === assetId)
+    if (match) {
+      return match
+    }
+  }
+  return null
 }
 
 export function resolveComponentRegistryEntry(

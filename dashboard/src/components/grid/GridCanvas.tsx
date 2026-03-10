@@ -85,7 +85,7 @@ export function GridCanvas({
   const requestRenderRef = useRef<() => void>(() => {})
   const queueCameraStateSyncRef = useRef<() => void>(() => {})
   const markerIconsRef = useRef<
-    Partial<Record<'ship' | 'planet' | 'star', HTMLImageElement>>
+    Partial<Record<'ship' | 'planet' | 'star' | 'asteroid', HTMLImageElement>>
   >({})
   const cameraSyncTimerRef = useRef<number | null>(null)
   const resizeDebounceTimerRef = useRef<number | null>(null)
@@ -301,15 +301,15 @@ export function GridCanvas({
     const resolveIconKey = (
       entityLabels: Array<string> | undefined,
       kind: string,
-    ): 'ship' | 'planet' | 'star' | null => {
+    ): 'ship' | 'planet' | 'star' | 'asteroid' | null => {
       const labels = (entityLabels ?? []).map((label) => String(label).toLowerCase())
       if (labels.some((label) => label.includes('star'))) return 'star'
+      if (labels.some((label) => label.includes('asteroid'))) return 'asteroid'
       if (
         labels.some(
           (label) =>
             label.includes('planet') ||
-            label.includes('celestialbody') ||
-            label.includes('asteroid'),
+            label.includes('celestialbody'),
         )
       ) {
         return 'planet'
@@ -323,8 +323,8 @@ export function GridCanvas({
       }
       const kindNormalized = kind.toLowerCase()
       if (kindNormalized.includes('star')) return 'star'
+      if (kindNormalized.includes('asteroid')) return 'asteroid'
       if (kindNormalized.includes('planet')) return 'planet'
-      if (kindNormalized.includes('asteroid')) return 'planet'
       if (kindNormalized.includes('ship') || kindNormalized.includes('player')) return 'ship'
       return null
     }
@@ -609,10 +609,14 @@ export function GridCanvas({
 
   useEffect(() => {
     let cancelled = false
-    const markerIcons: Array<{ key: 'ship' | 'planet' | 'star'; path: string }> = [
+    const markerIcons: Array<{
+      key: 'ship' | 'planet' | 'star' | 'asteroid'
+      path: string
+    }> = [
       { key: 'ship', path: '/icons/ship.svg' },
       { key: 'planet', path: '/icons/planet.svg' },
       { key: 'star', path: '/icons/star.svg' },
+      { key: 'asteroid', path: '/icons/asteroid.svg' },
     ]
 
     for (const icon of markerIcons) {

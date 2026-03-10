@@ -99,7 +99,19 @@ pub(crate) fn ensure_replicated_entity_spatial_components(
 pub(crate) fn ensure_hierarchy_parent_spatial_components(
     mut commands: Commands<'_, '_>,
     children_with_parent: Query<'_, '_, &'_ ChildOf>,
-    parent_components: Query<'_, '_, (Has<Transform>, Has<GlobalTransform>, Has<Visibility>)>,
+    parent_components: Query<
+        '_,
+        '_,
+        (
+            Has<Transform>,
+            Has<GlobalTransform>,
+            Has<Visibility>,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
+        ),
+    >,
 ) {
     let mut visited_parents = HashSet::<Entity>::new();
     for child_of in &children_with_parent {
@@ -107,20 +119,39 @@ pub(crate) fn ensure_hierarchy_parent_spatial_components(
         if !visited_parents.insert(entity) {
             continue;
         }
-        let Ok((has_transform, has_global_transform, has_visibility)) =
-            parent_components.get(entity)
+        let Ok((
+            has_transform,
+            has_global_transform,
+            has_visibility,
+            position,
+            rotation,
+            world_position,
+            world_rotation,
+        )) = parent_components.get(entity)
         else {
             continue;
         };
         if has_transform && has_global_transform && has_visibility {
             continue;
         }
+        let mut transform = Transform::default();
+        if let (Some(planar_position), Some(heading)) = (
+            resolve_world_position(position, world_position),
+            resolve_world_rotation_rad(rotation, world_rotation),
+        ) && planar_position.is_finite()
+            && heading.is_finite()
+        {
+            transform.translation.x = planar_position.x;
+            transform.translation.y = planar_position.y;
+            transform.translation.z = 0.0;
+            transform.rotation = Quat::from_rotation_z(heading);
+        }
         let mut entity_commands = commands.entity(entity);
         if !has_transform {
-            entity_commands.insert(Transform::default());
+            entity_commands.insert(transform);
         }
         if !has_global_transform {
-            entity_commands.insert(GlobalTransform::default());
+            entity_commands.insert(GlobalTransform::from(transform));
         }
         if !has_visibility {
             entity_commands.insert(Visibility::default());
@@ -131,22 +162,54 @@ pub(crate) fn ensure_hierarchy_parent_spatial_components(
 pub(crate) fn ensure_parent_spatial_components_on_children_added(
     trigger: On<Add, Children>,
     mut commands: Commands<'_, '_>,
-    parent_components: Query<'_, '_, (Has<Transform>, Has<GlobalTransform>, Has<Visibility>)>,
+    parent_components: Query<
+        '_,
+        '_,
+        (
+            Has<Transform>,
+            Has<GlobalTransform>,
+            Has<Visibility>,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
+        ),
+    >,
 ) {
     let entity = trigger.entity;
-    let Ok((has_transform, has_global_transform, has_visibility)) = parent_components.get(entity)
+    let Ok((
+        has_transform,
+        has_global_transform,
+        has_visibility,
+        position,
+        rotation,
+        world_position,
+        world_rotation,
+    )) = parent_components.get(entity)
     else {
         return;
     };
     if has_transform && has_global_transform && has_visibility {
         return;
     }
+    let mut transform = Transform::default();
+    if let (Some(planar_position), Some(heading)) = (
+        resolve_world_position(position, world_position),
+        resolve_world_rotation_rad(rotation, world_rotation),
+    ) && planar_position.is_finite()
+        && heading.is_finite()
+    {
+        transform.translation.x = planar_position.x;
+        transform.translation.y = planar_position.y;
+        transform.translation.z = 0.0;
+        transform.rotation = Quat::from_rotation_z(heading);
+    }
     let mut entity_commands = commands.entity(entity);
     if !has_transform {
-        entity_commands.insert(Transform::default());
+        entity_commands.insert(transform);
     }
     if !has_global_transform {
-        entity_commands.insert(GlobalTransform::default());
+        entity_commands.insert(GlobalTransform::from(transform));
     }
     if !has_visibility {
         entity_commands.insert(Visibility::default());

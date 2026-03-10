@@ -8,13 +8,15 @@ use super::app_state::ClientAppState;
 use super::camera::{
     audit_active_world_cameras_system, gate_gameplay_camera_system, gate_menu_camera_system,
     sync_debug_overlay_camera_to_gameplay_camera_system,
+    sync_planet_body_camera_to_gameplay_camera_system,
     sync_ui_overlay_camera_to_gameplay_camera_system, update_camera_motion_state,
     update_topdown_camera_system,
 };
-use super::components::{WeaponTracerCooldowns, WeaponTracerPool};
+use super::components::{WeaponImpactSparkPool, WeaponTracerCooldowns, WeaponTracerPool};
 use super::debug_overlay::{
     audit_prediction_entity_lifecycle, collect_debug_overlay_snapshot_system,
-    draw_debug_overlay_system, log_prediction_runtime_state, toggle_debug_overlay_system,
+    debug_overlay_enabled, draw_debug_overlay_system, log_prediction_runtime_state,
+    sync_debug_velocity_arrow_mesh_system, toggle_debug_overlay_system,
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
@@ -164,11 +166,16 @@ impl Plugin for ClientReplicationPlugin {
                     replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
                     replication::prune_runtime_entity_registry_system,
-                    assets::queue_missing_catalog_assets_system
-                        .run_if(move || !disable_runtime_asset_fetch),
-                    assets::poll_runtime_asset_http_fetches_system
-                        .after(assets::queue_missing_catalog_assets_system)
-                        .run_if(move || !disable_runtime_asset_fetch),
+                    (
+                        assets::sync_runtime_asset_dependency_state_system
+                            .after(replication::prune_runtime_entity_registry_system),
+                        assets::queue_missing_catalog_assets_system
+                            .after(assets::sync_runtime_asset_dependency_state_system)
+                            .run_if(move || !disable_runtime_asset_fetch),
+                        assets::poll_runtime_asset_http_fetches_system
+                            .after(assets::queue_missing_catalog_assets_system)
+                            .run_if(move || !disable_runtime_asset_fetch),
+                    ),
                     replication::adopt_native_lightyear_replicated_entities
                         .after(replication::prune_runtime_entity_registry_system)
                         .run_if(move || !disable_adoption),
@@ -220,11 +227,16 @@ impl Plugin for ClientReplicationPlugin {
                     replication::ensure_prediction_manager_present_system,
                     replication::configure_prediction_manager_tuning,
                     replication::prune_runtime_entity_registry_system,
-                    assets::queue_missing_catalog_assets_system
-                        .run_if(move || !disable_runtime_asset_fetch),
-                    assets::poll_runtime_asset_http_fetches_system
-                        .after(assets::queue_missing_catalog_assets_system)
-                        .run_if(move || !disable_runtime_asset_fetch),
+                    (
+                        assets::sync_runtime_asset_dependency_state_system
+                            .after(replication::prune_runtime_entity_registry_system),
+                        assets::queue_missing_catalog_assets_system
+                            .after(assets::sync_runtime_asset_dependency_state_system)
+                            .run_if(move || !disable_runtime_asset_fetch),
+                        assets::poll_runtime_asset_http_fetches_system
+                            .after(assets::queue_missing_catalog_assets_system)
+                            .run_if(move || !disable_runtime_asset_fetch),
+                    ),
                     replication::adopt_native_lightyear_replicated_entities
                         .after(replication::prune_runtime_entity_registry_system)
                         .run_if(move || !disable_adoption),
@@ -325,7 +337,15 @@ impl Plugin for ClientVisualsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponTracerPool>();
         app.init_resource::<WeaponTracerCooldowns>();
+        app.init_resource::<WeaponImpactSparkPool>();
         app.init_resource::<super::resources::RuntimeRenderLayerRegistry>();
+        app.init_resource::<super::resources::RuntimeRenderLayerRegistryState>();
+        app.init_resource::<super::resources::RuntimeRenderLayerAssignmentCache>();
+        app.init_resource::<super::resources::RenderLayerPerfCounters>();
+        app.init_resource::<super::resources::RuntimeSharedQuadMesh>();
+        app.init_resource::<super::resources::DuplicateVisualResolutionState>();
+        app.init_resource::<backdrop::FullscreenRenderCache>();
+        app.init_resource::<backdrop::BackdropRenderPerfCounters>();
         let in_world_visuals_core = (
             super::shaders::sync_runtime_shader_assignments_system
                 .after(replication::adopt_native_lightyear_replicated_entities),
@@ -343,8 +363,6 @@ impl Plugin for ClientVisualsPlugin {
                 .after(visuals::cleanup_planet_body_visual_children_system),
             visuals::ensure_planet_body_root_visibility_system
                 .after(visuals::attach_planet_visual_stack_system),
-            visuals::update_planet_body_visuals_system
-                .after(visuals::ensure_planet_body_root_visibility_system),
             visuals::attach_ballistic_projectile_visuals_system
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
             visuals::attach_thruster_plume_visuals_system
@@ -355,23 +373,23 @@ impl Plugin for ClientVisualsPlugin {
                 .after(visuals::attach_thruster_plume_visuals_system),
             visuals::ensure_weapon_tracer_pool_system
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
+            visuals::ensure_weapon_impact_spark_pool_system
+                .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
             visuals::emit_weapon_tracer_visuals_system
                 .after(visuals::ensure_weapon_tracer_pool_system),
             visuals::receive_remote_weapon_tracer_messages_system
                 .after(visuals::ensure_weapon_tracer_pool_system),
             visuals::update_weapon_tracer_visuals_system
                 .after(visuals::emit_weapon_tracer_visuals_system)
-                .after(visuals::receive_remote_weapon_tracer_messages_system),
+                .after(visuals::receive_remote_weapon_tracer_messages_system)
+                .after(visuals::ensure_weapon_impact_spark_pool_system),
             visuals::update_weapon_impact_sparks_system
                 .after(visuals::update_weapon_tracer_visuals_system),
             visuals::attach_streamed_visual_assets_system
                 .after(assets::poll_runtime_asset_http_fetches_system)
                 .after(render_layers::resolve_runtime_render_layer_assignments_system),
-            visuals::update_streamed_visual_layer_transforms_system
-                .after(visuals::attach_streamed_visual_assets_system)
-                .after(render_layers::resolve_runtime_render_layer_assignments_system),
             visuals::update_entity_visibility_fade_in_system
-                .after(visuals::update_streamed_visual_layer_transforms_system)
+                .after(visuals::attach_streamed_visual_assets_system)
                 .after(visuals::ensure_planet_body_root_visibility_system),
         );
         let in_world_backdrop = (
@@ -472,7 +490,8 @@ impl Plugin for ClientUiPlugin {
                 audit_prediction_entity_lifecycle,
                 ui::propagate_ui_overlay_layer_system,
                 ui::update_hud_system,
-                ui::sync_entity_nameplates_system,
+                ui::sync_entity_nameplates_system
+                    .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
                 toggle_debug_overlay_system,
             )
                 .run_if(in_state(ClientAppState::InWorld)),
@@ -499,11 +518,20 @@ impl Plugin for ClientUiPlugin {
                     .after(RollbackSystems::VisualCorrection)
                     .after(transforms::recover_stalled_interpolated_world_entity_transforms)
                     .after(transforms::sync_interpolated_world_entity_transforms_without_history),
+                sync_planet_body_camera_to_gameplay_camera_system
+                    .after(update_topdown_camera_system),
                 sync_ui_overlay_camera_to_gameplay_camera_system
                     .after(update_topdown_camera_system),
                 sync_debug_overlay_camera_to_gameplay_camera_system
                     .after(update_topdown_camera_system),
                 update_camera_motion_state.after(update_topdown_camera_system),
+                visuals::update_streamed_visual_layer_transforms_system
+                    .after(update_camera_motion_state)
+                    .after(visuals::attach_streamed_visual_assets_system),
+                visuals::update_planet_body_visuals_system
+                    .after(update_camera_motion_state)
+                    .after(visuals::ensure_planet_body_root_visibility_system)
+                    .after(visuals::attach_planet_visual_stack_system),
             )
                 .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(in_state(ClientAppState::InWorld)),
@@ -515,7 +543,8 @@ impl Plugin for ClientUiPlugin {
                     .after(FrameInterpolationSystems::Interpolate)
                     .after(RollbackSystems::VisualCorrection)
                     .after(transforms::recover_stalled_interpolated_world_entity_transforms)
-                    .after(bevy::transform::TransformSystems::Propagate),
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .run_if(debug_overlay_enabled),
                 ui::update_debug_overlay_text_ui_system
                     .after(collect_debug_overlay_snapshot_system),
             )
@@ -558,8 +587,11 @@ impl Plugin for ClientUiPlugin {
                     .after(super::backdrop::compute_fullscreen_external_world_system),
                 super::backdrop::update_space_background_material_system
                     .after(super::backdrop::update_starfield_material_system),
-                draw_debug_overlay_system
+                sync_debug_velocity_arrow_mesh_system
                     .after(super::backdrop::update_space_background_material_system),
+                draw_debug_overlay_system
+                    .after(sync_debug_velocity_arrow_mesh_system)
+                    .run_if(debug_overlay_enabled),
             )
                 .chain()
                 .run_if(in_state(ClientAppState::InWorld)),

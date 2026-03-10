@@ -16,9 +16,9 @@ use sidereal_persistence::{
     load_active_script_catalog, replace_active_script_catalog,
 };
 use sidereal_scripting::{
-    LuaSandboxPolicy, ScriptError, inject_script_logger, load_lua_module_from_source,
-    lua_value_to_json, resolve_scripts_root, table_get_required_string,
-    table_get_required_string_list,
+    LuaSandboxPolicy, ScriptAssetRegistryEntry, ScriptError, inject_script_logger,
+    load_asset_registry_from_source, load_lua_module_from_source, lua_value_to_json,
+    resolve_scripts_root, table_get_required_string, table_get_required_string_list,
 };
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -80,6 +80,7 @@ fn decode_graph_entity_records(
 fn validate_runtime_render_graph_records(records: &[GraphEntityRecord]) -> Result<(), String> {
     let generated_registry = sidereal_game::GeneratedComponentRegistry {
         entries: generated_component_registry(),
+        shader_entries: Vec::new(),
     };
     let known_component_kinds = sidereal_game::known_component_kinds(&generated_registry);
     let mut known_layer_ids = HashSet::<String>::from(["main_world".to_string()]);
@@ -247,6 +248,7 @@ pub struct AssetRegistryResource {
 #[derive(Reflect, Debug, Clone, Default)]
 pub struct AssetRegistryEntry {
     pub asset_id: String,
+    pub shader_family: Option<String>,
     pub source_path: String,
     pub content_type: String,
     pub dependencies: Vec<String>,
@@ -340,11 +342,11 @@ pub fn init_resources(app: &mut App) {
             Vec::new()
         }
     };
-    let asset_entries = match load_asset_registry_entries_from_catalog(&catalog) {
+    let (asset_entries, shader_entries) = match load_asset_registry_data_from_catalog(&catalog) {
         Ok(entries) => entries,
         Err(err) => {
             bevy::log::warn!("replication asset registry initial derive failed: {}", err);
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     };
     app.register_type::<ScriptCatalogEntry>();
@@ -376,6 +378,10 @@ pub fn init_resources(app: &mut App) {
         entries: asset_entries,
         revision: 1,
         script_path: ASSET_REGISTRY_SCRIPT_REL_PATH.to_string(),
+    });
+    app.insert_resource(sidereal_game::GeneratedComponentRegistry {
+        entries: generated_component_registry(),
+        shader_entries,
     });
     app.insert_resource(AssetRegistrySyncState {
         registry_script_path: asset_registry_script_path,
@@ -633,97 +639,157 @@ pub fn load_asset_registry_entries(root: &Path) -> Result<Vec<AssetRegistryEntry
 pub fn load_asset_registry_entries_from_catalog(
     catalog: &ScriptCatalogResource,
 ) -> Result<Vec<AssetRegistryEntry>, String> {
-    let policy = LuaSandboxPolicy::from_env();
+    load_asset_registry_data_from_catalog(catalog).map(|(entries, _)| entries)
+}
+
+fn load_asset_registry_data_from_catalog(
+    catalog: &ScriptCatalogResource,
+) -> Result<
+    (
+        Vec<AssetRegistryEntry>,
+        Vec<sidereal_game::ShaderEditorRegistryEntry>,
+    ),
+    String,
+> {
     let entry = lookup_script_catalog_entry(catalog, ASSET_REGISTRY_SCRIPT_REL_PATH)?;
-    let module = load_lua_module_from_source(
-        &entry.source,
-        Path::new(ASSET_REGISTRY_SCRIPT_REL_PATH),
-        &policy,
-    )
-    .map_err(map_script_err)?;
-    let root = module.root();
-    let schema_version_i64 = root.get::<i64>("schema_version").map_err(|err| {
-        format!(
-            "{}: schema_version read failed: {err}",
-            module.script_path().display()
-        )
-    })?;
-    if schema_version_i64 < 1 {
-        return Err(format!(
-            "{}: schema_version must be >= 1",
-            module.script_path().display()
-        ));
-    }
-    let assets_table = root.get::<Table>("assets").map_err(|err| {
-        format!(
-            "{}: assets table read failed: {err}",
-            module.script_path().display()
-        )
-    })?;
-    let mut assets = Vec::<AssetRegistryEntry>::new();
-    for (idx, value) in assets_table.sequence_values::<Table>().enumerate() {
-        let entry = value.map_err(|err| {
-            format!(
-                "{}: assets[{}] decode failed: {err}",
-                module.script_path().display(),
-                idx + 1
-            )
-        })?;
-        let context = format!("assets[{}]", idx + 1);
-        let asset_id =
-            table_get_required_string(&entry, "asset_id", &context).map_err(map_script_err)?;
-        let source_path =
-            table_get_required_string(&entry, "source_path", &context).map_err(map_script_err)?;
-        let content_type =
-            table_get_required_string(&entry, "content_type", &context).map_err(map_script_err)?;
-        let dependencies = match entry
-            .get::<Value>("dependencies")
-            .map_err(|err| format!("{}.dependencies read failed: {err}", context))?
-        {
-            Value::Nil => Vec::new(),
-            Value::Table(values) => {
-                let mut out = Vec::new();
-                for (dep_idx, value) in values.sequence_values::<String>().enumerate() {
-                    out.push(value.map_err(|err| {
-                        format!(
-                            "{}.dependencies[{}] decode failed: {err}",
-                            context,
-                            dep_idx + 1
-                        )
-                    })?);
-                }
-                out
-            }
-            _ => {
-                return Err(format!(
-                    "{}.dependencies must be an array of strings when present",
-                    context
-                ));
-            }
-        };
-        let bootstrap_required = match entry
-            .get::<Value>("bootstrap_required")
-            .map_err(|err| format!("{}.bootstrap_required read failed: {err}", context))?
-        {
-            Value::Nil => false,
-            Value::Boolean(value) => value,
-            _ => {
-                return Err(format!(
-                    "{}.bootstrap_required must be a boolean when present",
-                    context
-                ));
-            }
-        };
-        assets.push(AssetRegistryEntry {
-            asset_id,
-            source_path,
-            content_type,
-            dependencies,
-            bootstrap_required,
-        });
-    }
+    let registry =
+        load_asset_registry_from_source(&entry.source, Path::new(ASSET_REGISTRY_SCRIPT_REL_PATH))
+            .map_err(map_script_err)?;
+    let mut assets = registry
+        .assets
+        .iter()
+        .map(map_script_asset_registry_entry)
+        .collect::<Vec<_>>();
     assets.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
-    Ok(assets)
+    let shader_entries = shader_registry_entries_from_script_assets(&registry.assets)?;
+    Ok((assets, shader_entries))
+}
+
+fn map_script_asset_registry_entry(entry: &ScriptAssetRegistryEntry) -> AssetRegistryEntry {
+    AssetRegistryEntry {
+        asset_id: entry.asset_id.clone(),
+        shader_family: entry.shader_family.clone(),
+        source_path: entry.source_path.clone(),
+        content_type: entry.content_type.clone(),
+        dependencies: entry.dependencies.clone(),
+        bootstrap_required: entry.bootstrap_required,
+    }
+}
+
+fn shader_registry_entries_from_script_assets(
+    asset_entries: &[ScriptAssetRegistryEntry],
+) -> Result<Vec<sidereal_game::ShaderEditorRegistryEntry>, String> {
+    let mut entries = asset_entries
+        .iter()
+        .filter(|entry| entry.source_path.ends_with(".wgsl"))
+        .map(map_script_shader_registry_entry)
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
+    Ok(entries)
+}
+
+fn map_script_shader_registry_entry(
+    entry: &ScriptAssetRegistryEntry,
+) -> Result<sidereal_game::ShaderEditorRegistryEntry, String> {
+    let uniform_schema = entry
+        .editor_schema
+        .as_ref()
+        .map(|schema| {
+            schema
+                .uniforms
+                .iter()
+                .map(|field| {
+                    Ok(sidereal_game::ShaderEditorFieldSchema {
+                        field_path: field.field_path.clone(),
+                        display_name: field
+                            .label
+                            .clone()
+                            .unwrap_or_else(|| field.field_path.clone()),
+                        description: field.description.clone(),
+                        value_kind: shader_editor_value_kind(&field.kind)?,
+                        min: field.min,
+                        max: field.max,
+                        step: field.step,
+                        options: field
+                            .options
+                            .iter()
+                            .map(|option| sidereal_game::ShaderEditorOption {
+                                value: option.value.clone(),
+                                label: option.label.clone(),
+                            })
+                            .collect(),
+                        default_value_json: field
+                            .default_value
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(|err| {
+                                format!(
+                                    "asset {} uniform {} default json serialize failed: {}",
+                                    entry.asset_id, field.field_path, err
+                                )
+                            })?,
+                        group: field.group.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let presets = entry
+        .editor_schema
+        .as_ref()
+        .map(|schema| {
+            schema
+                .presets
+                .iter()
+                .map(|preset| {
+                    Ok(sidereal_game::ShaderEditorPreset {
+                        preset_id: preset.preset_id.clone(),
+                        display_name: preset.label.clone(),
+                        description: preset.description.clone(),
+                        values_json: serde_json::to_string(&preset.values).map_err(|err| {
+                            format!(
+                                "asset {} preset {} json serialize failed: {}",
+                                entry.asset_id, preset.preset_id, err
+                            )
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(sidereal_game::ShaderEditorRegistryEntry {
+        asset_id: entry.asset_id.clone(),
+        source_path: entry.source_path.clone(),
+        shader_family: entry.shader_family.clone(),
+        dependencies: entry.dependencies.clone(),
+        bootstrap_required: entry.bootstrap_required,
+        uniform_schema,
+        presets,
+    })
+}
+
+fn shader_editor_value_kind(kind: &str) -> Result<sidereal_game::ComponentEditorValueKind, String> {
+    match kind {
+        "Bool" => Ok(sidereal_game::ComponentEditorValueKind::Bool),
+        "SignedInteger" => Ok(sidereal_game::ComponentEditorValueKind::SignedInteger),
+        "UnsignedInteger" => Ok(sidereal_game::ComponentEditorValueKind::UnsignedInteger),
+        "Float" => Ok(sidereal_game::ComponentEditorValueKind::Float),
+        "String" => Ok(sidereal_game::ComponentEditorValueKind::String),
+        "Vec2" => Ok(sidereal_game::ComponentEditorValueKind::Vec2),
+        "Vec3" => Ok(sidereal_game::ComponentEditorValueKind::Vec3),
+        "Vec4" => Ok(sidereal_game::ComponentEditorValueKind::Vec4),
+        "ColorRgb" => Ok(sidereal_game::ComponentEditorValueKind::ColorRgb),
+        "ColorRgba" => Ok(sidereal_game::ComponentEditorValueKind::ColorRgba),
+        "Enum" => Ok(sidereal_game::ComponentEditorValueKind::Enum),
+        "Sequence" => Ok(sidereal_game::ComponentEditorValueKind::Sequence),
+        "Struct" => Ok(sidereal_game::ComponentEditorValueKind::Struct),
+        "Tuple" => Ok(sidereal_game::ComponentEditorValueKind::Tuple),
+        "Unknown" => Ok(sidereal_game::ComponentEditorValueKind::Unknown),
+        other => Err(format!("unsupported shader editor value kind={other}")),
+    }
 }
 
 fn reload_all_scripts_from_disk_system(
@@ -894,15 +960,19 @@ fn sync_asset_registry_resource_system(
     catalog: Res<'_, ScriptCatalogResource>,
     mut sync_state: ResMut<'_, AssetRegistrySyncState>,
     mut registry: ResMut<'_, AssetRegistryResource>,
+    generated_registry: Option<ResMut<'_, sidereal_game::GeneratedComponentRegistry>>,
 ) {
     if sync_state.last_catalog_revision == catalog.revision {
         return;
     }
     sync_state.last_catalog_revision = catalog.revision;
-    match load_asset_registry_entries_from_catalog(&catalog) {
-        Ok(entries) => {
+    match load_asset_registry_data_from_catalog(&catalog) {
+        Ok((entries, shader_entries)) => {
             registry.entries = entries;
             registry.revision = registry.revision.saturating_add(1);
+            if let Some(mut generated_registry) = generated_registry {
+                generated_registry.shader_entries = shader_entries;
+            }
             bevy::log::info!(
                 "replication asset registry reloaded from script catalog script={} catalog_revision={} revision={} entries={}",
                 sync_state.registry_script_path.display(),

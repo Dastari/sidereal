@@ -39,6 +39,42 @@ export type GeneratedComponentRegistryEntry = {
   editor_schema: ComponentEditorSchema
 }
 
+export type ShaderEditorOption = {
+  value: string
+  label: string
+}
+
+export type ShaderEditorFieldSchema = {
+  field_path: string
+  display_name: string
+  description: string | null
+  value_kind: ComponentEditorValueKind
+  min: number | null
+  max: number | null
+  step: number | null
+  options: Array<ShaderEditorOption>
+  default_value_json: string | null
+  group: string | null
+}
+
+export type ShaderEditorPreset = {
+  preset_id: string
+  display_name: string
+  description: string | null
+  values_json: string
+}
+
+export type ShaderEditorRegistryEntry = {
+  asset_id: string
+  source_path: string
+  shader_family: string | null
+  dependencies: Array<string>
+  bootstrap_required: boolean
+  uniform_schema: Array<ShaderEditorFieldSchema>
+  presets: Array<ShaderEditorPreset>
+}
+
 export type GeneratedComponentRegistryResource = {
   entries: Array<GeneratedComponentRegistryEntry>
+  shader_entries: Array<ShaderEditorRegistryEntry>
 }

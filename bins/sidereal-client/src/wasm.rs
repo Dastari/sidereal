@@ -404,27 +404,28 @@ async fn open_cache_db() -> Result<web_sys::IdbDatabase, String> {
     let request = factory
         .open_with_u32(WASM_CACHE_DB_NAME, WASM_CACHE_DB_VERSION)
         .map_err(js_error_to_string)?;
-    let upgrade = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |event: web_sys::Event| {
-        let Some(target) = event.target() else {
-            return;
-        };
-        let Ok(open_request) = target.dyn_into::<web_sys::IdbOpenDbRequest>() else {
-            return;
-        };
-        let Ok(result) = open_request.result() else {
-            return;
-        };
-        let Ok(db) = result.dyn_into::<web_sys::IdbDatabase>() else {
-            return;
-        };
-        let store_names = db.object_store_names();
-        if !store_names.contains(WASM_CACHE_META_STORE) {
-            let _ = db.create_object_store(WASM_CACHE_META_STORE);
-        }
-        if !store_names.contains(WASM_CACHE_ASSET_STORE) {
-            let _ = db.create_object_store(WASM_CACHE_ASSET_STORE);
-        }
-    }));
+    let upgrade =
+        Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |event: web_sys::Event| {
+            let Some(target) = event.target() else {
+                return;
+            };
+            let Ok(open_request) = target.dyn_into::<web_sys::IdbOpenDbRequest>() else {
+                return;
+            };
+            let Ok(result) = open_request.result() else {
+                return;
+            };
+            let Ok(db) = result.dyn_into::<web_sys::IdbDatabase>() else {
+                return;
+            };
+            let store_names = db.object_store_names();
+            if !store_names.contains(WASM_CACHE_META_STORE) {
+                let _ = db.create_object_store(WASM_CACHE_META_STORE);
+            }
+            if !store_names.contains(WASM_CACHE_ASSET_STORE) {
+                let _ = db.create_object_store(WASM_CACHE_ASSET_STORE);
+            }
+        }));
     request.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
     let result = await_idb_request(request.unchecked_ref()).await?;
     request.set_onupgradeneeded(None);

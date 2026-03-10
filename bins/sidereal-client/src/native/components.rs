@@ -67,6 +67,9 @@ pub(crate) struct DebugOverlayPanelLabelShadowText;
 pub(crate) struct DebugOverlayPanelValueShadowText;
 
 #[derive(Component)]
+pub(crate) struct DebugVelocityArrowMesh;
+
+#[derive(Component)]
 pub(crate) struct LoadingProgressBarFill;
 
 #[derive(Component)]
@@ -101,6 +104,9 @@ pub(crate) struct RuntimeScreenOverlayPass {
 
 #[derive(Component)]
 pub(crate) struct GameplayCamera;
+
+#[derive(Component)]
+pub(crate) struct PlanetBodyCamera;
 
 #[derive(Component)]
 pub(crate) struct DebugOverlayCamera;
@@ -278,6 +284,12 @@ pub(crate) struct WeaponTracerCooldowns {
     pub by_weapon_entity: std::collections::HashMap<Entity, f32>,
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct WeaponImpactSparkPool {
+    pub sparks: Vec<Entity>,
+    pub next_index: usize,
+}
+
 #[derive(Component, Clone)]
 pub(crate) struct StreamedSpriteShaderAssetId(pub String);
 
@@ -309,7 +321,7 @@ pub(crate) struct DebugBlueBackdrop;
 #[derive(Component)]
 pub(crate) struct SpaceBackdropFallback;
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeFullscreenRenderable {
     pub layer_id: Option<String>,
     pub owner_entity: Option<Entity>,

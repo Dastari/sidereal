@@ -67,6 +67,7 @@ fn generated_registry_resource_infers_editor_schema() {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, SiderealGameCorePlugin));
     let registry = app.world().resource::<GeneratedComponentRegistry>();
+    assert!(registry.shader_entries.is_empty());
     let mapping = registry
         .entries
         .iter()

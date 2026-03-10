@@ -39,8 +39,9 @@ use super::ecs_util::queue_despawn_if_exists;
 use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
     CameraMotionState, ClientControlRequestState, DebugOverlayDisplayMetrics, DebugOverlaySnapshot,
-    DebugOverlayState, DebugSeverity, EmbeddedFonts, NameplateUiState, OwnedAssetManifestCache,
-    TacticalContactsCache, TacticalFogCache, TacticalMapUiState,
+    DebugOverlayState, DebugSeverity, DuplicateVisualResolutionState, EmbeddedFonts,
+    NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache, TacticalFogCache,
+    TacticalMapUiState,
 };
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
@@ -51,14 +52,40 @@ const TACTICAL_CONTACT_PREDICTION_HORIZON_S: f32 = 0.25;
 /// Propagates the UI overlay render layer to all descendants of HUD roots so they are drawn
 /// by the UI overlay camera (fixed scale) instead of the gameplay camera.
 pub(super) fn propagate_ui_overlay_layer_system(
-    mut commands: Commands,
-    roots: Query<(Entity, &Children), With<UiOverlayLayer>>,
+    mut commands: Commands<'_, '_>,
+    added_overlay_roots: Query<'_, '_, Entity, Added<UiOverlayLayer>>,
+    added_children: Query<'_, '_, (Entity, &'_ ChildOf), Added<ChildOf>>,
+    children_query: Query<'_, '_, &'_ Children>,
+    overlay_entities: Query<'_, '_, (), With<UiOverlayLayer>>,
 ) {
-    for (_entity, children) in &roots {
+    for entity in &added_overlay_roots {
+        apply_ui_overlay_to_subtree(entity, &children_query, &overlay_entities, &mut commands);
+    }
+    for (entity, parent) in &added_children {
+        if overlay_entities.contains(parent.parent()) {
+            apply_ui_overlay_to_subtree(entity, &children_query, &overlay_entities, &mut commands);
+        }
+    }
+}
+
+fn apply_ui_overlay_to_subtree(
+    entity: Entity,
+    children_query: &Query<'_, '_, &'_ Children>,
+    overlay_entities: &Query<'_, '_, (), With<UiOverlayLayer>>,
+    commands: &mut Commands<'_, '_>,
+) {
+    if !overlay_entities.contains(entity) {
+        commands
+            .entity(entity)
+            .insert((RenderLayers::layer(UI_OVERLAY_RENDER_LAYER), UiOverlayLayer));
+    } else {
+        commands
+            .entity(entity)
+            .insert(RenderLayers::layer(UI_OVERLAY_RENDER_LAYER));
+    }
+    if let Ok(children) = children_query.get(entity) {
         for child in children.iter() {
-            commands
-                .entity(child)
-                .try_insert((RenderLayers::layer(UI_OVERLAY_RENDER_LAYER), UiOverlayLayer));
+            apply_ui_overlay_to_subtree(child, children_query, overlay_entities, commands);
         }
     }
 }
@@ -1562,17 +1589,11 @@ pub(super) fn update_segmented_bars_system(
 #[allow(clippy::type_complexity)]
 pub(super) fn sync_entity_nameplates_system(
     mut commands: Commands<'_, '_>,
+    duplicate_visuals: Res<'_, DuplicateVisualResolutionState>,
     world_entities: Query<
         '_,
         '_,
-        (
-            Entity,
-            Option<&EntityGuid>,
-            Option<&HealthPool>,
-            Has<ControlledEntity>,
-            Has<lightyear::prelude::Interpolated>,
-            Has<lightyear::prelude::Predicted>,
-        ),
+        (Entity, Option<&EntityGuid>, Option<&HealthPool>),
         (
             With<WorldEntity>,
             Without<EntityNameplateRoot>,
@@ -1590,41 +1611,19 @@ pub(super) fn sync_entity_nameplates_system(
         commands.entity(entity).remove::<GameplayHud>();
     }
 
-    let mut best_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32)>::new();
     let mut winner_entities = HashSet::<Entity>::new();
-    for (entity, guid, health_pool, is_controlled, is_interpolated, is_predicted) in &world_entities
-    {
+    for (entity, guid, health_pool) in &world_entities {
         if health_pool.is_none() {
             continue;
         }
-        let score = if is_controlled {
-            3
-        } else if is_interpolated {
-            2
-        } else if is_predicted {
-            1
-        } else {
-            0
-        };
         if let Some(guid) = guid {
-            match best_entity_by_guid.get_mut(&guid.0) {
-                Some((winner, winner_score)) => {
-                    if score > *winner_score
-                        || (score == *winner_score && entity.to_bits() < winner.to_bits())
-                    {
-                        *winner = entity;
-                        *winner_score = score;
-                    }
-                }
-                None => {
-                    best_entity_by_guid.insert(guid.0, (entity, score));
-                }
+            if duplicate_visuals.winner_by_guid.get(&guid.0) == Some(&entity) {
+                winner_entities.insert(entity);
             }
         } else {
             winner_entities.insert(entity);
         }
     }
-    winner_entities.extend(best_entity_by_guid.values().map(|(entity, _)| *entity));
 
     for entity in &winner_entities {
         if existing_targets.contains_key(entity) {
@@ -1816,5 +1815,33 @@ pub(super) fn update_entity_nameplate_positions_system(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::propagate_ui_overlay_layer_system;
+    use crate::native::components::UiOverlayLayer;
+    use crate::native::platform::UI_OVERLAY_RENDER_LAYER;
+    use bevy::camera::visibility::RenderLayers;
+    use bevy::prelude::*;
+
+    #[test]
+    fn ui_overlay_layer_propagates_to_new_children_only_when_needed() {
+        let mut app = App::new();
+        app.add_systems(Update, propagate_ui_overlay_layer_system);
+
+        let root = app.world_mut().spawn(UiOverlayLayer).id();
+        let child = app.world_mut().spawn_empty().id();
+        app.world_mut().entity_mut(root).add_child(child);
+
+        app.update();
+
+        let child_ref = app.world().entity(child);
+        assert!(child_ref.contains::<UiOverlayLayer>());
+        let layers = child_ref
+            .get::<RenderLayers>()
+            .expect("child render layers should be propagated");
+        assert!(layers.intersects(&RenderLayers::layer(UI_OVERLAY_RENDER_LAYER)));
     }
 }

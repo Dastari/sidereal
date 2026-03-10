@@ -85,6 +85,7 @@ fn decode_graph_entity_records(
 fn validate_runtime_render_graph_records(records: &[GraphEntityRecord]) -> Result<(), AuthError> {
     let generated_registry = sidereal_game::GeneratedComponentRegistry {
         entries: generated_component_registry(),
+        shader_entries: Vec::new(),
     };
     let known_component_kinds = sidereal_game::known_component_kinds(&generated_registry);
     let mut known_layer_ids = HashSet::<String>::from(["main_world".to_string()]);

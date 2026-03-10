@@ -18,6 +18,16 @@ import type {
   ShaderPreviewUniformDescriptor,
   ShaderPreviewUniformValues,
 } from '@/lib/shader-preview'
+import type {
+  GeneratedComponentRegistryResource,
+  ShaderEditorFieldSchema,
+  ShaderEditorRegistryEntry,
+} from '@/features/component-schema/types'
+import {
+  GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+  parseGeneratedComponentRegistryResource,
+  resolveShaderRegistryEntry,
+} from '@/features/component-schema/registry'
 import {
   AppLayout,
   Panel,
@@ -42,7 +52,6 @@ import {
 } from '@/components/ui/tooltip'
 import { applyWithShaderPreviewWasm } from '@/lib/shader-preview-wasm'
 import {
-  buildDefaultUniformValues,
   extractPreviewUniforms,
   renderPreviewShader,
 } from '@/lib/shader-preview'
@@ -67,6 +76,15 @@ type UploadResponse = {
   error?: string
 }
 
+type BrpResourceResponse = {
+  result?: {
+    value?: unknown
+  }
+  error?: {
+    message?: string
+  }
+}
+
 type PerfPanelState = {
   catalogLoadMs: number | null
   shaderLoadMs: number | null
@@ -82,6 +100,19 @@ const DEFAULT_SHADER_DETAIL_WIDTH = 360
 const DEFAULT_SHADER_EDITOR_WIDTH = 720
 const DEFAULT_SHADER_PREVIEW_HEIGHT = 420
 const SHADER_PREVIEW_ASPECT_RATIO = 3 / 2
+const GENERATED_SCHEMA_TARGET = { target: 'server' as const }
+
+type ShaderUniformControlModel = {
+  descriptor: ShaderPreviewUniformDescriptor
+  displayName: string
+  description: string | null
+  group: string | null
+  min: number
+  max: number
+  step: number
+  defaults: Array<number>
+  enumOptions: Array<{ value: string; label: string; numericValue: number }>
+}
 
 export interface ShaderWorkshopPageProps {
   selectedShaderId?: string | null
@@ -108,6 +139,9 @@ export function ShaderWorkshopPage({
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false)
   const [isLoadingShader, setIsLoadingShader] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [isLoadingGeneratedSchema, setIsLoadingGeneratedSchema] = useState(false)
+  const [generatedRegistry, setGeneratedRegistry] =
+    useState<GeneratedComponentRegistryResource | null>(null)
   const [statusText, setStatusText] = useState<string | null>(null)
   const [errorText, setErrorText] = useState<string | null>(null)
   const [previewSurfaceSize, setPreviewSurfaceSize] = useState({
@@ -164,23 +198,39 @@ export function ShaderWorkshopPage({
     () => extractPreviewUniforms(editorValue),
     [editorValue],
   )
+  const shaderSchemaEntry = useMemo(
+    () =>
+      resolveShaderRegistryEntry(generatedRegistry, {
+        assetId: selectedShader?.assetId ?? null,
+        sourcePath: selectedShader?.sourcePath ?? null,
+      }),
+    [generatedRegistry, selectedShader?.assetId, selectedShader?.sourcePath],
+  )
+  const uniformControls = useMemo(
+    () => buildUniformControlModels(shaderUniforms, shaderSchemaEntry),
+    [shaderSchemaEntry, shaderUniforms],
+  )
+  const shaderPresets = useMemo(
+    () => buildShaderPresetModels(shaderSchemaEntry),
+    [shaderSchemaEntry],
+  )
   const animatedUniformTargets = useMemo(
     () =>
-      shaderUniforms.flatMap((uniform) =>
-        uniform.labels.flatMap((label, componentIndex) => {
-          const lower = `${uniform.name} ${label}`.toLowerCase()
+      uniformControls.flatMap((uniform) =>
+        uniform.descriptor.labels.flatMap((label, componentIndex) => {
+          const lower = `${uniform.descriptor.name} ${label}`.toLowerCase()
           if (
             lower.includes('time') ||
             lower.includes('age') ||
             lower.includes('life') ||
             lower.includes('progress')
           ) {
-            return [{ uniformName: uniform.name, componentIndex, lower }]
+            return [{ uniformName: uniform.descriptor.name, componentIndex, lower }]
           }
           return []
         }),
       ),
-    [shaderUniforms],
+    [uniformControls],
   )
 
   const resetPreviewSimulation = useCallback(() => {
@@ -190,9 +240,9 @@ export function ShaderWorkshopPage({
       let changed = false
       const next = { ...prev }
 
-      for (const uniform of shaderUniforms) {
-        const hasAnimatedComponent = uniform.labels.some((label) => {
-          const lower = `${uniform.name} ${label}`.toLowerCase()
+      for (const uniform of uniformControls) {
+        const hasAnimatedComponent = uniform.descriptor.labels.some((label) => {
+          const lower = `${uniform.descriptor.name} ${label}`.toLowerCase()
           return (
             lower.includes('time') ||
             lower.includes('age') ||
@@ -206,35 +256,36 @@ export function ShaderWorkshopPage({
         }
 
         const defaults = [...uniform.defaults]
-        const current = prev[uniform.name] ?? []
+        const current = prev[uniform.descriptor.name] ?? []
         const isSame =
           current.length === defaults.length &&
           current.every((component, index) => component === defaults[index])
 
         if (!isSame) {
-          next[uniform.name] = defaults
+          next[uniform.descriptor.name] = defaults
           changed = true
         }
       }
 
       return changed ? next : prev
     })
-  }, [shaderUniforms])
+  }, [uniformControls])
 
   useEffect(() => {
-    const defaults = buildDefaultUniformValues(shaderUniforms)
+    const defaults = buildDefaultUniformValuesForControls(uniformControls)
     setUniformValues((prev) => {
       const next: ShaderPreviewUniformValues = {}
-      for (const uniform of shaderUniforms) {
-        next[uniform.name] =
-          Object.hasOwn(prev, uniform.name) &&
-          prev[uniform.name].length === uniform.components
-            ? prev[uniform.name]
-            : defaults[uniform.name]
+      for (const uniform of uniformControls) {
+        const name = uniform.descriptor.name
+        next[name] =
+          Object.hasOwn(prev, name) &&
+          prev[name].length === uniform.descriptor.components
+            ? prev[name]
+            : defaults[name]
       }
       return next
     })
-  }, [shaderUniforms])
+  }, [uniformControls])
 
   useEffect(() => {
     simulationTimeRef.current = 0
@@ -320,6 +371,39 @@ export function ShaderWorkshopPage({
     },
     [onSelectedShaderIdChange, setRouteState],
   )
+
+  const loadGeneratedSchema = useCallback(async () => {
+    setIsLoadingGeneratedSchema(true)
+    try {
+      const response = await fetch('/api/brp?target=server', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...GENERATED_SCHEMA_TARGET,
+          method: 'world.get_resources',
+          params: { resource: GENERATED_COMPONENT_REGISTRY_TYPE_PATH },
+        }),
+      })
+      const payload = (await response.json()) as BrpResourceResponse
+      if (!response.ok || payload.error) {
+        throw new Error(
+          payload.error?.message ?? 'Failed to load generated editor registry',
+        )
+      }
+      setGeneratedRegistry(
+        parseGeneratedComponentRegistryResource(
+          payload.result && typeof payload.result === 'object' && 'value' in payload.result
+            ? payload.result.value
+            : payload.result,
+        ),
+      )
+    } catch (error) {
+      console.error(error)
+      setGeneratedRegistry(null)
+    } finally {
+      setIsLoadingGeneratedSchema(false)
+    }
+  }, [])
 
   const loadCatalog = useCallback(async () => {
     setIsLoadingCatalog(true)
@@ -427,8 +511,15 @@ export function ShaderWorkshopPage({
       if (!response.ok || payload.error) {
         throw new Error(payload.error ?? 'Failed to load shader')
       }
-      const nextUniformValues = buildDefaultUniformValues(
-        extractPreviewUniforms(payload.source),
+      const nextUniforms = extractPreviewUniforms(payload.source)
+      const nextUniformValues = buildDefaultUniformValuesForControls(
+        buildUniformControlModels(
+          nextUniforms,
+          resolveShaderRegistryEntry(generatedRegistry, {
+            assetId: payload.entry.assetId,
+            sourcePath: payload.entry.sourcePath,
+          }),
+        ),
       )
       setSource(payload.source)
       setEditorValue(payload.source)
@@ -443,11 +534,15 @@ export function ShaderWorkshopPage({
     } finally {
       setIsLoadingShader(false)
     }
-  }, [runPreviewValidation])
+  }, [generatedRegistry, runPreviewValidation])
 
   useEffect(() => {
     void loadCatalog()
   }, [loadCatalog])
+
+  useEffect(() => {
+    void loadGeneratedSchema()
+  }, [loadGeneratedSchema])
 
   useEffect(() => {
     if (!effectiveSelectedShaderId) {
@@ -513,6 +608,7 @@ export function ShaderWorkshopPage({
 
     previewRenderIdRef.current += 1
     const renderId = previewRenderIdRef.current
+    let cancelled = false
     void (async () => {
       const browserPreview = await renderPreviewShader(
         canvas,
@@ -548,7 +644,9 @@ export function ShaderWorkshopPage({
       setPreviewStatus('invalid')
     })
 
-    return undefined
+    return () => {
+      cancelled = true
+    }
   }, [activePreviewSource, previewStatus, previewSurfaceSize, uniformValues])
 
   useEffect(() => {
@@ -706,7 +804,17 @@ export function ShaderWorkshopPage({
                 />
                 <DetailRow
                   label="Preview uniforms"
-                  value={String(shaderUniforms.length)}
+                  value={String(uniformControls.length)}
+                />
+                <DetailRow
+                  label="Schema source"
+                  value={
+                    shaderSchemaEntry
+                      ? `Generated registry (${shaderSchemaEntry.uniform_schema.length} fields)`
+                      : isLoadingGeneratedSchema
+                        ? 'Loading generated registry'
+                        : 'WGSL inference fallback'
+                  }
                 />
                 <div className="space-y-2 rounded-md bg-secondary/20 p-2">
                   <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -783,22 +891,53 @@ export function ShaderWorkshopPage({
                     </div>
                   </div>
                   <div className="rounded-md bg-secondary/20 p-2 text-xs text-muted-foreground">
-                    Uniform controls are derived from `var&lt;uniform&gt;` declarations in the current WGSL editor contents.
+                    {shaderSchemaEntry
+                      ? 'Uniform defaults, ranges, and presets are coming from GeneratedComponentRegistry when field names match the current WGSL preview uniforms.'
+                      : 'Uniform controls are currently derived from `var<uniform>` declarations in the current WGSL editor contents.'}
                   </div>
-                  {shaderUniforms.length === 0 ? (
+                  {shaderPresets.length > 0 ? (
+                    <div className="space-y-2 rounded-md border border-border-subtle p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium text-foreground">Presets</div>
+                        <Badge variant="secondary">{shaderPresets.length}</Badge>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {shaderPresets.map((preset) => (
+                          <Button
+                            key={preset.preset_id}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setUniformValues((prev) =>
+                                applyPresetToUniformValues(prev, uniformControls, preset.values),
+                              )
+                            }}
+                          >
+                            {preset.display_name}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {uniformControls.length === 0 ? (
                     <div className="text-xs text-muted-foreground">
                       No preview uniforms detected in this shader.
                     </div>
                   ) : (
-                    shaderUniforms.map((uniform) => (
+                    uniformControls.map((uniform) => (
                       <UniformControl
-                        key={uniform.name}
-                        descriptor={uniform}
-                        value={uniformValues[uniform.name] ?? uniform.defaults}
+                        key={uniform.descriptor.name}
+                        control={uniform}
+                        value={
+                          uniformValues[uniform.descriptor.name] ?? uniform.defaults
+                        }
                         onChange={(componentIndex, nextValue) => {
                           setUniformValues((prev) => ({
                             ...prev,
-                            [uniform.name]: (prev[uniform.name] ?? uniform.defaults).map(
+                            [uniform.descriptor.name]: (
+                              prev[uniform.descriptor.name] ?? uniform.defaults
+                            ).map(
                               (componentValue, index) =>
                                 index === componentIndex ? nextValue : componentValue,
                             ),
@@ -1142,11 +1281,20 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 function inferComponentRange(
   descriptor: ShaderPreviewUniformDescriptor,
   label: string,
+  schemaField: ShaderEditorFieldSchema | null,
 ): { min: number; max: number; step: number } {
-  const lower = `${descriptor.name} ${label}`.toLowerCase()
+  if (
+    schemaField &&
+    typeof schemaField.min === 'number' &&
+    typeof schemaField.max === 'number' &&
+    typeof schemaField.step === 'number'
+  ) {
+    return { min: schemaField.min, max: schemaField.max, step: schemaField.step }
+  }
   if (descriptor.category === 'color') {
     return { min: 0, max: 1, step: 0.01 }
   }
+  const lower = `${descriptor.name} ${label}`.toLowerCase()
   if (lower.includes('alpha') || lower.includes('age') || lower.includes('life')) {
     return { min: 0, max: 1, step: 0.01 }
   }
@@ -1161,6 +1309,13 @@ function inferComponentRange(
 
 function clampColorChannel(value: number): number {
   return Math.max(0, Math.min(1, value))
+}
+
+function formatNumericInput(value: number, step: number): string {
+  const stepText = String(step)
+  const precision =
+    stepText.includes('.') ? stepText.split('.')[1]?.length ?? 0 : 0
+  return precision > 0 ? value.toFixed(precision) : String(Math.round(value))
 }
 
 function toHexChannel(value: number): string {
@@ -1199,15 +1354,153 @@ function abbreviateColorLabel(label: string): string {
   return label
 }
 
+function schemaFieldMatchesDescriptor(
+  field: ShaderEditorFieldSchema,
+  descriptor: ShaderPreviewUniformDescriptor,
+): boolean {
+  return field.field_path === descriptor.name
+}
+
+function parseSchemaDefaultValues(
+  field: ShaderEditorFieldSchema | null,
+  descriptor: ShaderPreviewUniformDescriptor,
+): Array<number> | null {
+  if (!field?.default_value_json) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(field.default_value_json) as unknown
+    if (typeof parsed === 'number' && descriptor.components === 1) {
+      return [parsed]
+    }
+    if (Array.isArray(parsed)) {
+      const values = parsed
+        .slice(0, descriptor.components)
+        .map((value) => (typeof value === 'number' ? value : null))
+      if (
+        values.length === descriptor.components &&
+        values.every((value): value is number => value !== null)
+      ) {
+        return values
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function buildUniformControlModels(
+  uniforms: Array<ShaderPreviewUniformDescriptor>,
+  schemaEntry: ShaderEditorRegistryEntry | null,
+): Array<ShaderUniformControlModel> {
+  return uniforms.map((descriptor) => {
+    const schemaField =
+      schemaEntry?.uniform_schema.find((field) =>
+        schemaFieldMatchesDescriptor(field, descriptor),
+      ) ?? null
+    const defaults =
+      parseSchemaDefaultValues(schemaField, descriptor) ?? [...descriptor.defaults]
+    const range = inferComponentRange(
+      descriptor,
+      descriptor.labels[0] ?? descriptor.name,
+      schemaField,
+    )
+    const enumOptions =
+      descriptor.components === 1 && schemaField?.value_kind === 'Enum'
+        ? schemaField.options
+            .map((option) => ({
+              value: option.value,
+              label: option.label,
+              numericValue: Number(option.value),
+            }))
+            .filter((option) => Number.isFinite(option.numericValue))
+        : []
+    return {
+      descriptor,
+      displayName: schemaField?.display_name ?? descriptor.name,
+      description: schemaField?.description ?? null,
+      group: schemaField?.group ?? null,
+      min: range.min,
+      max: range.max,
+      step: range.step,
+      defaults,
+      enumOptions,
+    }
+  })
+}
+
+function buildDefaultUniformValuesForControls(
+  controls: Array<ShaderUniformControlModel>,
+): ShaderPreviewUniformValues {
+  return Object.fromEntries(
+    controls.map((control) => [control.descriptor.name, [...control.defaults]]),
+  )
+}
+
+function buildShaderPresetModels(
+  schemaEntry: ShaderEditorRegistryEntry | null,
+): Array<{
+  preset_id: string
+  display_name: string
+  values: Record<string, unknown>
+}> {
+  return (schemaEntry?.presets ?? []).flatMap((preset) => {
+    try {
+      const values = JSON.parse(preset.values_json) as unknown
+      if (!values || typeof values !== 'object' || Array.isArray(values)) {
+        return []
+      }
+      return [
+        {
+          preset_id: preset.preset_id,
+          display_name: preset.display_name,
+          values: values as Record<string, unknown>,
+        },
+      ]
+    } catch {
+      return []
+    }
+  })
+}
+
+function applyPresetToUniformValues(
+  current: ShaderPreviewUniformValues,
+  controls: Array<ShaderUniformControlModel>,
+  values: Record<string, unknown>,
+): ShaderPreviewUniformValues {
+  const next = { ...current }
+  for (const control of controls) {
+    const presetValue = values[control.descriptor.name]
+    if (typeof presetValue === 'number' && control.descriptor.components === 1) {
+      next[control.descriptor.name] = [presetValue]
+      continue
+    }
+    if (Array.isArray(presetValue)) {
+      const parsed = presetValue
+        .slice(0, control.descriptor.components)
+        .map((value) => (typeof value === 'number' ? value : null))
+      if (
+        parsed.length === control.descriptor.components &&
+        parsed.every((value): value is number => value !== null)
+      ) {
+        next[control.descriptor.name] = parsed
+      }
+    }
+  }
+  return next
+}
+
 function UniformControl({
-  descriptor,
+  control,
   value,
   onChange,
 }: {
-  descriptor: ShaderPreviewUniformDescriptor
+  control: ShaderUniformControlModel
   value: Array<number>
   onChange: (componentIndex: number, nextValue: number) => void
 }) {
+  const descriptor = control.descriptor
   if (descriptor.category === 'color') {
     const colorHex = colorValueToHex(value)
 
@@ -1215,10 +1508,15 @@ function UniformControl({
       <div className="space-y-3 rounded-md border border-border-subtle p-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="font-medium text-foreground">{descriptor.name}</div>
+            <div className="font-medium text-foreground">{control.displayName}</div>
             <div className="text-xs text-muted-foreground">
               binding {descriptor.binding} • {descriptor.type}
             </div>
+            {control.description ? (
+              <div className="mt-1 text-xs text-muted-foreground">
+                {control.description}
+              </div>
+            ) : null}
           </div>
           <Badge variant="secondary">{descriptor.category}</Badge>
         </div>
@@ -1272,44 +1570,74 @@ function UniformControl({
     <div className="space-y-3 rounded-md border border-border-subtle p-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="font-medium text-foreground">{descriptor.name}</div>
+          <div className="font-medium text-foreground">{control.displayName}</div>
           <div className="text-xs text-muted-foreground">
             binding {descriptor.binding} • {descriptor.type}
           </div>
+          {control.description ? (
+            <div className="mt-1 text-xs text-muted-foreground">
+              {control.description}
+            </div>
+          ) : null}
         </div>
         <Badge variant="secondary">{descriptor.category}</Badge>
       </div>
-      {descriptor.labels.map((label, componentIndex) => {
-        const range = inferComponentRange(descriptor, label)
-        const currentValue = value[componentIndex] ?? 0
+      {control.enumOptions.length > 0 ? (
+        <div className="space-y-2">
+          <div className="text-sm text-muted-foreground">Value</div>
+          <select
+            value={String(value[0] ?? control.defaults[0])}
+            onChange={(event) => {
+              const parsed = Number(event.target.value)
+              if (!Number.isFinite(parsed)) {
+                return
+              }
+              onChange(0, parsed)
+            }}
+            className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          >
+            {control.enumOptions.map((option) => (
+              <option key={option.value} value={option.numericValue}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+      {control.enumOptions.length === 0
+        ? descriptor.labels.map((label, componentIndex) => {
+            const currentValue = value[componentIndex] ?? 0
 
-        return (
-          <div key={`${descriptor.name}-${label}`} className="space-y-2">
-            <div className="flex items-center justify-between gap-3 text-sm">
-              <span className="text-muted-foreground">{label}</span>
-              <Input
-                value={currentValue.toFixed(2)}
-                onChange={(event) => {
-                  const parsed = Number(event.target.value)
-                  if (!Number.isFinite(parsed)) {
-                    return
+            return (
+              <div key={`${descriptor.name}-${label}`} className="space-y-2">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-muted-foreground">{label}</span>
+                  <Input
+                    value={formatNumericInput(currentValue, control.step)}
+                    onChange={(event) => {
+                      const parsed = Number(event.target.value)
+                      if (!Number.isFinite(parsed)) {
+                        return
+                      }
+                      onChange(componentIndex, parsed)
+                    }}
+                    className="h-7 w-20 text-right font-mono text-xs"
+                    inputMode="decimal"
+                  />
+                </div>
+                <Slider
+                  value={[currentValue]}
+                  min={control.min}
+                  max={control.max}
+                  step={control.step}
+                  onValueChange={(values) =>
+                    onChange(componentIndex, values[0] ?? currentValue)
                   }
-                  onChange(componentIndex, parsed)
-                }}
-                className="h-7 w-20 text-right font-mono text-xs"
-                inputMode="decimal"
-              />
-            </div>
-            <Slider
-              value={[currentValue]}
-              min={range.min}
-              max={range.max}
-              step={range.step}
-              onValueChange={(values) => onChange(componentIndex, values[0] ?? currentValue)}
-            />
-          </div>
-        )
-      })}
+                />
+              </div>
+            )
+          })
+        : null}
     </div>
   )
 }

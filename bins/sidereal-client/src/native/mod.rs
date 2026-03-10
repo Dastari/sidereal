@@ -176,11 +176,14 @@ pub(crate) fn configure_client_runtime(
     app.insert_resource(SessionReadyState::default());
     app.insert_resource(assets::LocalAssetManager::default());
     app.insert_resource(assets::AssetCatalogHotReloadState::default());
+    app.insert_resource(assets::RuntimeAssetDependencyState::default());
     app.insert_resource(assets::RuntimeAssetNetIndicatorState::default());
     app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
     let debug_blue_overlay = std::env::var("SIDEREAL_DEBUG_BLUE_FULLSCREEN")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     app.insert_resource(DebugBlueOverlayEnabled(debug_blue_overlay));
+    app.insert_resource(DebugGizmoOnGameplayCamera::from_env());
+    app.insert_resource(DebugVelocityArrowAsMesh::from_env());
     app.insert_resource(DebugOverlayState::default());
     app.insert_resource(DebugOverlaySnapshot::default());
     app.insert_resource(NameplateUiState { enabled: false });
@@ -348,10 +351,18 @@ pub(crate) fn build_windowed_client_app(
     app.add_plugins(SvgPlugin);
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     audio::insert_embedded_menu_loop_audio(&mut app);
+    let debug_gizmos_on_gameplay_camera =
+        std::env::var("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA")
+            .ok()
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     if let Some(mut gizmo_config_store) = app.world_mut().get_resource_mut::<GizmoConfigStore>() {
         let (config, _) =
             gizmo_config_store.config_mut::<bevy::gizmos::config::DefaultGizmoConfigGroup>();
-        config.render_layers = RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER);
+        config.render_layers = if debug_gizmos_on_gameplay_camera {
+            RenderLayers::from_layers(&[0, PLANET_BODY_RENDER_LAYER])
+        } else {
+            RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER)
+        };
     }
     configure_client_runtime(
         &mut app,
@@ -373,12 +384,14 @@ pub(crate) fn run() {
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     };
     eprintln!(
-        "client startup env flags: disable_runtime_asset_fetch={} disable_repl_adoption={} disable_hierarchy_rebuild={} disable_world_visuals={} disable_motion_ownership={} shader_materials_enabled={} streamed_shader_overrides={}",
+        "client startup env flags: disable_runtime_asset_fetch={} disable_repl_adoption={} disable_hierarchy_rebuild={} disable_world_visuals={} disable_motion_ownership={} debug_gizmos_on_gameplay_camera={} debug_arrow_as_mesh={} shader_materials_enabled={} streamed_shader_overrides={}",
         env_flag("SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH"),
         env_flag("SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION"),
         env_flag("SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD"),
         env_flag("SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS"),
         env_flag("SIDEREAL_CLIENT_DISABLE_MOTION_OWNERSHIP"),
+        env_flag("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA"),
+        env_flag("SIDEREAL_CLIENT_DEBUG_ARROW_AS_MESH"),
         shaders::shader_materials_enabled(),
         shaders::streamed_shader_overrides_enabled(),
     );

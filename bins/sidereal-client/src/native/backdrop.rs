@@ -32,6 +32,28 @@ use super::resources::AssetRootPath;
 use super::resources::{FullscreenExternalWorldData, StarfieldMotionState};
 use bevy::state::state_scoped::DespawnOnExit;
 
+#[derive(Resource, Default)]
+pub(crate) struct FullscreenRenderCache {
+    fullscreen_quad: Option<Handle<Mesh>>,
+}
+
+#[derive(Debug, Default, Resource)]
+pub(crate) struct BackdropRenderPerfCounters {
+    pub fullscreen_sync_runs: u64,
+    pub post_process_sync_runs: u64,
+    pub shared_quad_allocations: u64,
+    pub fullscreen_material_allocations: u64,
+    pub post_process_material_allocations: u64,
+    pub fullscreen_material_rebinds: u64,
+    pub post_process_material_rebinds: u64,
+}
+
+#[derive(Clone, Copy)]
+enum BackdropSyncPhase {
+    Fullscreen,
+    PostProcess,
+}
+
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync_fullscreen_layer_renderables_system(
@@ -46,6 +68,15 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
             Option<&'_ StarfieldShaderSettings>,
             Option<&'_ SpaceBackgroundShaderSettings>,
             Option<&'_ RuntimeFullscreenRenderable>,
+            Option<&'_ RuntimeFullscreenMaterialBinding>,
+            Option<&'_ Mesh2d>,
+            Option<&'_ Transform>,
+            Option<&'_ RenderLayers>,
+            Option<&'_ Visibility>,
+            Has<NoFrustumCulling>,
+            Has<MeshMaterial2d<StarfieldMaterial>>,
+            Has<MeshMaterial2d<SpaceBackgroundMaterial>>,
+            Has<MeshMaterial2d<SpaceBackgroundNebulaMaterial>>,
         ),
     >,
     stale_runtime_copies: Query<
@@ -59,6 +90,8 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         ),
     >,
     mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut render_cache: ResMut<'_, FullscreenRenderCache>,
+    mut perf: ResMut<'_, BackdropRenderPerfCounters>,
     starfield_materials: Option<ResMut<'_, Assets<StarfieldMaterial>>>,
     space_background_materials: Option<ResMut<'_, Assets<SpaceBackgroundMaterial>>>,
     space_background_nebula_materials: Option<ResMut<'_, Assets<SpaceBackgroundNebulaMaterial>>>,
@@ -70,7 +103,8 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
     let mut starfield_materials = starfield_materials;
     let mut space_background_materials = space_background_materials;
     let mut space_background_nebula_materials = space_background_nebula_materials;
-    let fullscreen_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+    perf.fullscreen_sync_runs = perf.fullscreen_sync_runs.saturating_add(1);
+    let fullscreen_mesh = fullscreen_quad_handle(&mut render_cache, &mut meshes, &mut perf);
     let shader_materials_enabled = super::shaders::shader_materials_enabled();
     for entity in &stale_runtime_copies {
         commands.entity(entity).despawn();
@@ -83,6 +117,15 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
         starfield_settings,
         space_background_settings,
         existing_renderable,
+        binding,
+        mesh,
+        transform,
+        render_layers,
+        visibility,
+        has_no_frustum_culling,
+        has_starfield_material,
+        has_space_background_material,
+        has_space_background_nebula_material,
     ) in &layers
     {
         let Some(selection) = resolve_fullscreen_layer_selection(
@@ -140,20 +183,31 @@ pub(super) fn sync_fullscreen_layer_renderables_system(
 
         let render_layer = render_layer_for_phase(selection.phase);
         let mut entity_commands = commands.entity(entity);
-        entity_commands.insert((
-            RuntimeFullscreenRenderable {
-                layer_id: Some(selection.layer_id.to_string()),
-                owner_entity: None,
-                pass_id: None,
-            },
-            Mesh2d(fullscreen_mesh.clone()),
-            Transform::from_xyz(0.0, 0.0, selection.order as f32),
-            RenderLayers::layer(render_layer),
-            NoFrustumCulling,
-            Visibility::Visible,
-        ));
-        attach_runtime_fullscreen_material(
+        let desired_renderable = RuntimeFullscreenRenderable {
+            layer_id: Some(selection.layer_id.to_string()),
+            owner_entity: None,
+            pass_id: None,
+        };
+        ensure_runtime_fullscreen_renderable(
             &mut entity_commands,
+            existing_renderable,
+            mesh,
+            transform,
+            render_layers,
+            visibility,
+            has_no_frustum_culling,
+            (
+                has_starfield_material,
+                has_space_background_material,
+                has_space_background_nebula_material,
+            ),
+            desired_renderable,
+            &fullscreen_mesh,
+            render_layer,
+            selection.order as f32,
+            BackdropSyncPhase::Fullscreen,
+            &mut perf,
+            binding.copied(),
             material_kind,
             starfield_materials.as_deref_mut(),
             space_background_materials.as_deref_mut(),
@@ -263,8 +317,26 @@ fn fullscreen_material_kind_for_shader(
 pub(super) fn sync_runtime_post_process_renderables_system(
     mut commands: Commands<'_, '_>,
     stacks: Query<'_, '_, (Entity, &'_ RuntimePostProcessStack)>,
-    existing: Query<'_, '_, (Entity, &'_ RuntimeFullscreenRenderable)>,
+    existing: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ RuntimeFullscreenRenderable,
+            Option<&'_ RuntimeFullscreenMaterialBinding>,
+            Option<&'_ Mesh2d>,
+            Option<&'_ Transform>,
+            Option<&'_ RenderLayers>,
+            Option<&'_ Visibility>,
+            Has<NoFrustumCulling>,
+            Has<MeshMaterial2d<StarfieldMaterial>>,
+            Has<MeshMaterial2d<SpaceBackgroundMaterial>>,
+            Has<MeshMaterial2d<SpaceBackgroundNebulaMaterial>>,
+        ),
+    >,
     mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut render_cache: ResMut<'_, FullscreenRenderCache>,
+    mut perf: ResMut<'_, BackdropRenderPerfCounters>,
     starfield_materials: Option<ResMut<'_, Assets<StarfieldMaterial>>>,
     space_background_materials: Option<ResMut<'_, Assets<SpaceBackgroundMaterial>>>,
     space_background_nebula_materials: Option<ResMut<'_, Assets<SpaceBackgroundNebulaMaterial>>>,
@@ -276,6 +348,8 @@ pub(super) fn sync_runtime_post_process_renderables_system(
     let mut starfield_materials = starfield_materials;
     let mut space_background_materials = space_background_materials;
     let mut space_background_nebula_materials = space_background_nebula_materials;
+    perf.post_process_sync_runs = perf.post_process_sync_runs.saturating_add(1);
+    let fullscreen_mesh = fullscreen_quad_handle(&mut render_cache, &mut meshes, &mut perf);
     let mut desired = std::collections::HashMap::<(Entity, String), (String, i32)>::new();
     for (owner_entity, stack) in &stacks {
         for pass in &stack.passes {
@@ -289,7 +363,30 @@ pub(super) fn sync_runtime_post_process_renderables_system(
         }
     }
 
-    for (entity, renderable) in &existing {
+    let existing_keys = existing
+        .iter()
+        .filter_map(|(_, renderable, ..)| {
+            Some((
+                renderable.owner_entity?,
+                renderable.pass_id.as_ref()?.clone(),
+            ))
+        })
+        .collect::<std::collections::HashSet<_>>();
+
+    for (
+        entity,
+        renderable,
+        binding,
+        mesh,
+        transform,
+        render_layers,
+        visibility,
+        has_no_frustum_culling,
+        has_starfield_material,
+        has_space_background_material,
+        has_space_background_nebula_material,
+    ) in &existing
+    {
         let (Some(existing_owner_entity), Some(existing_pass_id)) =
             (renderable.owner_entity, renderable.pass_id.as_ref())
         else {
@@ -314,36 +411,41 @@ pub(super) fn sync_runtime_post_process_renderables_system(
         ) {
             continue;
         }
-        let mesh = meshes.add(Rectangle::new(1.0, 1.0));
         let mut entity_commands = commands.entity(entity);
-        entity_commands.insert((
+        ensure_runtime_fullscreen_renderable(
+            &mut entity_commands,
+            Some(renderable),
+            mesh,
+            transform,
+            render_layers,
+            visibility,
+            has_no_frustum_culling,
+            (
+                has_starfield_material,
+                has_space_background_material,
+                has_space_background_nebula_material,
+            ),
             RuntimeFullscreenRenderable {
                 layer_id: None,
                 owner_entity: Some(existing_owner_entity),
                 pass_id: Some(existing_pass_id.clone()),
             },
-            Mesh2d(mesh),
-            Transform::from_xyz(0.0, 0.0, *order as f32),
-            RenderLayers::layer(POST_PROCESS_RENDER_LAYER),
-            NoFrustumCulling,
-            Visibility::Visible,
-            ClientSceneEntity,
-            DespawnOnExit(ClientAppState::InWorld),
-        ));
-        attach_runtime_fullscreen_material(
-            &mut entity_commands,
+            &fullscreen_mesh,
+            POST_PROCESS_RENDER_LAYER,
+            *order as f32,
+            BackdropSyncPhase::PostProcess,
+            &mut perf,
+            binding.copied(),
             Some(material_kind),
             starfield_materials.as_deref_mut(),
             space_background_materials.as_deref_mut(),
             space_background_nebula_materials.as_deref_mut(),
         );
+        entity_commands.insert((ClientSceneEntity, DespawnOnExit(ClientAppState::InWorld)));
     }
 
     for ((owner_entity, pass_id), (shader_asset_id, order)) in desired {
-        if existing.iter().any(|(_, renderable)| {
-            renderable.owner_entity == Some(owner_entity)
-                && renderable.pass_id.as_deref() == Some(pass_id.as_str())
-        }) {
+        if existing_keys.contains(&(owner_entity, pass_id.clone())) {
             continue;
         }
         let Some(material_kind) =
@@ -359,23 +461,28 @@ pub(super) fn sync_runtime_post_process_renderables_system(
         ) {
             continue;
         }
-        let mesh = meshes.add(Rectangle::new(1.0, 1.0));
-        let mut entity_commands = commands.spawn((
+        let mut entity_commands =
+            commands.spawn((ClientSceneEntity, DespawnOnExit(ClientAppState::InWorld)));
+        ensure_runtime_fullscreen_renderable(
+            &mut entity_commands,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            (false, false, false),
             RuntimeFullscreenRenderable {
                 layer_id: None,
                 owner_entity: Some(owner_entity),
                 pass_id: Some(pass_id),
             },
-            Mesh2d(mesh),
-            Transform::from_xyz(0.0, 0.0, order as f32),
-            RenderLayers::layer(POST_PROCESS_RENDER_LAYER),
-            NoFrustumCulling,
-            Visibility::Visible,
-            ClientSceneEntity,
-            DespawnOnExit(ClientAppState::InWorld),
-        ));
-        attach_runtime_fullscreen_material(
-            &mut entity_commands,
+            &fullscreen_mesh,
+            POST_PROCESS_RENDER_LAYER,
+            order as f32,
+            BackdropSyncPhase::PostProcess,
+            &mut perf,
+            None,
             Some(material_kind),
             starfield_materials.as_deref_mut(),
             space_background_materials.as_deref_mut(),
@@ -395,10 +502,34 @@ fn clear_runtime_fullscreen_material(entity_commands: &mut EntityCommands<'_>) {
 fn attach_runtime_fullscreen_material(
     entity_commands: &mut EntityCommands<'_>,
     material_kind: Option<FullscreenMaterialKind>,
+    phase: BackdropSyncPhase,
+    perf: &mut BackdropRenderPerfCounters,
+    current_binding: Option<RuntimeFullscreenMaterialBinding>,
     starfield_materials: Option<&mut Assets<StarfieldMaterial>>,
     space_background_materials: Option<&mut Assets<SpaceBackgroundMaterial>>,
     space_background_nebula_materials: Option<&mut Assets<SpaceBackgroundNebulaMaterial>>,
 ) {
+    if material_kind.is_none() {
+        clear_runtime_fullscreen_material(entity_commands);
+        return;
+    }
+
+    let desired_binding = material_kind.map(RuntimeFullscreenMaterialBinding::from);
+    if current_binding != desired_binding {
+        match phase {
+            BackdropSyncPhase::Fullscreen => {
+                perf.fullscreen_material_rebinds =
+                    perf.fullscreen_material_rebinds.saturating_add(1);
+            }
+            BackdropSyncPhase::PostProcess => {
+                perf.post_process_material_rebinds =
+                    perf.post_process_material_rebinds.saturating_add(1);
+            }
+        }
+    } else {
+        return;
+    }
+
     clear_runtime_fullscreen_material(entity_commands);
     match material_kind {
         Some(FullscreenMaterialKind::Starfield) => {
@@ -407,6 +538,7 @@ fn attach_runtime_fullscreen_material(
                 return;
             };
             let material = starfield_materials.add(StarfieldMaterial::default());
+            record_material_allocation(perf, phase);
             entity_commands.insert((
                 RuntimeFullscreenMaterialBinding::Starfield,
                 MeshMaterial2d(material),
@@ -420,6 +552,7 @@ fn attach_runtime_fullscreen_material(
                 return;
             };
             let material = space_background_materials.add(SpaceBackgroundMaterial::default());
+            record_material_allocation(perf, phase);
             entity_commands.insert((
                 RuntimeFullscreenMaterialBinding::SpaceBackgroundBase,
                 MeshMaterial2d(material),
@@ -434,12 +567,115 @@ fn attach_runtime_fullscreen_material(
             };
             let material =
                 space_background_nebula_materials.add(SpaceBackgroundNebulaMaterial::default());
+            record_material_allocation(perf, phase);
             entity_commands.insert((
                 RuntimeFullscreenMaterialBinding::SpaceBackgroundNebula,
                 MeshMaterial2d(material),
             ));
         }
         None => {}
+    }
+}
+
+fn ensure_runtime_fullscreen_renderable(
+    entity_commands: &mut EntityCommands<'_>,
+    existing_renderable: Option<&RuntimeFullscreenRenderable>,
+    mesh: Option<&Mesh2d>,
+    transform: Option<&Transform>,
+    render_layers: Option<&RenderLayers>,
+    visibility: Option<&Visibility>,
+    has_no_frustum_culling: bool,
+    material_components: (bool, bool, bool),
+    desired_renderable: RuntimeFullscreenRenderable,
+    fullscreen_mesh: &Handle<Mesh>,
+    render_layer: usize,
+    z_order: f32,
+    phase: BackdropSyncPhase,
+    perf: &mut BackdropRenderPerfCounters,
+    current_binding: Option<RuntimeFullscreenMaterialBinding>,
+    material_kind: Option<FullscreenMaterialKind>,
+    starfield_materials: Option<&mut Assets<StarfieldMaterial>>,
+    space_background_materials: Option<&mut Assets<SpaceBackgroundMaterial>>,
+    space_background_nebula_materials: Option<&mut Assets<SpaceBackgroundNebulaMaterial>>,
+) {
+    if existing_renderable != Some(&desired_renderable) {
+        entity_commands.insert(desired_renderable);
+    }
+    if mesh.is_none_or(|existing| existing.0 != *fullscreen_mesh) {
+        entity_commands.insert(Mesh2d(fullscreen_mesh.clone()));
+    }
+    let desired_transform = Transform::from_xyz(0.0, 0.0, z_order);
+    if transform != Some(&desired_transform) {
+        entity_commands.insert(desired_transform);
+    }
+    let desired_layers = RenderLayers::layer(render_layer);
+    if render_layers != Some(&desired_layers) {
+        entity_commands.insert(desired_layers);
+    }
+    if !has_no_frustum_culling {
+        entity_commands.insert(NoFrustumCulling);
+    }
+    if visibility != Some(&Visibility::Visible) {
+        entity_commands.insert(Visibility::Visible);
+    }
+
+    let has_expected_material_component = match material_kind {
+        Some(FullscreenMaterialKind::Starfield) => material_components.0,
+        Some(FullscreenMaterialKind::SpaceBackgroundBase) => material_components.1,
+        Some(FullscreenMaterialKind::SpaceBackgroundNebula) => material_components.2,
+        None => false,
+    };
+    let effective_binding = if has_expected_material_component {
+        current_binding
+    } else {
+        None
+    };
+    attach_runtime_fullscreen_material(
+        entity_commands,
+        material_kind,
+        phase,
+        perf,
+        effective_binding,
+        starfield_materials,
+        space_background_materials,
+        space_background_nebula_materials,
+    );
+}
+
+fn fullscreen_quad_handle(
+    render_cache: &mut FullscreenRenderCache,
+    meshes: &mut Assets<Mesh>,
+    perf: &mut BackdropRenderPerfCounters,
+) -> Handle<Mesh> {
+    render_cache
+        .fullscreen_quad
+        .get_or_insert_with(|| {
+            perf.shared_quad_allocations = perf.shared_quad_allocations.saturating_add(1);
+            meshes.add(Rectangle::new(1.0, 1.0))
+        })
+        .clone()
+}
+
+fn record_material_allocation(perf: &mut BackdropRenderPerfCounters, phase: BackdropSyncPhase) {
+    match phase {
+        BackdropSyncPhase::Fullscreen => {
+            perf.fullscreen_material_allocations =
+                perf.fullscreen_material_allocations.saturating_add(1);
+        }
+        BackdropSyncPhase::PostProcess => {
+            perf.post_process_material_allocations =
+                perf.post_process_material_allocations.saturating_add(1);
+        }
+    }
+}
+
+impl From<FullscreenMaterialKind> for RuntimeFullscreenMaterialBinding {
+    fn from(value: FullscreenMaterialKind) -> Self {
+        match value {
+            FullscreenMaterialKind::Starfield => Self::Starfield,
+            FullscreenMaterialKind::SpaceBackgroundBase => Self::SpaceBackgroundBase,
+            FullscreenMaterialKind::SpaceBackgroundNebula => Self::SpaceBackgroundNebula,
+        }
     }
 }
 
@@ -1537,6 +1773,158 @@ pub fn update_space_background_material_system(
                 .backlight_color_rgb
                 .clamp(Vec3::ZERO, Vec3::splat(3.0))
                 .extend(1.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BackdropRenderPerfCounters, FullscreenRenderCache, StarfieldMaterial,
+        sync_runtime_post_process_renderables_system,
+    };
+    use crate::native::assets::LocalAssetManager;
+    use crate::native::components::{ClientSceneEntity, RuntimeFullscreenRenderable};
+    use crate::native::resources::{AssetCacheAdapter, AssetRootPath};
+    use crate::native::shaders::{self, RuntimeShaderAssignments};
+    use bevy::prelude::*;
+    use bevy::sprite_render::MeshMaterial2d;
+    use sidereal_asset_runtime::AssetCacheIndex;
+    use sidereal_game::{
+        RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND, RuntimePostProcessPass,
+        RuntimePostProcessStack, RuntimeRenderLayerDefinition,
+    };
+    use std::pin::Pin;
+
+    #[test]
+    fn post_process_sync_reuses_mesh_and_material_for_unchanged_pass() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<StarfieldMaterial>>();
+        app.init_resource::<Assets<bevy::shader::Shader>>();
+        app.init_resource::<FullscreenRenderCache>();
+        app.init_resource::<BackdropRenderPerfCounters>();
+        app.insert_resource(AssetRootPath(".".to_string()));
+        app.insert_resource(LocalAssetManager::default());
+        app.insert_resource(dummy_cache_adapter());
+        app.insert_resource(RuntimeShaderAssignments::default());
+        app.add_systems(
+            Update,
+            (
+                shaders::sync_runtime_shader_assignments_system,
+                sync_runtime_post_process_renderables_system
+                    .after(shaders::sync_runtime_shader_assignments_system),
+            ),
+        );
+
+        app.world_mut().spawn(RuntimeRenderLayerDefinition {
+            layer_id: "bg_starfield".to_string(),
+            phase: RENDER_PHASE_FULLSCREEN_BACKGROUND.to_string(),
+            material_domain: RENDER_DOMAIN_FULLSCREEN.to_string(),
+            shader_asset_id: "shader.test.starfield".to_string(),
+            ..Default::default()
+        });
+        app.world_mut().spawn(RuntimePostProcessStack {
+            passes: vec![RuntimePostProcessPass {
+                pass_id: "warp".to_string(),
+                shader_asset_id: "shader.test.starfield".to_string(),
+                order: 3,
+                enabled: true,
+                ..Default::default()
+            }],
+        });
+
+        app.update();
+        let (entity, first_mesh, first_material) = post_process_handles(app.world_mut());
+
+        app.update();
+        let (same_entity, second_mesh, second_material) = post_process_handles(app.world_mut());
+
+        assert_eq!(
+            entity, same_entity,
+            "existing post-process entity should be reused"
+        );
+        assert_eq!(
+            first_mesh, second_mesh,
+            "post-process quad handle should be stable"
+        );
+        assert_eq!(
+            first_material, second_material,
+            "post-process material handle should be stable when authored state is unchanged"
+        );
+
+        let perf = app.world().resource::<BackdropRenderPerfCounters>();
+        assert_eq!(perf.shared_quad_allocations, 1);
+        assert_eq!(perf.post_process_material_allocations, 1);
+        assert_eq!(perf.post_process_material_rebinds, 1);
+    }
+
+    fn post_process_handles(
+        world: &mut World,
+    ) -> (Entity, AssetId<Mesh>, AssetId<StarfieldMaterial>) {
+        let mut query = world.query_filtered::<(
+            Entity,
+            &Mesh2d,
+            &MeshMaterial2d<StarfieldMaterial>,
+            &RuntimeFullscreenRenderable,
+        ), With<ClientSceneEntity>>();
+        let (entity, mesh, material, renderable) = query
+            .single(world)
+            .expect("one post-process renderable should exist");
+        assert!(renderable.owner_entity.is_some());
+        assert!(renderable.pass_id.is_some());
+        (entity, mesh.0.id(), material.0.id())
+    }
+
+    fn dummy_cache_adapter() -> AssetCacheAdapter {
+        fn prepare_root(
+            _: String,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'static>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+        fn load_index(
+            _: String,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<AssetCacheIndex, String>> + Send + 'static>,
+        > {
+            Box::pin(async { Ok(AssetCacheIndex::default()) })
+        }
+        fn save_index(
+            _: String,
+            _: AssetCacheIndex,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'static>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+        fn read_valid_asset(
+            _: String,
+            _: String,
+            _: String,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<Option<Vec<u8>>, String>> + Send + 'static>,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+        fn write_asset(
+            _: String,
+            _: String,
+            _: Vec<u8>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'static>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+        fn read_valid_asset_sync(_: &str, _: &str, _: &str) -> Option<Vec<u8>> {
+            None
+        }
+
+        AssetCacheAdapter {
+            prepare_root,
+            load_index,
+            save_index,
+            read_valid_asset,
+            write_asset,
+            read_valid_asset_sync,
         }
     }
 }

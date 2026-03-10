@@ -68,7 +68,7 @@ pub struct LoadedLuaModule {
     script_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScriptAssetRegistryEntry {
     pub asset_id: String,
     pub shader_family: Option<String>,
@@ -76,9 +76,10 @@ pub struct ScriptAssetRegistryEntry {
     pub content_type: String,
     pub dependencies: Vec<String>,
     pub bootstrap_required: bool,
+    pub editor_schema: Option<ScriptShaderEditorSchema>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScriptAssetRegistry {
     pub schema_version: u32,
     pub assets: Vec<ScriptAssetRegistryEntry>,
@@ -100,6 +101,40 @@ impl ScriptAssetRegistry {
             .map(|asset| asset.asset_id.clone())
             .collect()
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScriptShaderEditorSchema {
+    pub uniforms: Vec<ScriptShaderEditorFieldSchema>,
+    pub presets: Vec<ScriptShaderEditorPreset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScriptShaderEditorFieldSchema {
+    pub field_path: String,
+    pub label: Option<String>,
+    pub description: Option<String>,
+    pub kind: String,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub options: Vec<ScriptShaderEditorOption>,
+    pub default_value: Option<JsonValue>,
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptShaderEditorOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScriptShaderEditorPreset {
+    pub preset_id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub values: JsonValue,
 }
 
 impl LoadedLuaModule {
@@ -330,6 +365,7 @@ fn decode_asset_registry_module(
                 )));
             }
         };
+        let editor_schema = decode_optional_shader_editor_schema(&entry, &context)?;
         assets.push(ScriptAssetRegistryEntry {
             asset_id,
             shader_family,
@@ -337,6 +373,7 @@ fn decode_asset_registry_module(
             content_type,
             dependencies,
             bootstrap_required,
+            editor_schema,
         });
     }
 
@@ -373,6 +410,7 @@ fn validate_asset_registry(assets: &[ScriptAssetRegistryEntry]) -> Result<(), Sc
                 asset.asset_id
             )));
         }
+        validate_shader_editor_schema(asset)?;
     }
     let known = assets
         .iter()
@@ -399,6 +437,219 @@ fn validate_asset_registry(assets: &[ScriptAssetRegistryEntry]) -> Result<(), Sc
                     asset.asset_id, dep
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+fn decode_optional_shader_editor_schema(
+    entry: &Table,
+    context: &str,
+) -> Result<Option<ScriptShaderEditorSchema>, ScriptError> {
+    let value = entry.get::<Value>("editor_schema").map_err(|err| {
+        ScriptError::Contract(format!("{context}.editor_schema read failed: {err}"))
+    })?;
+    match value {
+        Value::Nil => Ok(None),
+        Value::Table(table) => Ok(Some(decode_shader_editor_schema(&table, context)?)),
+        _ => Err(ScriptError::Contract(format!(
+            "{context}.editor_schema must be a table when present"
+        ))),
+    }
+}
+
+fn decode_shader_editor_schema(
+    table: &Table,
+    context: &str,
+) -> Result<ScriptShaderEditorSchema, ScriptError> {
+    let uniforms = match table.get::<Value>("uniforms").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{context}.editor_schema.uniforms read failed: {err}"
+        ))
+    })? {
+        Value::Nil => Vec::new(),
+        Value::Table(uniforms_table) => decode_shader_editor_uniforms(&uniforms_table, context)?,
+        _ => {
+            return Err(ScriptError::Contract(format!(
+                "{context}.editor_schema.uniforms must be an object when present"
+            )));
+        }
+    };
+    let presets = match table.get::<Value>("presets").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{context}.editor_schema.presets read failed: {err}"
+        ))
+    })? {
+        Value::Nil => Vec::new(),
+        Value::Table(presets_table) => decode_shader_editor_presets(&presets_table, context)?,
+        _ => {
+            return Err(ScriptError::Contract(format!(
+                "{context}.editor_schema.presets must be an array when present"
+            )));
+        }
+    };
+    Ok(ScriptShaderEditorSchema { uniforms, presets })
+}
+
+fn decode_shader_editor_uniforms(
+    uniforms_table: &Table,
+    context: &str,
+) -> Result<Vec<ScriptShaderEditorFieldSchema>, ScriptError> {
+    let mut uniforms = Vec::new();
+    for pair in uniforms_table.pairs::<Value, Table>() {
+        let (field_key, field_table) = pair.map_err(|err| {
+            ScriptError::Contract(format!(
+                "{context}.editor_schema.uniforms decode failed: {err}"
+            ))
+        })?;
+        let field_path = match field_key {
+            Value::String(value) => value
+                .to_str()
+                .map_err(|err| {
+                    ScriptError::Contract(format!(
+                        "{context}.editor_schema.uniforms field key utf8 failed: {err}"
+                    ))
+                })?
+                .to_string(),
+            _ => {
+                return Err(ScriptError::Contract(format!(
+                    "{context}.editor_schema.uniforms keys must be strings"
+                )));
+            }
+        };
+        let field_context = format!("{context}.editor_schema.uniforms.{field_path}");
+        let kind = table_get_required_string(&field_table, "kind", &field_context)?;
+        let options = match field_table.get::<Value>("options").map_err(|err| {
+            ScriptError::Contract(format!("{field_context}.options read failed: {err}"))
+        })? {
+            Value::Nil => Vec::new(),
+            Value::Table(options_table) => {
+                let mut out = Vec::new();
+                for (index, option_value) in options_table.sequence_values::<Table>().enumerate() {
+                    let option_table = option_value.map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "{field_context}.options[{}] decode failed: {err}",
+                            index + 1
+                        ))
+                    })?;
+                    let option_context = format!("{field_context}.options[{}]", index + 1);
+                    out.push(ScriptShaderEditorOption {
+                        value: table_get_required_string(&option_table, "value", &option_context)?,
+                        label: table_get_required_string(&option_table, "label", &option_context)?,
+                    });
+                }
+                out
+            }
+            _ => {
+                return Err(ScriptError::Contract(format!(
+                    "{field_context}.options must be an array when present"
+                )));
+            }
+        };
+        let default_value = match field_table.get::<Value>("default").map_err(|err| {
+            ScriptError::Contract(format!("{field_context}.default read failed: {err}"))
+        })? {
+            Value::Nil => None,
+            value => Some(lua_value_to_json(value)?),
+        };
+        uniforms.push(ScriptShaderEditorFieldSchema {
+            field_path,
+            label: table_get_optional_string(&field_table, "label", &field_context)?,
+            description: table_get_optional_string(&field_table, "description", &field_context)?,
+            kind,
+            min: table_get_optional_number(&field_table, "min", &field_context)?,
+            max: table_get_optional_number(&field_table, "max", &field_context)?,
+            step: table_get_optional_number(&field_table, "step", &field_context)?,
+            options,
+            default_value,
+            group: table_get_optional_string(&field_table, "group", &field_context)?,
+        });
+    }
+    uniforms.sort_by(|a, b| a.field_path.cmp(&b.field_path));
+    Ok(uniforms)
+}
+
+fn decode_shader_editor_presets(
+    presets_table: &Table,
+    context: &str,
+) -> Result<Vec<ScriptShaderEditorPreset>, ScriptError> {
+    let mut presets = Vec::new();
+    for (index, preset_value) in presets_table.sequence_values::<Table>().enumerate() {
+        let preset_table = preset_value.map_err(|err| {
+            ScriptError::Contract(format!(
+                "{context}.editor_schema.presets[{}] decode failed: {err}",
+                index + 1
+            ))
+        })?;
+        let preset_context = format!("{context}.editor_schema.presets[{}]", index + 1);
+        let values = match preset_table.get::<Value>("values").map_err(|err| {
+            ScriptError::Contract(format!("{preset_context}.values read failed: {err}"))
+        })? {
+            Value::Nil => {
+                return Err(ScriptError::Contract(format!(
+                    "{preset_context}.values must be present"
+                )));
+            }
+            value => lua_value_to_json(value)?,
+        };
+        presets.push(ScriptShaderEditorPreset {
+            preset_id: table_get_required_string(&preset_table, "preset_id", &preset_context)?,
+            label: table_get_required_string(&preset_table, "label", &preset_context)?,
+            description: table_get_optional_string(&preset_table, "description", &preset_context)?,
+            values,
+        });
+    }
+    Ok(presets)
+}
+
+fn validate_shader_editor_schema(asset: &ScriptAssetRegistryEntry) -> Result<(), ScriptError> {
+    let Some(schema) = &asset.editor_schema else {
+        return Ok(());
+    };
+    let mut seen_fields = HashSet::<String>::new();
+    for field in &schema.uniforms {
+        if field.field_path.trim().is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "asset registry asset_id={} editor_schema uniform field path must not be empty",
+                asset.asset_id
+            )));
+        }
+        if !seen_fields.insert(field.field_path.clone()) {
+            return Err(ScriptError::Contract(format!(
+                "asset registry asset_id={} duplicates editor_schema uniform={}",
+                asset.asset_id, field.field_path
+            )));
+        }
+        if let (Some(min), Some(max)) = (field.min, field.max)
+            && min > max
+        {
+            return Err(ScriptError::Contract(format!(
+                "asset registry asset_id={} uniform={} has min > max",
+                asset.asset_id, field.field_path
+            )));
+        }
+        if let Some(step) = field.step
+            && step <= 0.0
+        {
+            return Err(ScriptError::Contract(format!(
+                "asset registry asset_id={} uniform={} step must be > 0",
+                asset.asset_id, field.field_path
+            )));
+        }
+        if field.kind == "Enum" && field.options.is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "asset registry asset_id={} uniform={} enum kind requires options",
+                asset.asset_id, field.field_path
+            )));
+        }
+    }
+    let mut seen_presets = HashSet::<String>::new();
+    for preset in &schema.presets {
+        if !seen_presets.insert(preset.preset_id.clone()) {
+            return Err(ScriptError::Contract(format!(
+                "asset registry asset_id={} duplicates preset_id={}",
+                asset.asset_id, preset.preset_id
+            )));
         }
     }
     Ok(())
@@ -502,6 +753,24 @@ pub fn table_get_optional_string(
         )),
         _ => Err(ScriptError::Contract(format!(
             "{context}.{key} must be a string when present"
+        ))),
+    }
+}
+
+pub fn table_get_optional_number(
+    table: &Table,
+    key: &str,
+    context: &str,
+) -> Result<Option<f64>, ScriptError> {
+    let value = table
+        .get::<Value>(key)
+        .map_err(|err| ScriptError::Contract(format!("{context}.{key} read failed: {err}")))?;
+    match value {
+        Value::Nil => Ok(None),
+        Value::Integer(value) => Ok(Some(value as f64)),
+        Value::Number(value) => Ok(Some(value)),
+        _ => Err(ScriptError::Contract(format!(
+            "{context}.{key} must be a number when present"
         ))),
     }
 }
@@ -784,6 +1053,103 @@ return {
             registry.assets[0].shader_family.as_deref(),
             Some("world_sprite_generic")
         );
+    }
+
+    #[test]
+    fn loads_asset_registry_editor_schema_from_source() {
+        let registry = load_asset_registry_from_source(
+            r#"
+return {
+  schema_version = 1,
+  assets = {
+    {
+      asset_id = "planet_visual_wgsl",
+      shader_family = "world_polygon_planet",
+      source_path = "shaders/planet_visual.wgsl",
+      content_type = "text/wgsl",
+      dependencies = {},
+      bootstrap_required = true,
+      editor_schema = {
+        uniforms = {
+          atmosphere_alpha = {
+            kind = "Float",
+            label = "Atmosphere Alpha",
+            min = 0.0,
+            max = 1.0,
+            step = 0.01,
+            default = 0.48,
+            group = "Atmosphere",
+          },
+          blend_mode = {
+            kind = "Enum",
+            options = {
+              { value = "screen", label = "Screen" },
+              { value = "add", label = "Add" },
+            },
+            default = "screen",
+          },
+        },
+        presets = {
+          {
+            preset_id = "earth_like",
+            label = "Earth-like",
+            values = {
+              atmosphere_alpha = 0.48,
+            },
+          },
+        },
+      },
+    },
+  },
+}
+"#,
+            Path::new("assets/registry.lua"),
+        )
+        .expect("load registry from source");
+
+        let asset = &registry.assets[0];
+        let schema = asset.editor_schema.as_ref().expect("editor schema");
+        assert_eq!(schema.uniforms.len(), 2);
+        assert_eq!(schema.presets.len(), 1);
+        assert_eq!(schema.uniforms[0].field_path, "atmosphere_alpha");
+        assert_eq!(
+            schema.uniforms[0].label.as_deref(),
+            Some("Atmosphere Alpha")
+        );
+        assert_eq!(schema.uniforms[1].options.len(), 2);
+        assert_eq!(schema.presets[0].preset_id, "earth_like");
+    }
+
+    #[test]
+    fn rejects_invalid_editor_schema_ranges() {
+        let err = load_asset_registry_from_source(
+            r#"
+return {
+  schema_version = 1,
+  assets = {
+    {
+      asset_id = "planet_visual_wgsl",
+      source_path = "shaders/planet_visual.wgsl",
+      content_type = "text/wgsl",
+      dependencies = {},
+      bootstrap_required = true,
+      editor_schema = {
+        uniforms = {
+          atmosphere_alpha = {
+            kind = "Float",
+            min = 2.0,
+            max = 1.0,
+          },
+        },
+      },
+    },
+  },
+}
+"#,
+            Path::new("assets/registry.lua"),
+        )
+        .expect_err("expected validation error");
+        assert!(err.to_string().contains("min > max"));
     }
 
     #[test]

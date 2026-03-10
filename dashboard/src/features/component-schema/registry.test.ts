@@ -4,6 +4,8 @@ import {
   getSchemaFieldValue,
   parseGeneratedComponentRegistryResource,
   resolveComponentRegistryEntry,
+  resolveShaderRegistryEntry,
+  resolveShaderRegistryEntryForComponent,
   setSchemaFieldValue,
 } from './registry'
 
@@ -53,11 +55,88 @@ describe('component schema registry helpers', () => {
         },
       },
     ],
+    shader_entries: [
+      {
+        asset_id: 'planet_visual_wgsl',
+        source_path: 'shaders/planet_visual.wgsl',
+        shader_family: 'world_polygon_planet',
+        dependencies: ['noise_lut_png'],
+        bootstrap_required: true,
+        uniform_schema: [
+          {
+            field_path: 'atmosphere_alpha',
+            display_name: 'Atmosphere Alpha',
+            description: 'Alpha for atmosphere rim.',
+            value_kind: 'Float',
+            min: 0,
+            max: 1,
+            step: 0.01,
+            options: [],
+            default_value_json: '0.48',
+            group: 'Atmosphere',
+          },
+          {
+            field_path: 'blend_mode',
+            display_name: 'Blend Mode',
+            description: null,
+            value_kind: 'Enum',
+            min: null,
+            max: null,
+            step: null,
+            options: [
+              { value: 'screen', label: 'Screen' },
+              { value: 'add', label: 'Add' },
+            ],
+            default_value_json: '"screen"',
+            group: null,
+          },
+        ],
+        presets: [
+          {
+            preset_id: 'earth_like',
+            display_name: 'Earth-like',
+            description: null,
+            values_json: '{"atmosphere_alpha":0.48}',
+          },
+        ],
+      },
+    ],
   })
+  if (!registry) {
+    throw new Error('expected generated registry fixture to parse')
+  }
 
   it('parses generated component registry payloads', () => {
-    expect(registry?.entries).toHaveLength(2)
-    expect(registry?.entries[0]?.component_kind).toBe('ammo_count')
+    expect(registry.entries).toHaveLength(2)
+    expect(registry.shader_entries).toHaveLength(1)
+    expect(registry.entries[0]?.component_kind).toBe('ammo_count')
+    expect(registry.shader_entries[0]?.asset_id).toBe('planet_visual_wgsl')
+    expect(registry.shader_entries[0]?.uniform_schema[1]?.options[0]?.value).toBe(
+      'screen',
+    )
+  })
+
+  it('resolves shader registry entries by asset id and source path', () => {
+    expect(
+      resolveShaderRegistryEntry(registry, {
+        assetId: 'planet_visual_wgsl',
+        sourcePath: null,
+      }),
+    ).toMatchObject({ asset_id: 'planet_visual_wgsl' })
+
+    expect(
+      resolveShaderRegistryEntry(registry, {
+        assetId: null,
+        sourcePath: 'data/shaders/planet_visual.wgsl',
+      }),
+    ).toMatchObject({ source_path: 'shaders/planet_visual.wgsl' })
+
+    expect(
+      resolveShaderRegistryEntryForComponent(
+        registry,
+        'sidereal_game::components::planet_body_shader_settings::PlanetBodyShaderSettings',
+      ),
+    ).toMatchObject({ asset_id: 'planet_visual_wgsl' })
   })
 
   it('resolves live and database component nodes against registry metadata', () => {
@@ -93,8 +172,8 @@ describe('component schema registry helpers', () => {
   })
 
   it('extracts persisted component envelopes and updates both nested and root fields', () => {
-    const ammoEntry = registry?.entries[0]
-    const rigidBodyEntry = registry?.entries[1]
+    const ammoEntry = registry.entries[0]
+    const rigidBodyEntry = registry.entries[1]
     expect(ammoEntry).toBeTruthy()
     expect(rigidBodyEntry).toBeTruthy()
 
@@ -108,25 +187,19 @@ describe('component schema registry helpers', () => {
           sidereal_game__components__ammo_count__AmmoCount: { current: 8 },
         },
       },
-      ammoEntry ?? null,
+      ammoEntry,
     )
     expect(ammoPayload).toEqual({ current: 8 })
 
-    const ammoField = ammoEntry?.editor_schema.fields[0]
+    const ammoField = ammoEntry.editor_schema.fields[0]
     expect(ammoField).toBeTruthy()
-    if (!ammoField) {
-      throw new Error('ammoField missing')
-    }
     expect(getSchemaFieldValue(ammoPayload, ammoField, 1)).toBe(8)
     expect(setSchemaFieldValue(ammoPayload, ammoField, 12, 1)).toEqual({
       current: 12,
     })
 
-    const rigidBodyField = rigidBodyEntry?.editor_schema.fields[0]
+    const rigidBodyField = rigidBodyEntry.editor_schema.fields[0]
     expect(rigidBodyField).toBeTruthy()
-    if (!rigidBodyField) {
-      throw new Error('rigidBodyField missing')
-    }
     expect(getSchemaFieldValue('Dynamic', rigidBodyField, 1)).toBe('Dynamic')
     expect(setSchemaFieldValue('Dynamic', rigidBodyField, 'Static', 1)).toBe(
       'Static',

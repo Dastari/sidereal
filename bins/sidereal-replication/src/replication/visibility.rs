@@ -188,12 +188,16 @@ pub struct VisibilityScratch {
     root_public_by_entity: HashMap<Entity, bool>,
     root_owner_by_entity: HashMap<Entity, String>,
     root_faction_by_entity: HashMap<Entity, String>,
+    pending_world_layer_override_by_entity: HashMap<Entity, String>,
     resolved_world_layer_by_entity: HashMap<Entity, RuntimeRenderLayerDefinition>,
+    visibility_source_candidates: Vec<(Entity, String, f32)>,
     visibility_sources_by_owner: HashMap<String, Vec<(Vec3, f32)>>,
     player_faction_by_owner: HashMap<String, String>,
     context_by_client: HashMap<Entity, PlayerVisibilityContext>,
     entities_by_cell: HashMap<(i64, i64), Vec<Entity>>,
     owned_entities_by_player: HashMap<String, Vec<Entity>>,
+    static_landmarks_by_entity: HashMap<Entity, (uuid::Uuid, StaticLandmark)>,
+    max_static_landmark_discovery_padding_m: f32,
     candidate_entities_by_client: HashMap<Entity, HashSet<Entity>>,
     candidate_cells_by_client: HashMap<Entity, HashSet<(i64, i64)>>,
 }
@@ -209,6 +213,24 @@ pub(crate) struct VisibilityRuntimeConfig {
 #[derive(Resource, Default)]
 pub struct VisibilityTelemetryLogState {
     pub last_logged_at_s: f64,
+}
+
+#[derive(Debug, Resource, Default, Clone)]
+pub struct VisibilityRuntimeMetrics {
+    pub query_ms: f64,
+    pub scratch_build_ms: f64,
+    pub discovery_and_candidate_ms: f64,
+    pub disclosure_sync_ms: f64,
+    pub apply_ms: f64,
+    pub clients: usize,
+    pub entities: usize,
+    pub candidates_total: usize,
+    pub candidates_per_client: f64,
+    pub discovered_checks: usize,
+    pub discovered_new_total: usize,
+    pub delivery_range_min_m: f64,
+    pub delivery_range_avg_m: f64,
+    pub delivery_range_max_m: f64,
 }
 
 #[derive(Resource, Default)]
@@ -245,6 +267,7 @@ pub fn init_resources(app: &mut App) {
         bypass_all_filters: bypass_all_visibility_filters_from_env(),
     });
     app.insert_resource(VisibilityTelemetryLogState::default());
+    app.insert_resource(VisibilityRuntimeMetrics::default());
     app.insert_resource(ClientLocalViewModeRegistry::default());
 }
 
@@ -313,12 +336,16 @@ impl VisibilityScratch {
         self.root_public_by_entity.clear();
         self.root_owner_by_entity.clear();
         self.root_faction_by_entity.clear();
+        self.pending_world_layer_override_by_entity.clear();
         self.resolved_world_layer_by_entity.clear();
+        self.visibility_source_candidates.clear();
         self.visibility_sources_by_owner.clear();
         self.player_faction_by_owner.clear();
         self.context_by_client.clear();
         self.entities_by_cell.clear();
         self.owned_entities_by_player.clear();
+        self.static_landmarks_by_entity.clear();
+        self.max_static_landmark_discovery_padding_m = 0.0;
         self.candidate_entities_by_client.clear();
         self.candidate_cells_by_client.clear();
     }
@@ -668,6 +695,8 @@ pub fn update_network_visibility(
     >,
 ) {
     let started_at = Instant::now();
+    let mut discovered_checks = 0usize;
+    let mut discovered_new_total = 0usize;
     scratch.clear();
     scratch.live_clients.extend(clients.iter());
     let live_clients_snapshot = scratch.live_clients.clone();
@@ -731,16 +760,27 @@ pub fn update_network_visibility(
         scratch
             .world_position_by_entity
             .insert(entity, effective_world_pos);
+        let entity_extent_m = entity_visibility_extent_m(size);
         scratch
             .visibility_extent_m_by_entity
-            .insert(entity, entity_visibility_extent_m(size));
-        scratch
-            .entities_by_cell
-            .entry(cell_key(effective_world_pos, runtime_cfg.cell_size_m))
-            .or_default()
-            .push(entity);
+            .insert(entity, entity_extent_m);
         if let Some(guid) = entity_guid {
             scratch.entity_by_guid.insert(guid.0, entity);
+            if let Some(static_landmark) = _static_landmark {
+                let discovery_padding_m =
+                    static_landmark.discovery_radius_m.unwrap_or(0.0).max(0.0)
+                        + if static_landmark.use_extent_for_discovery {
+                            entity_extent_m
+                        } else {
+                            0.0
+                        };
+                scratch.max_static_landmark_discovery_padding_m = scratch
+                    .max_static_landmark_discovery_padding_m
+                    .max(discovery_padding_m);
+                scratch
+                    .static_landmarks_by_entity
+                    .insert(entity, (guid.0, static_landmark.clone()));
+            }
         }
         scratch
             .root_public_by_entity
@@ -767,42 +807,31 @@ pub fn update_network_visibility(
                     .or_insert_with(|| faction.0.clone());
             }
         }
-        if let Some(override_layer) = runtime_render_layer_override
-            && let Some(definition) = runtime_layer_definitions_by_id.get(&override_layer.layer_id)
-        {
+        if let Some(override_layer) = runtime_render_layer_override {
             scratch
-                .resolved_world_layer_by_entity
-                .insert(entity, definition.clone());
+                .pending_world_layer_override_by_entity
+                .insert(entity, override_layer.layer_id.clone());
+        }
+        if let (Some(owner), Some(range)) = (owner_id, _visibility_range.map(|r| r.0))
+            && range > 0.0
+        {
+            scratch.visibility_source_candidates.push((
+                entity,
+                canonical_player_entity_id(owner.0.as_str()),
+                range,
+            ));
         }
         let _ = mounted_on;
     }
 
-    for (
-        entity,
-        _position,
-        _global_transform,
-        _entity_guid,
-        _owner_id,
-        _visibility_range,
-        _public_visibility,
-        _faction_visibility,
-        _faction_id,
-        _mounted_on,
-        _size,
-        _runtime_render_layer_definition,
-        runtime_render_layer_override,
-        _static_landmark,
-    ) in &all_replicated
-    {
-        if scratch.resolved_world_layer_by_entity.contains_key(&entity) {
+    for (entity, layer_id) in &scratch.pending_world_layer_override_by_entity {
+        if scratch.resolved_world_layer_by_entity.contains_key(entity) {
             continue;
         }
-        if let Some(override_layer) = runtime_render_layer_override
-            && let Some(definition) = runtime_layer_definitions_by_id.get(&override_layer.layer_id)
-        {
+        if let Some(definition) = runtime_layer_definitions_by_id.get(layer_id) {
             scratch
                 .resolved_world_layer_by_entity
-                .insert(entity, definition.clone());
+                .insert(*entity, definition.clone());
         }
     }
 
@@ -825,7 +854,7 @@ pub fn update_network_visibility(
     }
 
     // 3) Resolve mount root for each entity (traverse parent chain).
-    for (entity, _, _, _, _, _, _, _, _, _, _, _, _, _) in &all_replicated {
+    for &entity in &scratch.all_replicated_entities {
         let root = resolve_mount_root(entity, &scratch.parent_entity_by_entity);
         scratch.root_entity_by_entity.insert(entity, root);
     }
@@ -834,7 +863,7 @@ pub fn update_network_visibility(
     // Mounted children inherit root world position for visibility checks to avoid
     // false positives from unhydrated child transforms at origin.
     scratch.entities_by_cell.clear();
-    for (entity, _, _, _, _, _, _, _, _, _, _, _, _, _) in &all_replicated {
+    for &entity in &scratch.all_replicated_entities {
         let root = scratch
             .root_entity_by_entity
             .get(&entity)
@@ -867,48 +896,26 @@ pub fn update_network_visibility(
 
     // 4) Build visibility sources from owned roots with a resolved effective visibility range.
     // Child entities contribute via root VisibilityRangeM aggregation; they are not sources.
-    for (
-        entity,
-        _position,
-        _global,
-        _guid,
-        owner_id,
-        visibility_range,
-        _public,
-        _faction_vis,
-        _faction_id,
-        _mounted_on,
-        _size,
-        _runtime_render_layer_definition,
-        _runtime_render_layer_override,
-        _static_landmark,
-    ) in &all_replicated
-    {
+    for (entity, canonical_owner, range) in &scratch.visibility_source_candidates {
         let is_root = scratch
             .root_entity_by_entity
-            .get(&entity)
-            .is_some_and(|root| *root == entity);
+            .get(entity)
+            .is_some_and(|root| *root == *entity);
         if !is_root {
             continue;
         }
-        let Some(owner) = owner_id else { continue };
-        let Some(range) = visibility_range.map(|r| r.0) else {
-            continue;
-        };
-        if range <= 0.0 {
-            continue;
-        };
-        let canonical_owner = canonical_player_entity_id(owner.0.as_str());
-        let Some(position) = scratch.world_position_by_entity.get(&entity).copied() else {
+        let Some(position) = scratch.world_position_by_entity.get(entity).copied() else {
             continue;
         };
         scratch
             .visibility_sources_by_owner
-            .entry(canonical_owner)
+            .entry(canonical_owner.clone())
             .or_default()
-            .push((position, range));
+            .push((position, *range));
     }
+    let scratch_build_ms = started_at.elapsed().as_secs_f64() * 1000.0;
 
+    let discovery_started_at = Instant::now();
     let registered_clients = scratch.registered_clients.clone();
     for (client_entity, player_entity_id) in &registered_clients {
         let canonical_player_id = canonical_player_entity_id(player_entity_id.as_str());
@@ -953,28 +960,24 @@ pub fn update_network_visibility(
                 discovered_static_landmarks.extend(component.landmark_entity_ids.iter().copied());
             }
             let mut newly_discovered = Vec::<uuid::Uuid>::new();
-            for (
-                target_entity,
-                _position,
-                _global_transform,
-                target_guid,
-                _owner_id,
-                _visibility_range,
-                _public_visibility,
-                _faction_visibility,
-                _faction_id,
-                _mounted_on,
-                _size,
-                _runtime_render_layer_definition,
-                _runtime_render_layer_override,
-                static_landmark,
-            ) in &all_replicated
-            {
-                let (Some(target_guid), Some(static_landmark)) = (target_guid, static_landmark)
+            let mut discovery_candidates = HashSet::<Entity>::new();
+            for (visibility_pos, visibility_range_m) in &visibility_sources {
+                add_entities_in_radius(
+                    *visibility_pos,
+                    *visibility_range_m + scratch.max_static_landmark_discovery_padding_m,
+                    runtime_cfg.cell_size_m,
+                    &scratch.entities_by_cell,
+                    &mut discovery_candidates,
+                );
+            }
+            for target_entity in discovery_candidates {
+                let Some((target_guid, static_landmark)) =
+                    scratch.static_landmarks_by_entity.get(&target_entity)
                 else {
                     continue;
                 };
-                if discovered_static_landmarks.contains(&target_guid.0) {
+                discovered_checks = discovered_checks.saturating_add(1);
+                if discovered_static_landmarks.contains(target_guid) {
                     continue;
                 }
                 let target_position = scratch
@@ -1000,9 +1003,10 @@ pub fn update_network_visibility(
                     static_landmark,
                     &discovery_context,
                 ) {
-                    newly_discovered.push(target_guid.0);
+                    newly_discovered.push(*target_guid);
                 }
             }
+            discovered_new_total = discovered_new_total.saturating_add(newly_discovered.len());
             if !newly_discovered.is_empty() {
                 if let Some(component) = discovered_component.as_deref_mut() {
                     for landmark_id in newly_discovered {
@@ -1058,7 +1062,9 @@ pub fn update_network_visibility(
             .candidate_cells_by_client
             .insert(*client_entity, candidate_cells);
     }
+    let discovery_and_candidate_ms = discovery_started_at.elapsed().as_secs_f64() * 1000.0;
 
+    let disclosure_started_at = Instant::now();
     for (client_entity, player_entity_id) in &registered_clients {
         let canonical_player_id = canonical_player_entity_id(player_entity_id.as_str());
         let client_delivery_range_m = view_mode_registry
@@ -1120,7 +1126,9 @@ pub fn update_network_visibility(
             entity_commands.insert(next_disclosure);
         }
     }
+    let disclosure_sync_ms = disclosure_started_at.elapsed().as_secs_f64() * 1000.0;
 
+    let apply_started_at = Instant::now();
     for (
         entity,
         mut replication_state,
@@ -1213,8 +1221,7 @@ pub fn update_network_visibility(
                         RENDER_PHASE_FULLSCREEN_BACKGROUND | RENDER_PHASE_FULLSCREEN_FOREGROUND
                     )
             });
-        let is_global_render_config = is_global_fullscreen_config
-            || runtime_render_layer.is_some();
+        let is_global_render_config = is_global_fullscreen_config || runtime_render_layer.is_some();
         if is_global_render_config {
             for client_entity in &scratch.live_clients {
                 if scratch.context_by_client.contains_key(client_entity) {
@@ -1387,6 +1394,7 @@ pub fn update_network_visibility(
             }
         }
     }
+    let apply_ms = apply_started_at.elapsed().as_secs_f64() * 1000.0;
 
     if summary_logging_enabled() {
         let now_s = time.elapsed_secs_f64();
@@ -1447,6 +1455,63 @@ pub fn update_network_visibility(
             );
         }
     }
+
+    let clients_count = scratch.live_clients.len();
+    let entities_count = scratch.all_replicated_entities.len();
+    let candidates_total = scratch
+        .candidate_entities_by_client
+        .values()
+        .map(HashSet::len)
+        .sum::<usize>();
+    let candidates_per_client = if clients_count > 0 {
+        candidates_total as f64 / clients_count as f64
+    } else {
+        0.0
+    };
+    let (delivery_min, delivery_avg, delivery_max) = if scratch.live_clients.is_empty() {
+        (
+            runtime_cfg.delivery_range_m as f64,
+            runtime_cfg.delivery_range_m as f64,
+            runtime_cfg.delivery_range_m as f64,
+        )
+    } else {
+        let mut values = scratch
+            .live_clients
+            .iter()
+            .map(|client| {
+                view_mode_registry
+                    .by_client_entity
+                    .get(client)
+                    .map(|settings| settings.delivery_range_m)
+                    .unwrap_or(runtime_cfg.delivery_range_m) as f64
+            })
+            .collect::<Vec<_>>();
+        values.sort_by(|a, b| a.total_cmp(b));
+        let min = *values
+            .first()
+            .unwrap_or(&(runtime_cfg.delivery_range_m as f64));
+        let max = *values
+            .last()
+            .unwrap_or(&(runtime_cfg.delivery_range_m as f64));
+        let avg = values.iter().sum::<f64>() / values.len() as f64;
+        (min, avg, max)
+    };
+    commands.insert_resource(VisibilityRuntimeMetrics {
+        query_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+        scratch_build_ms,
+        discovery_and_candidate_ms,
+        disclosure_sync_ms,
+        apply_ms,
+        clients: clients_count,
+        entities: entities_count,
+        candidates_total,
+        candidates_per_client,
+        discovered_checks,
+        discovered_new_total,
+        delivery_range_min_m: delivery_min,
+        delivery_range_avg_m: delivery_avg,
+        delivery_range_max_m: delivery_max,
+    });
 }
 
 /// Resolves the mount root entity by traversing the parent chain (MountedOn).

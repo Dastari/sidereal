@@ -119,14 +119,12 @@ function EntityTree({
     (
       updater: (prev: EntityTreeUiState) => EntityTreeUiState,
     ) => {
-      setLocalUiState((prev) => {
-        const baseline = uiState ?? prev
-        const next = updater(baseline)
-        onUiStateChange?.(next)
-        return next
-      })
+      const baseline = uiState ?? localUiState
+      const next = updater(baseline)
+      setLocalUiState(next)
+      onUiStateChange?.(next)
     },
-    [onUiStateChange, uiState],
+    [localUiState, onUiStateChange, uiState],
   )
 
   const { rootsByGroupKey, childrenByParent } = React.useMemo(() => {

@@ -217,6 +217,7 @@ export function ExplorerWorkspace({
 }: ExplorerWorkspaceProps) {
   const DEFAULT_FILTER_MAP_INVISIBLE = true
   const scopeIsDatabase = scope === 'database'
+  const [hasHydrated, setHasHydrated] = useState(false)
   const [routeState, setRouteState] = useQueryStates({
     sourceMode: explorerSourceParser.withDefault(
       scopeIsDatabase ? 'database' : 'liveServer',
@@ -226,16 +227,20 @@ export function ExplorerWorkspace({
     selectedResourceTypePath: parseAsString,
     filterMapInvisible: parseAsBoolean.withDefault(DEFAULT_FILTER_MAP_INVISIBLE),
   })
-  const sourceMode = scopeIsDatabase
+  // Keep first client render aligned with SSR output to avoid tab hydration mismatches.
+  const routeSourceMode = scopeIsDatabase
     ? 'database'
     : ((routeState.sourceMode === 'database'
         ? 'liveServer'
         : routeState.sourceMode) as DataSourceMode)
+  const sourceMode = hasHydrated
+    ? routeSourceMode
+    : (scopeIsDatabase ? 'database' : 'liveServer')
   const [brpTabs, setBrpTabs] = useState<Array<BrpTab>>([
     { id: 'server', label: 'Server BRP', port: 15713, kind: 'server' },
     { id: 'client-1', label: 'Client 1 BRP', port: 15714, kind: 'client' },
   ])
-  const activeBrpTabId = routeState.activeBrpTabId
+  const activeBrpTabId = hasHydrated ? routeState.activeBrpTabId : 'server'
 
   // Data state
   const [entities, setEntities] = useState<Array<WorldEntity>>([])
@@ -269,7 +274,6 @@ export function ExplorerWorkspace({
     `dashboard:${scope}:detail-panel-width`,
     320,
   )
-  const [hasHydrated, setHasHydrated] = useState(false)
   const filterMapInvisible = hasHydrated
     ? routeState.filterMapInvisible
     : DEFAULT_FILTER_MAP_INVISIBLE
@@ -320,6 +324,16 @@ export function ExplorerWorkspace({
       kind: 'server' as const,
     }
   }, [brpTabs, activeBrpTabId])
+  const serverBrpTab = useMemo(() => {
+    const found = brpTabs.find((tab) => tab.kind === 'server')
+    if (found) return found
+    return {
+      id: 'server',
+      label: 'Server BRP',
+      port: 15713,
+      kind: 'server' as const,
+    }
+  }, [brpTabs])
   const setSourceMode = useCallback(
     (nextMode: DataSourceMode) => {
       if (scopeIsDatabase) {
@@ -734,7 +748,21 @@ export function ExplorerWorkspace({
             }
           }),
         )
-        setBrpResources(hydratedResources)
+        const serverRegistryResource = await fetchBrpResourceValue(
+          serverBrpTab.port,
+          'server',
+          GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+        )
+        const mergedResources = hydratedResources.filter(
+          (resource) => resource.typePath !== GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+        )
+        if (!serverRegistryResource.error) {
+          mergedResources.push({
+            typePath: GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+            value: serverRegistryResource.value,
+          })
+        }
+        setBrpResources(mergedResources)
         setGraphStatus({
           connected: true,
           nodeCount: liveRes.nodes.length,
@@ -762,7 +790,7 @@ export function ExplorerWorkspace({
     } finally {
       setIsRefreshing(false)
     }
-  }, [sourceMode, activeBrpTab])
+  }, [sourceMode, activeBrpTab, serverBrpTab.port])
 
   useEffect(() => {
     const previousSourceMode = previousSourceModeRef.current
@@ -1038,7 +1066,8 @@ export function ExplorerWorkspace({
         if (!res.ok || data.error) {
           throw new Error(data.error ?? res.statusText)
         }
-        void loadData()
+        // Keep the sidebar and detail panel stable after optimistic updates.
+        // The normal poll will reconcile any server-side canonical changes.
       } catch (err) {
         if (componentNodeId && previousNode) {
           setGraphNodes((current) => {

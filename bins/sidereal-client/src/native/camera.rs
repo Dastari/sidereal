@@ -11,11 +11,13 @@ use sidereal_runtime_sync::RuntimeEntityHierarchy;
 use super::app_state::{ClientSession, FreeCameraState, LocalPlayerViewState};
 use super::components::{
     ClientSceneEntity, ControlledEntity, DebugOverlayCamera, GameplayCamera, GameplayHud,
-    TopDownCamera, UiOverlayCamera,
+    PlanetBodyCamera, TopDownCamera, UiOverlayCamera,
 };
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::platform::ORTHO_SCALE_PER_DISTANCE;
-use super::resources::{CameraMotionState, DebugOverlayState, TacticalMapUiState};
+use super::resources::{
+    CameraMotionState, DebugGizmoOnGameplayCamera, DebugOverlayState, TacticalMapUiState,
+};
 
 fn parse_entity_id_guid(raw: &str) -> Option<uuid::Uuid> {
     sidereal_runtime_sync::parse_guid_from_entity_id(raw)
@@ -301,6 +303,7 @@ pub(crate) fn sync_ui_overlay_camera_to_gameplay_camera_system(
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_debug_overlay_camera_to_gameplay_camera_system(
     debug_overlay: Res<'_, DebugOverlayState>,
+    debug_gizmos_on_gameplay_camera: Res<'_, DebugGizmoOnGameplayCamera>,
     gameplay_camera: Query<
         '_,
         '_,
@@ -319,12 +322,40 @@ pub(crate) fn sync_debug_overlay_camera_to_gameplay_camera_system(
     };
 
     for (mut debug_camera, mut debug_transform, mut debug_projection) in &mut debug_camera {
-        debug_camera.is_active = debug_overlay.enabled;
-        if !debug_overlay.enabled {
+        debug_camera.is_active = debug_overlay.enabled && !debug_gizmos_on_gameplay_camera.0;
+        if !debug_overlay.enabled || debug_gizmos_on_gameplay_camera.0 {
             continue;
         }
         *debug_transform = *gameplay_transform;
         *debug_projection = gameplay_projection.clone();
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_planet_body_camera_to_gameplay_camera_system(
+    gameplay_camera: Query<
+        '_,
+        '_,
+        (&'_ Camera, &'_ Projection),
+        (With<GameplayCamera>, Without<PlanetBodyCamera>),
+    >,
+    mut planet_camera: Query<
+        '_,
+        '_,
+        (&'_ mut Camera, &'_ mut Transform, &'_ mut Projection),
+        (With<PlanetBodyCamera>, Without<GameplayCamera>),
+    >,
+) {
+    let Ok((gameplay_camera, gameplay_projection)) = gameplay_camera.single() else {
+        return;
+    };
+
+    for (mut planet_camera, mut planet_transform, mut planet_projection) in &mut planet_camera {
+        planet_camera.is_active = gameplay_camera.is_active;
+        planet_camera.clear_color = ClearColorConfig::None;
+        planet_transform.translation = Vec3::new(0.0, 0.0, 80.0);
+        planet_transform.rotation = Quat::IDENTITY;
+        *planet_projection = gameplay_projection.clone();
     }
 }
 
@@ -342,6 +373,7 @@ pub(crate) fn update_camera_motion_state(
     if !motion.initialized {
         motion.world_position_xy = current_xy;
         motion.smoothed_position_xy = current_xy;
+        motion.parallax_position_xy = current_xy;
         motion.prev_position_xy = current_xy;
         motion.frame_delta_xy = Vec2::ZERO;
         motion.initialized = true;
@@ -359,6 +391,14 @@ pub(crate) fn update_camera_motion_state(
         let raw_velocity = frame_delta_xy / dt;
         let vel_alpha = 1.0 - (-12.0 * dt).exp();
         motion.smoothed_velocity_xy = motion.smoothed_velocity_xy.lerp(raw_velocity, vel_alpha);
+    }
+
+    let correction_threshold_m = (motion.smoothed_velocity_xy.length() * dt * 2.5).max(6.0);
+    if frame_delta_xy.length() <= correction_threshold_m {
+        motion.parallax_position_xy = current_xy;
+    } else {
+        let parallax_alpha = 1.0 - (-12.0 * dt).exp();
+        motion.parallax_position_xy = motion.parallax_position_xy.lerp(current_xy, parallax_alpha);
     }
     motion.prev_position_xy = current_xy;
 }

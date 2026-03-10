@@ -1,7 +1,7 @@
 //! Fullscreen/backdrop and streamed visual lifecycle systems.
 
 use avian2d::prelude::{Position, SpatialQuery, SpatialQueryFilter};
-use bevy::asset::RenderAssetUsages;
+use bevy::asset::{AssetId, RenderAssetUsages};
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -30,18 +30,21 @@ use super::backdrop::{
     RuntimeEffectUniforms, SharedWorldLightingUniforms, StreamedSpriteShaderMaterial,
 };
 use super::components::{
-    BallisticProjectileVisualAttached, ControlledEntity, GameplayCamera, PendingInitialVisualReady,
-    PendingVisibilityFadeIn, ResolvedRuntimeRenderLayer, RuntimeWorldVisualFamily,
-    RuntimeWorldVisualPass, RuntimeWorldVisualPassKind, RuntimeWorldVisualPassSet,
-    StreamedSpriteShaderAssetId, StreamedVisualAssetId, StreamedVisualAttached,
-    StreamedVisualAttachmentKind, StreamedVisualChild, SuppressedPredictedDuplicateVisual,
-    WeaponImpactSpark, WeaponTracerBolt, WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
+    BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
+    PendingVisibilityFadeIn, PlanetBodyCamera, ResolvedRuntimeRenderLayer,
+    RuntimeWorldVisualFamily, RuntimeWorldVisualPass, RuntimeWorldVisualPassKind,
+    RuntimeWorldVisualPassSet, StreamedSpriteShaderAssetId, StreamedVisualAssetId,
+    StreamedVisualAttached, StreamedVisualAttachmentKind, StreamedVisualChild,
+    SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WeaponImpactSparkPool, WeaponTracerBolt,
+    WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
 };
-use super::ecs_util::{queue_despawn_if_exists, queue_despawn_if_exists_force};
+use super::ecs_util::queue_despawn_if_exists;
 use super::lighting::{CameraLocalLightSet, WorldLightingState};
 use super::platform::PLANET_BODY_RENDER_LAYER;
 use super::resources::AssetRootPath;
 use super::resources::CameraMotionState;
+use super::resources::DuplicateVisualResolutionState;
+use super::resources::RuntimeSharedQuadMesh;
 use super::shaders;
 
 const WEAPON_TRACER_POOL_SIZE: usize = 96;
@@ -53,6 +56,7 @@ const WEAPON_TRACER_ROTATION_OFFSET_RAD: f32 = -FRAC_PI_2;
 const WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ: f32 = 18.0;
 const WEAPON_TRACER_WIGGLE_MAX_AMP_MPS: f32 = 120.0;
 const WEAPON_IMPACT_SPARK_TTL_S: f32 = 0.12;
+const WEAPON_IMPACT_SPARK_POOL_SIZE: usize = 48;
 const WEAPON_TRACER_MIN_TTL_S: f32 = 0.01;
 const PLANET_CLOUD_BACK_LAYER_Z_OFFSET: f32 = -0.2;
 const PLANET_CLOUD_FRONT_LAYER_Z_OFFSET: f32 = 0.5;
@@ -69,6 +73,91 @@ enum StreamedVisualMaterialKind {
     Plain,
     GenericShader,
     AsteroidShader,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct StreamedSpriteMaterialCache {
+    pub reload_generation: u64,
+    pub by_image: HashMap<AssetId<Image>, Handle<StreamedSpriteShaderMaterial>>,
+}
+
+#[derive(Default)]
+pub(super) struct StreamedVisualAssetCaches {
+    last_reload_generation: u64,
+    asteroid_sprite_cache: HashMap<(uuid::Uuid, u64), (Handle<Image>, Handle<Image>)>,
+    streamed_image_cache: HashMap<String, Handle<Image>>,
+    generic_material_cache: StreamedSpriteMaterialCache,
+}
+
+fn shared_unit_quad_handle(
+    quad_mesh: &mut RuntimeSharedQuadMesh,
+    meshes: &mut Assets<Mesh>,
+) -> Handle<Mesh> {
+    if let Some(handle) = quad_mesh.unit_quad.clone() {
+        return handle;
+    }
+    let handle = meshes.add(Rectangle::new(1.0, 1.0));
+    quad_mesh.unit_quad = Some(handle.clone());
+    quad_mesh.allocations = quad_mesh.allocations.saturating_add(1);
+    handle
+}
+
+fn shared_streamed_sprite_material_handle(
+    cache: &mut StreamedSpriteMaterialCache,
+    materials: &mut Assets<StreamedSpriteShaderMaterial>,
+    image: &Handle<Image>,
+) -> Handle<StreamedSpriteShaderMaterial> {
+    let image_id = image.id();
+    if let Some(handle) = cache.by_image.get(&image_id) {
+        return handle.clone();
+    }
+    let handle = materials.add(StreamedSpriteShaderMaterial {
+        image: image.clone(),
+    });
+    cache.by_image.insert(image_id, handle.clone());
+    handle
+}
+
+fn activate_weapon_impact_spark(
+    impact_pos: Vec2,
+    pool: &mut WeaponImpactSparkPool,
+    sparks: &mut Query<
+        '_,
+        '_,
+        (
+            &'_ mut WeaponImpactSpark,
+            &'_ mut Transform,
+            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
+            &'_ mut Visibility,
+        ),
+        Without<WeaponTracerBolt>,
+    >,
+    effect_materials: &mut Assets<RuntimeEffectMaterial>,
+) {
+    if pool.sparks.is_empty() {
+        return;
+    }
+    let spark_entity = pool.sparks[pool.next_index % pool.sparks.len()];
+    pool.next_index = (pool.next_index + 1) % pool.sparks.len();
+    let Ok((mut spark, mut transform, material_handle, mut visibility)) =
+        sparks.get_mut(spark_entity)
+    else {
+        return;
+    };
+    spark.ttl_s = WEAPON_IMPACT_SPARK_TTL_S;
+    spark.max_ttl_s = WEAPON_IMPACT_SPARK_TTL_S;
+    transform.translation = Vec3::new(impact_pos.x, impact_pos.y, 0.45);
+    transform.scale = Vec3::ONE;
+    if let Some(material) = effect_materials.get_mut(&material_handle.0) {
+        material.params = RuntimeEffectUniforms::impact_spark(
+            0.0,
+            1.0,
+            1.0,
+            0.95,
+            Vec4::new(1.0, 0.9, 0.55, 1.0),
+        );
+    }
+    *visibility = Visibility::Visible;
 }
 
 impl StreamedVisualMaterialKind {
@@ -264,48 +353,257 @@ pub(super) fn update_entity_visibility_fade_in_system(
     }
 }
 
-#[allow(clippy::type_complexity)]
-pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
-    mut commands: Commands<'_, '_>,
-    world_entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Option<&EntityGuid>,
-            Has<ControlledEntityGuid>,
-            Has<PlayerTag>,
-            Has<ControlledEntity>,
-            Has<lightyear::prelude::Interpolated>,
-            Has<lightyear::prelude::Predicted>,
-            Option<&'_ ConfirmedHistory<avian2d::prelude::Position>>,
-            Option<&'_ ConfirmedHistory<avian2d::prelude::Rotation>>,
-            Has<SuppressedPredictedDuplicateVisual>,
-        ),
-        With<WorldEntity>,
-    >,
+pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(world: &mut World) {
+    let mut state = world
+        .remove_resource::<DuplicateVisualResolutionState>()
+        .unwrap_or_default();
+
+    collect_duplicate_visual_membership_changes(world, &mut state);
+    collect_duplicate_visual_dirty_guid_changes(world, &mut state);
+
+    let dirty_guids = if state.dirty_all {
+        state.entities_by_guid.keys().copied().collect::<Vec<_>>()
+    } else {
+        state.dirty_guids.iter().copied().collect::<Vec<_>>()
+    };
+
+    for guid in dirty_guids {
+        recompute_duplicate_visual_group(world, &mut state, guid);
+    }
+
+    state.dirty_guids.clear();
+    state.dirty_all = false;
+    state.duplicate_guid_groups = state
+        .entities_by_guid
+        .values()
+        .filter(|entities| entities.len() > 1)
+        .count();
+    world.insert_resource(state);
+}
+
+fn collect_duplicate_visual_membership_changes(
+    world: &mut World,
+    state: &mut DuplicateVisualResolutionState,
 ) {
-    let mut best_entity_by_guid = HashMap::<uuid::Uuid, (Entity, i32, bool)>::new();
-    for (
-        entity,
-        guid,
-        has_controlled_entity_guid,
-        has_player_tag,
-        is_controlled,
-        is_interpolated,
-        is_predicted,
-        position_history,
-        rotation_history,
-        is_suppressed,
-    ) in &world_entities
+    if state.dirty_all {
+        state.guid_by_entity.clear();
+        state.entities_by_guid.clear();
+        let mut query = world.query_filtered::<(Entity, &EntityGuid), With<WorldEntity>>();
+        for (entity, guid) in query.iter(world) {
+            state.guid_by_entity.insert(entity, guid.0);
+            state
+                .entities_by_guid
+                .entry(guid.0)
+                .or_default()
+                .insert(entity);
+            state.dirty_guids.insert(guid.0);
+        }
+        return;
+    }
+
+    let mut added_or_changed_guid = world.query_filtered::<(Entity, &EntityGuid), (
+        With<WorldEntity>,
+        Or<(Added<WorldEntity>, Added<EntityGuid>, Changed<EntityGuid>)>,
+    )>();
+    for (entity, guid) in added_or_changed_guid.iter(world) {
+        let new_guid = guid.0;
+        if let Some(previous_guid) = state.guid_by_entity.insert(entity, new_guid)
+            && previous_guid != new_guid
+        {
+            if let Some(entities) = state.entities_by_guid.get_mut(&previous_guid) {
+                entities.remove(&entity);
+                if entities.is_empty() {
+                    state.entities_by_guid.remove(&previous_guid);
+                }
+            }
+            state.dirty_guids.insert(previous_guid);
+        }
+        state
+            .entities_by_guid
+            .entry(new_guid)
+            .or_default()
+            .insert(entity);
+        state.dirty_guids.insert(new_guid);
+    }
+
+    let removed_entity_guid_entities = read_removed_duplicate_visual_entities::<EntityGuid>(
+        world,
+        &mut state.entity_guid_removal_cursor,
+    );
+    for entity in removed_entity_guid_entities {
+        remove_duplicate_visual_membership_for_entity(state, entity);
+    }
+    let removed_world_entities = read_removed_duplicate_visual_entities::<WorldEntity>(
+        world,
+        &mut state.world_entity_removal_cursor,
+    );
+    for entity in removed_world_entities {
+        remove_duplicate_visual_membership_for_entity(state, entity);
+    }
+}
+
+fn remove_duplicate_visual_membership_for_entity(
+    state: &mut DuplicateVisualResolutionState,
+    entity: Entity,
+) {
+    if let Some(previous_guid) = state.guid_by_entity.remove(&entity) {
+        if let Some(entities) = state.entities_by_guid.get_mut(&previous_guid) {
+            entities.remove(&entity);
+            if entities.is_empty() {
+                state.entities_by_guid.remove(&previous_guid);
+            }
+        }
+        state.dirty_guids.insert(previous_guid);
+    }
+}
+
+fn collect_duplicate_visual_dirty_guid_changes(
+    world: &mut World,
+    state: &mut DuplicateVisualResolutionState,
+) {
+    mark_dirty_duplicate_visual_guids_for_changes::<ControlledEntityGuid>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<PlayerTag>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<ControlledEntity>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<lightyear::prelude::Interpolated>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<lightyear::prelude::Predicted>(world, state);
+    mark_dirty_duplicate_visual_guids_for_additions::<ConfirmedHistory<avian2d::prelude::Position>>(
+        world, state,
+    );
+    mark_dirty_duplicate_visual_guids_for_additions::<ConfirmedHistory<avian2d::prelude::Rotation>>(
+        world, state,
+    );
+
+    for entity in read_removed_duplicate_visual_entities::<ControlledEntityGuid>(
+        world,
+        &mut state.controlled_entity_guid_removal_cursor,
+    ) {
+        mark_duplicate_visual_entity_guid_dirty(state, entity);
+    }
+    for entity in read_removed_duplicate_visual_entities::<PlayerTag>(
+        world,
+        &mut state.player_tag_removal_cursor,
+    ) {
+        mark_duplicate_visual_entity_guid_dirty(state, entity);
+    }
+    for entity in read_removed_duplicate_visual_entities::<ControlledEntity>(
+        world,
+        &mut state.controlled_entity_removal_cursor,
+    ) {
+        mark_duplicate_visual_entity_guid_dirty(state, entity);
+    }
+    for entity in read_removed_duplicate_visual_entities::<lightyear::prelude::Interpolated>(
+        world,
+        &mut state.interpolated_removal_cursor,
+    ) {
+        mark_duplicate_visual_entity_guid_dirty(state, entity);
+    }
+    for entity in read_removed_duplicate_visual_entities::<lightyear::prelude::Predicted>(
+        world,
+        &mut state.predicted_removal_cursor,
+    ) {
+        mark_duplicate_visual_entity_guid_dirty(state, entity);
+    }
+    for entity in read_removed_duplicate_visual_entities::<
+        ConfirmedHistory<avian2d::prelude::Position>,
+    >(world, &mut state.position_history_removal_cursor)
     {
-        let Some(guid) = guid else { continue };
-        let interpolated_ready = !is_interpolated
-            || (position_history.and_then(|h| h.end()).is_some()
-                && rotation_history.and_then(|h| h.end()).is_some());
-        let score = if has_controlled_entity_guid || has_player_tag {
-            -100
-        } else if is_controlled {
+        mark_duplicate_visual_entity_guid_dirty(state, entity);
+    }
+    for entity in read_removed_duplicate_visual_entities::<
+        ConfirmedHistory<avian2d::prelude::Rotation>,
+    >(world, &mut state.rotation_history_removal_cursor)
+    {
+        mark_duplicate_visual_entity_guid_dirty(state, entity);
+    }
+}
+
+fn mark_dirty_duplicate_visual_guids_for_changes<T: Component>(
+    world: &mut World,
+    state: &mut DuplicateVisualResolutionState,
+) {
+    let mut query =
+        world.query_filtered::<Entity, (With<WorldEntity>, Or<(Added<T>, Changed<T>)>)>();
+    for entity in query.iter(world) {
+        if let Some(guid) = state.guid_by_entity.get(&entity).copied() {
+            state.dirty_guids.insert(guid);
+        }
+    }
+}
+
+fn mark_dirty_duplicate_visual_guids_for_additions<T: Component>(
+    world: &mut World,
+    state: &mut DuplicateVisualResolutionState,
+) {
+    let mut query = world.query_filtered::<Entity, (With<WorldEntity>, Added<T>)>();
+    for entity in query.iter(world) {
+        if let Some(guid) = state.guid_by_entity.get(&entity).copied() {
+            state.dirty_guids.insert(guid);
+        }
+    }
+}
+
+fn mark_duplicate_visual_entity_guid_dirty(
+    state: &mut DuplicateVisualResolutionState,
+    entity: Entity,
+) {
+    if let Some(guid) = state.guid_by_entity.get(&entity).copied() {
+        state.dirty_guids.insert(guid);
+    }
+}
+
+fn read_removed_duplicate_visual_entities<T: Component>(
+    world: &mut World,
+    cursor: &mut Option<
+        bevy::ecs::message::MessageCursor<bevy::ecs::lifecycle::RemovedComponentEntity>,
+    >,
+) -> Vec<Entity> {
+    let Some(component_id) = world.component_id::<T>() else {
+        return Vec::new();
+    };
+    let Some(events) = world.removed_components().get(component_id) else {
+        return Vec::new();
+    };
+    let reader = cursor.get_or_insert_with(Default::default);
+    reader
+        .read(events)
+        .map(|event| Entity::from(event.clone()))
+        .collect()
+}
+
+fn recompute_duplicate_visual_group(
+    world: &mut World,
+    state: &mut DuplicateVisualResolutionState,
+    guid: uuid::Uuid,
+) {
+    let member_entities = state
+        .entities_by_guid
+        .get(&guid)
+        .cloned()
+        .unwrap_or_default();
+    let mut best_entity = None::<(Entity, i32)>;
+    let mut live_entities = std::collections::HashSet::<Entity>::new();
+
+    for entity in member_entities {
+        let Some(entity_ref) = world.get_entity(entity).ok() else {
+            continue;
+        };
+        if !entity_ref.contains::<WorldEntity>() {
+            continue;
+        }
+        live_entities.insert(entity);
+        let force_suppress =
+            entity_ref.contains::<ControlledEntityGuid>() || entity_ref.contains::<PlayerTag>();
+        if force_suppress {
+            continue;
+        }
+
+        let is_controlled = entity_ref.contains::<ControlledEntity>();
+        let is_interpolated = entity_ref.contains::<lightyear::prelude::Interpolated>();
+        let is_predicted = entity_ref.contains::<lightyear::prelude::Predicted>();
+        let interpolated_ready = entity_ref
+            .contains::<ConfirmedHistory<avian2d::prelude::Position>>()
+            && entity_ref.contains::<ConfirmedHistory<avian2d::prelude::Rotation>>();
+        let score = if is_controlled {
             3
         } else if is_interpolated && interpolated_ready {
             2
@@ -316,58 +614,53 @@ pub(super) fn suppress_duplicate_predicted_interpolated_visuals_system(
         } else {
             0
         };
-        match best_entity_by_guid.get_mut(&guid.0) {
-            Some((winner, winner_score, winner_is_suppressed)) => {
-                let winner_entity = *winner;
-                let should_replace = score > *winner_score
-                    || (score == *winner_score
-                        && is_suppressed != *winner_is_suppressed
-                        && *winner_is_suppressed)
-                    || (score == *winner_score
-                        && is_suppressed == *winner_is_suppressed
-                        && entity.to_bits() < winner_entity.to_bits());
-                if should_replace {
-                    *winner = entity;
-                    *winner_score = score;
-                    *winner_is_suppressed = is_suppressed;
-                }
-            }
-            None => {
-                best_entity_by_guid.insert(guid.0, (entity, score, is_suppressed));
+        match best_entity {
+            Some((winner, winner_score))
+                if score < winner_score
+                    || (score == winner_score && entity.to_bits() >= winner.to_bits()) => {}
+            _ => {
+                best_entity = Some((entity, score));
             }
         }
     }
 
-    for (
-        entity,
-        guid,
-        has_controlled_entity_guid,
-        has_player_tag,
-        _is_controlled,
-        _is_interpolated,
-        _is_predicted,
-        _position_history,
-        _rotation_history,
-        is_suppressed,
-    ) in &world_entities
-    {
-        let should_suppress = if has_controlled_entity_guid || has_player_tag {
-            true
-        } else {
-            guid.and_then(|guid| best_entity_by_guid.get(&guid.0).copied())
-                .is_some_and(|(winner, _, _)| winner != entity)
+    if live_entities.is_empty() {
+        state.entities_by_guid.remove(&guid);
+        state.winner_by_guid.remove(&guid);
+        return;
+    }
+
+    state.entities_by_guid.insert(guid, live_entities.clone());
+    let previous_winner = state.winner_by_guid.get(&guid).copied();
+    if let Some((winner, _)) = best_entity {
+        if previous_winner != Some(winner) {
+            state.winner_swap_count = state.winner_swap_count.saturating_add(1);
+        }
+        state.winner_by_guid.insert(guid, winner);
+    } else {
+        state.winner_by_guid.remove(&guid);
+    }
+
+    for entity in live_entities {
+        let Some(entity_ref) = world.get_entity(entity).ok() else {
+            continue;
         };
+        let should_suppress = entity_ref.contains::<ControlledEntityGuid>()
+            || entity_ref.contains::<PlayerTag>()
+            || state
+                .winner_by_guid
+                .get(&guid)
+                .is_some_and(|winner| *winner != entity);
+        let is_suppressed = entity_ref.contains::<SuppressedPredictedDuplicateVisual>();
+        let mut entity_mut = world.entity_mut(entity);
         if should_suppress {
-            if let Ok(mut entity_commands) = commands.get_entity(entity) {
-                if !is_suppressed {
-                    entity_commands.insert(SuppressedPredictedDuplicateVisual);
-                }
-                entity_commands.insert(Visibility::Hidden);
+            if !is_suppressed {
+                entity_mut.insert(SuppressedPredictedDuplicateVisual);
             }
-        } else if is_suppressed && let Ok(mut entity_commands) = commands.get_entity(entity) {
-            entity_commands
-                .remove::<SuppressedPredictedDuplicateVisual>()
-                .insert(Visibility::Visible);
+            entity_mut.insert(Visibility::Hidden);
+        } else if is_suppressed {
+            entity_mut.remove::<SuppressedPredictedDuplicateVisual>();
+            entity_mut.insert(Visibility::Visible);
         }
     }
 }
@@ -472,19 +765,15 @@ pub(super) fn attach_streamed_visual_assets_system(
     mut images: ResMut<'_, Assets<Image>>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
-    mut last_reload_generation: Local<'_, u64>,
+    mut cached_assets: Local<'_, StreamedVisualAssetCaches>,
     cache_adapter: Res<'_, super::resources::AssetCacheAdapter>,
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut quad_mesh: ResMut<'_, RuntimeSharedQuadMesh>,
     mut sprite_shader_materials: ResMut<'_, Assets<StreamedSpriteShaderMaterial>>,
     mut asteroid_shader_materials: ResMut<'_, Assets<AsteroidSpriteShaderMaterial>>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
-    mut asteroid_sprite_cache: Local<
-        '_,
-        HashMap<(uuid::Uuid, u64), (Handle<Image>, Handle<Image>)>,
-    >,
-    mut streamed_image_cache: Local<'_, HashMap<String, Handle<Image>>>,
     candidates: Query<
         '_,
         '_,
@@ -509,9 +798,11 @@ pub(super) fn attach_streamed_visual_assets_system(
         ),
     >,
 ) {
-    if *last_reload_generation != asset_manager.reload_generation {
-        streamed_image_cache.clear();
-        *last_reload_generation = asset_manager.reload_generation;
+    if cached_assets.last_reload_generation != asset_manager.reload_generation {
+        cached_assets.streamed_image_cache.clear();
+        cached_assets.generic_material_cache.by_image.clear();
+        cached_assets.generic_material_cache.reload_generation = asset_manager.reload_generation;
+        cached_assets.last_reload_generation = asset_manager.reload_generation;
     }
     let use_shader_materials = shader_materials_enabled();
     for (
@@ -550,7 +841,8 @@ pub(super) fn attach_streamed_visual_assets_system(
                 .unwrap_or_else(uuid::Uuid::nil);
             let fingerprint = procedural_sprite_fingerprint(procedural_sprite);
             Some(
-                asteroid_sprite_cache
+                cached_assets
+                    .asteroid_sprite_cache
                     .entry((guid, fingerprint))
                     .or_insert_with(|| {
                         let generated = generate_procedural_sprite_image_set(
@@ -579,7 +871,7 @@ pub(super) fn attach_streamed_visual_assets_system(
 
         let image_handle = if let Some(handle) = generated_asteroid_image.clone() {
             handle
-        } else if let Some(handle) = streamed_image_cache.get(&asset_id.0) {
+        } else if let Some(handle) = cached_assets.streamed_image_cache.get(&asset_id.0) {
             handle.clone()
         } else {
             let Some(handle) = assets::cached_image_handle(
@@ -591,7 +883,9 @@ pub(super) fn attach_streamed_visual_assets_system(
             ) else {
                 continue;
             };
-            streamed_image_cache.insert(asset_id.0.clone(), handle.clone());
+            cached_assets
+                .streamed_image_cache
+                .insert(asset_id.0.clone(), handle.clone());
             handle
         };
 
@@ -617,7 +911,7 @@ pub(super) fn attach_streamed_visual_assets_system(
         );
         match material_kind {
             StreamedVisualMaterialKind::AsteroidShader => {
-                let quad_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+                let shared_quad = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
                 let material = asteroid_shader_materials.add(AsteroidSpriteShaderMaterial {
                     image: image_handle.clone(),
                     lighting: SharedWorldLightingUniforms::from_state_for_world_position(
@@ -631,7 +925,7 @@ pub(super) fn attach_streamed_visual_assets_system(
                 entity_commands.with_children(|child| {
                     child.spawn((
                         StreamedVisualChild,
-                        Mesh2d(quad_mesh),
+                        Mesh2d(shared_quad),
                         MeshMaterial2d(material),
                         Transform::from_xyz(x, y, z).with_scale(Vec3::new(
                             sprite_size.x,
@@ -647,16 +941,18 @@ pub(super) fn attach_streamed_visual_assets_system(
                 continue;
             }
             StreamedVisualMaterialKind::GenericShader => {
-                let quad_mesh = meshes.add(Rectangle::new(1.0, 1.0));
-                let material = sprite_shader_materials.add(StreamedSpriteShaderMaterial {
-                    image: image_handle.clone(),
-                });
+                let shared_quad = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
+                let material = shared_streamed_sprite_material_handle(
+                    &mut cached_assets.generic_material_cache,
+                    &mut sprite_shader_materials,
+                    &image_handle,
+                );
                 let sprite_size = custom_size.unwrap_or(Vec2::splat(16.0));
                 let (x, y, z) = streamed_visual_layer_transform(resolved_render_layer, Vec2::ZERO);
                 entity_commands.with_children(|child| {
                     child.spawn((
                         StreamedVisualChild,
-                        Mesh2d(quad_mesh),
+                        Mesh2d(shared_quad),
                         MeshMaterial2d(material),
                         Transform::from_xyz(x, y, z).with_scale(Vec3::new(
                             sprite_size.x,
@@ -698,15 +994,23 @@ pub(super) fn attach_streamed_visual_assets_system(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        StreamedVisualMaterialKind, ensure_planet_body_root_visibility_system,
-        ensure_visual_parent_spatial_components, planet_visual_local_offset,
-        runtime_layer_screen_scale_factor, streamed_visual_needs_rebuild,
+        StreamedVisualMaterialKind, WEAPON_IMPACT_SPARK_TTL_S,
+        ensure_planet_body_root_visibility_system, ensure_visual_parent_spatial_components,
+        planet_camera_relative_translation, runtime_layer_screen_scale_factor,
+        shared_streamed_sprite_material_handle, shared_unit_quad_handle,
+        streamed_visual_needs_rebuild, suppress_duplicate_predicted_interpolated_visuals_system,
+        update_weapon_impact_sparks_system,
     };
+    use crate::native::backdrop::{RuntimeEffectMaterial, StreamedSpriteShaderMaterial};
     use crate::native::components::{
-        PendingInitialVisualReady, StreamedVisualAttachmentKind, WorldEntity,
+        ControlledEntity, PendingInitialVisualReady, StreamedVisualAttachmentKind,
+        SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WorldEntity,
     };
+    use crate::native::resources::{DuplicateVisualResolutionState, RuntimeSharedQuadMesh};
+    use crate::native::visuals::StreamedSpriteMaterialCache;
     use bevy::prelude::*;
-    use sidereal_game::PlanetBodyShaderSettings;
+    use bevy::sprite_render::MeshMaterial2d;
+    use sidereal_game::{EntityGuid, PlanetBodyShaderSettings};
 
     #[test]
     fn streamed_visual_rebuilds_when_material_kind_changes() {
@@ -770,10 +1074,13 @@ mod tests {
     }
 
     #[test]
-    fn planet_visual_local_offset_projects_from_authoritative_center() {
-        let offset =
-            planet_visual_local_offset(None, Vec2::new(100.0, 50.0), Vec2::new(300.0, 90.0));
-        assert_eq!(offset, Vec2::ZERO);
+    fn planet_camera_relative_translation_tracks_projected_position() {
+        let offset = planet_camera_relative_translation(
+            None,
+            Vec2::new(100.0, 50.0),
+            Vec2::new(300.0, 90.0),
+        );
+        assert_eq!(offset, Vec2::new(-200.0, -40.0));
 
         let layer = crate::native::components::ResolvedRuntimeRenderLayer {
             layer_id: "midground_planets".to_string(),
@@ -786,12 +1093,12 @@ mod tests {
                 ..Default::default()
             },
         };
-        let offset = planet_visual_local_offset(
+        let offset = planet_camera_relative_translation(
             Some(&layer),
             Vec2::new(100.0, 50.0),
             Vec2::new(300.0, 90.0),
         );
-        assert_eq!(offset, Vec2::new(150.0, 30.0));
+        assert_eq!(offset, Vec2::new(-50.0, -10.0));
     }
 
     #[test]
@@ -806,6 +1113,175 @@ mod tests {
         authored.screen_scale_factor = Some(1000.0);
         assert_eq!(runtime_layer_screen_scale_factor(&authored), 64.0);
     }
+
+    #[test]
+    fn shared_unit_quad_handle_reuses_single_mesh_allocation() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Mesh>();
+
+        let first = {
+            let world = app.world_mut();
+            let mut meshes = world.resource_mut::<Assets<Mesh>>();
+            let mut quad_mesh = RuntimeSharedQuadMesh::default();
+            let first = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
+            let second = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
+            assert_eq!(quad_mesh.allocations, 1);
+            assert_eq!(first, second);
+            first
+        };
+
+        let mesh_count = app.world().resource::<Assets<Mesh>>().iter().count();
+        assert_eq!(mesh_count, 1);
+        assert!(app.world().resource::<Assets<Mesh>>().get(&first).is_some());
+    }
+
+    #[test]
+    fn shared_streamed_sprite_material_handle_reuses_material_for_same_image() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<Image>();
+        app.init_asset::<StreamedSpriteShaderMaterial>();
+
+        let image_handle = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            images.add(Image::default())
+        };
+
+        let first = {
+            let world = app.world_mut();
+            let mut materials = world.resource_mut::<Assets<StreamedSpriteShaderMaterial>>();
+            let mut cache = StreamedSpriteMaterialCache::default();
+            let first =
+                shared_streamed_sprite_material_handle(&mut cache, &mut materials, &image_handle);
+            let second =
+                shared_streamed_sprite_material_handle(&mut cache, &mut materials, &image_handle);
+            assert_eq!(first, second);
+            assert_eq!(cache.by_image.len(), 1);
+            first
+        };
+
+        let material_count = app
+            .world()
+            .resource::<Assets<StreamedSpriteShaderMaterial>>()
+            .iter()
+            .count();
+        assert_eq!(material_count, 1);
+        assert!(
+            app.world()
+                .resource::<Assets<StreamedSpriteShaderMaterial>>()
+                .get(&first)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn weapon_impact_spark_expiry_hides_instead_of_despawning() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<RuntimeEffectMaterial>();
+        app.insert_resource(Time::<()>::default());
+        app.add_systems(Update, update_weapon_impact_sparks_system);
+
+        let material = {
+            let mut materials = app
+                .world_mut()
+                .resource_mut::<Assets<RuntimeEffectMaterial>>();
+            materials.add(RuntimeEffectMaterial::default())
+        };
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                WeaponImpactSpark {
+                    ttl_s: 0.0,
+                    max_ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
+                },
+                Transform::default(),
+                MeshMaterial2d(material),
+                Visibility::Visible,
+            ))
+            .id();
+
+        app.update();
+
+        let entity_ref = app.world().entity(entity);
+        assert!(entity_ref.contains::<WeaponImpactSpark>());
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Hidden
+        );
+    }
+
+    #[test]
+    fn duplicate_visual_winner_swaps_without_full_world_scan_state_reset() {
+        let mut app = App::new();
+        app.init_resource::<DuplicateVisualResolutionState>();
+        app.add_systems(
+            Update,
+            suppress_duplicate_predicted_interpolated_visuals_system,
+        );
+
+        let guid = uuid::Uuid::new_v4();
+        let controlled = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                ControlledEntity {
+                    entity_id: "controlled".to_string(),
+                    player_entity_id: "player".to_string(),
+                },
+                Visibility::Visible,
+            ))
+            .id();
+        let fallback = app
+            .world_mut()
+            .spawn((WorldEntity, EntityGuid(guid), Visibility::Visible))
+            .id();
+
+        app.update();
+        assert!(
+            !app.world()
+                .entity(controlled)
+                .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+        assert!(
+            app.world()
+                .entity(fallback)
+                .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+
+        app.world_mut()
+            .entity_mut(controlled)
+            .remove::<ControlledEntity>();
+        app.world_mut()
+            .entity_mut(fallback)
+            .insert(ControlledEntity {
+                entity_id: "fallback".to_string(),
+                player_entity_id: "player".to_string(),
+            });
+
+        app.update();
+
+        assert!(
+            app.world()
+                .entity(controlled)
+                .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+        assert!(
+            !app.world()
+                .entity(fallback)
+                .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+        assert_eq!(
+            app.world()
+                .resource::<DuplicateVisualResolutionState>()
+                .winner_by_guid
+                .get(&guid),
+            Some(&fallback)
+        );
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -819,7 +1295,7 @@ pub(super) fn update_streamed_visual_layer_transforms_system(
             continue;
         };
         let (x, y, z) =
-            streamed_visual_layer_transform(Some(layer), camera_motion.world_position_xy);
+            streamed_visual_layer_transform(Some(layer), camera_motion.parallax_position_xy);
         transform.translation.x = x;
         transform.translation.y = y;
         transform.translation.z = z;
@@ -884,12 +1360,13 @@ pub(super) fn cleanup_planet_body_visual_children_system(
 pub(super) fn attach_planet_visual_stack_system(
     mut commands: Commands<'_, '_>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut quad_mesh: ResMut<'_, RuntimeSharedQuadMesh>,
     mut planet_materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
     time: Res<'_, Time>,
+    camera_motion: Res<'_, CameraMotionState>,
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
-    gameplay_camera: Query<'_, '_, &'_ GlobalTransform, With<GameplayCamera>>,
     mut candidates: Query<
         '_,
         '_,
@@ -915,10 +1392,7 @@ pub(super) fn attach_planet_visual_stack_system(
     if !shader_materials_enabled() {
         return;
     }
-    let camera_world_position_xy = gameplay_camera
-        .single()
-        .map(|transform| transform.translation().truncate())
-        .unwrap_or(Vec2::ZERO);
+    let camera_world_position_xy = camera_motion.parallax_position_xy;
     for (
         entity,
         settings,
@@ -944,7 +1418,7 @@ pub(super) fn attach_planet_visual_stack_system(
             .map(|v| v.length.max(v.width).max(1.0))
             .unwrap_or(256.0);
         let layer_base_z = planet_layer_base_z(resolved_render_layer);
-        let local_offset = planet_visual_local_offset(
+        let projected_center_world = planet_camera_relative_translation(
             resolved_render_layer,
             world_position,
             camera_world_position_xy,
@@ -962,7 +1436,7 @@ pub(super) fn attach_planet_visual_stack_system(
             && shaders::world_polygon_shader_kind(&shader_assignments, &body_pass.shader_asset_id)
                 == Some(shaders::RuntimeWorldPolygonShaderKind::PlanetVisual)
         {
-            let mesh = meshes.add(Rectangle::new(1.0, 1.0));
+            let mesh = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
             let material = planet_materials.add(PlanetVisualMaterial {
                 params: PlanetBodyUniforms::from_settings(
                     settings,
@@ -985,8 +1459,8 @@ pub(super) fn attach_planet_visual_stack_system(
                     MeshMaterial2d(material),
                     RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                     Transform::from_xyz(
-                        local_offset.x,
-                        local_offset.y,
+                        projected_center_world.x,
+                        projected_center_world.y,
                         layer_base_z + PLANET_BODY_LAYER_Z_OFFSET + depth_bias_z,
                     )
                     .with_scale(Vec3::new(
@@ -1040,12 +1514,12 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualPassKind::PlanetCloudBack,
                         ),
                         NoFrustumCulling,
-                        Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
+                        Mesh2d(shared_unit_quad_handle(&mut quad_mesh, &mut meshes)),
                         MeshMaterial2d(back_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            local_offset.x,
-                            local_offset.y,
+                            projected_center_world.x,
+                            projected_center_world.y,
                             layer_base_z + PLANET_CLOUD_BACK_LAYER_Z_OFFSET + back_depth,
                         )
                         .with_scale(Vec3::new(
@@ -1062,12 +1536,12 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualPassKind::PlanetCloudFront,
                         ),
                         NoFrustumCulling,
-                        Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
+                        Mesh2d(shared_unit_quad_handle(&mut quad_mesh, &mut meshes)),
                         MeshMaterial2d(front_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            local_offset.x,
-                            local_offset.y,
+                            projected_center_world.x,
+                            projected_center_world.y,
                             layer_base_z + PLANET_CLOUD_FRONT_LAYER_Z_OFFSET + front_depth,
                         )
                         .with_scale(Vec3::new(
@@ -1123,12 +1597,12 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualPassKind::PlanetRingBack,
                         ),
                         NoFrustumCulling,
-                        Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
+                        Mesh2d(shared_unit_quad_handle(&mut quad_mesh, &mut meshes)),
                         MeshMaterial2d(back_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            local_offset.x,
-                            local_offset.y,
+                            projected_center_world.x,
+                            projected_center_world.y,
                             layer_base_z + PLANET_RING_BACK_LAYER_Z_OFFSET + back_depth,
                         )
                         .with_scale(Vec3::new(
@@ -1145,12 +1619,12 @@ pub(super) fn attach_planet_visual_stack_system(
                             RuntimeWorldVisualPassKind::PlanetRingFront,
                         ),
                         NoFrustumCulling,
-                        Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
+                        Mesh2d(shared_unit_quad_handle(&mut quad_mesh, &mut meshes)),
                         MeshMaterial2d(front_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            local_offset.x,
-                            local_offset.y,
+                            projected_center_world.x,
+                            projected_center_world.y,
                             layer_base_z + PLANET_RING_FRONT_LAYER_Z_OFFSET + front_depth,
                         )
                         .with_scale(Vec3::new(
@@ -1204,14 +1678,15 @@ pub(super) fn ensure_planet_body_root_visibility_system(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn update_planet_body_visuals_system(
     time: Res<'_, Time>,
+    camera_motion: Res<'_, CameraMotionState>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
     mut materials: ResMut<'_, Assets<PlanetVisualMaterial>>,
-    gameplay_camera: Query<
+    planet_camera: Query<
         '_,
         '_,
         (&'_ Camera, &'_ Projection, &'_ GlobalTransform),
-        With<GameplayCamera>,
+        With<PlanetBodyCamera>,
     >,
     planets: Query<
         '_,
@@ -1239,11 +1714,8 @@ pub(super) fn update_planet_body_visuals_system(
     >,
 ) {
     let time_s = time.elapsed_secs();
-    let camera_view = gameplay_camera.single().ok();
-    let camera_world_position_xy = camera_view
-        .as_ref()
-        .map(|(_, _, transform)| transform.translation().truncate())
-        .unwrap_or(Vec2::ZERO);
+    let camera_view = planet_camera.single().ok();
+    let camera_world_position_xy = camera_motion.parallax_position_xy;
     for (
         children,
         settings,
@@ -1262,12 +1734,11 @@ pub(super) fn update_planet_body_visuals_system(
             .map(|v| v.length.max(v.width).max(1.0))
             .unwrap_or(256.0);
         let layer_base_z = planet_layer_base_z(resolved_render_layer);
-        let local_offset = planet_visual_local_offset(
+        let projected_center_world = planet_camera_relative_translation(
             resolved_render_layer,
             world_position,
             camera_world_position_xy,
         );
-        let projected_center_world = world_position + local_offset;
         let layer_screen_scale = resolved_render_layer
             .map(|layer| runtime_layer_screen_scale_factor(&layer.definition))
             .unwrap_or(1.0);
@@ -1325,8 +1796,8 @@ pub(super) fn update_planet_body_visuals_system(
                     transform.scale = Vec3::new(projected_diameter_m, projected_diameter_m, 1.0);
                     projected_radius_m = projected_diameter_m * 0.5;
                 }
-                transform.translation.x = local_offset.x;
-                transform.translation.y = local_offset.y;
+                transform.translation.x = projected_center_world.x;
+                transform.translation.y = projected_center_world.y;
                 let in_projected_view =
                     camera_view.is_none_or(|(camera, projection, camera_transform)| {
                         projected_planet_intersects_camera_view(
@@ -1369,7 +1840,7 @@ fn planet_layer_base_z(resolved_render_layer: Option<&ResolvedRuntimeRenderLayer
         .unwrap_or(-60.0)
 }
 
-fn planet_visual_local_offset(
+fn planet_camera_relative_translation(
     resolved_render_layer: Option<&ResolvedRuntimeRenderLayer>,
     planet_world_position: Vec2,
     camera_world_position_xy: Vec2,
@@ -1377,7 +1848,7 @@ fn planet_visual_local_offset(
     let parallax_factor = resolved_render_layer
         .map(|layer| runtime_layer_parallax_factor(&layer.definition))
         .unwrap_or(1.0);
-    (camera_world_position_xy - planet_world_position) * (1.0 - parallax_factor)
+    (planet_world_position - camera_world_position_xy) * parallax_factor
 }
 
 fn projected_planet_intersects_camera_view(
@@ -1423,6 +1894,7 @@ fn streamed_visual_layer_transform(
 pub(super) fn attach_thruster_plume_visuals_system(
     mut commands: Commands<'_, '_>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut quad_mesh: ResMut<'_, RuntimeSharedQuadMesh>,
     mut plume_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
     world_lighting: Res<'_, WorldLightingState>,
     camera_local_lights: Res<'_, CameraLocalLightSet>,
@@ -1454,7 +1926,7 @@ pub(super) fn attach_thruster_plume_visuals_system(
         let Ok(mut entity_commands) = commands.get_entity(entity) else {
             continue;
         };
-        let plume_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+        let plume_mesh = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
         let plume_material = plume_materials.add(RuntimeEffectMaterial {
             lighting: SharedWorldLightingUniforms::from_state_for_world_position(
                 &world_lighting,
@@ -1669,6 +2141,7 @@ pub(super) fn update_asteroid_shader_lighting_system(
 pub(super) fn ensure_weapon_tracer_pool_system(
     mut commands: Commands<'_, '_>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut quad_mesh: ResMut<'_, RuntimeSharedQuadMesh>,
     mut effect_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
     mut pool: ResMut<'_, WeaponTracerPool>,
 ) {
@@ -1676,8 +2149,8 @@ pub(super) fn ensure_weapon_tracer_pool_system(
         return;
     }
     pool.bolts.reserve(WEAPON_TRACER_POOL_SIZE);
+    let mesh = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
     for _ in 0..WEAPON_TRACER_POOL_SIZE {
-        let mesh = meshes.add(Rectangle::new(1.0, 1.0));
         let material = effect_materials.add(RuntimeEffectMaterial {
             params: RuntimeEffectUniforms::beam_trail(
                 0.0,
@@ -1702,7 +2175,7 @@ pub(super) fn ensure_weapon_tracer_pool_system(
                     wiggle_freq_hz: WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ,
                     wiggle_amp_mps: 0.0,
                 },
-                Mesh2d(mesh),
+                Mesh2d(mesh.clone()),
                 MeshMaterial2d(material),
                 Transform::from_xyz(0.0, 0.0, 0.35).with_scale(Vec3::new(
                     WEAPON_TRACER_WIDTH_M,
@@ -1715,6 +2188,46 @@ pub(super) fn ensure_weapon_tracer_pool_system(
             ))
             .id();
         pool.bolts.push(bolt);
+    }
+}
+
+pub(super) fn ensure_weapon_impact_spark_pool_system(
+    mut commands: Commands<'_, '_>,
+    mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut quad_mesh: ResMut<'_, RuntimeSharedQuadMesh>,
+    mut effect_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
+    mut pool: ResMut<'_, WeaponImpactSparkPool>,
+) {
+    if !pool.sparks.is_empty() {
+        return;
+    }
+    pool.sparks.reserve(WEAPON_IMPACT_SPARK_POOL_SIZE);
+    let mesh = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
+    for _ in 0..WEAPON_IMPACT_SPARK_POOL_SIZE {
+        let spark = commands
+            .spawn((
+                WeaponImpactSpark {
+                    ttl_s: 0.0,
+                    max_ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
+                },
+                Mesh2d(mesh.clone()),
+                MeshMaterial2d(effect_materials.add(RuntimeEffectMaterial {
+                    params: RuntimeEffectUniforms::impact_spark(
+                        0.0,
+                        1.0,
+                        1.0,
+                        0.95,
+                        Vec4::new(1.0, 0.9, 0.55, 1.0),
+                    ),
+                    ..RuntimeEffectMaterial::default()
+                })),
+                Transform::from_xyz(0.0, 0.0, 0.45),
+                Visibility::Hidden,
+                WorldEntity,
+                DespawnOnExit(ClientAppState::InWorld),
+            ))
+            .id();
+        pool.sparks.push(spark);
     }
 }
 
@@ -2004,10 +2517,9 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
 }
 
 pub(super) fn update_weapon_tracer_visuals_system(
-    mut commands: Commands<'_, '_>,
     time: Res<'_, Time>,
     spatial_query: SpatialQuery<'_, '_>,
-    mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut spark_pool: ResMut<'_, WeaponImpactSparkPool>,
     mut effect_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
     mut bolts: Query<
         '_,
@@ -2018,6 +2530,18 @@ pub(super) fn update_weapon_tracer_visuals_system(
             &'_ mut Visibility,
             &'_ mut WeaponTracerBolt,
         ),
+        Without<WeaponImpactSpark>,
+    >,
+    mut sparks: Query<
+        '_,
+        '_,
+        (
+            &'_ mut WeaponImpactSpark,
+            &'_ mut Transform,
+            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
+            &'_ mut Visibility,
+        ),
+        Without<WeaponTracerBolt>,
     >,
 ) {
     let dt_s = time.delta_secs();
@@ -2049,27 +2573,12 @@ pub(super) fn update_weapon_tracer_visuals_system(
                 bolt.impact_xy = None;
                 *visibility = Visibility::Visible;
                 hit_this_frame = true;
-                commands.spawn((
-                    WeaponImpactSpark {
-                        ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
-                        max_ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
-                    },
-                    Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
-                    MeshMaterial2d(effect_materials.add(RuntimeEffectMaterial {
-                        params: RuntimeEffectUniforms::impact_spark(
-                            0.0,
-                            1.0,
-                            1.0,
-                            0.95,
-                            Vec4::new(1.0, 0.9, 0.55, 1.0),
-                        ),
-                        ..RuntimeEffectMaterial::default()
-                    })),
-                    Transform::from_xyz(impact_pos.x, impact_pos.y, 0.45),
-                    Visibility::Visible,
-                    WorldEntity,
-                    DespawnOnExit(ClientAppState::InWorld),
-                ));
+                activate_weapon_impact_spark(
+                    impact_pos,
+                    &mut spark_pool,
+                    &mut sparks,
+                    &mut effect_materials,
+                );
             }
         }
         if hit_this_frame {
@@ -2096,27 +2605,12 @@ pub(super) fn update_weapon_tracer_visuals_system(
                 bolt.impact_xy = None;
                 *visibility = Visibility::Visible;
                 hit_this_frame = true;
-                commands.spawn((
-                    WeaponImpactSpark {
-                        ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
-                        max_ttl_s: WEAPON_IMPACT_SPARK_TTL_S,
-                    },
-                    Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
-                    MeshMaterial2d(effect_materials.add(RuntimeEffectMaterial {
-                        params: RuntimeEffectUniforms::impact_spark(
-                            0.0,
-                            1.0,
-                            1.0,
-                            0.95,
-                            Vec4::new(1.0, 0.9, 0.55, 1.0),
-                        ),
-                        ..RuntimeEffectMaterial::default()
-                    })),
-                    Transform::from_xyz(impact_pos.x, impact_pos.y, 0.45),
-                    Visibility::Visible,
-                    WorldEntity,
-                    DespawnOnExit(ClientAppState::InWorld),
-                ));
+                activate_weapon_impact_spark(
+                    impact_pos,
+                    &mut spark_pool,
+                    &mut sparks,
+                    &mut effect_materials,
+                );
             }
         }
         if hit_this_frame {
@@ -2151,7 +2645,6 @@ pub(super) fn update_weapon_tracer_visuals_system(
 }
 
 pub(super) fn update_weapon_impact_sparks_system(
-    mut commands: Commands<'_, '_>,
     time: Res<'_, Time>,
     mut spark_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
     mut sparks: Query<
@@ -2164,13 +2657,14 @@ pub(super) fn update_weapon_impact_sparks_system(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
+        Without<WeaponTracerBolt>,
     >,
 ) {
     let dt_s = time.delta_secs();
-    for (entity, mut spark, mut transform, material_handle, mut visibility) in &mut sparks {
+    for (_entity, mut spark, mut transform, material_handle, mut visibility) in &mut sparks {
         spark.ttl_s = (spark.ttl_s - dt_s).max(0.0);
         if spark.ttl_s <= 0.0 {
-            queue_despawn_if_exists_force(&mut commands, entity);
+            *visibility = Visibility::Hidden;
             continue;
         }
         let t = (spark.ttl_s / spark.max_ttl_s).clamp(0.0, 1.0);

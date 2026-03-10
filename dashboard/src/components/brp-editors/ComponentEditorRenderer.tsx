@@ -3,6 +3,7 @@ import type { GraphNode } from '@/components/grid/types'
 import type {
   ComponentEditorFieldSchema,
   GeneratedComponentRegistryResource,
+  ShaderEditorFieldSchema,
 } from '@/features/component-schema/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,6 +13,7 @@ import {
   getComponentPayloadFromNode,
   getSchemaFieldValue,
   resolveComponentRegistryEntry,
+  resolveShaderRegistryEntryForComponent,
   setSchemaFieldValue,
 } from '@/features/component-schema/registry'
 
@@ -26,6 +28,10 @@ export interface ComponentEditorRendererProps {
     value: unknown,
   ) => Promise<void> | void
   readOnly?: boolean
+}
+
+type ResolvedComponentFieldSchema = ComponentEditorFieldSchema & {
+  shader_options?: Array<{ value: string; label: string }>
 }
 
 export function ComponentEditorRenderer({
@@ -45,6 +51,16 @@ export function ComponentEditorRenderer({
     () => getComponentPayloadFromNode(node, entry),
     [entry, node],
   )
+  const shaderSchemaEntry = React.useMemo(
+    () =>
+      entry
+        ? resolveShaderRegistryEntryForComponent(
+            generatedComponentRegistry,
+            entry.type_path,
+          )
+        : null,
+    [entry, generatedComponentRegistry],
+  )
   const [draftValue, setDraftValue] = React.useState(payload)
   const [saveState, setSaveState] = React.useState<
     'idle' | 'pending' | 'saving' | 'saved' | 'error'
@@ -55,6 +71,21 @@ export function ComponentEditorRenderer({
   React.useEffect(() => {
     setDraftValue(payload)
   }, [payload])
+
+  const fields = React.useMemo(
+    () =>
+      entry
+        ? entry.editor_schema.fields.map((field) =>
+            mergeShaderFieldOverrides(
+              field,
+              shaderSchemaEntry?.uniform_schema.find(
+                (schemaField) => schemaField.field_path === field.field_path,
+              ) ?? null,
+            ),
+          )
+        : [],
+    [entry, shaderSchemaEntry],
+  )
 
   React.useEffect(() => {
     if (readOnly || !entry) {
@@ -98,8 +129,6 @@ export function ComponentEditorRenderer({
   if (!entry) {
     return null
   }
-
-  const { fields } = entry.editor_schema
   if (fields.length === 0) {
     return (
       <div className="rounded border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
@@ -119,6 +148,11 @@ export function ComponentEditorRenderer({
         <div className="font-mono text-[11px] text-muted-foreground">
           {entry.type_path}
         </div>
+        {shaderSchemaEntry ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            Shader schema: {shaderSchemaEntry.asset_id}
+          </div>
+        ) : null}
       </div>
       <div className="space-y-3">
         {fields.map((field) => (
@@ -163,18 +197,73 @@ export function ComponentEditorRenderer({
   )
 }
 
+function mergeShaderFieldOverrides(
+  field: ComponentEditorFieldSchema,
+  shaderField: ShaderEditorFieldSchema | null,
+): ResolvedComponentFieldSchema {
+  if (!shaderField) {
+    return field
+  }
+  return {
+    ...field,
+    display_name: shaderField.display_name || field.display_name,
+    min: typeof shaderField.min === 'number' ? shaderField.min : field.min,
+    max: typeof shaderField.max === 'number' ? shaderField.max : field.max,
+    step: typeof shaderField.step === 'number' ? shaderField.step : field.step,
+    shader_options: shaderField.options,
+  }
+}
+
 function SchemaFieldEditor({
   field,
   value,
   readOnly,
   onChange,
 }: {
-  field: ComponentEditorFieldSchema
+  field: ResolvedComponentFieldSchema
   value: unknown
   readOnly: boolean
   onChange: (value: unknown) => void
 }) {
   const checked = value === true
+  const shaderNumericOptions = React.useMemo(
+    () =>
+      (field.shader_options ?? [])
+        .map((option) => ({
+          ...option,
+          numericValue: Number(option.value),
+        }))
+        .filter((option) => Number.isFinite(option.numericValue)),
+    [field.shader_options],
+  )
+
+  if (
+    shaderNumericOptions.length > 0 &&
+    (field.value_kind === 'UnsignedInteger' ||
+      field.value_kind === 'SignedInteger' ||
+      field.value_kind === 'Float')
+  ) {
+    return (
+      <FieldShell field={field}>
+        <select
+          className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+          disabled={readOnly}
+          value={String(typeof value === 'number' ? value : Number(value ?? 0))}
+          onChange={(event) => {
+            const next = Number(event.target.value)
+            if (!Number.isFinite(next)) return
+            onChange(next)
+          }}
+        >
+          {shaderNumericOptions.map((option) => (
+            <option key={option.value} value={option.numericValue}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </FieldShell>
+    )
+  }
 
   switch (field.value_kind) {
     case 'Bool':
@@ -239,6 +328,7 @@ function SchemaFieldEditor({
       return (
         <FieldShell field={field}>
           <VectorEditor
+            field={field}
             dimensions={Number(field.value_kind.slice(3))}
             value={value}
             readOnly={readOnly}
@@ -250,6 +340,7 @@ function SchemaFieldEditor({
       return (
         <FieldShell field={field}>
           <ColorEditor
+            field={field}
             alpha={false}
             value={value}
             readOnly={readOnly}
@@ -261,6 +352,7 @@ function SchemaFieldEditor({
       return (
         <FieldShell field={field}>
           <ColorEditor
+            field={field}
             alpha
             value={value}
             readOnly={readOnly}
@@ -339,44 +431,67 @@ function NumberEditor({
   return (
     <div className="space-y-2">
       {shouldShowSlider ? (
-        <Slider
+        <div className="flex items-center gap-2">
+          <Slider
+            className="flex-1"
+            min={min}
+            max={max}
+            step={step}
+            value={[safeValue]}
+            disabled={readOnly}
+            onValueChange={(next) => onChange(next[0] ?? safeValue)}
+          />
+          <Input
+            className="h-8 w-24 text-xs"
+            type="number"
+            disabled={readOnly}
+            min={min}
+            max={max}
+            step={step}
+            value={displayValue}
+            onChange={(event) => {
+              const next = Number(event.target.value)
+              onChange(Number.isFinite(next) ? next : 0)
+            }}
+          />
+        </div>
+      ) : null}
+      {!shouldShowSlider ? (
+        <Input
+          className="h-8 text-xs"
+          type="number"
+          disabled={readOnly}
           min={min}
           max={max}
           step={step}
-          value={[safeValue]}
-          disabled={readOnly}
-          onValueChange={(next) => onChange(next[0] ?? safeValue)}
+          value={displayValue}
+          onChange={(event) => {
+            const next = Number(event.target.value)
+            onChange(Number.isFinite(next) ? next : 0)
+          }}
         />
       ) : null}
-      <Input
-        className="h-8 text-xs"
-        type="number"
-        disabled={readOnly}
-        min={min}
-        max={max}
-        step={step}
-        value={displayValue}
-        onChange={(event) => {
-          const next = Number(event.target.value)
-          onChange(Number.isFinite(next) ? next : 0)
-        }}
-      />
     </div>
   )
 }
 
 function VectorEditor({
+  field,
   dimensions,
   value,
   readOnly,
   onChange,
 }: {
+  field: ComponentEditorFieldSchema
   dimensions: number
   value: unknown
   readOnly: boolean
   onChange: (value: unknown) => void
 }) {
   const channels = normalizeVectorValue(value, dimensions)
+  const step = field.step ?? 0.01
+  const min = field.min ?? undefined
+  const max = field.max ?? undefined
 
   return (
     <div className="grid grid-cols-2 gap-2">
@@ -385,9 +500,11 @@ function VectorEditor({
           key={index}
           className="h-8 text-xs"
           type="number"
-          step="0.01"
+          step={step}
+          min={min}
+          max={max}
           disabled={readOnly}
-          value={formatNumericInputValue(channelValue, 0.01)}
+          value={formatNumericInputValue(channelValue, step)}
           onChange={(event) => {
             const next = Number(event.target.value)
             if (!Number.isFinite(next)) return
@@ -402,11 +519,13 @@ function VectorEditor({
 }
 
 function ColorEditor({
+  field,
   alpha,
   value,
   readOnly,
   onChange,
 }: {
+  field: ComponentEditorFieldSchema
   alpha: boolean
   value: unknown
   readOnly: boolean
@@ -415,12 +534,16 @@ function ColorEditor({
   const dimensions = alpha ? 4 : 3
   const channels = normalizeVectorValue(value, dimensions)
   const [r, g, b] = channels
+  const labels = alpha ? ['R', 'G', 'B', 'A'] : ['R', 'G', 'B']
+  const step = field.step ?? 0.01
+  const min = field.min ?? 0
+  const max = field.max ?? 1
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-3">
+    <div className="overflow-x-auto">
+      <div className="flex min-w-0 items-center gap-2">
         <input
-          className="h-8 w-10 rounded border border-input bg-background p-1"
+          className="h-8 w-10 shrink-0 rounded border border-input bg-background p-1"
           type="color"
           disabled={readOnly}
           value={rgbChannelsToHex([r, g, b])}
@@ -435,24 +558,29 @@ function ColorEditor({
             onChange(writeVectorValue(value, nextChannels))
           }}
         />
-        <div className="grid flex-1 grid-cols-2 gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
           {channels.map((channelValue, index) => (
-            <Input
-              key={index}
-              className="h-8 text-xs"
-              type="number"
-              step="0.01"
-              min={0}
-              disabled={readOnly}
-              value={formatNumericInputValue(channelValue, 0.01)}
-              onChange={(event) => {
-                const next = Number(event.target.value)
-                if (!Number.isFinite(next)) return
-                const nextChannels = [...channels]
-                nextChannels[index] = next
-                onChange(writeVectorValue(value, nextChannels))
-              }}
-            />
+            <label key={index} className="min-w-0 flex-1">
+              <div className="mb-1 text-center text-[10px] font-medium uppercase leading-none text-muted-foreground">
+                {labels[index]}
+              </div>
+              <Input
+                className="h-8 min-w-0 px-2 text-xs"
+                type="number"
+                step={step}
+                min={min}
+                max={max}
+                disabled={readOnly}
+                value={formatNumericInputValue(channelValue, step)}
+                onChange={(event) => {
+                  const next = Number(event.target.value)
+                  if (!Number.isFinite(next)) return
+                  const nextChannels = [...channels]
+                  nextChannels[index] = next
+                  onChange(writeVectorValue(value, nextChannels))
+                }}
+              />
+            </label>
           ))}
         </div>
       </div>
