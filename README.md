@@ -26,6 +26,58 @@ Primary services/workspace areas:
 
 ## Quick Start
 
+## Environment Setup
+
+Ubuntu/Debian hosts can install the required toolchains and native dependencies with:
+
+```bash
+make setup-environment
+```
+
+This setup target installs the packages Sidereal needed on this machine:
+
+```bash
+apt-get install -y \
+  build-essential pkg-config curl git \
+  mingw-w64 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+  cmake ninja-build perl make \
+  docker.io docker-compose-v2 \
+  libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev \
+  libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+  libxxf86vm-dev libgl1-mesa-dev
+```
+
+It also installs and configures the Rust-side dependencies:
+
+```bash
+rustup toolchain install stable
+rustup default stable
+rustup target add x86_64-pc-windows-gnu wasm32-unknown-unknown
+rustup component add rustfmt clippy
+cargo install --locked wasm-bindgen-cli --version 0.2.114
+```
+
+For dashboard builds, ensure `pnpm` is available as well:
+
+```bash
+npm install -g pnpm
+```
+
+And it writes the Windows GNU linker configuration required for cross-builds:
+
+```toml
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+```
+
+If you prefer to install things manually instead of using `make setup-environment`, use the commands above, then verify the main targets:
+
+```bash
+cargo check -p sidereal-client --target x86_64-pc-windows-gnu
+cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
+cd dashboard && pnpm run build:shader-preview-wasm
+```
+
 1. Start database:
 
 ```bash

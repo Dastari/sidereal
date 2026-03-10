@@ -45,11 +45,7 @@
   --color-entity-label-player: #22c55e;
 
   /* Grid: background muted/40; origin (0,0) = border; other lines = border/80, border/60 */
-  --color-grid-background: color-mix(
-    in oklch,
-    var(--color-muted) 40%,
-    var(--color-card)
-  );
+  --color-grid-background: var(--color-background);
   --color-grid-origin: color-mix(
     in oklch,
     var(--color-border) 90%,
@@ -88,7 +84,7 @@
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
-
+ 
   /* Fonts */
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
@@ -143,11 +139,7 @@
   --color-primary-foreground: oklch(0.98 0.005 220);
   --color-secondary: oklch(0.92 0.01 280);
   --color-secondary-foreground: oklch(0.2 0.015 280);
-  --color-grid-background: color-mix(
-    in oklch,
-    var(--color-muted) 40%,
-    var(--color-background)
-  );
+  --color-grid-background: var(--color-card);
   --color-grid-origin: var(--color-border);
   --color-grid-major: color-mix(
     in oklch,

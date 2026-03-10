@@ -43,12 +43,13 @@ CLIENT2_BRP_URL ?= http://127.0.0.1:$(CLIENT2_BRP_PORT)/
 BRP_DUMP_DIR ?= ./data/debug/brp_dumps
 DASHBOARD_DIR ?= ./dashboard
 
-.PHONY: help pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full ensure-webtransport-cert run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
+.PHONY: help setup-environment pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full ensure-webtransport-cert run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
 	@echo ""
 	@echo "Infra:"
+	@echo "  make setup-environment  Install Ubuntu build/runtime dependencies + Rust targets"
 	@echo "  make pg-up              Start postgres+AGE via docker compose"
 	@echo "  make pg-down            Stop postgres+AGE"
 	@echo "  make pg-logs            Tail postgres logs"
@@ -90,6 +91,60 @@ help:
 
 pg-up:
 	SIDEREAL_PG_PORT=$(SIDEREAL_PG_PORT) docker compose up -d --force-recreate postgres
+
+setup-environment:
+	@if ! command -v apt-get >/dev/null 2>&1; then \
+		echo "setup-environment currently supports Ubuntu/Debian hosts only."; \
+		exit 1; \
+	fi
+	DEBIAN_FRONTEND=noninteractive apt-get update
+	DEBIAN_FRONTEND=noninteractive apt-get install -y \
+		build-essential \
+		pkg-config \
+		curl \
+		git \
+		mingw-w64 \
+		gcc-mingw-w64-x86-64 \
+		g++-mingw-w64-x86-64 \
+		cmake \
+		ninja-build \
+		perl \
+		make \
+		docker.io \
+		docker-compose-v2 \
+		libwayland-dev \
+		libxkbcommon-dev \
+		libasound2-dev \
+		libudev-dev \
+		libx11-dev \
+		libxcursor-dev \
+		libxi-dev \
+		libxrandr-dev \
+		libxxf86vm-dev \
+		libgl1-mesa-dev
+	@if [ ! -x "$$HOME/.cargo/bin/rustup" ]; then \
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh; \
+		bash /tmp/rustup-init.sh -y --default-toolchain stable; \
+	fi
+	@bash -lc '. "$$HOME/.cargo/env" && \
+		rustup toolchain install stable && \
+		rustup default stable && \
+		rustup target add x86_64-pc-windows-gnu wasm32-unknown-unknown && \
+		rustup component add rustfmt clippy && \
+		if ! command -v wasm-bindgen >/dev/null 2>&1; then \
+			cargo install --locked wasm-bindgen-cli --version 0.2.114; \
+		fi'
+	@if command -v npm >/dev/null 2>&1 && ! command -v pnpm >/dev/null 2>&1; then \
+		npm install -g pnpm; \
+	fi
+	@mkdir -p "$$HOME/.cargo"
+	@if [ ! -f "$$HOME/.cargo/config.toml" ]; then \
+		printf '[target.x86_64-pc-windows-gnu]\nlinker = "x86_64-w64-mingw32-gcc"\n' > "$$HOME/.cargo/config.toml"; \
+	elif ! grep -q 'x86_64-w64-mingw32-gcc' "$$HOME/.cargo/config.toml"; then \
+		printf '\n[target.x86_64-pc-windows-gnu]\nlinker = "x86_64-w64-mingw32-gcc"\n' >> "$$HOME/.cargo/config.toml"; \
+	fi
+	@systemctl enable --now docker >/dev/null 2>&1 || true
+	@echo "Environment setup complete."
 
 pg-down:
 	docker compose down
