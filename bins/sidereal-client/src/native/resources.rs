@@ -446,42 +446,6 @@ impl Default for CameraMotionState {
     }
 }
 
-#[derive(Debug, Resource, Clone)]
-pub(crate) struct PredictionLifecycleAuditConfig {
-    pub enabled: bool,
-    pub target_guid: Option<uuid::Uuid>,
-    pub interval_s: f64,
-}
-
-impl PredictionLifecycleAuditConfig {
-    pub fn from_env() -> Self {
-        let raw = std::env::var("SIDEREAL_CLIENT_LIFECYCLE_AUDIT_GUID").ok();
-        let enabled = raw.is_some();
-        let target_guid = raw.as_deref().and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("controlled") {
-                None
-            } else {
-                uuid::Uuid::parse_str(trimmed).ok()
-            }
-        });
-        Self {
-            enabled,
-            target_guid,
-            interval_s: 0.5,
-        }
-    }
-}
-
-#[derive(Debug, Resource, Default)]
-pub(crate) struct PredictionLifecycleAuditState {
-    pub last_logged_at_s: f64,
-    pub last_overlay_winner: Option<Entity>,
-    pub last_overlay_lane: Option<DebugEntityLane>,
-    pub last_visual_winner: Option<Entity>,
-    pub last_visual_winner_swap_count: u64,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledRuntimeRenderLayerRule {
     pub rule_id: String,

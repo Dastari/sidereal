@@ -12,8 +12,8 @@ use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::PrimaryWindow;
 use bevy_svg::prelude::{Svg, Svg2d};
 use sidereal_game::{
-    EntityGuid, FuelTank, HealthPool, MapIcon, MountedOn, SizeM, TacticalMapUiSettings,
-    TacticalPresentationDefaults,
+    EntityAction, EntityGuid, FuelTank, HealthPool, MapIcon, MountedOn, SizeM,
+    TacticalMapUiSettings, TacticalPresentationDefaults,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::{HashMap, HashSet};
@@ -38,10 +38,10 @@ use super::dev_console::{DevConsoleState, is_console_open};
 use super::ecs_util::queue_despawn_if_exists;
 use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
-    CameraMotionState, ClientControlRequestState, DebugOverlayDisplayMetrics, DebugOverlaySnapshot,
-    DebugOverlayState, DebugSeverity, DuplicateVisualResolutionState, EmbeddedFonts,
-    NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache, TacticalFogCache,
-    TacticalMapUiState,
+    CameraMotionState, ClientControlRequestState, ClientInputSendState, DebugOverlayDisplayMetrics,
+    DebugOverlaySnapshot, DebugOverlayState, DebugSeverity, DuplicateVisualResolutionState,
+    EmbeddedFonts, NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache,
+    TacticalFogCache, TacticalMapUiState,
 };
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
@@ -160,6 +160,7 @@ pub(super) fn update_debug_overlay_text_ui_system(
     debug_overlay: Res<'_, DebugOverlayState>,
     snapshot: Res<'_, DebugOverlaySnapshot>,
     diagnostics: Res<'_, DiagnosticsStore>,
+    input_send_state: Res<'_, ClientInputSendState>,
     mut display_metrics: Local<'_, DebugOverlayDisplayMetrics>,
     mut root_query: Query<'_, '_, &mut Visibility, With<DebugOverlayPanelRoot>>,
     mut text_queries: ParamSet<
@@ -212,6 +213,10 @@ pub(super) fn update_debug_overlay_text_ui_system(
             .map(|value| format!("{value:.2} ms"))
             .unwrap_or_else(|| "--.-- ms".to_string()),
     );
+    labels.push("Sent Input".to_string());
+    values.push(format_sent_input_actions(
+        &input_send_state.last_sent_actions,
+    ));
     for row in &snapshot.text_rows {
         labels.push(row.label.clone());
         values.push(row.value.clone());
@@ -246,6 +251,40 @@ pub(super) fn update_debug_overlay_text_ui_system(
     }
     if let Ok(mut value_shadow_text) = text_queries.p3().single_mut() {
         value_shadow_text.0 = values_text;
+    }
+}
+
+fn format_sent_input_actions(actions: &[EntityAction]) -> String {
+    if actions.is_empty() {
+        return "[]".to_string();
+    }
+
+    let names: Vec<&'static str> = actions.iter().map(describe_entity_action).collect();
+    format!("[{}]", names.join(", "))
+}
+
+fn describe_entity_action(action: &EntityAction) -> &'static str {
+    match action {
+        EntityAction::Forward => "Forward",
+        EntityAction::Backward => "Backward",
+        EntityAction::LongitudinalNeutral => "Long Neutral",
+        EntityAction::Left => "Left",
+        EntityAction::Right => "Right",
+        EntityAction::LateralNeutral => "Turn Neutral",
+        EntityAction::Brake => "Brake",
+        EntityAction::AfterburnerOn => "Afterburner On",
+        EntityAction::AfterburnerOff => "Afterburner Off",
+        EntityAction::FirePrimary => "Fire Primary",
+        EntityAction::FireSecondary => "Fire Secondary",
+        EntityAction::ActivateShield => "Shield On",
+        EntityAction::DeactivateShield => "Shield Off",
+        EntityAction::ActivateTractor => "Tractor On",
+        EntityAction::DeactivateTractor => "Tractor Off",
+        EntityAction::ActivateScanner => "Scanner On",
+        EntityAction::DeployCargo => "Deploy Cargo",
+        EntityAction::EngageAutopilot => "Autopilot On",
+        EntityAction::DisengageAutopilot => "Autopilot Off",
+        EntityAction::InitiateDocking => "Dock",
     }
 }
 

@@ -36,7 +36,7 @@ fn owner_authorization_still_requires_delivery_scope() {
             None,
             None,
             0.0,
-            &ctx,
+            &ctx.as_ref(),
         ),
         Some(VisibilityAuthorization::Owner)
     );
@@ -49,7 +49,7 @@ fn owner_authorization_still_requires_delivery_scope() {
         None,
         Some(Vec3::new(10.0, 0.0, 0.0)),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -59,7 +59,17 @@ fn owner_authorization_still_requires_delivery_scope() {
 fn public_authorization_is_independent_of_delivery_scope() {
     let ctx = visibility_context("player-a", None, None, vec![]);
     assert_eq!(
-        authorize_visibility("player-a", None, true, false, false, None, None, 0.0, &ctx),
+        authorize_visibility(
+            "player-a",
+            None,
+            true,
+            false,
+            false,
+            None,
+            None,
+            0.0,
+            &ctx.as_ref(),
+        ),
         Some(VisibilityAuthorization::Public)
     );
     assert!(!is_entity_visible_to_player(
@@ -71,7 +81,7 @@ fn public_authorization_is_independent_of_delivery_scope() {
         None,
         Some(Vec3::new(10.0, 0.0, 0.0)),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -90,7 +100,7 @@ fn faction_authorization_is_independent_of_delivery_scope() {
             Some("faction-1"),
             None,
             0.0,
-            &ctx,
+            &ctx.as_ref(),
         ),
         Some(VisibilityAuthorization::Faction)
     );
@@ -103,7 +113,7 @@ fn faction_authorization_is_independent_of_delivery_scope() {
         Some("faction-1"),
         Some(Vec3::ZERO),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -127,7 +137,7 @@ fn scanner_authorization_requires_scanner_coverage() {
             None,
             Some(Vec3::new(0.0, 0.0, 0.0)),
             0.0,
-            &ctx
+            &ctx.as_ref()
         ),
         None
     );
@@ -152,7 +162,7 @@ fn scanner_authorization_still_requires_delivery_scope() {
             None,
             Some(target_position),
             0.0,
-            &ctx
+            &ctx.as_ref()
         ),
         Some(VisibilityAuthorization::Range)
     );
@@ -165,7 +175,7 @@ fn scanner_authorization_still_requires_delivery_scope() {
         None,
         Some(target_position),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -190,7 +200,7 @@ fn scanner_authorization_with_missing_observer_anchor_is_culled() {
             None,
             Some(target_position),
             0.0,
-            &ctx
+            &ctx.as_ref()
         ),
         Some(VisibilityAuthorization::Range)
     );
@@ -203,7 +213,7 @@ fn scanner_authorization_with_missing_observer_anchor_is_culled() {
         None,
         Some(target_position),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -227,7 +237,7 @@ fn scanner_authorization_with_player_anchor_in_range_is_visible() {
         None,
         Some(target_position),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -250,7 +260,7 @@ fn discovered_static_landmark_authorization_still_requires_delivery_scope() {
             None,
             Some(Vec3::new(10.0, 0.0, 0.0)),
             0.0,
-            &ctx,
+            &ctx.as_ref(),
         ),
         Some(VisibilityAuthorization::DiscoveredStaticLandmark)
     );
@@ -263,7 +273,7 @@ fn discovered_static_landmark_authorization_still_requires_delivery_scope() {
         None,
         Some(Vec3::new(10_000.0, 0.0, 0.0)),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -285,7 +295,7 @@ fn discovered_static_landmark_in_delivery_scope_is_visible_without_scanner_cover
         None,
         Some(Vec3::new(100.0, 0.0, 0.0)),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
         DEFAULT_VIEW_RANGE_M,
         false,
     ));
@@ -303,7 +313,7 @@ fn candidate_bypass_triggers_for_owner_public_faction_and_scanner() {
         None,
         None,
         0.0,
-        &owner_ctx
+        &owner_ctx.as_ref()
     ));
 
     let public_ctx = visibility_context("player-a", None, None, vec![]);
@@ -316,7 +326,7 @@ fn candidate_bypass_triggers_for_owner_public_faction_and_scanner() {
         None,
         None,
         0.0,
-        &public_ctx
+        &public_ctx.as_ref()
     ));
 
     let faction_ctx = visibility_context("player-a", None, Some("faction-1"), vec![]);
@@ -329,7 +339,7 @@ fn candidate_bypass_triggers_for_owner_public_faction_and_scanner() {
         Some("faction-1"),
         Some(Vec3::ZERO),
         0.0,
-        &faction_ctx
+        &faction_ctx.as_ref()
     ));
 
     let scanner_ctx = visibility_context(
@@ -347,7 +357,7 @@ fn candidate_bypass_triggers_for_owner_public_faction_and_scanner() {
         None,
         Some(Vec3::new(20.0, 0.0, 0.0)),
         0.0,
-        &scanner_ctx
+        &scanner_ctx.as_ref()
     ));
 }
 
@@ -363,6 +373,6 @@ fn discovered_landmarks_bypass_candidate_prefilter() {
         None,
         Some(Vec3::new(50_000.0, 0.0, 0.0)),
         0.0,
-        &ctx,
+        &ctx.as_ref(),
     ));
 }

@@ -663,7 +663,7 @@ fn render_cloud_pass(
 
 fn render_ring_pass(mesh: VertexOutput, body_kind: f32, pass_mode: f32) -> vec4<f32> {
     if pass_mode < 0.5 {
-        discard;
+        return vec4<f32>(0.0);
     }
     let quad_uv = mesh.uv * 2.0 - vec2<f32>(1.0, 1.0);
     let ring_tilt = 0.42;
@@ -674,14 +674,14 @@ fn render_ring_pass(mesh: VertexOutput, body_kind: f32, pass_mode: f32) -> vec4<
     let split_blend = smoothstep(-0.045, 0.045, arc_side);
     let pass_weight = select(1.0 - split_blend, split_blend, pass_mode > 1.5);
     if pass_weight <= 0.001 {
-        discard;
+        return vec4<f32>(0.0);
     }
 
     if body_kind > 1.5 {
         let inner = 0.26;
         let outer = 0.86;
         if radius < inner || radius > outer {
-            discard;
+            return vec4<f32>(0.0);
         }
         let band = 1.0 - smoothstep(inner, inner + 0.06, radius);
         let outer_band = smoothstep(outer - 0.18, outer, radius);
@@ -701,7 +701,7 @@ fn render_ring_pass(mesh: VertexOutput, body_kind: f32, pass_mode: f32) -> vec4<
         let inner = 0.44;
         let outer = 0.72;
         if radius < inner || radius > outer {
-            discard;
+            return vec4<f32>(0.0);
         }
         let dust = fbm2(vec2<f32>(radius * 26.0, atan2(quad_uv.y, quad_uv.x) * 3.0 + params.identity_a.w * 0.05));
         let gaps = fbm2(vec2<f32>(radius * 12.0 - params.identity_a.w * 0.02, quad_uv.x * 5.0));
@@ -720,7 +720,7 @@ fn render_ring_pass(mesh: VertexOutput, body_kind: f32, pass_mode: f32) -> vec4<
         return vec4<f32>(color, alpha);
     }
 
-    discard;
+    return vec4<f32>(0.0);
 }
 
 fn perturbed_normal(sphere_p: vec3<f32>, body_kind: f32, planet_type: f32) -> vec3<f32> {
@@ -752,7 +752,11 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let ring_pass_mode = params.pass_flags_a.y;
     let radius = mix(0.58, 0.8, saturate(params.lighting_a.x));
     if ring_pass_mode > 0.5 {
-        return render_ring_pass(mesh, body_kind, ring_pass_mode);
+        let ring_color = render_ring_pass(mesh, body_kind, ring_pass_mode);
+        if ring_color.a <= 0.0001 {
+            discard;
+        }
+        return ring_color;
     }
     if cloud_pass_mode > 0.5 {
         return render_cloud_pass(mesh, body_kind, planet_type, radius, cloud_pass_mode);

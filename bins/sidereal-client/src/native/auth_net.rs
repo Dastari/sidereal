@@ -108,6 +108,8 @@ pub struct AssetBootstrapRequestState {
     pub failed: bool,
 }
 
+const MAX_PARALLEL_BOOTSTRAP_FETCHES: usize = 4;
+
 #[derive(Debug)]
 struct AssetBootstrapRequestResult {
     manifest: AssetBootstrapManifestResponse,
@@ -126,6 +128,15 @@ struct AssetBootstrapRecord {
     asset_version: u64,
     sha256_hex: String,
     ready: bool,
+}
+
+#[derive(Debug)]
+struct AssetBootstrapFetchedAsset {
+    asset_id: String,
+    relative_cache_path: String,
+    byte_len: u64,
+    sha256_hex: String,
+    payload: Vec<u8>,
 }
 
 pub fn init_gateway_request_state(app: &mut App) {
@@ -372,6 +383,7 @@ pub fn submit_asset_bootstrap_request(
             });
         }
 
+        let mut missing_required_assets = Vec::new();
         for required in &manifest.required_assets {
             bootstrap_total_bytes = bootstrap_total_bytes.saturating_add(required.byte_len);
             let satisfied = (cache_adapter.read_valid_asset)(
@@ -382,8 +394,18 @@ pub fn submit_asset_bootstrap_request(
             .await?
             .is_some();
             if !satisfied {
-                let url = if required.url.starts_with("http://")
-                    || required.url.starts_with("https://")
+                missing_required_assets.push(required.clone());
+            }
+            bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
+        }
+
+        let mut pending_fetches = Vec::<Task<Result<AssetBootstrapFetchedAsset, String>>>::new();
+        for required in missing_required_assets {
+            let gateway_http = gateway_http;
+            let gateway_url = gateway_url.clone();
+            let access_token = access_token.clone();
+            pending_fetches.push(IoTaskPool::get().spawn(async move {
+                let url = if required.url.starts_with("http://") || required.url.starts_with("https://")
                 {
                     required.url.clone()
                 } else {
@@ -393,26 +415,63 @@ pub fn submit_asset_bootstrap_request(
                     "asset bootstrap download starting: asset_id={} relative_cache_path={} bytes={}",
                     required.asset_id, required.relative_cache_path, required.byte_len
                 );
-                let bytes = (gateway_http.fetch_asset_bytes)(url, access_token.clone()).await?;
-                let payload_sha = sha256_hex(&bytes);
+                let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
+                let payload_sha = sha256_hex(&payload);
                 if payload_sha != required.sha256_hex {
                     return Err(format!(
                         "asset checksum mismatch asset_id={} expected={} got={}",
                         required.asset_id, required.sha256_hex, payload_sha
                     ));
                 }
+                Ok(AssetBootstrapFetchedAsset {
+                    asset_id: required.asset_id,
+                    relative_cache_path: required.relative_cache_path,
+                    byte_len: required.byte_len,
+                    sha256_hex: required.sha256_hex,
+                    payload,
+                })
+            }));
+            if pending_fetches.len() >= MAX_PARALLEL_BOOTSTRAP_FETCHES {
+                let fetched = pending_fetches.remove(0).await?;
                 (cache_adapter.write_asset)(
                     asset_root.clone(),
-                    required.relative_cache_path.clone(),
-                    bytes,
+                    fetched.relative_cache_path.clone(),
+                    fetched.payload,
                 )
                 .await?;
                 info!(
                     "asset bootstrap cache write complete: asset_id={} relative_cache_path={} bytes={}",
-                    required.asset_id, required.relative_cache_path, required.byte_len
+                    fetched.asset_id, fetched.relative_cache_path, fetched.byte_len
+                );
+                cache_index.by_asset_id.insert(
+                    fetched.asset_id,
+                    AssetCacheIndexRecord {
+                        asset_version: asset_version_from_sha256_hex(&fetched.sha256_hex),
+                        sha256_hex: fetched.sha256_hex,
+                    },
                 );
             }
-            bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
+        }
+
+        for pending in pending_fetches {
+            let fetched = pending.await?;
+            (cache_adapter.write_asset)(
+                asset_root.clone(),
+                fetched.relative_cache_path.clone(),
+                fetched.payload,
+            )
+            .await?;
+            info!(
+                "asset bootstrap cache write complete: asset_id={} relative_cache_path={} bytes={}",
+                fetched.asset_id, fetched.relative_cache_path, fetched.byte_len
+            );
+            cache_index.by_asset_id.insert(
+                fetched.asset_id,
+                AssetCacheIndexRecord {
+                    asset_version: asset_version_from_sha256_hex(&fetched.sha256_hex),
+                    sha256_hex: fetched.sha256_hex,
+                },
+            );
         }
 
         for required in &manifest.required_assets {

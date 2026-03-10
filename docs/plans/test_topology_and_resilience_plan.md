@@ -2,6 +2,10 @@
 
 Status: Planned work item (no code changes applied yet).
 
+2026-03-10 status note:
+- The topology snapshot in section 3 is now stale. The repo currently has substantially more inline `src/*.rs` tests than listed here.
+- Use `docs/plans/test_suite_rationalization_plan_2026-03-10.md` as the current source for the March 10, 2026 inventory, keep/remove guidance, and prune-first execution order.
+
 ## 1. Purpose
 
 This document tracks the agreed test reorganization and coverage expansion work:

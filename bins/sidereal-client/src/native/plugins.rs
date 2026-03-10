@@ -14,9 +14,9 @@ use super::camera::{
 };
 use super::components::{WeaponImpactSparkPool, WeaponTracerCooldowns, WeaponTracerPool};
 use super::debug_overlay::{
-    audit_prediction_entity_lifecycle, collect_debug_overlay_snapshot_system,
-    debug_overlay_enabled, draw_debug_overlay_system, log_prediction_runtime_state,
-    sync_debug_velocity_arrow_mesh_system, toggle_debug_overlay_system,
+    collect_debug_overlay_snapshot_system, debug_overlay_enabled, draw_debug_overlay_system,
+    log_prediction_runtime_state, sync_debug_velocity_arrow_mesh_system,
+    toggle_debug_overlay_system,
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
@@ -487,7 +487,6 @@ impl Plugin for ClientUiPlugin {
                 ui::update_loading_overlay_system,
                 ui::update_runtime_stream_icon_system,
                 bootstrap::watch_in_world_bootstrap_failures,
-                audit_prediction_entity_lifecycle,
                 ui::propagate_ui_overlay_layer_system,
                 ui::update_hud_system,
                 ui::sync_entity_nameplates_system

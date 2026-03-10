@@ -351,10 +351,16 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
             && rotation.is_none()
             && (world_position.is_some() || world_rotation.is_some())
         {
-            if let (Some(planar_position), Some(heading)) = (
-                resolve_world_position(position, world_position),
-                resolve_world_rotation_rad(rotation, world_rotation),
-            ) {
+            let planar_position = resolve_world_position(position, world_position);
+            let heading = world_rotation
+                .map(|value| value.0)
+                .filter(|value| value.is_finite())
+                .or_else(|| {
+                    resolve_world_rotation_rad(rotation, world_rotation)
+                        .filter(|value| value.is_finite())
+                })
+                .or(Some(0.0));
+            if let (Some(planar_position), Some(heading)) = (planar_position, heading) {
                 source_position = Some(planar_position);
                 source_heading = Some(heading);
                 ready = true;

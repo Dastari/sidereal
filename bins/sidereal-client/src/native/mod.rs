@@ -200,8 +200,6 @@ pub(crate) fn configure_client_runtime(
     app.insert_resource(FullscreenExternalWorldData::default());
     app.insert_resource(StarfieldMotionState::default());
     app.insert_resource(CameraMotionState::default());
-    app.insert_resource(PredictionLifecycleAuditConfig::from_env());
-    app.insert_resource(PredictionLifecycleAuditState::default());
     app.insert_resource(BootstrapWatchdogState::default());
     app.insert_resource(DeferredPredictedAdoptionState::default());
     app.insert_resource(PredictionBootstrapTuning::from_env());

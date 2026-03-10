@@ -32,6 +32,19 @@ use super::resources::{
     RemoteEntityRegistry,
 };
 
+fn bootstrap_planar_heading(
+    rotation: Option<&Rotation>,
+    world_rotation: Option<&WorldRotation>,
+) -> Option<f32> {
+    world_rotation
+        .map(|value| value.0)
+        .filter(|value| value.is_finite())
+        .or_else(|| {
+            resolve_world_rotation_rad(rotation, world_rotation).filter(|value| value.is_finite())
+        })
+        .or(Some(0.0))
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) fn mark_new_ballistic_projectiles_prespawned(
     mut commands: Commands<'_, '_>,
@@ -76,7 +89,7 @@ pub(crate) fn ensure_replicated_entity_spatial_components(
         let mut transform = Transform::default();
         if let (Some(planar_position), Some(heading)) = (
             resolve_world_position(position, world_position),
-            resolve_world_rotation_rad(rotation, world_rotation),
+            bootstrap_planar_heading(rotation, world_rotation),
         ) && planar_position.is_finite()
             && heading.is_finite()
         {
@@ -137,7 +150,7 @@ pub(crate) fn ensure_hierarchy_parent_spatial_components(
         let mut transform = Transform::default();
         if let (Some(planar_position), Some(heading)) = (
             resolve_world_position(position, world_position),
-            resolve_world_rotation_rad(rotation, world_rotation),
+            bootstrap_planar_heading(rotation, world_rotation),
         ) && planar_position.is_finite()
             && heading.is_finite()
         {
@@ -195,7 +208,7 @@ pub(crate) fn ensure_parent_spatial_components_on_children_added(
     let mut transform = Transform::default();
     if let (Some(planar_position), Some(heading)) = (
         resolve_world_position(position, world_position),
-        resolve_world_rotation_rad(rotation, world_rotation),
+        bootstrap_planar_heading(rotation, world_rotation),
     ) && planar_position.is_finite()
         && heading.is_finite()
     {

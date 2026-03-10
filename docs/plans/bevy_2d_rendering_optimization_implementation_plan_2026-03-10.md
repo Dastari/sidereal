@@ -19,6 +19,18 @@ Update note (2026-03-10):
   5. UI/tactical/nameplate frame cost,
   6. material-instance pressure only after re-measurement.
 
+Update note (2026-03-10, later):
+- Phase 0 instrumentation is partially completed. Client F3/overlay and BRP-visible metrics now cover render-layer counters, asset bootstrap/runtime fetch counts, duplicate winner swaps, active cameras, streamed visual child count, planet pass count, and visibility-stage timings/candidate counts.
+- Phase 1 is in progress with semantics preserved. `update_network_visibility()` now reports sub-stage timings, static-landmark discovery no longer scans every replicated entity, discovery is spatially prefiltered, and the visibility hot path no longer performs several redundant whole-query passes.
+- Phase 2 has started. Asset bootstrap required downloads and runtime lazy fetch now use bounded parallel download concurrency instead of a strict single-file pipeline, while keeping dependency-before-parent selection and checksum validation intact.
+- Earlier client-side work from the superseded same-day plan is already present in the branch and should be treated as implemented/re-measure work, not as untouched future work:
+  - change-driven render-layer invalidation,
+  - dirty runtime asset dependency tracking,
+  - duplicate-visual winner caching,
+  - debug overlay gating,
+  - shared quad reuse and selective pooled effect/material reuse.
+- Remaining plan intent is unchanged: keep measuring, finish the visibility cadence refactor, then validate whether any Phase 3 to Phase 5 gaps still need code changes instead of documentation-only reconciliation.
+
 Guardrails:
 - Preserve `DR-0027` and the Lua-authored render-layer/runtime shader direction.
 - Preserve Lightyear transform interpolation and the current post-correction camera follow ordering.

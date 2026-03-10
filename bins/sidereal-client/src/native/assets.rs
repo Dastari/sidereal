@@ -99,10 +99,9 @@ pub(crate) struct RuntimeAssetNetIndicatorState {
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct RuntimeAssetHttpFetchState {
-    pending: Option<Task<Result<RuntimeAssetFetchResult, String>>>,
+    pending: Vec<RuntimeAssetFetchTask>,
     in_flight_asset_ids: HashSet<String>,
     pending_parent_asset_ids: HashMap<String, String>,
-    pub last_request_at_s: f64,
 }
 
 impl RuntimeAssetHttpFetchState {
@@ -115,6 +114,12 @@ impl RuntimeAssetHttpFetchState {
     }
 }
 
+#[derive(Debug)]
+struct RuntimeAssetFetchTask {
+    asset_id: String,
+    task: Task<Result<RuntimeAssetFetchResult, String>>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeAssetFetchResult {
     pub asset_id: String,
@@ -124,8 +129,9 @@ pub(crate) struct RuntimeAssetFetchResult {
     pub asset_version: u64,
     pub sha256_hex: String,
     pub payload: Vec<u8>,
-    pub cache_index: AssetCacheIndex,
 }
+
+const MAX_CONCURRENT_RUNTIME_ASSET_FETCHES: usize = 4;
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct RuntimeAssetDependencyState {
@@ -336,7 +342,7 @@ pub(super) fn resolved_world_sprite_size(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn queue_missing_catalog_assets_system(
-    time: Res<'_, Time>,
+    _time: Res<'_, Time>,
     mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
     asset_manager: Res<'_, LocalAssetManager>,
     dependency_state: Res<'_, RuntimeAssetDependencyState>,
@@ -348,165 +354,98 @@ pub(super) fn queue_missing_catalog_assets_system(
     let Some(access_token) = session.access_token.as_ref() else {
         return;
     };
-    if fetch_state.pending.is_some() {
+    if fetch_state.pending.len() >= MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
         return;
     }
-    let now = time.elapsed_secs_f64();
-    if now - fetch_state.last_request_at_s < 0.05 {
-        return;
-    }
-    let Some(next_asset_id) = next_runtime_asset_fetch_candidate(
-        &dependency_state.candidate_asset_ids,
-        &asset_manager,
-        &asset_root.0,
-        *cache_adapter,
-        &fetch_state.in_flight_asset_ids,
-    ) else {
-        return;
-    };
-    let Some(catalog) = asset_manager
-        .catalog_by_asset_id
-        .get(&next_asset_id)
-        .cloned()
-    else {
-        return;
-    };
-    let unresolved_dependency = catalog
-        .dependencies
-        .iter()
-        .find(|dependency| {
-            !asset_present_in_cache_or_source(
-                dependency,
-                &asset_manager,
-                &asset_root.0,
-                *cache_adapter,
-            ) && !fetch_state.in_flight_asset_ids.contains(*dependency)
-        })
-        .cloned();
-    if let Some(dependency_asset_id) = unresolved_dependency {
-        fetch_state
-            .pending_parent_asset_ids
-            .insert(dependency_asset_id.clone(), next_asset_id.clone());
-        fetch_state.last_request_at_s = now;
-        fetch_state
-            .in_flight_asset_ids
-            .insert(dependency_asset_id.clone());
+    while fetch_state.pending.len() < MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
+        let Some(next_asset_id) = next_runtime_asset_fetch_candidate(
+            &dependency_state.candidate_asset_ids,
+            &asset_manager,
+            &asset_root.0,
+            *cache_adapter,
+            &fetch_state.in_flight_asset_ids,
+        ) else {
+            break;
+        };
         let Some(catalog) = asset_manager
             .catalog_by_asset_id
-            .get(&dependency_asset_id)
+            .get(&next_asset_id)
             .cloned()
         else {
-            fetch_state.in_flight_asset_ids.remove(&dependency_asset_id);
+            break;
+        };
+        let unresolved_dependency = catalog
+            .dependencies
+            .iter()
+            .find(|dependency| {
+                !asset_present_in_cache_or_source(
+                    dependency,
+                    &asset_manager,
+                    &asset_root.0,
+                    *cache_adapter,
+                ) && !fetch_state.in_flight_asset_ids.contains(*dependency)
+            })
+            .cloned();
+        let (asset_id, parent_asset_id, catalog) =
+            if let Some(dependency_asset_id) = unresolved_dependency {
+                let Some(dependency_catalog) = asset_manager
+                    .catalog_by_asset_id
+                    .get(&dependency_asset_id)
+                    .cloned()
+                else {
+                    break;
+                };
+                (dependency_asset_id, Some(next_asset_id), dependency_catalog)
+            } else {
+                (next_asset_id, None, catalog)
+            };
+        if let Some(parent_asset_id) = parent_asset_id.clone() {
             fetch_state
                 .pending_parent_asset_ids
-                .remove(&dependency_asset_id);
-            return;
-        };
-        info!(
-            "runtime asset download queued: asset_id={} dependency_for={} relative_cache_path={}",
-            dependency_asset_id, next_asset_id, catalog.relative_cache_path
-        );
+                .insert(asset_id.clone(), parent_asset_id.clone());
+            info!(
+                "runtime asset download queued: asset_id={} dependency_for={} relative_cache_path={}",
+                asset_id, parent_asset_id, catalog.relative_cache_path
+            );
+        } else {
+            info!(
+                "runtime asset download queued: asset_id={} relative_cache_path={}",
+                asset_id, catalog.relative_cache_path
+            );
+        }
         let url = if catalog.url.starts_with("http://") || catalog.url.starts_with("https://") {
             catalog.url.clone()
         } else {
             format!("{}{}", session.gateway_url, catalog.url)
         };
+        fetch_state.in_flight_asset_ids.insert(asset_id.clone());
         let access_token = access_token.clone();
         let gateway_http = *gateway_http;
-        let cache_adapter = *cache_adapter;
-        let asset_root = asset_root.0.clone();
-        let mut cache_index = asset_manager.cache_index.clone();
-        fetch_state.pending = Some(IoTaskPool::get().spawn(async move {
-            let payload = (gateway_http.fetch_asset_bytes)(url, access_token.clone()).await?;
-            let payload_sha = sha256_hex(&payload);
-            if payload_sha != catalog.sha256_hex {
-                return Err(format!(
-                    "runtime asset checksum mismatch asset_id={} expected={} got={}",
-                    dependency_asset_id, catalog.sha256_hex, payload_sha
-                ));
-            }
-            cache_index.by_asset_id.insert(
-                dependency_asset_id.clone(),
-                AssetCacheIndexRecord {
+        fetch_state.pending.push(RuntimeAssetFetchTask {
+            asset_id: asset_id.clone(),
+            task: IoTaskPool::get().spawn(async move {
+                let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
+                let payload_sha = sha256_hex(&payload);
+                if payload_sha != catalog.sha256_hex {
+                    return Err(format!(
+                        "runtime asset checksum mismatch asset_id={} expected={} got={}",
+                        asset_id, catalog.sha256_hex, payload_sha
+                    ));
+                }
+                Ok(RuntimeAssetFetchResult {
+                    asset_id,
+                    relative_cache_path: catalog.relative_cache_path,
+                    content_type: catalog.content_type,
+                    byte_len: payload.len() as u64,
                     asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(
                         &payload_sha,
                     ),
-                    sha256_hex: payload_sha.clone(),
-                },
-            );
-            (cache_adapter.write_asset)(
-                asset_root.clone(),
-                catalog.relative_cache_path.clone(),
-                payload.clone(),
-            )
-            .await?;
-            (cache_adapter.save_index)(asset_root.clone(), cache_index.clone()).await?;
-            Ok(RuntimeAssetFetchResult {
-                asset_id: dependency_asset_id,
-                relative_cache_path: catalog.relative_cache_path,
-                content_type: catalog.content_type,
-                byte_len: payload.len() as u64,
-                asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(&payload_sha),
-                sha256_hex: payload_sha,
-                payload,
-                cache_index,
-            })
-        }));
-        return;
+                    sha256_hex: payload_sha,
+                    payload,
+                })
+            }),
+        });
     }
-    let url = if catalog.url.starts_with("http://") || catalog.url.starts_with("https://") {
-        catalog.url.clone()
-    } else {
-        format!("{}{}", session.gateway_url, catalog.url)
-    };
-    fetch_state
-        .in_flight_asset_ids
-        .insert(next_asset_id.clone());
-    fetch_state.last_request_at_s = now;
-    info!(
-        "runtime asset download queued: asset_id={} relative_cache_path={}",
-        next_asset_id, catalog.relative_cache_path
-    );
-
-    let access_token = access_token.clone();
-    let gateway_http = *gateway_http;
-    let cache_adapter = *cache_adapter;
-    let asset_root = asset_root.0.clone();
-    let mut cache_index = asset_manager.cache_index.clone();
-    fetch_state.pending = Some(IoTaskPool::get().spawn(async move {
-        let payload = (gateway_http.fetch_asset_bytes)(url, access_token.clone()).await?;
-        let payload_sha = sha256_hex(&payload);
-        if payload_sha != catalog.sha256_hex {
-            return Err(format!(
-                "runtime asset checksum mismatch asset_id={} expected={} got={}",
-                next_asset_id, catalog.sha256_hex, payload_sha
-            ));
-        }
-        cache_index.by_asset_id.insert(
-            next_asset_id.clone(),
-            AssetCacheIndexRecord {
-                asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(&payload_sha),
-                sha256_hex: payload_sha.clone(),
-            },
-        );
-        (cache_adapter.write_asset)(
-            asset_root.clone(),
-            catalog.relative_cache_path.clone(),
-            payload.clone(),
-        )
-        .await?;
-        (cache_adapter.save_index)(asset_root.clone(), cache_index.clone()).await?;
-        Ok(RuntimeAssetFetchResult {
-            asset_id: next_asset_id,
-            relative_cache_path: catalog.relative_cache_path,
-            content_type: catalog.content_type,
-            byte_len: payload.len() as u64,
-            asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(&payload_sha),
-            sha256_hex: payload_sha,
-            payload,
-            cache_index,
-        })
-    }));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -520,73 +459,117 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
 ) {
-    let Some(task) = fetch_state.pending.as_mut() else {
+    if fetch_state.pending.is_empty() {
         return;
-    };
-    let Some(result) = bevy::tasks::block_on(future::poll_once(task)) else {
-        return;
-    };
-    fetch_state.pending = None;
+    }
+    let mut completed_results = Vec::new();
+    let mut task_index = 0usize;
+    while task_index < fetch_state.pending.len() {
+        let Some(result) =
+            bevy::tasks::block_on(future::poll_once(&mut fetch_state.pending[task_index].task))
+        else {
+            task_index += 1;
+            continue;
+        };
+        let completed = fetch_state.pending.swap_remove(task_index);
+        completed_results.push((completed.asset_id, result));
+    }
 
-    match result {
-        Ok(result) => {
-            let payload_sha = sha256_hex(&result.payload);
-            if payload_sha != result.sha256_hex {
-                warn!(
-                    "runtime asset download failed: runtime asset checksum mismatch asset_id={} expected={} got={}",
-                    result.asset_id, result.sha256_hex, payload_sha
-                );
-                session.status = format!(
-                    "Asset download failed: runtime asset checksum mismatch asset_id={} expected={} got={}",
-                    result.asset_id, result.sha256_hex, payload_sha
-                );
-                session.ui_dirty = true;
-            } else {
-                asset_manager.cache_index = result.cache_index.clone();
-                asset_manager.records_by_asset_id.insert(
-                    result.asset_id.clone(),
-                    LocalAssetRecord {
-                        relative_cache_path: result.relative_cache_path.clone(),
-                        _content_type: result.content_type.clone(),
-                        _byte_len: result.byte_len,
-                        _chunk_count: 1,
-                        _asset_version: result.asset_version,
-                        _sha256_hex: result.sha256_hex.clone(),
-                        ready: true,
-                    },
-                );
-                info!(
-                    "runtime asset cache write complete: asset_id={} relative_cache_path={} bytes={}",
-                    result.asset_id, result.relative_cache_path, result.byte_len
-                );
-                hot_reload.forced_asset_ids.remove(&result.asset_id);
-                session.status = format!("Asset downloaded: {}", result.asset_id);
-                session.ui_dirty = true;
-                if shaders::shader_materials_enabled()
-                    && result.relative_cache_path.ends_with(".wgsl")
-                {
-                    shaders::reload_streamed_shaders(
-                        &mut shaders_assets,
-                        &asset_root.0,
-                        &asset_manager,
-                        *cache_adapter,
-                        &shader_assignments,
+    for (queued_asset_id, result) in completed_results {
+        match result {
+            Ok(result) => {
+                let payload_sha = sha256_hex(&result.payload);
+                if payload_sha != result.sha256_hex {
+                    warn!(
+                        "runtime asset download failed: runtime asset checksum mismatch asset_id={} expected={} got={}",
+                        result.asset_id, result.sha256_hex, payload_sha
                     );
+                    session.status = format!(
+                        "Asset download failed: runtime asset checksum mismatch asset_id={} expected={} got={}",
+                        result.asset_id, result.sha256_hex, payload_sha
+                    );
+                    session.ui_dirty = true;
+                } else {
+                    let write_result = bevy::tasks::block_on((cache_adapter.write_asset)(
+                        asset_root.0.clone(),
+                        result.relative_cache_path.clone(),
+                        result.payload.clone(),
+                    ));
+                    if let Err(err) = write_result {
+                        warn!("runtime asset cache write failed: {}", err);
+                        session.status = format!("Asset download failed: {}", err);
+                        session.ui_dirty = true;
+                        fetch_state.in_flight_asset_ids.remove(&result.asset_id);
+                        fetch_state
+                            .pending_parent_asset_ids
+                            .remove(&result.asset_id);
+                        continue;
+                    }
+                    asset_manager.cache_index.by_asset_id.insert(
+                        result.asset_id.clone(),
+                        AssetCacheIndexRecord {
+                            asset_version: result.asset_version,
+                            sha256_hex: result.sha256_hex.clone(),
+                        },
+                    );
+                    let save_result = bevy::tasks::block_on((cache_adapter.save_index)(
+                        asset_root.0.clone(),
+                        asset_manager.cache_index.clone(),
+                    ));
+                    if let Err(err) = save_result {
+                        warn!("runtime asset cache index save failed: {}", err);
+                        session.status = format!("Asset download failed: {}", err);
+                        session.ui_dirty = true;
+                        fetch_state.in_flight_asset_ids.remove(&result.asset_id);
+                        fetch_state
+                            .pending_parent_asset_ids
+                            .remove(&result.asset_id);
+                        continue;
+                    }
+                    asset_manager.records_by_asset_id.insert(
+                        result.asset_id.clone(),
+                        LocalAssetRecord {
+                            relative_cache_path: result.relative_cache_path.clone(),
+                            _content_type: result.content_type.clone(),
+                            _byte_len: result.byte_len,
+                            _chunk_count: 1,
+                            _asset_version: result.asset_version,
+                            _sha256_hex: result.sha256_hex.clone(),
+                            ready: true,
+                        },
+                    );
+                    info!(
+                        "runtime asset cache write complete: asset_id={} relative_cache_path={} bytes={}",
+                        result.asset_id, result.relative_cache_path, result.byte_len
+                    );
+                    hot_reload.forced_asset_ids.remove(&result.asset_id);
+                    session.status = format!("Asset downloaded: {}", result.asset_id);
+                    session.ui_dirty = true;
+                    if shaders::shader_materials_enabled()
+                        && result.relative_cache_path.ends_with(".wgsl")
+                    {
+                        shaders::reload_streamed_shaders(
+                            &mut shaders_assets,
+                            &asset_root.0,
+                            &asset_manager,
+                            *cache_adapter,
+                            &shader_assignments,
+                        );
+                    }
                 }
+                fetch_state.in_flight_asset_ids.remove(&result.asset_id);
+                fetch_state
+                    .pending_parent_asset_ids
+                    .remove(&result.asset_id);
             }
-            fetch_state.in_flight_asset_ids.remove(&result.asset_id);
-            fetch_state
-                .pending_parent_asset_ids
-                .remove(&result.asset_id);
-        }
-        Err(err) => {
-            warn!("runtime asset download failed: {}", err);
-            session.status = format!("Asset download failed: {}", err);
-            session.ui_dirty = true;
-            let maybe_id = fetch_state.in_flight_asset_ids.iter().next().cloned();
-            if let Some(asset_id) = maybe_id {
-                fetch_state.in_flight_asset_ids.remove(&asset_id);
-                fetch_state.pending_parent_asset_ids.remove(&asset_id);
+            Err(err) => {
+                warn!("runtime asset download failed: {}", err);
+                session.status = format!("Asset download failed: {}", err);
+                session.ui_dirty = true;
+                fetch_state.in_flight_asset_ids.remove(&queued_asset_id);
+                fetch_state
+                    .pending_parent_asset_ids
+                    .remove(&queued_asset_id);
             }
         }
     }

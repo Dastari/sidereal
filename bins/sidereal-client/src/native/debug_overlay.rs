@@ -31,7 +31,7 @@ use super::resources::{
     DebugOverlayEntity, DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DebugSeverity,
     DebugTextRow, DebugVelocityArrowAsMesh, DeferredPredictedAdoptionState,
     DuplicateVisualResolutionState, LocalSimulationDebugMode, PredictionBootstrapTuning,
-    PredictionLifecycleAuditConfig, PredictionLifecycleAuditState, RenderLayerPerfCounters,
+    RenderLayerPerfCounters,
 };
 
 const DEBUG_OVERLAY_Z_OFFSET: f32 = 6.0;
@@ -971,25 +971,6 @@ fn angle_delta_rad(a: f32, b: f32) -> f32 {
     delta.abs()
 }
 
-fn prediction_audit_target_guid(
-    config: &PredictionLifecycleAuditConfig,
-    session: &ClientSession,
-    player_view_state: &LocalPlayerViewState,
-) -> Option<uuid::Uuid> {
-    config.target_guid.or_else(|| {
-        player_view_state
-            .controlled_entity_id
-            .as_deref()
-            .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
-            .or_else(|| {
-                session
-                    .player_entity_id
-                    .as_deref()
-                    .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
-            })
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 pub(crate) fn log_prediction_runtime_state(
@@ -1224,149 +1205,6 @@ pub(crate) fn log_prediction_runtime_state(
             );
         }
     }
-}
-
-#[allow(clippy::type_complexity)]
-pub(crate) fn audit_prediction_entity_lifecycle(
-    time: Res<'_, Time>,
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    config: Res<'_, PredictionLifecycleAuditConfig>,
-    mut state: ResMut<'_, PredictionLifecycleAuditState>,
-    duplicate_visuals: Res<'_, DuplicateVisualResolutionState>,
-    world_entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Option<&'_ MountedOn>,
-            Option<&'_ ParentGuid>,
-            Option<&'_ PlayerTag>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-            Has<lightyear::prelude::Replicated>,
-            Has<ConfirmedHistory<Position>>,
-            Has<ConfirmedHistory<Rotation>>,
-            Has<ControlledEntity>,
-            Has<super::components::SuppressedPredictedDuplicateVisual>,
-            &'_ Visibility,
-            Option<&'_ Transform>,
-        ),
-        With<WorldEntity>,
-    >,
-) {
-    if !config.enabled {
-        return;
-    }
-    let now = time.elapsed_secs_f64();
-    if now - state.last_logged_at_s < config.interval_s {
-        return;
-    }
-    state.last_logged_at_s = now;
-
-    let target_guid = prediction_audit_target_guid(&config, &session, &player_view_state);
-    let Some(target_guid) = target_guid else {
-        return;
-    };
-
-    let mut lines = Vec::new();
-    let mut root_candidates = Vec::new();
-    for (
-        entity,
-        guid,
-        mounted_on,
-        parent_guid,
-        player_tag,
-        is_predicted,
-        is_interpolated,
-        is_replicated,
-        has_position_history,
-        has_rotation_history,
-        is_controlled,
-        is_suppressed,
-        visibility,
-        transform,
-    ) in &world_entities
-    {
-        if guid.0 != target_guid {
-            continue;
-        }
-        let pos = transform.map(|value| value.translation.truncate());
-        lines.push(format!(
-            "entity={entity:?} replicated={is_replicated} predicted={is_predicted} interpolated={is_interpolated} interp_ready={} controlled={is_controlled} suppressed={is_suppressed} visibility={visibility:?} mounted={} parent_guid={} pos={pos:?}",
-            has_position_history && has_rotation_history,
-            mounted_on.is_some(),
-            parent_guid.map(|value| value.0).is_some(),
-        ));
-
-        if player_tag.is_some()
-            || mounted_on.is_some()
-            || parent_guid.is_some()
-            || is_suppressed
-            || !debug_overlay_candidate_visible(Some(visibility))
-        {
-            continue;
-        }
-
-        root_candidates.push(RootDebugCandidate {
-            overlay_entity: DebugOverlayEntity {
-                entity,
-                lane: DebugEntityLane::Auxiliary,
-                position_xy: pos.unwrap_or(Vec2::ZERO),
-                rotation_rad: transform
-                    .map(|value| value.rotation.to_euler(EulerRot::XYZ).2)
-                    .unwrap_or_default(),
-                velocity_xy: Vec2::ZERO,
-                angular_velocity_rps: 0.0,
-                collision: DebugCollisionShape::None,
-                is_controlled,
-            },
-            is_replicated,
-            is_interpolated,
-            is_predicted,
-            interpolated_ready: has_position_history && has_rotation_history,
-            has_confirmed_wrappers: false,
-            confirmed_pose: None,
-        });
-    }
-    if lines.is_empty() {
-        info!(
-            "lifecycle_audit guid={} no runtime entity candidates",
-            target_guid
-        );
-        return;
-    }
-
-    let overlay_resolution = resolve_root_candidates(&root_candidates);
-    let overlay_winner = overlay_resolution
-        .primary
-        .map(|candidate| candidate.overlay_entity.entity);
-    let overlay_lane = overlay_resolution.primary.map(|candidate| {
-        candidate_primary_lane(
-            candidate,
-            root_candidates
-                .iter()
-                .any(|value| value.overlay_entity.is_controlled),
-        )
-    });
-    let visual_winner = duplicate_visuals.winner_by_guid.get(&target_guid).copied();
-    let overlay_changed =
-        state.last_overlay_winner != overlay_winner || state.last_overlay_lane != overlay_lane;
-    let visual_changed = state.last_visual_winner != visual_winner
-        || state.last_visual_winner_swap_count != duplicate_visuals.winner_swap_count;
-    info!(
-        "lifecycle_audit guid={} overlay_winner={overlay_winner:?} overlay_lane={overlay_lane:?} overlay_changed={} visual_winner={visual_winner:?} visual_changed={} duplicate_visual_swaps={} candidates={}",
-        target_guid,
-        overlay_changed,
-        visual_changed,
-        duplicate_visuals.winner_swap_count,
-        lines.join(" | ")
-    );
-    state.last_overlay_winner = overlay_winner;
-    state.last_overlay_lane = overlay_lane;
-    state.last_visual_winner = visual_winner;
-    state.last_visual_winner_swap_count = duplicate_visuals.winner_swap_count;
 }
 
 #[cfg(test)]

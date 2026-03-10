@@ -71,7 +71,7 @@ pub(super) fn spawn_world_scene(
     commands.spawn((
         Camera2d,
         Camera {
-            order: -1,
+            order: -2,
             clear_color: ClearColorConfig::Custom(Color::BLACK),
             ..default()
         },
@@ -118,6 +118,21 @@ pub(super) fn spawn_world_scene(
     commands.spawn((
         Camera2d,
         Camera {
+            order: -1,
+            is_active: false,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, 80.0),
+        RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
+        PlanetBodyCamera,
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+
+    commands.spawn((
+        Camera2d,
+        Camera {
             order: 0,
             is_active: false,
             clear_color: ClearColorConfig::None,
@@ -137,21 +152,6 @@ pub(super) fn spawn_world_scene(
             filtered_focus_xy: Vec2::ZERO,
             focus_initialized: false,
         },
-        ClientSceneEntity,
-        DespawnOnExit(ClientAppState::InWorld),
-    ));
-
-    commands.spawn((
-        Camera2d,
-        Camera {
-            order: 0,
-            is_active: false,
-            clear_color: ClearColorConfig::None,
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, 80.0),
-        RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
-        PlanetBodyCamera,
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
