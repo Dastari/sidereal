@@ -156,7 +156,6 @@ pg-logs:
 
 pg-reset:
 	docker compose down -v
-	rm -rf data/postgresql
 	docker compose up -d postgres
 
 db-reset: pg-reset

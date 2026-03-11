@@ -276,7 +276,9 @@ pub fn start_health_server(
     thread::Builder::new()
         .name("replication-health-http".to_string())
         .spawn(move || {
-            let runtime = tokio::runtime::Runtime::new()
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
                 .expect("failed to create tokio runtime for replication health server");
             runtime.block_on(async move {
                 let listener = match tokio::net::TcpListener::bind(bind_addr).await {

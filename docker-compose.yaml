@@ -9,7 +9,7 @@ services:
     ports:
       - "${SIDEREAL_PG_PORT:-5432}:5432"
     volumes:
-      - ./data/postgresql:/var/lib/postgresql
+      - sidereal_postgres_data:/var/lib/postgresql
       - ./docker/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sidereal -d sidereal"]
@@ -17,3 +17,6 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+
+volumes:
+  sidereal_postgres_data:
