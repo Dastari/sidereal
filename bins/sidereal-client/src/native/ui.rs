@@ -45,18 +45,54 @@ use super::resources::{
     TacticalFogCache, TacticalMapUiState,
 };
 
+#[allow(clippy::type_complexity)]
 #[derive(SystemParam)]
 pub(super) struct DebugOverlayTextUiQueries<'w, 's> {
     root_query: Query<'w, 's, &'static mut Visibility, With<DebugOverlayPanelRoot>>,
-    label_text: Query<'w, 's, &'static mut Text, With<DebugOverlayPanelLabelText>>,
-    label_shadow_text: Query<'w, 's, &'static mut Text, With<DebugOverlayPanelLabelShadowText>>,
+    label_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<DebugOverlayPanelLabelText>,
+            Without<DebugOverlayPanelLabelShadowText>,
+            Without<DebugOverlayPanelValueText>,
+            Without<DebugOverlayPanelValueShadowText>,
+        ),
+    >,
+    label_shadow_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<DebugOverlayPanelLabelShadowText>,
+            Without<DebugOverlayPanelLabelText>,
+            Without<DebugOverlayPanelValueText>,
+            Without<DebugOverlayPanelValueShadowText>,
+        ),
+    >,
     value_text: Query<
         'w,
         's,
         (&'static mut Text, &'static mut TextColor),
-        With<DebugOverlayPanelValueText>,
+        (
+            With<DebugOverlayPanelValueText>,
+            Without<DebugOverlayPanelLabelText>,
+            Without<DebugOverlayPanelLabelShadowText>,
+            Without<DebugOverlayPanelValueShadowText>,
+        ),
     >,
-    value_shadow_text: Query<'w, 's, &'static mut Text, With<DebugOverlayPanelValueShadowText>>,
+    value_shadow_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<DebugOverlayPanelValueShadowText>,
+            Without<DebugOverlayPanelLabelText>,
+            Without<DebugOverlayPanelLabelShadowText>,
+            Without<DebugOverlayPanelValueText>,
+        ),
+    >,
 }
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
