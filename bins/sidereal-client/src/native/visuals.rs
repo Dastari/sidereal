@@ -159,7 +159,7 @@ fn activate_weapon_impact_spark(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        Without<WeaponTracerBolt>,
+        (Without<WeaponTracerBolt>, Without<WeaponImpactExplosion>),
     >,
     effect_materials: &mut Assets<RuntimeEffectMaterial>,
 ) {
@@ -201,7 +201,7 @@ fn activate_weapon_impact_explosion(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        Without<WeaponTracerBolt>,
+        (Without<WeaponTracerBolt>, Without<WeaponImpactSpark>),
     >,
     effect_materials: &mut Assets<RuntimeEffectMaterial>,
 ) {
@@ -2584,7 +2584,7 @@ pub(super) fn update_weapon_tracer_visuals_system(
             &'_ mut Visibility,
             &'_ mut WeaponTracerBolt,
         ),
-        Without<WeaponImpactSpark>,
+        (Without<WeaponImpactSpark>, Without<WeaponImpactExplosion>),
     >,
     mut sparks: Query<
         '_,
@@ -2595,7 +2595,7 @@ pub(super) fn update_weapon_tracer_visuals_system(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        Without<WeaponTracerBolt>,
+        (Without<WeaponTracerBolt>, Without<WeaponImpactExplosion>),
     >,
     mut explosions: Query<
         '_,
@@ -2606,7 +2606,7 @@ pub(super) fn update_weapon_tracer_visuals_system(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        Without<WeaponTracerBolt>,
+        (Without<WeaponTracerBolt>, Without<WeaponImpactSpark>),
     >,
 ) {
     let dt_s = time.delta_secs();
