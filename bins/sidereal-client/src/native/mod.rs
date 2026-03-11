@@ -134,6 +134,7 @@ fn init_asset_runtime_resources(app: &mut App, asset_root: String) {
     app.insert_resource(assets::LocalAssetManager::default());
     app.insert_resource(assets::AssetCatalogHotReloadState::default());
     app.insert_resource(assets::RuntimeAssetDependencyState::default());
+    app.insert_resource(assets::RuntimeAssetDependencyDirtyState::default());
     app.insert_resource(assets::RuntimeAssetNetIndicatorState::default());
     app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
     app.insert_resource(OwnedAssetManifestCache::default());
@@ -161,6 +162,7 @@ fn init_debug_and_diagnostics_resources(app: &mut App, headless_transport: bool)
     app.insert_resource(DebugOverlayState::default());
     app.insert_resource(DebugOverlaySnapshot::default());
     app.insert_resource(shaders::RuntimeShaderAssignments::default());
+    app.insert_resource(shaders::RuntimeShaderAssignmentSyncState::default());
     if headless_transport {
         app.init_resource::<dialog_ui::DialogQueue>();
     }

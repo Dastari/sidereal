@@ -9,7 +9,7 @@ authors.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bevy = { workspace = true, features = ["webgpu"] }
+bevy = { workspace = true, default-features = false, features = ["bevy_log"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -11,7 +11,7 @@ lightyear = ["dep:lightyear"]
 
 [dependencies]
 avian2d.workspace = true
-bevy.workspace = true
+bevy = { workspace = true, default-features = false, features = ["bevy_asset", "bevy_camera", "bevy_log", "serialize"] }
 inventory.workspace = true
 lightyear = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }

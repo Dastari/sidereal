@@ -18,6 +18,7 @@ Project operating contract for human and AI contributors working in this reposit
 - Lightyear upstream issue triage reference: `docs/features/lightyear_upstream_issue_snapshot.md`
 - Native client/server transform and ownership audit: `docs/reports/native_runtime_system_ownership_audit_2026-03-09.md`
 - UI design system and component patterns: `docs/ui_design_guide.md`
+- Dashboard/frontend UI styling and component standards: `docs/frontend_ui_styling_guide.md`
 - Repo overview: `README.md`
 
 If any code change conflicts with docs, update docs in the same change or stop and resolve ambiguity first.
@@ -77,6 +78,10 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Client cache is MMO-style local cache: single `assets.pak` + companion index/metadata, with checksum/version invalidation.
 - Browser/WASM runtime asset mounting must be byte-backed from the authenticated cache adapter or gateway fetch path; browser code must not rely on filesystem-style `AssetServer` paths such as `data/cache_stream/...`.
 - `bevy_remote` inspection endpoints for shard/replication/client must be auth-gated and follow project security defaults. Until a real authenticated HTTP gate exists, BRP must remain loopback-only.
+- Dashboard/frontend work under `dashboard/` must follow `docs/frontend_ui_styling_guide.md` for semantic theme tokens, shadcn/ui usage, route boundaries, validation, security, and bundle-splitting rules.
+- Major dashboard tool routes must stay lazily split and keep heavy feature implementations out of the eagerly loaded shell/runtime path.
+- Dashboard route params, search params, form payloads, and API mutation bodies should use Zod or an equivalently strict schema boundary; do not keep expanding ad hoc manual validation for normal frontend boundary parsing.
+- Dashboard destructive/admin workflows must not use browser-native `window.prompt`/`window.confirm`/`window.alert`, and new privileged mutation routes must be structured around a shared server-side auth/authorization guard point.
 
 ## 4. Implementation Workflow Requirements
 
@@ -95,7 +100,9 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - WASM client validation must include WebGPU support in the build configuration (`bevy/webgpu`), not only default WASM feature sets.
 - When changing client behavior, transport contracts, prediction/reconciliation flow, or client runtime defaults: update docs to note native impact and WASM impact (or explicitly state "no WASM impact").
 - When adding a new client-side dependency: verify it is either WASM-compatible or correctly gated behind `cfg(not(target_arch = "wasm32"))` with a WASM-compatible alternative also provided.
-- When adding or changing client UI: follow the design system specified in `docs/ui_design_guide.md`. Match existing color palette, spacing, and component patterns. Do not introduce new colors or patterns without updating the design guide first.
+- When adding or changing native/client Bevy UI: follow the design system specified in `docs/ui_design_guide.md`. Match existing color palette, spacing, and component patterns. Do not introduce new colors or patterns without updating the design guide first.
+- When adding or changing dashboard/frontend UI under `dashboard/`: follow `docs/frontend_ui_styling_guide.md`. Use semantic theme tokens, prefer existing local shadcn/ui wrappers or add missing wrappers before bespoke controls, keep major tool routes lazily split, and add route-level pending/error boundaries for data-owning screens.
+- When changing dashboard/frontend routing, forms, or API handlers: validate route params/search params/request bodies at the boundary, prefer route-owned initial data loading over ad hoc first-render `useEffect` fetches, and keep server-only modules out of client bundles.
 - For error handling in client: use persistent dialog UI (`dialog_ui::DialogQueue::push_error()`) for failures requiring user acknowledgment. Do not rely on console logs or ephemeral status text for critical errors.
 
 ## 5. Runtime and Environment Conventions

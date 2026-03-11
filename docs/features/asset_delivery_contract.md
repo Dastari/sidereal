@@ -1,7 +1,7 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract
-Last updated: March 9, 2026
+Last updated: March 12, 2026
 Primary architecture reference: `docs/sidereal_design_document.md`
 Related contract: `docs/features/scripting_support.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
@@ -185,6 +185,9 @@ In `AssetLoading`, client must:
 8. Browser/WASM implementations may use platform storage primitives behind the cache adapter, but the gameplay/runtime layer must still consume validated asset bytes through the shared cache/index contract.
 
 ### 8.2 Runtime lazy fetch
+
+2026-03-12 native impact: runtime optional-asset completion now persists cache payload bytes and saves the cache index off the main frame thread; dependency graph refresh and shader-assignment refresh are dirty-driven instead of full always-on polling every update.
+2026-03-12 WASM impact: no contract change; browser/WASM clients keep the same shared asset state machine, and the native-only async cache persistence path does not change byte-backed WASM mounting requirements.
 
 After entering world:
 

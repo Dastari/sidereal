@@ -312,6 +312,21 @@ impl RuntimeShaderAssignments {
     }
 }
 
+#[derive(Debug, Clone, Resource)]
+pub(crate) struct RuntimeShaderAssignmentSyncState {
+    pub dirty: bool,
+    pub last_catalog_reload_generation: u64,
+}
+
+impl Default for RuntimeShaderAssignmentSyncState {
+    fn default() -> Self {
+        Self {
+            dirty: true,
+            last_catalog_reload_generation: 0,
+        }
+    }
+}
+
 fn env_flag_with_default(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
@@ -636,9 +651,76 @@ where
         })
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn mark_runtime_shader_assignments_dirty_system(
+    mut state: ResMut<'_, RuntimeShaderAssignmentSyncState>,
+    runtime_render_layer_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(
+            Added<RuntimeRenderLayerDefinition>,
+            Changed<RuntimeRenderLayerDefinition>,
+        )>,
+    >,
+    sprite_shader_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(
+            Added<SpriteShaderAssetId>,
+            Changed<SpriteShaderAssetId>,
+            Added<PlanetBodyShaderSettings>,
+            Changed<PlanetBodyShaderSettings>,
+            Added<ProceduralSprite>,
+            Changed<ProceduralSprite>,
+        )>,
+    >,
+    streamed_sprite_shader_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(
+            Added<StreamedSpriteShaderAssetId>,
+            Changed<StreamedSpriteShaderAssetId>,
+            Added<PlanetBodyShaderSettings>,
+            Changed<PlanetBodyShaderSettings>,
+            Added<ProceduralSprite>,
+            Changed<ProceduralSprite>,
+        )>,
+    >,
+    tactical_map_settings_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(Added<TacticalMapUiSettings>, Changed<TacticalMapUiSettings>)>,
+    >,
+    mut removed_runtime_render_layer: RemovedComponents<'_, '_, RuntimeRenderLayerDefinition>,
+    mut removed_sprite_shader: RemovedComponents<'_, '_, SpriteShaderAssetId>,
+    mut removed_streamed_sprite_shader: RemovedComponents<'_, '_, StreamedSpriteShaderAssetId>,
+    mut removed_tactical_map_settings: RemovedComponents<'_, '_, TacticalMapUiSettings>,
+    mut removed_planet_shader_settings: RemovedComponents<'_, '_, PlanetBodyShaderSettings>,
+    mut removed_procedural_sprite: RemovedComponents<'_, '_, ProceduralSprite>,
+) {
+    let changed = runtime_render_layer_changed.iter().next().is_some()
+        || sprite_shader_changed.iter().next().is_some()
+        || streamed_sprite_shader_changed.iter().next().is_some()
+        || tactical_map_settings_changed.iter().next().is_some()
+        || removed_runtime_render_layer.read().next().is_some()
+        || removed_sprite_shader.read().next().is_some()
+        || removed_streamed_sprite_shader.read().next().is_some()
+        || removed_tactical_map_settings.read().next().is_some()
+        || removed_planet_shader_settings.read().next().is_some()
+        || removed_procedural_sprite.read().next().is_some();
+    if changed {
+        state.dirty = true;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn sync_runtime_shader_assignments_system(
     mut assignments: ResMut<'_, RuntimeShaderAssignments>,
+    mut sync_state: ResMut<'_, RuntimeShaderAssignmentSyncState>,
     runtime_render_layers: Query<'_, '_, &'_ RuntimeRenderLayerDefinition>,
     sprite_shader_asset_ids: Query<
         '_,
@@ -662,9 +744,16 @@ pub fn sync_runtime_shader_assignments_system(
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
-    mut last_reload_generation: Local<'_, u64>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
 ) {
+    let catalog_reloaded =
+        sync_state.last_catalog_reload_generation != asset_manager.reload_generation;
+    if !sync_state.dirty && !catalog_reloaded {
+        return;
+    }
+    sync_state.dirty = false;
+    sync_state.last_catalog_reload_generation = asset_manager.reload_generation;
+
     let mut next = RuntimeShaderAssignments::default();
 
     for layer in &runtime_render_layers {
@@ -770,8 +859,6 @@ pub fn sync_runtime_shader_assignments_system(
         )
     });
 
-    let catalog_reloaded = *last_reload_generation != asset_manager.reload_generation;
-    *last_reload_generation = asset_manager.reload_generation;
     if *assignments != next || catalog_reloaded {
         *assignments = next;
         reload_streamed_shaders(

@@ -1842,7 +1842,9 @@ mod tests {
     use crate::native::assets::LocalAssetManager;
     use crate::native::components::{ClientSceneEntity, RuntimeFullscreenRenderable};
     use crate::native::resources::{AssetCacheAdapter, AssetRootPath, CacheFuture};
-    use crate::native::shaders::{self, RuntimeShaderAssignments};
+    use crate::native::shaders::{
+        self, RuntimeShaderAssignmentSyncState, RuntimeShaderAssignments,
+    };
     use bevy::prelude::*;
     use bevy::sprite_render::MeshMaterial2d;
     use sidereal_asset_runtime::AssetCacheIndex;
@@ -1862,6 +1864,7 @@ mod tests {
         app.insert_resource(LocalAssetManager::default());
         app.insert_resource(dummy_cache_adapter());
         app.insert_resource(RuntimeShaderAssignments::default());
+        app.insert_resource(RuntimeShaderAssignmentSyncState::default());
         app.add_systems(
             Update,
             (

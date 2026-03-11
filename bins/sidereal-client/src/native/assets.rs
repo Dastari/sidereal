@@ -6,8 +6,6 @@ use super::resources::AssetRootPath;
 use super::resources::{AssetCacheAdapter, GatewayHttpAdapter};
 use super::shaders;
 use bevy::asset::RenderAssetUsages;
-use bevy::ecs::lifecycle::RemovedComponentEntity;
-use bevy::ecs::message::MessageCursor;
 use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
@@ -99,7 +97,10 @@ pub(crate) struct RuntimeAssetNetIndicatorState {
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct RuntimeAssetHttpFetchState {
-    pending: Vec<RuntimeAssetFetchTask>,
+    pending_fetches: Vec<RuntimeAssetFetchTask>,
+    pending_persists: Vec<RuntimeAssetPersistTask>,
+    save_index_task: Option<Task<Result<(), String>>>,
+    cache_index_dirty: bool,
     in_flight_asset_ids: HashSet<String>,
     pending_parent_asset_ids: HashMap<String, String>,
 }
@@ -107,6 +108,8 @@ pub(crate) struct RuntimeAssetHttpFetchState {
 impl RuntimeAssetHttpFetchState {
     pub fn has_in_flight_fetch(&self) -> bool {
         !self.in_flight_asset_ids.is_empty()
+            || !self.pending_persists.is_empty()
+            || self.save_index_task.is_some()
     }
 
     pub fn in_flight_asset_ids_len(&self) -> usize {
@@ -120,6 +123,12 @@ struct RuntimeAssetFetchTask {
     task: Task<Result<RuntimeAssetFetchResult, String>>,
 }
 
+#[derive(Debug)]
+struct RuntimeAssetPersistTask {
+    asset_id: String,
+    task: Task<Result<RuntimeAssetPersistResult, String>>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeAssetFetchResult {
     pub asset_id: String,
@@ -131,6 +140,16 @@ pub(crate) struct RuntimeAssetFetchResult {
     pub payload: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeAssetPersistResult {
+    pub asset_id: String,
+    pub relative_cache_path: String,
+    pub content_type: String,
+    pub byte_len: u64,
+    pub asset_version: u64,
+    pub sha256_hex: String,
+}
+
 const MAX_CONCURRENT_RUNTIME_ASSET_FETCHES: usize = 4;
 
 #[derive(Debug, Resource, Default)]
@@ -140,12 +159,17 @@ pub(crate) struct RuntimeAssetDependencyState {
     pub forced_asset_ids_signature: u64,
     pub dependency_graph_rebuilds: u64,
     pub dependency_scan_runs: u64,
-    fullscreen_layer_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
-    runtime_render_layer_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
-    runtime_post_process_stack_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
-    sprite_shader_asset_id_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
-    streamed_sprite_shader_asset_id_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
-    streamed_visual_asset_id_removal_cursor: Option<MessageCursor<RemovedComponentEntity>>,
+}
+
+#[derive(Debug, Resource)]
+pub(crate) struct RuntimeAssetDependencyDirtyState {
+    pub dirty: bool,
+}
+
+impl Default for RuntimeAssetDependencyDirtyState {
+    fn default() -> Self {
+        Self { dirty: true }
+    }
 }
 
 fn expand_catalog_dependencies(
@@ -167,9 +191,79 @@ fn expand_catalog_dependencies(
     expanded
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(super) fn mark_runtime_asset_dependency_state_dirty_system(
+    mut dirty_state: ResMut<'_, RuntimeAssetDependencyDirtyState>,
+    fullscreen_changed: Query<'_, '_, (), Or<(Added<FullscreenLayer>, Changed<FullscreenLayer>)>>,
+    runtime_render_layer_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(
+            Added<RuntimeRenderLayerDefinition>,
+            Changed<RuntimeRenderLayerDefinition>,
+        )>,
+    >,
+    runtime_post_process_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(
+            Added<RuntimePostProcessStack>,
+            Changed<RuntimePostProcessStack>,
+        )>,
+    >,
+    sprite_shader_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(Added<SpriteShaderAssetId>, Changed<SpriteShaderAssetId>)>,
+    >,
+    streamed_sprite_shader_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(
+            Added<StreamedSpriteShaderAssetId>,
+            Changed<StreamedSpriteShaderAssetId>,
+        )>,
+    >,
+    streamed_visual_changed: Query<
+        '_,
+        '_,
+        (),
+        Or<(Added<StreamedVisualAssetId>, Changed<StreamedVisualAssetId>)>,
+    >,
+    mut removed_fullscreen_layer: RemovedComponents<'_, '_, FullscreenLayer>,
+    mut removed_runtime_render_layer: RemovedComponents<'_, '_, RuntimeRenderLayerDefinition>,
+    mut removed_runtime_post_process: RemovedComponents<'_, '_, RuntimePostProcessStack>,
+    mut removed_sprite_shader: RemovedComponents<'_, '_, SpriteShaderAssetId>,
+    mut removed_streamed_sprite_shader: RemovedComponents<'_, '_, StreamedSpriteShaderAssetId>,
+    mut removed_streamed_visual: RemovedComponents<'_, '_, StreamedVisualAssetId>,
+) {
+    let changed = fullscreen_changed.iter().next().is_some()
+        || runtime_render_layer_changed.iter().next().is_some()
+        || runtime_post_process_changed.iter().next().is_some()
+        || sprite_shader_changed.iter().next().is_some()
+        || streamed_sprite_shader_changed.iter().next().is_some()
+        || streamed_visual_changed.iter().next().is_some()
+        || removed_fullscreen_layer.read().next().is_some()
+        || removed_runtime_render_layer.read().next().is_some()
+        || removed_runtime_post_process.read().next().is_some()
+        || removed_sprite_shader.read().next().is_some()
+        || removed_streamed_sprite_shader.read().next().is_some()
+        || removed_streamed_visual.read().next().is_some();
+    if changed {
+        dirty_state.dirty = true;
+    }
+}
+
 pub(super) fn sync_runtime_asset_dependency_state_system(world: &mut World) {
     let mut dependency_state = world
         .remove_resource::<RuntimeAssetDependencyState>()
+        .unwrap_or_default();
+    let mut dirty_state = world
+        .remove_resource::<RuntimeAssetDependencyDirtyState>()
         .unwrap_or_default();
     dependency_state.dependency_scan_runs = dependency_state.dependency_scan_runs.saturating_add(1);
     let catalog_reload_generation = world
@@ -180,40 +274,11 @@ pub(super) fn sync_runtime_asset_dependency_state_system(world: &mut World) {
         .get_resource::<AssetCatalogHotReloadState>()
         .map(|hot_reload| hash_asset_ids(&hot_reload.forced_asset_ids))
         .unwrap_or_default();
-    let dependency_inputs_changed = catalog_reload_generation
-        != dependency_state.catalog_reload_generation
-        || forced_asset_ids_signature != dependency_state.forced_asset_ids_signature
-        || has_any_component_changes::<FullscreenLayer>(world)
-        || has_any_component_changes::<RuntimeRenderLayerDefinition>(world)
-        || has_any_component_changes::<RuntimePostProcessStack>(world)
-        || has_any_component_changes::<SpriteShaderAssetId>(world)
-        || has_any_component_changes::<StreamedSpriteShaderAssetId>(world)
-        || has_any_component_changes::<StreamedVisualAssetId>(world)
-        || has_any_removed_components::<FullscreenLayer>(
-            world,
-            &mut dependency_state.fullscreen_layer_removal_cursor,
-        )
-        || has_any_removed_components::<RuntimeRenderLayerDefinition>(
-            world,
-            &mut dependency_state.runtime_render_layer_removal_cursor,
-        )
-        || has_any_removed_components::<RuntimePostProcessStack>(
-            world,
-            &mut dependency_state.runtime_post_process_stack_removal_cursor,
-        )
-        || has_any_removed_components::<SpriteShaderAssetId>(
-            world,
-            &mut dependency_state.sprite_shader_asset_id_removal_cursor,
-        )
-        || has_any_removed_components::<StreamedSpriteShaderAssetId>(
-            world,
-            &mut dependency_state.streamed_sprite_shader_asset_id_removal_cursor,
-        )
-        || has_any_removed_components::<StreamedVisualAssetId>(
-            world,
-            &mut dependency_state.streamed_visual_asset_id_removal_cursor,
-        );
+    let dependency_inputs_changed = dirty_state.dirty
+        || catalog_reload_generation != dependency_state.catalog_reload_generation
+        || forced_asset_ids_signature != dependency_state.forced_asset_ids_signature;
     if !dependency_inputs_changed {
+        world.insert_resource(dirty_state);
         world.insert_resource(dependency_state);
         return;
     }
@@ -234,6 +299,8 @@ pub(super) fn sync_runtime_asset_dependency_state_system(world: &mut World) {
     dependency_state.forced_asset_ids_signature = forced_asset_ids_signature;
     dependency_state.dependency_graph_rebuilds =
         dependency_state.dependency_graph_rebuilds.saturating_add(1);
+    dirty_state.dirty = false;
+    world.insert_resource(dirty_state);
     world.insert_resource(dependency_state);
 }
 
@@ -354,10 +421,10 @@ pub(super) fn queue_missing_catalog_assets_system(
     let Some(access_token) = session.access_token.as_ref() else {
         return;
     };
-    if fetch_state.pending.len() >= MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
+    if fetch_state.pending_fetches.len() >= MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
         return;
     }
-    while fetch_state.pending.len() < MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
+    while fetch_state.pending_fetches.len() < MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
         let Some(next_asset_id) = next_runtime_asset_fetch_candidate(
             &dependency_state.candidate_asset_ids,
             &asset_manager,
@@ -421,7 +488,7 @@ pub(super) fn queue_missing_catalog_assets_system(
         fetch_state.in_flight_asset_ids.insert(asset_id.clone());
         let access_token = access_token.clone();
         let gateway_http = *gateway_http;
-        fetch_state.pending.push(RuntimeAssetFetchTask {
+        fetch_state.pending_fetches.push(RuntimeAssetFetchTask {
             asset_id: asset_id.clone(),
             task: IoTaskPool::get().spawn(async move {
                 let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
@@ -459,19 +526,22 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
 ) {
-    if fetch_state.pending.is_empty() {
+    if fetch_state.pending_fetches.is_empty()
+        && fetch_state.pending_persists.is_empty()
+        && fetch_state.save_index_task.is_none()
+    {
         return;
     }
     let mut completed_results = Vec::new();
     let mut task_index = 0usize;
-    while task_index < fetch_state.pending.len() {
-        let Some(result) =
-            bevy::tasks::block_on(future::poll_once(&mut fetch_state.pending[task_index].task))
-        else {
+    while task_index < fetch_state.pending_fetches.len() {
+        let Some(result) = bevy::tasks::block_on(future::poll_once(
+            &mut fetch_state.pending_fetches[task_index].task,
+        )) else {
             task_index += 1;
             continue;
         };
-        let completed = fetch_state.pending.swap_remove(task_index);
+        let completed = fetch_state.pending_fetches.swap_remove(task_index);
         completed_results.push((completed.asset_id, result));
     }
 
@@ -490,77 +560,28 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
                     );
                     session.ui_dirty = true;
                 } else {
-                    let write_result = bevy::tasks::block_on((cache_adapter.write_asset)(
-                        asset_root.0.clone(),
-                        result.relative_cache_path.clone(),
-                        result.payload.clone(),
-                    ));
-                    if let Err(err) = write_result {
-                        warn!("runtime asset cache write failed: {}", err);
-                        session.status = format!("Asset download failed: {}", err);
-                        session.ui_dirty = true;
-                        fetch_state.in_flight_asset_ids.remove(&result.asset_id);
-                        fetch_state
-                            .pending_parent_asset_ids
-                            .remove(&result.asset_id);
-                        continue;
-                    }
-                    asset_manager.cache_index.by_asset_id.insert(
-                        result.asset_id.clone(),
-                        AssetCacheIndexRecord {
-                            asset_version: result.asset_version,
-                            sha256_hex: result.sha256_hex.clone(),
-                        },
-                    );
-                    let save_result = bevy::tasks::block_on((cache_adapter.save_index)(
-                        asset_root.0.clone(),
-                        asset_manager.cache_index.clone(),
-                    ));
-                    if let Err(err) = save_result {
-                        warn!("runtime asset cache index save failed: {}", err);
-                        session.status = format!("Asset download failed: {}", err);
-                        session.ui_dirty = true;
-                        fetch_state.in_flight_asset_ids.remove(&result.asset_id);
-                        fetch_state
-                            .pending_parent_asset_ids
-                            .remove(&result.asset_id);
-                        continue;
-                    }
-                    asset_manager.records_by_asset_id.insert(
-                        result.asset_id.clone(),
-                        LocalAssetRecord {
-                            relative_cache_path: result.relative_cache_path.clone(),
-                            _content_type: result.content_type.clone(),
-                            _byte_len: result.byte_len,
-                            _chunk_count: 1,
-                            _asset_version: result.asset_version,
-                            _sha256_hex: result.sha256_hex.clone(),
-                            ready: true,
-                        },
-                    );
-                    info!(
-                        "runtime asset cache write complete: asset_id={} relative_cache_path={} bytes={}",
-                        result.asset_id, result.relative_cache_path, result.byte_len
-                    );
-                    hot_reload.forced_asset_ids.remove(&result.asset_id);
-                    session.status = format!("Asset downloaded: {}", result.asset_id);
-                    session.ui_dirty = true;
-                    if shaders::shader_materials_enabled()
-                        && result.relative_cache_path.ends_with(".wgsl")
-                    {
-                        shaders::reload_streamed_shaders(
-                            &mut shaders_assets,
-                            &asset_root.0,
-                            &asset_manager,
-                            *cache_adapter,
-                            &shader_assignments,
-                        );
-                    }
+                    let asset_root = asset_root.0.clone();
+                    let cache_adapter = *cache_adapter;
+                    fetch_state.pending_persists.push(RuntimeAssetPersistTask {
+                        asset_id: result.asset_id.clone(),
+                        task: IoTaskPool::get().spawn(async move {
+                            (cache_adapter.write_asset)(
+                                asset_root,
+                                result.relative_cache_path.clone(),
+                                result.payload,
+                            )
+                            .await?;
+                            Ok(RuntimeAssetPersistResult {
+                                asset_id: result.asset_id,
+                                relative_cache_path: result.relative_cache_path,
+                                content_type: result.content_type,
+                                byte_len: result.byte_len,
+                                asset_version: result.asset_version,
+                                sha256_hex: result.sha256_hex,
+                            })
+                        }),
+                    });
                 }
-                fetch_state.in_flight_asset_ids.remove(&result.asset_id);
-                fetch_state
-                    .pending_parent_asset_ids
-                    .remove(&result.asset_id);
             }
             Err(err) => {
                 warn!("runtime asset download failed: {}", err);
@@ -572,6 +593,100 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
                     .remove(&queued_asset_id);
             }
         }
+    }
+
+    let mut completed_persists = Vec::new();
+    let mut persist_index = 0usize;
+    while persist_index < fetch_state.pending_persists.len() {
+        let Some(result) = bevy::tasks::block_on(future::poll_once(
+            &mut fetch_state.pending_persists[persist_index].task,
+        )) else {
+            persist_index += 1;
+            continue;
+        };
+        let completed = fetch_state.pending_persists.swap_remove(persist_index);
+        completed_persists.push((completed.asset_id, result));
+    }
+
+    for (queued_asset_id, result) in completed_persists {
+        match result {
+            Ok(result) => {
+                asset_manager.cache_index.by_asset_id.insert(
+                    result.asset_id.clone(),
+                    AssetCacheIndexRecord {
+                        asset_version: result.asset_version,
+                        sha256_hex: result.sha256_hex.clone(),
+                    },
+                );
+                fetch_state.cache_index_dirty = true;
+                asset_manager.records_by_asset_id.insert(
+                    result.asset_id.clone(),
+                    LocalAssetRecord {
+                        relative_cache_path: result.relative_cache_path.clone(),
+                        _content_type: result.content_type.clone(),
+                        _byte_len: result.byte_len,
+                        _chunk_count: 1,
+                        _asset_version: result.asset_version,
+                        _sha256_hex: result.sha256_hex.clone(),
+                        ready: true,
+                    },
+                );
+                info!(
+                    "runtime asset cache write complete: asset_id={} relative_cache_path={} bytes={}",
+                    result.asset_id, result.relative_cache_path, result.byte_len
+                );
+                hot_reload.forced_asset_ids.remove(&result.asset_id);
+                session.status = format!("Asset downloaded: {}", result.asset_id);
+                session.ui_dirty = true;
+                if shaders::shader_materials_enabled()
+                    && result.relative_cache_path.ends_with(".wgsl")
+                {
+                    shaders::reload_streamed_shaders(
+                        &mut shaders_assets,
+                        &asset_root.0,
+                        &asset_manager,
+                        *cache_adapter,
+                        &shader_assignments,
+                    );
+                }
+                fetch_state.in_flight_asset_ids.remove(&result.asset_id);
+                fetch_state
+                    .pending_parent_asset_ids
+                    .remove(&result.asset_id);
+            }
+            Err(err) => {
+                warn!("runtime asset cache write failed: {}", err);
+                session.status = format!("Asset download failed: {}", err);
+                session.ui_dirty = true;
+                fetch_state.in_flight_asset_ids.remove(&queued_asset_id);
+                fetch_state
+                    .pending_parent_asset_ids
+                    .remove(&queued_asset_id);
+            }
+        }
+    }
+
+    if let Some(save_index_task) = fetch_state.save_index_task.as_mut()
+        && let Some(result) = bevy::tasks::block_on(future::poll_once(save_index_task))
+    {
+        fetch_state.save_index_task = None;
+        if let Err(err) = result {
+            warn!("runtime asset cache index save failed: {}", err);
+            session.status = format!("Asset download failed: {}", err);
+            session.ui_dirty = true;
+            fetch_state.cache_index_dirty = true;
+        }
+    }
+
+    if fetch_state.cache_index_dirty && fetch_state.save_index_task.is_none() {
+        fetch_state.cache_index_dirty = false;
+        let asset_root = asset_root.0.clone();
+        let cache_index = asset_manager.cache_index.clone();
+        let cache_adapter = *cache_adapter;
+        fetch_state.save_index_task = Some(
+            IoTaskPool::get()
+                .spawn(async move { (cache_adapter.save_index)(asset_root, cache_index).await }),
+        );
     }
 }
 
@@ -705,25 +820,6 @@ fn next_runtime_asset_fetch_candidate(
         .or(Some(next_asset_id))
 }
 
-fn has_any_component_changes<T: Component>(world: &mut World) -> bool {
-    let mut query = world.query_filtered::<Entity, Or<(Added<T>, Changed<T>)>>();
-    query.iter(world).next().is_some()
-}
-
-fn has_any_removed_components<T: Component>(
-    world: &mut World,
-    cursor: &mut Option<MessageCursor<RemovedComponentEntity>>,
-) -> bool {
-    let Some(component_id) = world.component_id::<T>() else {
-        return false;
-    };
-    let Some(events) = world.removed_components().get(component_id) else {
-        return false;
-    };
-    let reader = cursor.get_or_insert_with(Default::default);
-    reader.read(events).next().is_some()
-}
-
 fn hash_asset_ids(asset_ids: &HashSet<String>) -> u64 {
     let mut sorted = asset_ids.iter().collect::<Vec<_>>();
     sorted.sort_unstable();
@@ -738,7 +834,8 @@ fn hash_asset_ids(asset_ids: &HashSet<String>) -> u64 {
 mod tests {
     use super::{
         AssetCatalogHotReloadState, LocalAssetManager, RuntimeAssetCatalogRecord,
-        RuntimeAssetDependencyState, next_runtime_asset_fetch_candidate,
+        RuntimeAssetDependencyDirtyState, RuntimeAssetDependencyState,
+        mark_runtime_asset_dependency_state_dirty_system, next_runtime_asset_fetch_candidate,
         sync_runtime_asset_dependency_state_system,
     };
     use crate::native::components::StreamedVisualAssetId;
@@ -781,7 +878,15 @@ mod tests {
         app.insert_resource(test_asset_manager(&[("planet_shader", &[])]));
         app.insert_resource(AssetCatalogHotReloadState::default());
         app.insert_resource(RuntimeAssetDependencyState::default());
-        app.add_systems(Update, sync_runtime_asset_dependency_state_system);
+        app.insert_resource(RuntimeAssetDependencyDirtyState::default());
+        app.add_systems(
+            Update,
+            (
+                mark_runtime_asset_dependency_state_dirty_system,
+                sync_runtime_asset_dependency_state_system
+                    .after(mark_runtime_asset_dependency_state_dirty_system),
+            ),
+        );
 
         let entity = app
             .world_mut()
@@ -820,7 +925,15 @@ mod tests {
         ]));
         app.insert_resource(AssetCatalogHotReloadState::default());
         app.insert_resource(RuntimeAssetDependencyState::default());
-        app.add_systems(Update, sync_runtime_asset_dependency_state_system);
+        app.insert_resource(RuntimeAssetDependencyDirtyState::default());
+        app.add_systems(
+            Update,
+            (
+                mark_runtime_asset_dependency_state_dirty_system,
+                sync_runtime_asset_dependency_state_system
+                    .after(mark_runtime_asset_dependency_state_dirty_system),
+            ),
+        );
 
         app.world_mut()
             .spawn(StreamedVisualAssetId("visual_root".to_string()));

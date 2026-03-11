@@ -10,7 +10,7 @@ default = ["persistence"]
 persistence = ["dep:sidereal-persistence"]
 
 [dependencies]
-bevy.workspace = true
+bevy = { workspace = true, default-features = false, features = ["serialize"] }
 serde.workspace = true
 serde_json.workspace = true
 sidereal-game = { path = "../sidereal-game" }

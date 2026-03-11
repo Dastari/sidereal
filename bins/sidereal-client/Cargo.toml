@@ -15,7 +15,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 avian2d.workspace = true
-bevy = { workspace = true, features = ["webgpu", "mp3"] }
+bevy = { workspace = true, default-features = false, features = ["2d", "webgpu", "mp3"] }
 bevy_svg = "0.18.0"
 sidereal-core = { path = "../../crates/sidereal-core" }
 sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime", default-features = false }
@@ -29,14 +29,14 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-bevy_remote = "0.18.0"
+bevy_remote = { workspace = true, default-features = false, features = ["http"] }
 lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", default-features = false, features = ["std", "client", "raw_connection", "udp", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rand.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
-lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", default-features = false, features = ["std", "client", "raw_connection", "webtransport", "websocket", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
+lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", default-features = false, features = ["std", "client", "raw_connection", "webtransport", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["DomException", "DomStringList", "Event", "Headers", "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "Request", "RequestInit", "Response", "Window"] }

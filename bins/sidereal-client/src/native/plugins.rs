@@ -155,8 +155,10 @@ fn add_shared_replication_runtime_systems(app: &mut App) {
             replication::configure_prediction_manager_tuning,
             replication::prune_runtime_entity_registry_system,
             (
-                assets::sync_runtime_asset_dependency_state_system
+                assets::mark_runtime_asset_dependency_state_dirty_system
                     .after(replication::prune_runtime_entity_registry_system),
+                assets::sync_runtime_asset_dependency_state_system
+                    .after(assets::mark_runtime_asset_dependency_state_dirty_system),
                 assets::queue_missing_catalog_assets_system
                     .after(assets::sync_runtime_asset_dependency_state_system),
                 assets::poll_runtime_asset_http_fetches_system
@@ -282,8 +284,10 @@ impl Plugin for ClientVisualsPlugin {
         app.init_resource::<backdrop::FullscreenRenderCache>();
         app.init_resource::<backdrop::BackdropRenderPerfCounters>();
         let in_world_visuals_core = (
-            super::shaders::sync_runtime_shader_assignments_system
+            super::shaders::mark_runtime_shader_assignments_dirty_system
                 .after(replication::adopt_native_lightyear_replicated_entities),
+            super::shaders::sync_runtime_shader_assignments_system
+                .after(super::shaders::mark_runtime_shader_assignments_dirty_system),
             render_layers::sync_runtime_render_layer_registry_system
                 .after(replication::adopt_native_lightyear_replicated_entities),
             render_layers::resolve_runtime_render_layer_assignments_system
