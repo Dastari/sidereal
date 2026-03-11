@@ -15,7 +15,6 @@ use super::camera::{
 use super::components::{WeaponImpactSparkPool, WeaponTracerCooldowns, WeaponTracerPool};
 use super::debug_overlay::{
     collect_debug_overlay_snapshot_system, debug_overlay_enabled, draw_debug_overlay_system,
-    log_prediction_runtime_state, sync_debug_velocity_arrow_mesh_system,
     toggle_debug_overlay_system,
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
@@ -26,15 +25,47 @@ use super::{
     scene, scene_world, tactical, transforms, transport, ui, visuals, world_loading_ui,
 };
 
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-}
-
 pub(super) struct ClientBootstrapPlugin {
     pub(super) headless: bool,
+}
+
+fn configure_non_headless_bootstrap(app: &mut App) {
+    scene::insert_embedded_fonts(app);
+    auth_net::init_gateway_request_state(app);
+    app.init_state::<ClientAppState>();
+    app.add_systems(
+        OnEnter(ClientAppState::Auth),
+        logout::purge_stale_world_and_transport_on_enter_auth_system,
+    );
+    auth_ui::register_auth_ui(app);
+    dialog_ui::register_dialog_ui(app);
+    app.add_systems(Startup, scene::spawn_ui_overlay_camera);
+    app.add_systems(
+        OnEnter(ClientAppState::CharacterSelect),
+        scene::setup_character_select_screen,
+    );
+    app.add_systems(
+        OnEnter(ClientAppState::WorldLoading),
+        (
+            transport::ensure_lightyear_client_system,
+            bootstrap::reset_bootstrap_watchdog_on_enter_world_loading,
+            world_loading_ui::setup_world_loading_screen,
+        )
+            .chain(),
+    );
+    app.add_systems(
+        OnEnter(ClientAppState::AssetLoading),
+        asset_loading_ui::setup_asset_loading_screen,
+    );
+    app.add_systems(
+        OnEnter(ClientAppState::InWorld),
+        (
+            transport::ensure_lightyear_client_system,
+            scene_world::spawn_world_scene,
+            bootstrap::reset_bootstrap_watchdog_on_enter_in_world,
+        )
+            .chain(),
+    );
 }
 
 impl Plugin for ClientBootstrapPlugin {
@@ -48,43 +79,7 @@ impl Plugin for ClientBootstrapPlugin {
             });
             return;
         }
-
-        scene::insert_embedded_fonts(app);
-        auth_net::init_gateway_request_state(app);
-        app.init_state::<ClientAppState>();
-        app.add_systems(
-            OnEnter(ClientAppState::Auth),
-            logout::purge_stale_world_and_transport_on_enter_auth_system,
-        );
-        auth_ui::register_auth_ui(app);
-        dialog_ui::register_dialog_ui(app);
-        app.add_systems(Startup, scene::spawn_ui_overlay_camera);
-        app.add_systems(
-            OnEnter(ClientAppState::CharacterSelect),
-            scene::setup_character_select_screen,
-        );
-        app.add_systems(
-            OnEnter(ClientAppState::WorldLoading),
-            (
-                transport::ensure_lightyear_client_system,
-                bootstrap::reset_bootstrap_watchdog_on_enter_world_loading,
-                world_loading_ui::setup_world_loading_screen,
-            )
-                .chain(),
-        );
-        app.add_systems(
-            OnEnter(ClientAppState::AssetLoading),
-            asset_loading_ui::setup_asset_loading_screen,
-        );
-        app.add_systems(
-            OnEnter(ClientAppState::InWorld),
-            (
-                transport::ensure_lightyear_client_system,
-                scene_world::spawn_world_scene,
-                bootstrap::reset_bootstrap_watchdog_on_enter_in_world,
-            )
-                .chain(),
-        );
+        configure_non_headless_bootstrap(app);
     }
 }
 
@@ -100,7 +95,9 @@ impl Plugin for ClientTransportPlugin {
                 (
                     auth_net::apply_headless_account_switch_system,
                     transport::ensure_client_transport_channels,
+                    transport::handle_unexpected_server_disconnect_system,
                     auth_net::send_lightyear_auth_messages,
+                    auth_net::receive_lightyear_session_ready_messages,
                 )
                     .chain(),
             );
@@ -125,174 +122,109 @@ pub(super) struct ClientReplicationPlugin {
     pub(super) headless: bool,
 }
 
+fn add_shared_replication_maintenance_systems(app: &mut App) {
+    app.add_systems(
+        PreUpdate,
+        (
+            replication::ensure_replicated_entity_spatial_components,
+            replication::ensure_hierarchy_parent_spatial_components
+                .after(replication::ensure_replicated_entity_spatial_components),
+        ),
+    );
+    app.add_systems(
+        PostUpdate,
+        (
+            replication::ensure_hierarchy_parent_spatial_components
+                .after(sidereal_game::sync_mounted_hierarchy),
+            backdrop::detach_fullscreen_layer_hierarchy_links_system
+                .after(replication::ensure_hierarchy_parent_spatial_components),
+            replication::sanitize_invalid_childof_hierarchy_links
+                .after(backdrop::detach_fullscreen_layer_hierarchy_links_system),
+        )
+            .before(bevy::transform::TransformSystems::Propagate),
+    );
+}
+
+fn add_shared_replication_runtime_systems(app: &mut App) {
+    app.add_systems(
+        Update,
+        (
+            replication::ensure_prediction_manager_present_system,
+            replication::configure_prediction_manager_tuning,
+            replication::prune_runtime_entity_registry_system,
+            (
+                assets::sync_runtime_asset_dependency_state_system
+                    .after(replication::prune_runtime_entity_registry_system),
+                assets::queue_missing_catalog_assets_system
+                    .after(assets::sync_runtime_asset_dependency_state_system),
+                assets::poll_runtime_asset_http_fetches_system
+                    .after(assets::queue_missing_catalog_assets_system),
+            ),
+            replication::adopt_native_lightyear_replicated_entities
+                .after(replication::prune_runtime_entity_registry_system),
+            transforms::sync_frame_interpolation_markers_for_world_entities
+                .after(replication::adopt_native_lightyear_replicated_entities),
+            transforms::sync_confirmed_world_entity_transforms_from_physics
+                .after(transforms::sync_frame_interpolation_markers_for_world_entities),
+            transforms::sync_confirmed_world_entity_transforms_from_world_space
+                .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
+            transforms::sync_interpolated_world_entity_transforms_without_history
+                .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
+            transforms::reveal_world_entities_when_initial_transform_ready
+                .after(transforms::sync_interpolated_world_entity_transforms_without_history),
+        ),
+    );
+}
+
+fn add_shared_replication_control_systems(app: &mut App) {
+    app.add_systems(
+        Update,
+        (
+            (
+                replication::sync_local_player_view_state_system
+                    .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
+                replication::sanitize_conflicting_prediction_interpolation_markers_system
+                    .after(replication::sync_local_player_view_state_system),
+                replication::sync_controlled_entity_tags_system.after(
+                    replication::sanitize_conflicting_prediction_interpolation_markers_system,
+                ),
+            ),
+            control::send_local_view_mode_updates
+                .after(replication::sync_local_player_view_state_system),
+            control::send_lightyear_control_requests
+                .after(replication::sync_controlled_entity_tags_system)
+                .after(control::send_local_view_mode_updates),
+            control::receive_lightyear_control_results
+                .after(control::send_lightyear_control_requests),
+            assets::receive_asset_catalog_version_messages
+                .after(control::receive_lightyear_control_results),
+            owner_manifest::receive_owner_asset_manifest_messages
+                .after(assets::receive_asset_catalog_version_messages),
+            tactical::receive_tactical_snapshot_messages
+                .after(owner_manifest::receive_owner_asset_manifest_messages),
+        ),
+    );
+}
+
+fn add_non_headless_replication_transition_systems(app: &mut App) {
+    app.add_systems(
+        Update,
+        (
+            replication::transition_world_loading_to_in_world
+                .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
+            replication::transition_asset_loading_to_in_world
+                .after(replication::transition_world_loading_to_in_world),
+        ),
+    );
+}
+
 impl Plugin for ClientReplicationPlugin {
     fn build(&self, app: &mut App) {
-        let disable_runtime_asset_fetch = env_flag("SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH");
-        let disable_adoption = env_flag("SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION");
-        if disable_runtime_asset_fetch {
-            info!(
-                "client runtime asset fetch systems disabled via SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH"
-            );
-        }
-        if disable_adoption {
-            info!(
-                "client replication adoption disabled via SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION"
-            );
-        }
-        app.add_systems(
-            PreUpdate,
-            (
-                replication::ensure_replicated_entity_spatial_components,
-                replication::ensure_hierarchy_parent_spatial_components
-                    .after(replication::ensure_replicated_entity_spatial_components),
-            ),
-        );
-        app.add_systems(
-            PostUpdate,
-            (
-                replication::ensure_hierarchy_parent_spatial_components
-                    .after(sidereal_game::sync_mounted_hierarchy),
-                backdrop::detach_fullscreen_layer_hierarchy_links_system
-                    .after(replication::ensure_hierarchy_parent_spatial_components),
-                replication::sanitize_invalid_childof_hierarchy_links
-                    .after(backdrop::detach_fullscreen_layer_hierarchy_links_system),
-            )
-                .before(bevy::transform::TransformSystems::Propagate),
-        );
-        if self.headless {
-            app.add_systems(
-                Update,
-                (
-                    replication::ensure_prediction_manager_present_system,
-                    replication::configure_prediction_manager_tuning,
-                    replication::prune_runtime_entity_registry_system,
-                    (
-                        assets::sync_runtime_asset_dependency_state_system
-                            .after(replication::prune_runtime_entity_registry_system),
-                        assets::queue_missing_catalog_assets_system
-                            .after(assets::sync_runtime_asset_dependency_state_system)
-                            .run_if(move || !disable_runtime_asset_fetch),
-                        assets::poll_runtime_asset_http_fetches_system
-                            .after(assets::queue_missing_catalog_assets_system)
-                            .run_if(move || !disable_runtime_asset_fetch),
-                    ),
-                    replication::adopt_native_lightyear_replicated_entities
-                        .after(replication::prune_runtime_entity_registry_system)
-                        .run_if(move || !disable_adoption),
-                    transforms::sync_frame_interpolation_markers_for_world_entities
-                        .after(replication::adopt_native_lightyear_replicated_entities),
-                    transforms::sync_confirmed_world_entity_transforms_from_physics
-                        .after(transforms::sync_frame_interpolation_markers_for_world_entities),
-                    transforms::sync_confirmed_world_entity_transforms_from_world_space
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
-                    transforms::sync_interpolated_world_entity_transforms_without_history
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
-                    transforms::reveal_world_entities_when_initial_transform_ready.after(
-                        transforms::sync_interpolated_world_entity_transforms_without_history,
-                    ),
-                    (
-                        replication::sync_local_player_view_state_system.after(
-                            transforms::sync_confirmed_world_entity_transforms_from_world_space,
-                        ),
-                        replication::sanitize_conflicting_prediction_interpolation_markers_system
-                            .after(replication::sync_local_player_view_state_system),
-                        replication::sync_controlled_entity_tags_system.after(
-                            replication::sanitize_conflicting_prediction_interpolation_markers_system,
-                        ),
-                    ),
-                    control::send_local_view_mode_updates
-                        .after(replication::sync_local_player_view_state_system),
-                    control::send_lightyear_control_requests
-                        .after(replication::sync_controlled_entity_tags_system)
-                        .after(control::send_local_view_mode_updates),
-                    control::receive_lightyear_control_results
-                        .after(control::send_lightyear_control_requests),
-                    control::audit_client_control_handover_resolution
-                        .after(control::receive_lightyear_control_results),
-                    assets::receive_asset_catalog_version_messages
-                        .after(control::audit_client_control_handover_resolution),
-                    owner_manifest::receive_owner_asset_manifest_messages
-                        .after(assets::receive_asset_catalog_version_messages),
-                    tactical::receive_tactical_snapshot_messages
-                        .after(owner_manifest::receive_owner_asset_manifest_messages),
-                    control::log_client_control_state_changes
-                        .after(tactical::receive_tactical_snapshot_messages),
-                ),
-            );
-            app.add_systems(Update, log_prediction_runtime_state);
-        } else {
-            app.add_systems(
-                Update,
-                (
-                    replication::ensure_prediction_manager_present_system,
-                    replication::configure_prediction_manager_tuning,
-                    replication::prune_runtime_entity_registry_system,
-                    (
-                        assets::sync_runtime_asset_dependency_state_system
-                            .after(replication::prune_runtime_entity_registry_system),
-                        assets::queue_missing_catalog_assets_system
-                            .after(assets::sync_runtime_asset_dependency_state_system)
-                            .run_if(move || !disable_runtime_asset_fetch),
-                        assets::poll_runtime_asset_http_fetches_system
-                            .after(assets::queue_missing_catalog_assets_system)
-                            .run_if(move || !disable_runtime_asset_fetch),
-                    ),
-                    replication::adopt_native_lightyear_replicated_entities
-                        .after(replication::prune_runtime_entity_registry_system)
-                        .run_if(move || !disable_adoption),
-                    transforms::sync_frame_interpolation_markers_for_world_entities
-                        .after(replication::adopt_native_lightyear_replicated_entities),
-                    transforms::sync_confirmed_world_entity_transforms_from_physics
-                        .after(transforms::sync_frame_interpolation_markers_for_world_entities),
-                    transforms::sync_confirmed_world_entity_transforms_from_world_space
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
-                    transforms::sync_interpolated_world_entity_transforms_without_history
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
-                    transforms::reveal_world_entities_when_initial_transform_ready.after(
-                        transforms::sync_interpolated_world_entity_transforms_without_history,
-                    ),
-                    replication::transition_world_loading_to_in_world
-                        .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
-                    replication::transition_asset_loading_to_in_world
-                        .after(replication::transition_world_loading_to_in_world),
-                ),
-            );
-            app.add_systems(
-                Update,
-                (
-                    (
-                        replication::sync_local_player_view_state_system.after(
-                            transforms::sync_confirmed_world_entity_transforms_from_world_space,
-                        ),
-                        replication::sanitize_conflicting_prediction_interpolation_markers_system
-                            .after(replication::sync_local_player_view_state_system),
-                        replication::sync_controlled_entity_tags_system.after(
-                            replication::sanitize_conflicting_prediction_interpolation_markers_system,
-                        ),
-                    ),
-                    control::send_local_view_mode_updates
-                        .after(replication::sync_local_player_view_state_system),
-                    control::send_lightyear_control_requests
-                        .after(replication::sync_controlled_entity_tags_system)
-                        .after(control::send_local_view_mode_updates),
-                    control::receive_lightyear_control_results
-                        .after(control::send_lightyear_control_requests),
-                    control::audit_client_control_handover_resolution
-                        .after(control::receive_lightyear_control_results),
-                    assets::receive_asset_catalog_version_messages
-                        .after(control::audit_client_control_handover_resolution),
-                    owner_manifest::receive_owner_asset_manifest_messages
-                        .after(assets::receive_asset_catalog_version_messages),
-                    tactical::receive_tactical_snapshot_messages
-                        .after(owner_manifest::receive_owner_asset_manifest_messages),
-                    control::log_client_control_state_changes
-                        .after(tactical::receive_tactical_snapshot_messages),
-                ),
-            );
-            app.add_systems(
-                Update,
-                log_prediction_runtime_state.run_if(in_state(ClientAppState::InWorld)),
-            );
+        add_shared_replication_maintenance_systems(app);
+        add_shared_replication_runtime_systems(app);
+        add_shared_replication_control_systems(app);
+        if !self.headless {
+            add_non_headless_replication_transition_systems(app);
         }
     }
 }
@@ -586,10 +518,8 @@ impl Plugin for ClientUiPlugin {
                     .after(super::backdrop::compute_fullscreen_external_world_system),
                 super::backdrop::update_space_background_material_system
                     .after(super::backdrop::update_starfield_material_system),
-                sync_debug_velocity_arrow_mesh_system
-                    .after(super::backdrop::update_space_background_material_system),
                 draw_debug_overlay_system
-                    .after(sync_debug_velocity_arrow_mesh_system)
+                    .after(super::backdrop::update_space_background_material_system)
                     .run_if(debug_overlay_enabled),
             )
                 .chain()

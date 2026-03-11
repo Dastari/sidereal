@@ -89,7 +89,7 @@ impl Default for StarfieldShaderSettings {
         ) {
             Ok(settings) => settings,
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "[sidereal-game] invalid DEFAULT_STARFIELD_SHADER_SETTINGS_JSON: {}",
                     err
                 );

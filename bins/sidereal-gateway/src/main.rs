@@ -1,11 +1,13 @@
+mod config;
+
 use anyhow::Context;
+use config::{BootstrapMode, CliAction};
 use sidereal_core::logging::{RunLogFile, prepare_timestamped_log_file};
 use sidereal_gateway::api::app_with_service;
 use sidereal_gateway::auth::{
     AuthConfig, AuthService, BootstrapDispatcher, DirectBootstrapDispatcher, PostgresAuthStore,
     UdpBootstrapDispatcher,
 };
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{Level, info};
 use tracing_subscriber::EnvFilter;
@@ -13,6 +15,15 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli_config = match config::apply_process_cli() {
+        Ok(CliAction::Run(config)) => *config,
+        Ok(CliAction::Help(text)) => {
+            println!("{text}");
+            return Ok(());
+        }
+        Err(err) => anyhow::bail!(err),
+    };
+    cli_config.apply_env();
     let RunLogFile {
         file: log_file,
         path: log_path,
@@ -25,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr.and(log_file))
         .try_init();
     info!("sidereal-gateway tracing log file: {}", log_path.display());
-    let config = AuthConfig::from_env().context("invalid auth configuration")?;
+    let auth_config = AuthConfig::from_env().context("invalid auth configuration")?;
     let database_url = std::env::var("GATEWAY_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
     let store = PostgresAuthStore::connect(&database_url)
@@ -35,33 +46,24 @@ async fn main() -> anyhow::Result<()> {
         .ensure_schema()
         .await
         .context("failed to ensure schema")?;
-    let bootstrap_mode =
-        std::env::var("GATEWAY_BOOTSTRAP_MODE").unwrap_or_else(|_| "udp".to_string());
-    let bootstrap_dispatcher: Arc<dyn BootstrapDispatcher> =
-        if bootstrap_mode.eq_ignore_ascii_case("udp") {
-            Arc::new(
-                UdpBootstrapDispatcher::from_env()
-                    .await
-                    .context("invalid replication control UDP config")?,
-            )
-        } else {
-            Arc::new(DirectBootstrapDispatcher::from_env())
-        };
+    let bootstrap_dispatcher: Arc<dyn BootstrapDispatcher> = match cli_config.bootstrap_mode {
+        BootstrapMode::Udp => Arc::new(
+            UdpBootstrapDispatcher::from_env()
+                .await
+                .context("invalid replication control UDP config")?,
+        ),
+        BootstrapMode::Direct => Arc::new(DirectBootstrapDispatcher::from_env()),
+    };
     let service = Arc::new(AuthService::new(
-        config,
+        auth_config,
         Arc::new(store),
         bootstrap_dispatcher,
     ));
 
-    let bind_addr = std::env::var("GATEWAY_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let socket_addr: SocketAddr = bind_addr
-        .parse()
-        .with_context(|| format!("invalid GATEWAY_BIND value: {bind_addr}"))?;
-
-    let listener = tokio::net::TcpListener::bind(socket_addr)
+    let listener = tokio::net::TcpListener::bind(cli_config.bind_addr)
         .await
-        .with_context(|| format!("failed to bind gateway on {socket_addr}"))?;
-    info!("sidereal-gateway listening on {}", socket_addr);
+        .with_context(|| format!("failed to bind gateway on {}", cli_config.bind_addr))?;
+    info!("sidereal-gateway listening on {}", cli_config.bind_addr);
     axum::serve(listener, app_with_service(service))
         .await
         .context("gateway server failed")?;

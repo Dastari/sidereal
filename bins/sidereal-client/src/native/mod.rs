@@ -12,6 +12,7 @@ mod backdrop;
 mod bootstrap;
 mod camera;
 mod components;
+mod config;
 mod control;
 mod debug_overlay;
 mod input;
@@ -46,6 +47,8 @@ pub(crate) use backdrop::{
     SpaceBackgroundMaterial, SpaceBackgroundNebulaMaterial, StarfieldMaterial,
     StreamedSpriteShaderMaterial, TacticalMapOverlayMaterial,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use config::*;
 #[allow(unused_imports)]
 pub(crate) use dev_console::build_log_capture_layer;
 pub(crate) use platform::*;
@@ -83,6 +86,7 @@ use lightyear::prelude::client::ClientPlugins;
 use lightyear::prelude::client::{Client, Connected};
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::input::native::ClientInputPlugin as NativeClientInputPlugin;
+use sidereal_core::SIM_TICK_HZ;
 #[cfg(not(target_arch = "wasm32"))]
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
@@ -99,6 +103,86 @@ use std::fs::OpenOptions;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use tracing_subscriber::FmtSubscriber;
+
+fn init_transport_resources(
+    app: &mut App,
+    headless_transport: bool,
+    gateway_http_adapter: GatewayHttpAdapter,
+    asset_cache_adapter: AssetCacheAdapter,
+) {
+    app.insert_resource(ClientSession::default());
+    app.insert_resource(PendingDisconnectNotify::default());
+    app.insert_resource(PendingDisconnectNotifySent::default());
+    app.insert_resource(LogoutCleanupRequested::default());
+    app.insert_resource(DisconnectRequest::default());
+    app.insert_resource(PauseMenuState::default());
+    app.insert_resource(ClientNetworkTick::default());
+    app.insert_resource(ClientInputAckTracker::default());
+    app.insert_resource(ClientInputSendState::default());
+    app.insert_resource(ClientAuthSyncState::default());
+    app.insert_resource(SessionReadyWatchdogConfig::from_env());
+    app.insert_resource(SessionReadyWatchdogState::default());
+    app.insert_resource(gateway_http_adapter);
+    app.insert_resource(asset_cache_adapter);
+    app.insert_resource(HeadlessTransportMode(headless_transport));
+}
+
+fn init_asset_runtime_resources(app: &mut App, asset_root: String) {
+    app.insert_resource(AssetRootPath(asset_root));
+    app.insert_resource(assets::LocalAssetManager::default());
+    app.insert_resource(assets::AssetCatalogHotReloadState::default());
+    app.insert_resource(assets::RuntimeAssetDependencyState::default());
+    app.insert_resource(assets::RuntimeAssetNetIndicatorState::default());
+    app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
+    app.insert_resource(OwnedAssetManifestCache::default());
+}
+
+fn init_control_and_prediction_resources(app: &mut App) {
+    app.insert_resource(CombatAuthorityEnabled(false));
+    app.insert_resource(MotionOwnershipReconcileState {
+        dirty: true,
+        ..default()
+    });
+    app.insert_resource(ClientControlRequestState::default());
+    app.insert_resource(ClientViewModeState::default());
+    app.insert_resource(LocalPlayerViewState::default());
+    app.insert_resource(RuntimeEntityHierarchy::default());
+    app.insert_resource(BootstrapWatchdogState::default());
+    app.insert_resource(DeferredPredictedAdoptionState::default());
+    app.insert_resource(PredictionBootstrapTuning::from_env());
+    app.insert_resource(PredictionCorrectionTuning::from_env());
+    app.insert_resource(NearbyCollisionProxyTuning::from_env());
+    app.insert_resource(RemoteEntityRegistry::default());
+}
+
+fn init_debug_and_diagnostics_resources(app: &mut App, headless_transport: bool) {
+    app.insert_resource(DebugOverlayState::default());
+    app.insert_resource(DebugOverlaySnapshot::default());
+    app.insert_resource(shaders::RuntimeShaderAssignments::default());
+    if headless_transport {
+        app.init_resource::<dialog_ui::DialogQueue>();
+    }
+}
+
+fn init_tactical_resources(app: &mut App) {
+    app.insert_resource(NameplateUiState { enabled: false });
+    app.insert_resource(CharacterSelectionState::default());
+    app.insert_resource(FreeCameraState::default());
+    app.insert_resource(OwnedEntitiesPanelState::default());
+    app.insert_resource(TacticalFogCache::default());
+    app.insert_resource(TacticalContactsCache::default());
+    app.insert_resource(TacticalResnapshotRequestState::default());
+    app.insert_resource(TacticalMapUiState::default());
+    app.insert_resource(SessionReadyState::default());
+}
+
+fn init_scene_and_render_resources(app: &mut App) {
+    app.insert_resource(FullscreenExternalWorldData::default());
+    app.insert_resource(StarfieldMotionState::default());
+    app.insert_resource(CameraMotionState::default());
+}
 
 pub(crate) fn configure_client_runtime(
     app: &mut App,
@@ -107,13 +191,6 @@ pub(crate) fn configure_client_runtime(
     gateway_http_adapter: GatewayHttpAdapter,
     asset_cache_adapter: AssetCacheAdapter,
 ) {
-    let env_flag = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    };
-
     app.add_plugins(
         PhysicsPlugins::default()
             .with_length_unit(1.0)
@@ -124,7 +201,7 @@ pub(crate) fn configure_client_runtime(
     app.insert_resource(Gravity(Vec2::ZERO));
     crate::client_core::configure_shared_client_core(app);
     app.add_plugins(ClientPlugins {
-        tick_duration: Duration::from_secs_f64(1.0 / 60.0),
+        tick_duration: Duration::from_secs_f64(1.0 / f64::from(SIM_TICK_HZ)),
     });
     app.add_plugins(LightyearAvianPlugin {
         replication_mode: AvianReplicationMode::PositionButInterpolateTransform,
@@ -144,135 +221,46 @@ pub(crate) fn configure_client_runtime(
     app.add_message::<ShotHitEvent>();
     app.add_message::<BallisticProjectileSpawnedEvent>();
 
-    app.insert_resource(Time::<Fixed>::from_hz(60.0));
-    app.insert_resource(AssetRootPath(asset_root));
-    app.insert_resource(CombatAuthorityEnabled(false));
-    app.insert_resource(LocalSimulationDebugMode::from_env());
-    app.insert_resource(MotionOwnershipAuditEnabled::from_env());
-    app.insert_resource(MotionOwnershipAuditState::default());
-    app.insert_resource(MotionOwnershipReconcileState {
-        dirty: true,
-        ..default()
-    });
-    app.insert_resource(ClientSession::default());
-    app.insert_resource(PendingDisconnectNotify::default());
-    app.insert_resource(PendingDisconnectNotifySent::default());
-    app.insert_resource(LogoutCleanupRequested::default());
-    app.insert_resource(DisconnectRequest::default());
-    app.insert_resource(PauseMenuState::default());
-    app.insert_resource(ClientNetworkTick::default());
-    app.insert_resource(ClientInputAckTracker::default());
-    app.insert_resource(ClientInputLogState::default());
-    app.insert_resource(ClientInputSendState::default());
-    app.insert_resource(ClientAuthSyncState::default());
-    app.insert_resource(SessionReadyWatchdogConfig::from_env());
-    app.insert_resource(SessionReadyWatchdogState::default());
-    app.insert_resource(gateway_http_adapter);
-    app.insert_resource(asset_cache_adapter);
-    app.insert_resource(shaders::RuntimeShaderAssignments::default());
-    app.insert_resource(ClientControlRequestState::default());
-    app.insert_resource(ClientControlDebugState::default());
-    app.insert_resource(ClientViewModeState::default());
-    app.insert_resource(SessionReadyState::default());
-    app.insert_resource(assets::LocalAssetManager::default());
-    app.insert_resource(assets::AssetCatalogHotReloadState::default());
-    app.insert_resource(assets::RuntimeAssetDependencyState::default());
-    app.insert_resource(assets::RuntimeAssetNetIndicatorState::default());
-    app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
-    let debug_blue_overlay = std::env::var("SIDEREAL_DEBUG_BLUE_FULLSCREEN")
-        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    app.insert_resource(DebugBlueOverlayEnabled(debug_blue_overlay));
-    app.insert_resource(DebugGizmoOnGameplayCamera::from_env());
-    app.insert_resource(DebugVelocityArrowAsMesh::from_env());
-    app.insert_resource(DebugOverlayState::default());
-    app.insert_resource(DebugOverlaySnapshot::default());
-    app.insert_resource(NameplateUiState { enabled: false });
-    app.insert_resource(LocalPlayerViewState::default());
-    app.insert_resource(CharacterSelectionState::default());
-    app.insert_resource(FreeCameraState::default());
-    app.insert_resource(OwnedEntitiesPanelState::default());
-    app.insert_resource(OwnedAssetManifestCache::default());
-    app.insert_resource(TacticalFogCache::default());
-    app.insert_resource(TacticalContactsCache::default());
-    app.insert_resource(TacticalResnapshotRequestState::default());
-    app.insert_resource(TacticalMapUiState::default());
-    app.insert_resource(RuntimeEntityHierarchy::default());
-    app.insert_resource(FullscreenExternalWorldData::default());
-    app.insert_resource(StarfieldMotionState::default());
-    app.insert_resource(CameraMotionState::default());
-    app.insert_resource(BootstrapWatchdogState::default());
-    app.insert_resource(DeferredPredictedAdoptionState::default());
-    app.insert_resource(PredictionBootstrapTuning::from_env());
-    app.insert_resource(PredictionCorrectionTuning::from_env());
-    app.insert_resource(NearbyCollisionProxyTuning::from_env());
-    app.insert_resource(RemoteEntityRegistry::default());
-    app.insert_resource(HeadlessTransportMode(headless_transport));
-    let disable_motion_ownership = env_flag("SIDEREAL_CLIENT_DISABLE_MOTION_OWNERSHIP");
-    if disable_motion_ownership {
-        eprintln!(
-            "WARN sidereal_client::native: client motion-ownership systems disabled via SIDEREAL_CLIENT_DISABLE_MOTION_OWNERSHIP"
-        );
-        app.add_systems(
-            FixedUpdate,
-            (
-                motion::sync_controlled_mass_from_total_mass,
-                process_character_movement_actions,
-                process_flight_actions,
-                bootstrap_weapon_cooldown_state,
-                tick_weapon_cooldowns,
-                process_weapon_fire_actions,
-                replication::mark_new_ballistic_projectiles_prespawned,
-                update_ballistic_projectiles,
-                apply_engine_thrust,
-            )
-                .chain()
-                .before(avian2d::prelude::PhysicsSystems::StepSimulation),
-        );
-    } else {
-        app.add_systems(
-            FixedUpdate,
-            (
-                motion::enforce_motion_ownership_for_world_entities,
-                motion::audit_motion_ownership_system
-                    .after(motion::enforce_motion_ownership_for_world_entities)
-                    .run_if(bevy::ecs::schedule::common_conditions::not(
-                        lightyear::prelude::is_in_rollback,
-                    )),
-                motion::sync_controlled_mass_from_total_mass,
-                process_character_movement_actions,
-                process_flight_actions,
-                bootstrap_weapon_cooldown_state,
-                tick_weapon_cooldowns,
-                process_weapon_fire_actions,
-                replication::mark_new_ballistic_projectiles_prespawned,
-                update_ballistic_projectiles,
-                apply_engine_thrust,
-            )
-                .chain()
-                .before(avian2d::prelude::PhysicsSystems::StepSimulation),
-        );
-        app.add_systems(FixedPreUpdate, motion::mark_motion_ownership_dirty_signals);
-    }
+    app.insert_resource(Time::<Fixed>::from_hz(f64::from(SIM_TICK_HZ)));
+    init_transport_resources(
+        app,
+        headless_transport,
+        gateway_http_adapter,
+        asset_cache_adapter,
+    );
+    init_asset_runtime_resources(app, asset_root);
+    init_control_and_prediction_resources(app);
+    init_debug_and_diagnostics_resources(app, headless_transport);
+    init_tactical_resources(app);
+    init_scene_and_render_resources(app);
+    app.add_systems(
+        FixedUpdate,
+        (
+            motion::enforce_motion_ownership_for_world_entities,
+            motion::sync_controlled_mass_from_total_mass,
+            process_character_movement_actions,
+            process_flight_actions,
+            bootstrap_weapon_cooldown_state,
+            tick_weapon_cooldowns,
+            process_weapon_fire_actions,
+            replication::mark_new_ballistic_projectiles_prespawned,
+            update_ballistic_projectiles,
+            apply_engine_thrust,
+        )
+            .chain()
+            .before(avian2d::prelude::PhysicsSystems::StepSimulation),
+    );
+    app.add_systems(FixedPreUpdate, motion::mark_motion_ownership_dirty_signals);
     app.add_systems(
         FixedUpdate,
         (stabilize_idle_motion, clamp_angular_velocity)
             .chain()
             .after(avian2d::prelude::PhysicsSystems::StepSimulation),
     );
-    if headless_transport {
-        app.init_resource::<dialog_ui::DialogQueue>();
-    }
-    let disable_hierarchy_rebuild = env_flag("SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD");
-    if disable_hierarchy_rebuild {
-        eprintln!(
-            "WARN sidereal_client::native: client hierarchy rebuild disabled via SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD"
-        );
-    } else {
-        app.add_systems(
-            PostUpdate,
-            sync_mounted_hierarchy.before(bevy::transform::TransformSystems::Propagate),
-        );
-    }
+    app.add_systems(
+        PostUpdate,
+        sync_mounted_hierarchy.before(bevy::transform::TransformSystems::Propagate),
+    );
     app.add_observer(log_client_transport_connected);
     app.add_observer(transport::ensure_raw_client_connected_after_linked);
     app.add_plugins(plugins::ClientBootstrapPlugin {
@@ -288,14 +276,7 @@ pub(crate) fn configure_client_runtime(
         headless: headless_transport,
     });
     if !headless_transport {
-        let disable_world_visuals = env_flag("SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS");
-        if disable_world_visuals {
-            eprintln!(
-                "WARN sidereal_client::native: client world visuals disabled via SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS"
-            );
-        } else {
-            app.add_plugins(plugins::ClientVisualsPlugin);
-        }
+        app.add_plugins(plugins::ClientVisualsPlugin);
         app.add_plugins(plugins::ClientLightingPlugin);
         app.add_plugins(plugins::ClientUiPlugin);
         app.add_plugins(plugins::ClientDiagnosticsPlugin);
@@ -349,18 +330,10 @@ pub(crate) fn build_windowed_client_app(
     app.add_plugins(SvgPlugin);
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     audio::insert_embedded_menu_loop_audio(&mut app);
-    let debug_gizmos_on_gameplay_camera =
-        std::env::var("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA")
-            .ok()
-            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     if let Some(mut gizmo_config_store) = app.world_mut().get_resource_mut::<GizmoConfigStore>() {
         let (config, _) =
             gizmo_config_store.config_mut::<bevy::gizmos::config::DefaultGizmoConfigGroup>();
-        config.render_layers = if debug_gizmos_on_gameplay_camera {
-            RenderLayers::from_layers(&[0, PLANET_BODY_RENDER_LAYER])
-        } else {
-            RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER)
-        };
+        config.render_layers = RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER);
     }
     configure_client_runtime(
         &mut app,
@@ -374,25 +347,18 @@ pub(crate) fn build_windowed_client_app(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run() {
+    match apply_process_cli() {
+        Ok(CliAction::Run) => {}
+        Ok(CliAction::Help(help)) => {
+            println!("{help}");
+            return;
+        }
+        Err(err) => {
+            emit_startup_tracing_error(&err.to_string());
+            std::process::exit(2);
+        }
+    }
     dev_console::install_panic_file_hook();
-    let env_flag = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    };
-    eprintln!(
-        "client startup env flags: disable_runtime_asset_fetch={} disable_repl_adoption={} disable_hierarchy_rebuild={} disable_world_visuals={} disable_motion_ownership={} debug_gizmos_on_gameplay_camera={} debug_arrow_as_mesh={} shader_materials_enabled={} streamed_shader_overrides={}",
-        env_flag("SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH"),
-        env_flag("SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION"),
-        env_flag("SIDEREAL_CLIENT_DISABLE_HIERARCHY_REBUILD"),
-        env_flag("SIDEREAL_CLIENT_DISABLE_WORLD_VISUALS"),
-        env_flag("SIDEREAL_CLIENT_DISABLE_MOTION_OWNERSHIP"),
-        env_flag("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA"),
-        env_flag("SIDEREAL_CLIENT_DEBUG_ARROW_AS_MESH"),
-        shaders::shader_materials_enabled(),
-        shaders::streamed_shader_overrides_enabled(),
-    );
 
     let headless_transport = std::env::var("SIDEREAL_CLIENT_HEADLESS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -400,8 +366,7 @@ pub(crate) fn run() {
     let remote_cfg = match RemoteInspectConfig::from_env("CLIENT", 15714) {
         Ok(cfg) => cfg,
         Err(err) => {
-            log_startup_error_line(&format!("invalid CLIENT BRP config: {err}"));
-            eprintln!("invalid CLIENT BRP config: {err}");
+            emit_startup_tracing_error(&format!("invalid CLIENT BRP config: {err}"));
             std::process::exit(2);
         }
     };
@@ -461,6 +426,19 @@ fn log_startup_error_line(message: &str) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{message}");
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_startup_tracing_error(message: &str) {
+    log_startup_error_line(message);
+    let subscriber = FmtSubscriber::builder()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::error!("{message}");
+    });
 }
 
 fn log_client_transport_connected(

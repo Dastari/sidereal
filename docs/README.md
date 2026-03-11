@@ -50,6 +50,8 @@ Update note (2026-03-09):
    - `docs/decisions/dr-0026_sql_script_catalog_persistence.md`
 4. Historical audits and reports:
    - `docs/reports/`
+   - `docs/reports/client_environment_variable_audit_2026-03-11.md`
+   - `docs/reports/server_gateway_environment_variable_audit_2026-03-11.md`
 
 ## Maintenance Rules
 

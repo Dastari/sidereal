@@ -15,7 +15,10 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - Lightyear-native replication/prediction/interpolation is active.
 - Legacy world-delta runtime paths are removed.
 - Legacy mirror-motion components are removed from runtime simulation/replication flow.
-- Fixed-step simulation remains authoritative at 30 Hz.
+- Fixed-step simulation remains authoritative at 60 Hz.
+
+2026-03-11 update:
+- Shared core `SIM_TICK_HZ` now matches the active 60 Hz client and replication runtime.
 
 ## 2.1 Current Native Runtime Status (2026-03-08)
 
@@ -107,6 +110,11 @@ Track remaining non-structural work after Lightyear-native migration completion:
    - `SIDEREAL_CLIENT_DEFER_DIALOG_AFTER_S`
    - `SIDEREAL_CLIENT_DEFER_SUMMARY_INTERVAL_S`
 
+2026-03-11 update:
+
+1. Native client prediction/runtime tuning values now have command-line equivalents in addition to env vars; use `sidereal-client --help` for the current native option surface.
+2. The old env-driven debug startup toggles were removed from the native client startup path. This playbook should only reference active prediction/runtime tuning inputs, not debug-only launch flags.
+
 ## 4. Runtime Tuning Playbook
 
 1. Start with defaults:
@@ -117,8 +125,8 @@ Track remaining non-structural work after Lightyear-native migration completion:
 2. Run at least 2 concurrent clients with repeated reconnect + immediate input bursts.
 3. Watch logs for:
    - `predicted adoption delay summary` (`samples`, `avg_wait_s`, `max_wait_s`)
-   - `prediction runtime summary` (`replicated`, `predicted`, `interpolated`, `controlled`)
-   - anomaly warnings (`no controlled entity`, `zero Predicted markers`)
+   - controlled-adoption delay/stall warnings
+   - correction/rollback configuration logs from prediction-manager setup
 4. Tune thresholds:
    - raise warn thresholds if harmless startup delays spam warnings,
    - lower dialog threshold if real control gaps are being hidden.

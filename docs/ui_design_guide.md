@@ -382,7 +382,7 @@ dialog_queue.push_error(
 );
 
 // ❌ WRONG: Just log to console or flash status text
-eprintln!("Error: {err}");  // User never sees this
+tracing::error!("Error: {err}");  // User never sees this
 session.status = format!("Error: {err}");  // Disappears too fast
 ```
 

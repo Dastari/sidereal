@@ -370,7 +370,7 @@ impl Default for SpaceBackgroundShaderSettings {
         ) {
             Ok(settings) => settings,
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "[sidereal-game] invalid DEFAULT_SPACE_BACKGROUND_SHADER_SETTINGS_JSON: {}",
                     err
                 );

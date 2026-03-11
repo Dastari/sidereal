@@ -7385,6 +7385,8 @@ dependencies = [
  "sidereal-game",
  "sidereal-net",
  "sidereal-runtime-sync",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -7423,6 +7425,7 @@ dependencies = [
  "serde_json",
  "sidereal-component-macros",
  "sidereal-core",
+ "tracing",
  "uuid",
 ]
 
@@ -7484,6 +7487,7 @@ dependencies = [
  "serde_json",
  "sidereal-core",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 
@@ -7515,6 +7519,8 @@ dependencies = [
  "sidereal-scripting",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -7537,6 +7543,8 @@ dependencies = [
  "mlua",
  "serde",
  "serde_json",
+ "sidereal-game",
+ "sidereal-persistence",
  "thiserror 2.0.18",
  "tracing",
 ]

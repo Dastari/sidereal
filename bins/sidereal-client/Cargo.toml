@@ -24,6 +24,8 @@ sidereal-net = { path = "../../crates/sidereal-net", features = ["lightyear_prot
 sidereal-runtime-sync = { path = "../../crates/sidereal-runtime-sync", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

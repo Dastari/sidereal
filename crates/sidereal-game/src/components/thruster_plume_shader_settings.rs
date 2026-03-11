@@ -108,7 +108,7 @@ impl Default for ThrusterPlumeShaderSettings {
         ) {
             Ok(settings) => settings,
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "[sidereal-game] invalid DEFAULT_THRUSTER_PLUME_SHADER_SETTINGS_JSON: {}",
                     err
                 );

@@ -3,7 +3,7 @@
 //! This module is binary-only Bevy integration that receives bootstrap UDP
 //! messages and forwards entity-binding commands into the replication world.
 
-use bevy::log::info;
+use bevy::log::{error, info, warn};
 use bevy::prelude::{Commands, Resource};
 use sidereal_replication::bootstrap::{
     BootstrapProcessor, ControlHandleResult, PostgresBootstrapStore,
@@ -47,21 +47,21 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
     let socket = match UdpSocket::bind(&bind_addr) {
         Ok(socket) => socket,
         Err(err) => {
-            eprintln!("failed to bind replication control UDP listener on {bind_addr}: {err}");
+            error!("failed to bind replication control UDP listener on {bind_addr}: {err}");
             return;
         }
     };
     let store = match PostgresBootstrapStore::connect(&database_url) {
         Ok(store) => store,
         Err(err) => {
-            eprintln!("failed to connect replication bootstrap store: {err}");
+            error!("failed to connect replication bootstrap store: {err}");
             return;
         }
     };
     let mut processor = match BootstrapProcessor::new(store) {
         Ok(processor) => processor,
         Err(err) => {
-            eprintln!("failed to initialize replication bootstrap processor: {err}");
+            error!("failed to initialize replication bootstrap processor: {err}");
             return;
         }
     };
@@ -76,14 +76,14 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
             let (size, from) = match socket.recv_from(&mut buf) {
                 Ok(v) => v,
                 Err(err) => {
-                    eprintln!("replication control recv error: {err}");
+                    warn!("replication control recv error: {err}");
                     continue;
                 }
             };
             let payload = &buf[..size];
             match processor.handle_payload(payload) {
                 Ok(ControlHandleResult::Bootstrap(result)) => {
-                    println!(
+                    info!(
                         "replication bootstrap processed from {from}: account_id={}, player_entity_id={}, applied={}",
                         result.account_id, result.player_entity_id, result.applied
                     );
@@ -94,7 +94,7 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
                     });
                 }
                 Ok(ControlHandleResult::AdminSpawn(result)) => {
-                    println!(
+                    info!(
                         "replication admin spawn command accepted from {from}: request_id={} actor_account_id={} target_player_entity_id={} bundle_id={} requested_entity_id={}",
                         result.request_id,
                         result.actor_account_id,
@@ -115,7 +115,7 @@ pub fn start_replication_control_listener(mut commands: Commands<'_, '_>) {
                     });
                 }
                 Err(err) => {
-                    eprintln!("replication control message rejected from {from}: {err}");
+                    warn!("replication control message rejected from {from}: {err}");
                 }
             }
         }

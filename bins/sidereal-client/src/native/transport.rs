@@ -166,14 +166,14 @@ pub fn start_lightyear_client_transport_inner(
         let local_addr = match local_addr {
             Ok(v) => v,
             Err(err) => {
-                eprintln!("invalid CLIENT_UDP_BIND: {err}");
+                tracing::error!("invalid CLIENT_UDP_BIND: {err}");
                 return;
             }
         };
         let remote_addr = match resolved_udp_addr(session) {
             Ok(v) => v,
             Err(err) => {
-                eprintln!("{err}");
+                tracing::error!("{err}");
                 return;
             }
         };

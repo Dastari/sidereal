@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use lightyear::prelude::input::native::ActionState;
 use lightyear::prelude::server::ClientOf;
@@ -60,6 +61,25 @@ pub struct RealtimeInputActivityByPlayer {
 
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct RealtimeInputTimeoutSeconds(pub f64);
+
+type PlayerActionQueueQueryItem<'a> = (
+    Entity,
+    &'a EntityGuid,
+    Option<&'a SimulatedControlledEntity>,
+    Option<&'a PlayerTag>,
+    Option<&'a ControlledEntityGuid>,
+    &'a mut ActionQueue,
+);
+
+#[derive(SystemParam)]
+pub struct NativeInputDrainState<'w> {
+    pub controlled_entity_map: Res<'w, PlayerControlledEntityMap>,
+    pub latest_realtime_inputs: Res<'w, LatestRealtimeInputsByPlayer>,
+    pub realtime_input_activity: Res<'w, RealtimeInputActivityByPlayer>,
+    pub realtime_input_timeout: Res<'w, RealtimeInputTimeoutSeconds>,
+    pub input_drop_metrics: ResMut<'w, ClientInputDropMetrics>,
+    pub input_log_state: ResMut<'w, InputActivityLogState>,
+}
 
 #[derive(Resource, Debug, Default)]
 pub struct InputRateLimitState {
@@ -374,23 +394,11 @@ pub fn drain_native_player_inputs_to_action_queue(
     entities: Query<
         '_,
         '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Option<&'_ SimulatedControlledEntity>,
-            Option<&'_ PlayerTag>,
-            Option<&'_ ControlledEntityGuid>,
-            &'_ mut ActionQueue,
-        ),
+        PlayerActionQueueQueryItem<'_>,
         Without<lightyear::prelude::Confirmed<ActionState<PlayerInput>>>,
     >,
     time: Res<'_, Time>,
-    controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
-    latest_realtime_inputs: Res<'_, LatestRealtimeInputsByPlayer>,
-    realtime_input_activity: Res<'_, RealtimeInputActivityByPlayer>,
-    realtime_input_timeout: Res<'_, RealtimeInputTimeoutSeconds>,
-    mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
-    mut input_log_state: ResMut<'_, InputActivityLogState>,
+    mut drain_state: NativeInputDrainState<'_>,
 ) {
     const ACTIVE_INPUT_LOG_INTERVAL_S: f64 = 0.15;
     let now_s = time.elapsed_secs_f64();
@@ -414,7 +422,8 @@ pub fn drain_native_player_inputs_to_action_queue(
         let Some(player_id) = parse_player_entity_id(player_entity_id.as_str()) else {
             continue;
         };
-        let is_authoritative_target = controlled_entity_map
+        let is_authoritative_target = drain_state
+            .controlled_entity_map
             .by_player_entity_id
             .get(&player_id)
             .is_some_and(|mapped| *mapped == entity);
@@ -424,12 +433,16 @@ pub fn drain_native_player_inputs_to_action_queue(
             continue;
         }
         let controlled_entity_id = RuntimeEntityId(guid.0);
-        let latest_for_player = latest_realtime_inputs.by_player_entity_id.get(&player_id);
-        let latest_is_fresh = realtime_input_activity
+        let latest_for_player = drain_state
+            .latest_realtime_inputs
+            .by_player_entity_id
+            .get(&player_id);
+        let latest_is_fresh = drain_state
+            .realtime_input_activity
             .last_received_at_s_by_player_entity_id
             .get(&player_id)
             .is_some_and(|last_received_at_s| {
-                now_s - *last_received_at_s <= realtime_input_timeout.0
+                now_s - *last_received_at_s <= drain_state.realtime_input_timeout.0
             });
         let (actions, action_source) = match latest_for_player {
             Some(_) if !latest_is_fresh => (&[][..], "stale_realtime"),
@@ -440,7 +453,8 @@ pub fn drain_native_player_inputs_to_action_queue(
             // controlled id encoding/routing is stale or mismatched. The server-side
             // authoritative control map already scoped this entity to the player.
             Some(latest) if is_authoritative_target => {
-                input_drop_metrics.controlled_target_mismatch = input_drop_metrics
+                drain_state.input_drop_metrics.controlled_target_mismatch = drain_state
+                    .input_drop_metrics
                     .controlled_target_mismatch
                     .saturating_add(1);
                 (latest.actions.as_slice(), "realtime_mismatch_accepted")
@@ -448,7 +462,8 @@ pub fn drain_native_player_inputs_to_action_queue(
             // For non-simulated entities, keep strict target matching to avoid
             // accidentally applying player intent outside authoritative control flow.
             Some(_) => {
-                input_drop_metrics.controlled_target_mismatch = input_drop_metrics
+                drain_state.input_drop_metrics.controlled_target_mismatch = drain_state
+                    .input_drop_metrics
                     .controlled_target_mismatch
                     .saturating_add(1);
                 (&[][..], "mismatch")
@@ -461,7 +476,8 @@ pub fn drain_native_player_inputs_to_action_queue(
                 queue.clear();
             }
             if input_debug_logging_enabled()
-                && latest_realtime_inputs
+                && drain_state
+                    .latest_realtime_inputs
                     .by_player_entity_id
                     .contains_key(&player_id)
             {
@@ -479,18 +495,21 @@ pub fn drain_native_player_inputs_to_action_queue(
         for action in actions.iter().copied() {
             queue.push(action);
         }
-        let accepted_tick = latest_realtime_inputs
+        let accepted_tick = drain_state
+            .latest_realtime_inputs
             .by_player_entity_id
             .get(&player_id)
             .map(|latest| latest.tick)
             .unwrap_or(0);
         if input_debug_logging_enabled() {
-            let last_logged_at_s = *input_log_state
+            let last_logged_at_s = *drain_state
+                .input_log_state
                 .last_logged_at_s_by_player_entity_id
                 .get(player_entity_id.as_str())
                 .unwrap_or(&f64::NEG_INFINITY);
             let time_due = now_s - last_logged_at_s >= ACTIVE_INPUT_LOG_INTERVAL_S;
-            let actions_changed = input_log_state
+            let actions_changed = drain_state
+                .input_log_state
                 .last_logged_actions_by_player_entity_id
                 .get(player_entity_id.as_str())
                 .is_none_or(|last| last.as_slice() != actions);
@@ -506,15 +525,17 @@ pub fn drain_native_player_inputs_to_action_queue(
                     controlled = %controlled_entity_id,
                     "server applied input to action queue"
                 );
-                input_log_state
+                drain_state
+                    .input_log_state
                     .last_logged_at_s_by_player_entity_id
                     .insert(player_entity_id.clone(), now_s);
-                input_log_state
+                drain_state
+                    .input_log_state
                     .last_logged_actions_by_player_entity_id
                     .insert(player_entity_id.clone(), actions.to_vec());
             }
         }
-        input_drop_metrics.record_accepted();
+        drain_state.input_drop_metrics.record_accepted();
     }
 }
 

@@ -326,7 +326,7 @@ All other replicated components (~45+) are receive-only (no prediction, no inter
 
 ### 7.6 Server-Side Replication Configuration
 
-- **Tick rate**: 30 Hz fixed timestep
+- **Tick rate**: 60 Hz fixed timestep
 - **Send mode**: `SendUpdatesMode::SinceLastAck` — delta since last acknowledged state
 - **Replication groups**: Per-entity (`ReplicationGroup::new_from_entity()`)
 - **Hierarchy replication**: Disabled (`HierarchyRebuildEnabled(false)`) — hierarchy tracked via `MountedOn` (UUID-based)

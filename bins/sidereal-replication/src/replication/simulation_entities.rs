@@ -8,6 +8,7 @@
 
 use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, RigidBody, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
+use bevy::log::error;
 use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{
@@ -255,12 +256,12 @@ pub fn hydrate_simulation_entities(
     let mut persistence = match GraphPersistence::connect(&replication_database_url()) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("replication simulation hydration skipped; connect failed: {err}");
+            error!("replication simulation hydration skipped; connect failed: {err}");
             return;
         }
     };
     if let Err(err) = persistence.ensure_schema() {
-        eprintln!("replication simulation hydration skipped; schema init failed: {err}");
+        error!("replication simulation hydration skipped; schema init failed: {err}");
         return;
     }
     schema_init_state.0 = true;
@@ -271,14 +272,14 @@ pub fn hydrate_simulation_entities(
         entity_registry.as_ref(),
         asset_registry.as_ref(),
     ) {
-        eprintln!("replication simulation hydration skipped; scripted world init failed: {err}");
+        error!("replication simulation hydration skipped; scripted world init failed: {err}");
         return;
     }
 
     let records = match persistence.load_graph_records() {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("replication simulation hydration skipped; graph load failed: {err}");
+            error!("replication simulation hydration skipped; graph load failed: {err}");
             return;
         }
     };
@@ -300,7 +301,7 @@ pub fn hydrate_simulation_entities(
             .map(|(guid, entity_ids)| format!("guid {} reused by {:?}", guid, entity_ids))
             .collect::<Vec<_>>()
             .join("; ");
-        eprintln!(
+        error!(
             "replication simulation hydration aborted: runtime GUID collisions detected: {formatted}"
         );
         return;

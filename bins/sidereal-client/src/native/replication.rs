@@ -2,6 +2,7 @@
 
 use avian2d::prelude::{LinearVelocity, Position, Rotation};
 use bevy::ecs::query::Has;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use lightyear::frame_interpolation::FrameInterpolate;
@@ -27,10 +28,46 @@ use super::components::{
     StreamedVisualAttached, StreamedVisualAttachmentKind, WorldEntity,
 };
 use super::resources::{
-    BootstrapWatchdogState, DeferredPredictedAdoptionState, LocalSimulationDebugMode,
-    PredictionBootstrapTuning, PredictionCorrectionTuning, PredictionRollbackStateTuning,
-    RemoteEntityRegistry,
+    BootstrapWatchdogState, DeferredPredictedAdoptionState, PredictionBootstrapTuning,
+    PredictionCorrectionTuning, PredictionRollbackStateTuning, RemoteEntityRegistry,
 };
+
+type MissingReplicatedSpatialQueryItem<'a> = (
+    Entity,
+    Option<&'a Position>,
+    Option<&'a Rotation>,
+    Option<&'a WorldPosition>,
+    Option<&'a WorldRotation>,
+);
+
+type ParentSpatialQueryItem<'a> = (
+    Has<Transform>,
+    Has<GlobalTransform>,
+    Has<Visibility>,
+    Option<&'a Position>,
+    Option<&'a Rotation>,
+    Option<&'a WorldPosition>,
+    Option<&'a WorldRotation>,
+);
+
+type ControlledTagGuidCandidate<'a> = (
+    Entity,
+    &'a EntityGuid,
+    Has<PlayerTag>,
+    Has<lightyear::prelude::Predicted>,
+    Has<lightyear::prelude::Interpolated>,
+);
+
+#[derive(SystemParam)]
+pub(crate) struct ControlledEntityTagInputs<'w, 's> {
+    session: Res<'w, ClientSession>,
+    player_view_state: Res<'w, LocalPlayerViewState>,
+    adoption_state: ResMut<'w, DeferredPredictedAdoptionState>,
+    entity_registry: Res<'w, RuntimeEntityHierarchy>,
+    controlled_query: Query<'w, 's, (Entity, &'static ControlledEntity)>,
+    writer_query: Query<'w, 's, Entity, With<SimulationMotionWriter>>,
+    guid_candidates: Query<'w, 's, ControlledTagGuidCandidate<'static>>,
+}
 
 fn bootstrap_planar_heading(
     rotation: Option<&Rotation>,
@@ -69,13 +106,7 @@ pub(crate) fn ensure_replicated_entity_spatial_components(
     missing_transform: Query<
         '_,
         '_,
-        (
-            Entity,
-            Option<&'_ Position>,
-            Option<&'_ Rotation>,
-            Option<&'_ WorldPosition>,
-            Option<&'_ WorldRotation>,
-        ),
+        MissingReplicatedSpatialQueryItem<'_>,
         (With<lightyear::prelude::Replicated>, Without<Transform>),
     >,
     missing_visibility: Query<
@@ -112,19 +143,7 @@ pub(crate) fn ensure_replicated_entity_spatial_components(
 pub(crate) fn ensure_hierarchy_parent_spatial_components(
     mut commands: Commands<'_, '_>,
     children_with_parent: Query<'_, '_, &'_ ChildOf>,
-    parent_components: Query<
-        '_,
-        '_,
-        (
-            Has<Transform>,
-            Has<GlobalTransform>,
-            Has<Visibility>,
-            Option<&'_ Position>,
-            Option<&'_ Rotation>,
-            Option<&'_ WorldPosition>,
-            Option<&'_ WorldRotation>,
-        ),
-    >,
+    parent_components: Query<'_, '_, ParentSpatialQueryItem<'_>>,
 ) {
     let mut visited_parents = HashSet::<Entity>::new();
     for child_of in &children_with_parent {
@@ -175,19 +194,7 @@ pub(crate) fn ensure_hierarchy_parent_spatial_components(
 pub(crate) fn ensure_parent_spatial_components_on_children_added(
     trigger: On<Add, Children>,
     mut commands: Commands<'_, '_>,
-    parent_components: Query<
-        '_,
-        '_,
-        (
-            Has<Transform>,
-            Has<GlobalTransform>,
-            Has<Visibility>,
-            Option<&'_ Position>,
-            Option<&'_ Rotation>,
-            Option<&'_ WorldPosition>,
-            Option<&'_ WorldRotation>,
-        ),
-    >,
+    parent_components: Query<'_, '_, ParentSpatialQueryItem<'_>>,
 ) {
     let entity = trigger.entity;
     let Ok((
@@ -464,7 +471,6 @@ pub(crate) fn prune_runtime_entity_registry_system(
 pub(crate) fn adopt_native_lightyear_replicated_entities(
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
-    local_mode: Res<'_, LocalSimulationDebugMode>,
     tuning: Res<'_, PredictionBootstrapTuning>,
     time: Res<'_, Time>,
     mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
@@ -536,7 +542,6 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
         let is_local_controlled_entity = (is_root_entity || is_local_player_entity)
             && player_view_state.controlled_entity_id.as_deref()
                 == Some(runtime_entity_id.as_str());
-        let predicted_mode = !local_mode.0;
         let is_spatial_root = is_root_entity && size_m.is_some();
         let is_static_world_spatial =
             (world_position.is_some() || world_rotation.is_some()) && linear_velocity.is_none();
@@ -549,14 +554,12 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             // motion components arrive; this prevents transient wrong-world placement.
             continue;
         }
-        if predicted_mode
-            && should_defer_controlled_predicted_adoption(
-                is_local_controlled_entity,
-                position.is_some(),
-                rotation.is_some(),
-                linear_velocity.is_some(),
-            )
-        {
+        if should_defer_controlled_predicted_adoption(
+            is_local_controlled_entity,
+            position.is_some(),
+            rotation.is_some(),
+            linear_velocity.is_some(),
+        ) {
             let now_s = time.elapsed_secs_f64();
             let mut missing = Vec::new();
             if position.is_none() {
@@ -860,38 +863,31 @@ pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_system(
 pub(crate) fn sync_controlled_entity_tags_system(
     mut commands: Commands<'_, '_>,
     time: Res<'_, Time>,
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    mut adoption_state: ResMut<'_, DeferredPredictedAdoptionState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    controlled_query: Query<'_, '_, (Entity, &'_ ControlledEntity)>,
-    writer_query: Query<'_, '_, Entity, With<SimulationMotionWriter>>,
-    guid_candidates: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Has<PlayerTag>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-        ),
-    >,
+    mut inputs: ControlledEntityTagInputs<'_, '_>,
 ) {
-    let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
+    let Some(local_player_entity_id) = inputs.session.player_entity_id.as_ref() else {
         return;
     };
     let local_player_wire_id = local_player_entity_id.clone();
     let local_player_runtime_id = runtime_entity_id_from_guid(
-        &entity_registry,
+        &inputs.entity_registry,
         local_player_entity_id,
         local_player_entity_id,
     )
     .unwrap_or_else(|| local_player_entity_id.clone());
 
-    let target_entity_id = match player_view_state.controlled_entity_id.as_ref() {
-        Some(id) if entity_registry.by_entity_id.contains_key(id.as_str()) => Some(id.clone()),
-        Some(id) => runtime_entity_id_from_guid(&entity_registry, local_player_entity_id, id),
+    let target_entity_id = match inputs.player_view_state.controlled_entity_id.as_ref() {
+        Some(id)
+            if inputs
+                .entity_registry
+                .by_entity_id
+                .contains_key(id.as_str()) =>
+        {
+            Some(id.clone())
+        }
+        Some(id) => {
+            runtime_entity_id_from_guid(&inputs.entity_registry, local_player_entity_id, id)
+        }
         None => Some(local_player_runtime_id.clone()),
     };
     let target_guid = target_entity_id
@@ -907,7 +903,7 @@ pub(crate) fn sync_controlled_entity_tags_system(
         let mut best_confirmed: Option<Entity> = None;
         let mut best_player_anchor: Option<Entity> = None;
         for (entity, entity_guid, is_player_anchor, is_predicted, is_interpolated) in
-            &guid_candidates
+            &inputs.guid_candidates
         {
             if entity_guid.0 != guid {
                 continue;
@@ -939,7 +935,7 @@ pub(crate) fn sync_controlled_entity_tags_system(
         }
 
         if let Some(predicted) = best_predicted {
-            adoption_state.missing_predicted_control_entity_id = None;
+            inputs.adoption_state.missing_predicted_control_entity_id = None;
             return Some(predicted);
         }
 
@@ -948,24 +944,24 @@ pub(crate) fn sync_controlled_entity_tags_system(
             // Sidereal-specific control lane and can temporarily remain confirmed-only while
             // the camera and UI stay usable. This is intentionally different from a stock
             // "always predict the controlled pawn" example.
-            adoption_state.missing_predicted_control_entity_id = None;
+            inputs.adoption_state.missing_predicted_control_entity_id = None;
             return best_player_anchor.or(best_confirmed).or(best_interpolated);
         }
 
         let missing_id = target_entity_id.clone().unwrap_or_else(|| guid.to_string());
-        adoption_state.missing_predicted_control_entity_id = Some(missing_id.clone());
+        inputs.adoption_state.missing_predicted_control_entity_id = Some(missing_id.clone());
         let now_s = time.elapsed_secs_f64();
-        if now_s - adoption_state.last_missing_predicted_warn_at_s >= 1.0 {
+        if now_s - inputs.adoption_state.last_missing_predicted_warn_at_s >= 1.0 {
             bevy::log::warn!(
                 "controlled runtime target {} has no Predicted clone yet; refusing to bind local control to confirmed/interpolated fallback",
                 missing_id
             );
-            adoption_state.last_missing_predicted_warn_at_s = now_s;
+            inputs.adoption_state.last_missing_predicted_warn_at_s = now_s;
         }
         None
     });
 
-    for (entity, controlled) in &controlled_query {
+    for (entity, controlled) in &inputs.controlled_query {
         if Some(entity) != target_entity {
             commands.entity(entity).remove::<ControlledEntity>();
         } else if controlled.player_entity_id != local_player_wire_id {
@@ -975,7 +971,7 @@ pub(crate) fn sync_controlled_entity_tags_system(
             });
         }
     }
-    for entity in &writer_query {
+    for entity in &inputs.writer_query {
         if Some(entity) != target_entity {
             commands.entity(entity).remove::<SimulationMotionWriter>();
         }

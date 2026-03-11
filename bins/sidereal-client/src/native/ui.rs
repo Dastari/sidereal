@@ -4,6 +4,7 @@ use avian2d::prelude::{LinearVelocity, Rotation};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -43,6 +44,20 @@ use super::resources::{
     EmbeddedFonts, NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache,
     TacticalFogCache, TacticalMapUiState,
 };
+
+#[derive(SystemParam)]
+pub(super) struct DebugOverlayTextUiQueries<'w, 's> {
+    root_query: Query<'w, 's, &'static mut Visibility, With<DebugOverlayPanelRoot>>,
+    label_text: Query<'w, 's, &'static mut Text, With<DebugOverlayPanelLabelText>>,
+    label_shadow_text: Query<'w, 's, &'static mut Text, With<DebugOverlayPanelLabelShadowText>>,
+    value_text: Query<
+        'w,
+        's,
+        (&'static mut Text, &'static mut TextColor),
+        With<DebugOverlayPanelValueText>,
+    >,
+    value_shadow_text: Query<'w, 's, &'static mut Text, With<DebugOverlayPanelValueShadowText>>,
+}
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
 const TACTICAL_ICON_WORLD_HEIGHT_M: f32 = 24.0;
@@ -162,19 +177,9 @@ pub(super) fn update_debug_overlay_text_ui_system(
     diagnostics: Res<'_, DiagnosticsStore>,
     input_send_state: Res<'_, ClientInputSendState>,
     mut display_metrics: Local<'_, DebugOverlayDisplayMetrics>,
-    mut root_query: Query<'_, '_, &mut Visibility, With<DebugOverlayPanelRoot>>,
-    mut text_queries: ParamSet<
-        '_,
-        '_,
-        (
-            Query<'_, '_, &mut Text, With<DebugOverlayPanelLabelText>>,
-            Query<'_, '_, &mut Text, With<DebugOverlayPanelLabelShadowText>>,
-            Query<'_, '_, (&mut Text, &mut TextColor), With<DebugOverlayPanelValueText>>,
-            Query<'_, '_, &mut Text, With<DebugOverlayPanelValueShadowText>>,
-        ),
-    >,
+    mut ui_queries: DebugOverlayTextUiQueries<'_, '_>,
 ) {
-    let Ok(mut root_visibility) = root_query.single_mut() else {
+    let Ok(mut root_visibility) = ui_queries.root_query.single_mut() else {
         return;
     };
 
@@ -235,13 +240,13 @@ pub(super) fn update_debug_overlay_text_ui_system(
         })
         .unwrap_or(DebugSeverity::Normal);
 
-    if let Ok(mut label_text) = text_queries.p0().single_mut() {
+    if let Ok(mut label_text) = ui_queries.label_text.single_mut() {
         label_text.0 = labels_text.clone();
     }
-    if let Ok(mut label_shadow_text) = text_queries.p1().single_mut() {
+    if let Ok(mut label_shadow_text) = ui_queries.label_shadow_text.single_mut() {
         label_shadow_text.0 = labels_text;
     }
-    if let Ok((mut value_text, mut value_text_color)) = text_queries.p2().single_mut() {
+    if let Ok((mut value_text, mut value_text_color)) = ui_queries.value_text.single_mut() {
         value_text.0 = values_text.clone();
         value_text_color.0 = match highest_severity {
             DebugSeverity::Normal => Color::srgb(0.85, 0.92, 1.0),
@@ -249,7 +254,7 @@ pub(super) fn update_debug_overlay_text_ui_system(
             DebugSeverity::Error => Color::srgb(1.0, 0.55, 0.5),
         };
     }
-    if let Ok(mut value_shadow_text) = text_queries.p3().single_mut() {
+    if let Ok(mut value_shadow_text) = ui_queries.value_shadow_text.single_mut() {
         value_shadow_text.0 = values_text;
     }
 }

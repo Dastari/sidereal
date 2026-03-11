@@ -45,6 +45,7 @@ impl Plugin for ReplicationDiagnosticsPlugin {
             Update,
             (
                 health::update_health_snapshot,
+                health::update_world_explorer_snapshot,
                 health::update_world_map_snapshot,
             )
                 .chain(),

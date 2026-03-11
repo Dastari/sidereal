@@ -561,7 +561,6 @@ pub(crate) fn should_bypass_candidate_filter(
     if is_faction_visibility
         && visibility_context
             .player_faction_id
-            .as_deref()
             .zip(entity_faction_id)
             .is_some_and(|(player_faction, entity_faction)| player_faction == entity_faction)
     {
@@ -1608,7 +1607,6 @@ pub(crate) fn authorize_visibility(
     if is_faction_visibility
         && visibility_context
             .player_faction_id
-            .as_deref()
             .zip(entity_faction_id)
             .is_some_and(|(player_faction, entity_faction)| player_faction == entity_faction)
     {

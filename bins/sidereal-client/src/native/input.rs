@@ -1,7 +1,6 @@
-//! Client input: realtime input messages, input marker ownership, debug logging.
+//! Client input: realtime input messages and input marker ownership.
 #![allow(clippy::items_after_test_module)]
 
-use bevy::log::info;
 use bevy::prelude::*;
 use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected};
@@ -9,7 +8,6 @@ use lightyear::prelude::input::native::{ActionState, InputMarker};
 use sidereal_game::{EntityAction, EntityGuid, SimulationMotionWriter};
 use sidereal_net::{ClientRealtimeInputMessage, InputChannel, PlayerEntityId, PlayerInput};
 use sidereal_runtime_sync::parse_guid_from_entity_id;
-use std::sync::OnceLock;
 
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, is_active_world_state,
@@ -17,8 +15,8 @@ use super::app_state::{
 use super::components::ControlledEntity;
 use super::dev_console::DevConsoleState;
 use super::resources::{
-    ClientControlRequestState, ClientInputAckTracker, ClientInputLogState, ClientInputSendState,
-    ClientNetworkTick, HeadlessTransportMode,
+    ClientControlRequestState, ClientInputAckTracker, ClientInputSendState, ClientNetworkTick,
+    HeadlessTransportMode,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -99,14 +97,6 @@ fn canonical_player_entity_id(id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-pub fn client_input_debug_logging_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("SIDEREAL_DEBUG_INPUT_LOGS")
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    })
-}
-
 #[allow(clippy::type_complexity)]
 fn resolve_entity_by_guid_prefer_predicted(
     guid_candidates: &Query<
@@ -180,9 +170,8 @@ pub fn send_lightyear_input_messages(
     >,
     mut tick: ResMut<'_, ClientNetworkTick>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
-    mut input_log_state: ResMut<'_, ClientInputLogState>,
     mut input_send_state: ResMut<'_, ClientInputSendState>,
-    request_state: Res<'_, ClientControlRequestState>,
+    _request_state: Res<'_, ClientControlRequestState>,
 ) {
     let suppress_for_console = super::dev_console::is_console_open(dev_console_state.as_deref());
     let in_world_state = is_active_world_state(&app_state, &headless_mode);
@@ -245,34 +234,6 @@ pub fn send_lightyear_input_messages(
     // server routing cannot stall on sparse heartbeats.
     let should_send_network = should_send_network || has_active_input;
 
-    if client_input_debug_logging_enabled() {
-        let actions_changed = input_log_state.last_logged_actions != player_input.actions;
-        let control_changed = input_log_state.last_logged_controlled_entity_id
-            != player_view_state.controlled_entity_id
-            || input_log_state.last_logged_pending_controlled_entity_id
-                != request_state.pending_controlled_entity_id;
-        let periodic_active_log_due =
-            has_active_input && now_s - input_log_state.last_logged_at_s >= 0.15;
-        if periodic_active_log_due || actions_changed || control_changed {
-            input_log_state.last_logged_at_s = now_s;
-            input_log_state.last_logged_actions = player_input.actions.clone();
-            input_log_state.last_logged_controlled_entity_id =
-                player_view_state.controlled_entity_id.clone();
-            input_log_state.last_logged_pending_controlled_entity_id =
-                request_state.pending_controlled_entity_id.clone();
-            info!(
-                player = %player_entity_id,
-                actions = ?player_input.actions,
-                tick = tick.0.saturating_add(1),
-                controlled = ?player_view_state.controlled_entity_id,
-                routed_target = %target_entity_id,
-                pending = ?request_state.pending_controlled_entity_id,
-                detached = player_view_state.detached_free_camera,
-                send = should_send_network,
-                "client sending input route"
-            );
-        }
-    }
     if let Some(target_entity) = target_entity {
         commands.entity(target_entity).insert((
             SimulationMotionWriter,

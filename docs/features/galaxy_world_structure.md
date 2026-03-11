@@ -34,7 +34,7 @@ With 40 solar systems, even modestly spaced, galaxy diameter will be in the thou
 | 2,000 km | ~0.125 m | Visible jumping; physics instability |
 | 5,000 km (galaxy diameter) | ~0.5 m | Broken -- ships snap between half-meter increments |
 
-At 30 Hz with 100 m/s velocity, each tick moves 3.33 m. At large coordinates, position deltas can approach or fall below available f32 precision, causing motion to stall or quantize.
+At 60 Hz with 100 m/s velocity, each tick moves 1.67 m. At large coordinates, position deltas can approach or fall below available f32 precision, causing motion to stall or quantize.
 
 ### 2.3 Decision: Enable f64 for World Coordinates
 

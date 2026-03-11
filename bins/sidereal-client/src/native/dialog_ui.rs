@@ -11,8 +11,9 @@ use bevy::prelude::*;
 ///
 /// # Usage
 ///
-/// ```rust
-/// use crate::dialog_ui::DialogQueue;
+/// ```ignore
+/// use bevy::prelude::ResMut;
+/// use sidereal_client::native::dialog_ui::DialogQueue;
 ///
 /// fn my_system(mut dialog_queue: ResMut<DialogQueue>) {
 ///     // Show error dialog (red theme)

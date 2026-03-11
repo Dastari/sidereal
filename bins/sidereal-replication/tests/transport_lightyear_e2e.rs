@@ -163,7 +163,7 @@ fn test_access_token(player_entity_id: &str, jwt_secret: &str) -> String {
 #[test]
 fn replication_client_lightyear_transport_flow() {
     if !ensure_test_db_available() {
-        eprintln!("skipping transport e2e test; postgres unavailable");
+        tracing::warn!("skipping transport e2e test; postgres unavailable");
         return;
     }
 
@@ -198,7 +198,9 @@ fn replication_client_lightyear_transport_flow() {
     let client_udp_addr = format!("127.0.0.1:{client_udp_port}");
     let Some(player_entity_id) = available_player_entity_ids(1).and_then(|mut ids| ids.pop())
     else {
-        eprintln!("skipping transport e2e test; no auth_characters player_entity_id available");
+        tracing::warn!(
+            "skipping transport e2e test; no auth_characters player_entity_id available"
+        );
         return;
     };
     let jwt_secret = test_jwt_secret();
@@ -234,12 +236,17 @@ fn replication_client_lightyear_transport_flow() {
 
     let client_connected_ok = wait_for_log(
         &client_log,
-        "native client lightyear transport connected",
+        "client lightyear transport connected",
         Duration::from_secs(20),
     );
-    let client_input_ok = wait_for_log(
+    let replication_bound_ok = wait_for_log(
         &rep_log,
-        "replication received client input:",
+        "replication client authenticated and bound: client=",
+        Duration::from_secs(20),
+    );
+    let client_ready_ok = wait_for_log(
+        &client_log,
+        &format!("client session ready received for player_entity_id={player_entity_id}"),
         Duration::from_secs(20),
     );
 
@@ -251,8 +258,14 @@ fn replication_client_lightyear_transport_flow() {
         client_log.lock().expect("client log lock"),
     );
     assert!(
-        client_input_ok,
-        "replication did not ingest client input.\nreplication log:\n{}\nclient log:\n{}",
+        replication_bound_ok,
+        "replication did not authenticate and bind the client.\nreplication log:\n{}\nclient log:\n{}",
+        rep_log.lock().expect("rep log lock"),
+        client_log.lock().expect("client log lock"),
+    );
+    assert!(
+        client_ready_ok,
+        "client did not receive session ready.\nreplication log:\n{}\nclient log:\n{}",
         rep_log.lock().expect("rep log lock"),
         client_log.lock().expect("client log lock"),
     );
@@ -261,7 +274,7 @@ fn replication_client_lightyear_transport_flow() {
 #[test]
 fn replication_rebinds_same_remote_after_player_switch() {
     if !ensure_test_db_available() {
-        eprintln!("skipping transport e2e test; postgres unavailable");
+        tracing::warn!("skipping transport e2e test; postgres unavailable");
         return;
     }
 
@@ -295,11 +308,11 @@ fn replication_rebinds_same_remote_after_player_switch() {
     let control_udp_addr = format!("127.0.0.1:{control_udp_port}");
     let client_udp_addr = format!("127.0.0.1:{client_udp_port}");
     let Some(player_ids) = available_player_entity_ids(2) else {
-        eprintln!("skipping transport e2e test; failed loading auth_characters player ids");
+        tracing::warn!("skipping transport e2e test; failed loading auth_characters player ids");
         return;
     };
     if player_ids.len() < 2 {
-        eprintln!("skipping transport e2e test; need at least 2 player_entity_id values");
+        tracing::warn!("skipping transport e2e test; need at least 2 player_entity_id values");
         return;
     }
     let player_a = player_ids[0].clone();

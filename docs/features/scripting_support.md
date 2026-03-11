@@ -77,7 +77,7 @@ client input -> shard sim -> replication/distribution -> persistence
 ┌────────────────────────▼────────────────────────────────┐
 │                  BEVY ECS CORE (Rust)                    │
 │  Physics, Networking, Persistence, Rendering            │
-│  30 Hz authoritative simulation                         │
+│  60 Hz authoritative simulation                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -384,7 +384,7 @@ end
 
 | Domain | Why NOT Scriptable |
 |---|---|
-| Physics simulation | 30 Hz hot path, server-authoritative, performance-critical |
+| Physics simulation | 60 Hz hot path, server-authoritative, performance-critical |
 | Networking / replication | Ultra-low latency, security boundary, binary protocol |
 | Client prediction / reconciliation | 60 Hz on client, deterministic requirement |
 | Core component systems (thrust, fuel, mass) | High frequency, data-parallel, type safety critical |
@@ -1652,13 +1652,15 @@ end
 
 ### 11.4 Current Compromises
 
+Status note 2026-03-11:
+- `WorldInitScriptConfig`, world-init source decoding, graph-record decoding, and runtime render-graph validation now live in `crates/sidereal-scripting` and are consumed by both gateway and replication. The remaining compromises below reflect other current limitations, not that shared extraction work.
+
 1. `world_init` is replication-startup-only (one-time marker guarded), while gateway registration only uses the gateway starter-world script surfaces (`player_init`, bundle registry, bundle graph records). Gateway is now catalog-backed too, but it still does not have replication's BRP-driven Bevy resource host model.
 2. Durable script persistence now uses SQL tables, not graph records. Disk is seed/default content plus explicit reload source, not the long-term authority.
 3. `reload_all_from_disk_requested` replaces the in-memory script catalog from the disk seed set and that replacement is then flushed into the active SQL-backed catalog. This intentionally overwrites any prior live-edited SQL state with disk content.
 4. World init currently seeds legacy fullscreen layers, one patrol NPC prototype, and a deterministic asteroid field. Dynamic region-load/unload generation is still pending, and the fullscreen bootstrap contract should migrate to the DR-0027 authored render-layer model.
 5. Event bridge is still interval-first prototype (single script module); full declarative multi-module event routing from section 5 is pending.
-6. `WorldInitScriptConfig` struct is defined in both gateway and replication (identical shape). Could be shared via the scripting crate if dependencies allow.
-7. Lua table conversion is currently shape-inferred (array vs object). Empty table literals are ambiguous; script payloads should avoid relying on empty arrays until explicit array constructors are added.
+6. Lua table conversion is currently shape-inferred (array vs object). Empty table literals are ambiguous; script payloads should avoid relying on empty arrays until explicit array constructors are added.
 
 ### 11.4.1 Script Source Authority (Replication Host)
 
@@ -1905,13 +1907,13 @@ This chain executes before physics prepare.
 
 - [ ] Add end-to-end integration test: DB wipe -> first startup world init -> new account scripted bundle creation -> replication hydration on enter-world -> restart -> verify idempotent.
 - [ ] Add restart test proving world-init marker skip behavior.
-- [ ] Share `WorldInitScriptConfig` through the scripting crate or a shared types module to eliminate duplication between gateway and replication.
+- [x] Share `WorldInitScriptConfig` through the scripting crate or a shared types module to eliminate duplication between gateway and replication.
 - [ ] Add approved-path `require` replacement so scripts can import shared modules within the scripts root.
 
 ### Phase B2: Lua Asset Registry Integration
 
 - [ ] Add canonical script module for asset registry (for example `data/scripts/assets/registry.lua`) with schema versioning and validation.
-- [ ] Implement shared loader/decoder in `sidereal-scripting` so gateway/replication use one registry parsing path.
+- [x] Implement shared loader/decoder in `sidereal-scripting` so gateway/replication use one registry parsing path.
 - [ ] Mark bootstrap-required assets in Lua registry (`bootstrap_required`) and remove ad-hoc always-required Rust lists.
 - [ ] Build generated catalog metadata (`asset_id`, `asset_guid`, shader domain/schema metadata, optional compatibility aliases, checksum, dependencies, content type) from Lua registry input.
 - [ ] Add startup manifest payload schema consumed by client `AssetLoading` flow (`required_assets` + optional full catalog).
@@ -2106,10 +2108,10 @@ All mutations remain intent-only and are validated in Rust authority systems.
 
 ## 13. Performance Budget
 
-Content scripts run at 1-10 Hz, not on the 30 Hz physics hot path.
+Content scripts run at 1-10 Hz, not on the 60 Hz physics hot path.
 
 ```
-30 Hz authority tick: 33 ms budget
+60 Hz authority tick: 16.7 ms budget
   Physics:      ~10 ms
   Replication:  ~5 ms
   Rendering:    ~10 ms

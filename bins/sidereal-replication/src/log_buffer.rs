@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use bevy::prelude::Resource;
 
-const DEFAULT_LOG_BUFFER_CAPACITY: usize = 10_000;
+// Keep a deeper in-memory history than the persisted console tail so the TUI can
+// scroll back across longer startup/runtime sessions without immediately evicting older rows.
+const DEFAULT_LOG_BUFFER_CAPACITY: usize = 50_000;
 static LOG_TO_STDERR: AtomicBool = AtomicBool::new(true);
 
 #[derive(Debug, Clone, Default, Resource)]

@@ -1,6 +1,12 @@
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
+use sidereal_game::{
+    RuntimeWorldVisualStack, generated_component_registry, validate_runtime_post_process_stack,
+    validate_runtime_render_layer_definition, validate_runtime_render_layer_rule,
+    validate_runtime_world_visual_stack,
+};
+use sidereal_persistence::GraphEntityRecord;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -66,6 +72,14 @@ pub struct LoadedLuaModule {
     lua: Lua,
     root: Table,
     script_path: PathBuf,
+}
+
+pub const WORLD_INIT_SCRIPT_REL_PATH: &str = "world/world_init.lua";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldInitScriptConfig {
+    pub render_layer_shader_asset_ids: Vec<String>,
+    pub additional_required_asset_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -159,6 +173,211 @@ pub fn resolve_scripts_root(cargo_manifest_dir: &str) -> PathBuf {
         .join("../../data/scripts")
         .components()
         .collect::<PathBuf>()
+}
+
+pub fn decode_graph_entity_records(
+    script_path: &Path,
+    json_value: JsonValue,
+) -> Result<Vec<GraphEntityRecord>, ScriptError> {
+    let Some(values) = json_value.as_array() else {
+        return Err(ScriptError::Contract(format!(
+            "{}: build_graph_records(ctx) must return an array of graph entity records",
+            script_path.display()
+        )));
+    };
+    let mut records = Vec::with_capacity(values.len());
+    for (index, value) in values.iter().enumerate() {
+        match serde_json::from_value::<GraphEntityRecord>(value.clone()) {
+            Ok(record) => records.push(record),
+            Err(err) => {
+                let keys = value
+                    .as_object()
+                    .map(|object| {
+                        let mut keys = object.keys().cloned().collect::<Vec<_>>();
+                        keys.sort();
+                        keys.join(", ")
+                    })
+                    .unwrap_or_else(|| "<non-object>".to_string());
+                return Err(ScriptError::Contract(format!(
+                    "{}: build_graph_records(ctx) record[{index}] is not GraphEntityRecord-compatible: {err}; keys={keys}; value={value}",
+                    script_path.display()
+                )));
+            }
+        }
+    }
+    Ok(records)
+}
+
+pub fn validate_runtime_render_graph_records(
+    records: &[GraphEntityRecord],
+) -> Result<(), ScriptError> {
+    let generated_registry = sidereal_game::GeneratedComponentRegistry {
+        entries: generated_component_registry(),
+        shader_entries: Vec::new(),
+    };
+    let known_component_kinds = sidereal_game::known_component_kinds(&generated_registry);
+    let mut known_layer_ids = HashSet::<String>::from(["main_world".to_string()]);
+
+    for record in records {
+        for component in &record.components {
+            if component.component_kind == "runtime_render_layer_definition" {
+                let definition = serde_json::from_value::<
+                    sidereal_game::RuntimeRenderLayerDefinition,
+                >(component.properties.clone())
+                .map_err(|err| {
+                    ScriptError::Contract(format!(
+                        "entity {} runtime_render_layer_definition decode failed: {err}",
+                        record.entity_id
+                    ))
+                })?;
+                validate_runtime_render_layer_definition(&definition).map_err(|err| {
+                    ScriptError::Contract(format!(
+                        "entity {} invalid runtime_render_layer_definition '{}': {}",
+                        record.entity_id, definition.layer_id, err
+                    ))
+                })?;
+                known_layer_ids.insert(definition.layer_id);
+            }
+        }
+    }
+
+    for record in records {
+        for component in &record.components {
+            match component.component_kind.as_str() {
+                "runtime_render_layer_rule" => {
+                    let rule = serde_json::from_value::<sidereal_game::RuntimeRenderLayerRule>(
+                        component.properties.clone(),
+                    )
+                    .map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "entity {} runtime_render_layer_rule decode failed: {err}",
+                            record.entity_id
+                        ))
+                    })?;
+                    validate_runtime_render_layer_rule(
+                        &rule,
+                        &known_layer_ids,
+                        &known_component_kinds,
+                    )
+                    .map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "entity {} invalid runtime_render_layer_rule '{}': {}",
+                            record.entity_id, rule.rule_id, err
+                        ))
+                    })?;
+                }
+                "runtime_post_process_stack" => {
+                    let stack = serde_json::from_value::<sidereal_game::RuntimePostProcessStack>(
+                        component.properties.clone(),
+                    )
+                    .map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "entity {} runtime_post_process_stack decode failed: {err}",
+                            record.entity_id
+                        ))
+                    })?;
+                    validate_runtime_post_process_stack(&stack).map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "entity {} invalid runtime_post_process_stack: {}",
+                            record.entity_id, err
+                        ))
+                    })?;
+                }
+                "runtime_world_visual_stack" => {
+                    let stack = serde_json::from_value::<RuntimeWorldVisualStack>(
+                        component.properties.clone(),
+                    )
+                    .map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "entity {} runtime_world_visual_stack decode failed: {err}",
+                            record.entity_id
+                        ))
+                    })?;
+                    validate_runtime_world_visual_stack(&stack).map_err(|err| {
+                        ScriptError::Contract(format!(
+                            "entity {} invalid runtime_world_visual_stack: {}",
+                            record.entity_id, err
+                        ))
+                    })?;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn load_world_init_config_from_source(
+    source: &str,
+    policy: &LuaSandboxPolicy,
+) -> Result<WorldInitScriptConfig, ScriptError> {
+    let module =
+        load_lua_module_from_source(source, Path::new(WORLD_INIT_SCRIPT_REL_PATH), policy)?;
+    let world_defaults = module
+        .root()
+        .get::<Table>("world_defaults")
+        .map_err(|err| ScriptError::Contract(format!("{WORLD_INIT_SCRIPT_REL_PATH}: {err}")))?;
+    let render_layer_shader_asset_ids = match world_defaults
+        .get::<Value>("render_layer_definitions")
+        .map_err(|err| ScriptError::Contract(format!("{WORLD_INIT_SCRIPT_REL_PATH}: {err}")))?
+    {
+        Value::Nil => Vec::new(),
+        Value::Table(values_table) => {
+            let mut out = Vec::new();
+            for value in values_table.sequence_values::<Table>() {
+                let layer = value.map_err(|err| {
+                    ScriptError::Contract(format!(
+                        "{WORLD_INIT_SCRIPT_REL_PATH}: world_defaults.render_layer_definitions entry decode failed: {err}"
+                    ))
+                })?;
+                let shader_asset_id = layer
+                    .get::<Option<String>>("shader_asset_id")
+                    .map_err(|err| {
+                        ScriptError::Contract(format!("{WORLD_INIT_SCRIPT_REL_PATH}: {err}"))
+                    })?
+                    .unwrap_or_default();
+                if !shader_asset_id.trim().is_empty()
+                    && !out.iter().any(|value| value == &shader_asset_id)
+                {
+                    out.push(shader_asset_id);
+                }
+            }
+            out
+        }
+        _ => {
+            return Err(ScriptError::Contract(format!(
+                "{WORLD_INIT_SCRIPT_REL_PATH}: world_defaults.render_layer_definitions must be an array of tables when present"
+            )));
+        }
+    };
+    let additional_required_asset_ids = match world_defaults
+        .get::<Value>("additional_required_asset_ids")
+        .map_err(|err| ScriptError::Contract(format!("{WORLD_INIT_SCRIPT_REL_PATH}: {err}")))?
+    {
+        Value::Nil => Vec::new(),
+        Value::Table(values_table) => {
+            let mut out = Vec::new();
+            for value in values_table.sequence_values::<String>() {
+                out.push(value.map_err(|err| {
+                    ScriptError::Contract(format!(
+                        "{WORLD_INIT_SCRIPT_REL_PATH}: world_defaults.additional_required_asset_ids entry decode failed: {err}"
+                    ))
+                })?);
+            }
+            out
+        }
+        _ => {
+            return Err(ScriptError::Contract(format!(
+                "{WORLD_INIT_SCRIPT_REL_PATH}: world_defaults.additional_required_asset_ids must be an array of strings when present"
+            )));
+        }
+    };
+
+    Ok(WorldInitScriptConfig {
+        render_layer_shader_asset_ids,
+        additional_required_asset_ids,
+    })
 }
 
 pub fn load_lua_module_from_root(
@@ -961,4 +1180,90 @@ pub fn resolve_script_path_from_root(
         )));
     }
     Ok(canonical_candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LuaSandboxPolicy, decode_graph_entity_records, load_world_init_config_from_source,
+        validate_runtime_render_graph_records,
+    };
+    use serde_json::json;
+    use std::path::Path;
+
+    #[test]
+    fn world_init_config_loads_expected_asset_lists() {
+        let source = r#"
+            return {
+                world_defaults = {
+                    render_layer_definitions = {
+                        { shader_asset_id = "shader.starfield" },
+                        { shader_asset_id = "shader.starfield" },
+                        { shader_asset_id = "shader.nebula" },
+                    },
+                    additional_required_asset_ids = {
+                        "asset.alpha",
+                        "asset.beta",
+                    },
+                }
+            }
+        "#;
+        let config = load_world_init_config_from_source(source, &LuaSandboxPolicy::default())
+            .expect("world init config should parse");
+        assert_eq!(
+            config.render_layer_shader_asset_ids,
+            vec!["shader.starfield".to_string(), "shader.nebula".to_string()]
+        );
+        assert_eq!(
+            config.additional_required_asset_ids,
+            vec!["asset.alpha".to_string(), "asset.beta".to_string()]
+        );
+    }
+
+    #[test]
+    fn graph_entity_record_decode_and_render_validation_accept_known_render_components() {
+        let records = decode_graph_entity_records(
+            Path::new("world/world_init.lua"),
+            json!([
+                {
+                    "entity_id": "entity-main-world-layer",
+                    "labels": ["Entity"],
+                    "properties": {},
+                    "components": [
+                        {
+                            "component_id": "entity-main-world-layer:runtime_render_layer_definition",
+                            "component_kind": "runtime_render_layer_definition",
+                            "properties": {
+                                "layer_id": "foreground_fx",
+                                "phase": "fullscreen_background",
+                                "material_domain": "fullscreen",
+                                "shader_asset_id": "shader.foreground_fx",
+                                "sort_key": 10
+                            }
+                        }
+                    ]
+                },
+                {
+                    "entity_id": "entity-rule",
+                    "labels": ["Entity"],
+                    "properties": {},
+                    "components": [
+                        {
+                            "component_id": "entity-rule:runtime_render_layer_rule",
+                            "component_kind": "runtime_render_layer_rule",
+                            "properties": {
+                                "rule_id": "assign-planet",
+                                "target_layer_id": "foreground_fx",
+                                "components_any": ["planet_body_shader_settings"]
+                            }
+                        }
+                    ]
+                }
+            ]),
+        )
+        .expect("graph records should decode");
+
+        validate_runtime_render_graph_records(&records)
+            .expect("render graph records should validate");
+    }
 }

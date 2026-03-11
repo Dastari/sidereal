@@ -664,4 +664,14 @@ If replication client-facing/shared runtime code is touched as part of diagnosti
 2. Define the reusable admin command bus contract so future dashboard/dev-tool clients can target it without coupling to the TUI implementation.
 3. Decide whether session/entity tree snapshots should eventually be shared with the dashboard to avoid duplicate diagnostics shaping logic.
 4. Decide later whether dashboard-to-server admin traffic should talk directly to replication or route through gateway; this plan intentionally keeps that transport boundary open.
-3. Decide whether session/entity tree snapshots should eventually be shared with the dashboard to avoid duplicate diagnostics shaping logic.
+
+## 2026-03-11 Progress Note
+
+- Increased retained in-memory TUI log history to reduce scrollback loss during active sessions.
+- Switched log pane scroll state and scrollbar positioning to track the wrapped-row viewport offset directly so the thumb aligns with actual history position at top/bottom.
+- Replaced remaining runtime terminal-print paths in replication-side long-running systems with tracing macros so out-of-band terminal writes do not stomp the alternate-screen TUI.
+- Began left explorer-pane implementation using a shared world-explorer snapshot shaped around connected players, owned entities, and `MountedOn` hierarchy.
+- Added live-ish per-player latency sourcing from Lightyear `Link.stats.rtt` and exposed it to the TUI explorer rows for right-aligned display.
+- Renamed the center pane to `map` and replaced the old placeholder left pane with an expandable `world` tree scaffold that supports selection, mouse hit-testing, and collapse state.
+- Corrected explorer nesting to use local Bevy `ChildOf` hierarchy rather than `MountedOn`, and re-enabled local hierarchy rebuild on replication so the diagnostics/TUI tree can mirror the dashboard-style explorer model.
+- Snapshot production is now cadence-limited instead of running every uncapped `Update`: summary health defaults to 2 Hz and world/map explorer snapshots default to 5 Hz, with env overrides available for diagnostics tuning.

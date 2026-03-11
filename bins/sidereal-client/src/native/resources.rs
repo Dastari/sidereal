@@ -60,14 +60,6 @@ pub(crate) struct ClientInputAckTracker {
 }
 
 #[derive(Debug, Resource, Default)]
-pub(crate) struct ClientInputLogState {
-    pub last_logged_at_s: f64,
-    pub last_logged_actions: Vec<EntityAction>,
-    pub last_logged_controlled_entity_id: Option<String>,
-    pub last_logged_pending_controlled_entity_id: Option<String>,
-}
-
-#[derive(Debug, Resource, Default)]
 pub(crate) struct ClientAuthSyncState {
     pub sent_for_client_entities: std::collections::HashSet<Entity>,
     pub last_sent_at_s_by_client_entity: HashMap<Entity, f64>,
@@ -104,22 +96,14 @@ pub(crate) struct ClientControlRequestState {
     pub last_sent_at_s: f64,
 }
 
-#[derive(Debug, Resource, Default)]
-pub(crate) struct ClientControlDebugState {
-    pub last_controlled_entity_id: Option<String>,
-    pub last_pending_controlled_entity_id: Option<String>,
-    pub last_detached_free_camera: bool,
-    pub handover_audit_entity_id: Option<String>,
-    pub handover_audit_started_at_s: Option<f64>,
-    pub last_handover_audit_log_at_s: f64,
-}
-
-#[derive(Debug, Resource, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ClientViewModeState {
     pub last_sent_mode: Option<sidereal_net::ClientLocalViewMode>,
     pub last_sent_delivery_range_m: Option<f32>,
     pub last_sent_at_s: f64,
 }
+
+impl Resource for ClientViewModeState {}
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct OwnedAssetManifestCache {
@@ -192,35 +176,6 @@ impl Default for TacticalMapUiState {
             pan_offset_world: Vec2::ZERO,
             last_pan_cursor_px: None,
         }
-    }
-}
-
-#[derive(Debug, Resource, Default)]
-pub(crate) struct DebugBlueOverlayEnabled(pub bool);
-
-#[derive(Debug, Resource, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct DebugGizmoOnGameplayCamera(pub bool);
-
-impl DebugGizmoOnGameplayCamera {
-    pub fn from_env() -> Self {
-        Self(
-            std::env::var("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA")
-                .ok()
-                .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
-        )
-    }
-}
-
-#[derive(Debug, Resource, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct DebugVelocityArrowAsMesh(pub bool);
-
-impl DebugVelocityArrowAsMesh {
-    pub fn from_env() -> Self {
-        Self(
-            std::env::var("SIDEREAL_CLIENT_DEBUG_ARROW_AS_MESH")
-                .ok()
-                .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
-        )
     }
 }
 
@@ -546,7 +501,6 @@ pub(crate) struct DeferredPredictedAdoptionState {
     pub resolved_total_wait_s: f64,
     pub resolved_max_wait_s: f64,
     pub last_summary_at_s: f64,
-    pub last_runtime_summary_at_s: f64,
     // Sidereal supports dynamic control handoff and free-roam via the persisted player
     // anchor. If the intended controlled ship never gets a Predicted clone, we must not
     // silently bind local control to an Interpolated fallback because that breaks the
@@ -696,45 +650,6 @@ pub(crate) struct EmbeddedFonts {
 #[derive(Resource, Default)]
 pub(crate) struct RemoteEntityRegistry {
     pub by_entity_id: HashMap<String, Entity>,
-}
-
-#[derive(Debug, Clone, Copy, Resource, Default)]
-#[allow(dead_code)]
-pub(crate) struct LocalSimulationDebugMode(pub bool);
-
-impl LocalSimulationDebugMode {
-    #[allow(dead_code)]
-    pub fn from_env() -> Self {
-        let enabled = std::env::var("SIDEREAL_CLIENT_PHYSICS_MODE")
-            .ok()
-            .is_some_and(|v| v.eq_ignore_ascii_case("local"));
-        if enabled {
-            eprintln!(
-                "[sidereal-client] LOCAL DEBUG SIMULATION: enabled (full local simulation, no reconciliation)"
-            );
-        }
-        Self(enabled)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Resource, Default)]
-#[allow(dead_code)]
-pub(crate) struct MotionOwnershipAuditEnabled(pub bool);
-
-impl MotionOwnershipAuditEnabled {
-    #[allow(dead_code)]
-    pub fn from_env() -> Self {
-        let enabled = std::env::var("SIDEREAL_CLIENT_MOTION_AUDIT")
-            .ok()
-            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        Self(enabled)
-    }
-}
-
-#[derive(Debug, Resource, Default)]
-#[allow(dead_code)]
-pub(crate) struct MotionOwnershipAuditState {
-    pub last_logged_at_s: f64,
 }
 
 #[derive(Debug, Resource)]

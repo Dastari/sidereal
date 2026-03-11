@@ -11,6 +11,7 @@ use lightyear::prelude::{
     ReplicationSender, SendUpdatesMode, Transport, Unlink,
 };
 use lightyear::prelude::{Identity, LocalAddr};
+use sidereal_core::SIM_TICK_HZ;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_net::{
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
@@ -207,7 +208,7 @@ pub fn log_replication_client_connected(
 /// Attaches `ReplicationSender` to each new client link entity so Lightyear
 /// can replicate entity state and process visibility for this client.
 pub fn setup_client_replication_sender(trigger: On<Add, LinkOf>, mut commands: Commands<'_, '_>) {
-    let send_interval = std::time::Duration::from_secs_f64(1.0 / 60.0); // exactly 60 Hz, matching server tick
+    let send_interval = std::time::Duration::from_secs_f64(1.0 / f64::from(SIM_TICK_HZ));
     commands
         .entity(trigger.entity)
         .insert(ReplicationSender::new(

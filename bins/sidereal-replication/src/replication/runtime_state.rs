@@ -12,6 +12,16 @@ use sidereal_game::{
 use crate::replication::visibility::ClientObserverAnchorPositionMap;
 use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity, debug_env};
 
+type ControlledTargetDebugQueryItem<'a> = (
+    Entity,
+    &'a EntityGuid,
+    Has<Replicate>,
+    Has<PredictionTarget>,
+    Has<InterpolationTarget>,
+    Option<&'a ControlledBy>,
+    Option<&'a ReplicationState>,
+);
+
 #[derive(Resource, Default)]
 pub struct PlayerControlDebugState {
     pub last_controlled_guid_by_player: std::collections::HashMap<String, Option<String>>,
@@ -32,15 +42,7 @@ pub fn log_player_control_state_changes(
     controlled_targets: Query<
         '_,
         '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Has<Replicate>,
-            Has<PredictionTarget>,
-            Has<InterpolationTarget>,
-            Option<&'_ ControlledBy>,
-            Option<&'_ ReplicationState>,
-        ),
+        ControlledTargetDebugQueryItem<'_>,
         With<SimulatedControlledEntity>,
     >,
     client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,

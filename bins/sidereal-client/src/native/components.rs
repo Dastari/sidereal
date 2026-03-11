@@ -67,9 +67,6 @@ pub(crate) struct DebugOverlayPanelLabelShadowText;
 pub(crate) struct DebugOverlayPanelValueShadowText;
 
 #[derive(Component)]
-pub(crate) struct DebugVelocityArrowMesh;
-
-#[derive(Component)]
 pub(crate) struct LoadingProgressBarFill;
 
 #[derive(Component)]
@@ -314,9 +311,6 @@ pub(crate) enum RuntimeFullscreenMaterialBinding {
     SpaceBackgroundBase,
     SpaceBackgroundNebula,
 }
-
-#[derive(Component)]
-pub(crate) struct DebugBlueBackdrop;
 
 #[derive(Component)]
 pub(crate) struct SpaceBackdropFallback;

@@ -1,8 +1,10 @@
 mod bootstrap_runtime;
+mod config;
 mod log_buffer;
 mod plugins;
 mod replication;
 mod tui;
+use crate::config::CliAction;
 use crate::replication::{
     assets, auth, control, health, input, lifecycle, owner_manifest, persistence,
     runtime_scripting, runtime_state, scripting, simulation_entities, tactical, visibility,
@@ -17,6 +19,7 @@ use bevy::scene::ScenePlugin;
 use lightyear::input::native::prelude::NativeStateSequence;
 use lightyear::input::plugin::InputPlugin as LightyearInputProtocolPlugin;
 use lightyear::prelude::server::ServerPlugins;
+use sidereal_core::SIM_TICK_HZ;
 use sidereal_core::logging::prepare_timestamped_log_file;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{HierarchyRebuildEnabled, SiderealGamePlugin};
@@ -35,63 +38,34 @@ static REPLICATION_LOG_FANOUT: OnceLock<ReplicationLogFanout> = OnceLock::new();
 #[allow(dead_code)]
 struct HeadlessMode(pub bool);
 
-#[derive(Debug, Clone)]
-struct ReplicationCli {
-    headless: bool,
-    health_bind: std::net::SocketAddr,
-}
-
-impl ReplicationCli {
-    fn parse() -> Result<Self, String> {
-        let mut headless = false;
-        let mut health_bind = None;
-        let mut args = std::env::args().skip(1);
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--headless" | "--no-tui" => headless = true,
-                "--health-bind" => {
-                    let value = args
-                        .next()
-                        .ok_or_else(|| "--health-bind requires a socket address".to_string())?;
-                    let parsed = value
-                        .parse()
-                        .map_err(|err| format!("invalid --health-bind value {value}: {err}"))?;
-                    health_bind = Some(parsed);
-                }
-                other => return Err(format!("unrecognized argument: {other}")),
-            }
-        }
-        Ok(Self {
-            headless,
-            health_bind: health_bind
-                .unwrap_or_else(|| health::ReplicationHealthServerConfig::default().bind_addr),
-        })
-    }
-}
-
 fn main() {
-    let cli = match ReplicationCli::parse() {
-        Ok(cli) => cli,
+    let config = match config::apply_process_cli() {
+        Ok(CliAction::Run(config)) => *config,
+        Ok(CliAction::Help(text)) => {
+            println!("{text}");
+            return;
+        }
         Err(err) => {
-            eprintln!("{err}");
+            emit_startup_tracing_error(&err);
             std::process::exit(2);
         }
     };
+    config.apply_env();
     let run_log = match prepare_timestamped_log_file("sidereal-replication") {
         Ok(run_log) => run_log,
         Err(err) => {
-            eprintln!("failed to create replication log file: {err}");
+            emit_startup_tracing_error(&format!("failed to create replication log file: {err}"));
             std::process::exit(2);
         }
     };
     if REPLICATION_LOG_PATH.set(run_log.path.clone()).is_err() {
-        eprintln!("replication log path initialized more than once");
+        emit_startup_tracing_error("replication log path initialized more than once");
         std::process::exit(2);
     }
     let shared_log_buffer = init_global_log_buffer();
     let log_fanout = ReplicationLogFanout::new(run_log.file, shared_log_buffer.clone());
     if REPLICATION_LOG_FANOUT.set(log_fanout).is_err() {
-        eprintln!("replication log fanout initialized more than once");
+        emit_startup_tracing_error("replication log fanout initialized more than once");
         std::process::exit(2);
     }
 
@@ -99,12 +73,12 @@ fn main() {
     {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("invalid REPLICATION BRP config: {err}");
+            emit_startup_tracing_error(&format!("invalid REPLICATION BRP config: {err}"));
             std::process::exit(2);
         }
     };
     let interactive_terminal = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
-    let headless_mode = cli.headless || !interactive_terminal;
+    let headless_mode = config.headless || !interactive_terminal;
     set_log_to_stderr(headless_mode);
 
     let mut app = App::new();
@@ -128,9 +102,12 @@ fn main() {
         fmt_layer: replication_fmt_layer,
         ..Default::default()
     });
-    app.add_plugins(SiderealGamePlugin);
-    // Prevent server-side Bevy hierarchy components from being replicated.
+    // Replication must not rebuild Bevy ChildOf/Children locally because those
+    // relationships can leak into network replication. UUID-based ParentGuid /
+    // MountedOn remains the only cross-runtime hierarchy contract, including for
+    // Lua-authored world-init entities.
     app.insert_resource(HierarchyRebuildEnabled(false));
+    app.add_plugins(SiderealGamePlugin);
     app.add_plugins(
         PhysicsPlugins::default()
             .with_length_unit(1.0)
@@ -141,7 +118,7 @@ fn main() {
     app.init_asset::<Mesh>();
     app.insert_resource(Gravity(Vec2::ZERO));
     app.add_plugins(ServerPlugins {
-        tick_duration: Duration::from_secs_f64(1.0 / 60.0),
+        tick_duration: Duration::from_secs_f64(1.0 / f64::from(SIM_TICK_HZ)),
     });
     app.add_plugins(LightyearInputProtocolPlugin::<
         NativeStateSequence<sidereal_net::PlayerInput>,
@@ -149,12 +126,12 @@ fn main() {
     register_lightyear_server_protocol(&mut app);
     lifecycle::configure_remote(&mut app, &remote_cfg);
 
-    // Lightyear/Bevy plugins can initialize Fixed time; enforce authoritative 60 Hz after plugin wiring.
-    app.insert_resource(Time::<Fixed>::from_hz(60.0));
+    // Lightyear/Bevy plugins can initialize Fixed time; enforce the shared authoritative tick after plugin wiring.
+    app.insert_resource(Time::<Fixed>::from_hz(f64::from(SIM_TICK_HZ)));
     app.insert_resource(shared_log_buffer.clone());
     app.insert_resource(HeadlessMode(headless_mode));
     app.insert_resource(health::ReplicationHealthServerConfig {
-        bind_addr: cli.health_bind,
+        bind_addr: config.health_bind,
     });
     init_resources(&mut app);
     register_plugins(&mut app);
@@ -173,16 +150,32 @@ fn main() {
             .world()
             .resource::<health::SharedWorldMapSnapshot>()
             .clone();
+        let shared_world_explorer = app
+            .world()
+            .resource::<health::SharedWorldExplorerSnapshot>()
+            .clone();
         if let Err(err) = tui::start(
             shared_log_buffer.clone(),
             command_sender,
             shared_health,
+            shared_world_explorer,
             shared_world_map,
         ) {
             info!("sidereal-replication TUI startup failed; continuing headless: {err}");
         }
     }
     app.run();
+}
+
+fn emit_startup_tracing_error(message: &str) {
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::error!("{message}");
+    });
 }
 
 fn replication_fmt_layer(_app: &mut App) -> Option<BoxedFmtLayer> {

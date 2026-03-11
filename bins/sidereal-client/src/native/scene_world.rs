@@ -1,8 +1,7 @@
 //! World scene bootstrap systems.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
-use bevy::log::info;
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite_render::{ColorMaterial, MeshMaterial2d};
@@ -12,23 +11,21 @@ use super::app_state::{ClientAppState, ClientSession};
 use super::assets::LocalAssetManager;
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    BackdropCamera, ClientSceneEntity, DebugBlueBackdrop, DebugOverlayCamera,
-    DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
-    DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, DebugVelocityArrowMesh,
-    FullscreenForegroundCamera, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
-    HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
-    LoadingProgressBarFill, PlanetBodyCamera, PostProcessCamera, RuntimeScreenOverlayPass,
-    RuntimeScreenOverlayPassKind, RuntimeStreamingIconText, SegmentedBarSegment, SegmentedBarStyle,
-    SegmentedBarValue, SpaceBackdropFallback, TacticalMapCursorText, TacticalMapOverlayRoot,
-    TacticalMapTitle, TopDownCamera, UiOverlayLayer,
+    BackdropCamera, ClientSceneEntity, DebugOverlayCamera, DebugOverlayPanelLabelShadowText,
+    DebugOverlayPanelLabelText, DebugOverlayPanelRoot, DebugOverlayPanelValueShadowText,
+    DebugOverlayPanelValueText, FullscreenForegroundCamera, GameplayCamera, GameplayHud,
+    HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
+    LoadingOverlayText, LoadingProgressBarFill, PlanetBodyCamera, PostProcessCamera,
+    RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind, RuntimeStreamingIconText,
+    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SpaceBackdropFallback,
+    TacticalMapCursorText, TacticalMapOverlayRoot, TacticalMapTitle, TopDownCamera, UiOverlayLayer,
 };
 use super::platform::{
     BACKDROP_RENDER_LAYER, DEBUG_OVERLAY_RENDER_LAYER, FULLSCREEN_FOREGROUND_RENDER_LAYER,
     PLANET_BODY_RENDER_LAYER, POST_PROCESS_RENDER_LAYER, UI_OVERLAY_RENDER_LAYER,
 };
 use super::resources::{
-    AssetCacheAdapter, AssetRootPath, CameraMotionState, DebugBlueOverlayEnabled, EmbeddedFonts,
-    StarfieldMotionState,
+    AssetCacheAdapter, AssetRootPath, CameraMotionState, EmbeddedFonts, StarfieldMotionState,
 };
 use super::shaders;
 
@@ -49,16 +46,8 @@ pub(super) fn spawn_world_scene(
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
-    debug_blue_overlay: Res<'_, DebugBlueOverlayEnabled>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
 ) {
-    let debug_gizmos_on_gameplay_camera =
-        std::env::var("SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA")
-            .ok()
-            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-    let debug_velocity_arrow_as_mesh = std::env::var("SIDEREAL_CLIENT_DEBUG_ARROW_AS_MESH")
-        .ok()
-        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     *starfield_motion = StarfieldMotionState::default();
     *camera_motion = CameraMotionState::default();
     shaders::reload_streamed_shaders(
@@ -92,28 +81,6 @@ pub(super) fn spawn_world_scene(
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));
-
-    if debug_velocity_arrow_as_mesh {
-        let arrow_mesh = meshes.add(Rectangle::new(1.0, 1.0));
-        let arrow_material = color_materials.add(ColorMaterial::from(Color::srgb(0.2, 0.5, 1.0)));
-        let arrow_layers = if debug_gizmos_on_gameplay_camera {
-            RenderLayers::layer(0)
-        } else {
-            RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER)
-        };
-        commands.spawn((
-            Mesh2d(arrow_mesh),
-            MeshMaterial2d(arrow_material),
-            Transform::from_xyz(0.0, 0.0, -500.0),
-            GlobalTransform::default(),
-            Visibility::Hidden,
-            NoFrustumCulling,
-            arrow_layers,
-            DebugVelocityArrowMesh,
-            ClientSceneEntity,
-            DespawnOnExit(ClientAppState::InWorld),
-        ));
-    }
 
     commands.spawn((
         Camera2d,
@@ -160,7 +127,7 @@ pub(super) fn spawn_world_scene(
         Camera2d,
         Camera {
             order: 50,
-            is_active: !debug_gizmos_on_gameplay_camera,
+            is_active: true,
             clear_color: ClearColorConfig::None,
             ..default()
         },
@@ -634,19 +601,5 @@ pub(super) fn spawn_world_scene(
                 TacticalMapCursorText,
             ));
         });
-    if debug_blue_overlay.0 {
-        let mesh = meshes.add(Rectangle::new(1.0, 1.0));
-        let material = color_materials.add(ColorMaterial::from(Color::srgb(0.1, 0.35, 1.0)));
-        commands.spawn((
-            Mesh2d(mesh),
-            MeshMaterial2d(material),
-            Transform::from_xyz(0.0, 0.0, -180.0),
-            RenderLayers::layer(BACKDROP_RENDER_LAYER),
-            DebugBlueBackdrop,
-            ClientSceneEntity,
-            DespawnOnExit(ClientAppState::InWorld),
-        ));
-        info!("client debug blue fullscreen overlay enabled");
-    }
     session.status = "Scene ready. Waiting for replicated entities...".to_string();
 }

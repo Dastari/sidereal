@@ -87,12 +87,12 @@ fn graph_persistence_full_lifecycle_ship_hardpoint_engine() {
     let mut persistence = match GraphPersistence::connect_with_graph(&database_url, &graph_name) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("skipping graph lifecycle test; postgres unavailable: {err}");
+            tracing::warn!("skipping graph lifecycle test; postgres unavailable: {err}");
             return;
         }
     };
     if let Err(err) = persistence.ensure_schema() {
-        eprintln!("skipping graph lifecycle test; AGE schema unavailable: {err}");
+        tracing::warn!("skipping graph lifecycle test; AGE schema unavailable: {err}");
         return;
     }
 

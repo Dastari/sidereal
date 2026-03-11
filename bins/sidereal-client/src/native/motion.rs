@@ -7,23 +7,19 @@ use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::input::native::{ActionState, InputMarker};
 use lightyear::prelude::is_in_rollback;
 use sidereal_game::{
-    ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid,
-    FlightControlAuthority, Hardpoint, MountedOn, PlayerTag, SimulationMotionWriter, SizeM,
-    TotalMassKg, angular_inertia_from_size, collider_from_collision_shape,
-    default_flight_action_capabilities,
+    ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid, Hardpoint,
+    MountedOn, PlayerTag, SimulationMotionWriter, SizeM, TotalMassKg, angular_inertia_from_size,
+    collider_from_collision_shape, default_flight_action_capabilities,
 };
 use sidereal_net::PlayerInput;
-use sidereal_runtime_sync::{RuntimeEntityHierarchy, parse_guid_from_entity_id};
+use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::HashSet;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
     ControlledEntity, NearbyCollisionProxy, SuppressedPredictedDuplicateVisual, WorldEntity,
 };
-use super::resources::{
-    LocalSimulationDebugMode, MotionOwnershipAuditEnabled, MotionOwnershipAuditState,
-    MotionOwnershipReconcileState, NearbyCollisionProxyTuning,
-};
+use super::resources::{MotionOwnershipReconcileState, NearbyCollisionProxyTuning};
 
 pub(crate) fn mark_motion_ownership_dirty_signals(
     session: Res<'_, ClientSession>,
@@ -70,7 +66,6 @@ pub(crate) fn apply_predicted_input_to_action_queue(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn enforce_motion_ownership_for_world_entities(
     mut commands: Commands<'_, '_>,
-    _local_mode: Res<'_, LocalSimulationDebugMode>,
     proxy_tuning: Res<'_, NearbyCollisionProxyTuning>,
     time: Res<'_, Time>,
     session: Res<'_, ClientSession>,
@@ -452,129 +447,6 @@ pub(crate) fn sync_controlled_mass_from_total_mass(
         if let (Some(mut inertia), Some(size)) = (maybe_inertia, size) {
             *inertia = angular_inertia_from_size(computed_total, size);
         }
-    }
-}
-
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub(crate) fn audit_motion_ownership_system(
-    time: Res<'_, Time>,
-    enabled: Res<'_, MotionOwnershipAuditEnabled>,
-    local_mode: Res<'_, LocalSimulationDebugMode>,
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    mut audit_state: ResMut<'_, MotionOwnershipAuditState>,
-    roots: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Option<&'_ Name>,
-            Option<&'_ MountedOn>,
-            Option<&'_ Hardpoint>,
-            Option<&'_ PlayerTag>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-            Has<ActionQueue>,
-            Has<FlightControlAuthority>,
-            Has<RigidBody>,
-            Has<NearbyCollisionProxy>,
-            Has<Position>,
-            Has<Rotation>,
-            Has<LinearVelocity>,
-        ),
-        With<WorldEntity>,
-    >,
-) {
-    if !enabled.0 {
-        return;
-    }
-    let now_s = time.elapsed_secs_f64();
-    if now_s - audit_state.last_logged_at_s < 0.5 {
-        return;
-    }
-    audit_state.last_logged_at_s = now_s;
-
-    let target_entity_id = match player_view_state.controlled_entity_id.as_ref() {
-        Some(id) if entity_registry.by_entity_id.contains_key(id.as_str()) => Some(id),
-        Some(_) => {
-            warn!(
-                controlled = ?player_view_state.controlled_entity_id,
-                "motion audit: controlled entity unresolved in registry"
-            );
-            return;
-        }
-        None => session.player_entity_id.as_ref(),
-    };
-    let target_entity =
-        target_entity_id.and_then(|id| entity_registry.by_entity_id.get(id.as_str()).copied());
-
-    let mut anomalies = Vec::new();
-    for (
-        entity,
-        name,
-        mounted_on,
-        hardpoint,
-        player_tag,
-        is_predicted,
-        is_interpolated,
-        has_action_queue,
-        has_flight_control_authority,
-        has_rigidbody,
-        has_nearby_proxy,
-        has_position,
-        has_rotation,
-        has_linear_velocity,
-    ) in &roots
-    {
-        let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
-        if !is_root_entity {
-            continue;
-        }
-        let entity_name = name
-            .map(|n| n.as_str().to_string())
-            .unwrap_or_else(|| format!("<entity:{entity:?}>"));
-        let is_target = Some(entity) == target_entity;
-
-        if is_target && !local_mode.0 {
-            if !is_predicted || is_interpolated {
-                anomalies.push(format!(
-                    "{} target markers invalid predicted={} interpolated={}",
-                    entity_name, is_predicted, is_interpolated
-                ));
-            }
-            if !has_rigidbody || !has_position || !has_rotation || !has_linear_velocity {
-                anomalies.push(format!(
-                    "{} target motion components missing rb={} pos={} rot={} vel={}",
-                    entity_name, has_rigidbody, has_position, has_rotation, has_linear_velocity
-                ));
-            }
-            continue;
-        }
-
-        if is_predicted
-            || has_action_queue
-            || has_flight_control_authority
-            || (has_rigidbody && !has_nearby_proxy)
-        {
-            anomalies.push(format!(
-                "{} remote writers present predicted={} action_queue={} flight_authority={} rb={} nearby_proxy={}",
-                entity_name,
-                is_predicted,
-                has_action_queue,
-                has_flight_control_authority,
-                has_rigidbody,
-                has_nearby_proxy
-            ));
-        }
-    }
-
-    if !anomalies.is_empty() {
-        warn!(
-            "motion ownership audit anomalies ({}): {}",
-            anomalies.len(),
-            anomalies.join(" | ")
-        );
     }
 }
 

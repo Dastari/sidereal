@@ -38,12 +38,12 @@ fn replication_ingest_persist_hydrate_lifecycle() {
     let mut persistence = match GraphPersistence::connect_with_graph(&database_url, &graph_name) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("skipping replication lifecycle test; postgres unavailable: {err}");
+            tracing::warn!("skipping replication lifecycle test; postgres unavailable: {err}");
             return;
         }
     };
     if let Err(err) = persistence.ensure_schema() {
-        eprintln!("skipping replication lifecycle test; AGE schema unavailable: {err}");
+        tracing::warn!("skipping replication lifecycle test; AGE schema unavailable: {err}");
         return;
     }
 

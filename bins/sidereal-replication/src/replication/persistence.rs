@@ -1,6 +1,7 @@
 #![allow(clippy::items_after_test_module)]
 
 use bevy::ecs::reflect::AppTypeRegistry;
+use bevy::log::error;
 use bevy::prelude::*;
 use sidereal_game::{
     BallisticProjectile, EntityGuid, EntityLabels, GeneratedComponentRegistry, MountedOn,
@@ -503,7 +504,7 @@ fn persistence_worker_loop(
                     break;
                 }
                 Err(err) => {
-                    eprintln!("persistence worker write failed: {err}; reconnecting");
+                    error!("persistence worker write failed: {err}; reconnecting");
                     pending = Some(batch);
                     thread::sleep(Duration::from_millis(250));
                     persistence =
@@ -529,7 +530,7 @@ fn connect_persistence_with_retry(
                             *schema_initialized = true;
                         }
                         Err(err) => {
-                            eprintln!(
+                            error!(
                                 "persistence worker schema initialization failed: {err}; retrying"
                             );
                             thread::sleep(Duration::from_secs(1));
@@ -540,7 +541,7 @@ fn connect_persistence_with_retry(
                 return persistence;
             }
             Err(err) => {
-                eprintln!("persistence worker connect failed: {err}; retrying");
+                error!("persistence worker connect failed: {err}; retrying");
             }
         }
         thread::sleep(Duration::from_secs(1));

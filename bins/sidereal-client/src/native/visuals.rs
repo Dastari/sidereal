@@ -3,6 +3,7 @@
 use avian2d::prelude::{Position, SpatialQuery, SpatialQueryFilter};
 use bevy::asset::{AssetId, RenderAssetUsages};
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::state::state_scoped::DespawnOnExit;
@@ -48,6 +49,23 @@ use super::resources::RuntimeSharedQuadMesh;
 use super::shaders;
 
 const WEAPON_TRACER_POOL_SIZE: usize = 96;
+
+type WeaponImpactSparkQueryItem<'a> = (
+    Entity,
+    &'a mut WeaponImpactSpark,
+    &'a mut Transform,
+    &'a MeshMaterial2d<RuntimeEffectMaterial>,
+    &'a mut Visibility,
+);
+
+#[derive(SystemParam)]
+pub(super) struct ThrusterPlumeAttachAssets<'w> {
+    meshes: ResMut<'w, Assets<Mesh>>,
+    quad_mesh: ResMut<'w, RuntimeSharedQuadMesh>,
+    plume_materials: ResMut<'w, Assets<RuntimeEffectMaterial>>,
+    world_lighting: Res<'w, WorldLightingState>,
+    camera_local_lights: Res<'w, CameraLocalLightSet>,
+}
 const WEAPON_TRACER_SPEED_MPS: f32 = 1800.0;
 const WEAPON_TRACER_LIFETIME_S: f32 = 0.2;
 const WEAPON_TRACER_WIDTH_M: f32 = 0.35;
@@ -1832,11 +1850,7 @@ fn streamed_visual_layer_transform(
 #[allow(clippy::type_complexity)]
 pub(super) fn attach_thruster_plume_visuals_system(
     mut commands: Commands<'_, '_>,
-    mut meshes: ResMut<'_, Assets<Mesh>>,
-    mut quad_mesh: ResMut<'_, RuntimeSharedQuadMesh>,
-    mut plume_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
-    world_lighting: Res<'_, WorldLightingState>,
-    camera_local_lights: Res<'_, CameraLocalLightSet>,
+    mut assets: ThrusterPlumeAttachAssets<'_>,
     visual_children: Query<'_, '_, &'_ RuntimeWorldVisualPass>,
     engines: Query<
         '_,
@@ -1865,12 +1879,12 @@ pub(super) fn attach_thruster_plume_visuals_system(
         let Ok(mut entity_commands) = commands.get_entity(entity) else {
             continue;
         };
-        let plume_mesh = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
-        let plume_material = plume_materials.add(RuntimeEffectMaterial {
+        let plume_mesh = shared_unit_quad_handle(&mut assets.quad_mesh, &mut assets.meshes);
+        let plume_material = assets.plume_materials.add(RuntimeEffectMaterial {
             lighting: SharedWorldLightingUniforms::from_state_for_world_position(
-                &world_lighting,
+                &assets.world_lighting,
                 Vec2::ZERO,
-                &camera_local_lights,
+                &assets.camera_local_lights,
             ),
             ..RuntimeEffectMaterial::default()
         });
@@ -2586,18 +2600,7 @@ pub(super) fn update_weapon_tracer_visuals_system(
 pub(super) fn update_weapon_impact_sparks_system(
     time: Res<'_, Time>,
     mut spark_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
-    mut sparks: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ mut WeaponImpactSpark,
-            &'_ mut Transform,
-            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
-            &'_ mut Visibility,
-        ),
-        Without<WeaponTracerBolt>,
-    >,
+    mut sparks: Query<'_, '_, WeaponImpactSparkQueryItem<'_>, Without<WeaponTracerBolt>>,
 ) {
     let dt_s = time.delta_secs();
     for (_entity, mut spark, mut transform, material_handle, mut visibility) in &mut sparks {

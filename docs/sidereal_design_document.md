@@ -58,6 +58,19 @@ Core player loop:
 - Gateway HTTP must answer browser CORS preflight for local dashboard/client origins. The runtime default allows `http://localhost:3000` and `http://127.0.0.1:3000`; set comma-separated `GATEWAY_ALLOWED_ORIGINS` when the browser host origin differs.
 - Gateway and replication tracing output is written to both the console and workspace-relative `./logs/`, using a fresh timestamped log file for each process start.
 
+Update note (2026-03-11):
+- Replication and gateway startup configuration is no longer intended to be Makefile-only. Both binaries now accept CLI arguments for their core runtime configuration, with precedence `CLI > env > built-in default`.
+- Local-dev built-in defaults now align with the long-standing non-debug Makefile defaults:
+  - replication UDP bind: `0.0.0.0:7001`
+  - replication WebTransport bind: `0.0.0.0:7003`
+  - replication control UDP bind: `127.0.0.1:9004`
+  - replication health bind: `127.0.0.1:15716`
+  - gateway HTTP bind: `0.0.0.0:8080`
+  - asset root: `./data`
+  - scripts root: `./data/scripts`
+  - gateway allowed origins: `http://localhost:3000,http://127.0.0.1:3000`
+- BRP remains opt-in and loopback-only. Those defaults were not changed to always-on runtime behavior.
+
 ### 3.2.1 Server-Only Admin Spawn Control Path (Current)
 
 Server-authoritative entity spawning for dashboard/dev tooling uses a dedicated gateway-admin path:
@@ -473,6 +486,9 @@ Implementation note:
 - Native client startup does not perform multi-instance lock/tracking; separate local client processes are treated identically.
 - `SIDEREAL_CLIENT_FORCE_SOFTWARE_ADAPTER` is explicit opt-in only (`1`/`true` forces software adapter; unset or `0`/`false` keeps hardware adapter selection).
 - Native primary window is user-resizable with enforced minimum logical size `960x540`; resize/minimize transitions treat non-positive viewport dimensions as non-renderable for fullscreen backdrop/material uniform updates.
+- 2026-03-11 update: native client runtime configuration now supports command-line overrides as well as environment variables. `sidereal-client --help` is the canonical discovery surface for native launch options, and CLI flags take precedence over env vars for the current process.
+- 2026-03-11 update: env-driven debug toggles and diagnostic kill-switch startup flags were removed from the native client startup surface. Native startup config is now limited to real transport/render/bootstrap/runtime tuning inputs rather than debug-only launch switches.
+- 2026-03-11 update: native client bootstrap now initializes runtime resources by domain (transport, asset runtime, control/prediction, diagnostics, tactical/UI, scene/render), and shared replication/control scheduling is composed once before headless-vs-interactive divergences are applied. This keeps entrypoint ownership closer to documented domain boundaries without introducing a native-only runtime fork.
 
 ## 11. Engineering Boundaries
 

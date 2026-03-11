@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{self, Stdout};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +26,12 @@ use crate::log_buffer::SharedLogBuffer;
 use crate::replication::admin::{
     AdminCommand, AdminCommandBusSender, command_spec, command_specs, parse_admin_command,
 };
-use crate::replication::health::{SharedHealthSnapshot, SharedWorldMapSnapshot, WorldMapSnapshot};
+use crate::replication::health::{
+    SharedHealthSnapshot, SharedWorldExplorerSnapshot, SharedWorldMapSnapshot,
+    WorldExplorerEntitySnapshot, WorldExplorerGroupSnapshot, WorldExplorerSnapshot,
+    WorldMapSnapshot,
+};
+use bevy::log::error;
 
 type Backend = CrosstermBackend<Stdout>;
 
@@ -118,7 +124,10 @@ struct TuiApp {
     pending_clear_logs: bool,
     follow_logs: bool,
     log_scroll: usize,
+    max_log_scroll: usize,
+    log_visible_rows: usize,
     selected_log_line: Option<usize>,
+    keep_selected_log_visible: bool,
     should_exit: bool,
     dialog: Option<TuiDialog>,
     tui_last_frame_ms: f64,
@@ -128,6 +137,15 @@ struct TuiApp {
     sessions_rect: Rect,
     world_rect: Rect,
     health_rect: Rect,
+    world_tree_selected_key: Option<String>,
+    world_tree_scroll: usize,
+    world_tree_last_rows: usize,
+    world_tree_visible_rows: usize,
+    world_tree_last_keys: Vec<String>,
+    world_tree_last_rows_data: Vec<WorldTreeRow>,
+    world_tree_expandable_keys: HashSet<String>,
+    world_tree_keep_selected_visible: bool,
+    collapsed_world_tree_keys: HashSet<String>,
     world_center_x: f32,
     world_center_y: f32,
     world_zoom: f32,
@@ -152,7 +170,10 @@ impl Default for TuiApp {
             pending_clear_logs: false,
             follow_logs: true,
             log_scroll: 0,
+            max_log_scroll: 0,
+            log_visible_rows: 0,
             selected_log_line: None,
+            keep_selected_log_visible: false,
             should_exit: false,
             dialog: None,
             tui_last_frame_ms: 0.0,
@@ -162,6 +183,15 @@ impl Default for TuiApp {
             sessions_rect: Rect::default(),
             world_rect: Rect::default(),
             health_rect: Rect::default(),
+            world_tree_selected_key: None,
+            world_tree_scroll: 0,
+            world_tree_last_rows: 0,
+            world_tree_visible_rows: 0,
+            world_tree_last_keys: Vec::new(),
+            world_tree_last_rows_data: Vec::new(),
+            world_tree_expandable_keys: HashSet::new(),
+            world_tree_keep_selected_visible: false,
+            collapsed_world_tree_keys: HashSet::new(),
             world_center_x: 0.0,
             world_center_y: 0.0,
             world_zoom: 250.0,
@@ -198,13 +228,20 @@ pub fn start(
     log_buffer: SharedLogBuffer,
     command_sender: AdminCommandBusSender,
     health_snapshot: SharedHealthSnapshot,
+    world_explorer_snapshot: SharedWorldExplorerSnapshot,
     world_snapshot: SharedWorldMapSnapshot,
 ) -> Result<(), String> {
     thread::Builder::new()
         .name("replication-tui".to_string())
         .spawn(move || {
-            if let Err(err) = run(log_buffer, command_sender, health_snapshot, world_snapshot) {
-                eprintln!("replication TUI terminated: {err}");
+            if let Err(err) = run(
+                log_buffer,
+                command_sender,
+                health_snapshot,
+                world_explorer_snapshot,
+                world_snapshot,
+            ) {
+                error!("replication TUI terminated: {err}");
             }
         })
         .map(|_| ())
@@ -215,6 +252,7 @@ fn run(
     log_buffer: SharedLogBuffer,
     command_sender: AdminCommandBusSender,
     health_snapshot: SharedHealthSnapshot,
+    world_explorer_snapshot: SharedWorldExplorerSnapshot,
     world_snapshot: SharedWorldMapSnapshot,
 ) -> Result<(), String> {
     enable_raw_mode().map_err(|err| format!("enable raw mode failed: {err}"))?;
@@ -232,6 +270,7 @@ fn run(
         log_buffer,
         command_sender,
         health_snapshot,
+        world_explorer_snapshot,
         world_snapshot,
     );
 
@@ -255,6 +294,7 @@ fn event_loop(
     log_buffer: SharedLogBuffer,
     command_sender: AdminCommandBusSender,
     health_snapshot: SharedHealthSnapshot,
+    world_explorer_snapshot: SharedWorldExplorerSnapshot,
     world_snapshot: SharedWorldMapSnapshot,
 ) -> Result<(), String> {
     let mut last_draw = Instant::now() - FRAME_INTERVAL;
@@ -265,9 +305,10 @@ fn event_loop(
             let logs = log_buffer.snapshot();
             app.tui_last_log_read_ms = log_read_started.elapsed().as_secs_f64() * 1000.0;
             let health = health_snapshot.load();
+            let world_explorer = world_explorer_snapshot.load();
             let world = world_snapshot.load();
             terminal
-                .draw(|frame| render(frame, app, &logs, &health, &world))
+                .draw(|frame| render(frame, app, &logs, &health, &world_explorer, &world))
                 .map_err(|err| format!("terminal draw failed: {err}"))?;
             app.tui_last_frame_ms = frame_started.elapsed().as_secs_f64() * 1000.0;
             app.tui_max_frame_ms = app.tui_max_frame_ms.max(app.tui_last_frame_ms);
@@ -279,7 +320,13 @@ fn event_loop(
         {
             match event::read().map_err(|err| format!("event read failed: {err}"))? {
                 Event::Key(key) => handle_key(app, key, &command_sender)?,
-                Event::Mouse(mouse) => handle_mouse(app, mouse, &world_snapshot, &log_buffer)?,
+                Event::Mouse(mouse) => handle_mouse(
+                    app,
+                    mouse,
+                    &world_explorer_snapshot,
+                    &world_snapshot,
+                    &log_buffer,
+                )?,
                 Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
         }
@@ -290,6 +337,7 @@ fn event_loop(
 fn handle_mouse(
     app: &mut TuiApp,
     mouse: MouseEvent,
+    world_explorer_snapshot: &SharedWorldExplorerSnapshot,
     world_snapshot: &SharedWorldMapSnapshot,
     log_buffer: &SharedLogBuffer,
 ) -> Result<(), String> {
@@ -301,6 +349,10 @@ fn handle_mouse(
             if contains(app.logs_rect, (mouse.column, mouse.row)) {
                 let logs = log_buffer.snapshot();
                 select_log_line_at(app, &logs, mouse.column, mouse.row);
+            }
+            if contains(app.sessions_rect, (mouse.column, mouse.row)) {
+                let snapshot = world_explorer_snapshot.load();
+                select_world_tree_row_at(app, &snapshot, mouse.column, mouse.row);
             }
             if contains(app.world_rect, (mouse.column, mouse.row)) {
                 let snapshot = world_snapshot.load();
@@ -325,8 +377,12 @@ fn handle_mouse(
         MouseEventKind::ScrollUp => {
             if contains(app.logs_rect, (mouse.column, mouse.row)) {
                 app.focus = PaneFocus::Logs;
-                app.follow_logs = false;
-                app.log_scroll = app.log_scroll.saturating_add(3);
+                scroll_logs_up(app, 3);
+                return Ok(());
+            }
+            if contains(app.sessions_rect, (mouse.column, mouse.row)) {
+                app.focus = PaneFocus::Sessions;
+                scroll_world_tree(app, -3);
                 return Ok(());
             }
             if contains(app.world_rect, (mouse.column, mouse.row)) {
@@ -337,7 +393,12 @@ fn handle_mouse(
         MouseEventKind::ScrollDown => {
             if contains(app.logs_rect, (mouse.column, mouse.row)) {
                 app.focus = PaneFocus::Logs;
-                app.log_scroll = app.log_scroll.saturating_sub(3);
+                scroll_logs_down(app, 3);
+                return Ok(());
+            }
+            if contains(app.sessions_rect, (mouse.column, mouse.row)) {
+                app.focus = PaneFocus::Sessions;
+                scroll_world_tree(app, 3);
                 return Ok(());
             }
             if contains(app.world_rect, (mouse.column, mouse.row)) {
@@ -381,18 +442,38 @@ fn handle_normal_key(
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::BackTab => app.focus = app.focus.previous(),
         KeyCode::Char('h') => {
-            if app.focus != PaneFocus::Logs {
+            if app.focus == PaneFocus::Sessions {
+                collapse_world_tree_selection(app);
+            } else if app.focus != PaneFocus::Logs {
+                app.focus = app.focus.previous();
+            }
+        }
+        KeyCode::Left => {
+            if app.focus == PaneFocus::Sessions {
+                collapse_world_tree_selection(app);
+            } else if app.focus != PaneFocus::Logs {
                 app.focus = app.focus.previous();
             }
         }
         KeyCode::Char('l') => {
-            if app.focus != PaneFocus::Logs {
+            if app.focus == PaneFocus::Sessions {
+                expand_world_tree_selection(app);
+            } else if app.focus != PaneFocus::Logs {
+                app.focus = app.focus.next();
+            }
+        }
+        KeyCode::Right => {
+            if app.focus == PaneFocus::Sessions {
+                expand_world_tree_selection(app);
+            } else if app.focus != PaneFocus::Logs {
                 app.focus = app.focus.next();
             }
         }
         KeyCode::Char('k') => {
             if app.focus == PaneFocus::Logs {
                 move_log_selection(app, -1);
+            } else if app.focus == PaneFocus::Sessions {
+                move_world_tree_selection(app, -1);
             } else {
                 app.focus = PaneFocus::Logs;
             }
@@ -400,6 +481,8 @@ fn handle_normal_key(
         KeyCode::Char('j') => {
             if app.focus == PaneFocus::Logs {
                 move_log_selection(app, 1);
+            } else if app.focus == PaneFocus::Sessions {
+                move_world_tree_selection(app, 1);
             } else {
                 app.focus = PaneFocus::Sessions;
             }
@@ -407,20 +490,35 @@ fn handle_normal_key(
         KeyCode::Up => {
             if app.focus == PaneFocus::Logs {
                 move_log_selection(app, -1);
+            } else if app.focus == PaneFocus::Sessions {
+                move_world_tree_selection(app, -1);
             }
         }
         KeyCode::Down => {
             if app.focus == PaneFocus::Logs {
                 move_log_selection(app, 1);
+            } else if app.focus == PaneFocus::Sessions {
+                move_world_tree_selection(app, 1);
             }
         }
+        KeyCode::Enter | KeyCode::Char(' ') if app.focus == PaneFocus::Sessions => {
+            toggle_world_tree_selection(app);
+        }
+        KeyCode::Char('[') if app.focus == PaneFocus::Sessions => collapse_all_world_tree(app),
+        KeyCode::Char(']') if app.focus == PaneFocus::Sessions => expand_all_world_tree(app),
         KeyCode::PageUp => {
-            app.follow_logs = false;
-            app.log_scroll = app.log_scroll.saturating_add(10);
+            if app.focus == PaneFocus::Logs {
+                page_log_selection(app, -1);
+            } else if app.focus == PaneFocus::Sessions {
+                page_world_tree_selection(app, -1);
+            }
         }
         KeyCode::PageDown => {
-            app.follow_logs = false;
-            app.log_scroll = app.log_scroll.saturating_sub(10);
+            if app.focus == PaneFocus::Logs {
+                page_log_selection(app, 1);
+            } else if app.focus == PaneFocus::Sessions {
+                page_world_tree_selection(app, 1);
+            }
         }
         KeyCode::End | KeyCode::Char('G') if app.focus == PaneFocus::Logs => {
             jump_to_latest_log(app)
@@ -442,6 +540,7 @@ fn handle_normal_key(
             app.world_cursor_x = 0.0;
             app.world_cursor_y = 0.0;
         }
+        KeyCode::Char('g') if app.focus == PaneFocus::Sessions => goto_selected_world_entity(app),
         KeyCode::Char('c') => {
             request_clear_logs(app);
         }
@@ -547,6 +646,7 @@ fn render(
     app: &mut TuiApp,
     logs: &[String],
     health: &crate::replication::health::ReplicationHealthSnapshot,
+    world_explorer: &WorldExplorerSnapshot,
     world: &WorldMapSnapshot,
 ) {
     if app.pending_clear_logs {
@@ -554,6 +654,8 @@ fn render(
         app.pending_clear_logs = false;
         app.selected_log_line = None;
         app.log_scroll = 0;
+        app.max_log_scroll = 0;
+        app.keep_selected_log_visible = false;
         app.follow_logs = true;
     }
     let layout = Layout::default()
@@ -579,8 +681,8 @@ fn render(
     initialize_world_view(app, world);
 
     render_logs(frame, app, logs, layout[0]);
-    render_sessions(frame, app, health, bottom[0]);
-    render_world(frame, app, world, bottom[1]);
+    render_world_tree(frame, app, world_explorer, bottom[0]);
+    render_world_map(frame, app, world, bottom[1]);
     render_health(frame, app, health, bottom[2]);
     render_command_bar(frame, app, layout[2]);
     render_dialog(frame, app);
@@ -644,8 +746,10 @@ fn render_logs(
     let scrollbar_gutter = 1usize;
     let text_width = inner.width.saturating_sub(scrollbar_gutter as u16) as usize;
     let visible_height = inner.height as usize;
+    app.log_visible_rows = visible_height;
     let wrapped_rows = build_wrapped_log_rows(&filtered, text_width);
     let max_scroll = wrapped_rows.len().saturating_sub(visible_height);
+    app.max_log_scroll = max_scroll;
     let effective_selected_log_line = resolve_selected_log_line(app, filtered.len());
     let scroll = compute_log_scroll(
         app,
@@ -676,9 +780,10 @@ fn render_logs(
     frame.render_widget(Paragraph::new(visible_lines), text_area);
 
     if visible_height > 0 && wrapped_rows.len() > visible_height {
+        let scrollbar_position = compute_scrollbar_position(scroll, max_scroll, wrapped_rows.len());
         let mut scrollbar_state = ScrollbarState::new(wrapped_rows.len())
             .viewport_content_length(visible_height)
-            .position(scroll.min(max_scroll));
+            .position(scrollbar_position);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -696,41 +801,307 @@ fn render_logs(
     }
 }
 
-fn render_sessions(
-    frame: &mut ratatui::Frame<'_>,
-    app: &TuiApp,
-    health: &crate::replication::health::ReplicationHealthSnapshot,
-    area: ratatui::layout::Rect,
-) {
-    let lines = vec![
-        Line::from(format!("users online: {}", health.users_online)),
-        Line::from(format!("sessions: {}", health.session_count)),
-        Line::from(format!(
-            "recent activity: {}",
-            health.clients_with_recent_activity
-        )),
-        Line::from(""),
-        Line::from("Tree view pending"),
-        Line::from("Dashboard-like hierarchy"),
-        Line::from("will be wired here next."),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines).block(panel_block(
-            "sessions",
-            app.focus == PaneFocus::Sessions,
-            Color::Rgb(167, 139, 250),
-            &[
-                ShortcutHint::new("Enter", "Expand"),
-                ShortcutHint::new("o", "Focus"),
-                ShortcutHint::new("p", "Ping"),
-            ],
-            None,
-        )),
-        area,
-    );
+fn compute_scrollbar_position(scroll: usize, max_scroll: usize, content_len: usize) -> usize {
+    if content_len <= 1 || max_scroll == 0 {
+        return 0;
+    }
+    let last_index = content_len.saturating_sub(1);
+    scroll.saturating_mul(last_index) / max_scroll
 }
 
-fn render_world(
+#[derive(Debug, Clone)]
+struct WorldTreeRow {
+    key: String,
+    depth: usize,
+    label: String,
+    kind_label: Option<String>,
+    entity_guid: Option<String>,
+    entity_display_name: Option<String>,
+    entity_position_xy: Option<(f32, f32)>,
+    latency_ms: Option<u64>,
+    expandable: bool,
+    expanded: bool,
+    accent: Color,
+}
+
+fn build_world_tree_rows(explorer: &WorldExplorerSnapshot, app: &TuiApp) -> Vec<WorldTreeRow> {
+    let mut rows = Vec::new();
+    for group in &explorer.groups {
+        push_group_tree_rows(&mut rows, group, app);
+    }
+    rows
+}
+
+fn push_group_tree_rows(
+    rows: &mut Vec<WorldTreeRow>,
+    group: &WorldExplorerGroupSnapshot,
+    app: &TuiApp,
+) {
+    let expanded = !app.collapsed_world_tree_keys.contains(&group.key);
+    rows.push(WorldTreeRow {
+        key: group.key.clone(),
+        depth: 0,
+        label: format!("{} ({})", group.label, group.entities.len()),
+        kind_label: None,
+        entity_guid: None,
+        entity_display_name: None,
+        entity_position_xy: None,
+        latency_ms: None,
+        expandable: !group.entities.is_empty(),
+        expanded,
+        accent: Color::Rgb(167, 139, 250),
+    });
+    if !expanded {
+        return;
+    }
+    for entity in &group.entities {
+        push_entity_tree_rows(rows, entity, app, 1);
+    }
+}
+
+fn push_entity_tree_rows(
+    rows: &mut Vec<WorldTreeRow>,
+    entity: &WorldExplorerEntitySnapshot,
+    app: &TuiApp,
+    depth: usize,
+) {
+    let key = format!("entity:{}", entity.guid);
+    let expanded = !app.collapsed_world_tree_keys.contains(&key);
+    let mut label = entity
+        .display_name
+        .clone()
+        .unwrap_or_else(|| entity.guid.clone());
+    if entity.is_controlled {
+        label.push_str(" [controlled]");
+    }
+    rows.push(WorldTreeRow {
+        key: key.clone(),
+        depth,
+        label,
+        kind_label: Some(entity.kind_label.clone()),
+        entity_guid: Some(entity.guid.clone()),
+        entity_display_name: entity.display_name.clone(),
+        entity_position_xy: entity.position_xy,
+        latency_ms: entity.latency_ms,
+        expandable: !entity.children.is_empty(),
+        expanded,
+        accent: if entity.is_player_anchor {
+            Color::Rgb(125, 211, 252)
+        } else if entity.is_controlled {
+            Color::Rgb(248, 113, 113)
+        } else {
+            Color::Rgb(203, 213, 225)
+        },
+    });
+    if !expanded {
+        return;
+    }
+    for child in &entity.children {
+        push_entity_tree_rows(rows, child, app, depth + 1);
+    }
+}
+
+fn world_tree_row_line(
+    row: &WorldTreeRow,
+    width: usize,
+    selected_key: Option<&str>,
+) -> Line<'static> {
+    let selected = selected_key.is_some_and(|key| key == row.key);
+    let row_bg = if selected {
+        Color::Rgb(30, 41, 59)
+    } else {
+        Color::Reset
+    };
+    let indent = "  ".repeat(row.depth);
+    let branch = if row.expandable {
+        if row.expanded { "▾ " } else { "▸ " }
+    } else {
+        "  "
+    };
+    let kind_prefix = row
+        .kind_label
+        .as_deref()
+        .map(|kind| match kind {
+            "player" => "@ ",
+            "ship" => "◆ ",
+            "landmark" => "◉ ",
+            "projectile" => "• ",
+            _ => "· ",
+        })
+        .unwrap_or("");
+    let ping_text = row.latency_ms.map(|ping| format!("{ping:>4}ms"));
+    let left_text = format!("{indent}{branch}{kind_prefix}{}", row.label);
+    let total_right = ping_text
+        .as_ref()
+        .map(|value| value.chars().count() + 1)
+        .unwrap_or(0);
+    let left_width = left_text.chars().count();
+    let spacer_width = width.saturating_sub(left_width + total_right);
+    let mut spans = vec![Span::styled(
+        left_text,
+        Style::default()
+            .fg(row.accent)
+            .bg(row_bg)
+            .add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+    )];
+    if let Some(kind) = &row.kind_label {
+        let kind_hint = format!(" <{kind}>");
+        if spacer_width > kind_hint.chars().count() + total_right {
+            spans.push(Span::styled(
+                kind_hint,
+                Style::default().fg(Color::DarkGray).bg(row_bg),
+            ));
+            let remaining = width.saturating_sub(
+                spans
+                    .iter()
+                    .map(|span| span.content.chars().count())
+                    .sum::<usize>()
+                    + total_right,
+            );
+            spans.push(Span::styled(
+                " ".repeat(remaining),
+                Style::default().bg(row_bg),
+            ));
+        } else {
+            spans.push(Span::styled(
+                " ".repeat(spacer_width),
+                Style::default().bg(row_bg),
+            ));
+        }
+    } else {
+        spans.push(Span::styled(
+            " ".repeat(spacer_width),
+            Style::default().bg(row_bg),
+        ));
+    }
+    if let Some(ping_text) = ping_text {
+        spans.push(Span::styled(" ", Style::default().bg(row_bg)));
+        spans.push(Span::styled(
+            ping_text,
+            Style::default()
+                .fg(Color::Rgb(196, 181, 253))
+                .bg(row_bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn render_world_tree(
+    frame: &mut ratatui::Frame<'_>,
+    app: &mut TuiApp,
+    explorer: &WorldExplorerSnapshot,
+    area: ratatui::layout::Rect,
+) {
+    let footer = Some(Line::from(vec![
+        Span::styled(
+            format!("groups:{} ", explorer.groups.len()),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            app.world_tree_selected_key
+                .as_deref()
+                .unwrap_or("no selection")
+                .to_string(),
+            Style::default().fg(Color::Rgb(203, 213, 225)),
+        ),
+    ]));
+    let block = panel_block(
+        "world",
+        app.focus == PaneFocus::Sessions,
+        Color::Rgb(167, 139, 250),
+        &[
+            ShortcutHint::new("[", "collapse all"),
+            ShortcutHint::new("]", "expand all"),
+            ShortcutHint::new("g", "goto"),
+        ],
+        footer,
+    );
+    let inner = inner_rect(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let rows = build_world_tree_rows(explorer, app);
+    app.world_tree_last_rows = rows.len();
+    app.world_tree_last_keys = rows.iter().map(|row| row.key.clone()).collect();
+    app.world_tree_last_rows_data = rows.clone();
+    app.world_tree_expandable_keys = rows
+        .iter()
+        .filter(|row| row.expandable)
+        .map(|row| row.key.clone())
+        .collect();
+    let visible_height = inner.height as usize;
+    app.world_tree_visible_rows = visible_height;
+    if app.world_tree_selected_key.is_none() {
+        app.world_tree_selected_key = rows.first().map(|row| row.key.clone());
+    }
+    let selected_index = rows
+        .iter()
+        .position(|row| app.world_tree_selected_key.as_deref() == Some(row.key.as_str()))
+        .unwrap_or(0);
+    if app.world_tree_keep_selected_visible {
+        if selected_index < app.world_tree_scroll {
+            app.world_tree_scroll = selected_index;
+        } else if visible_height > 0
+            && selected_index >= app.world_tree_scroll.saturating_add(visible_height)
+        {
+            app.world_tree_scroll = selected_index
+                .saturating_add(1)
+                .saturating_sub(visible_height);
+        }
+        app.world_tree_keep_selected_visible = false;
+    }
+    let max_scroll = rows.len().saturating_sub(visible_height);
+    app.world_tree_scroll = app.world_tree_scroll.min(max_scroll);
+
+    let text_width = inner.width.saturating_sub(1) as usize;
+    let mut visible_lines = rows
+        .iter()
+        .skip(app.world_tree_scroll)
+        .take(visible_height)
+        .map(|row| world_tree_row_line(row, text_width, app.world_tree_selected_key.as_deref()))
+        .collect::<Vec<_>>();
+    while visible_lines.len() < visible_height {
+        visible_lines.push(Line::from(" ".repeat(text_width)));
+    }
+    let text_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width.saturating_sub(1),
+        height: inner.height,
+    };
+    frame.render_widget(Paragraph::new(visible_lines), text_area);
+
+    if visible_height > 0 && rows.len() > visible_height {
+        let scrollbar_position =
+            compute_scrollbar_position(app.world_tree_scroll, max_scroll, rows.len());
+        let mut scrollbar_state = ScrollbarState::new(rows.len())
+            .viewport_content_length(visible_height)
+            .position(scrollbar_position);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(Color::Rgb(167, 139, 250)))
+                .track_style(Style::default().fg(Color::Rgb(55, 65, 81))),
+            Rect {
+                x: inner.x + inner.width.saturating_sub(1),
+                y: inner.y,
+                width: 1,
+                height: inner.height,
+            },
+            &mut scrollbar_state,
+        );
+    }
+}
+
+fn render_world_map(
     frame: &mut ratatui::Frame<'_>,
     app: &TuiApp,
     world: &WorldMapSnapshot,
@@ -759,7 +1130,7 @@ fn render_world(
         ),
     ]));
     let block = panel_block(
-        "world",
+        "map",
         app.focus == PaneFocus::World,
         Color::Rgb(251, 191, 36),
         &[
@@ -1176,7 +1547,172 @@ fn select_world_entity_at(app: &mut TuiApp, world: &WorldMapSnapshot, column: u1
         app.world_selected_name = entity.display_name.clone();
         app.world_cursor_x = entity.x;
         app.world_cursor_y = entity.y;
+        app.world_tree_selected_key = Some(format!("entity:{}", entity.guid));
+        app.world_tree_keep_selected_visible = true;
     }
+}
+
+fn select_world_tree_row_at(
+    app: &mut TuiApp,
+    explorer: &WorldExplorerSnapshot,
+    column: u16,
+    row: u16,
+) {
+    let inner = inner_rect(app.sessions_rect);
+    if inner.width <= 1 || inner.height == 0 || !contains(inner, (column, row)) {
+        return;
+    }
+    let rows = build_world_tree_rows(explorer, app);
+    let row_index = app
+        .world_tree_scroll
+        .saturating_add(row.saturating_sub(inner.y) as usize);
+    let Some(clicked_row) = rows.get(row_index) else {
+        return;
+    };
+    let already_selected = app.world_tree_selected_key.as_deref() == Some(clicked_row.key.as_str());
+    app.world_tree_selected_key = Some(clicked_row.key.clone());
+    app.world_tree_keep_selected_visible = true;
+    sync_map_selection_from_tree_row(app, clicked_row);
+    if already_selected && clicked_row.expandable {
+        toggle_world_tree_selection(app);
+    }
+}
+
+fn move_world_tree_selection(app: &mut TuiApp, delta: isize) {
+    let max_index = app.world_tree_last_rows.saturating_sub(1);
+    let current = world_tree_selected_index(app).unwrap_or(0);
+    let next = if delta.is_negative() {
+        current.saturating_sub(delta.unsigned_abs())
+    } else {
+        current.saturating_add(delta as usize).min(max_index)
+    };
+    app.world_tree_selected_key = Some(world_tree_key_from_index(app, next));
+    app.world_tree_keep_selected_visible = true;
+    sync_map_selection_from_tree(app);
+}
+
+fn page_world_tree_selection(app: &mut TuiApp, direction: isize) {
+    let page = app.world_tree_visible_rows.saturating_sub(1).max(1);
+    move_world_tree_selection(app, direction.saturating_mul(page as isize));
+}
+
+fn scroll_world_tree(app: &mut TuiApp, delta: isize) {
+    app.world_tree_keep_selected_visible = false;
+    if delta.is_negative() {
+        app.world_tree_scroll = app.world_tree_scroll.saturating_sub(delta.unsigned_abs());
+    } else {
+        app.world_tree_scroll = app
+            .world_tree_scroll
+            .saturating_add(delta as usize)
+            .min(app.world_tree_last_rows.saturating_sub(1));
+    }
+}
+
+fn toggle_world_tree_selection(app: &mut TuiApp) {
+    let Some(key) = app.world_tree_selected_key.clone() else {
+        return;
+    };
+    if !app.world_tree_expandable_keys.contains(&key) {
+        return;
+    }
+    if !app.collapsed_world_tree_keys.insert(key.clone()) {
+        app.collapsed_world_tree_keys.remove(&key);
+    }
+}
+
+fn expand_world_tree_selection(app: &mut TuiApp) {
+    if let Some(key) = app.world_tree_selected_key.clone() {
+        app.collapsed_world_tree_keys.remove(&key);
+    }
+}
+
+fn collapse_world_tree_selection(app: &mut TuiApp) {
+    if let Some(key) = app.world_tree_selected_key.clone()
+        && app.world_tree_expandable_keys.contains(&key)
+    {
+        app.collapsed_world_tree_keys.insert(key);
+    }
+}
+
+fn expand_all_world_tree(app: &mut TuiApp) {
+    app.collapsed_world_tree_keys.clear();
+}
+
+fn collapse_all_world_tree(app: &mut TuiApp) {
+    app.collapsed_world_tree_keys = app
+        .world_tree_expandable_keys
+        .iter()
+        .filter(|key| key.starts_with("entity:") || key.starts_with("group:"))
+        .cloned()
+        .collect();
+}
+
+fn world_tree_selected_index(app: &TuiApp) -> Option<usize> {
+    app.world_tree_selected_key.as_deref().and_then(|key| {
+        app.world_tree_last_keys
+            .iter()
+            .position(|row_key| row_key == key)
+    })
+}
+
+fn world_tree_key_from_index(app: &TuiApp, index: usize) -> String {
+    app.world_tree_last_keys
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| "group:world".to_string())
+}
+
+fn sync_map_selection_from_tree(app: &mut TuiApp) {
+    let Some(selected_key) = app.world_tree_selected_key.as_deref() else {
+        return;
+    };
+    let selected_row = app
+        .world_tree_last_rows_data
+        .iter()
+        .find(|row| row.key == selected_key)
+        .cloned();
+    if let Some(row) = selected_row.as_ref() {
+        sync_map_selection_from_tree_row(app, row);
+    }
+}
+
+fn sync_map_selection_from_tree_row(app: &mut TuiApp, row: &WorldTreeRow) {
+    if let Some(guid) = row.entity_guid.as_ref() {
+        app.world_selected_guid = Some(guid.clone());
+        app.world_selected_name = row.entity_display_name.clone();
+        if let Some((x, y)) = row.entity_position_xy {
+            app.world_cursor_x = x;
+            app.world_cursor_y = y;
+        }
+    }
+}
+
+fn goto_selected_world_entity(app: &mut TuiApp) {
+    let Some(selected_key) = app.world_tree_selected_key.as_deref() else {
+        return;
+    };
+    let Some(row) = app
+        .world_tree_last_rows_data
+        .iter()
+        .find(|row| row.key == selected_key)
+        .cloned()
+    else {
+        return;
+    };
+    if row.entity_guid.is_none() {
+        return;
+    }
+    if app.world_selected_guid != row.entity_guid {
+        sync_map_selection_from_tree_row(app, &row);
+    }
+    if let Some((x, y)) = row.entity_position_xy {
+        app.world_center_x = x;
+        app.world_center_y = y;
+        app.world_cursor_x = x;
+        app.world_cursor_y = y;
+    }
+    app.focus = PaneFocus::World;
+    app.world_zoom = app.world_zoom.min(250.0);
 }
 
 fn inner_rect(rect: Rect) -> Rect {
@@ -1252,6 +1788,7 @@ fn filtered_logs(app: &TuiApp, logs: &[String]) -> Vec<String> {
 
 fn move_log_selection(app: &mut TuiApp, delta: isize) {
     app.follow_logs = false;
+    app.keep_selected_log_visible = true;
     match (app.selected_log_line, delta.cmp(&0)) {
         (Some(selected), std::cmp::Ordering::Less) => {
             app.selected_log_line = Some(selected.saturating_sub(delta.unsigned_abs()));
@@ -1263,6 +1800,33 @@ fn move_log_selection(app: &mut TuiApp, delta: isize) {
         (None, std::cmp::Ordering::Greater) => app.selected_log_line = Some(delta as usize),
         _ => {}
     }
+}
+
+fn page_log_selection(app: &mut TuiApp, direction: isize) {
+    let page = app.log_visible_rows.saturating_sub(1).max(1);
+    move_log_selection(app, direction.saturating_mul(page as isize));
+}
+
+fn scroll_logs_up(app: &mut TuiApp, amount: usize) {
+    let base = if app.follow_logs {
+        app.max_log_scroll
+    } else {
+        app.log_scroll
+    };
+    app.follow_logs = false;
+    app.keep_selected_log_visible = false;
+    app.log_scroll = base.saturating_sub(amount);
+}
+
+fn scroll_logs_down(app: &mut TuiApp, amount: usize) {
+    let base = if app.follow_logs {
+        app.max_log_scroll
+    } else {
+        app.log_scroll
+    };
+    app.follow_logs = false;
+    app.keep_selected_log_visible = false;
+    app.log_scroll = base.saturating_add(amount).min(app.max_log_scroll);
 }
 
 fn request_clear_logs(app: &mut TuiApp) {
@@ -1280,7 +1844,8 @@ fn apply_filter_command(app: &mut TuiApp, level: &str) {
 
 fn jump_to_latest_log(app: &mut TuiApp) {
     app.follow_logs = true;
-    app.log_scroll = 0;
+    app.keep_selected_log_visible = false;
+    app.log_scroll = app.max_log_scroll;
 }
 
 fn resolve_selected_log_line(app: &mut TuiApp, filtered_len: usize) -> Option<usize> {
@@ -1291,6 +1856,7 @@ fn resolve_selected_log_line(app: &mut TuiApp, filtered_len: usize) -> Option<us
     if app.follow_logs {
         let latest = filtered_len.saturating_sub(1);
         app.selected_log_line = Some(latest);
+        app.keep_selected_log_visible = false;
         return Some(latest);
     }
     let selected = app
@@ -1309,12 +1875,18 @@ fn compute_log_scroll(
 ) -> usize {
     let max_scroll = wrapped_rows.len().saturating_sub(visible_height);
     if app.follow_logs {
-        app.log_scroll = 0;
+        app.log_scroll = max_scroll;
         return max_scroll;
     }
 
-    let mut scroll = max_scroll.saturating_sub(app.log_scroll.min(max_scroll));
-    if let Some(selected) = selected_log_line {
+    let mut scroll = app.log_scroll.min(max_scroll);
+    if scroll == max_scroll {
+        app.log_scroll = max_scroll;
+        return max_scroll;
+    }
+    if app.keep_selected_log_visible
+        && let Some(selected) = selected_log_line
+    {
         let selected_start = wrapped_rows
             .iter()
             .position(|row| row.line_index == selected)
@@ -1331,8 +1903,8 @@ fn compute_log_scroll(
                 .saturating_sub(visible_height);
         }
     }
-    app.log_scroll = max_scroll.saturating_sub(scroll.min(max_scroll));
-    scroll.min(max_scroll)
+    app.log_scroll = scroll.min(max_scroll);
+    app.log_scroll
 }
 
 #[derive(Debug, Clone)]
@@ -1645,12 +2217,13 @@ fn select_log_line_at(app: &mut TuiApp, logs: &[String], column: u16, row: u16) 
     let scroll = if app.follow_logs {
         max_scroll
     } else {
-        max_scroll.saturating_sub(app.log_scroll.min(max_scroll))
+        app.log_scroll.min(max_scroll)
     };
     let row_index = row.saturating_sub(inner.y) as usize;
     if let Some(wrapped) = wrapped_rows.get(scroll + row_index) {
         app.selected_log_line = Some(wrapped.line_index);
         app.follow_logs = false;
+        app.keep_selected_log_visible = true;
     }
 }
 

@@ -16,6 +16,6 @@ fn entity_id_new_v4_is_unique() {
 #[test]
 fn baseline_constants_match_design_defaults() {
     assert_eq!(PROTOCOL_VERSION, 1);
-    assert_eq!(SIM_TICK_HZ, 30);
+    assert_eq!(SIM_TICK_HZ, 60);
     assert_eq!(RENDER_TARGET_HZ, 60);
 }

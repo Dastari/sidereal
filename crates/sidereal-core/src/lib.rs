@@ -8,7 +8,7 @@ pub mod net_envelope;
 pub mod remote_inspect;
 
 pub const PROTOCOL_VERSION: u16 = 1;
-pub const SIM_TICK_HZ: u16 = 30;
+pub const SIM_TICK_HZ: u16 = 60;
 pub const RENDER_TARGET_HZ: u16 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
