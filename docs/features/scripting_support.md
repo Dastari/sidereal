@@ -1565,6 +1565,195 @@ end
 | Asset delivery | Scripts own Lua asset registry definitions and reference logical `asset_id` values only; gateway serves payloads by immutable `asset_guid` |
 | Visibility/replication | Script-spawned entities pass through normal visibility and replication policy |
 
+### 10.1 Background World Simulation Integration
+
+Update note (2026-03-11):
+- Background/offscreen world simulation now has an explicit feature contract in `docs/features/background_world_simulation_contract.md`.
+- This section defines the intended ABI-vs-Lua boundary for that system so it does not drift into either "everything hardcoded in Rust" or "scripts bypass the kernel".
+
+The design goal is to maximize Lua authorship for economy behavior, faction behavior, mission generation, and encounter policy while keeping authority, determinism, persistence, and safety in the Rust ABI.
+
+#### 10.1.1 High-Level Ownership Split
+
+**Rust ABI owns the simulation kernel.**
+
+Rust is the right owner for:
+
+1. authoritative persistence schema and graph-record mapping for nodes, factions, abstract actors, mission state, and promoted runtime entities,
+2. identity, ownership, and visibility invariants,
+3. scheduler/timing infrastructure for low-cadence background steps and promotion/demotion boundaries,
+4. spatial query/indexing infrastructure,
+5. canonical transaction primitives for inventory, budget, cargo reservation, cargo transfer, delivery commit, and destruction/loss,
+6. canonical promotion/demotion machinery,
+7. weighted-resolution kernel for offscreen conflict once inputs are assembled,
+8. validation and audit logging for all privileged mutation paths,
+9. telemetry/metrics so tuning decisions are evidence-based rather than script-only guesswork.
+
+**Lua owns policy, tuning, and authored world behavior.**
+
+Lua is the right owner for:
+
+1. faction goals and strategic priorities,
+2. actor role selection (`trader`, `miner`, `pirate`, `escort`, `patrol`, `smuggler`, etc.),
+3. route preference heuristics and destination choice,
+4. price/demand response curves,
+5. mission generation policy,
+6. pirate/security escalation thresholds,
+7. encounter template selection and narrative dressing,
+8. hero actor behavior/state machines,
+9. resource-regrowth policy formulas,
+10. content-level cargo tables, encounter reward tables, and faction-flavor differences.
+
+Rule of thumb:
+
+1. If a behavior is about "what should this actor/faction/world pressure want to do?" it should bias toward Lua.
+2. If a behavior is about "what authoritative state transitions are legal and how are they safely committed?" it should bias toward Rust.
+
+#### 10.1.2 Recommended Boundary for Background Simulation
+
+For background world simulation, the recommended split is:
+
+**Rust ABI responsibilities**
+
+1. `EconomicNode`, `FactionEconomyState`, `AbstractActor`, `TrafficLane`, and promotion-state schemas.
+2. Route-progress bookkeeping (`origin`, `destination`, progress, ETA windows).
+3. Finite inventory and finite budget accounting.
+4. Reservation/commit semantics so two scripts cannot both "spend" the same cargo or budget.
+5. Conflict-resolution execution from validated input summaries.
+6. Promotion of abstract actors into full ECS entities and demotion back into abstract state.
+7. Rebuild/recompute pipeline for derived lane heat and probability volumes.
+8. Read/query budget enforcement for script access to background state.
+
+**Lua responsibilities**
+
+1. Decide when a faction prefers trade vs expansion vs defense vs piracy.
+2. Decide which abstract actors take which jobs.
+3. Choose which shortages become player-visible missions and how aggressively rewards escalate.
+4. Decide how pirate factions react to high-value lanes.
+5. Decide what convoy qualities/cargo profiles are typical for a faction or route.
+6. Decide what kinds of security response a faction prefers.
+7. Decide how hero actors differ from generic quanta in ambition, risk tolerance, and mission participation.
+
+**Hybrid responsibilities**
+
+Some systems should be kernel-driven but script-configured:
+
+1. Offscreen conflict resolution:
+   - Rust executes the weighted outcome kernel.
+   - Lua authors weighting profiles, actor quality modifiers, retreat thresholds, loot preferences, and faction-specific risk appetite.
+2. Promotion cargo/fleet realization:
+   - Rust guarantees deterministic promotion from abstract state.
+   - Lua provides archetype/template families and cargo profile tables.
+3. Derived pressure:
+   - Rust computes lane heat / piracy pressure / security pressure from authoritative world activity.
+   - Lua decides what missions, events, and faction responses those pressures should trigger.
+
+#### 10.1.3 What Should Not Live In Lua
+
+The following should not be left to freeform Lua because they are kernel or security concerns:
+
+1. direct graph persistence writes,
+2. direct component storage mutation outside validated intents/actions,
+3. promotion/demotion lifecycle ownership,
+4. final inventory/budget/cargo commit semantics,
+5. visibility authorization rules,
+6. low-level replication payload control,
+7. exact spatial-index ownership and query guardrails,
+8. unrestricted actor creation that bypasses budget, ownership, or faction constraints.
+
+#### 10.1.4 Recommended New Script Surfaces
+
+The current `ctx.world` API is a strong base, but background world simulation likely needs domain-specific script surfaces so content authors are not forced to reconstruct economy state from generic entity reads alone.
+
+Recommended additions:
+
+**`ctx.economy`**
+
+1. `ctx.economy:get_node(node_id)`
+2. `ctx.economy:query_nodes(filter?)`
+3. `ctx.economy:get_price(node_id, item_id)`
+4. `ctx.economy:get_shortages(filter?)`
+5. `ctx.economy:get_faction_budget(faction_id)`
+6. `ctx.economy:get_lane(origin_id, destination_id)`
+7. `ctx.economy:query_lanes(filter?)`
+8. `ctx.economy:get_probability_volume(route_or_region_id)`
+
+**`ctx.background`**
+
+1. `ctx.background:get_actor(actor_id)`
+2. `ctx.background:query_actors(filter?)`
+3. `ctx.background:get_actor_route(actor_id)`
+4. `ctx.background:get_actor_job(actor_id)`
+5. `ctx.background:estimate_route_risk(origin_id, destination_id, cargo_profile?)`
+6. `ctx.background:request_promotion(actor_id, reason)`
+
+These should remain read-mostly helper surfaces. The mutation path should still be intents/actions, not direct write handles.
+
+#### 10.1.5 Recommended Background-Sim Intents
+
+The following intent family is the right shape for script customization without giving scripts raw authority bypasses:
+
+1. `create_abstract_actor`
+2. `assign_actor_job`
+3. `assign_actor_route`
+4. `reserve_node_inventory`
+5. `commit_node_transfer`
+6. `post_generated_mission`
+7. `adjust_faction_budget`
+8. `request_actor_promotion`
+9. `retire_abstract_actor`
+10. `apply_resource_regrowth`
+
+Design rule:
+
+1. An intent name should correspond to a meaningful domain operation with validation.
+2. It should not be a disguised raw component patch unless the component/field is explicitly allowlisted and non-authority-sensitive.
+
+#### 10.1.6 Data Authorship Model
+
+To maximize customization while keeping ABI stable:
+
+1. Rust should define the stable schema families.
+2. Lua should author the policy and content data that fills those schemas.
+
+Recommended authored data in Lua:
+
+1. actor role templates,
+2. faction doctrine profiles,
+3. cargo profile tables,
+4. mission template tables,
+5. price elasticity / scarcity response tables,
+6. pirate/security response weighting tables,
+7. resource-field regeneration policy tables,
+8. promotion encounter template families.
+
+Recommended stable ABI in Rust:
+
+1. actor state envelope,
+2. node inventory/budget envelope,
+3. lane-pressure envelope,
+4. conflict input/output envelope,
+5. promotion request/result envelope,
+6. mission posting envelope.
+
+This keeps scripting expressive while preserving binary/runtime compatibility and persistence sanity.
+
+#### 10.1.7 Practical Design Rule For Sidereal
+
+When deciding whether a new background-sim feature belongs in Rust ABI or Lua:
+
+1. Put it in Rust if it defines invariants, persistence shape, authority validation, deterministic scheduling, or a reusable kernel primitive.
+2. Put it in Lua if it is faction flavor, encounter flavor, economic tuning, mission logic, actor preference logic, or a content-specific response policy.
+3. Split it if the engine needs a safe primitive but designers need to control its parameters or trigger conditions.
+
+Examples:
+
+1. "How does cargo theft cap at pirate hold size?" -> Rust ABI.
+2. "How greedy is faction X, and when do they risk an ambush?" -> Lua.
+3. "How is convoy quality translated into archetype selection on promotion?" -> Rust realization pipeline fed by Lua-authored template families.
+4. "When does a shortage escalate into a player contract instead of being absorbed by quanta?" -> Lua over Rust-authored economy state.
+5. "How are node budgets atomically debited?" -> Rust ABI.
+
 ## 11. Implemented State (March 2026)
 
 ### 11.1 What Is Live Now

@@ -109,6 +109,15 @@ pub(crate) struct PlanetBodyCamera;
 pub(crate) struct DebugOverlayCamera;
 
 #[derive(Component)]
+pub(crate) struct DebugVelocityArrowShaft;
+
+#[derive(Component)]
+pub(crate) struct DebugVelocityArrowHeadUpper;
+
+#[derive(Component)]
+pub(crate) struct DebugVelocityArrowHeadLower;
+
+#[derive(Component)]
 pub(crate) struct BackdropCamera;
 
 #[derive(Component)]
@@ -270,6 +279,12 @@ pub(crate) struct WeaponImpactSpark {
     pub max_ttl_s: f32,
 }
 
+#[derive(Component)]
+pub(crate) struct WeaponImpactExplosion {
+    pub ttl_s: f32,
+    pub max_ttl_s: f32,
+}
+
 #[derive(Resource, Default)]
 pub(crate) struct WeaponTracerPool {
     pub bolts: Vec<Entity>,
@@ -284,6 +299,12 @@ pub(crate) struct WeaponTracerCooldowns {
 #[derive(Resource, Default)]
 pub(crate) struct WeaponImpactSparkPool {
     pub sparks: Vec<Entity>,
+    pub next_index: usize,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct WeaponImpactExplosionPool {
+    pub explosions: Vec<Entity>,
     pub next_index: usize,
 }
 

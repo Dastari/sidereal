@@ -30,6 +30,7 @@ use crate::replication::simulation_entities::{
 };
 use crate::replication::visibility::{
     ClientLocalViewModeRegistry, ClientObserverAnchorPositionMap, ClientVisibilityRegistry,
+    VisibilityClientContextCache, VisibilityMembershipCache, VisibilitySpatialIndex,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,6 +389,9 @@ fn perform_admin_reset(world: &mut World) -> Result<usize, String> {
             .resource_mut::<ClientLocalViewModeRegistry>()
             .by_client_entity
             .clear();
+        world.resource_mut::<VisibilityClientContextCache>().clear();
+        world.resource_mut::<VisibilityMembershipCache>().clear();
+        world.resource_mut::<VisibilitySpatialIndex>().clear();
         world
             .resource_mut::<ClientObserverAnchorPositionMap>()
             .position_by_player_entity_id

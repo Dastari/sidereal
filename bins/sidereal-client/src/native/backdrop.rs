@@ -1242,6 +1242,7 @@ impl Default for PlanetVisualMaterial {
 pub enum RuntimeEffectKind {
     BillboardThruster = 1,
     BillboardImpactSpark = 2,
+    BillboardExplosion = 3,
     BeamTrailTracer = 10,
 }
 
@@ -1312,6 +1313,32 @@ impl RuntimeEffectUniforms {
             color_a: color,
             color_b: Vec4::ZERO,
             color_c: Vec4::ZERO,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn explosion_burst(
+        age_norm: f32,
+        intensity: f32,
+        expansion: f32,
+        alpha: f32,
+        noise_strength: f32,
+        core_color: Vec4,
+        rim_color: Vec4,
+        smoke_color: Vec4,
+    ) -> Self {
+        Self {
+            identity_a: Vec4::new(
+                RuntimeEffectKind::BillboardExplosion as u32 as f32,
+                age_norm,
+                intensity,
+                alpha,
+            ),
+            params_a: Vec4::new(expansion, noise_strength, 0.0, 0.0),
+            params_b: Vec4::ZERO,
+            color_a: core_color,
+            color_b: rim_color,
+            color_c: smoke_color,
         }
     }
 

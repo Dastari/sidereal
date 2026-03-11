@@ -36,8 +36,9 @@ use super::components::{
     RuntimeWorldVisualFamily, RuntimeWorldVisualPass, RuntimeWorldVisualPassKind,
     RuntimeWorldVisualPassSet, StreamedSpriteShaderAssetId, StreamedVisualAssetId,
     StreamedVisualAttached, StreamedVisualAttachmentKind, StreamedVisualChild,
-    SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WeaponImpactSparkPool, WeaponTracerBolt,
-    WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
+    SuppressedPredictedDuplicateVisual, WeaponImpactExplosion, WeaponImpactExplosionPool,
+    WeaponImpactSpark, WeaponImpactSparkPool, WeaponTracerBolt, WeaponTracerCooldowns,
+    WeaponTracerPool, WorldEntity,
 };
 use super::ecs_util::queue_despawn_if_exists;
 use super::lighting::{CameraLocalLightSet, WorldLightingState};
@@ -53,6 +54,14 @@ const WEAPON_TRACER_POOL_SIZE: usize = 96;
 type WeaponImpactSparkQueryItem<'a> = (
     Entity,
     &'a mut WeaponImpactSpark,
+    &'a mut Transform,
+    &'a MeshMaterial2d<RuntimeEffectMaterial>,
+    &'a mut Visibility,
+);
+
+type WeaponImpactExplosionQueryItem<'a> = (
+    Entity,
+    &'a mut WeaponImpactExplosion,
     &'a mut Transform,
     &'a MeshMaterial2d<RuntimeEffectMaterial>,
     &'a mut Visibility,
@@ -75,6 +84,8 @@ const WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ: f32 = 18.0;
 const WEAPON_TRACER_WIGGLE_MAX_AMP_MPS: f32 = 120.0;
 const WEAPON_IMPACT_SPARK_TTL_S: f32 = 0.12;
 const WEAPON_IMPACT_SPARK_POOL_SIZE: usize = 48;
+const WEAPON_IMPACT_EXPLOSION_TTL_S: f32 = 0.18;
+const WEAPON_IMPACT_EXPLOSION_POOL_SIZE: usize = 32;
 const WEAPON_TRACER_MIN_TTL_S: f32 = 0.01;
 const PLANET_CLOUD_BACK_LAYER_Z_OFFSET: f32 = -0.2;
 const PLANET_CLOUD_FRONT_LAYER_Z_OFFSET: f32 = 0.5;
@@ -173,6 +184,51 @@ fn activate_weapon_impact_spark(
             1.0,
             0.95,
             Vec4::new(1.0, 0.9, 0.55, 1.0),
+        );
+    }
+    *visibility = Visibility::Visible;
+}
+
+fn activate_weapon_impact_explosion(
+    impact_pos: Vec2,
+    pool: &mut WeaponImpactExplosionPool,
+    explosions: &mut Query<
+        '_,
+        '_,
+        (
+            &'_ mut WeaponImpactExplosion,
+            &'_ mut Transform,
+            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
+            &'_ mut Visibility,
+        ),
+        Without<WeaponTracerBolt>,
+    >,
+    effect_materials: &mut Assets<RuntimeEffectMaterial>,
+) {
+    if pool.explosions.is_empty() {
+        return;
+    }
+    let explosion_entity = pool.explosions[pool.next_index % pool.explosions.len()];
+    pool.next_index = (pool.next_index + 1) % pool.explosions.len();
+    let Ok((mut explosion, mut transform, material_handle, mut visibility)) =
+        explosions.get_mut(explosion_entity)
+    else {
+        return;
+    };
+    explosion.ttl_s = WEAPON_IMPACT_EXPLOSION_TTL_S;
+    explosion.max_ttl_s = WEAPON_IMPACT_EXPLOSION_TTL_S;
+    transform.translation = Vec3::new(impact_pos.x, impact_pos.y, 0.43);
+    transform.scale = Vec3::splat(1.6);
+    if let Some(material) = effect_materials.get_mut(&material_handle.0) {
+        material.params = RuntimeEffectUniforms::explosion_burst(
+            0.0,
+            1.0,
+            1.0,
+            0.92,
+            0.35,
+            Vec4::new(1.0, 0.92, 0.68, 1.0),
+            Vec4::new(1.0, 0.54, 0.16, 1.0),
+            Vec4::new(0.24, 0.14, 0.08, 1.0),
         );
     }
     *visibility = Visibility::Visible;
@@ -1896,7 +1952,7 @@ pub(super) fn attach_thruster_plume_visuals_system(
                 ),
                 Mesh2d(plume_mesh),
                 MeshMaterial2d(plume_material),
-                Transform::from_xyz(0.0, -0.35, 0.1).with_scale(Vec3::new(1.2, 0.02, 1.0)),
+                Transform::from_xyz(0.0, -0.2, 0.1).with_scale(Vec3::new(1.0, 0.02, 1.0)),
                 Visibility::Visible,
             ));
         });
@@ -2029,7 +2085,7 @@ pub(super) fn update_thruster_plume_visuals_system(
                     settings.afterburner_color_rgb.extend(1.0),
                 );
             }
-            transform.translation = Vec3::new(0.0, -(plume_length * 0.5 + 0.35), 0.1);
+            transform.translation = Vec3::new(0.0, -(plume_length * 0.5 + plume_width * 0.18), 0.1);
             transform.scale = Vec3::new(plume_width, plume_length, 1.0);
             *visibility = if plume_alpha > 0.001 {
                 Visibility::Visible
@@ -2181,6 +2237,49 @@ pub(super) fn ensure_weapon_impact_spark_pool_system(
             ))
             .id();
         pool.sparks.push(spark);
+    }
+}
+
+pub(super) fn ensure_weapon_impact_explosion_pool_system(
+    mut commands: Commands<'_, '_>,
+    mut meshes: ResMut<'_, Assets<Mesh>>,
+    mut quad_mesh: ResMut<'_, RuntimeSharedQuadMesh>,
+    mut effect_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
+    mut pool: ResMut<'_, WeaponImpactExplosionPool>,
+) {
+    if !pool.explosions.is_empty() {
+        return;
+    }
+    pool.explosions.reserve(WEAPON_IMPACT_EXPLOSION_POOL_SIZE);
+    let mesh = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
+    for _ in 0..WEAPON_IMPACT_EXPLOSION_POOL_SIZE {
+        let explosion = commands
+            .spawn((
+                WeaponImpactExplosion {
+                    ttl_s: 0.0,
+                    max_ttl_s: WEAPON_IMPACT_EXPLOSION_TTL_S,
+                },
+                Mesh2d(mesh.clone()),
+                MeshMaterial2d(effect_materials.add(RuntimeEffectMaterial {
+                    params: RuntimeEffectUniforms::explosion_burst(
+                        0.0,
+                        1.0,
+                        1.0,
+                        0.92,
+                        0.35,
+                        Vec4::new(1.0, 0.92, 0.68, 1.0),
+                        Vec4::new(1.0, 0.54, 0.16, 1.0),
+                        Vec4::new(0.24, 0.14, 0.08, 1.0),
+                    ),
+                    ..RuntimeEffectMaterial::default()
+                })),
+                Transform::from_xyz(0.0, 0.0, 0.43),
+                Visibility::Hidden,
+                WorldEntity,
+                DespawnOnExit(ClientAppState::InWorld),
+            ))
+            .id();
+        pool.explosions.push(explosion);
     }
 }
 
@@ -2469,10 +2568,12 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn update_weapon_tracer_visuals_system(
     time: Res<'_, Time>,
     spatial_query: SpatialQuery<'_, '_>,
     mut spark_pool: ResMut<'_, WeaponImpactSparkPool>,
+    mut explosion_pool: ResMut<'_, WeaponImpactExplosionPool>,
     mut effect_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
     mut bolts: Query<
         '_,
@@ -2490,6 +2591,17 @@ pub(super) fn update_weapon_tracer_visuals_system(
         '_,
         (
             &'_ mut WeaponImpactSpark,
+            &'_ mut Transform,
+            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
+            &'_ mut Visibility,
+        ),
+        Without<WeaponTracerBolt>,
+    >,
+    mut explosions: Query<
+        '_,
+        '_,
+        (
+            &'_ mut WeaponImpactExplosion,
             &'_ mut Transform,
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
@@ -2532,6 +2644,12 @@ pub(super) fn update_weapon_tracer_visuals_system(
                     &mut sparks,
                     &mut effect_materials,
                 );
+                activate_weapon_impact_explosion(
+                    impact_pos,
+                    &mut explosion_pool,
+                    &mut explosions,
+                    &mut effect_materials,
+                );
             }
         }
         if hit_this_frame {
@@ -2562,6 +2680,12 @@ pub(super) fn update_weapon_tracer_visuals_system(
                     impact_pos,
                     &mut spark_pool,
                     &mut sparks,
+                    &mut effect_materials,
+                );
+                activate_weapon_impact_explosion(
+                    impact_pos,
+                    &mut explosion_pool,
+                    &mut explosions,
                     &mut effect_materials,
                 );
             }
@@ -2622,6 +2746,38 @@ pub(super) fn update_weapon_impact_sparks_system(
         }
         let scale = 1.0 + age_norm * 7.0;
         transform.scale = Vec3::splat(scale);
+        *visibility = Visibility::Visible;
+    }
+}
+
+pub(super) fn update_weapon_impact_explosions_system(
+    time: Res<'_, Time>,
+    mut explosion_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
+    mut explosions: Query<'_, '_, WeaponImpactExplosionQueryItem<'_>, Without<WeaponTracerBolt>>,
+) {
+    let dt_s = time.delta_secs();
+    for (_entity, mut explosion, mut transform, material_handle, mut visibility) in &mut explosions
+    {
+        explosion.ttl_s = (explosion.ttl_s - dt_s).max(0.0);
+        if explosion.ttl_s <= 0.0 {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+        let t = (explosion.ttl_s / explosion.max_ttl_s).clamp(0.0, 1.0);
+        let age_norm = 1.0 - t;
+        transform.scale = Vec3::splat(1.2 + age_norm * 4.4);
+        if let Some(material) = explosion_materials.get_mut(&material_handle.0) {
+            material.params = RuntimeEffectUniforms::explosion_burst(
+                age_norm,
+                1.0 + (1.0 - age_norm) * 0.35,
+                1.0 + age_norm * 0.5,
+                t * 0.95,
+                0.35 + age_norm * 0.2,
+                Vec4::new(1.0, 0.94, 0.72, 1.0),
+                Vec4::new(1.0, 0.5, 0.15, 1.0),
+                Vec4::new(0.24, 0.14, 0.08, 1.0),
+            );
+        }
         *visibility = Visibility::Visible;
     }
 }

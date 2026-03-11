@@ -12,10 +12,12 @@ use super::camera::{
     sync_ui_overlay_camera_to_gameplay_camera_system, update_camera_motion_state,
     update_topdown_camera_system,
 };
-use super::components::{WeaponImpactSparkPool, WeaponTracerCooldowns, WeaponTracerPool};
+use super::components::{
+    WeaponImpactExplosionPool, WeaponImpactSparkPool, WeaponTracerCooldowns, WeaponTracerPool,
+};
 use super::debug_overlay::{
     collect_debug_overlay_snapshot_system, debug_overlay_enabled, draw_debug_overlay_system,
-    toggle_debug_overlay_system,
+    sync_debug_velocity_arrow_mesh_system, toggle_debug_overlay_system,
 };
 use super::motion::{apply_predicted_input_to_action_queue, enforce_controlled_planar_motion};
 use super::resources::LogoutCleanupRequested;
@@ -270,6 +272,7 @@ impl Plugin for ClientVisualsPlugin {
         app.init_resource::<WeaponTracerPool>();
         app.init_resource::<WeaponTracerCooldowns>();
         app.init_resource::<WeaponImpactSparkPool>();
+        app.init_resource::<WeaponImpactExplosionPool>();
         app.init_resource::<super::resources::RuntimeRenderLayerRegistry>();
         app.init_resource::<super::resources::RuntimeRenderLayerRegistryState>();
         app.init_resource::<super::resources::RuntimeRenderLayerAssignmentCache>();
@@ -307,6 +310,8 @@ impl Plugin for ClientVisualsPlugin {
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
             visuals::ensure_weapon_impact_spark_pool_system
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
+            visuals::ensure_weapon_impact_explosion_pool_system
+                .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
             visuals::emit_weapon_tracer_visuals_system
                 .after(visuals::ensure_weapon_tracer_pool_system),
             visuals::receive_remote_weapon_tracer_messages_system
@@ -314,9 +319,12 @@ impl Plugin for ClientVisualsPlugin {
             visuals::update_weapon_tracer_visuals_system
                 .after(visuals::emit_weapon_tracer_visuals_system)
                 .after(visuals::receive_remote_weapon_tracer_messages_system)
-                .after(visuals::ensure_weapon_impact_spark_pool_system),
+                .after(visuals::ensure_weapon_impact_spark_pool_system)
+                .after(visuals::ensure_weapon_impact_explosion_pool_system),
             visuals::update_weapon_impact_sparks_system
                 .after(visuals::update_weapon_tracer_visuals_system),
+            visuals::update_weapon_impact_explosions_system
+                .after(visuals::update_weapon_impact_sparks_system),
             visuals::attach_streamed_visual_assets_system
                 .after(assets::poll_runtime_asset_http_fetches_system)
                 .after(render_layers::resolve_runtime_render_layer_assignments_system),
@@ -518,8 +526,11 @@ impl Plugin for ClientUiPlugin {
                     .after(super::backdrop::compute_fullscreen_external_world_system),
                 super::backdrop::update_space_background_material_system
                     .after(super::backdrop::update_starfield_material_system),
-                draw_debug_overlay_system
+                sync_debug_velocity_arrow_mesh_system
                     .after(super::backdrop::update_space_background_material_system)
+                    .run_if(debug_overlay_enabled),
+                draw_debug_overlay_system
+                    .after(sync_debug_velocity_arrow_mesh_system)
                     .run_if(debug_overlay_enabled),
             )
                 .chain()

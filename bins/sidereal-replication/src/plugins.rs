@@ -1,4 +1,5 @@
 use avian2d::prelude::PhysicsSystems;
+use bevy::prelude::IntoScheduleConfigs;
 use bevy::prelude::*;
 
 use crate::bootstrap_runtime;
@@ -37,6 +38,7 @@ pub(crate) struct ReplicationDiagnosticsPlugin;
 
 impl Plugin for ReplicationDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(Update, health::advance_fixed_step_update_frame);
         app.add_systems(
             Update,
             (admin::execute_admin_commands, admin::apply_admin_resets).chain(),
@@ -65,7 +67,12 @@ impl Plugin for ReplicationInputPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            input::drain_native_player_inputs_to_action_queue.before(PhysicsSystems::Prepare),
+            (
+                health::begin_fixed_step_diagnostics,
+                input::drain_native_player_inputs_to_action_queue,
+            )
+                .chain()
+                .before(PhysicsSystems::Prepare),
         );
     }
 }
@@ -95,24 +102,90 @@ impl Plugin for ReplicationControlPlugin {
 
 pub(crate) struct ReplicationVisibilityPlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+enum ReplicationVisibilitySet {
+    TransformSync,
+    ObserverAnchors,
+    VisibilityRanges,
+    EntityCache,
+    SpatialIndex,
+    LandmarkDiscovery,
+    MembershipEnsure,
+    MembershipUpdate,
+    Streaming,
+}
+
 impl Plugin for ReplicationVisibilityPlugin {
     fn build(&self, app: &mut App) {
+        app.configure_sets(
+            FixedUpdate,
+            (
+                ReplicationVisibilitySet::TransformSync,
+                ReplicationVisibilitySet::ObserverAnchors,
+                ReplicationVisibilitySet::VisibilityRanges,
+                ReplicationVisibilitySet::EntityCache,
+                ReplicationVisibilitySet::SpatialIndex,
+                ReplicationVisibilitySet::LandmarkDiscovery,
+                ReplicationVisibilitySet::MembershipEnsure,
+                ReplicationVisibilitySet::MembershipUpdate,
+                ReplicationVisibilitySet::Streaming,
+            )
+                .chain()
+                .after(PhysicsSystems::Writeback),
+        );
         app.add_systems(
             FixedUpdate,
             (
                 simulation_entities::sync_controlled_entity_transforms,
                 simulation_entities::sync_world_entity_transforms_from_world_space,
-                runtime_state::update_client_observer_anchor_positions,
-                runtime_state::compute_controlled_entity_visibility_ranges,
-                visibility::ensure_network_visibility_for_replicated_entities,
-                visibility::update_network_visibility,
+            )
+                .in_set(ReplicationVisibilitySet::TransformSync),
+        );
+        app.add_systems(
+            FixedUpdate,
+            runtime_state::update_client_observer_anchor_positions
+                .in_set(ReplicationVisibilitySet::ObserverAnchors),
+        );
+        app.add_systems(
+            FixedUpdate,
+            runtime_state::compute_controlled_entity_visibility_ranges
+                .in_set(ReplicationVisibilitySet::VisibilityRanges),
+        );
+        app.add_systems(
+            FixedUpdate,
+            visibility::refresh_visibility_entity_cache
+                .in_set(ReplicationVisibilitySet::EntityCache),
+        );
+        app.add_systems(
+            FixedUpdate,
+            visibility::refresh_visibility_spatial_index
+                .in_set(ReplicationVisibilitySet::SpatialIndex),
+        );
+        app.add_systems(
+            FixedUpdate,
+            visibility::refresh_static_landmark_discoveries
+                .in_set(ReplicationVisibilitySet::LandmarkDiscovery),
+        );
+        app.add_systems(
+            FixedUpdate,
+            visibility::ensure_network_visibility_for_replicated_entities
+                .in_set(ReplicationVisibilitySet::MembershipEnsure),
+        );
+        app.add_systems(
+            FixedUpdate,
+            (visibility::update_network_visibility,)
+                .in_set(ReplicationVisibilitySet::MembershipUpdate),
+        );
+        app.add_systems(
+            FixedUpdate,
+            (
                 assets::stream_asset_catalog_version_messages,
                 owner_manifest::stream_owner_asset_manifest_messages,
                 tactical::receive_tactical_resnapshot_requests,
                 tactical::stream_tactical_snapshot_messages,
             )
                 .chain()
-                .after(PhysicsSystems::Writeback),
+                .in_set(ReplicationVisibilitySet::Streaming),
         );
     }
 }
@@ -133,7 +206,13 @@ impl Plugin for ReplicationPersistencePlugin {
         app.add_systems(
             FixedUpdate,
             persistence::flush_simulation_state_persistence
-                .after(visibility::update_network_visibility),
+                .after(ReplicationVisibilitySet::MembershipUpdate),
+        );
+        app.add_systems(
+            FixedUpdate,
+            health::end_fixed_step_diagnostics
+                .after(ReplicationVisibilitySet::Streaming)
+                .after(persistence::flush_simulation_state_persistence),
         );
     }
 }

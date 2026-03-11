@@ -13,7 +13,8 @@ use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     BackdropCamera, ClientSceneEntity, DebugOverlayCamera, DebugOverlayPanelLabelShadowText,
     DebugOverlayPanelLabelText, DebugOverlayPanelRoot, DebugOverlayPanelValueShadowText,
-    DebugOverlayPanelValueText, FullscreenForegroundCamera, GameplayCamera, GameplayHud,
+    DebugOverlayPanelValueText, DebugVelocityArrowHeadLower, DebugVelocityArrowHeadUpper,
+    DebugVelocityArrowShaft, FullscreenForegroundCamera, GameplayCamera, GameplayHud,
     HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
     LoadingOverlayText, LoadingProgressBarFill, PlanetBodyCamera, PostProcessCamera,
     RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind, RuntimeStreamingIconText,
@@ -134,6 +135,39 @@ pub(super) fn spawn_world_scene(
         Transform::from_xyz(0.0, 0.0, 80.0),
         RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER),
         DebugOverlayCamera,
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+
+    let debug_arrow_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+    let debug_arrow_material = color_materials.add(ColorMaterial::from(Color::srgb(0.2, 0.5, 1.0)));
+    commands.spawn((
+        Mesh2d(debug_arrow_mesh.clone()),
+        MeshMaterial2d(debug_arrow_material.clone()),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        Visibility::Hidden,
+        RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER),
+        DebugVelocityArrowShaft,
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+    commands.spawn((
+        Mesh2d(debug_arrow_mesh.clone()),
+        MeshMaterial2d(debug_arrow_material.clone()),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        Visibility::Hidden,
+        RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER),
+        DebugVelocityArrowHeadUpper,
+        ClientSceneEntity,
+        DespawnOnExit(ClientAppState::InWorld),
+    ));
+    commands.spawn((
+        Mesh2d(debug_arrow_mesh),
+        MeshMaterial2d(debug_arrow_material),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        Visibility::Hidden,
+        RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER),
+        DebugVelocityArrowHeadLower,
         ClientSceneEntity,
         DespawnOnExit(ClientAppState::InWorld),
     ));

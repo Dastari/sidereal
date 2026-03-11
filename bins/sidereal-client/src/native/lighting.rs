@@ -199,25 +199,39 @@ pub(super) fn collect_thruster_local_light_emitters_system(
         let Some(material) = plume_materials.get(&material_handle.0) else {
             continue;
         };
-        if (material.params.identity_a.x - RuntimeEffectKind::BillboardThruster as u32 as f32).abs()
-            >= 0.5
-        {
-            continue;
-        }
-        let thrust_alpha = material.params.identity_a.z.clamp(0.0, 1.0);
-        let afterburner_alpha = material.params.params_b.x.clamp(0.0, 1.0);
-        let alpha = material.params.identity_a.w.clamp(0.0, 1.0);
-        let intensity = alpha * (0.35 + thrust_alpha * 1.2 + afterburner_alpha * 1.4);
+        let scale = transform.to_scale_rotation_translation().0;
+        let kind = material.params.identity_a.x;
+        let (color, intensity, radius_m) =
+            if (kind - RuntimeEffectKind::BillboardThruster as u32 as f32).abs() < 0.5 {
+                let thrust_alpha = material.params.identity_a.z.clamp(0.0, 1.0);
+                let afterburner_alpha = material.params.params_b.x.clamp(0.0, 1.0);
+                let alpha = material.params.identity_a.w.clamp(0.0, 1.0);
+                let intensity = alpha * (0.35 + thrust_alpha * 1.2 + afterburner_alpha * 1.4);
+                let color = material
+                    .params
+                    .color_a
+                    .xyz()
+                    .lerp(material.params.color_c.xyz(), afterburner_alpha);
+                (color, intensity, scale.y.max(scale.x * 0.28).max(2.0))
+            } else if (kind - RuntimeEffectKind::BillboardExplosion as u32 as f32).abs() < 0.5 {
+                let age_norm = material.params.identity_a.y.clamp(0.0, 1.0);
+                let alpha = material.params.identity_a.w.clamp(0.0, 1.0);
+                let intensity = alpha * (0.8 + (1.0 - age_norm) * 2.2);
+                (
+                    material
+                        .params
+                        .color_a
+                        .xyz()
+                        .lerp(material.params.color_b.xyz(), age_norm),
+                    intensity,
+                    scale.max_element().max(3.0),
+                )
+            } else {
+                continue;
+            };
         if intensity <= 0.02 {
             continue;
         }
-        let scale = transform.to_scale_rotation_translation().0;
-        let radius_m = scale.y.max(scale.x * 0.28).max(2.0);
-        let color = material
-            .params
-            .color_a
-            .xyz()
-            .lerp(material.params.color_c.xyz(), afterburner_alpha);
         emitters.push(LocalLightEmitter {
             source_entity: entity,
             world_position: transform.translation().truncate(),

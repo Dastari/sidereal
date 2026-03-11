@@ -25,7 +25,7 @@ impl BallisticWeapon {
             rpm: 720.0,
             damage_per_shot: 12.0,
             max_range_m: 150.0,
-            projectile_speed_mps: 360.0,
+            projectile_speed_mps: 0.0,
             spread_rad: 0.0,
             damage_type: DamageType::Ballistic,
         }

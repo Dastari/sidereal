@@ -43,12 +43,16 @@ Update note (2026-03-09):
    - `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
    - `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`
    - `docs/plans/replication_server_tui_backend_plan_2026-03-10.md`
-3. Asset delivery and scripting:
+3. Background world simulation and economy direction:
+   - `docs/features/background_world_simulation_contract.md`
+   - `docs/decisions/dr-0033_background_world_simulation_tiering.md`
+4. Asset delivery and scripting:
    - `docs/features/asset_delivery_contract.md`
+   - `docs/features/asteroid_field_system.md`
    - `docs/features/scripting_support.md`
    - `docs/decisions/dr-0025_runtime_script_catalog_authority.md`
    - `docs/decisions/dr-0026_sql_script_catalog_persistence.md`
-4. Historical audits and reports:
+5. Historical audits and reports:
    - `docs/reports/`
    - `docs/reports/client_environment_variable_audit_2026-03-11.md`
    - `docs/reports/server_gateway_environment_variable_audit_2026-03-11.md`

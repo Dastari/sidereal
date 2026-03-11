@@ -24,6 +24,7 @@ struct SharedWorldLightingUniforms {
 
 const EFFECT_KIND_BILLBOARD_THRUSTER: f32 = 1.0;
 const EFFECT_KIND_BILLBOARD_IMPACT_SPARK: f32 = 2.0;
+const EFFECT_KIND_BILLBOARD_EXPLOSION: f32 = 3.0;
 const EFFECT_KIND_BEAM_TRAIL_TRACER: f32 = 10.0;
 
 fn saturate(v: f32) -> f32 {
@@ -42,7 +43,7 @@ fn hash11(x: f32) -> f32 {
 fn render_thruster(mesh: VertexOutput) -> vec4<f32> {
     let uv = mesh.uv;
     let centered_x = (uv.x - 0.5) * 2.0;
-    let along = clamp(uv.y, 0.0, 1.0);
+    let from_nozzle = clamp(1.0 - uv.y, 0.0, 1.0);
 
     let t = effect.identity_a.y;
     let thrust_alpha = clamp(effect.identity_a.z, 0.0, 1.0);
@@ -54,31 +55,48 @@ fn render_thruster(mesh: VertexOutput) -> vec4<f32> {
     let noise_strength = max(0.0, effect.params_a.z);
     let flicker_hz = max(0.0, effect.params_a.w);
 
-    let along_curve = pow(along, falloff);
-    let radius_near = 0.65;
-    let radius_far = 0.04;
+    let along_curve = pow(from_nozzle, falloff);
+    let radius_near = mix(0.56, 0.72, thrust_alpha);
+    let radius_far = mix(0.08, 0.03, thrust_alpha);
     let radius_profile = mix(radius_near, radius_far, along_curve);
     let radial = abs(centered_x) / max(0.001, radius_profile);
     let edge = 1.0 - smoothstep(1.0 - edge_softness, 1.0, radial);
 
-    let core = 1.0 - smoothstep(0.0, 0.5, radial);
-    let flame_ramp = pow(along, 1.15);
-    let longitudinal = pow(1.0 - along, 0.45) * (1.0 - smoothstep(0.9, 1.0, along));
+    let core = 1.0 - smoothstep(0.0, 0.42, radial);
+    let sheath = 1.0 - smoothstep(0.25, 1.0, radial);
+    let nozzle_heat = pow(1.0 - from_nozzle, 0.28);
+    let tail_fade = 1.0 - smoothstep(0.72, 1.0, from_nozzle);
+    let longitudinal = nozzle_heat * tail_fade;
 
-    let flicker_noise = hash21(vec2<f32>(along * 43.0, floor(t * (2.0 + flicker_hz)))) * 2.0 - 1.0;
+    let flicker_noise = hash21(
+        vec2<f32>(floor(from_nozzle * 44.0), floor(t * (2.0 + flicker_hz)))
+    ) * 2.0 - 1.0;
+    let side_noise = hash21(
+        vec2<f32>(floor((centered_x + 1.0) * 18.0), floor((t + from_nozzle) * 9.0))
+    ) * 2.0 - 1.0;
     let flicker = 1.0 + flicker_noise * noise_strength * (0.25 + thrust_alpha * 0.75);
+    let plume_breakup = 1.0 + side_noise * noise_strength * from_nozzle * 0.28;
 
     let base_rgb = effect.color_a.rgb;
     let hot_rgb = effect.color_b.rgb;
     let afterburner_rgb = effect.color_c.rgb;
 
-    let thermal_rgb = mix(base_rgb, hot_rgb, clamp(flame_ramp * (0.65 + thrust_alpha * 0.35), 0.0, 1.0));
-    let final_rgb = mix(thermal_rgb, afterburner_rgb, afterburner_alpha);
+    let thermal_rgb = mix(
+        base_rgb,
+        hot_rgb,
+        clamp(nozzle_heat * (0.7 + thrust_alpha * 0.3), 0.0, 1.0)
+    );
+    let tail_rgb = mix(thermal_rgb, base_rgb, clamp(from_nozzle * 0.72, 0.0, 1.0));
+    let final_rgb = mix(tail_rgb, afterburner_rgb, afterburner_alpha * (0.35 + nozzle_heat * 0.65));
 
-    let intensity = (0.25 + 0.75 * core) * (0.45 + 0.55 * thrust_alpha) * longitudinal;
+    let intensity = (0.28 + core * 0.82 + sheath * 0.24)
+        * (0.42 + 0.58 * thrust_alpha)
+        * longitudinal
+        * plume_breakup;
     let alpha = clamp(edge * intensity * flicker * alpha_scale, 0.0, 1.0);
     let ambient_tint = lighting.ambient.rgb * lighting.ambient.w;
-    let backlight_tint = lighting.backlight.rgb * lighting.backlight.w * (0.25 + along * 0.45);
+    let backlight_tint =
+        lighting.backlight.rgb * lighting.backlight.w * (0.25 + (1.0 - from_nozzle) * 0.45);
     let flash_tint = lighting.flash.rgb * lighting.flash.w * 0.25;
     let local_tint = lighting.local_color_radius.rgb * lighting.local_dir_intensity.w * 0.2;
     let scene_tint = ambient_tint + backlight_tint + flash_tint + local_tint;
@@ -119,6 +137,44 @@ fn render_impact_spark(mesh: VertexOutput) -> vec4<f32> {
     return vec4<f32>(rgb, out_alpha);
 }
 
+fn render_explosion(mesh: VertexOutput) -> vec4<f32> {
+    let uv = mesh.uv * 2.0 - 1.0;
+    let r = length(uv);
+    let age = clamp(effect.identity_a.y, 0.0, 1.0);
+    let life = 1.0 - age;
+    let intensity = max(effect.identity_a.z, 0.0);
+    let alpha = clamp(effect.identity_a.w, 0.0, 1.0);
+    let expansion = max(effect.params_a.x, 0.1);
+    let noise_strength = max(effect.params_a.y, 0.0);
+
+    let noise = hash21(vec2<f32>(floor((uv.x + 1.2) * 11.0), floor((uv.y + age) * 13.0))) * 2.0 - 1.0;
+    let warped_r = r + noise * noise_strength * 0.08;
+
+    let core_radius = mix(0.18, 0.04, age);
+    let core = exp(-pow(warped_r / max(core_radius, 0.001), 2.0)) * mix(1.8, 0.35, age);
+
+    let ring_radius = mix(0.14, 0.72 * expansion, age);
+    let ring_width = mix(0.2, 0.08, age);
+    let shock = exp(-pow((warped_r - ring_radius) / max(ring_width, 0.001), 2.0));
+
+    let plume = smoothstep(1.0, 0.12, warped_r)
+        * smoothstep(0.0, 0.55, warped_r)
+        * mix(0.45, 0.22, age);
+    let smoke = smoothstep(1.2, 0.3, warped_r)
+        * smoothstep(0.05, 0.88, warped_r)
+        * age
+        * 0.38;
+
+    let energy = (core + shock * 1.25 + plume) * intensity;
+    let core_rgb = effect.color_a.rgb * (core * 1.1 + plume * 0.25);
+    let rim_rgb = effect.color_b.rgb * (shock * 1.4 + plume * 0.55);
+    let smoke_rgb = effect.color_c.rgb * smoke;
+    let rgb = core_rgb + rim_rgb + smoke_rgb;
+    let out_alpha = clamp((energy + smoke * 0.45) * alpha * mix(1.0, 0.28, age), 0.0, 1.0);
+
+    return vec4<f32>(rgb, out_alpha);
+}
+
 fn render_beam_trail(mesh: VertexOutput) -> vec4<f32> {
     let uv = mesh.uv;
     let centered = uv * 2.0 - 1.0;
@@ -150,6 +206,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     }
     if abs(kind - EFFECT_KIND_BILLBOARD_IMPACT_SPARK) < 0.5 {
         return render_impact_spark(mesh);
+    }
+    if abs(kind - EFFECT_KIND_BILLBOARD_EXPLOSION) < 0.5 {
+        return render_explosion(mesh);
     }
     if abs(kind - EFFECT_KIND_BEAM_TRAIL_TRACER) < 0.5 {
         return render_beam_trail(mesh);

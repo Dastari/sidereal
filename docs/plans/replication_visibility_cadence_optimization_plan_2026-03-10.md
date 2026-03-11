@@ -4,6 +4,15 @@ Status: Proposed implementation plan
 Date: 2026-03-10  
 Owners: replication runtime + gameplay runtime + diagnostics
 
+Update note (2026-03-11):
+- Initial implementation work has started in `bins/sidereal-replication/src/replication/visibility.rs`.
+- The first landed slice adds persistent visibility-entity cache scaffolding plus expanded cadence telemetry (`cache_refresh_ms`, occupied-cell stats, visible gain/loss counters).
+- A follow-up slice has now switched the per-entity cache refresh path from whole-world full-refresh to dirty/removal-driven maintenance using `Added`/`Changed`/`RemovedComponents` invalidation.
+- The next slice has also landed persistent per-client visibility context caching, so dynamic scratch state now carries candidate results only while stable client context is retained across ticks and refreshed by current owner/view/anchor inputs.
+- Static-landmark discovery is now maintained on its own lower-cadence server lane (0.25s default cadence) instead of the hottest per-tick visibility pass. Dynamic delivery still consumes authoritative discovered-landmark state every visibility tick.
+- Visibility membership application now uses cached desired-set diffs per replicated entity instead of mutating `ReplicationState` opportunistically throughout the decision loop.
+- Persistent spatial-index reuse has now landed for the dynamic visibility hot path: `VisibilitySpatialIndex` is refreshed incrementally for motion/extent changes, structural invalidations fall back to a full rebuild, and per-tick membership updates now consume the persistent cell/root/effective-position state instead of rebuilding `entities_by_cell` and mount-root visibility maps from scratch.
+
 Primary references:
 - `docs/features/visibility_replication_contract.md`
 - `docs/plans/discovered_static_landmark_visibility_plan_2026-03-09.md`

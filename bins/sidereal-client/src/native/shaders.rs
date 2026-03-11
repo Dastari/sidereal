@@ -823,6 +823,7 @@ mod tests {
                 "tactical_map_overlay_wgsl",
                 "shaders/tactical_map_overlay.wgsl",
             ),
+            ("runtime_effect_wgsl", "shaders/runtime_effect.wgsl"),
         ] {
             let source_bytes =
                 fs::read(asset_root.join(source_path)).expect("shader source should exist");

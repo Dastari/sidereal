@@ -65,6 +65,34 @@ For each decision:
 
 ## Decisions
 
+## DR-0033: Background World Simulation Tiering
+- Status: Proposed
+- Date: 2026-03-11
+- Owners: gameplay / replication / persistence / scripting
+- Context:
+  - Sidereal needs a world that remains economically and socially active outside visible/player-relevant runtime bubbles.
+  - Existing docs define persistence, scripting, visibility, and galaxy-scale travel, but not the contract for abstract offscreen actors and promotion back into full runtime.
+- Decision:
+  - Introduce a tiered background world simulation model with `FullRuntime`, `AbstractSimulation`, and `DerivedPressure`.
+  - Distinguish lightweight `Quanta` actors from persistent `HeroActor` NPCs.
+  - Derive dynamic traffic lanes and probability-volume-style pressure from recent activity to drive mission generation, piracy/security response, and encounter promotion.
+- Consequences:
+  - Positive:
+    - Shared economy/faction/mission pressures can drive both NPC and player-facing world behavior.
+    - World activity can continue without requiring full simulation everywhere.
+  - Negative:
+    - Promotion/demotion and abstract conflict resolution become new architecture surfaces that must stay persistence-safe and encounter-safe.
+- Follow-up:
+  - Use the new feature contract as the source-of-truth.
+  - Resolve exact resource depletion/regrowth and abstract conflict formulas before implementation hardens.
+- Decision doc:
+  - `docs/decisions/dr-0033_background_world_simulation_tiering.md`
+- References:
+  - `docs/features/background_world_simulation_contract.md`
+  - `docs/features/scripting_support.md`
+  - `docs/features/galaxy_world_structure.md`
+  - `docs/features/visibility_replication_contract.md`
+
 ## DR-0032: Discovered Static Landmark Visibility
 - Status: Accepted
 - Date: 2026-03-09

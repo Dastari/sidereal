@@ -11,7 +11,7 @@ use crate::replication::input::{
     RealtimeInputActivityByPlayer,
 };
 use crate::replication::lifecycle::ClientLastActivity;
-use crate::replication::visibility::ClientVisibilityRegistry;
+use crate::replication::visibility::{ClientVisibilityRegistry, VisibilityClientContextCache};
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{RemoteId, ReplicationState};
 
@@ -25,6 +25,7 @@ fn cleanup_drops_visibility_for_disconnected_client() {
     app.init_resource::<LatestRealtimeInputsByPlayer>();
     app.init_resource::<RealtimeInputActivityByPlayer>();
     app.init_resource::<ClientVisibilityRegistry>();
+    app.init_resource::<VisibilityClientContextCache>();
     app.init_resource::<ClientControlRequestOrder>();
     app.init_resource::<ClientLastActivity>();
     app.add_systems(Update, cleanup_client_auth_bindings);

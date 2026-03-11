@@ -63,6 +63,10 @@ Current implementation baseline:
 - For parallaxed discovered landmarks, delivery narrowing must account for the authored world-layer parallax factor rather than using the authoritative center alone. Otherwise the server can cull a landmark before its projected render center leaves the buffered viewport.
 - Candidate prefiltering must not reject already-discovered static landmarks before the landmark-specific delivery check runs.
 
+2026-03-11 update:
+- Static-landmark discovery maintenance now runs on a lower-cadence server lane separate from the hottest per-tick visibility membership update. The current runtime default cadence is 0.25 seconds.
+- Dynamic per-tick visibility still consumes the authoritative discovered-landmark state every visibility tick; the cadence split changes maintenance timing only and does not change the authorization ordering (`Authorization -> Delivery -> Payload`).
+
 ## 4. Multi-Lane Contract (Current + Approved Direction)
 
 Lane model:

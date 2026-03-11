@@ -110,3 +110,10 @@ fn zero_speed_weapon_remains_hitscan_and_spawns_no_projectile_entity() {
         .unwrap();
     assert!(cooldown.remaining_s > 0.0);
 }
+
+#[test]
+fn corvette_gatling_defaults_to_tracer_hitscan_mode() {
+    let weapon = BallisticWeapon::corvette_ballistic_gatling();
+    assert!(!weapon.uses_projectile_entities());
+    assert_eq!(weapon.projectile_speed_mps, 0.0);
+}

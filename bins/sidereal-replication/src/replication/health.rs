@@ -5,7 +5,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::replication::SimulatedControlledEntity;
 use crate::replication::auth::AuthenticatedClientBindings;
-use crate::replication::input::ClientInputDropMetrics;
+use crate::replication::input::{
+    ClientInputDropMetrics, LatestRealtimeInputsByPlayer, RealtimeInputActivityByPlayer,
+    RealtimeInputTimeoutSeconds,
+};
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::persistence::PersistenceWorkerState;
 use crate::replication::runtime_scripting::ScriptRuntimeMetrics;
@@ -20,6 +23,7 @@ use lightyear::prelude::Link;
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::ClientOf;
 use serde::Serialize;
+use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
     BallisticProjectile, ControlledEntityGuid, DisplayName, EntityGuid, EntityLabels, MapIcon,
     PlayerTag, ScriptState, ShipTag, SizeM, StaticLandmark, WorldPosition,
@@ -96,15 +100,56 @@ pub struct ReplicationHealthSnapshot {
     pub controlled_entity_count: usize,
     pub input_accepted_total: u64,
     pub input_drop_total: u64,
+    pub input_future_tick_drop_total: u64,
+    pub input_duplicate_or_out_of_order_drop_total: u64,
+    pub input_rate_limited_drop_total: u64,
+    pub input_oversized_packet_drop_total: u64,
+    pub input_empty_after_filter_drop_total: u64,
+    pub input_unbound_client_drop_total: u64,
+    pub input_spoofed_player_drop_total: u64,
+    pub input_controlled_target_mismatch_total: u64,
+    pub input_players_tracked: usize,
+    pub input_stale_players: usize,
+    pub input_oldest_age_ms: f64,
+    pub fixed_tick_budget_ms: f64,
+    pub fixed_tick_last_wall_ms: f64,
+    pub fixed_tick_max_wall_ms: f64,
+    pub fixed_tick_over_budget_total: u64,
+    pub fixed_ticks_total: u64,
+    pub fixed_ticks_last_update: u32,
+    pub fixed_ticks_max_per_update: u32,
+    pub fixed_multi_step_updates_total: u64,
     pub visibility_query_ms: f64,
     pub visibility_apply_ms: f64,
+    pub visibility_cache_refresh_ms: f64,
+    pub visibility_client_context_refresh_ms: f64,
+    pub visibility_landmark_discovery_ms: f64,
     pub visibility_clients: usize,
     pub visibility_entities: usize,
+    pub visibility_candidates_total: usize,
+    pub visibility_candidates_per_client: f64,
+    pub visibility_occupied_cells: usize,
+    pub visibility_max_entities_per_cell: usize,
+    pub visibility_visible_gains: usize,
+    pub visibility_visible_losses: usize,
     pub persistence_enqueued_batches: u64,
     pub persistence_queue_full_events: u64,
     pub persistence_disconnected_events: u64,
     pub persistence_pending_latest: bool,
     pub lua_runtime: LuaRuntimeHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Resource, Default)]
+pub struct FixedStepRuntimeMetrics {
+    pub fixed_ticks_total: u64,
+    pub fixed_ticks_last_update: u32,
+    pub max_fixed_ticks_per_update: u32,
+    pub multi_step_updates_total: u64,
+    pub last_fixed_tick_wall_ms: f64,
+    pub max_fixed_tick_wall_ms: f64,
+    pub over_budget_ticks_total: u64,
+    current_update_fixed_ticks: u32,
+    current_fixed_tick_started_at: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Default, Resource)]
@@ -185,6 +230,24 @@ pub struct WorldExplorerSnapshotInputs<'w, 's> {
     client_links: Query<'w, 's, &'static Link, (With<ClientOf>, With<Connected>)>,
 }
 
+#[derive(SystemParam)]
+pub struct HealthSnapshotInputs<'w, 's> {
+    bindings: Res<'w, AuthenticatedClientBindings>,
+    last_activity: Res<'w, ClientLastActivity>,
+    controlled_entities: Res<'w, PlayerControlledEntityMap>,
+    input_metrics: Res<'w, ClientInputDropMetrics>,
+    latest_realtime_inputs: Res<'w, LatestRealtimeInputsByPlayer>,
+    realtime_input_activity: Res<'w, RealtimeInputActivityByPlayer>,
+    realtime_input_timeout: Res<'w, RealtimeInputTimeoutSeconds>,
+    fixed_metrics: Res<'w, FixedStepRuntimeMetrics>,
+    visibility_metrics: Res<'w, VisibilityRuntimeMetrics>,
+    persistence_state: Res<'w, PersistenceWorkerState>,
+    script_metrics: Option<Res<'w, ScriptRuntimeMetrics>>,
+    all_entities: Query<'w, 's, Entity>,
+    physics_entities: Query<'w, 's, Entity, With<RigidBody>>,
+    scripted_entities: Query<'w, 's, Entity, With<ScriptState>>,
+}
+
 impl SharedWorldMapSnapshot {
     pub fn new() -> Self {
         Self::default()
@@ -251,6 +314,7 @@ pub struct ReplicationProcessStartedAt(pub std::time::Instant);
 pub fn init_resources(app: &mut App) {
     app.insert_resource(DiagnosticsSnapshotCadence::default());
     app.insert_resource(DiagnosticsSnapshotState::default());
+    app.insert_resource(FixedStepRuntimeMetrics::default());
     app.insert_resource(ReplicationHealthSnapshot::default());
     app.insert_resource(SharedHealthSnapshot::new());
     app.insert_resource(WorldMapSnapshot::default());
@@ -314,6 +378,36 @@ async fn get_health(
     Ok(Json(state.snapshot.load()))
 }
 
+pub fn advance_fixed_step_update_frame(mut metrics: ResMut<'_, FixedStepRuntimeMetrics>) {
+    let fixed_ticks_this_update = std::mem::take(&mut metrics.current_update_fixed_ticks);
+    metrics.fixed_ticks_last_update = fixed_ticks_this_update;
+    metrics.max_fixed_ticks_per_update = metrics
+        .max_fixed_ticks_per_update
+        .max(fixed_ticks_this_update);
+    if fixed_ticks_this_update > 1 {
+        metrics.multi_step_updates_total = metrics.multi_step_updates_total.saturating_add(1);
+    }
+}
+
+pub fn begin_fixed_step_diagnostics(mut metrics: ResMut<'_, FixedStepRuntimeMetrics>) {
+    metrics.fixed_ticks_total = metrics.fixed_ticks_total.saturating_add(1);
+    metrics.current_update_fixed_ticks = metrics.current_update_fixed_ticks.saturating_add(1);
+    metrics.current_fixed_tick_started_at = Some(std::time::Instant::now());
+}
+
+pub fn end_fixed_step_diagnostics(mut metrics: ResMut<'_, FixedStepRuntimeMetrics>) {
+    let Some(started_at) = metrics.current_fixed_tick_started_at.take() else {
+        return;
+    };
+    let wall_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+    metrics.last_fixed_tick_wall_ms = wall_ms;
+    metrics.max_fixed_tick_wall_ms = metrics.max_fixed_tick_wall_ms.max(wall_ms);
+    let budget_ms = 1000.0 / f64::from(SIM_TICK_HZ);
+    if wall_ms > budget_ms {
+        metrics.over_budget_ticks_total = metrics.over_budget_ticks_total.saturating_add(1);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn update_health_snapshot(
     time: Res<'_, Time<Real>>,
@@ -322,16 +416,7 @@ pub fn update_health_snapshot(
     started_at: Res<'_, ReplicationProcessStartedAt>,
     shared: Res<'_, SharedHealthSnapshot>,
     mut snapshot: ResMut<'_, ReplicationHealthSnapshot>,
-    bindings: Res<'_, AuthenticatedClientBindings>,
-    last_activity: Res<'_, ClientLastActivity>,
-    controlled_entities: Res<'_, PlayerControlledEntityMap>,
-    input_metrics: Res<'_, ClientInputDropMetrics>,
-    visibility_metrics: Res<'_, VisibilityRuntimeMetrics>,
-    persistence_state: Res<'_, PersistenceWorkerState>,
-    script_metrics: Option<Res<'_, ScriptRuntimeMetrics>>,
-    all_entities: Query<'_, '_, Entity>,
-    physics_entities: Query<'_, '_, Entity, With<RigidBody>>,
-    scripted_entities: Query<'_, '_, Entity, With<ScriptState>>,
+    inputs: HealthSnapshotInputs<'_, '_>,
 ) {
     let now_s = time.elapsed_secs_f64();
     if !should_refresh_snapshot(
@@ -341,36 +426,83 @@ pub fn update_health_snapshot(
     ) {
         return;
     }
-    let unique_users = bindings
+    let unique_users = inputs
+        .bindings
         .by_client_entity
         .values()
         .cloned()
         .collect::<std::collections::HashSet<_>>()
         .len();
-    let current_script_metrics = script_metrics
+    let current_script_metrics = inputs
+        .script_metrics
         .map(|metrics| metrics.clone())
         .unwrap_or_default();
+    let input_players_tracked = inputs.latest_realtime_inputs.by_player_entity_id.len();
+    let mut input_stale_players = 0usize;
+    let mut input_oldest_age_ms = 0.0f64;
+    for last_received_at_s in inputs
+        .realtime_input_activity
+        .last_received_at_s_by_player_entity_id
+        .values()
+    {
+        let age_s = (now_s - *last_received_at_s).max(0.0);
+        if age_s > inputs.realtime_input_timeout.0 {
+            input_stale_players = input_stale_players.saturating_add(1);
+        }
+        input_oldest_age_ms = input_oldest_age_ms.max(age_s * 1000.0);
+    }
+    let fixed_tick_budget_ms = 1000.0 / f64::from(SIM_TICK_HZ);
     let next_snapshot = ReplicationHealthSnapshot {
         status: "ok".to_string(),
         generated_at_unix_ms: unix_time_ms(),
         uptime_seconds: started_at.0.elapsed().as_secs(),
-        session_count: bindings.by_client_entity.len(),
+        session_count: inputs.bindings.by_client_entity.len(),
         users_online: unique_users,
-        clients_with_recent_activity: last_activity.0.len(),
-        world_entity_count: all_entities.iter().len(),
-        physics_body_count: physics_entities.iter().len(),
-        scripted_entity_count: scripted_entities.iter().len(),
-        controlled_entity_count: controlled_entities.by_player_entity_id.len(),
-        input_accepted_total: input_metrics.accepted_inputs,
-        input_drop_total: input_metrics.total_drops(),
-        visibility_query_ms: visibility_metrics.query_ms,
-        visibility_apply_ms: visibility_metrics.apply_ms,
-        visibility_clients: visibility_metrics.clients,
-        visibility_entities: visibility_metrics.entities,
-        persistence_enqueued_batches: persistence_state.enqueued_batches(),
-        persistence_queue_full_events: persistence_state.queue_full_events(),
-        persistence_disconnected_events: persistence_state.disconnected_events(),
-        persistence_pending_latest: persistence_state.has_latest_pending_batch(),
+        clients_with_recent_activity: inputs.last_activity.0.len(),
+        world_entity_count: inputs.all_entities.iter().len(),
+        physics_body_count: inputs.physics_entities.iter().len(),
+        scripted_entity_count: inputs.scripted_entities.iter().len(),
+        controlled_entity_count: inputs.controlled_entities.by_player_entity_id.len(),
+        input_accepted_total: inputs.input_metrics.accepted_inputs,
+        input_drop_total: inputs.input_metrics.total_drops(),
+        input_future_tick_drop_total: inputs.input_metrics.future_tick,
+        input_duplicate_or_out_of_order_drop_total: inputs
+            .input_metrics
+            .duplicate_or_out_of_order_tick,
+        input_rate_limited_drop_total: inputs.input_metrics.rate_limited,
+        input_oversized_packet_drop_total: inputs.input_metrics.oversized_packet,
+        input_empty_after_filter_drop_total: inputs.input_metrics.empty_after_filter,
+        input_unbound_client_drop_total: inputs.input_metrics.unbound_client,
+        input_spoofed_player_drop_total: inputs.input_metrics.spoofed_player_id,
+        input_controlled_target_mismatch_total: inputs.input_metrics.controlled_target_mismatch,
+        input_players_tracked,
+        input_stale_players,
+        input_oldest_age_ms,
+        fixed_tick_budget_ms,
+        fixed_tick_last_wall_ms: inputs.fixed_metrics.last_fixed_tick_wall_ms,
+        fixed_tick_max_wall_ms: inputs.fixed_metrics.max_fixed_tick_wall_ms,
+        fixed_tick_over_budget_total: inputs.fixed_metrics.over_budget_ticks_total,
+        fixed_ticks_total: inputs.fixed_metrics.fixed_ticks_total,
+        fixed_ticks_last_update: inputs.fixed_metrics.fixed_ticks_last_update,
+        fixed_ticks_max_per_update: inputs.fixed_metrics.max_fixed_ticks_per_update,
+        fixed_multi_step_updates_total: inputs.fixed_metrics.multi_step_updates_total,
+        visibility_query_ms: inputs.visibility_metrics.query_ms,
+        visibility_apply_ms: inputs.visibility_metrics.apply_ms,
+        visibility_cache_refresh_ms: inputs.visibility_metrics.cache_refresh_ms,
+        visibility_client_context_refresh_ms: inputs.visibility_metrics.client_context_refresh_ms,
+        visibility_landmark_discovery_ms: inputs.visibility_metrics.landmark_discovery_ms,
+        visibility_clients: inputs.visibility_metrics.clients,
+        visibility_entities: inputs.visibility_metrics.entities,
+        visibility_candidates_total: inputs.visibility_metrics.candidates_total,
+        visibility_candidates_per_client: inputs.visibility_metrics.candidates_per_client,
+        visibility_occupied_cells: inputs.visibility_metrics.occupied_cells,
+        visibility_max_entities_per_cell: inputs.visibility_metrics.max_entities_per_cell,
+        visibility_visible_gains: inputs.visibility_metrics.visible_gains,
+        visibility_visible_losses: inputs.visibility_metrics.visible_losses,
+        persistence_enqueued_batches: inputs.persistence_state.enqueued_batches(),
+        persistence_queue_full_events: inputs.persistence_state.queue_full_events(),
+        persistence_disconnected_events: inputs.persistence_state.disconnected_events(),
+        persistence_pending_latest: inputs.persistence_state.has_latest_pending_batch(),
         lua_runtime: LuaRuntimeHealthSnapshot {
             memory_limit_bytes: current_script_metrics.memory_limit_bytes,
             current_memory_bytes: current_script_metrics.current_memory_bytes,
@@ -814,11 +946,15 @@ mod tests {
         let snapshot = ReplicationHealthSnapshot {
             users_online: 3,
             session_count: 4,
+            fixed_ticks_last_update: 2,
+            input_rate_limited_drop_total: 5,
             ..Default::default()
         };
         let value = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(value["users_online"], 3);
         assert_eq!(value["session_count"], 4);
+        assert_eq!(value["fixed_ticks_last_update"], 2);
+        assert_eq!(value["input_rate_limited_drop_total"], 5);
         assert!(value.get("sessions").is_none());
     }
 }

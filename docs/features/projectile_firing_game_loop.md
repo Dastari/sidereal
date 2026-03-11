@@ -4,6 +4,12 @@ Status: Updated after ballistic projectile refactor
 Date: 2026-03-08  
 Owners: gameplay runtime + replication + client
 
+Implementation status note (2026-03-12):
+
+1. The current corvette/rocinante `Ballistic Gatling` has been moved back to the authoritative hitscan-plus-tracer path by setting `projectile_speed_mps = 0.0`.
+2. True projectile entities remain the supported path for weapon families that are intentionally modeled as inertial ballistic shots.
+3. This restores the existing tracer presentation loop for the starter ship while projectile-backed combat work continues for distinct weapon classes.
+
 Primary architecture references:
 - `docs/sidereal_design_document.md`
 - `docs/features/visibility_replication_contract.md`
@@ -36,18 +42,19 @@ Implemented in the current baseline:
 5. Bound `Space` to `FirePrimary` and moved brake hold to `Ctrl` keys.
 6. Preserved native/WASM parity by wiring fire intent through shared `PlayerInput` protocol (`sidereal-net`) used by both targets.
 
-Current ballistic-gatling behavior:
+Current combat-slice weapon behavior:
 
-1. Weapons with `projectile_speed_mps > 0` now spawn true ballistic projectile entities.
-2. Projectile initial velocity inherits shooter inertial velocity:
+1. The starter `Ballistic Gatling` currently uses the authoritative hitscan `ShotFiredEvent -> tracer message` path because its authored `projectile_speed_mps` is `0.0`.
+2. Weapons with `projectile_speed_mps > 0` spawn true ballistic projectile entities.
+3. Projectile initial velocity inherits shooter inertial velocity:
    - `projectile_velocity = shooter_linear_velocity + muzzle_forward * projectile_speed_mps`
-3. The local shooter pre-spawns the projectile in fixed-step gameplay.
-4. The replication server also spawns the same projectile in fixed-step gameplay and marks it `PreSpawned`, then:
+4. The local shooter pre-spawns the projectile in fixed-step gameplay.
+5. The replication server also spawns the same projectile in fixed-step gameplay and marks it `PreSpawned`, then:
    - predicts it for the owning shooter,
    - interpolates it for observers.
-5. Legacy hitscan `ShotFiredEvent -> ShotImpactResolvedEvent -> tracer message` remains only for weapons with `projectile_speed_mps <= 0`.
-6. Runtime ballistic projectile entities carry a real `EntityGuid` for replication/prediction clone matching.
-7. Replication persistence explicitly excludes ballistic projectile entities because they are ephemeral runtime combat state, not durable world state.
+6. The hitscan `ShotFiredEvent -> ShotImpactResolvedEvent -> tracer message` path remains for weapons with `projectile_speed_mps <= 0`.
+7. Runtime ballistic projectile entities carry a real `EntityGuid` for replication/prediction clone matching.
+8. Replication persistence explicitly excludes ballistic projectile entities because they are ephemeral runtime combat state, not durable world state.
 
 Current constraints in this baseline:
 

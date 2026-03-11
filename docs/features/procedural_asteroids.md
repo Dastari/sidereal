@@ -5,6 +5,7 @@
 
 ## 0. Status Notes
 
+- 2026-03-12: The current implementation remains the live baseline, but it is no longer the intended end-state architecture. Planned direction is a persisted field-root model with clustered activation, larger size tiers, and authoritative fracture/depletion state; see `docs/features/asteroid_field_system.md`. Native impact: future runtime/client work required. WASM impact: shared gameplay/procedural-generation logic should stay target-shared.
 - 2026-03-09: Native client streamed asteroid visuals now rebuild when replicated `sprite_shader_asset_id` or `procedural_sprite` data arrives after the initial `visual_asset_id`. This prevents some asteroids from remaining on the `asteroid_texture_red_png` fallback after late component adoption. WASM impact: no architecture change; shared streamed-visual retry behavior should match once parity work resumes.
 
 ## 1. What Is Implemented

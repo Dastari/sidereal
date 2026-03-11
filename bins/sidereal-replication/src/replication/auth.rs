@@ -23,7 +23,7 @@ use crate::replication::input::{
     RealtimeInputActivityByPlayer, canonical_player_entity_id,
 };
 use crate::replication::lifecycle::ClientLastActivity;
-use crate::replication::visibility::ClientVisibilityRegistry;
+use crate::replication::visibility::{ClientVisibilityRegistry, VisibilityClientContextCache};
 use crate::replication::{
     PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
 };
@@ -70,6 +70,7 @@ pub fn cleanup_client_auth_bindings(
     mut latest_realtime_inputs: ResMut<'_, LatestRealtimeInputsByPlayer>,
     mut realtime_input_activity: ResMut<'_, RealtimeInputActivityByPlayer>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
+    mut client_context_cache: ResMut<'_, VisibilityClientContextCache>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
     mut last_activity: ResMut<'_, ClientLastActivity>,
 ) {
@@ -135,6 +136,7 @@ pub fn cleanup_client_auth_bindings(
         .collect();
     for client_entity in &disconnected_clients {
         visibility_registry.unregister_client(*client_entity);
+        client_context_cache.remove_client(*client_entity);
     }
     last_activity
         .0
@@ -155,6 +157,7 @@ pub fn receive_client_disconnect_notify(
     mut commands: Commands<'_, '_>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
+    mut client_context_cache: ResMut<'_, VisibilityClientContextCache>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
     mut last_activity: ResMut<'_, ClientLastActivity>,
     mut receivers: Query<
@@ -177,6 +180,7 @@ pub fn receive_client_disconnect_notify(
             bindings.by_client_entity.remove(&client_entity);
             bindings.by_remote_id.remove(&remote_id.0);
             visibility_registry.unregister_client(client_entity);
+            client_context_cache.remove_client(client_entity);
             control_order
                 .last_request_seq_by_player
                 .remove(&msg.player_entity_id);

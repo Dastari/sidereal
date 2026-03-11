@@ -14,10 +14,12 @@ Update note (2026-03-09):
 
 1. Active implementation contracts:
    - `asset_delivery_contract.md`
+   - `background_world_simulation_contract.md`
    - `visibility_replication_contract.md`
    - `tactical_and_owner_lane_protocol_contract.md`
 2. Active feature references:
    - `asset-packs.md`
+   - `asteroid_field_system.md`
    - `brp_debugging_workflow.md`
    - `galaxy_world_structure.md`
    - `procedural_asteroids.md`

@@ -4,6 +4,11 @@ Status: Accepted direction
 Date: 2026-03-07
 Owners: client rendering + scripting + asset streaming
 
+Status note (2026-03-12):
+
+1. `RuntimeEffectMaterial` now has an initial explosion billboard variant in addition to thruster plume, impact spark, and tracer usage.
+2. Explosion visuals still use the same fixed Rust-owned effect family ABI; no new standalone explosion material type was introduced.
+
 Primary references:
 - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 - `docs/plans/dynamic_runtime_shader_material_plan.md`
@@ -195,11 +200,12 @@ Implementation progress:
 
 1. Canonical effect-family shader asset is now `runtime_effect_wgsl`.
 2. `EffectBillboard` is implemented for thruster plume and weapon impact spark.
-3. `EffectBeamTrail` is implemented for weapon tracers.
-4. `EffectField` remains a planned base ABI category only; there is no hardcoded example-specific field consumer in the client.
-5. Tactical overlay remains outside this family as a separate fixed schema.
-6. `ThrusterPlumeMaterial` and `WeaponImpactSparkMaterial` are now collapsed into `RuntimeEffectMaterial`.
-7. Weapon tracer visuals no longer use a legacy sprite path; they now use the `RuntimeEffectMaterial` beam/trail variant.
+3. `EffectBillboard` now also includes an initial explosion burst variant.
+4. `EffectBeamTrail` is implemented for weapon tracers.
+5. `EffectField` remains a planned base ABI category only; there is no hardcoded example-specific field consumer in the client.
+6. Tactical overlay remains outside this family as a separate fixed schema.
+7. `ThrusterPlumeMaterial` and `WeaponImpactSparkMaterial` are now collapsed into `RuntimeEffectMaterial`.
+8. Weapon tracer visuals no longer use a legacy sprite path; they now use the `RuntimeEffectMaterial` beam/trail variant.
 
 ### 3.5 Screen overlay family
 
