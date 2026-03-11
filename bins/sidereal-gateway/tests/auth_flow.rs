@@ -99,43 +99,6 @@ async fn register_login_refresh_me_happy_path() {
 }
 
 #[tokio::test]
-async fn login_does_not_dispatch_bootstrap_command() {
-    let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
-    let service = Arc::new(AuthService::new_with_persister(
-        AuthConfig::for_tests(),
-        Arc::new(InMemoryAuthStore::default()),
-        dispatcher.clone(),
-        Arc::new(NoopStarterWorldPersister),
-    ));
-    let app = app_with_service(service.clone());
-
-    let _ = app
-        .clone()
-        .oneshot(json_request(
-            Method::POST,
-            "/auth/register",
-            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
-            None,
-        ))
-        .await
-        .expect("register response");
-    let dispatch_after_register = dispatcher.commands().await.len();
-
-    let _ = app
-        .oneshot(json_request(
-            Method::POST,
-            "/auth/login",
-            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
-            None,
-        ))
-        .await
-        .expect("login response");
-
-    let dispatch_after_login = dispatcher.commands().await.len();
-    assert_eq!(dispatch_after_register, dispatch_after_login);
-}
-
-#[tokio::test]
 async fn login_route_answers_cors_preflight_for_dashboard_origin() {
     let service = Arc::new(AuthService::new_with_persister(
         AuthConfig::for_tests(),

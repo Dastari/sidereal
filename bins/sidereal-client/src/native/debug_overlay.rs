@@ -1295,73 +1295,108 @@ mod tests {
     }
 
     #[test]
-    fn controlled_guid_prefers_predicted_lane_and_confirmed_ghost() {
-        let guid = uuid::Uuid::nil();
-        let candidates = vec![
-            root_candidate(
-                2,
-                guid,
-                true,
-                true,
-                false,
-                false,
-                true,
-                Some(ConfirmedGhostPose {
-                    position_xy: Vec2::new(10.0, 20.0),
-                    rotation_rad: 0.3,
-                }),
-            ),
-            root_candidate(1, guid, true, true, false, false, false, None),
+    fn root_lane_resolution_prefers_expected_primary_candidate() {
+        struct Case {
+            name: &'static str,
+            candidates: Vec<RootDebugCandidate>,
+            expected_lane: DebugEntityLane,
+            expected_entity_bits: u64,
+            expected_confirmed_ghost_position: Option<Vec2>,
+        }
+
+        let controlled_guid = uuid::Uuid::nil();
+        let remote_ready_guid = uuid::Uuid::new_v4();
+        let remote_unready_guid = uuid::Uuid::new_v4();
+        let cases = vec![
+            Case {
+                name: "controlled predicted lane wins and spawns confirmed ghost",
+                candidates: vec![
+                    root_candidate(
+                        2,
+                        controlled_guid,
+                        true,
+                        true,
+                        false,
+                        false,
+                        true,
+                        Some(ConfirmedGhostPose {
+                            position_xy: Vec2::new(10.0, 20.0),
+                            rotation_rad: 0.3,
+                        }),
+                    ),
+                    root_candidate(1, controlled_guid, true, true, false, false, false, None),
+                ],
+                expected_lane: DebugEntityLane::Predicted,
+                expected_entity_bits: 2,
+                expected_confirmed_ghost_position: Some(Vec2::new(10.0, 20.0)),
+            },
+            Case {
+                name: "remote ready interpolated lane beats confirmed",
+                candidates: vec![
+                    root_candidate(4, remote_ready_guid, false, true, false, false, false, None),
+                    root_candidate(3, remote_ready_guid, false, true, true, true, false, None),
+                ],
+                expected_lane: DebugEntityLane::Interpolated,
+                expected_entity_bits: 3,
+                expected_confirmed_ghost_position: None,
+            },
+            Case {
+                name: "remote confirmed lane beats unready interpolated",
+                candidates: vec![
+                    root_candidate(
+                        4,
+                        remote_unready_guid,
+                        false,
+                        true,
+                        false,
+                        false,
+                        false,
+                        None,
+                    ),
+                    root_candidate(
+                        3,
+                        remote_unready_guid,
+                        false,
+                        true,
+                        true,
+                        false,
+                        false,
+                        None,
+                    ),
+                ],
+                expected_lane: DebugEntityLane::Confirmed,
+                expected_entity_bits: 4,
+                expected_confirmed_ghost_position: None,
+            },
         ];
 
-        let resolved = resolve_root_candidates(&candidates);
-
-        assert_eq!(resolved.primary_lane, DebugEntityLane::Predicted);
-        assert_eq!(
-            resolved.primary.unwrap().overlay_entity.entity,
-            Entity::from_bits(2)
-        );
-        assert!(resolved.confirmed_ghost.is_some());
-        assert_eq!(
-            resolved.confirmed_ghost.unwrap().overlay_entity.position_xy,
-            Vec2::new(10.0, 20.0)
-        );
-    }
-
-    #[test]
-    fn remote_guid_prefers_interpolated_over_confirmed() {
-        let guid = uuid::Uuid::new_v4();
-        let candidates = vec![
-            root_candidate(4, guid, false, true, false, false, false, None),
-            root_candidate(3, guid, false, true, true, true, false, None),
-        ];
-
-        let resolved = resolve_root_candidates(&candidates);
-
-        assert_eq!(resolved.primary_lane, DebugEntityLane::Interpolated);
-        assert_eq!(
-            resolved.primary.unwrap().overlay_entity.entity,
-            Entity::from_bits(3)
-        );
-        assert!(resolved.confirmed_ghost.is_none());
-    }
-
-    #[test]
-    fn remote_guid_prefers_confirmed_over_unready_interpolated() {
-        let guid = uuid::Uuid::new_v4();
-        let candidates = vec![
-            root_candidate(4, guid, false, true, false, false, false, None),
-            root_candidate(3, guid, false, true, true, false, false, None),
-        ];
-
-        let resolved = resolve_root_candidates(&candidates);
-
-        assert_eq!(resolved.primary_lane, DebugEntityLane::Confirmed);
-        assert_eq!(
-            resolved.primary.unwrap().overlay_entity.entity,
-            Entity::from_bits(4)
-        );
-        assert!(resolved.confirmed_ghost.is_none());
+        for case in cases {
+            let resolved = resolve_root_candidates(&case.candidates);
+            assert_eq!(resolved.primary_lane, case.expected_lane, "{}", case.name);
+            assert_eq!(
+                resolved
+                    .primary
+                    .expect("primary candidate")
+                    .overlay_entity
+                    .entity,
+                Entity::from_bits(case.expected_entity_bits),
+                "{}",
+                case.name
+            );
+            match case.expected_confirmed_ghost_position {
+                Some(expected_position) => assert_eq!(
+                    resolved
+                        .confirmed_ghost
+                        .expect("confirmed ghost")
+                        .overlay_entity
+                        .position_xy,
+                    expected_position,
+                    "{}",
+                    case.name
+                ),
+                None => assert!(resolved.confirmed_ghost.is_none(), "{}", case.name),
+            }
+        }
     }
 
     #[test]
@@ -1371,37 +1406,82 @@ mod tests {
     }
 
     #[test]
-    fn auxiliary_guid_follows_parent_predicted_lane() {
-        let parent_guid = uuid::Uuid::new_v4();
-        let child_guid = uuid::Uuid::new_v4();
-        let mut resolved_root_lanes = HashMap::new();
-        resolved_root_lanes.insert(parent_guid, DebugEntityLane::Predicted);
-        let candidates = vec![
-            auxiliary_candidate(4, child_guid, parent_guid, true, false, false, false),
-            auxiliary_candidate(3, child_guid, parent_guid, true, false, false, true),
+    fn auxiliary_lane_resolution_prefers_expected_candidate() {
+        struct Case {
+            name: &'static str,
+            parent_lane: DebugEntityLane,
+            candidates: Vec<AuxiliaryDebugCandidate>,
+            expected_entity_bits: u64,
+        }
+
+        let predicted_parent_guid = uuid::Uuid::new_v4();
+        let interpolated_parent_guid = uuid::Uuid::new_v4();
+        let cases = vec![
+            Case {
+                name: "predicted parent keeps predicted child",
+                parent_lane: DebugEntityLane::Predicted,
+                candidates: vec![
+                    auxiliary_candidate(
+                        4,
+                        uuid::Uuid::new_v4(),
+                        predicted_parent_guid,
+                        true,
+                        false,
+                        false,
+                        false,
+                    ),
+                    auxiliary_candidate(
+                        3,
+                        uuid::Uuid::new_v4(),
+                        predicted_parent_guid,
+                        true,
+                        false,
+                        false,
+                        true,
+                    ),
+                ],
+                expected_entity_bits: 3,
+            },
+            Case {
+                name: "interpolated parent keeps confirmed child over unready interpolated",
+                parent_lane: DebugEntityLane::Interpolated,
+                candidates: vec![
+                    auxiliary_candidate(
+                        4,
+                        uuid::Uuid::new_v4(),
+                        interpolated_parent_guid,
+                        true,
+                        false,
+                        false,
+                        false,
+                    ),
+                    auxiliary_candidate(
+                        3,
+                        uuid::Uuid::new_v4(),
+                        interpolated_parent_guid,
+                        true,
+                        true,
+                        false,
+                        false,
+                    ),
+                ],
+                expected_entity_bits: 4,
+            },
         ];
 
-        let resolved = resolve_auxiliary_candidate(&candidates, &resolved_root_lanes)
-            .expect("predicted auxiliary winner");
-
-        assert_eq!(resolved.overlay_entity.entity, Entity::from_bits(3));
-    }
-
-    #[test]
-    fn auxiliary_guid_prefers_confirmed_over_unready_interpolated_for_interpolated_parent() {
-        let parent_guid = uuid::Uuid::new_v4();
-        let child_guid = uuid::Uuid::new_v4();
-        let mut resolved_root_lanes = HashMap::new();
-        resolved_root_lanes.insert(parent_guid, DebugEntityLane::Interpolated);
-        let candidates = vec![
-            auxiliary_candidate(4, child_guid, parent_guid, true, false, false, false),
-            auxiliary_candidate(3, child_guid, parent_guid, true, true, false, false),
-        ];
-
-        let resolved = resolve_auxiliary_candidate(&candidates, &resolved_root_lanes)
-            .expect("confirmed auxiliary winner");
-
-        assert_eq!(resolved.overlay_entity.entity, Entity::from_bits(4));
+        for case in cases {
+            let parent_guid = case.candidates[0].parent_root_guid;
+            let mut resolved_root_lanes = HashMap::new();
+            resolved_root_lanes.insert(parent_guid, case.parent_lane);
+            let resolved = resolve_auxiliary_candidate(&case.candidates, &resolved_root_lanes)
+                .expect("auxiliary winner");
+            assert_eq!(
+                resolved.overlay_entity.entity,
+                Entity::from_bits(case.expected_entity_bits),
+                "{}",
+                case.name
+            );
+        }
     }
 
     #[test]

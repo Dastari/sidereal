@@ -318,6 +318,69 @@ pub fn hydrate_simulation_entities(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn reload_runtime_world_from_persistence(
+    commands: &mut Commands<'_, '_>,
+    script_catalog: &ScriptCatalogResource,
+    entity_registry: &EntityRegistryResource,
+    asset_registry: &AssetRegistryResource,
+    component_registry: &GeneratedComponentRegistry,
+    app_type_registry: &AppTypeRegistry,
+    controlled_entity_map: &mut PlayerControlledEntityMap,
+    player_entity_map: &mut PlayerRuntimeEntityMap,
+    schema_init_state: &mut PersistenceSchemaInitState,
+) -> Result<usize, String> {
+    let mut persistence = GraphPersistence::connect(&replication_database_url())
+        .map_err(|err| format!("reload world connect failed: {err}"))?;
+    persistence
+        .ensure_schema()
+        .map_err(|err| format!("reload world ensure schema failed: {err}"))?;
+    schema_init_state.0 = true;
+    apply_scripted_world_init_once(
+        &mut persistence,
+        script_catalog,
+        entity_registry,
+        asset_registry,
+    )?;
+
+    let records = persistence
+        .load_graph_records()
+        .map_err(|err| format!("reload world graph load failed: {err}"))?;
+    let collisions = find_runtime_guid_collisions(&records);
+    if !collisions.is_empty() {
+        let formatted = collisions
+            .iter()
+            .map(|(guid, entity_ids)| format!("guid {} reused by {:?}", guid, entity_ids))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "reload world aborted: runtime GUID collisions detected: {formatted}"
+        ));
+    }
+
+    for record in &records {
+        commands.spawn(HydratedGraphEntity {
+            _entity_id: record.entity_id.clone(),
+            _labels: record.labels.clone(),
+            _component_count: record.components.len(),
+        });
+    }
+    commands.insert_resource(HydratedEntityCount {
+        _count: records.len(),
+    });
+    let existing_guids = HashSet::new();
+    hydrate_records_into_world(
+        commands,
+        &records,
+        component_registry,
+        app_type_registry,
+        &existing_guids,
+        player_entity_map,
+        controlled_entity_map,
+    );
+    Ok(records.len())
+}
+
 fn derive_control_bindings(
     commands: &mut Commands<'_, '_>,
     spawned: &HashMap<String, Entity>,

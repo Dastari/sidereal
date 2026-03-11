@@ -65,7 +65,7 @@ async fn validation_rejects_invalid_email_and_short_password() {
 }
 
 #[tokio::test]
-async fn register_does_not_dispatch_bootstrap() {
+async fn auth_service_register_and_login_do_not_dispatch_bootstrap() {
     let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
     let service = AuthService::new_with_persister(
         AuthConfig::for_tests(),
@@ -78,27 +78,11 @@ async fn register_does_not_dispatch_bootstrap() {
         .register("pilot@example.com", "very-strong-password")
         .await
         .expect("register");
-    let commands = dispatcher.commands().await;
     assert!(
-        commands.is_empty(),
+        dispatcher.commands().await.is_empty(),
         "registration should not implicitly bootstrap runtime world state"
     );
-}
 
-#[tokio::test]
-async fn login_does_not_dispatch_bootstrap() {
-    let dispatcher = Arc::new(RecordingBootstrapDispatcher::default());
-    let service = AuthService::new_with_persister(
-        AuthConfig::for_tests(),
-        Arc::new(InMemoryAuthStore::default()),
-        dispatcher.clone(),
-        Arc::new(NoopStarterWorldPersister),
-    );
-
-    let _ = service
-        .register("pilot@example.com", "very-strong-password")
-        .await
-        .expect("register");
     let _ = service
         .login("pilot@example.com", "very-strong-password")
         .await

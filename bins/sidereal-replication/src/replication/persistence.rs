@@ -77,6 +77,24 @@ pub struct PersistenceWorkerState {
     last_logged_at_s: f64,
 }
 
+impl PersistenceWorkerState {
+    pub fn enqueued_batches(&self) -> u64 {
+        self.enqueued_batches
+    }
+
+    pub fn queue_full_events(&self) -> u64 {
+        self.queue_full_events
+    }
+
+    pub fn disconnected_events(&self) -> u64 {
+        self.disconnected_events
+    }
+
+    pub fn has_latest_pending_batch(&self) -> bool {
+        self.latest_pending_batch.is_some()
+    }
+}
+
 pub fn init_resources(app: &mut App) {
     app.insert_resource(PersistenceWorkerState::default());
     app.insert_resource(PersistenceDirtyState::default());
@@ -262,7 +280,10 @@ mod tests {
 /// structural metadata (parent_entity_id for graph relationship traversal).
 pub fn flush_simulation_state_persistence(world: &mut World) {
     {
-        let now_s = world.resource::<Time<Real>>().elapsed_secs_f64();
+        let now_s = world
+            .get_resource::<Time<Real>>()
+            .map(|time| time.elapsed_secs_f64())
+            .unwrap_or(0.0);
         let mut timer = world.resource_mut::<SimulationPersistenceTimer>();
         if timer
             .last_flush_at_s

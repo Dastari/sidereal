@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::replication::scripting::{ScriptCatalogResource, lookup_script_catalog_entry};
@@ -70,6 +71,34 @@ pub struct ScriptEvent {
 #[derive(Resource, Default)]
 pub struct ScriptEventQueue {
     pub pending: Vec<ScriptEvent>,
+}
+
+#[derive(Debug, Clone, Resource)]
+pub struct ScriptRuntimeMetrics {
+    pub memory_limit_bytes: u64,
+    pub current_memory_bytes: Option<u64>,
+    pub interval_runs: u64,
+    pub event_runs: u64,
+    pub error_count: u64,
+    pub reload_count: u64,
+    pub last_interval_run_ms: Option<f64>,
+    pub last_event_run_ms: Option<f64>,
+}
+
+impl Default for ScriptRuntimeMetrics {
+    fn default() -> Self {
+        let policy = LuaSandboxPolicy::from_env();
+        Self {
+            memory_limit_bytes: policy.memory_limit_bytes as u64,
+            current_memory_bytes: None,
+            interval_runs: 0,
+            event_runs: 0,
+            error_count: 0,
+            reload_count: 0,
+            last_interval_run_ms: None,
+            last_event_run_ms: None,
+        }
+    }
 }
 
 enum ScriptIntent {
@@ -174,6 +203,7 @@ impl ScriptRuntime {
 pub fn init_resources(app: &mut App) {
     app.insert_resource(ScriptWorldSnapshot::default());
     app.insert_resource(ScriptEventQueue::default());
+    app.insert_resource(ScriptRuntimeMetrics::default());
     let catalog = app.world().resource::<ScriptCatalogResource>().clone();
     match ScriptRuntime::from_catalog(&catalog) {
         Ok(runtime) => {
@@ -230,14 +260,17 @@ pub fn run_script_intervals(
     catalog: Res<'_, ScriptCatalogResource>,
     snapshot: Res<'_, ScriptWorldSnapshot>,
     time: Res<'_, Time>,
+    mut metrics: ResMut<'_, ScriptRuntimeMetrics>,
 ) {
     let Some(mut runtime) = runtime else { return };
     if runtime.catalog_revision != catalog.revision {
         match ScriptRuntime::from_catalog(&catalog) {
             Ok(new_runtime) => {
                 *runtime = new_runtime;
+                metrics.reload_count = metrics.reload_count.saturating_add(1);
             }
             Err(err) => {
+                metrics.error_count = metrics.error_count.saturating_add(1);
                 warn!(
                     "replication runtime scripting reload failed root={} catalog_revision={} error={}",
                     catalog.root_dir, catalog.revision, err
@@ -250,6 +283,7 @@ pub fn run_script_intervals(
     if runtime.handlers.is_empty() {
         return;
     }
+    let interval_started_at = Instant::now();
     let snapshot_map = Rc::new(snapshot.entities_by_guid.clone());
     for (entity_guid, entity) in &*snapshot_map {
         let Some((handler_name, interval_s)) = parse_tick_handler_config(entity) else {
@@ -264,6 +298,7 @@ pub fn run_script_intervals(
                 )
             })
         else {
+            metrics.error_count = metrics.error_count.saturating_add(1);
             warn!(
                 "replication runtime scripting entity={} references unknown on_tick_handler={}",
                 entity_guid, handler_name
@@ -296,6 +331,7 @@ pub fn run_script_intervals(
         ) {
             Ok(v) => v,
             Err(err) => {
+                metrics.error_count = metrics.error_count.saturating_add(1);
                 warn!(
                     "replication runtime script on_tick handler={} entity={} context build failed: {}",
                     handler_log_name, entity_guid, err
@@ -307,6 +343,7 @@ pub fn run_script_intervals(
         let event = match json_to_lua_value(&runtime.lua, &event_payload) {
             Ok(v) => v,
             Err(err) => {
+                metrics.error_count = metrics.error_count.saturating_add(1);
                 warn!(
                     "replication runtime script on_tick handler={} entity={} event encode failed: {}",
                     handler_log_name, entity_guid, err
@@ -324,6 +361,7 @@ pub fn run_script_intervals(
         let function = match runtime.lua.registry_value::<Function>(function_key) {
             Ok(v) => v,
             Err(err) => {
+                metrics.error_count = metrics.error_count.saturating_add(1);
                 warn!(
                     "replication runtime script on_tick handler={} entity={} registry decode failed: {}",
                     handler_log_name, entity_guid, err
@@ -333,16 +371,20 @@ pub fn run_script_intervals(
         };
         reset_lua_instruction_budget(&runtime.lua);
         if let Err(err) = function.call::<()>((ctx, event)) {
+            metrics.error_count = metrics.error_count.saturating_add(1);
             warn!(
                 "replication runtime script on_tick handler={} entity={} execution failed: {}",
                 handler_log_name, entity_guid, err
             );
             continue;
         }
+        metrics.interval_runs = metrics.interval_runs.saturating_add(1);
         runtime
             .pending_intents
             .extend(pending_intents.borrow_mut().drain(..));
     }
+    metrics.last_interval_run_ms = Some(interval_started_at.elapsed().as_secs_f64() * 1000.0);
+    metrics.current_memory_bytes = None;
 }
 
 pub fn run_script_events(
@@ -350,14 +392,17 @@ pub fn run_script_events(
     catalog: Res<'_, ScriptCatalogResource>,
     snapshot: Res<'_, ScriptWorldSnapshot>,
     mut event_queue: ResMut<'_, ScriptEventQueue>,
+    mut metrics: ResMut<'_, ScriptRuntimeMetrics>,
 ) {
     let Some(mut runtime) = runtime else { return };
     if runtime.catalog_revision != catalog.revision {
         match ScriptRuntime::from_catalog(&catalog) {
             Ok(new_runtime) => {
                 *runtime = new_runtime;
+                metrics.reload_count = metrics.reload_count.saturating_add(1);
             }
             Err(err) => {
+                metrics.error_count = metrics.error_count.saturating_add(1);
                 warn!(
                     "replication runtime scripting reload failed root={} catalog_revision={} error={}",
                     catalog.root_dir, catalog.revision, err
@@ -369,6 +414,7 @@ pub fn run_script_events(
     if runtime.handlers.is_empty() || event_queue.pending.is_empty() {
         return;
     }
+    let events_started_at = Instant::now();
     let snapshot_map = Rc::new(snapshot.entities_by_guid.clone());
     let events = std::mem::take(&mut event_queue.pending);
     for event in events {
@@ -385,6 +431,7 @@ pub fn run_script_events(
                 continue;
             };
             let Some(handler) = runtime.handlers.get(&handler_name) else {
+                metrics.error_count = metrics.error_count.saturating_add(1);
                 warn!(
                     "replication runtime scripting entity={} event={} references unknown handler={}",
                     entity_guid, event.event_name, handler_name
@@ -404,6 +451,7 @@ pub fn run_script_events(
             ) {
                 Ok(v) => v,
                 Err(err) => {
+                    metrics.error_count = metrics.error_count.saturating_add(1);
                     warn!(
                         "replication runtime script on_{} handler={} entity={} context build failed: {}",
                         event.event_name, handler.name, entity_guid, err
@@ -426,6 +474,7 @@ pub fn run_script_events(
             let event_lua = match json_to_lua_value(&runtime.lua, &event_payload) {
                 Ok(v) => v,
                 Err(err) => {
+                    metrics.error_count = metrics.error_count.saturating_add(1);
                     warn!(
                         "replication runtime script on_{} handler={} entity={} event encode failed: {}",
                         event.event_name, handler.name, entity_guid, err
@@ -436,6 +485,7 @@ pub fn run_script_events(
             let function = match runtime.lua.registry_value::<Function>(function_key) {
                 Ok(v) => v,
                 Err(err) => {
+                    metrics.error_count = metrics.error_count.saturating_add(1);
                     warn!(
                         "replication runtime script on_{} handler={} entity={} registry decode failed: {}",
                         event.event_name, handler.name, entity_guid, err
@@ -445,17 +495,21 @@ pub fn run_script_events(
             };
             reset_lua_instruction_budget(&runtime.lua);
             if let Err(err) = function.call::<()>((ctx, event_lua)) {
+                metrics.error_count = metrics.error_count.saturating_add(1);
                 warn!(
                     "replication runtime script on_{} handler={} entity={} execution failed: {}",
                     event.event_name, handler.name, entity_guid, err
                 );
                 continue;
             }
+            metrics.event_runs = metrics.event_runs.saturating_add(1);
             runtime
                 .pending_intents
                 .extend(pending_intents.borrow_mut().drain(..));
         }
     }
+    metrics.last_event_run_ms = Some(events_started_at.elapsed().as_secs_f64() * 1000.0);
+    metrics.current_memory_bytes = None;
 }
 
 #[allow(clippy::type_complexity)]

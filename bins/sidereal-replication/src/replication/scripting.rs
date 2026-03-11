@@ -1892,94 +1892,9 @@ fn inject_generate_collision_outline_fn_cached(
 #[cfg(test)]
 mod tests {
     use super::{
-        load_known_bundle_ids, load_script_catalog_from_database_or_disk_with_url,
-        load_world_init_config, load_world_init_graph_records, scripts_root_dir,
+        load_script_catalog_from_database_or_disk_with_url, scripts_root_dir,
         spawn_bundle_graph_records,
     };
-
-    #[test]
-    fn default_world_init_script_loads() {
-        let root = scripts_root_dir();
-        let config = load_world_init_config(&root).expect("load world init");
-        assert!(!config.render_layer_shader_asset_ids.is_empty());
-        assert!(
-            config
-                .render_layer_shader_asset_ids
-                .iter()
-                .any(|id| id == "space_background_base_wgsl")
-        );
-        assert!(
-            config
-                .render_layer_shader_asset_ids
-                .iter()
-                .any(|id| id == "space_background_nebula_wgsl")
-        );
-        assert!(
-            config
-                .render_layer_shader_asset_ids
-                .iter()
-                .any(|id| id == "starfield_wgsl")
-        );
-    }
-
-    #[test]
-    fn default_world_init_graph_records_script_loads() {
-        let root = scripts_root_dir();
-        let records = load_world_init_graph_records(&root).expect("load world records");
-        assert!(!records.is_empty());
-        assert!(
-            records
-                .iter()
-                .any(|record| record.entity_id == "0012ebad-0000-0000-0000-000000000002")
-        );
-        let background_base = records
-            .iter()
-            .find(|record| record.entity_id == "0012ebad-0000-0000-0000-000000000002")
-            .expect("base background layer should exist");
-        assert!(
-            background_base
-                .components
-                .iter()
-                .any(|component| component.component_kind == "space_background_shader_settings"),
-            "base background layer should carry SpaceBackgroundShaderSettings"
-        );
-        let background_nebula = records
-            .iter()
-            .find(|record| record.entity_id == "0012ebad-0000-0000-0000-000000000014")
-            .expect("nebula background layer should exist");
-        assert!(
-            background_nebula
-                .components
-                .iter()
-                .any(|component| component.component_kind == "space_background_shader_settings"),
-            "nebula background layer should carry SpaceBackgroundShaderSettings"
-        );
-        let starfield = records
-            .iter()
-            .find(|record| record.entity_id == "0012ebad-0000-0000-0000-000000000001")
-            .expect("starfield layer should exist");
-        assert!(
-            starfield
-                .components
-                .iter()
-                .any(|component| component.component_kind == "starfield_shader_settings"),
-            "starfield layer should carry StarfieldShaderSettings"
-        );
-        let aurelia = records
-            .iter()
-            .find(|record| record.entity_id == "0012ebad-0000-0000-0000-000000000010")
-            .expect("starter planet Aurelia should exist");
-        let aurelia_position = aurelia
-            .components
-            .iter()
-            .find(|component| component.component_kind == "world_position")
-            .expect("Aurelia should have world_position");
-        assert_eq!(
-            aurelia_position.properties,
-            serde_json::json!([8000.0, 0.0]),
-            "Aurelia should be emitted at (8000, 0) from world_init"
-        );
-    }
 
     #[test]
     fn script_catalog_falls_back_to_disk_when_database_is_unreachable() {
@@ -1999,13 +1914,6 @@ mod tests {
                 .iter()
                 .any(|entry| entry.script_path == "bundles/bundle_registry.lua")
         );
-    }
-
-    #[test]
-    fn bundle_registry_exposes_corvette_bundle() {
-        let root = scripts_root_dir();
-        let bundles = load_known_bundle_ids(&root).expect("bundle ids");
-        assert!(bundles.contains("ship.corvette"));
     }
 
     #[test]

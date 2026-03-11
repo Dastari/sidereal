@@ -6,8 +6,8 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    assets, combat, control, input, lifecycle, owner_manifest, persistence, runtime_scripting,
-    runtime_state, simulation_entities, tactical, visibility,
+    admin, assets, combat, control, health, input, lifecycle, owner_manifest, persistence,
+    runtime_scripting, runtime_state, simulation_entities, tactical, visibility,
 };
 
 pub(crate) struct ReplicationLifecyclePlugin;
@@ -19,6 +19,7 @@ impl Plugin for ReplicationLifecyclePlugin {
             (
                 simulation_entities::hydrate_simulation_entities,
                 lifecycle::start_lightyear_server,
+                health::start_health_server,
             )
                 .chain(),
         );
@@ -29,6 +30,25 @@ impl Plugin for ReplicationLifecyclePlugin {
         app.add_observer(lifecycle::log_replication_client_connected);
         app.add_observer(lifecycle::setup_client_replication_sender);
         app.add_observer(lifecycle::prime_client_link_transport_on_insert);
+    }
+}
+
+pub(crate) struct ReplicationDiagnosticsPlugin;
+
+impl Plugin for ReplicationDiagnosticsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (admin::execute_admin_commands, admin::apply_admin_resets).chain(),
+        );
+        app.add_systems(
+            Update,
+            (
+                health::update_health_snapshot,
+                health::update_world_map_snapshot,
+            )
+                .chain(),
+        );
     }
 }
 

@@ -1,6 +1,12 @@
 # Test Suite Rationalization Plan
 
 Status: Proposed plan as of 2026-03-10.
+Update note (2026-03-10):
+- First-pass rationalization landed:
+  - shared script smoke coverage now lives in `crates/sidereal-scripting/tests/`,
+  - duplicated gateway/replication script smoke tests were reduced,
+  - client render-layer/debug-overlay tests were merged toward behavior-oriented assertions,
+  - an inline `src/*.rs` Rust test guard now exists via `scripts/check_inline_rust_tests.sh` with an explicit allowlist.
 
 ## 1. Purpose
 

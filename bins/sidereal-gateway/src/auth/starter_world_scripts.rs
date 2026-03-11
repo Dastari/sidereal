@@ -1394,80 +1394,9 @@ fn map_script_error(err: ScriptError) -> AuthError {
 mod tests {
     use super::{
         ScriptContext, load_bundle_registry, load_graph_records_for_bundle,
-        load_player_init_config, load_world_init_config, load_world_init_graph_records,
-        reload_script_catalog_from_disk, scripts_root_dir,
+        load_world_init_graph_records, scripts_root_dir,
     };
     use uuid::Uuid;
-
-    #[test]
-    fn default_world_init_script_loads() {
-        let root = scripts_root_dir();
-        let _ = reload_script_catalog_from_disk(&root).expect("reload script catalog");
-        let config = load_world_init_config(&root).expect("load world init");
-        assert!(!config.render_layer_shader_asset_ids.is_empty());
-        assert!(
-            config
-                .render_layer_shader_asset_ids
-                .iter()
-                .any(|id| id == "space_background_base_wgsl")
-        );
-        assert!(
-            config
-                .render_layer_shader_asset_ids
-                .iter()
-                .any(|id| id == "starfield_wgsl")
-        );
-    }
-
-    #[test]
-    fn default_player_init_script_loads() {
-        let root = scripts_root_dir();
-        let _ = reload_script_catalog_from_disk(&root).expect("reload script catalog");
-        let config = load_player_init_config(
-            &root,
-            ScriptContext {
-                account_id: Uuid::new_v4(),
-                player_entity_id: &Uuid::new_v4().to_string(),
-                email: "pilot@example.com",
-                controlled_entity_guid: None,
-            },
-        )
-        .expect("load player init");
-        assert_eq!(config.player_bundle_id, "player.default");
-        assert_eq!(config.ship_bundle_id, "ship.corvette");
-    }
-
-    #[test]
-    fn default_bundle_registry_loads_and_validates_component_kinds() {
-        let root = scripts_root_dir();
-        let _ = reload_script_catalog_from_disk(&root).expect("reload script catalog");
-        let registry = load_bundle_registry(&root).expect("load bundle registry");
-        let corvette = registry
-            .bundles
-            .get("ship.corvette")
-            .expect("corvette bundle");
-        assert_eq!(corvette.bundle_class, "ship");
-        assert_eq!(corvette.graph_records_script, "bundles/ship/corvette.lua");
-        assert!(
-            corvette
-                .required_component_kinds
-                .contains(&"display_name".to_string())
-        );
-        assert!(
-            corvette
-                .required_component_kinds
-                .contains(&"visibility_range_buff_m".to_string())
-        );
-        let player_bundle = registry
-            .bundles
-            .get("player.default")
-            .expect("player bundle");
-        assert_eq!(player_bundle.bundle_class, "player");
-        assert_eq!(
-            player_bundle.graph_records_script,
-            "bundles/starter/player.lua"
-        );
-    }
 
     #[test]
     fn corvette_bundle_includes_visibility_range_buff_ms() {

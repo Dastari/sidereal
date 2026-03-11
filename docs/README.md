@@ -42,6 +42,7 @@ Update note (2026-03-09):
    - `docs/features/tactical_and_owner_lane_protocol_contract.md`
    - `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
    - `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`
+   - `docs/plans/replication_server_tui_backend_plan_2026-03-10.md`
 3. Asset delivery and scripting:
    - `docs/features/asset_delivery_contract.md`
    - `docs/features/scripting_support.md`

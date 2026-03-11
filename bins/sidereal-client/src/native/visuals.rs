@@ -997,17 +997,15 @@ mod tests {
         StreamedVisualMaterialKind, WEAPON_IMPACT_SPARK_TTL_S,
         ensure_planet_body_root_visibility_system, ensure_visual_parent_spatial_components,
         planet_camera_relative_translation, runtime_layer_screen_scale_factor,
-        shared_streamed_sprite_material_handle, shared_unit_quad_handle,
         streamed_visual_needs_rebuild, suppress_duplicate_predicted_interpolated_visuals_system,
         update_weapon_impact_sparks_system,
     };
-    use crate::native::backdrop::{RuntimeEffectMaterial, StreamedSpriteShaderMaterial};
+    use crate::native::backdrop::RuntimeEffectMaterial;
     use crate::native::components::{
         ControlledEntity, PendingInitialVisualReady, StreamedVisualAttachmentKind,
         SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WorldEntity,
     };
-    use crate::native::resources::{DuplicateVisualResolutionState, RuntimeSharedQuadMesh};
-    use crate::native::visuals::StreamedSpriteMaterialCache;
+    use crate::native::resources::DuplicateVisualResolutionState;
     use bevy::prelude::*;
     use bevy::sprite_render::MeshMaterial2d;
     use sidereal_game::{EntityGuid, PlanetBodyShaderSettings};
@@ -1106,73 +1104,14 @@ mod tests {
         let default_layer = sidereal_game::RuntimeRenderLayerDefinition::default();
         assert_eq!(runtime_layer_screen_scale_factor(&default_layer), 1.0);
 
-        let mut authored = sidereal_game::RuntimeRenderLayerDefinition::default();
-        authored.screen_scale_factor = Some(1.5);
+        let mut authored = sidereal_game::RuntimeRenderLayerDefinition {
+            screen_scale_factor: Some(1.5),
+            ..Default::default()
+        };
         assert_eq!(runtime_layer_screen_scale_factor(&authored), 1.5);
 
         authored.screen_scale_factor = Some(1000.0);
         assert_eq!(runtime_layer_screen_scale_factor(&authored), 64.0);
-    }
-
-    #[test]
-    fn shared_unit_quad_handle_reuses_single_mesh_allocation() {
-        let mut app = App::new();
-        app.add_plugins(bevy::asset::AssetPlugin::default());
-        app.init_asset::<Mesh>();
-
-        let first = {
-            let world = app.world_mut();
-            let mut meshes = world.resource_mut::<Assets<Mesh>>();
-            let mut quad_mesh = RuntimeSharedQuadMesh::default();
-            let first = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
-            let second = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
-            assert_eq!(quad_mesh.allocations, 1);
-            assert_eq!(first, second);
-            first
-        };
-
-        let mesh_count = app.world().resource::<Assets<Mesh>>().iter().count();
-        assert_eq!(mesh_count, 1);
-        assert!(app.world().resource::<Assets<Mesh>>().get(&first).is_some());
-    }
-
-    #[test]
-    fn shared_streamed_sprite_material_handle_reuses_material_for_same_image() {
-        let mut app = App::new();
-        app.add_plugins(bevy::asset::AssetPlugin::default());
-        app.init_asset::<Image>();
-        app.init_asset::<StreamedSpriteShaderMaterial>();
-
-        let image_handle = {
-            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-            images.add(Image::default())
-        };
-
-        let first = {
-            let world = app.world_mut();
-            let mut materials = world.resource_mut::<Assets<StreamedSpriteShaderMaterial>>();
-            let mut cache = StreamedSpriteMaterialCache::default();
-            let first =
-                shared_streamed_sprite_material_handle(&mut cache, &mut materials, &image_handle);
-            let second =
-                shared_streamed_sprite_material_handle(&mut cache, &mut materials, &image_handle);
-            assert_eq!(first, second);
-            assert_eq!(cache.by_image.len(), 1);
-            first
-        };
-
-        let material_count = app
-            .world()
-            .resource::<Assets<StreamedSpriteShaderMaterial>>()
-            .iter()
-            .count();
-        assert_eq!(material_count, 1);
-        assert!(
-            app.world()
-                .resource::<Assets<StreamedSpriteShaderMaterial>>()
-                .get(&first)
-                .is_some()
-        );
     }
 
     #[test]

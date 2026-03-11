@@ -43,7 +43,7 @@ CLIENT2_BRP_URL ?= http://127.0.0.1:$(CLIENT2_BRP_PORT)/
 BRP_DUMP_DIR ?= ./data/debug/brp_dumps
 DASHBOARD_DIR ?= ./dashboard
 
-.PHONY: help setup-environment pg-up pg-down pg-logs pg-reset db-reset fmt clippy check test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full ensure-webtransport-cert run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
+.PHONY: help setup-environment pg-up pg-down pg-logs pg-reset db-reset fmt clippy check inline-test-guard test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full ensure-webtransport-cert run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -60,6 +60,7 @@ help:
 	@echo "  make fmt                cargo fmt --all -- --check"
 	@echo "  make clippy             cargo clippy --workspace --all-targets -- -D warnings"
 	@echo "  make check              cargo check --workspace"
+	@echo "  make inline-test-guard  Fail on new inline src/ test modules unless allowlisted"
 	@echo "  make wasm-check         cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu"
 	@echo "  make windows-check      cargo check client for x86_64-pc-windows-gnu"
 	@echo "  make windows-build      Debug build client .exe"
@@ -168,6 +169,9 @@ clippy:
 check:
 	cargo check --workspace
 
+inline-test-guard:
+	./scripts/check_inline_rust_tests.sh
+
 wasm-check:
 	cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
 
@@ -203,6 +207,7 @@ clean-full:
 	@echo "Done. Full cargo artifacts removed."
 
 test:
+	./scripts/check_inline_rust_tests.sh
 	cargo test -p sidereal-replication
 	cargo test -p sidereal-gateway
 	cargo test -p sidereal-shard

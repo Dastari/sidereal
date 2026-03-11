@@ -1,7 +1,9 @@
+pub mod admin;
 pub mod assets;
 pub mod auth;
 pub mod combat;
 pub mod control;
+pub mod health;
 pub mod input;
 pub mod lifecycle;
 pub mod owner_manifest;

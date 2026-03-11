@@ -1763,13 +1763,11 @@ mod tests {
 
     #[test]
     fn delivery_scope_includes_entity_extent() {
-        let discovered = HashSet::new();
         let visibility_sources = Vec::new();
         let visibility_context = PlayerVisibilityContextRef {
             player_entity_id: "11111111-1111-1111-1111-111111111111",
             observer_anchor_position: Some(Vec3::ZERO),
             visibility_sources: &visibility_sources,
-            discovered_static_landmarks: &discovered,
             player_faction_id: None,
             view_mode: ClientLocalViewMode::Tactical,
         };
@@ -1784,13 +1782,11 @@ mod tests {
 
     #[test]
     fn authorization_range_includes_entity_extent() {
-        let discovered = HashSet::new();
         let visibility_sources = vec![(Vec3::ZERO, 900.0)];
         let visibility_context = PlayerVisibilityContextRef {
             player_entity_id: "11111111-1111-1111-1111-111111111111",
             observer_anchor_position: Some(Vec3::ZERO),
             visibility_sources: &visibility_sources,
-            discovered_static_landmarks: &discovered,
             player_faction_id: None,
             view_mode: ClientLocalViewMode::Tactical,
         };

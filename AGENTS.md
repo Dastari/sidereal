@@ -86,6 +86,7 @@ If any code change conflicts with docs, update docs in the same change or stop a
   - unit tests in touched crates,
   - integration test updates if cross-service behavior changes,
   - doc updates for protocol/runtime/architecture changes.
+- Default new Rust tests to `tests/*.rs` rather than inline `src/*.rs` modules. If private-item access requires an inline `src/*.rs` test, add the file to `scripts/inline_rust_test_allowlist.txt` in the same change so the inline-test guard stays explicit.
 - For new gameplay components, include persistence/hydration mapping updates (or explicit non-persisted runtime-only rationale) and tests in the same change.
 - For scripting-connected components (for example `FlightComputer`), script APIs may emit intent only; scripts must not directly authoritatively mutate transforms/velocities/ownership or bypass Rust authority systems.
 - Keep boundaries explicit between crates/services (no persistence/network leakage into gameplay core).

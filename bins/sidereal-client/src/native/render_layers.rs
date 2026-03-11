@@ -643,11 +643,15 @@ mod tests {
         app.add_systems(Update, sync_runtime_render_layer_registry_system);
 
         app.update();
+        let first_generation = app
+            .world()
+            .resource::<RuntimeRenderLayerRegistryState>()
+            .generation;
         app.update();
 
-        let perf = app.world().resource::<RenderLayerPerfCounters>();
-        assert_eq!(perf.registry_sync_runs, 2);
-        assert_eq!(perf.registry_rebuilds, 1);
+        let registry_state = app.world().resource::<RuntimeRenderLayerRegistryState>();
+        assert_eq!(first_generation, 1);
+        assert_eq!(registry_state.generation, first_generation);
     }
 
     #[test]
@@ -674,60 +678,18 @@ mod tests {
             .id();
 
         app.update();
+        let first_generation = app
+            .world()
+            .resource::<RuntimeRenderLayerRegistryState>()
+            .generation;
         app.world_mut()
             .entity_mut(rule_entity)
             .remove::<sidereal_game::RuntimeRenderLayerRule>();
         app.update();
 
-        let perf = app.world().resource::<RenderLayerPerfCounters>();
-        assert_eq!(perf.registry_sync_runs, 2);
-        assert_eq!(perf.registry_rebuilds, 2);
-    }
-
-    #[test]
-    fn assignment_resolution_skips_unchanged_entities_after_first_pass() {
-        let mut app = App::new();
-        app.insert_resource(GeneratedComponentRegistry {
-            entries: Vec::new(),
-            shader_entries: Vec::new(),
-        });
-        app.init_resource::<RuntimeRenderLayerRegistry>();
-        app.init_resource::<RuntimeRenderLayerRegistryState>();
-        app.init_resource::<RuntimeRenderLayerAssignmentCache>();
-        app.init_resource::<RenderLayerPerfCounters>();
-        app.add_systems(
-            Update,
-            (
-                sync_runtime_render_layer_registry_system,
-                resolve_runtime_render_layer_assignments_system
-                    .after(sync_runtime_render_layer_registry_system),
-            ),
-        );
-
-        let entity = app
-            .world_mut()
-            .spawn((WorldEntity, EntityLabels(vec!["planet".to_string()])))
-            .id();
-
-        app.update();
-        app.update();
-
-        let perf = app.world().resource::<RenderLayerPerfCounters>();
-        assert_eq!(perf.assignment_full_scans, 0);
-        assert_eq!(perf.assignment_targeted_scans, 2);
-        assert_eq!(perf.assignment_entities_considered, 1);
-        assert_eq!(perf.assignment_recomputes, 1);
-        assert_eq!(perf.assignment_skips, 0);
-
-        let resolved = app
-            .world()
-            .entity(entity)
-            .get::<ResolvedRuntimeRenderLayer>()
-            .expect("resolved render layer should be present");
-        assert_eq!(
-            resolved.layer_id,
-            sidereal_game::DEFAULT_MAIN_WORLD_LAYER_ID
-        );
+        let registry_state = app.world().resource::<RuntimeRenderLayerRegistryState>();
+        assert_eq!(first_generation, 1);
+        assert_eq!(registry_state.generation, first_generation + 1);
     }
 
     #[test]
@@ -775,11 +737,6 @@ mod tests {
         app.update();
         app.world_mut().entity_mut(entity).remove::<EntityLabels>();
         app.update();
-
-        let perf = app.world().resource::<RenderLayerPerfCounters>();
-        assert_eq!(perf.assignment_full_scans, 0);
-        assert_eq!(perf.assignment_targeted_scans, 2);
-        assert_eq!(perf.assignment_recomputes, 2);
 
         let resolved = app
             .world()
@@ -840,12 +797,6 @@ mod tests {
             .insert(TestWatchedComponent);
         app.update();
 
-        let perf = app.world().resource::<RenderLayerPerfCounters>();
-        assert_eq!(perf.assignment_full_scans, 0);
-        assert_eq!(perf.assignment_targeted_scans, 2);
-        assert_eq!(perf.assignment_entities_considered, 2);
-        assert_eq!(perf.assignment_recomputes, 2);
-
         let resolved = app
             .world()
             .entity(entity)
@@ -897,11 +848,6 @@ mod tests {
             .entity_mut(entity)
             .remove::<sidereal_game::RuntimeRenderLayerOverride>();
         app.update();
-
-        let perf = app.world().resource::<RenderLayerPerfCounters>();
-        assert_eq!(perf.assignment_full_scans, 0);
-        assert_eq!(perf.assignment_targeted_scans, 2);
-        assert_eq!(perf.assignment_recomputes, 2);
 
         let resolved = app
             .world()

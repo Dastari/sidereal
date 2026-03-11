@@ -144,7 +144,7 @@ impl ClientInputDropMetrics {
         self.accepted_inputs = self.accepted_inputs.saturating_add(1);
     }
 
-    fn total_drops(&self) -> u64 {
+    pub fn total_drops(&self) -> u64 {
         self.future_tick
             .saturating_add(self.duplicate_or_out_of_order_tick)
             .saturating_add(self.rate_limited)
