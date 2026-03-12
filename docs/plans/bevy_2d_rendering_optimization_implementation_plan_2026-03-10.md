@@ -31,6 +31,10 @@ Update note (2026-03-10, later):
   - shared quad reuse and selective pooled effect/material reuse.
 - Remaining plan intent is unchanged: keep measuring, finish the visibility cadence refactor, then validate whether any Phase 3 to Phase 5 gaps still need code changes instead of documentation-only reconciliation.
 
+Update note (2026-03-12):
+- This plan is superseded as the current execution document by `docs/plans/bevy_2d_rendering_optimization_completion_plan_2026-03-12.md`.
+- Keep this file as historical context for the March 10 reprioritization, but use the March 12 completion plan for active execution order and phase status.
+
 Guardrails:
 - Preserve `DR-0027` and the Lua-authored render-layer/runtime shader direction.
 - Preserve Lightyear transform interpolation and the current post-correction camera follow ordering.

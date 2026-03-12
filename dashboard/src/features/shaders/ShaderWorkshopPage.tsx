@@ -51,6 +51,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { applyWithShaderPreviewWasm } from '@/lib/shader-preview-wasm'
+import { buildBrpReadUrl } from '@/lib/brp-read'
 import {
   extractPreviewUniforms,
   renderPreviewShader,
@@ -375,15 +376,16 @@ export function ShaderWorkshopPage({
   const loadGeneratedSchema = useCallback(async () => {
     setIsLoadingGeneratedSchema(true)
     try {
-      const response = await fetch('/api/brp?target=server', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          ...GENERATED_SCHEMA_TARGET,
-          method: 'world.get_resources',
-          params: { resource: GENERATED_COMPONENT_REGISTRY_TYPE_PATH },
-        }),
+      const requestUrl = buildBrpReadUrl({
+        ...GENERATED_SCHEMA_TARGET,
+        method: 'world.get_resources',
+        params: { resource: GENERATED_COMPONENT_REGISTRY_TYPE_PATH },
+        port: 15713,
       })
+      if (!requestUrl) {
+        throw new Error('Generated registry read URL could not be constructed')
+      }
+      const response = await fetch(requestUrl)
       const payload = (await response.json()) as BrpResourceResponse
       if (!response.ok || payload.error) {
         throw new Error(

@@ -67,6 +67,17 @@ type WeaponImpactExplosionQueryItem<'a> = (
     &'a mut Visibility,
 );
 
+type WeaponTracerBoltQueryItem<'a> = (
+    &'a mut Transform,
+    &'a MeshMaterial2d<RuntimeEffectMaterial>,
+    &'a mut Visibility,
+    &'a mut WeaponTracerBolt,
+);
+
+type WeaponTracerBoltQueryFilter = (Without<WeaponImpactSpark>, Without<WeaponImpactExplosion>);
+type WeaponImpactSparkQueryFilter = (Without<WeaponTracerBolt>, Without<WeaponImpactExplosion>);
+type WeaponImpactExplosionQueryFilter = (Without<WeaponTracerBolt>, Without<WeaponImpactSpark>);
+
 #[derive(SystemParam)]
 pub(super) struct ThrusterPlumeAttachAssets<'w> {
     meshes: ResMut<'w, Assets<Mesh>>,
@@ -131,6 +142,12 @@ fn shared_unit_quad_handle(
     handle
 }
 
+fn sync_planar_projectile_transform(transform: &mut Transform, position: Vec2, heading_rad: f32) {
+    transform.translation.x = position.x;
+    transform.translation.y = position.y;
+    transform.rotation = Quat::from_rotation_z(heading_rad);
+}
+
 fn shared_streamed_sprite_material_handle(
     cache: &mut StreamedSpriteMaterialCache,
     materials: &mut Assets<StreamedSpriteShaderMaterial>,
@@ -159,7 +176,7 @@ fn activate_weapon_impact_spark(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        (Without<WeaponTracerBolt>, Without<WeaponImpactExplosion>),
+        WeaponImpactSparkQueryFilter,
     >,
     effect_materials: &mut Assets<RuntimeEffectMaterial>,
 ) {
@@ -201,7 +218,7 @@ fn activate_weapon_impact_explosion(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        (Without<WeaponTracerBolt>, Without<WeaponImpactSpark>),
+        WeaponImpactExplosionQueryFilter,
     >,
     effect_materials: &mut Assets<RuntimeEffectMaterial>,
 ) {
@@ -1068,21 +1085,32 @@ pub(super) fn attach_streamed_visual_assets_system(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        StreamedVisualMaterialKind, WEAPON_IMPACT_SPARK_TTL_S,
+        PROJECTILE_VISUAL_Z, StreamedVisualMaterialKind, WEAPON_IMPACT_SPARK_TTL_S,
+        attach_ballistic_projectile_visuals_system,
+        bootstrap_local_ballistic_projectile_visual_roots_system,
         ensure_planet_body_root_visibility_system, ensure_visual_parent_spatial_components,
         planet_camera_relative_translation, runtime_layer_screen_scale_factor,
         streamed_visual_needs_rebuild, suppress_duplicate_predicted_interpolated_visuals_system,
+        sync_unadopted_ballistic_projectile_visual_roots_system,
         update_weapon_impact_sparks_system,
     };
     use crate::native::backdrop::RuntimeEffectMaterial;
     use crate::native::components::{
-        ControlledEntity, PendingInitialVisualReady, StreamedVisualAttachmentKind,
-        SuppressedPredictedDuplicateVisual, WeaponImpactSpark, WorldEntity,
+        BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
+        StreamedVisualAttachmentKind, SuppressedPredictedDuplicateVisual, WeaponImpactSpark,
+        WorldEntity,
     };
     use crate::native::resources::DuplicateVisualResolutionState;
+    use crate::native::transforms::{
+        reveal_world_entities_when_initial_transform_ready,
+        sync_interpolated_world_entity_transforms_without_history,
+    };
+    use avian2d::prelude::{Position, Rotation};
+    use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
     use bevy::sprite_render::MeshMaterial2d;
-    use sidereal_game::{EntityGuid, PlanetBodyShaderSettings};
+    use lightyear::prelude::Interpolated;
+    use sidereal_game::{BallisticProjectile, DamageType, EntityGuid, PlanetBodyShaderSettings};
 
     #[test]
     fn streamed_visual_rebuilds_when_material_kind_changes() {
@@ -1223,6 +1251,144 @@ mod tests {
         assert_eq!(
             *entity_ref.get::<Visibility>().expect("visibility"),
             Visibility::Hidden
+        );
+    }
+
+    #[test]
+    fn local_ballistic_projectiles_get_immediate_visual_root_and_preserve_pose_on_attach() {
+        let mut app = App::new();
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                Position(Vec2::new(18.0, -7.5)),
+                Rotation::from(Quat::from_rotation_z(0.35)),
+                BallisticProjectile::new(
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
+                    10.0,
+                    DamageType::Ballistic,
+                    0.25,
+                    0.35,
+                ),
+            ))
+            .id();
+
+        let _ = app
+            .world_mut()
+            .run_system_once(bootstrap_local_ballistic_projectile_visual_roots_system);
+        let _ = app
+            .world_mut()
+            .run_system_once(attach_ballistic_projectile_visuals_system);
+
+        let entity_ref = app.world().entity(entity);
+        let transform = entity_ref.get::<Transform>().expect("transform");
+        assert_eq!(transform.translation.truncate(), Vec2::new(18.0, -7.5));
+        assert!((transform.rotation.to_euler(EulerRot::XYZ).2 - 0.35).abs() < 0.001);
+        assert!((transform.translation.z - PROJECTILE_VISUAL_Z).abs() < f32::EPSILON);
+        assert!(
+            entity_ref.contains::<BallisticProjectileVisualAttached>(),
+            "local prespawned projectile should become renderable before replication adoption"
+        );
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Visible
+        );
+    }
+
+    #[test]
+    fn unadopted_ballistic_projectile_transform_sync_preserves_visual_depth() {
+        let mut app = App::new();
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                Position(Vec2::new(4.0, 9.0)),
+                Rotation::from(Quat::from_rotation_z(-0.6)),
+                BallisticProjectile::new(
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
+                    10.0,
+                    DamageType::Ballistic,
+                    0.25,
+                    0.35,
+                ),
+                Transform::from_xyz(-100.0, 55.0, PROJECTILE_VISUAL_Z),
+            ))
+            .id();
+
+        let _ = app
+            .world_mut()
+            .run_system_once(sync_unadopted_ballistic_projectile_visual_roots_system);
+
+        let transform = app
+            .world()
+            .entity(entity)
+            .get::<Transform>()
+            .expect("transform");
+        assert_eq!(transform.translation.truncate(), Vec2::new(4.0, 9.0));
+        assert!((transform.rotation.to_euler(EulerRot::XYZ).2 + 0.6).abs() < 0.001);
+        assert!(
+            (transform.translation.z - PROJECTILE_VISUAL_Z).abs() < f32::EPSILON,
+            "projectile root sync should not flatten the visual layer depth"
+        );
+    }
+
+    #[test]
+    fn observer_ballistic_projectile_uses_authoritative_spawn_pose_before_first_history_sample() {
+        let mut app = App::new();
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                Interpolated,
+                WorldEntity,
+                PendingInitialVisualReady,
+                Visibility::Hidden,
+                Transform::default(),
+                Position(Vec2::new(64.0, -22.0)),
+                Rotation::from(Quat::from_rotation_z(1.1)),
+                BallisticProjectile::new(
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
+                    10.0,
+                    DamageType::Ballistic,
+                    0.25,
+                    0.35,
+                ),
+            ))
+            .id();
+
+        let _ = app
+            .world_mut()
+            .run_system_once(sync_interpolated_world_entity_transforms_without_history);
+        let _ = app
+            .world_mut()
+            .run_system_once(reveal_world_entities_when_initial_transform_ready);
+        let _ = app
+            .world_mut()
+            .run_system_once(attach_ballistic_projectile_visuals_system);
+
+        let entity_ref = app.world().entity(entity);
+        let transform = entity_ref.get::<Transform>().expect("transform");
+        assert_eq!(transform.translation.truncate(), Vec2::new(64.0, -22.0));
+        assert_ne!(
+            transform.translation.truncate(),
+            Vec2::ZERO,
+            "observer projectile should not render at the origin before interpolation history exists"
+        );
+        assert!((transform.rotation.to_euler(EulerRot::XYZ).2 - 1.1).abs() < 0.001);
+        assert!(
+            entity_ref.contains::<BallisticProjectileVisualAttached>(),
+            "observer projectile should attach the projectile tracer visual"
+        );
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Visible
+        );
+        assert!(
+            !entity_ref.contains::<PendingInitialVisualReady>(),
+            "observer projectile should leave the pending-visual gate once the authoritative pose is available"
         );
     }
 
@@ -2284,20 +2450,67 @@ pub(super) fn ensure_weapon_impact_explosion_pool_system(
 }
 
 #[allow(clippy::type_complexity)]
+pub(super) fn bootstrap_local_ballistic_projectile_visual_roots_system(
+    mut commands: Commands<'_, '_>,
+    projectiles: Query<
+        '_,
+        '_,
+        (Entity, &'_ Position, &'_ avian2d::prelude::Rotation),
+        (
+            With<BallisticProjectile>,
+            Without<WorldEntity>,
+            Without<Transform>,
+        ),
+    >,
+) {
+    for (entity, position, rotation) in &projectiles {
+        let mut transform = Transform::default();
+        sync_planar_projectile_transform(&mut transform, position.0, rotation.as_radians());
+        let global_transform = GlobalTransform::from(transform);
+        commands
+            .entity(entity)
+            .insert((transform, global_transform, Visibility::Visible));
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn sync_unadopted_ballistic_projectile_visual_roots_system(
+    mut projectiles: Query<
+        '_,
+        '_,
+        (
+            &'_ Position,
+            &'_ avian2d::prelude::Rotation,
+            &'_ mut Transform,
+        ),
+        (With<BallisticProjectile>, Without<WorldEntity>),
+    >,
+) {
+    for (position, rotation, mut transform) in &mut projectiles {
+        sync_planar_projectile_transform(&mut transform, position.0, rotation.as_radians());
+    }
+}
+
+#[allow(clippy::type_complexity)]
 pub(super) fn attach_ballistic_projectile_visuals_system(
     mut commands: Commands<'_, '_>,
     projectiles: Query<
         '_,
         '_,
-        (Entity, Has<SuppressedPredictedDuplicateVisual>),
+        (
+            Entity,
+            Has<SuppressedPredictedDuplicateVisual>,
+            Option<&'_ Transform>,
+        ),
         (
             With<BallisticProjectile>,
-            With<WorldEntity>,
             Without<BallisticProjectileVisualAttached>,
         ),
     >,
 ) {
-    for (entity, is_suppressed) in &projectiles {
+    for (entity, is_suppressed, existing_transform) in &projectiles {
+        let mut transform = existing_transform.copied().unwrap_or_default();
+        transform.translation.z = PROJECTILE_VISUAL_Z;
         commands.entity(entity).insert((
             BallisticProjectileVisualAttached,
             Sprite {
@@ -2308,7 +2521,7 @@ pub(super) fn attach_ballistic_projectile_visuals_system(
                 )),
                 ..default()
             },
-            Transform::from_xyz(0.0, 0.0, PROJECTILE_VISUAL_Z),
+            transform,
             if is_suppressed {
                 Visibility::Hidden
             } else {
@@ -2575,17 +2788,7 @@ pub(super) fn update_weapon_tracer_visuals_system(
     mut spark_pool: ResMut<'_, WeaponImpactSparkPool>,
     mut explosion_pool: ResMut<'_, WeaponImpactExplosionPool>,
     mut effect_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
-    mut bolts: Query<
-        '_,
-        '_,
-        (
-            &'_ mut Transform,
-            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
-            &'_ mut Visibility,
-            &'_ mut WeaponTracerBolt,
-        ),
-        (Without<WeaponImpactSpark>, Without<WeaponImpactExplosion>),
-    >,
+    mut bolts: Query<'_, '_, WeaponTracerBoltQueryItem<'_>, WeaponTracerBoltQueryFilter>,
     mut sparks: Query<
         '_,
         '_,
@@ -2595,7 +2798,7 @@ pub(super) fn update_weapon_tracer_visuals_system(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        (Without<WeaponTracerBolt>, Without<WeaponImpactExplosion>),
+        WeaponImpactSparkQueryFilter,
     >,
     mut explosions: Query<
         '_,
@@ -2606,7 +2809,7 @@ pub(super) fn update_weapon_tracer_visuals_system(
             &'_ MeshMaterial2d<RuntimeEffectMaterial>,
             &'_ mut Visibility,
         ),
-        (Without<WeaponTracerBolt>, Without<WeaponImpactSpark>),
+        WeaponImpactExplosionQueryFilter,
     >,
 ) {
     let dt_s = time.delta_secs();

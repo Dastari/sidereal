@@ -27,7 +27,8 @@ use super::dev_console::{DevConsoleState, is_console_open};
 use super::resources::{
     DebugCollisionShape, DebugControlledLane, DebugEntityLane, DebugOverlayEntity,
     DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DebugSeverity, DebugTextRow,
-    DuplicateVisualResolutionState, RenderLayerPerfCounters,
+    DuplicateVisualResolutionState, HudPerfCounters, RenderLayerPerfCounters,
+    RuntimeAssetPerfCounters,
 };
 
 const DEBUG_OVERLAY_Z_OFFSET: f32 = 6.0;
@@ -51,6 +52,8 @@ pub(crate) struct DebugOverlayStatsInputs<'w, 's> {
     asset_manager: Res<'w, LocalAssetManager>,
     runtime_asset_dependency_state: Res<'w, RuntimeAssetDependencyState>,
     runtime_asset_fetch_state: Res<'w, RuntimeAssetHttpFetchState>,
+    runtime_asset_perf: Res<'w, RuntimeAssetPerfCounters>,
+    hud_perf: Res<'w, HudPerfCounters>,
     render_layer_perf: Res<'w, RenderLayerPerfCounters>,
     duplicate_resolution: Res<'w, DuplicateVisualResolutionState>,
     mesh_assets: Res<'w, Assets<Mesh>>,
@@ -179,12 +182,46 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         .runtime_asset_fetch_state
         .as_ref()
         .in_flight_asset_ids_len();
+    snapshot.stats.runtime_pending_fetch_count = stats_inputs.runtime_asset_perf.pending_fetch_count;
+    snapshot.stats.runtime_pending_persist_count =
+        stats_inputs.runtime_asset_perf.pending_persist_count;
+    snapshot.stats.runtime_asset_fetch_poll_last_ms =
+        stats_inputs.runtime_asset_perf.fetch_poll_last_ms;
+    snapshot.stats.runtime_asset_fetch_poll_max_ms =
+        stats_inputs.runtime_asset_perf.fetch_poll_max_ms;
+    snapshot.stats.runtime_asset_persist_task_last_ms =
+        stats_inputs.runtime_asset_perf.persist_task_last_ms;
+    snapshot.stats.runtime_asset_persist_task_max_ms =
+        stats_inputs.runtime_asset_perf.persist_task_max_ms;
+    snapshot.stats.runtime_asset_save_index_last_ms =
+        stats_inputs.runtime_asset_perf.save_index_last_ms;
+    snapshot.stats.runtime_asset_save_index_max_ms =
+        stats_inputs.runtime_asset_perf.save_index_max_ms;
     snapshot.stats.render_layer_registry_rebuilds =
         stats_inputs.render_layer_perf.registry_rebuilds;
     snapshot.stats.render_layer_assignment_recomputes =
         stats_inputs.render_layer_perf.assignment_recomputes;
     snapshot.stats.render_layer_assignment_skips = stats_inputs.render_layer_perf.assignment_skips;
     snapshot.stats.duplicate_winner_swaps = stats_inputs.duplicate_resolution.winner_swap_count;
+    snapshot.stats.tactical_contacts_last = stats_inputs.hud_perf.tactical_contacts_last;
+    snapshot.stats.tactical_markers_last = stats_inputs.hud_perf.tactical_markers_last;
+    snapshot.stats.tactical_marker_spawns_last = stats_inputs.hud_perf.tactical_marker_spawns_last;
+    snapshot.stats.tactical_marker_updates_last =
+        stats_inputs.hud_perf.tactical_marker_updates_last;
+    snapshot.stats.tactical_marker_despawns_last =
+        stats_inputs.hud_perf.tactical_marker_despawns_last;
+    snapshot.stats.tactical_overlay_last_ms = stats_inputs.hud_perf.tactical_overlay_last_ms;
+    snapshot.stats.tactical_overlay_max_ms = stats_inputs.hud_perf.tactical_overlay_max_ms;
+    snapshot.stats.nameplate_targets_last = stats_inputs.hud_perf.nameplate_targets_last;
+    snapshot.stats.nameplate_visible_last = stats_inputs.hud_perf.nameplate_visible_last;
+    snapshot.stats.nameplate_hidden_last = stats_inputs.hud_perf.nameplate_hidden_last;
+    snapshot.stats.nameplate_health_updates_last =
+        stats_inputs.hud_perf.nameplate_health_updates_last;
+    snapshot.stats.nameplate_entity_data_last = stats_inputs.hud_perf.nameplate_entity_data_last;
+    snapshot.stats.nameplate_sync_last_ms = stats_inputs.hud_perf.nameplate_sync_last_ms;
+    snapshot.stats.nameplate_sync_max_ms = stats_inputs.hud_perf.nameplate_sync_max_ms;
+    snapshot.stats.nameplate_position_last_ms = stats_inputs.hud_perf.nameplate_position_last_ms;
+    snapshot.stats.nameplate_position_max_ms = stats_inputs.hud_perf.nameplate_position_max_ms;
 
     let logical_control_guid = player_view_state
         .controlled_entity_id
@@ -924,6 +961,40 @@ fn build_debug_text_rows(
             severity: DebugSeverity::Normal,
         },
         DebugTextRow {
+            label: "Fetch/Persist".to_string(),
+            value: format!(
+                "{:>3}/{:>3}",
+                stats.runtime_pending_fetch_count, stats.runtime_pending_persist_count
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Asset Poll ms".to_string(),
+            value: format!(
+                "{:>4.1}/{:>4.1}",
+                stats.runtime_asset_fetch_poll_last_ms, stats.runtime_asset_fetch_poll_max_ms
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Persist ms".to_string(),
+            value: format!(
+                "{:>4.1}/{:>4.1}",
+                stats.runtime_asset_persist_task_last_ms,
+                stats.runtime_asset_persist_task_max_ms
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "SaveIdx ms".to_string(),
+            value: format!(
+                "{:>4.1}/{:>4.1}",
+                stats.runtime_asset_save_index_last_ms,
+                stats.runtime_asset_save_index_max_ms
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
             label: "Layer Rebuilds".to_string(),
             value: format!("{:>4}", stats.render_layer_registry_rebuilds),
             severity: DebugSeverity::Normal,
@@ -936,6 +1007,66 @@ fn build_debug_text_rows(
         DebugTextRow {
             label: "Layer Skips".to_string(),
             value: format!("{:>4}", stats.render_layer_assignment_skips),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Tact Mk/Cont".to_string(),
+            value: format!(
+                "{:>3}/{:>3}",
+                stats.tactical_markers_last, stats.tactical_contacts_last
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Tact Delta".to_string(),
+            value: format!(
+                "+{:>2} ~{:>2} -{:>2}",
+                stats.tactical_marker_spawns_last,
+                stats.tactical_marker_updates_last,
+                stats.tactical_marker_despawns_last
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Tact ms".to_string(),
+            value: format!(
+                "{:>4.1}/{:>4.1}",
+                stats.tactical_overlay_last_ms, stats.tactical_overlay_max_ms
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Plates".to_string(),
+            value: format!(
+                "{:>3}/{:>3}",
+                stats.nameplate_visible_last, stats.nameplate_targets_last
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Plate Hidden".to_string(),
+            value: format!("{:>4}", stats.nameplate_hidden_last),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "HP Updates".to_string(),
+            value: format!("{:>4}", stats.nameplate_health_updates_last),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Plate Sync ms".to_string(),
+            value: format!(
+                "{:>4.1}/{:>4.1}",
+                stats.nameplate_sync_last_ms, stats.nameplate_sync_max_ms
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Plate Pos ms".to_string(),
+            value: format!(
+                "{:>4.1}/{:>4.1}",
+                stats.nameplate_position_last_ms, stats.nameplate_position_max_ms
+            ),
             severity: DebugSeverity::Normal,
         },
     ];
@@ -1011,8 +1142,8 @@ fn angle_delta_rad(a: f32, b: f32) -> f32 {
 mod tests {
     use super::{
         AuxiliaryDebugCandidate, ConfirmedGhostPose, RootDebugCandidate, angle_delta_rad,
-        collect_debug_overlay_snapshot_system, resolve_auxiliary_candidate,
-        resolve_root_candidates,
+        build_debug_text_rows, collect_debug_overlay_snapshot_system,
+        resolve_auxiliary_candidate, resolve_root_candidates,
     };
     use crate::native::app_state::{ClientSession, LocalPlayerViewState};
     use crate::native::assets::{
@@ -1025,8 +1156,9 @@ mod tests {
     use crate::native::components::{WeaponImpactSparkPool, WeaponTracerPool, WorldEntity};
     use crate::native::resources::{
         DebugCollisionShape, DebugEntityLane, DebugOverlayEntity, DebugOverlayMode,
-        DebugOverlaySnapshot, DebugOverlayState, DuplicateVisualResolutionState,
-        RenderLayerPerfCounters,
+        DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats,
+        DuplicateVisualResolutionState, HudPerfCounters, RenderLayerPerfCounters,
+        RuntimeAssetPerfCounters,
     };
     use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
@@ -1298,6 +1430,8 @@ mod tests {
         app.insert_resource(LocalAssetManager::default());
         app.insert_resource(RuntimeAssetDependencyState::default());
         app.insert_resource(RuntimeAssetHttpFetchState::default());
+        app.insert_resource(RuntimeAssetPerfCounters::default());
+        app.insert_resource(HudPerfCounters::default());
         app.insert_resource(RenderLayerPerfCounters::default());
         app.insert_resource(DuplicateVisualResolutionState::default());
         app.insert_resource(DebugOverlaySnapshot::default());
@@ -1338,5 +1472,48 @@ mod tests {
         assert_eq!(snapshot.entities.len(), 1);
         assert_eq!(snapshot.entities[0].lane, DebugEntityLane::Confirmed);
         assert_eq!(snapshot.entities[0].position_xy, Vec2::new(20.0, 0.0));
+    }
+
+    #[test]
+    fn debug_text_rows_include_asset_and_hud_perf_metrics() {
+        let stats = DebugOverlayStats {
+            runtime_pending_fetch_count: 2,
+            runtime_pending_persist_count: 1,
+            runtime_asset_fetch_poll_last_ms: 1.5,
+            runtime_asset_fetch_poll_max_ms: 3.0,
+            runtime_asset_persist_task_last_ms: 4.5,
+            runtime_asset_persist_task_max_ms: 6.0,
+            runtime_asset_save_index_last_ms: 2.5,
+            runtime_asset_save_index_max_ms: 5.0,
+            tactical_contacts_last: 7,
+            tactical_markers_last: 8,
+            tactical_marker_spawns_last: 2,
+            tactical_marker_updates_last: 5,
+            tactical_marker_despawns_last: 1,
+            tactical_overlay_last_ms: 0.8,
+            tactical_overlay_max_ms: 1.6,
+            nameplate_targets_last: 6,
+            nameplate_visible_last: 4,
+            nameplate_hidden_last: 2,
+            nameplate_health_updates_last: 4,
+            nameplate_sync_last_ms: 0.3,
+            nameplate_sync_max_ms: 0.9,
+            nameplate_position_last_ms: 1.2,
+            nameplate_position_max_ms: 2.4,
+            ..DebugOverlayStats::default()
+        };
+
+        let rows = build_debug_text_rows(&stats, None, &[]);
+        let labels = rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>();
+
+        assert!(labels.contains(&"Fetch/Persist"));
+        assert!(labels.contains(&"Asset Poll ms"));
+        assert!(labels.contains(&"Persist ms"));
+        assert!(labels.contains(&"SaveIdx ms"));
+        assert!(labels.contains(&"Tact Mk/Cont"));
+        assert!(labels.contains(&"Tact ms"));
+        assert!(labels.contains(&"Plates"));
+        assert!(labels.contains(&"HP Updates"));
+        assert!(labels.contains(&"Plate Pos ms"));
     }
 }

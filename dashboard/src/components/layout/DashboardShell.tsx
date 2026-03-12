@@ -94,19 +94,8 @@ export function DashboardShell() {
           <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/85">
             Sidereal Control Surface
           </div>
-          <div className="text-lg font-semibold text-foreground">
-            {activeTool.label}
-          </div>
         </div>
-        <p className="hidden min-w-0 flex-1 truncate text-sm text-muted-foreground lg:block">
-          {activeTool.description}
-        </p>
-        <Badge variant="outline" className="hidden md:inline-flex">
-          TanStack Router
-        </Badge>
-        <Badge variant="secondary" className="hidden md:inline-flex">
-          React 19
-        </Badge>
+        <div className="grow" />
         <DashboardAdminAccess />
         <ThemeToggle />
         <NavigationProgressBar />

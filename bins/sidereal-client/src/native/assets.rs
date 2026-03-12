@@ -3,7 +3,7 @@
 use super::app_state::ClientSession;
 use super::components::{StreamedSpriteShaderAssetId, StreamedVisualAssetId};
 use super::resources::AssetRootPath;
-use super::resources::{AssetCacheAdapter, GatewayHttpAdapter};
+use super::resources::{AssetCacheAdapter, GatewayHttpAdapter, RuntimeAssetPerfCounters};
 use super::shaders;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
@@ -21,6 +21,7 @@ use sidereal_game::{
 use sidereal_net::ServerAssetCatalogVersionMessage;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LocalAssetRecord {
@@ -99,7 +100,7 @@ pub(crate) struct RuntimeAssetNetIndicatorState {
 pub(crate) struct RuntimeAssetHttpFetchState {
     pending_fetches: Vec<RuntimeAssetFetchTask>,
     pending_persists: Vec<RuntimeAssetPersistTask>,
-    save_index_task: Option<Task<Result<(), String>>>,
+    save_index_task: Option<RuntimeAssetSaveIndexTask>,
     cache_index_dirty: bool,
     in_flight_asset_ids: HashSet<String>,
     pending_parent_asset_ids: HashMap<String, String>,
@@ -120,13 +121,21 @@ impl RuntimeAssetHttpFetchState {
 #[derive(Debug)]
 struct RuntimeAssetFetchTask {
     asset_id: String,
+    queued_at: Instant,
     task: Task<Result<RuntimeAssetFetchResult, String>>,
 }
 
 #[derive(Debug)]
 struct RuntimeAssetPersistTask {
     asset_id: String,
+    queued_at: Instant,
     task: Task<Result<RuntimeAssetPersistResult, String>>,
+}
+
+#[derive(Debug)]
+struct RuntimeAssetSaveIndexTask {
+    queued_at: Instant,
+    task: Task<Result<(), String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +420,7 @@ pub(super) fn resolved_world_sprite_size(
 pub(super) fn queue_missing_catalog_assets_system(
     _time: Res<'_, Time>,
     mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
+    mut perf: ResMut<'_, RuntimeAssetPerfCounters>,
     asset_manager: Res<'_, LocalAssetManager>,
     dependency_state: Res<'_, RuntimeAssetDependencyState>,
     asset_root: Res<'_, AssetRootPath>,
@@ -418,10 +428,17 @@ pub(super) fn queue_missing_catalog_assets_system(
     cache_adapter: Res<'_, AssetCacheAdapter>,
     session: Res<'_, ClientSession>,
 ) {
+    perf.queue_runs = perf.queue_runs.saturating_add(1);
     let Some(access_token) = session.access_token.as_ref() else {
+        perf.pending_fetch_count = fetch_state.pending_fetches.len();
+        perf.pending_persist_count = fetch_state.pending_persists.len();
+        perf.cache_index_dirty = fetch_state.cache_index_dirty;
         return;
     };
     if fetch_state.pending_fetches.len() >= MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
+        perf.pending_fetch_count = fetch_state.pending_fetches.len();
+        perf.pending_persist_count = fetch_state.pending_persists.len();
+        perf.cache_index_dirty = fetch_state.cache_index_dirty;
         return;
     }
     while fetch_state.pending_fetches.len() < MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
@@ -486,10 +503,12 @@ pub(super) fn queue_missing_catalog_assets_system(
             format!("{}{}", session.gateway_url, catalog.url)
         };
         fetch_state.in_flight_asset_ids.insert(asset_id.clone());
+        perf.fetches_queued = perf.fetches_queued.saturating_add(1);
         let access_token = access_token.clone();
         let gateway_http = *gateway_http;
         fetch_state.pending_fetches.push(RuntimeAssetFetchTask {
             asset_id: asset_id.clone(),
+            queued_at: Instant::now(),
             task: IoTaskPool::get().spawn(async move {
                 let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
                 let payload_sha = sha256_hex(&payload);
@@ -513,11 +532,15 @@ pub(super) fn queue_missing_catalog_assets_system(
             }),
         });
     }
+    perf.pending_fetch_count = fetch_state.pending_fetches.len();
+    perf.pending_persist_count = fetch_state.pending_persists.len();
+    perf.cache_index_dirty = fetch_state.cache_index_dirty;
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn poll_runtime_asset_http_fetches_system(
     mut fetch_state: ResMut<'_, RuntimeAssetHttpFetchState>,
+    mut perf: ResMut<'_, RuntimeAssetPerfCounters>,
     mut asset_manager: ResMut<'_, LocalAssetManager>,
     mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
     mut session: ResMut<'_, ClientSession>,
@@ -526,10 +549,16 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
 ) {
+    perf.fetch_poll_runs = perf.fetch_poll_runs.saturating_add(1);
+    let poll_started_at = Instant::now();
     if fetch_state.pending_fetches.is_empty()
         && fetch_state.pending_persists.is_empty()
         && fetch_state.save_index_task.is_none()
     {
+        perf.pending_fetch_count = 0;
+        perf.pending_persist_count = 0;
+        perf.cache_index_dirty = fetch_state.cache_index_dirty;
+        perf.fetch_poll_last_ms = 0.0;
         return;
     }
     let mut completed_results = Vec::new();
@@ -542,10 +571,11 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
             continue;
         };
         let completed = fetch_state.pending_fetches.swap_remove(task_index);
-        completed_results.push((completed.asset_id, result));
+        completed_results.push((completed.asset_id, completed.queued_at, result));
     }
 
-    for (queued_asset_id, result) in completed_results {
+    for (queued_asset_id, queued_at, result) in completed_results {
+        perf.fetches_completed = perf.fetches_completed.saturating_add(1);
         match result {
             Ok(result) => {
                 let payload_sha = sha256_hex(&result.payload);
@@ -564,6 +594,7 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
                     let cache_adapter = *cache_adapter;
                     fetch_state.pending_persists.push(RuntimeAssetPersistTask {
                         asset_id: result.asset_id.clone(),
+                        queued_at: Instant::now(),
                         task: IoTaskPool::get().spawn(async move {
                             (cache_adapter.write_asset)(
                                 asset_root,
@@ -593,6 +624,7 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
                     .remove(&queued_asset_id);
             }
         }
+        let _fetch_task_ms = queued_at.elapsed().as_secs_f64() * 1000.0;
     }
 
     let mut completed_persists = Vec::new();
@@ -605,12 +637,16 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
             continue;
         };
         let completed = fetch_state.pending_persists.swap_remove(persist_index);
-        completed_persists.push((completed.asset_id, result));
+        completed_persists.push((completed.asset_id, completed.queued_at, result));
     }
 
-    for (queued_asset_id, result) in completed_persists {
+    for (queued_asset_id, queued_at, result) in completed_persists {
+        let persist_task_ms = queued_at.elapsed().as_secs_f64() * 1000.0;
+        perf.persist_task_last_ms = persist_task_ms;
+        perf.persist_task_max_ms = perf.persist_task_max_ms.max(persist_task_ms);
         match result {
             Ok(result) => {
+                perf.persists_completed = perf.persists_completed.saturating_add(1);
                 asset_manager.cache_index.by_asset_id.insert(
                     result.asset_id.clone(),
                     AssetCacheIndexRecord {
@@ -667,8 +703,12 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     }
 
     if let Some(save_index_task) = fetch_state.save_index_task.as_mut()
-        && let Some(result) = bevy::tasks::block_on(future::poll_once(save_index_task))
+        && let Some(result) = bevy::tasks::block_on(future::poll_once(&mut save_index_task.task))
     {
+        let save_index_ms = save_index_task.queued_at.elapsed().as_secs_f64() * 1000.0;
+        perf.save_index_last_ms = save_index_ms;
+        perf.save_index_max_ms = perf.save_index_max_ms.max(save_index_ms);
+        perf.save_index_completions = perf.save_index_completions.saturating_add(1);
         fetch_state.save_index_task = None;
         if let Err(err) = result {
             warn!("runtime asset cache index save failed: {}", err);
@@ -683,11 +723,18 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
         let asset_root = asset_root.0.clone();
         let cache_index = asset_manager.cache_index.clone();
         let cache_adapter = *cache_adapter;
-        fetch_state.save_index_task = Some(
-            IoTaskPool::get()
+        perf.save_index_starts = perf.save_index_starts.saturating_add(1);
+        fetch_state.save_index_task = Some(RuntimeAssetSaveIndexTask {
+            queued_at: Instant::now(),
+            task: IoTaskPool::get()
                 .spawn(async move { (cache_adapter.save_index)(asset_root, cache_index).await }),
-        );
+        });
     }
+    perf.pending_fetch_count = fetch_state.pending_fetches.len();
+    perf.pending_persist_count = fetch_state.pending_persists.len();
+    perf.cache_index_dirty = fetch_state.cache_index_dirty;
+    perf.fetch_poll_last_ms = poll_started_at.elapsed().as_secs_f64() * 1000.0;
+    perf.fetch_poll_max_ms = perf.fetch_poll_max_ms.max(perf.fetch_poll_last_ms);
 }
 
 fn asset_present_in_cache_or_source(

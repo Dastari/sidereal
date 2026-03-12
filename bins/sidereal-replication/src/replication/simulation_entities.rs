@@ -26,7 +26,8 @@ use sidereal_runtime_sync::{
     insert_registered_components_from_graph_records, parse_guid_from_entity_id,
 };
 use std::collections::{HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::bootstrap_runtime::BootstrapEntityCommandPayload;
 use crate::bootstrap_runtime::{self, BootstrapEntityReceiver};
@@ -45,6 +46,8 @@ const ADMIN_MAX_OVERRIDE_FIELDS: usize = 8;
 const ADMIN_MAX_OVERRIDE_JSON_BYTES: usize = 2048;
 
 const WORLD_INIT_STATE_KEY: &str = "world/world_init.lua:phase2";
+const STARTUP_PERSISTENCE_RETRY_ATTEMPTS: usize = 20;
+const STARTUP_PERSISTENCE_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Resource, Default)]
 pub struct PlayerControlledEntityMap {
@@ -253,35 +256,17 @@ pub fn hydrate_simulation_entities(
     component_registry: Res<'_, GeneratedComponentRegistry>,
     app_type_registry: Res<'_, AppTypeRegistry>,
 ) {
-    let mut persistence = match GraphPersistence::connect(&replication_database_url()) {
-        Ok(v) => v,
-        Err(err) => {
-            error!("replication simulation hydration skipped; connect failed: {err}");
-            return;
-        }
-    };
-    if let Err(err) = persistence.ensure_schema() {
-        error!("replication simulation hydration skipped; schema init failed: {err}");
-        return;
-    }
-    schema_init_state.0 = true;
-
-    if let Err(err) = apply_scripted_world_init_once(
-        &mut persistence,
+    let records = match load_runtime_world_records_with_retry(
+        &mut schema_init_state,
         script_catalog.as_ref(),
         entity_registry.as_ref(),
         asset_registry.as_ref(),
     ) {
-        error!("replication simulation hydration skipped; scripted world init failed: {err}");
-        return;
-    }
-
-    let records = match persistence.load_graph_records() {
-        Ok(v) => v,
         Err(err) => {
-            error!("replication simulation hydration skipped; graph load failed: {err}");
+            error!("replication simulation hydration skipped: {err}");
             return;
         }
+        Ok(records) => records,
     };
 
     for record in &records {
@@ -331,22 +316,12 @@ pub fn reload_runtime_world_from_persistence(
     player_entity_map: &mut PlayerRuntimeEntityMap,
     schema_init_state: &mut PersistenceSchemaInitState,
 ) -> Result<usize, String> {
-    let mut persistence = GraphPersistence::connect(&replication_database_url())
-        .map_err(|err| format!("reload world connect failed: {err}"))?;
-    persistence
-        .ensure_schema()
-        .map_err(|err| format!("reload world ensure schema failed: {err}"))?;
-    schema_init_state.0 = true;
-    apply_scripted_world_init_once(
-        &mut persistence,
+    let records = load_runtime_world_records_with_retry(
+        schema_init_state,
         script_catalog,
         entity_registry,
         asset_registry,
     )?;
-
-    let records = persistence
-        .load_graph_records()
-        .map_err(|err| format!("reload world graph load failed: {err}"))?;
     let collisions = find_runtime_guid_collisions(&records);
     if !collisions.is_empty() {
         let formatted = collisions
@@ -380,6 +355,66 @@ pub fn reload_runtime_world_from_persistence(
         controlled_entity_map,
     );
     Ok(records.len())
+}
+
+fn load_runtime_world_records_with_retry(
+    schema_init_state: &mut PersistenceSchemaInitState,
+    script_catalog: &ScriptCatalogResource,
+    entity_registry: &EntityRegistryResource,
+    asset_registry: &AssetRegistryResource,
+) -> Result<Vec<GraphEntityRecord>, String> {
+    retry_startup_persistence("runtime world load", || {
+        let mut persistence = GraphPersistence::connect(&replication_database_url())
+            .map_err(|err| format!("connect failed: {err}"))?;
+        if !schema_init_state.0 {
+            persistence
+                .ensure_schema()
+                .map_err(|err| format!("schema init failed: {err}"))?;
+            schema_init_state.0 = true;
+        }
+        apply_scripted_world_init_once(
+            &mut persistence,
+            script_catalog,
+            entity_registry,
+            asset_registry,
+        )
+        .map_err(|err| format!("scripted world init failed: {err}"))?;
+        persistence
+            .load_graph_records()
+            .map_err(|err| format!("graph load failed: {err}"))
+    })
+}
+
+fn retry_startup_persistence<T, F>(label: &str, mut operation: F) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, String>,
+{
+    let mut last_err = None;
+    for attempt in 1..=STARTUP_PERSISTENCE_RETRY_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if attempt == STARTUP_PERSISTENCE_RETRY_ATTEMPTS {
+                    return Err(format!(
+                        "{label} failed after {} attempts: {err}",
+                        STARTUP_PERSISTENCE_RETRY_ATTEMPTS
+                    ));
+                }
+                warn!(
+                    "{label} attempt {attempt}/{} failed: {err}; retrying in {}ms",
+                    STARTUP_PERSISTENCE_RETRY_ATTEMPTS,
+                    STARTUP_PERSISTENCE_RETRY_DELAY.as_millis()
+                );
+                last_err = Some(err);
+                thread::sleep(STARTUP_PERSISTENCE_RETRY_DELAY);
+            }
+        }
+    }
+    Err(format!(
+        "{label} failed after {} attempts: {}",
+        STARTUP_PERSISTENCE_RETRY_ATTEMPTS,
+        last_err.unwrap_or_else(|| "retry loop exited without an error".to_string())
+    ))
 }
 
 fn derive_control_bindings(
@@ -1319,5 +1354,41 @@ pub fn enforce_planar_motion(
             heading = 0.0;
         }
         *rotation = Rotation::radians(heading);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_startup_persistence;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn startup_retry_returns_first_successful_result() {
+        let attempts = AtomicUsize::new(0);
+        let result = retry_startup_persistence("test operation", || {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt < 3 {
+                Err(format!("attempt {attempt} failed"))
+            } else {
+                Ok(attempt)
+            }
+        });
+
+        assert_eq!(result.expect("retry should eventually succeed"), 3);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn startup_retry_returns_last_error_after_exhaustion() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<usize, String> = retry_startup_persistence("test operation", || {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            Err(format!("attempt {attempt} failed"))
+        });
+
+        let err = result.expect_err("retry should fail after exhausting attempts");
+        assert!(err.contains("failed after 20 attempts"));
+        assert!(err.contains("attempt 20 failed"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 20);
     }
 }

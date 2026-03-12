@@ -44,7 +44,7 @@ CLIENT2_BRP_URL ?= http://127.0.0.1:$(CLIENT2_BRP_PORT)/
 BRP_DUMP_DIR ?= ./data/debug/brp_dumps
 DASHBOARD_DIR ?= ./dashboard
 
-.PHONY: help setup-environment pg-up pg-down pg-logs pg-reset db-reset fmt clippy check inline-test-guard test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full ensure-webtransport-cert run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
+.PHONY: help setup-environment pg-up pg-down pg-logs pg-reset pg-wait-ready db-reset fmt clippy check inline-test-guard test test-gateway test-replication test-client wasm-check windows-check windows-build windows-release target-size clean-lite clean-full ensure-webtransport-cert run-gateway run-replication run-shard run-client run-client-release run-client-wsl-perf run-client-wsl-safe run-client2 run-client-headless run-dashboard brp-dump-replication brp-dump-client brp-dump-client2 brp-dump-all dev-stack dev-stack-client register-demo
 
 help:
 	@echo "Sidereal v3 Make targets"
@@ -93,6 +93,7 @@ help:
 
 pg-up:
 	SIDEREAL_PG_PORT=$(SIDEREAL_PG_PORT) docker compose up -d --force-recreate postgres
+	@$(MAKE) pg-wait-ready
 
 setup-environment:
 	@if ! command -v apt-get >/dev/null 2>&1; then \
@@ -157,6 +158,35 @@ pg-logs:
 pg-reset:
 	docker compose down -v
 	docker compose up -d postgres
+	@$(MAKE) pg-wait-ready
+
+pg-wait-ready:
+	@cid="$$(docker compose ps -q postgres)"; \
+	ready_streak=0; \
+	if [ -z "$$cid" ]; then \
+		echo "postgres container not found"; \
+		exit 1; \
+	fi; \
+	echo "Waiting for postgres health..."; \
+	for _ in $$(seq 1 60); do \
+		status="$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$$cid" 2>/dev/null || true)"; \
+		if PGPASSWORD=sidereal psql -h 127.0.0.1 -p $(SIDEREAL_PG_PORT) -U sidereal -d sidereal -Atqc "SELECT 1" >/dev/null 2>&1; then \
+			ready_streak=$$((ready_streak + 1)); \
+		else \
+			ready_streak=0; \
+		fi; \
+		if [ "$$status" = "healthy" ] && [ "$$ready_streak" -ge 2 ]; then \
+			echo "postgres is healthy and accepting queries."; \
+			exit 0; \
+		fi; \
+		if [ "$$status" = "exited" ] || [ "$$status" = "dead" ]; then \
+			echo "postgres container failed with status=$$status"; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "timed out waiting for postgres health"; \
+	exit 1
 
 db-reset: pg-reset
 

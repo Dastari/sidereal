@@ -14,6 +14,7 @@ bins/sidereal-gateway/src/auth/starter_world_scripts.rs
 bins/sidereal-replication/src/main.rs
 bins/sidereal-replication/src/replication/owner_manifest.rs
 bins/sidereal-replication/src/replication/persistence.rs
+bins/sidereal-replication/src/replication/simulation_entities.rs
 bins/sidereal-replication/src/replication/scripting.rs
 bins/sidereal-replication/src/replication/tactical.rs
 bins/sidereal-replication/src/replication/visibility.rs

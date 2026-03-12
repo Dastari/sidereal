@@ -18,6 +18,7 @@ use sidereal_game::{
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use super::app_state::{
     ClientAppState, ClientSession, LocalPlayerViewState, OwnedEntitiesPanelState,
@@ -41,8 +42,8 @@ use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
     CameraMotionState, ClientControlRequestState, ClientInputSendState, DebugOverlayDisplayMetrics,
     DebugOverlaySnapshot, DebugOverlayState, DebugSeverity, DuplicateVisualResolutionState,
-    EmbeddedFonts, NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache,
-    TacticalFogCache, TacticalMapUiState,
+    EmbeddedFonts, HudPerfCounters, NameplateUiState, OwnedAssetManifestCache,
+    TacticalContactsCache, TacticalFogCache, TacticalMapUiState,
 };
 
 #[allow(clippy::type_complexity)]
@@ -99,6 +100,10 @@ const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
 const TACTICAL_ICON_WORLD_HEIGHT_M: f32 = 24.0;
 const TACTICAL_CONTACT_SMOOTHING_RATE: f32 = 8.0;
 const TACTICAL_CONTACT_PREDICTION_HORIZON_S: f32 = 0.25;
+
+fn elapsed_ms(started_at: Instant) -> f64 {
+    started_at.elapsed().as_secs_f64() * 1000.0
+}
 
 /// Propagates the UI overlay render layer to all descendants of HUD roots so they are drawn
 /// by the UI overlay camera (fixed scale) instead of the gameplay camera.
@@ -434,7 +439,7 @@ fn normalized_transition_progress(value: f32, start: f32, end: f32) -> f32 {
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 pub(super) fn update_tactical_map_overlay_system(
-    time: Res<'_, Time>,
+    perf_inputs: (Res<'_, Time>, ResMut<'_, HudPerfCounters>),
     mut tactical_map_state: ResMut<'_, TacticalMapUiState>,
     contacts_cache: Res<'_, TacticalContactsCache>,
     asset_io: (
@@ -519,6 +524,14 @@ pub(super) fn update_tactical_map_overlay_system(
         ),
     >,
 ) {
+    let (time, mut hud_perf) = perf_inputs;
+    let started_at = Instant::now();
+    hud_perf.tactical_overlay_runs = hud_perf.tactical_overlay_runs.saturating_add(1);
+    hud_perf.tactical_contacts_last = contacts_cache.contacts_by_entity_id.len();
+    hud_perf.tactical_markers_last = 0;
+    hud_perf.tactical_marker_spawns_last = 0;
+    hud_perf.tactical_marker_updates_last = 0;
+    hud_perf.tactical_marker_despawns_last = 0;
     let (asset_root, cache_adapter) = asset_io;
     if icon_cache.reload_generation != asset_manager.reload_generation {
         *icon_cache = TacticalMapIconSvgCache::default();
@@ -534,6 +547,9 @@ pub(super) fn update_tactical_map_overlay_system(
         defaults_query.iter().next().cloned()
     };
     let Ok(window) = windows.single() else {
+        let elapsed_ms = elapsed_ms(started_at);
+        hud_perf.tactical_overlay_last_ms = elapsed_ms;
+        hud_perf.tactical_overlay_max_ms = hud_perf.tactical_overlay_max_ms.max(elapsed_ms);
         return;
     };
     let mut camera_distance = tactical_map_state.transition_start_distance;
@@ -592,13 +608,22 @@ pub(super) fn update_tactical_map_overlay_system(
     {
         let mut roots = map_queries.p3();
         let Ok((_root_entity, mut root_bg, mut visibility, _children)) = roots.single_mut() else {
+            let elapsed_ms = elapsed_ms(started_at);
+            hud_perf.tactical_overlay_last_ms = elapsed_ms;
+            hud_perf.tactical_overlay_max_ms = hud_perf.tactical_overlay_max_ms.max(elapsed_ms);
             return;
         };
         if alpha < 0.01 && !tactical_map_state.enabled {
+            let mut despawned = 0usize;
             *visibility = Visibility::Hidden;
             for (marker, _, _, _) in &mut dynamic_markers {
                 queue_despawn_if_exists(&mut commands, marker);
+                despawned = despawned.saturating_add(1);
             }
+            hud_perf.tactical_marker_despawns_last = despawned;
+            let elapsed_ms = elapsed_ms(started_at);
+            hud_perf.tactical_overlay_last_ms = elapsed_ms;
+            hud_perf.tactical_overlay_max_ms = hud_perf.tactical_overlay_max_ms.max(elapsed_ms);
             return;
         }
         *visibility = Visibility::Visible;
@@ -722,9 +747,17 @@ pub(super) fn update_tactical_map_overlay_system(
                 heading_rad,
                 base_translation,
             );
+            let existing_entity = existing_marker_entities.remove(marker_key.as_str());
+            if existing_entity.is_some() {
+                hud_perf.tactical_marker_updates_last =
+                    hud_perf.tactical_marker_updates_last.saturating_add(1);
+            } else {
+                hud_perf.tactical_marker_spawns_last =
+                    hud_perf.tactical_marker_spawns_last.saturating_add(1);
+            }
             upsert_tactical_map_marker(
                 &mut commands,
-                existing_marker_entities.remove(marker_key.as_str()),
+                existing_entity,
                 marker_key,
                 svg_handle,
                 marker_translation,
@@ -781,9 +814,17 @@ pub(super) fn update_tactical_map_overlay_system(
         );
         let marker_key = contact.entity_id.clone();
         seen_marker_keys.insert(marker_key.clone());
+        let existing_entity = existing_marker_entities.remove(marker_key.as_str());
+        if existing_entity.is_some() {
+            hud_perf.tactical_marker_updates_last =
+                hud_perf.tactical_marker_updates_last.saturating_add(1);
+        } else {
+            hud_perf.tactical_marker_spawns_last =
+                hud_perf.tactical_marker_spawns_last.saturating_add(1);
+        }
         upsert_tactical_map_marker(
             &mut commands,
-            existing_marker_entities.remove(marker_key.as_str()),
+            existing_entity,
             marker_key,
             svg_handle,
             marker_translation,
@@ -795,8 +836,14 @@ pub(super) fn update_tactical_map_overlay_system(
     for (stale_key, entity) in existing_marker_entities {
         if !seen_marker_keys.contains(stale_key.as_str()) {
             queue_despawn_if_exists(&mut commands, entity);
+            hud_perf.tactical_marker_despawns_last =
+                hud_perf.tactical_marker_despawns_last.saturating_add(1);
         }
     }
+    hud_perf.tactical_markers_last = seen_marker_keys.len();
+    let elapsed_ms = elapsed_ms(started_at);
+    hud_perf.tactical_overlay_last_ms = elapsed_ms;
+    hud_perf.tactical_overlay_max_ms = hud_perf.tactical_overlay_max_ms.max(elapsed_ms);
 }
 
 fn upsert_tactical_map_marker(
@@ -1669,6 +1716,7 @@ pub(super) fn update_segmented_bars_system(
 #[allow(clippy::type_complexity)]
 pub(super) fn sync_entity_nameplates_system(
     mut commands: Commands<'_, '_>,
+    mut hud_perf: ResMut<'_, HudPerfCounters>,
     duplicate_visuals: Res<'_, DuplicateVisualResolutionState>,
     world_entities: Query<
         '_,
@@ -1682,6 +1730,11 @@ pub(super) fn sync_entity_nameplates_system(
     >,
     existing: Query<'_, '_, (Entity, &EntityNameplateRoot)>,
 ) {
+    let started_at = Instant::now();
+    hud_perf.nameplate_sync_runs = hud_perf.nameplate_sync_runs.saturating_add(1);
+    hud_perf.nameplate_targets_last = 0;
+    hud_perf.nameplate_spawned_last = 0;
+    hud_perf.nameplate_despawned_last = 0;
     let mut existing_targets = HashMap::<Entity, Entity>::new();
     for (entity, root) in &existing {
         existing_targets.insert(root.target, entity);
@@ -1709,6 +1762,7 @@ pub(super) fn sync_entity_nameplates_system(
         if existing_targets.contains_key(entity) {
             continue;
         }
+        hud_perf.nameplate_spawned_last = hud_perf.nameplate_spawned_last.saturating_add(1);
         commands
             .spawn((
                 Node {
@@ -1768,13 +1822,20 @@ pub(super) fn sync_entity_nameplates_system(
     for (nameplate_entity, root) in &existing {
         if !winner_entities.contains(&root.target) {
             queue_despawn_if_exists(&mut commands, nameplate_entity);
+            hud_perf.nameplate_despawned_last =
+                hud_perf.nameplate_despawned_last.saturating_add(1);
         }
     }
+    hud_perf.nameplate_targets_last = winner_entities.len();
+    let elapsed_ms = elapsed_ms(started_at);
+    hud_perf.nameplate_sync_last_ms = elapsed_ms;
+    hud_perf.nameplate_sync_max_ms = hud_perf.nameplate_sync_max_ms.max(elapsed_ms);
 }
 
 #[allow(clippy::type_complexity)]
 pub(super) fn update_entity_nameplate_positions_system(
     nameplate_state: Res<'_, NameplateUiState>,
+    mut hud_perf: ResMut<'_, HudPerfCounters>,
     mut roots: Query<
         '_,
         '_,
@@ -1801,20 +1862,36 @@ pub(super) fn update_entity_nameplate_positions_system(
     gameplay_camera: Query<'_, '_, (&Camera, &Transform), With<GameplayCamera>>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
 ) {
+    let started_at = Instant::now();
+    hud_perf.nameplate_position_runs = hud_perf.nameplate_position_runs.saturating_add(1);
+    hud_perf.nameplate_entity_data_last = 0;
+    hud_perf.nameplate_visible_last = 0;
+    hud_perf.nameplate_hidden_last = 0;
+    hud_perf.nameplate_health_updates_last = 0;
     if !nameplate_state.enabled {
         for (_, _, mut visibility) in &mut roots {
             *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
         }
+        let elapsed_ms = elapsed_ms(started_at);
+        hud_perf.nameplate_position_last_ms = elapsed_ms;
+        hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
         return;
     }
 
     let Ok((camera, camera_transform)) = gameplay_camera.single() else {
+        let elapsed_ms = elapsed_ms(started_at);
+        hud_perf.nameplate_position_last_ms = elapsed_ms;
+        hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
         return;
     };
     // This runs in `Last` after camera transform updates. Convert the current camera
     // `Transform` directly so projection uses the final same-frame camera state.
     let camera_global = GlobalTransform::from(*camera_transform);
     let Ok(window) = window_query.single() else {
+        let elapsed_ms = elapsed_ms(started_at);
+        hud_perf.nameplate_position_last_ms = elapsed_ms;
+        hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
         return;
     };
 
@@ -1846,21 +1923,25 @@ pub(super) fn update_entity_nameplate_positions_system(
             ),
         );
     }
+    hud_perf.nameplate_entity_data_last = entity_data_by_entity.len();
 
     for (root, mut node, mut visibility) in &mut roots {
         let Some((world_pos, half_extent_world, _)) = entity_data_by_entity.get(&root.target)
         else {
             *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
             continue;
         };
         let center_world = Vec3::new(world_pos.x, world_pos.y, 0.0);
         let Ok(viewport_pos) = camera.world_to_viewport(&camera_global, center_world) else {
             *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
             continue;
         };
         let top_world = Vec3::new(world_pos.x, world_pos.y + *half_extent_world, 0.0);
         let Ok(top_viewport_pos) = camera.world_to_viewport(&camera_global, top_world) else {
             *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
             continue;
         };
         // Hide plate once the entity itself is fully outside viewport bounds.
@@ -1878,6 +1959,7 @@ pub(super) fn update_entity_nameplate_positions_system(
             || viewport_pos.y > window.height() + extent_px_y
         {
             *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
             continue;
         }
         let plate_width = 100.0;
@@ -1887,15 +1969,21 @@ pub(super) fn update_entity_nameplate_positions_system(
         let entity_top_y_px = viewport_pos.y.min(top_viewport_pos.y);
         node.top = px(entity_top_y_px - plate_height - vertical_gap);
         *visibility = Visibility::Visible;
+        hud_perf.nameplate_visible_last = hud_perf.nameplate_visible_last.saturating_add(1);
 
         if let Some((_, _, health_ratio)) = entity_data_by_entity.get(&root.target) {
             for (bar_target, mut value) in &mut health_bars {
                 if bar_target.target == root.target {
                     value.ratio = *health_ratio;
+                    hud_perf.nameplate_health_updates_last =
+                        hud_perf.nameplate_health_updates_last.saturating_add(1);
                 }
             }
         }
     }
+    let elapsed_ms = elapsed_ms(started_at);
+    hud_perf.nameplate_position_last_ms = elapsed_ms;
+    hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
 }
 
 #[cfg(test)]

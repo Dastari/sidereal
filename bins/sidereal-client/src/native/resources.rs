@@ -270,9 +270,33 @@ pub(crate) struct DebugOverlayStats {
     pub runtime_dependency_graph_rebuilds: u64,
     pub runtime_dependency_scan_runs: u64,
     pub runtime_in_flight_fetch_count: usize,
+    pub runtime_pending_fetch_count: usize,
+    pub runtime_pending_persist_count: usize,
+    pub runtime_asset_fetch_poll_last_ms: f64,
+    pub runtime_asset_fetch_poll_max_ms: f64,
+    pub runtime_asset_persist_task_last_ms: f64,
+    pub runtime_asset_persist_task_max_ms: f64,
+    pub runtime_asset_save_index_last_ms: f64,
+    pub runtime_asset_save_index_max_ms: f64,
     pub render_layer_registry_rebuilds: u64,
     pub render_layer_assignment_recomputes: u64,
     pub render_layer_assignment_skips: u64,
+    pub tactical_contacts_last: usize,
+    pub tactical_markers_last: usize,
+    pub tactical_marker_spawns_last: usize,
+    pub tactical_marker_updates_last: usize,
+    pub tactical_marker_despawns_last: usize,
+    pub tactical_overlay_last_ms: f64,
+    pub tactical_overlay_max_ms: f64,
+    pub nameplate_targets_last: usize,
+    pub nameplate_visible_last: usize,
+    pub nameplate_hidden_last: usize,
+    pub nameplate_health_updates_last: usize,
+    pub nameplate_entity_data_last: usize,
+    pub nameplate_sync_last_ms: f64,
+    pub nameplate_sync_max_ms: f64,
+    pub nameplate_position_last_ms: f64,
+    pub nameplate_position_max_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -345,6 +369,51 @@ pub(crate) struct DebugOverlayDisplayMetrics {
 #[derive(Debug, Resource, Default)]
 pub(crate) struct NameplateUiState {
     pub enabled: bool,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct RuntimeAssetPerfCounters {
+    pub queue_runs: u64,
+    pub fetch_poll_runs: u64,
+    pub fetches_queued: u64,
+    pub fetches_completed: u64,
+    pub persists_completed: u64,
+    pub save_index_starts: u64,
+    pub save_index_completions: u64,
+    pub pending_fetch_count: usize,
+    pub pending_persist_count: usize,
+    pub cache_index_dirty: bool,
+    pub fetch_poll_last_ms: f64,
+    pub fetch_poll_max_ms: f64,
+    pub persist_task_last_ms: f64,
+    pub persist_task_max_ms: f64,
+    pub save_index_last_ms: f64,
+    pub save_index_max_ms: f64,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct HudPerfCounters {
+    pub tactical_overlay_runs: u64,
+    pub tactical_overlay_last_ms: f64,
+    pub tactical_overlay_max_ms: f64,
+    pub tactical_contacts_last: usize,
+    pub tactical_markers_last: usize,
+    pub tactical_marker_spawns_last: usize,
+    pub tactical_marker_updates_last: usize,
+    pub tactical_marker_despawns_last: usize,
+    pub nameplate_sync_runs: u64,
+    pub nameplate_sync_last_ms: f64,
+    pub nameplate_sync_max_ms: f64,
+    pub nameplate_targets_last: usize,
+    pub nameplate_spawned_last: usize,
+    pub nameplate_despawned_last: usize,
+    pub nameplate_position_runs: u64,
+    pub nameplate_position_last_ms: f64,
+    pub nameplate_position_max_ms: f64,
+    pub nameplate_entity_data_last: usize,
+    pub nameplate_visible_last: usize,
+    pub nameplate_hidden_last: usize,
+    pub nameplate_health_updates_last: usize,
 }
 
 #[derive(Debug, Resource, Default)]

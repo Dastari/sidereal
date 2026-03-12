@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
+import { isReadOnlyBrpMethod } from '@/lib/brp-read'
 import {
   brpPortSchema,
   brpRequestSchema,
@@ -27,6 +28,17 @@ function parsePort(value: unknown): number | null {
   return parsed.success ? parsed.data : null
 }
 
+function buildReadOnlyParams(method: string, url: URL): unknown {
+  if (method === 'world.list_resources') {
+    return undefined
+  }
+
+  const resource = url.searchParams.get('resource')
+  return typeof resource === 'string' && resource.length > 0
+    ? { resource }
+    : null
+}
+
 export const Route = createFileRoute('/api/brp')({
   server: {
     handlers: {
@@ -36,6 +48,7 @@ export const Route = createFileRoute('/api/brp')({
         const target = parseTarget(url.searchParams.get('target'))
         const port = parsePort(url.searchParams.get('port'))
         const options = { target, ...(port ? { port } : {}) }
+        const method = url.searchParams.get('method')
 
         if (snapshot === '1' || snapshot === 'true') {
           try {
@@ -47,6 +60,42 @@ export const Route = createFileRoute('/api/brp')({
             return json({ error: message }, { status: 502 })
           }
         }
+
+        if (method && isReadOnlyBrpMethod(method)) {
+          const params = buildReadOnlyParams(method, url)
+          if (method !== 'world.list_resources' && params === null) {
+            return json({ error: 'resource query param is required' }, { status: 400 })
+          }
+
+          try {
+            const response = await callBrp(
+              {
+                id: `${target}-${method}`,
+                method,
+                params: params ?? undefined,
+              },
+              options,
+            )
+
+            return json({
+              target,
+              brpUrl: getBrpUrl(options),
+              ...response,
+            })
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : 'Unknown error'
+            return json(
+              {
+                error: message,
+                target,
+                brpUrl: getBrpUrl(options),
+              },
+              { status: 502 },
+            )
+          }
+        }
+
         try {
           const discover = await callBrp(
             {

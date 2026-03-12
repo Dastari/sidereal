@@ -302,7 +302,12 @@ impl Plugin for ClientVisualsPlugin {
                 .after(visuals::cleanup_planet_body_visual_children_system),
             visuals::ensure_planet_body_root_visibility_system
                 .after(visuals::attach_planet_visual_stack_system),
+            visuals::bootstrap_local_ballistic_projectile_visual_roots_system
+                .after(replication::adopt_native_lightyear_replicated_entities),
+            visuals::sync_unadopted_ballistic_projectile_visual_roots_system
+                .after(visuals::bootstrap_local_ballistic_projectile_visual_roots_system),
             visuals::attach_ballistic_projectile_visuals_system
+                .after(visuals::sync_unadopted_ballistic_projectile_visual_roots_system)
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
             visuals::attach_thruster_plume_visuals_system
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),

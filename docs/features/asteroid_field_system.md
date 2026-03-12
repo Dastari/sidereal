@@ -6,6 +6,7 @@
 ## 0. Status Notes
 
 - 2026-03-12: This document defines the intended replacement for the current bootstrap-only `asteroid.field_member` scatter model. The target direction is a persisted asteroid-field entity that owns clustered asteroid content, supports large size tiers, and authoritatively fractures destructible asteroids into smaller child bodies. Native impact: server/runtime/client work required. WASM impact: shared gameplay, replication, and procedural-generation logic should remain target-shared; browser-specific work stays limited to asset/loading/render boundary behavior.
+- 2026-03-12: Destruction/fracture visuals should follow the scripting-support ownership split. Default asteroid explosion/fracture/loot behavior belongs in Rust-defined authored profiles/components referenced by field/member content, while Lua hooks are reserved for exceptional lifecycle overrides. Native impact: future runtime/schema work required. WASM impact: no special browser-only behavior; the contract stays in shared gameplay/runtime code.
 
 ## 1. Purpose
 
@@ -778,6 +779,30 @@ When `Small` asteroids are destroyed:
 2. convert remaining value into depletion/resource outputs,
 3. mark the member entry terminal,
 4. allow non-authoritative VFX on the client if desired.
+
+### 17.5 Destruction VFX And Scripted Override Contract
+
+Asteroid destruction/fracture should not directly encode raw shader selection in gameplay logic. The intended long-term contract is:
+
+1. field/member/archetype content references authored destruction behavior and effect presets, rather than directly naming WGSL files or low-level runtime effect ABI fields;
+2. Rust authoritative destruction systems resolve the default outcome:
+   - destroy vs fracture,
+   - which authored effect preset to spawn,
+   - which loot/resource profile to apply,
+   - whether child members are created;
+3. the client renders explosion/fracture visuals from those authoritative outcomes or from approved replicated effect payloads;
+4. Lua lifecycle hooks are for exceptional behavior only, such as:
+   - canceling a normal death,
+   - restoring health through a validated gameplay path,
+   - spawning ambushers/reinforcements,
+   - selecting an alternate authored reward/event outcome;
+5. scripted overrides must run through Rust-validated intents and a pre-resolution lifecycle event; scripts must not directly despawn the asteroid, mutate raw health/components, or invoke shader/material ABI details themselves.
+
+For practical authoring this means:
+
+1. common asteroid families should get default destruction/fracture/effect/loot profiles in their bundle or archetype definitions;
+2. unique asteroids can attach script hook overrides through `ScriptState.data.event_hooks`;
+3. "all asteroids of this authored type do X on death" should be expressed as a shared profile or archetype-level script binding, not duplicated per spawned member instance.
 
 ## 18. Migration from Current `asteroid.field_member` Model
 

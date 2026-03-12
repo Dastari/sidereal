@@ -137,6 +137,7 @@ fn init_asset_runtime_resources(app: &mut App, asset_root: String) {
     app.insert_resource(assets::RuntimeAssetDependencyDirtyState::default());
     app.insert_resource(assets::RuntimeAssetNetIndicatorState::default());
     app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
+    app.insert_resource(RuntimeAssetPerfCounters::default());
     app.insert_resource(OwnedAssetManifestCache::default());
 }
 
@@ -170,6 +171,7 @@ fn init_debug_and_diagnostics_resources(app: &mut App, headless_transport: bool)
 
 fn init_tactical_resources(app: &mut App) {
     app.insert_resource(NameplateUiState { enabled: false });
+    app.insert_resource(HudPerfCounters::default());
     app.insert_resource(CharacterSelectionState::default());
     app.insert_resource(FreeCameraState::default());
     app.insert_resource(OwnedEntitiesPanelState::default());

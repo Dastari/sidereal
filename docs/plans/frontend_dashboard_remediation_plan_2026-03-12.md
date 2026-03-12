@@ -484,3 +484,4 @@ This plan is complete when:
 - 2026-03-12: Initial plan created from the frontend audit report and new frontend styling guide.
 - 2026-03-12: First implementation slice landed for shared mutation-route guarding, dashboard admin session bootstrap, password-reset token removal, route fallback components, and major tool lazy-route boundaries.
 - 2026-03-12: Second implementation slice landed for route-owned database initial data loading via shared server functions plus shared Zod-backed boundary schemas for touched dashboard routes and API handlers.
+- 2026-03-12: Read-only BRP resource discovery moved onto unauthenticated GET requests while BRP mutation POSTs remained admin-gated, so explorer and shader bootstrap reads no longer require an unlocked admin session.

@@ -9,6 +9,8 @@ Implementation status note (2026-03-12):
 1. The current corvette/rocinante `Ballistic Gatling` has been moved back to the authoritative hitscan-plus-tracer path by setting `projectile_speed_mps = 0.0`.
 2. True projectile entities remain the supported path for weapon families that are intentionally modeled as inertial ballistic shots.
 3. This restores the existing tracer presentation loop for the starter ship while projectile-backed combat work continues for distinct weapon classes.
+4. Native client ballistic projectile visuals now render immediately from the locally pre-spawned projectile entity before replicated `WorldEntity` adoption, avoiding owner-view muzzle-origin drift caused by waiting for replication/adoption.
+5. WASM impact: no current WASM-specific change in this slice.
 
 Primary architecture references:
 - `docs/sidereal_design_document.md`

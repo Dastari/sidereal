@@ -7,6 +7,7 @@ import type {
   PlayerVisibilityOverlay,
   WorldEntity,
 } from '@/components/grid/types'
+import { buildBrpReadUrl } from '@/lib/brp-read'
 
 type ApiGraph = {
   graph: string
@@ -588,11 +589,17 @@ async function callBrpJsonRpc<T = unknown>(
   method: string,
   params?: unknown,
 ): Promise<{ result?: T; error?: string }> {
-  const response = await fetch(`/api/brp?port=${port}&target=${target}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method, params }),
-  })
+  const readUrl = buildBrpReadUrl({ method, params, port, target })
+  const response = await fetch(
+    readUrl ?? `/api/brp?port=${port}&target=${target}`,
+    readUrl
+      ? { method: 'GET' }
+      : {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ method, params }),
+        },
+  )
   const payload = (await response.json()) as {
     result?: T
     error?: { message?: string } | string
