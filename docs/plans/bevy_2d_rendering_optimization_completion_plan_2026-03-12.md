@@ -34,6 +34,11 @@ Update note (2026-03-12, later 3):
 - This removes more repeated root-owner/root-faction/public/landmark setup and controlled-owner branching from the inner client loop while preserving existing visibility semantics and tests.
 - Future Phase 1 work should extend these prepared buckets and client lookup caches rather than collapsing back to a single generic per-client branch that re-derives root/public/faction/landmark state inside the hot loop.
 
+Update note (2026-03-13):
+- Phase 0 instrumentation slice is implemented enough to support baseline capture: asset completion, tactical HUD, and nameplate counters are now exposed through the client-side debug overlay.
+- Phase 1 is in active implementation, not just planned. The visibility apply path now has a unified visibility evaluator, per-entity policy preparation, and owner/map client lookup buckets.
+- The immediate next work remains inside Phase 1: split the remaining conditional entities into narrower public/faction/discovered/range buckets, then capture fresh `apply_ms` measurements before moving to Phase 2.
+
 ## 1. Purpose
 
 This plan is written for a fresh agent with no prior project context.
@@ -117,7 +122,28 @@ Execute the remaining work in this order unless fresh measurement clearly dispro
 9. Phase 7: Rationalize camera/pass baseline only if it still shows up as a meaningful limiter after the earlier work
 10. Final validation, docs reconciliation, and a dated completion/status note
 
+### 6.1 Current Execution Status
+
+- [x] Phase 0 instrumentation slice: runtime asset completion counters added and surfaced in the client debug overlay.
+- [x] Phase 0 instrumentation slice: tactical marker, nameplate, and health-bar workload counters added and surfaced in the client debug overlay.
+- [ ] Phase 0 remaining: capture and record a native baseline using the new counters.
+- [x] Phase 1 slice: unified visibility evaluation helper implemented in the replication visibility apply path.
+- [x] Phase 1 slice: per-entity visibility policy preparation implemented for owner-only anchors, global/config entities, and conditional entities.
+- [x] Phase 1 slice: owner and owner-in-map client lookup buckets implemented to short-circuit stable fast paths before generic per-client evaluation.
+- [ ] Phase 1 next: split conditional entities into narrower public-visible, faction-visible, discovered-landmark, and ordinary range-checked paths.
+- [ ] Phase 1 next: capture fresh `apply_ms`/visibility-stage measurements and compare against the pre-optimization baseline.
+- [ ] Phase 1 exit gate: confirm whether visibility apply cost is reduced enough to move to Phase 2.
+- [ ] Phase 2: asset completion hitch removal and priority enforcement has not started yet.
+- [ ] Phase 3: steady-state client polling removal has not started yet.
+- [ ] Phase 4: tactical/nameplate/HUD cost reduction beyond instrumentation has not started yet.
+- [ ] Phase 5: duplicate-presentation/debug cleanup follow-up has not started yet.
+
 ## 7. Phase 0: Baseline Validation and Instrumentation Gap Closure
+
+Status (2026-03-13):
+- In progress.
+- The instrumentation/code changes are partially complete.
+- The remaining required step is to capture and record a baseline from a representative native run.
 
 Goal:
 Make sure the current counters and timers are real, easy to compare, and sufficient to guide the rest of the pass.
@@ -167,6 +193,14 @@ Acceptance criteria:
 
 ## 8. Phase 1: Finish Visibility Cadence Optimization
 
+Status (2026-03-13):
+- In progress.
+- Three implementation slices are already landed:
+  1. unified authorization/candidate-bypass/delivery evaluation,
+  2. per-entity policy preparation before the client loop,
+  3. client lookup buckets for owner-only and owner-in-map fast paths.
+- The next work is still inside this phase; do not move to Phase 2 yet.
+
 Goal:
 Reduce the remaining cost inside the final visibility membership/apply lane without changing visibility semantics.
 
@@ -207,6 +241,15 @@ Do not do in this phase:
 1. Do not replace Sidereal visibility with Lightyear interest management.
 2. Do not collapse distinct policy semantics to win a micro-benchmark.
 3. Do not re-merge landmark discovery into the hot per-tick path.
+
+Immediate next tasks (do these in order):
+
+- [ ] Split `PreparedEntityApplyPolicy::Conditional` into narrower subpaths so public-visible, faction-visible, discovered-landmark, and ordinary range-checked entities do not all pay the same generic client-evaluation shape.
+- [ ] Keep authorization ordering explicit: `Authorization -> Delivery -> Payload` must still be obvious in the code after the split.
+- [ ] Reuse the existing prepared entity facts and client lookup buckets; do not reintroduce root/public/faction/landmark derivation inside the inner client loop.
+- [ ] Add or tighten tests for each new conditional subpath so the fast paths are locked to current owner/public/faction/discovered semantics.
+- [ ] Capture native or representative runtime measurements for `apply_ms`, `discovery_and_candidate_ms`, `candidates_per_client`, `visible_gains`, and `visible_losses`.
+- [ ] Add a dated status note to this plan with the measurement result and a clear Phase 1 go/no-go decision for moving to Phase 2.
 
 Acceptance criteria:
 
