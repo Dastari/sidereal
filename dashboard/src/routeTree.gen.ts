@@ -15,6 +15,7 @@ import { Route as DashboardIndexRouteImport } from './routes/_dashboard.index'
 import { Route as ApiShadersRouteImport } from './routes/api.shaders'
 import { Route as ApiGraphRouteImport } from './routes/api.graph'
 import { Route as ApiDatabaseRouteImport } from './routes/api.database'
+import { Route as ApiDashboardSessionRouteImport } from './routes/api.dashboard-session'
 import { Route as ApiBrpRouteImport } from './routes/api.brp'
 import { Route as DashboardShaderWorkshopRouteImport } from './routes/_dashboard.shader-workshop'
 import { Route as DashboardSettingsRouteImport } from './routes/_dashboard.settings'
@@ -62,6 +63,11 @@ const ApiGraphRoute = ApiGraphRouteImport.update({
 const ApiDatabaseRoute = ApiDatabaseRouteImport.update({
   id: '/api/database',
   path: '/api/database',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDashboardSessionRoute = ApiDashboardSessionRouteImport.update({
+  id: '/api/dashboard-session',
+  path: '/api/dashboard-session',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiBrpRoute = ApiBrpRouteImport.update({
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
+  '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
   '/api/shaders': typeof ApiShadersRouteWithChildren
@@ -200,6 +207,7 @@ export interface FileRoutesByTo {
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
+  '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
   '/api/shaders': typeof ApiShadersRouteWithChildren
@@ -228,6 +236,7 @@ export interface FileRoutesById {
   '/_dashboard/settings': typeof DashboardSettingsRoute
   '/_dashboard/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
+  '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
   '/api/shaders': typeof ApiShadersRouteWithChildren
@@ -257,6 +266,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/shader-workshop'
     | '/api/brp'
+    | '/api/dashboard-session'
     | '/api/database'
     | '/api/graph'
     | '/api/shaders'
@@ -281,6 +291,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/shader-workshop'
     | '/api/brp'
+    | '/api/dashboard-session'
     | '/api/database'
     | '/api/graph'
     | '/api/shaders'
@@ -308,6 +319,7 @@ export interface FileRouteTypes {
     | '/_dashboard/settings'
     | '/_dashboard/shader-workshop'
     | '/api/brp'
+    | '/api/dashboard-session'
     | '/api/database'
     | '/api/graph'
     | '/api/shaders'
@@ -330,6 +342,7 @@ export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRouteWithChildren
   ShaderWorkbenchRoute: typeof ShaderWorkbenchRoute
   ApiBrpRoute: typeof ApiBrpRoute
+  ApiDashboardSessionRoute: typeof ApiDashboardSessionRoute
   ApiDatabaseRoute: typeof ApiDatabaseRouteWithChildren
   ApiGraphRoute: typeof ApiGraphRoute
   ApiShadersRoute: typeof ApiShadersRouteWithChildren
@@ -379,6 +392,13 @@ declare module '@tanstack/react-router' {
       path: '/api/database'
       fullPath: '/api/database'
       preLoaderRoute: typeof ApiDatabaseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/dashboard-session': {
+      id: '/api/dashboard-session'
+      path: '/api/dashboard-session'
+      fullPath: '/api/dashboard-session'
+      preLoaderRoute: typeof ApiDashboardSessionRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/brp': {
@@ -617,6 +637,7 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRouteWithChildren,
   ShaderWorkbenchRoute: ShaderWorkbenchRoute,
   ApiBrpRoute: ApiBrpRoute,
+  ApiDashboardSessionRoute: ApiDashboardSessionRoute,
   ApiDatabaseRoute: ApiDatabaseRouteWithChildren,
   ApiGraphRoute: ApiGraphRoute,
   ApiShadersRoute: ApiShadersRouteWithChildren,

@@ -2,6 +2,20 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
+@keyframes navigation-progress-slide {
+  0% {
+    transform: translateX(-35%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.navigation-progress-bar {
+  animation: navigation-progress-slide 0.9s linear infinite;
+  will-change: transform;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme {
@@ -84,7 +98,7 @@
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
- 
+
   /* Fonts */
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;

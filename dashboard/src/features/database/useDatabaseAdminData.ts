@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { apiPost } from '@/lib/api/client'
+import { loadDatabaseAdminData } from '@/lib/server-fns/database-admin'
 import type { DatabaseAdminPayload } from '@/features/database/types'
 
 const EMPTY_PAYLOAD: DatabaseAdminPayload = {
@@ -13,19 +15,30 @@ const EMPTY_PAYLOAD: DatabaseAdminPayload = {
   scriptDocuments: [],
 }
 
-export function useDatabaseAdminData() {
-  const [data, setData] = useState<DatabaseAdminPayload>(EMPTY_PAYLOAD)
-  const [loading, setLoading] = useState(true)
+type PasswordResetResponse = {
+  accepted: boolean
+}
+
+export function useDatabaseAdminData(
+  initialData: DatabaseAdminPayload = EMPTY_PAYLOAD,
+) {
+  const [data, setData] = useState<DatabaseAdminPayload>(initialData)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setData(initialData)
+    setLoading(false)
+    setError(initialData.error ?? null)
+  }, [initialData])
 
   const refresh = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await fetch('/api/database')
-      const payload = (await response.json()) as DatabaseAdminPayload
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error ?? 'Failed to load database admin data')
+      const payload = await loadDatabaseAdminData()
+      if (payload.error) {
+        throw new Error(payload.error)
       }
       setData(payload)
     } catch (fetchError) {
@@ -40,49 +53,17 @@ export function useDatabaseAdminData() {
   }, [])
 
   const requestPasswordReset = useCallback(async (accountId: string) => {
-    const response = await fetch(
+    return apiPost<PasswordResetResponse>(
       `/api/database/accounts/${encodeURIComponent(accountId)}/password-reset`,
-      { method: 'POST' },
     )
-    const payload = (await response.json().catch(() => ({}))) as {
-      accepted?: unknown
-      resetToken?: unknown
-      error?: unknown
-    }
-    if (!response.ok) {
-      throw new Error(
-        typeof payload.error === 'string'
-          ? payload.error
-          : 'Failed to request password reset',
-      )
-    }
-    return {
-      accepted: payload.accepted === true,
-      resetToken:
-        typeof payload.resetToken === 'string' ? payload.resetToken : null,
-    }
   }, [])
 
   const renameCharacter = useCallback(
     async (playerEntityId: string, displayName: string) => {
-      const response = await fetch(
+      await apiPost<{ playerEntityId: string; displayName: string }>(
         `/api/database/characters/${encodeURIComponent(playerEntityId)}/display-name`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ displayName }),
-        },
+        { displayName },
       )
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: unknown
-      }
-      if (!response.ok) {
-        throw new Error(
-          typeof payload.error === 'string'
-            ? payload.error
-            : 'Failed to rename character',
-        )
-      }
 
       setData((current) => ({
         ...current,
@@ -98,10 +79,6 @@ export function useDatabaseAdminData() {
     },
     [],
   )
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
 
   return {
     data,

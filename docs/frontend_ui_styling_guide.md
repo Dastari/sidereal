@@ -4,6 +4,13 @@
 **Date:** 2026-03-12  
 **Audience:** Dashboard/frontend developers, AI agents, UI contributors
 
+Update note (2026-03-12):
+
+- Dashboard mutation routes are now expected to flow through the shared password-backed admin session boundary exposed by `/api/dashboard-session` and enforced by the shared server-side guard in `dashboard/src/server/dashboard-auth.ts`.
+- Temporary local auth uses an HttpOnly SameSite=Strict cookie plus same-origin mutation checks; this is an interim operator auth point, not a replacement for future role-based session auth.
+- Password reset workflows must return acceptance state only; raw reset tokens must not be rendered back into the browser by default.
+- The database tool now uses route-owned initial data loading through a shared server loader/server function path instead of effect-owned first-render fetches.
+
 ## 1. Scope
 
 This guide defines the enforceable UI, theming, routing, validation, and frontend architecture standards for the web frontend under `dashboard/`.

@@ -9,6 +9,8 @@ import {
   Sparkles,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
+import { DashboardAdminAccess } from '@/components/layout/DashboardAdminAccess'
+import { NavigationProgressBar } from '@/components/layout/NavigationProgressBar'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -87,7 +89,7 @@ export function DashboardShell() {
 
   return (
     <div className="flex min-h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(96,165,250,0.10),_transparent_28%),linear-gradient(180deg,_rgba(4,8,18,1),_rgba(6,10,18,1))] text-foreground">
-      <header className="flex h-15 items-center gap-4 border-b border-border/80 bg-background px-5 backdrop-blur">
+      <header className="relative flex h-15 items-center gap-4 border-b border-border/80 bg-background px-5 backdrop-blur">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/85">
             Sidereal Control Surface
@@ -105,7 +107,9 @@ export function DashboardShell() {
         <Badge variant="secondary" className="hidden md:inline-flex">
           React 19
         </Badge>
+        <DashboardAdminAccess />
         <ThemeToggle />
+        <NavigationProgressBar />
       </header>
 
       <div className="flex min-h-0 flex-1">

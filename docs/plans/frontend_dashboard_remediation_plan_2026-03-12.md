@@ -5,6 +5,7 @@ Date: 2026-03-12
 Scope: `dashboard/` full frontend remediation, redesign alignment, security hardening, and architecture cleanup
 
 Primary references:
+
 - `docs/reports/frontend_tanstack_router_audit_report_2026-03-12.md`
 - `docs/frontend_ui_styling_guide.md`
 - `docs/ui_design_guide.md`
@@ -481,3 +482,5 @@ This plan is complete when:
 ## 14. Change Log
 
 - 2026-03-12: Initial plan created from the frontend audit report and new frontend styling guide.
+- 2026-03-12: First implementation slice landed for shared mutation-route guarding, dashboard admin session bootstrap, password-reset token removal, route fallback components, and major tool lazy-route boundaries.
+- 2026-03-12: Second implementation slice landed for route-owned database initial data loading via shared server functions plus shared Zod-backed boundary schemas for touched dashboard routes and API handlers.

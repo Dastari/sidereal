@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { faker } from '@faker-js/faker'
-import {
-  parseAsBoolean,
-  parseAsString,
-  useQueryStates,
-} from 'nuqs'
+import { parseAsBoolean, parseAsString, useQueryStates } from 'nuqs'
 import type {
   ApiGraph,
   ApiLiveWorld,
@@ -89,6 +85,8 @@ type LiveTabWorkspaceSnapshot = {
   }
   entityTreeUiState: EntityTreeUiState
 }
+
+let databaseWorkspaceSnapshot: LiveTabWorkspaceSnapshot | null = null
 
 const DEFAULT_CAMERA_STATE: CameraSnapshot = {
   x: 0,
@@ -225,7 +223,9 @@ export function ExplorerWorkspace({
     activeBrpTabId: parseAsString.withDefault('server'),
     selectedEntityId: parseAsString,
     selectedResourceTypePath: parseAsString,
-    filterMapInvisible: parseAsBoolean.withDefault(DEFAULT_FILTER_MAP_INVISIBLE),
+    filterMapInvisible: parseAsBoolean.withDefault(
+      DEFAULT_FILTER_MAP_INVISIBLE,
+    ),
   })
   // Keep first client render aligned with SSR output to avoid tab hydration mismatches.
   const routeSourceMode = scopeIsDatabase
@@ -235,7 +235,12 @@ export function ExplorerWorkspace({
         : routeState.sourceMode) as DataSourceMode)
   const sourceMode = hasHydrated
     ? routeSourceMode
-    : (scopeIsDatabase ? 'database' : 'liveServer')
+    : scopeIsDatabase
+      ? 'database'
+      : 'liveServer'
+  const initialDatabaseSnapshot = scopeIsDatabase
+    ? databaseWorkspaceSnapshot
+    : null
   const [brpTabs, setBrpTabs] = useState<Array<BrpTab>>([
     { id: 'server', label: 'Server BRP', port: 15713, kind: 'server' },
     { id: 'client-1', label: 'Client 1 BRP', port: 15714, kind: 'client' },
@@ -243,21 +248,29 @@ export function ExplorerWorkspace({
   const activeBrpTabId = hasHydrated ? routeState.activeBrpTabId : 'server'
 
   // Data state
-  const [entities, setEntities] = useState<Array<WorldEntity>>([])
-  const [brpResources, setBrpResources] = useState<Array<BrpResourceRecord>>([])
-  const [graphNodes, setGraphNodes] = useState<Map<string, GraphNode>>(
-    new Map(),
+  const [entities, setEntities] = useState<Array<WorldEntity>>(
+    () => initialDatabaseSnapshot?.entities ?? [],
   )
-  const [graphEdges, setGraphEdges] = useState<Array<GraphEdge>>([])
+  const [brpResources, setBrpResources] = useState<Array<BrpResourceRecord>>(
+    () => initialDatabaseSnapshot?.brpResources ?? [],
+  )
+  const [graphNodes, setGraphNodes] = useState<Map<string, GraphNode>>(
+    () => new Map(initialDatabaseSnapshot?.graphNodes ?? []),
+  )
+  const [graphEdges, setGraphEdges] = useState<Array<GraphEdge>>(
+    () => initialDatabaseSnapshot?.graphEdges ?? [],
+  )
   const [expandedNodes, setExpandedNodes] = useState<Map<string, ExpandedNode>>(
-    new Map(),
+    () => new Map(initialDatabaseSnapshot?.expandedNodes ?? []),
   )
 
   // UI state
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => initialDatabaseSnapshot?.selectedId ?? null,
+  )
   const [pendingSelectedEntityGuid, setPendingSelectedEntityGuid] = useState<
     string | null
-  >(null)
+  >(() => initialDatabaseSnapshot?.pendingSelectedEntityGuid ?? null)
   const [centerRequest, setCenterRequest] = useState<{
     position: { x: number; y: number } | null
     seq: number
@@ -285,10 +298,16 @@ export function ExplorerWorkspace({
     worldX: null,
     worldY: null,
   })
-  const [contextStatusText, setContextStatusText] = useState<string | null>(null)
-  const [cameraState, setCameraState] = useState(DEFAULT_CAMERA_STATE)
+  const [contextStatusText, setContextStatusText] = useState<string | null>(
+    null,
+  )
+  const [cameraState, setCameraState] = useState(
+    () => initialDatabaseSnapshot?.cameraState ?? DEFAULT_CAMERA_STATE,
+  )
   const [entityTreeUiState, setEntityTreeUiState] = useState<EntityTreeUiState>(
-    () => createDefaultEntityTreeUiState(),
+    () =>
+      initialDatabaseSnapshot?.entityTreeUiState ??
+      createDefaultEntityTreeUiState(),
   )
   const effectiveSelectedEntityGuid =
     selectedEntityGuid ?? pendingSelectedEntityGuid
@@ -303,14 +322,14 @@ export function ExplorerWorkspace({
 
   // Status
   const [graphStatus, setGraphStatus] = useState({
-    connected: false,
-    nodeCount: 0,
-    edgeCount: 0,
-    graphName: '',
+    connected: initialDatabaseSnapshot?.graphStatus.connected ?? false,
+    nodeCount: initialDatabaseSnapshot?.graphStatus.nodeCount ?? 0,
+    edgeCount: initialDatabaseSnapshot?.graphStatus.edgeCount ?? 0,
+    graphName: initialDatabaseSnapshot?.graphStatus.graphName ?? '',
   })
   const [worldStatus, setWorldStatus] = useState({
-    loaded: false,
-    entityCount: 0,
+    loaded: initialDatabaseSnapshot?.worldStatus.loaded ?? false,
+    entityCount: initialDatabaseSnapshot?.worldStatus.entityCount ?? 0,
   })
 
   const activeBrpTab = useMemo(() => {
@@ -351,9 +370,10 @@ export function ExplorerWorkspace({
   )
   const isServerBrpMode =
     sourceMode === 'liveServer' && activeBrpTab.kind === 'server'
-  const resourceSelectionId = scopeIsDatabase && routeState.selectedResourceTypePath
-    ? `${RESOURCE_SELECTION_PREFIX}${routeState.selectedResourceTypePath}`
-    : null
+  const resourceSelectionId =
+    scopeIsDatabase && routeState.selectedResourceTypePath
+      ? `${RESOURCE_SELECTION_PREFIX}${routeState.selectedResourceTypePath}`
+      : null
   const selectedEntityId = useMemo(
     () =>
       selectedId && selectedId.startsWith(RESOURCE_SELECTION_PREFIX)
@@ -364,7 +384,9 @@ export function ExplorerWorkspace({
   const playerEntities = useMemo(
     () =>
       entities
-        .filter((entity) => isPlayerEntity(entity) && Boolean(entity.entityGuid))
+        .filter(
+          (entity) => isPlayerEntity(entity) && Boolean(entity.entityGuid),
+        )
         .sort((a, b) => playerLabel(a).localeCompare(playerLabel(b))),
     [entities],
   )
@@ -380,9 +402,9 @@ export function ExplorerWorkspace({
     () =>
       filterMapInvisible
         ? entities.filter((entity) => {
-          // Sidereal Entities Only: show only entities that have an EntityGuid component (BRP and database).
-          return Boolean(entity.entityGuid)
-        })
+            // Sidereal Entities Only: show only entities that have an EntityGuid component (BRP and database).
+            return Boolean(entity.entityGuid)
+          })
         : entities,
     [entities, filterMapInvisible],
   )
@@ -430,6 +452,38 @@ export function ExplorerWorkspace({
   useEffect(() => {
     effectiveSelectedEntityGuidRef.current = effectiveSelectedEntityGuid
   }, [effectiveSelectedEntityGuid])
+
+  useEffect(() => {
+    if (!scopeIsDatabase) {
+      return
+    }
+    databaseWorkspaceSnapshot = {
+      entities,
+      brpResources,
+      graphNodes: new Map(graphNodes),
+      graphEdges: [...graphEdges],
+      expandedNodes: new Map(expandedNodes),
+      selectedId,
+      pendingSelectedEntityGuid,
+      cameraState,
+      graphStatus,
+      worldStatus,
+      entityTreeUiState,
+    }
+  }, [
+    brpResources,
+    cameraState,
+    entities,
+    entityTreeUiState,
+    expandedNodes,
+    graphEdges,
+    graphNodes,
+    graphStatus,
+    pendingSelectedEntityGuid,
+    scopeIsDatabase,
+    selectedId,
+    worldStatus,
+  ])
 
   useEffect(() => {
     if (!selectedEntityGuid) {
@@ -754,7 +808,8 @@ export function ExplorerWorkspace({
           GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
         )
         const mergedResources = hydratedResources.filter(
-          (resource) => resource.typePath !== GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+          (resource) =>
+            resource.typePath !== GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
         )
         if (!serverRegistryResource.error) {
           mergedResources.push({
@@ -816,12 +871,7 @@ export function ExplorerWorkspace({
       selectedEntityId: null,
       selectedResourceTypePath: null,
     })
-  }, [
-    onSelectedEntityGuidChange,
-    scopeIsDatabase,
-    setRouteState,
-    sourceMode,
-  ])
+  }, [onSelectedEntityGuidChange, scopeIsDatabase, setRouteState, sourceMode])
 
   useEffect(() => {
     if (!selectedId) return
@@ -889,37 +939,49 @@ export function ExplorerWorkspace({
     if (!selectedId || !selectedId.startsWith(RESOURCE_SELECTION_PREFIX)) return
     if (sourceMode !== 'liveServer' && sourceMode !== 'liveClient') return
     const typePath = selectedId.slice(RESOURCE_SELECTION_PREFIX.length)
-    const existing = brpResources.find((resource) => resource.typePath === typePath)
+    const existing = brpResources.find(
+      (resource) => resource.typePath === typePath,
+    )
     if (!existing || existing.value !== undefined || existing.error) return
     let cancelled = false
-    void fetchBrpResourceValue(activeBrpTab.port, activeBrpTab.kind, typePath).then(
-      (loaded) => {
-        if (cancelled) return
-        setBrpResources((prev) =>
-          prev.map((resource) =>
-            resource.typePath === typePath
-              ? {
-                  ...resource,
-                  ...loaded,
-                }
-              : resource,
-          ),
-        )
-      },
-    )
+    void fetchBrpResourceValue(
+      activeBrpTab.port,
+      activeBrpTab.kind,
+      typePath,
+    ).then((loaded) => {
+      if (cancelled) return
+      setBrpResources((prev) =>
+        prev.map((resource) =>
+          resource.typePath === typePath
+            ? {
+                ...resource,
+                ...loaded,
+              }
+            : resource,
+        ),
+      )
+    })
     return () => {
       cancelled = true
     }
-  }, [activeBrpTab.kind, activeBrpTab.port, brpResources, selectedId, sourceMode])
+  }, [
+    activeBrpTab.kind,
+    activeBrpTab.port,
+    brpResources,
+    selectedId,
+    sourceMode,
+  ])
 
   // Initial load and polling
   useEffect(() => {
-    void loadData()
+    if (!scopeIsDatabase || !databaseWorkspaceSnapshot?.worldStatus.loaded) {
+      void loadData()
+    }
     const interval = setInterval(() => {
       void loadData()
     }, 5000)
     return () => clearInterval(interval)
-  }, [loadData])
+  }, [loadData, scopeIsDatabase])
 
   // Handle node expansion
   const handleExpand = useCallback(
@@ -1005,7 +1067,9 @@ export function ExplorerWorkspace({
             nodeComponentKind === componentKind
           )
         })?.to ?? null
-      const previousNode = componentNodeId ? graphNodes.get(componentNodeId) ?? null : null
+      const previousNode = componentNodeId
+        ? (graphNodes.get(componentNodeId) ?? null)
+        : null
       const previousEntities = entities
 
       if (componentNodeId && previousNode) {
@@ -1042,7 +1106,9 @@ export function ExplorerWorkspace({
         } else {
           const numericEntityId = Number(entityId)
           if (!Number.isFinite(numericEntityId)) {
-            console.error('Component update failed: entity ID must be numeric for BRP')
+            console.error(
+              'Component update failed: entity ID must be numeric for BRP',
+            )
             return
           }
           const url = `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`
@@ -1138,13 +1204,16 @@ export function ExplorerWorkspace({
         if (scopeIsDatabase) {
           void setRouteState({
             selectedEntityId: null,
-            selectedResourceTypePath: nextId.slice(RESOURCE_SELECTION_PREFIX.length),
+            selectedResourceTypePath: nextId.slice(
+              RESOURCE_SELECTION_PREFIX.length,
+            ),
           })
         }
         return
       }
 
-      const selectedEntity = entities.find((entity) => entity.id === nextId) ?? null
+      const selectedEntity =
+        entities.find((entity) => entity.id === nextId) ?? null
       const entityGuid = selectedEntity?.entityGuid ?? null
       setPendingSelectedEntityGuid(entityGuid)
       onSelectedEntityGuidChange?.(entityGuid)
@@ -1170,35 +1239,39 @@ export function ExplorerWorkspace({
   )
 
   // Handle entity selection from tree
-  const handleSelectFromTree = useCallback((id: string) => {
-    updateSelection(id)
-    if (id.startsWith(RESOURCE_SELECTION_PREFIX)) {
-      return
-    }
-    const entity = entitiesForMap.find((e) => e.id === id)
-    if (
-      entity &&
-      entity.hasPosition !== false &&
-      Number.isFinite(entity.x) &&
-      Number.isFinite(entity.y)
-    ) {
-      setCenterRequest((prev) => ({
-        position: { x: entity.x, y: entity.y },
-        seq: prev.seq + 1,
-      }))
-    }
-  }, [entitiesForMap, updateSelection])
+  const handleSelectFromTree = useCallback(
+    (id: string) => {
+      updateSelection(id)
+      if (id.startsWith(RESOURCE_SELECTION_PREFIX)) {
+        return
+      }
+      const entity = entitiesForMap.find((e) => e.id === id)
+      if (
+        entity &&
+        entity.hasPosition !== false &&
+        Number.isFinite(entity.x) &&
+        Number.isFinite(entity.y)
+      ) {
+        setCenterRequest((prev) => ({
+          position: { x: entity.x, y: entity.y },
+          seq: prev.seq + 1,
+        }))
+      }
+    },
+    [entitiesForMap, updateSelection],
+  )
 
-  const handleSelectFromGrid = useCallback((id: string | null) => {
-    updateSelection(id)
-  }, [updateSelection])
+  const handleSelectFromGrid = useCallback(
+    (id: string | null) => {
+      updateSelection(id)
+    },
+    [updateSelection],
+  )
 
   const handleDeleteEntity = useCallback(
     async (entityId: string) => {
       const endpoint =
-        sourceMode === 'database'
-          ? `/api/delete-entity/${entityId}`
-          : null
+        sourceMode === 'database' ? `/api/delete-entity/${entityId}` : null
 
       if (endpoint) {
         const response = await fetch(endpoint, { method: 'DELETE' })
@@ -1288,7 +1361,9 @@ export function ExplorerWorkspace({
     async (templateId: string) => {
       const actorPlayerEntityId = playerEntities[0]?.entityGuid
       if (!actorPlayerEntityId) {
-        setContextStatusText('Spawn failed: no player entity available for admin actor context')
+        setContextStatusText(
+          'Spawn failed: no player entity available for admin actor context',
+        )
         return
       }
       const generatedName = `${faker.word.adjective()} ${templateId}`.replace(
@@ -1304,11 +1379,16 @@ export function ExplorerWorkspace({
           overrides: { display_name: generatedName, owner_id: null },
         }),
       })
-      const payload = (await response.json()) as { error?: string; spawned_entity_id?: string }
+      const payload = (await response.json()) as {
+        error?: string
+        spawned_entity_id?: string
+      }
       if (!response.ok) {
         throw new Error(payload.error ?? 'spawn request failed')
       }
-      setContextStatusText(`Spawned ${templateId}: ${payload.spawned_entity_id ?? 'unknown'}`)
+      setContextStatusText(
+        `Spawned ${templateId}: ${payload.spawned_entity_id ?? 'unknown'}`,
+      )
       await loadData()
     },
     [loadData, playerEntities],
@@ -1348,7 +1428,11 @@ export function ExplorerWorkspace({
       if (!Number.isFinite(numericEntityId)) {
         throw new Error('Assign owner requires server BRP numeric entity ID')
       }
-      const ownerTypePath = resolveOwnerTypePath(targetEntityId, graphNodes, graphEdges)
+      const ownerTypePath = resolveOwnerTypePath(
+        targetEntityId,
+        graphNodes,
+        graphEdges,
+      )
       const response = await fetch(
         `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`,
         {
@@ -1386,13 +1470,17 @@ export function ExplorerWorkspace({
         POSITION_SUFFIX,
       )
       if (!positionComponent) {
-        throw new Error(`Move failed: no Position component found for ${shipEntityId}`)
+        throw new Error(
+          `Move failed: no Position component found for ${shipEntityId}`,
+        )
       }
       const normalizedValue = normalizeVec2Value(positionComponent.value, x, y)
       await insertComponents(shipEntityId, {
         [positionComponent.typePath]: normalizedValue,
       })
-      setContextStatusText(`Moved ${shipEntityId} to (${x.toFixed(2)}, ${y.toFixed(2)})`)
+      setContextStatusText(
+        `Moved ${shipEntityId} to (${x.toFixed(2)}, ${y.toFixed(2)})`,
+      )
       await loadData()
     },
     [graphEdges, graphNodes, insertComponents, loadData],
@@ -1400,7 +1488,10 @@ export function ExplorerWorkspace({
 
   const handleRepairRefuel = useCallback(
     async (shipEntityId: string) => {
-      const targetEntityIds = collectEntityAndDescendants(shipEntityId, entities)
+      const targetEntityIds = collectEntityAndDescendants(
+        shipEntityId,
+        entities,
+      )
       let mutationCount = 0
       for (const targetEntityId of targetEntityIds) {
         const health = findComponentBySuffix(
@@ -1447,9 +1538,13 @@ export function ExplorerWorkspace({
         mutationCount += Object.keys(componentUpdates).length
       }
       if (mutationCount === 0) {
-        setContextStatusText(`Repair/Refuel: no compatible components found on ${shipEntityId}`)
+        setContextStatusText(
+          `Repair/Refuel: no compatible components found on ${shipEntityId}`,
+        )
       } else {
-        setContextStatusText(`Repair/Refuel applied to ${shipEntityId} (${mutationCount} updates)`)
+        setContextStatusText(
+          `Repair/Refuel applied to ${shipEntityId} (${mutationCount} updates)`,
+        )
       }
       await loadData()
     },
@@ -1457,305 +1552,324 @@ export function ExplorerWorkspace({
   )
 
   return (
-        <AppLayout
-          header={
-            <Toolbar
-              sourceMode={sourceMode}
-              onSourceModeChange={setSourceMode}
-              brpTabs={brpTabs}
-              activeBrpTabId={activeBrpTab.id}
-              onActiveBrpTabIdChange={setActiveBrpTabId}
-              onAddClientTab={handleAddClientTab}
-              showDataSourceTabs={!scopeIsDatabase}
-              showDatabaseTab={false}
-            >
-              {toolbarContent}
-            </Toolbar>
-          }
-          sidebar={
-            <Panel>
-              <PanelHeader className="py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <h1 className="text-sm font-semibold text-foreground">
-                    {scopeIsDatabase ? 'Database Explorer' : 'Game World Explorer'}
-                  </h1>
-                  <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="whitespace-nowrap">Entities Only</span>
-                    <Switch
-                      checked={filterMapInvisible}
-                      onCheckedChange={(checked) => {
-                        void setRouteState({ filterMapInvisible: checked })
-                      }}
-                      aria-label="Filter to entities with EntityGuid component"
-                    />
-                  </label>
-                </div>
-              </PanelHeader>
-              <PanelContent>
-                <EntityTree
-                  entities={entitiesForTree}
-                  resources={brpResources.filter(
-                    (resource) => resource.typePath !== '__error__',
-                  )}
-                  uiState={entityTreeUiState}
-                  onUiStateChange={setEntityTreeUiState}
-                  selectedId={selectedId}
-                  onSelect={handleSelectFromTree}
-                  sourceMode={sourceMode}
-                  onDelete={handleDeleteEntity}
-                  onContextMenuRequest={(entityId, point) =>
-                    handleOpenContextMenu(entityId, point)
-                  }
-                />
-              </PanelContent>
-              <StatusBar
-                sourceMode={sourceMode}
-                liveSourceLabel={activeBrpTab.label}
-                graphStatus={graphStatus}
-                worldStatus={worldStatus}
-                isRefreshing={isRefreshing}
-                onRefresh={loadData}
-              />
-            </Panel>
-          }
-          sidebarWidth={sidebarWidth}
-          onSidebarResize={(width) => {
-            setSidebarWidth(width)
-          }}
-          detailPanelWidth={detailPanelWidth}
-          onDetailPanelResize={(width) => {
-            setDetailPanelWidth(width)
-          }}
-          detailPanel={
-            <Panel>
-              <DetailPanel
-                selectedId={selectedId}
-                entities={entities}
-                resources={brpResources.filter(
-                  (resource) => resource.typePath !== '__error__',
-                )}
-                expandedNodes={expandedNodes}
-                graphNodes={graphNodes}
-                graphEdges={graphEdges}
-                onSelect={updateSelection}
-                onExpand={handleExpand}
-                onCollapse={handleCollapse}
-                sourceMode={sourceMode}
-                onComponentUpdate={handleComponentUpdate}
-                onClose={() => updateSelection(null)}
-              />
-            </Panel>
-          }
+    <AppLayout
+      header={
+        <Toolbar
+          sourceMode={sourceMode}
+          onSourceModeChange={setSourceMode}
+          brpTabs={brpTabs}
+          activeBrpTabId={activeBrpTab.id}
+          onActiveBrpTabIdChange={setActiveBrpTabId}
+          onAddClientTab={handleAddClientTab}
+          showDataSourceTabs={!scopeIsDatabase}
+          showDatabaseTab={false}
         >
-          <GridCanvas
-            entities={entitiesForMap}
+          {toolbarContent}
+        </Toolbar>
+      }
+      sidebar={
+        <Panel>
+          <PanelHeader className="py-2">
+            <div className="flex items-center justify-between gap-2">
+              <h1 className="text-sm font-semibold text-foreground">
+                {scopeIsDatabase ? 'Database Explorer' : 'Game World Explorer'}
+              </h1>
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="whitespace-nowrap">Entities Only</span>
+                <Switch
+                  checked={filterMapInvisible}
+                  onCheckedChange={(checked) => {
+                    void setRouteState({ filterMapInvisible: checked })
+                  }}
+                  aria-label="Filter to entities with EntityGuid component"
+                />
+              </label>
+            </div>
+          </PanelHeader>
+          <PanelContent>
+            <EntityTree
+              entities={entitiesForTree}
+              resources={brpResources.filter(
+                (resource) => resource.typePath !== '__error__',
+              )}
+              uiState={entityTreeUiState}
+              onUiStateChange={setEntityTreeUiState}
+              selectedId={selectedId}
+              onSelect={handleSelectFromTree}
+              sourceMode={sourceMode}
+              onDelete={handleDeleteEntity}
+              onContextMenuRequest={(entityId, point) =>
+                handleOpenContextMenu(entityId, point)
+              }
+            />
+          </PanelContent>
+          <StatusBar
+            sourceMode={sourceMode}
+            liveSourceLabel={activeBrpTab.label}
+            graphStatus={graphStatus}
+            worldStatus={worldStatus}
+            isRefreshing={isRefreshing}
+            onRefresh={loadData}
+          />
+        </Panel>
+      }
+      sidebarWidth={sidebarWidth}
+      onSidebarResize={(width) => {
+        setSidebarWidth(width)
+      }}
+      detailPanelWidth={detailPanelWidth}
+      onDetailPanelResize={(width) => {
+        setDetailPanelWidth(width)
+      }}
+      detailPanel={
+        <Panel>
+          <DetailPanel
+            selectedId={selectedId}
+            entities={entities}
+            resources={brpResources.filter(
+              (resource) => resource.typePath !== '__error__',
+            )}
+            expandedNodes={expandedNodes}
             graphNodes={graphNodes}
             graphEdges={graphEdges}
-            selectedId={selectedEntityId}
-            onSelect={handleSelectFromGrid}
+            onSelect={updateSelection}
             onExpand={handleExpand}
-            expandedNodes={expandedNodes}
-            filterMapInvisible={filterMapInvisible}
+            onCollapse={handleCollapse}
             sourceMode={sourceMode}
-            excludedFromMapIds={cameraEntityIds}
-            centerOnPosition={centerOnPosition}
-            centerOnRequestSeq={centerRequest.seq}
-            selectedPlayerVisibilityOverlay={selectedPlayerVisibilityOverlay}
-            cameraState={cameraState}
-            onCameraStateChange={handleCameraStateChange}
-            onContextMenuRequest={handleOpenContextMenu}
+            onComponentUpdate={handleComponentUpdate}
+            onClose={() => updateSelection(null)}
           />
-          {contextMenu.open && isServerBrpMode && (
-            <div
-              className="fixed z-[300] min-w-56 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur"
-              style={{ left: contextMenu.x, top: contextMenu.y }}
-              onPointerDown={(event) => event.stopPropagation()}
-              onContextMenu={(event) => event.preventDefault()}
-            >
-              <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Actions
-              </div>
-              <div className="space-y-1">
-                {contextMenu.entityId ? (
-                  <>
-                    <div className="relative group/owner">
-                      <button
-                        type="button"
-                        className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                      >
-                        Assign Owner ▸
-                      </button>
-                      <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/owner:block">
-                        {playerEntities.length === 0 ? (
-                          <div className="px-2 py-1 text-xs text-muted-foreground">
-                            No players available
-                          </div>
-                        ) : (
-                          playerEntities.map((player) => (
-                            <button
-                              key={player.id}
-                              type="button"
-                              className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                              onClick={() => {
-                                setContextMenu((prev) => ({ ...prev, open: false }))
-                                if (!player.entityGuid || !contextMenu.entityId) return
-                                void handleAssignOwner(
-                                  contextMenu.entityId,
-                                  player.entityGuid,
-                                ).catch((error) => {
-                                  setContextStatusText(
-                                    error instanceof Error
-                                      ? error.message
-                                      : 'owner assignment failed',
-                                  )
-                                })
-                              }}
-                            >
-                              {playerLabel(player)}
-                            </button>
-                          ))
-                        )}
+        </Panel>
+      }
+    >
+      <GridCanvas
+        entities={entitiesForMap}
+        graphNodes={graphNodes}
+        graphEdges={graphEdges}
+        selectedId={selectedEntityId}
+        onSelect={handleSelectFromGrid}
+        onExpand={handleExpand}
+        expandedNodes={expandedNodes}
+        filterMapInvisible={filterMapInvisible}
+        sourceMode={sourceMode}
+        excludedFromMapIds={cameraEntityIds}
+        centerOnPosition={centerOnPosition}
+        centerOnRequestSeq={centerRequest.seq}
+        selectedPlayerVisibilityOverlay={selectedPlayerVisibilityOverlay}
+        cameraState={cameraState}
+        onCameraStateChange={handleCameraStateChange}
+        onContextMenuRequest={handleOpenContextMenu}
+      />
+      {contextMenu.open && isServerBrpMode && (
+        <div
+          className="fixed z-[300] min-w-56 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Actions
+          </div>
+          <div className="space-y-1">
+            {contextMenu.entityId ? (
+              <>
+                <div className="relative group/owner">
+                  <button
+                    type="button"
+                    className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                  >
+                    Assign Owner ▸
+                  </button>
+                  <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/owner:block">
+                    {playerEntities.length === 0 ? (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">
+                        No players available
                       </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                      onClick={() => {
-                        setContextMenu((prev) => ({ ...prev, open: false }))
-                        const targetEntityId = contextMenu.entityId
-                        if (!targetEntityId) return
-                        void handleRepairRefuel(targetEntityId).catch((error) => {
-                          setContextStatusText(
-                            error instanceof Error ? error.message : 'repair/refuel failed',
-                          )
-                        })
-                      }}
-                    >
-                      Repair & Refuel
-                    </button>
-                    <button
-                      type="button"
-                      className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                      onClick={() => {
-                        setContextMenu((prev) => ({ ...prev, open: false }))
-                        const targetEntityId = contextMenu.entityId
-                        if (!targetEntityId) return
-                        void handleMoveShipTo(targetEntityId, 0, 0).catch((error) => {
-                          setContextStatusText(
-                            error instanceof Error ? error.message : 'move failed',
-                          )
-                        })
-                      }}
-                    >
-                      Move to 0,0
-                    </button>
-                    <div className="border-t border-border-subtle my-1" />
-                    <button
-                      type="button"
-                      className="block w-full rounded px-2 py-1 text-left text-sm text-destructive hover:bg-destructive/10"
-                      onClick={() => {
-                        setContextMenu((prev) => ({ ...prev, open: false }))
-                        const targetEntityId = contextMenu.entityId
-                        if (!targetEntityId) return
-                        void handleDeleteEntity(targetEntityId).catch((error) => {
-                          setContextStatusText(
-                            error instanceof Error ? error.message : 'delete failed',
-                          )
-                        })
-                      }}
-                    >
-                      Delete Entity
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <div className="relative group/spawn">
-                      <button
-                        type="button"
-                        className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                      >
-                        Spawn Ship ▸
-                      </button>
-                      <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/spawn:block">
-                        {spawnTemplates.length > 0 ? (
-                          spawnTemplates.map((template) => (
-                            <button
-                              key={template.templateId}
-                              type="button"
-                              className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                              onClick={() => {
-                                setContextMenu((prev) => ({ ...prev, open: false }))
-                                void handleSpawnTemplate(template.templateId).catch((error) => {
-                                  setContextStatusText(
-                                    error instanceof Error ? error.message : 'spawn failed',
-                                  )
-                                })
-                              }}
-                            >
-                              {template.label}
-                            </button>
-                          ))
-                        ) : (
-                          <div className="px-2 py-1 text-xs text-muted-foreground">
-                            No ship templates from EntityRegistryResource
-                          </div>
-                        )}
+                    ) : (
+                      playerEntities.map((player) => (
+                        <button
+                          key={player.id}
+                          type="button"
+                          className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                          onClick={() => {
+                            setContextMenu((prev) => ({ ...prev, open: false }))
+                            if (!player.entityGuid || !contextMenu.entityId)
+                              return
+                            void handleAssignOwner(
+                              contextMenu.entityId,
+                              player.entityGuid,
+                            ).catch((error) => {
+                              setContextStatusText(
+                                error instanceof Error
+                                  ? error.message
+                                  : 'owner assignment failed',
+                              )
+                            })
+                          }}
+                        >
+                          {playerLabel(player)}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                  onClick={() => {
+                    setContextMenu((prev) => ({ ...prev, open: false }))
+                    const targetEntityId = contextMenu.entityId
+                    if (!targetEntityId) return
+                    void handleRepairRefuel(targetEntityId).catch((error) => {
+                      setContextStatusText(
+                        error instanceof Error
+                          ? error.message
+                          : 'repair/refuel failed',
+                      )
+                    })
+                  }}
+                >
+                  Repair & Refuel
+                </button>
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                  onClick={() => {
+                    setContextMenu((prev) => ({ ...prev, open: false }))
+                    const targetEntityId = contextMenu.entityId
+                    if (!targetEntityId) return
+                    void handleMoveShipTo(targetEntityId, 0, 0).catch(
+                      (error) => {
+                        setContextStatusText(
+                          error instanceof Error
+                            ? error.message
+                            : 'move failed',
+                        )
+                      },
+                    )
+                  }}
+                >
+                  Move to 0,0
+                </button>
+                <div className="border-t border-border-subtle my-1" />
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1 text-left text-sm text-destructive hover:bg-destructive/10"
+                  onClick={() => {
+                    setContextMenu((prev) => ({ ...prev, open: false }))
+                    const targetEntityId = contextMenu.entityId
+                    if (!targetEntityId) return
+                    void handleDeleteEntity(targetEntityId).catch((error) => {
+                      setContextStatusText(
+                        error instanceof Error
+                          ? error.message
+                          : 'delete failed',
+                      )
+                    })
+                  }}
+                >
+                  Delete Entity
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="relative group/spawn">
+                  <button
+                    type="button"
+                    className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                  >
+                    Spawn Ship ▸
+                  </button>
+                  <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/spawn:block">
+                    {spawnTemplates.length > 0 ? (
+                      spawnTemplates.map((template) => (
+                        <button
+                          key={template.templateId}
+                          type="button"
+                          className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                          onClick={() => {
+                            setContextMenu((prev) => ({ ...prev, open: false }))
+                            void handleSpawnTemplate(template.templateId).catch(
+                              (error) => {
+                                setContextStatusText(
+                                  error instanceof Error
+                                    ? error.message
+                                    : 'spawn failed',
+                                )
+                              },
+                            )
+                          }}
+                        >
+                          {template.label}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">
+                        No ship templates from EntityRegistryResource
                       </div>
-                    </div>
-                    <div className="relative group/movehere">
-                      <button
-                        type="button"
-                        className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                      >
-                        Move Ship Here ▸
-                      </button>
-                      <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/movehere:block">
-                        {contextMenu.worldX === null || contextMenu.worldY === null ? (
-                          <div className="px-2 py-1 text-xs text-muted-foreground">
-                            No world position at cursor
-                          </div>
-                        ) : shipEntities.length === 0 ? (
-                          <div className="px-2 py-1 text-xs text-muted-foreground">
-                            No ships in world
-                          </div>
-                        ) : (
-                          shipEntities.map((ship) => (
-                            <button
-                              key={ship.id}
-                              type="button"
-                              className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                              onClick={() => {
-                                setContextMenu((prev) => ({ ...prev, open: false }))
-                                if (contextMenu.worldX === null || contextMenu.worldY === null) {
-                                  return
-                                }
-                                void handleMoveShipTo(
-                                  ship.id,
-                                  contextMenu.worldX,
-                                  contextMenu.worldY,
-                                ).catch((error) => {
-                                  setContextStatusText(
-                                    error instanceof Error ? error.message : 'move failed',
-                                  )
-                                })
-                              }}
-                            >
-                              {ship.name}
-                            </button>
-                          ))
-                        )}
+                    )}
+                  </div>
+                </div>
+                <div className="relative group/movehere">
+                  <button
+                    type="button"
+                    className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                  >
+                    Move Ship Here ▸
+                  </button>
+                  <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/movehere:block">
+                    {contextMenu.worldX === null ||
+                    contextMenu.worldY === null ? (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">
+                        No world position at cursor
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-          {contextStatusText ? (
-            <div className="absolute left-4 top-4 z-[250] rounded border border-border bg-card/90 px-3 py-1 text-xs text-muted-foreground backdrop-blur">
-              {contextStatusText}
-            </div>
-          ) : null}
-        </AppLayout>
+                    ) : shipEntities.length === 0 ? (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">
+                        No ships in world
+                      </div>
+                    ) : (
+                      shipEntities.map((ship) => (
+                        <button
+                          key={ship.id}
+                          type="button"
+                          className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                          onClick={() => {
+                            setContextMenu((prev) => ({ ...prev, open: false }))
+                            if (
+                              contextMenu.worldX === null ||
+                              contextMenu.worldY === null
+                            ) {
+                              return
+                            }
+                            void handleMoveShipTo(
+                              ship.id,
+                              contextMenu.worldX,
+                              contextMenu.worldY,
+                            ).catch((error) => {
+                              setContextStatusText(
+                                error instanceof Error
+                                  ? error.message
+                                  : 'move failed',
+                              )
+                            })
+                          }}
+                        >
+                          {ship.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {contextStatusText ? (
+        <div className="absolute left-4 top-4 z-[250] rounded border border-border bg-card/90 px-3 py-1 text-xs text-muted-foreground backdrop-blur">
+          {contextStatusText}
+        </div>
+      ) : null}
+    </AppLayout>
   )
 }

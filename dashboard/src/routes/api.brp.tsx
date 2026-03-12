@@ -1,5 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
+import {
+  brpPortSchema,
+  brpRequestSchema,
+  brpTargetSchema,
+} from '@/lib/schemas/dashboard'
+import { requireDashboardAdmin } from '@/server/dashboard-auth'
 import type { BrpTarget } from '@/server/brp'
 import { callBrp, getBrpUrl, getLiveWorldSnapshot } from '@/server/brp'
 
@@ -12,21 +18,13 @@ type BrpRequestBody = {
 }
 
 function parseTarget(value: unknown): BrpTarget {
-  if (value === 'hostClient') return 'hostClient'
-  return value === 'client' ? 'client' : 'server'
+  const parsed = brpTargetSchema.safeParse(value)
+  return parsed.success ? parsed.data : 'server'
 }
 
 function parsePort(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isInteger(value)) {
-    return value >= 1 && value <= 65535 ? value : null
-  }
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number.parseInt(value, 10)
-    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
-      return parsed
-    }
-  }
-  return null
+  const parsed = brpPortSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
 }
 
 export const Route = createFileRoute('/api/brp')({
@@ -50,10 +48,13 @@ export const Route = createFileRoute('/api/brp')({
           }
         }
         try {
-          const discover = await callBrp({
-            id: `${target}-discover`,
-            method: 'rpc.discover',
-          }, options)
+          const discover = await callBrp(
+            {
+              id: `${target}-discover`,
+              method: 'rpc.discover',
+            },
+            options,
+          )
 
           return json({
             ok: !discover.error,
@@ -77,6 +78,11 @@ export const Route = createFileRoute('/api/brp')({
         }
       },
       POST: async ({ request }) => {
+        const authFailure = requireDashboardAdmin(request)
+        if (authFailure) {
+          return authFailure
+        }
+
         let body: BrpRequestBody
         try {
           body = (await request.json()) as BrpRequestBody
@@ -84,23 +90,34 @@ export const Route = createFileRoute('/api/brp')({
           return json({ error: 'Invalid JSON body' }, { status: 400 })
         }
 
-        if (typeof body.method !== 'string' || body.method.length === 0) {
+        const parsedBody = brpRequestSchema.safeParse(body)
+        if (!parsedBody.success) {
           return json(
-            { error: 'Body must include a JSON-RPC method string' },
+            {
+              error:
+                parsedBody.error.issues[0]?.message ?? 'Invalid request body',
+            },
             { status: 400 },
           )
         }
         const url = new URL(request.url)
-        const target = parseTarget(body.target ?? url.searchParams.get('target'))
-        const port = parsePort(body.port ?? url.searchParams.get('port'))
+        const target = parseTarget(
+          parsedBody.data.target ?? url.searchParams.get('target'),
+        )
+        const port = parsePort(
+          parsedBody.data.port ?? url.searchParams.get('port'),
+        )
         const options = { target, ...(port ? { port } : {}) }
 
         try {
-          const response = await callBrp({
-            id: body.id,
-            method: body.method,
-            params: body.params,
-          }, options)
+          const response = await callBrp(
+            {
+              id: parsedBody.data.id,
+              method: parsedBody.data.method,
+              params: parsedBody.data.params,
+            },
+            options,
+          )
           return json({
             target,
             brpUrl: getBrpUrl(options),

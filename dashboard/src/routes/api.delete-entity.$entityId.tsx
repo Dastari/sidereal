@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
+import { requireDashboardAdmin } from '@/server/dashboard-auth'
 
 type PgClient = {
   query: (sql: string, params?: Array<unknown>) => Promise<{ rows: Array<any> }>
@@ -65,7 +66,12 @@ function escapeCypherString(value: string): string {
 export const Route = createFileRoute('/api/delete-entity/$entityId')({
   server: {
     handlers: {
-      DELETE: async ({ params }) => {
+      DELETE: async ({ request, params }) => {
+        const authFailure = requireDashboardAdmin(request)
+        if (authFailure) {
+          return authFailure
+        }
+
         const { entityId } = params
         const graphName = safeGraphName(process.env.GRAPH_NAME || 'sidereal')
         const pool = await getPool()

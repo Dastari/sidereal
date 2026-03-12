@@ -49,22 +49,24 @@ pnpm build
 
 ## Environment Variables
 
-| Variable                         | Default                         | Description                                  |
-| -------------------------------- | ------------------------------- | -------------------------------------------- |
-| `REPLICATION_DATABASE_URL`       | unset                           | Full DB URL used by replication/runtime      |
-| `DATABASE_URL`                   | unset                           | Alternate full DB URL                        |
-| `PGHOST`                         | `127.0.0.1`                     | PostgreSQL host (fallback when URL not set)  |
-| `PGPORT`                         | `5432`                          | PostgreSQL port (fallback when URL not set)  |
-| `PGDATABASE`                     | `sidereal`                      | Database name (fallback when URL not set)    |
-| `PGUSER`                         | `sidereal`                      | Database user (fallback when URL not set)    |
-| `PGPASSWORD`                     | `sidereal`                      | Database password (fallback when URL not set) |
-| `GRAPH_NAME`                     | `sidereal`                      | AGE graph name                               |
-| `REPLICATION_BRP_URL`            | `http://127.0.0.1:15713/`       | Server BRP endpoint                          |
-| `CLIENT_BRP_URL`                 | `http://127.0.0.1:15714/`       | Client BRP endpoint                          |
-| `SIDEREAL_REPLICATION_BRP_AUTH_TOKEN` | unset                    | Optional auth token for server BRP           |
-| `SIDEREAL_CLIENT_BRP_AUTH_TOKEN` | unset                           | Optional auth token for client BRP           |
-| `GATEWAY_API_URL`                 | `http://127.0.0.1:8080`         | Gateway base URL for admin spawn proxy       |
-| `SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN` | unset                    | Bearer token used by dashboard admin spawn API |
+| Variable                                | Default                   | Description                                                         |
+| --------------------------------------- | ------------------------- | ------------------------------------------------------------------- |
+| `REPLICATION_DATABASE_URL`              | unset                     | Full DB URL used by replication/runtime                             |
+| `DATABASE_URL`                          | unset                     | Alternate full DB URL                                               |
+| `PGHOST`                                | `127.0.0.1`               | PostgreSQL host (fallback when URL not set)                         |
+| `PGPORT`                                | `5432`                    | PostgreSQL port (fallback when URL not set)                         |
+| `PGDATABASE`                            | `sidereal`                | Database name (fallback when URL not set)                           |
+| `PGUSER`                                | `sidereal`                | Database user (fallback when URL not set)                           |
+| `PGPASSWORD`                            | `sidereal`                | Database password (fallback when URL not set)                       |
+| `GRAPH_NAME`                            | `sidereal`                | AGE graph name                                                      |
+| `REPLICATION_BRP_URL`                   | `http://127.0.0.1:15713/` | Server BRP endpoint                                                 |
+| `CLIENT_BRP_URL`                        | `http://127.0.0.1:15714/` | Client BRP endpoint                                                 |
+| `SIDEREAL_REPLICATION_BRP_AUTH_TOKEN`   | unset                     | Optional auth token for server BRP                                  |
+| `SIDEREAL_CLIENT_BRP_AUTH_TOKEN`        | unset                     | Optional auth token for client BRP                                  |
+| `GATEWAY_API_URL`                       | `http://127.0.0.1:8080`   | Gateway base URL for admin spawn proxy                              |
+| `SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN` | unset                     | Bearer token used by dashboard admin spawn API                      |
+| `SIDEREAL_DASHBOARD_ADMIN_PASSWORD`     | unset                     | Required password for dashboard mutation/admin session bootstrap    |
+| `SIDEREAL_DASHBOARD_SESSION_SECRET`     | unset                     | Optional explicit signing secret for dashboard admin session cookie |
 
 ## API Endpoints
 
@@ -72,7 +74,20 @@ pnpm build
 - `GET /api/world` - Returns world entities with positions and component counts
 - `GET /api/live-world` - Returns live entities from server BRP
 - `GET /api/live-client-world` - Returns live entities from client BRP
+- `GET /api/dashboard-session` - Returns dashboard admin session/configuration status
+- `POST /api/dashboard-session` - Exchanges the configured admin password for an HttpOnly admin session cookie
+- `DELETE /api/dashboard-session` - Clears the current dashboard admin session cookie
 - `POST /api/admin/spawn-entity` - Proxies admin spawn requests to gateway
+
+## Admin Mutation Auth
+
+As of 2026-03-12, privileged dashboard mutation routes require an authenticated dashboard admin session. The current interim flow is:
+
+1. Set `SIDEREAL_DASHBOARD_ADMIN_PASSWORD` on the dashboard server.
+2. Use the header unlock control in the dashboard UI to create an HttpOnly SameSite=Strict session cookie through `/api/dashboard-session`.
+3. Privileged mutation routes reject cross-origin requests and require that admin session cookie.
+
+Password reset requests now return accepted/sent state only. Raw reset tokens are no longer returned to the browser by default.
 
 ## Project Structure
 

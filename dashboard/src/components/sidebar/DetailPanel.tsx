@@ -85,11 +85,17 @@ export function DetailPanel({
 
   // Resolve entity details unconditionally so hook dependencies remain stable
   // across resource/entity/empty states.
-  const worldEntity = selectedId ? entities.find((e) => e.id === selectedId) : undefined
+  const worldEntity = selectedId
+    ? entities.find((e) => e.id === selectedId)
+    : undefined
   const expandedNode = selectedId ? expandedNodes.get(selectedId) : undefined
   const graphNode = selectedId ? graphNodes.get(selectedId) : undefined
   const name =
-    worldEntity?.name || expandedNode?.label || graphNode?.label || selectedId || ''
+    worldEntity?.name ||
+    expandedNode?.label ||
+    graphNode?.label ||
+    selectedId ||
+    ''
   const kind =
     worldEntity?.kind || expandedNode?.kind || graphNode?.kind || 'unknown'
   const entityLabels = worldEntity?.entity_labels
@@ -109,7 +115,14 @@ export function DetailPanel({
     }
 
     viewport.scrollTop = detailScrollTopRef.current
-  }, [selectedId, graphEdges, graphNodes, expandedNodes, resources, worldEntity?.componentCount])
+  }, [
+    selectedId,
+    graphEdges,
+    graphNodes,
+    expandedNodes,
+    resources,
+    worldEntity?.componentCount,
+  ])
 
   React.useEffect(() => {
     const root = detailScrollAreaRef.current
@@ -130,8 +143,9 @@ export function DetailPanel({
 
   if (selectedResourceTypePath) {
     const selectedResource =
-      resources.find((resource) => resource.typePath === selectedResourceTypePath) ??
-      null
+      resources.find(
+        (resource) => resource.typePath === selectedResourceTypePath,
+      ) ?? null
     const resourceValue = selectedResource?.value
     const displayValue = formatDisplayValue(resourceValue ?? null)
     const renderEntityRegistryResource = selectedResourceTypePath.includes(
@@ -174,7 +188,11 @@ export function DetailPanel({
         <ScrollArea className="flex-1 ml-1">
           <div className="p-5 space-y-4">
             <PropertySection title="Type Path" icon={Layers}>
-              <PropertyRow label="type_path" value={selectedResourceTypePath} mono />
+              <PropertyRow
+                label="type_path"
+                value={selectedResourceTypePath}
+                mono
+              />
             </PropertySection>
             <PropertySection title="Value" icon={Box}>
               {selectedResource ? (
@@ -216,21 +234,21 @@ export function DetailPanel({
           <div className="min-w-0 flex-1">
             <h2 className="font-semibold text-foreground truncate">{name}</h2>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
-              {entityLabels && entityLabels.length > 0
-                ? entityLabels.map((label) => (
-                    <Badge
-                      key={label}
-                      variant="secondary"
-                      className="capitalize text-xs"
-                    >
-                      {label}
-                    </Badge>
-                  ))
-                : (
-                  <Badge variant="secondary" className="capitalize text-xs">
-                    {kind}
+              {entityLabels && entityLabels.length > 0 ? (
+                entityLabels.map((label) => (
+                  <Badge
+                    key={label}
+                    variant="secondary"
+                    className="capitalize text-xs"
+                  >
+                    {label}
                   </Badge>
-                )}
+                ))
+              ) : (
+                <Badge variant="secondary" className="capitalize text-xs">
+                  {kind}
+                </Badge>
+              )}
               {worldEntity && (
                 <span className="text-xs text-muted-foreground">
                   Shard {worldEntity.shardId}
@@ -255,187 +273,185 @@ export function DetailPanel({
       {/* Content - single scrollable properties view */}
       <ScrollArea ref={detailScrollAreaRef} className="flex-1 ml-1">
         <div className="p-5 space-y-4">
-              {/* Position: X/Y on same line as heading, no unit. Speed: magnitude with m/s. */}
-              {worldEntity && (
-                <>
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-2 w-full">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                          Position
-                        </h3>
-                      </div>
-                      <span className="text-xs text-foreground text-right shrink-0 tabular-nums">
-                        <span className="text-muted-foreground">X:</span>{' '}
-                        {worldEntity.x.toFixed(2)} ·{' '}
-                        <span className="text-muted-foreground">Y:</span>{' '}
-                        {worldEntity.y.toFixed(2)}
-                      </span>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-2 w-full">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Gauge className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                          Speed
-                        </h3>
-                      </div>
-                      <span className="text-xs text-foreground text-right shrink-0 tabular-nums">
-                        {Math.sqrt(
-                          worldEntity.vx * worldEntity.vx +
-                            worldEntity.vy * worldEntity.vy,
-                        ).toFixed(2)}{' '}
-                        <span className="text-muted-foreground">m/s</span>
-                      </span>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Identity: show Bevy entity ID and gameplay EntityGuid separately. */}
+          {/* Position: X/Y on same line as heading, no unit. Speed: magnitude with m/s. */}
+          {worldEntity && (
+            <>
               <div>
                 <div className="flex items-center justify-between gap-2 mb-2 w-full">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Bevy ID
+                      Position
                     </h3>
                   </div>
-                  <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
-                    <span className="text-xs text-foreground font-mono tabular-nums min-w-0 break-all text-right">
-                      {selectedId}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                      aria-label="Copy Bevy ID"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(selectedId)
-                      }}
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+                  <span className="text-xs text-foreground text-right shrink-0 tabular-nums">
+                    <span className="text-muted-foreground">X:</span>{' '}
+                    {worldEntity.x.toFixed(2)} ·{' '}
+                    <span className="text-muted-foreground">Y:</span>{' '}
+                    {worldEntity.y.toFixed(2)}
+                  </span>
                 </div>
               </div>
               <div>
                 <div className="flex items-center justify-between gap-2 mb-2 w-full">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <Gauge className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Entity Guid
+                      Speed
                     </h3>
                   </div>
-                  <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
-                    <span className="text-xs text-foreground font-mono tabular-nums min-w-0 break-all text-right">
-                      {worldEntity?.entityGuid ?? '—'}
-                    </span>
-                    {worldEntity?.entityGuid ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                        aria-label="Copy Entity Guid"
-                        onClick={() => {
-                          if (!worldEntity.entityGuid) return
-                          void navigator.clipboard.writeText(worldEntity.entityGuid)
-                        }}
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                      </Button>
-                    ) : null}
-                  </div>
+                  <span className="text-xs text-foreground text-right shrink-0 tabular-nums">
+                    {Math.sqrt(
+                      worldEntity.vx * worldEntity.vx +
+                        worldEntity.vy * worldEntity.vy,
+                    ).toFixed(2)}{' '}
+                    <span className="text-muted-foreground">m/s</span>
+                  </span>
                 </div>
               </div>
+            </>
+          )}
 
-              {/* Parent: link to parent entity like children */}
-              {worldEntity?.parentEntityId && (
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-2 w-full">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Parent
-                      </h3>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onSelect(worldEntity.parentEntityId!)}
-                      className="flex items-center gap-2 px-2 py-1 rounded hover:bg-secondary/50 text-sm transition-colors text-left text-foreground"
-                    >
-                      <span className="truncate max-w-[140px]">
-                        {entities.find((e) => e.id === worldEntity.parentEntityId)
-                          ?.name ?? worldEntity.parentEntityId}
-                      </span>
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0 rotate-180" />
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Child Entities Section */}
-              <ChildEntitiesSection
-                entityId={selectedId}
-                entities={entities}
-                onSelect={onSelect}
-              />
-
-              {/* Graph properties (exclude entity_labels) */}
-              {graphNode?.properties &&
-                Object.keys(graphNode.properties).length > 0 && (
-                  <PropertySection title="Graph Properties" icon={Box}>
-                    {Object.entries(graphNode.properties)
-                      .filter(([key]) => key !== 'entity_labels')
-                      .map(([key, value]) => (
-                        <PropertyRow key={key} label={key} value={value} mono />
-                      ))}
-                  </PropertySection>
-                )}
-
-              {/* Expanded node properties */}
-              {expandedNode?.properties &&
-                Object.keys(expandedNode.properties).length > 0 && (
-                  <PropertySection title="Node Properties" icon={Box}>
-                    {Object.entries(expandedNode.properties).map(
-                      ([key, value]) => (
-                        <PropertyRow key={key} label={key} value={value} mono />
-                      ),
-                    )}
-                  </PropertySection>
-                )}
-
-              {/* Components - same style heading as Position, Speed, Children; count in header */}
-              {(() => {
-                const componentCount =
-                  worldEntity?.componentCount ??
-                  graphEdges.filter(
-                    (e) => e.from === selectedId && e.label === 'HAS_COMPONENT',
-                  ).length
-                return (
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <Puzzle className="h-4 w-4 text-muted-foreground" />
-                      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Components ({componentCount})
-                      </h3>
-                    </div>
-                    <div className="pl-6">
-                      <ComponentsList
-                        entityId={selectedId}
-                        graphNodes={graphNodes}
-                        graphEdges={graphEdges}
-                        generatedComponentRegistry={generatedComponentRegistry}
-                        sourceMode={sourceMode}
-                        onComponentUpdate={onComponentUpdate}
-                      />
-                    </div>
-                  </div>
-                )
-              })()}
+          {/* Identity: show Bevy entity ID and gameplay EntityGuid separately. */}
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-2 w-full">
+              <div className="flex items-center gap-2 min-w-0">
+                <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Bevy ID
+                </h3>
+              </div>
+              <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
+                <span className="text-xs text-foreground font-mono tabular-nums min-w-0 break-all text-right">
+                  {selectedId}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                  aria-label="Copy Bevy ID"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(selectedId)
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
+          </div>
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-2 w-full">
+              <div className="flex items-center gap-2 min-w-0">
+                <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Entity Guid
+                </h3>
+              </div>
+              <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
+                <span className="text-xs text-foreground font-mono tabular-nums min-w-0 break-all text-right">
+                  {worldEntity?.entityGuid ?? '—'}
+                </span>
+                {worldEntity?.entityGuid ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    aria-label="Copy Entity Guid"
+                    onClick={() => {
+                      if (!worldEntity.entityGuid) return
+                      void navigator.clipboard.writeText(worldEntity.entityGuid)
+                    }}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          {/* Parent: link to parent entity like children */}
+          {worldEntity?.parentEntityId && (
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2 w-full">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Parent
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onSelect(worldEntity.parentEntityId!)}
+                  className="flex items-center gap-2 px-2 py-1 rounded hover:bg-secondary/50 text-sm transition-colors text-left text-foreground"
+                >
+                  <span className="truncate max-w-[140px]">
+                    {entities.find((e) => e.id === worldEntity.parentEntityId)
+                      ?.name ?? worldEntity.parentEntityId}
+                  </span>
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0 rotate-180" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Child Entities Section */}
+          <ChildEntitiesSection
+            entityId={selectedId}
+            entities={entities}
+            onSelect={onSelect}
+          />
+
+          {/* Graph properties (exclude entity_labels) */}
+          {graphNode?.properties &&
+            Object.keys(graphNode.properties).length > 0 && (
+              <PropertySection title="Graph Properties" icon={Box}>
+                {Object.entries(graphNode.properties)
+                  .filter(([key]) => key !== 'entity_labels')
+                  .map(([key, value]) => (
+                    <PropertyRow key={key} label={key} value={value} mono />
+                  ))}
+              </PropertySection>
+            )}
+
+          {/* Expanded node properties */}
+          {expandedNode?.properties &&
+            Object.keys(expandedNode.properties).length > 0 && (
+              <PropertySection title="Node Properties" icon={Box}>
+                {Object.entries(expandedNode.properties).map(([key, value]) => (
+                  <PropertyRow key={key} label={key} value={value} mono />
+                ))}
+              </PropertySection>
+            )}
+
+          {/* Components - same style heading as Position, Speed, Children; count in header */}
+          {(() => {
+            const componentCount =
+              worldEntity?.componentCount ??
+              graphEdges.filter(
+                (e) => e.from === selectedId && e.label === 'HAS_COMPONENT',
+              ).length
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Puzzle className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Components ({componentCount})
+                  </h3>
+                </div>
+                <div className="pl-6">
+                  <ComponentsList
+                    entityId={selectedId}
+                    graphNodes={graphNodes}
+                    graphEdges={graphEdges}
+                    generatedComponentRegistry={generatedComponentRegistry}
+                    sourceMode={sourceMode}
+                    onComponentUpdate={onComponentUpdate}
+                  />
+                </div>
+              </div>
+            )
+          })()}
+        </div>
       </ScrollArea>
     </div>
   )
@@ -467,7 +483,8 @@ function parseEntityRegistryResourceEntries(
     if (typeof entityId !== 'string') continue
     parsed.push({
       entity_id: entityId,
-      entity_class: typeof entry.entity_class === 'string' ? entry.entity_class : undefined,
+      entity_class:
+        typeof entry.entity_class === 'string' ? entry.entity_class : undefined,
       graph_records_script:
         typeof entry.graph_records_script === 'string'
           ? entry.graph_records_script
@@ -535,7 +552,9 @@ function EntityRegistryEntryCard({
         <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-1">
           {entry.entity_class ? (
             <div className="flex items-start gap-2 py-0.5 min-w-0">
-              <span className="text-xs text-muted-foreground shrink-0">class</span>
+              <span className="text-xs text-muted-foreground shrink-0">
+                class
+              </span>
               <ValueField
                 value={formatDisplayValue(entry.entity_class)}
                 mono
@@ -545,7 +564,9 @@ function EntityRegistryEntryCard({
           ) : null}
           {entry.graph_records_script ? (
             <div className="flex items-start gap-2 py-0.5 min-w-0">
-              <span className="text-xs text-muted-foreground shrink-0">script</span>
+              <span className="text-xs text-muted-foreground shrink-0">
+                script
+              </span>
               <ValueField
                 value={formatDisplayValue(entry.graph_records_script)}
                 mono
@@ -556,7 +577,9 @@ function EntityRegistryEntryCard({
           {entry.required_component_kinds &&
           entry.required_component_kinds.length > 0 ? (
             <div className="flex items-start gap-2 py-0.5 min-w-0">
-              <span className="text-xs text-muted-foreground shrink-0">components</span>
+              <span className="text-xs text-muted-foreground shrink-0">
+                components
+              </span>
               <ValueField
                 value={formatDisplayValue(entry.required_component_kinds)}
                 mono
@@ -591,7 +614,9 @@ function GeneratedComponentRegistryView({ value }: { value: unknown }) {
     <div className="space-y-1">
       {registry.shader_entries.length > 0 ? (
         <div className="rounded-md border border-border px-3 py-2 text-xs">
-          <div className="font-medium text-foreground">Shader editor entries</div>
+          <div className="font-medium text-foreground">
+            Shader editor entries
+          </div>
           <div className="mt-1 text-muted-foreground">
             {registry.shader_entries.length} shader assets
           </div>
@@ -602,8 +627,12 @@ function GeneratedComponentRegistryView({ value }: { value: unknown }) {
           key={entry.type_path}
           className="rounded-md border border-border px-3 py-2 text-xs"
         >
-          <div className="font-medium text-foreground">{entry.component_kind}</div>
-          <div className="font-mono text-muted-foreground">{entry.type_path}</div>
+          <div className="font-medium text-foreground">
+            {entry.component_kind}
+          </div>
+          <div className="font-mono text-muted-foreground">
+            {entry.type_path}
+          </div>
           <div className="mt-1 text-muted-foreground">
             {entry.editor_schema.fields.length} fields
           </div>
@@ -825,8 +854,10 @@ function ComponentsList({
           const legacyEditor = getEditorForNode(node)
           const shouldUseLegacyEditor =
             Boolean(legacyEditor) &&
-            (!componentEntry || componentEntry.editor_schema.fields.length === 0)
-          const hasStructuredEditor = Boolean(legacyEditor) || Boolean(componentEntry)
+            (!componentEntry ||
+              componentEntry.editor_schema.fields.length === 0)
+          const hasStructuredEditor =
+            Boolean(legacyEditor) || Boolean(componentEntry)
           const legacyTypePath =
             (typeof node.properties.typePath === 'string'
               ? node.properties.typePath
@@ -894,30 +925,22 @@ function ComponentsList({
                   ) : null}
                   <div className="space-y-1 grow">
                     {shouldUseLegacyEditor && legacyEditor ? (
-                      <React.Suspense
-                        fallback={
-                          <div className="rounded border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                            Loading editor...
-                          </div>
-                        }
-                      >
-                        {React.createElement(legacyEditor, {
-                          componentNodeId: id,
-                          entityId,
-                          node,
-                          value: getComponentValue(node),
-                          onChange: (value: unknown) => {
-                            if (!legacyTypePath || !legacyComponentKind) return
-                            onComponentUpdate?.(
-                              entityId,
-                              legacyTypePath,
-                              legacyComponentKind,
-                              value,
-                            )
-                          },
-                          readOnly: !onComponentUpdate,
-                        })}
-                      </React.Suspense>
+                      React.createElement(legacyEditor, {
+                        componentNodeId: id,
+                        entityId,
+                        node,
+                        value: getComponentValue(node),
+                        onChange: (value: unknown) => {
+                          if (!legacyTypePath || !legacyComponentKind) return
+                          onComponentUpdate?.(
+                            entityId,
+                            legacyTypePath,
+                            legacyComponentKind,
+                            value,
+                          )
+                        },
+                        readOnly: !onComponentUpdate,
+                      })
                     ) : (
                       <ComponentEditorRenderer
                         componentNodeId={id}
@@ -925,7 +948,12 @@ function ComponentsList({
                         node={node}
                         generatedComponentRegistry={generatedComponentRegistry}
                         onUpdate={(typePath, componentKind, value) => {
-                          onComponentUpdate?.(entityId, typePath, componentKind, value)
+                          onComponentUpdate?.(
+                            entityId,
+                            typePath,
+                            componentKind,
+                            value,
+                          )
                         }}
                         readOnly={!onComponentUpdate}
                       />

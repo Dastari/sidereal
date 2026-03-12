@@ -1,5 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
+import { graphComponentUpdateSchema } from '@/lib/schemas/dashboard'
+import { requireDashboardAdmin } from '@/server/dashboard-auth'
 import { getPostgresPool, safeGraphName } from '@/server/postgres'
 
 type GraphNode = {
@@ -21,13 +23,6 @@ type GraphPayload = {
   graph: string
   nodes: Array<GraphNode>
   edges: Array<GraphEdge>
-}
-
-type GraphComponentUpdateBody = {
-  entityId?: unknown
-  typePath?: unknown
-  componentKind?: unknown
-  value?: unknown
 }
 
 function labelName(name: string): string {
@@ -64,7 +59,9 @@ function toCypherLiteral(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'true' : 'false'
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
-      throw new Error('Non-finite numbers are not supported in component values')
+      throw new Error(
+        'Non-finite numbers are not supported in component values',
+      )
     }
     return String(value)
   }
@@ -187,27 +184,28 @@ export const Route = createFileRoute('/api/graph')({
         }
       },
       POST: async ({ request }) => {
-        let body: GraphComponentUpdateBody
+        const authFailure = requireDashboardAdmin(request)
+        if (authFailure) {
+          return authFailure
+        }
+
+        let body: unknown
         try {
-          body = (await request.json()) as GraphComponentUpdateBody
+          body = await request.json()
         } catch {
           return json({ error: 'Invalid JSON body' }, { status: 400 })
         }
-
-        const entityId = typeof body.entityId === 'string' ? body.entityId : null
-        const typePath = typeof body.typePath === 'string' ? body.typePath : null
-        const componentKind =
-          typeof body.componentKind === 'string' ? body.componentKind : null
-
-        if (!entityId || !typePath || !componentKind) {
+        const parsedBody = graphComponentUpdateSchema.safeParse(body)
+        if (!parsedBody.success) {
           return json(
             {
               error:
-                'Body must include entityId, typePath, and componentKind as strings',
+                parsedBody.error.issues[0]?.message ?? 'Invalid request body',
             },
             { status: 400 },
           )
         }
+        const { componentKind, entityId, typePath, value } = parsedBody.data
 
         const graphName = safeGraphName(process.env.GRAPH_NAME || 'sidereal')
         const pool = await getPostgresPool()
@@ -218,7 +216,7 @@ export const Route = createFileRoute('/api/graph')({
           await client.query('SET search_path = ag_catalog, public')
 
           const payloadKey = sanitizePayloadKey(typePath)
-          const payloadLiteral = toCypherLiteral(body.value)
+          const payloadLiteral = toCypherLiteral(value)
           const escapedEntityId = escapeCypherString(entityId)
           const escapedComponentKind = escapeCypherString(componentKind)
 

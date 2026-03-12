@@ -8,6 +8,10 @@ import {
 import { NuqsAdapter } from 'nuqs/adapters/react'
 
 import appCss from '../styles.css?url'
+import {
+  RouteErrorState,
+  RouteNotFoundState,
+} from '@/components/feedback/route-feedback'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -40,23 +44,10 @@ export const Route = createRootRoute({
     ],
   }),
   notFoundComponent: () => (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'grid',
-        placeItems: 'center',
-        background: '#0b0d12',
-        color: '#d7e0ea',
-        fontFamily: 'Inter, sans-serif',
-      }}
-    >
-      <div style={{ textAlign: 'center' }}>
-        <h1 style={{ marginBottom: 8 }}>Page Not Found</h1>
-        <p style={{ opacity: 0.8 }}>
-          The requested dashboard route does not exist.
-        </p>
-      </div>
-    </div>
+    <RouteNotFoundState
+      title="Page not found"
+      description="The requested dashboard route does not exist."
+    />
   ),
   errorComponent: ({ error }) => (
     <html lang="en" suppressHydrationWarning>
@@ -65,19 +56,9 @@ export const Route = createRootRoute({
         <HeadContent />
       </head>
       <body>
-        <div
-          style={{
-            minHeight: '100vh',
-            display: 'grid',
-            placeItems: 'center',
-            background: '#0b0d12',
-            color: '#d7e0ea',
-            fontFamily: 'Inter, sans-serif',
-            padding: 24,
-          }}
-        >
-          <div style={{ width: '100%', maxWidth: 720 }}>
-            <h1 style={{ marginBottom: 12 }}>Dashboard Route Error</h1>
+        <div className="min-h-screen bg-background p-6">
+          <RouteErrorState title="Dashboard route error" error={error} />
+          <div className="sr-only">
             <ErrorComponent error={error} />
           </div>
         </div>

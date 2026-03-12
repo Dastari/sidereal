@@ -1,17 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
+import {
+  renameCharacterBodySchema,
+  renameCharacterParamsSchema,
+} from '@/lib/schemas/dashboard'
+import { requireDashboardAdmin } from '@/server/dashboard-auth'
 import { getPostgresPool, safeGraphName } from '@/server/postgres'
-
-type RenameBody = {
-  displayName?: unknown
-}
-
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
-function looksLikeUuid(value: string): boolean {
-  return UUID_REGEX.test(value.trim())
-}
 
 function escapeCypherString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
@@ -21,9 +15,9 @@ function isSafeIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
 }
 
-async function resolveCharactersQualifiedName(
-  client: { query: (sql: string, params?: Array<unknown>) => Promise<{ rows: Array<any> }> },
-): Promise<string | null> {
+async function resolveCharactersQualifiedName(client: {
+  query: (sql: string, params?: Array<unknown>) => Promise<{ rows: Array<any> }>
+}): Promise<string | null> {
   const graphName = safeGraphName(process.env.GRAPH_NAME || 'sidereal')
   for (const schemaName of [graphName, 'public']) {
     if (!isSafeIdentifier(schemaName)) continue
@@ -45,40 +39,53 @@ export const Route = createFileRoute(
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        const playerEntityId = params.playerEntityId?.trim()
-        if (!playerEntityId || !looksLikeUuid(playerEntityId)) {
+        const authFailure = requireDashboardAdmin(request)
+        if (authFailure) {
+          return authFailure
+        }
+
+        const parsedParams = renameCharacterParamsSchema.safeParse(params)
+        if (!parsedParams.success) {
           return json(
-            { error: 'playerEntityId must be a UUID' },
+            {
+              error:
+                parsedParams.error.issues[0]?.message ??
+                'playerEntityId must be a UUID',
+            },
             { status: 400 },
           )
         }
+        const playerEntityId = parsedParams.data.playerEntityId
 
-        let body: RenameBody
+        let body: unknown
         try {
-          body = (await request.json()) as RenameBody
+          body = await request.json()
         } catch {
           return json({ error: 'Invalid JSON body' }, { status: 400 })
         }
-        if (typeof body.displayName !== 'string') {
-          return json({ error: 'displayName is required' }, { status: 400 })
-        }
-        const displayName = body.displayName.trim()
-        if (displayName.length < 2 || displayName.length > 64) {
+        const parsedBody = renameCharacterBodySchema.safeParse(body)
+        if (!parsedBody.success) {
           return json(
-            { error: 'displayName must be between 2 and 64 characters' },
+            {
+              error:
+                parsedBody.error.issues[0]?.message ?? 'Invalid request body',
+            },
             { status: 400 },
           )
         }
+        const displayName = parsedBody.data.displayName
 
         const pool = await getPostgresPool()
         const client = await pool.connect()
 
         try {
-          const charactersQualifiedName = await resolveCharactersQualifiedName(
-            client,
-          )
+          const charactersQualifiedName =
+            await resolveCharactersQualifiedName(client)
           if (!charactersQualifiedName) {
-            return json({ error: 'auth_characters table not found' }, { status: 404 })
+            return json(
+              { error: 'auth_characters table not found' },
+              { status: 404 },
+            )
           }
           const characterRow = await client.query(
             `

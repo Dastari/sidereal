@@ -1,10 +1,16 @@
 import { createRouter as createTanStackRouter } from '@tanstack/react-router'
+import { RouteNotFoundState } from '@/components/feedback/route-feedback'
 import { routeTree } from './routeTree.gen'
 
 export function getRouter() {
   const router = createTanStackRouter({
     routeTree,
-    defaultNotFoundComponent: () => <p>Not Found</p>,
+    defaultNotFoundComponent: () => (
+      <RouteNotFoundState
+        title="Route not found"
+        description="This dashboard view does not have a registered route."
+      />
+    ),
 
     scrollRestoration: true,
     defaultPreload: 'intent',

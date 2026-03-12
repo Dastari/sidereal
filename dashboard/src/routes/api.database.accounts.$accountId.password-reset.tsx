@@ -1,26 +1,21 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
+import { passwordResetParamsSchema } from '@/lib/schemas/dashboard'
+import { requireDashboardAdmin } from '@/server/dashboard-auth'
 import { getPostgresPool, safeGraphName } from '@/server/postgres'
-
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function parseGatewayUrl(): string {
   const raw = process.env.GATEWAY_API_URL?.trim() || 'http://127.0.0.1:8080'
   return raw.endsWith('/') ? raw.slice(0, -1) : raw
 }
 
-function looksLikeUuid(value: string): boolean {
-  return UUID_REGEX.test(value.trim())
-}
-
 function isSafeIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
 }
 
-async function resolveAccountsQualifiedName(
-  client: { query: (sql: string, params?: Array<unknown>) => Promise<{ rows: Array<any> }> },
-): Promise<string | null> {
+async function resolveAccountsQualifiedName(client: {
+  query: (sql: string, params?: Array<unknown>) => Promise<{ rows: Array<any> }>
+}): Promise<string | null> {
   const graphName = safeGraphName(process.env.GRAPH_NAME || 'sidereal')
   for (const schemaName of [graphName, 'public']) {
     if (!isSafeIdentifier(schemaName)) continue
@@ -41,18 +36,35 @@ export const Route = createFileRoute(
 )({
   server: {
     handlers: {
-      POST: async ({ params }) => {
-        const accountId = params.accountId?.trim()
-        if (!accountId || !looksLikeUuid(accountId)) {
-          return json({ error: 'accountId must be a UUID' }, { status: 400 })
+      POST: async ({ request, params }) => {
+        const authFailure = requireDashboardAdmin(request)
+        if (authFailure) {
+          return authFailure
         }
+
+        const parsedParams = passwordResetParamsSchema.safeParse(params)
+        if (!parsedParams.success) {
+          return json(
+            {
+              error:
+                parsedParams.error.issues[0]?.message ??
+                'accountId must be a UUID',
+            },
+            { status: 400 },
+          )
+        }
+        const accountId = parsedParams.data.accountId
 
         const pool = await getPostgresPool()
         const client = await pool.connect()
         try {
-          const accountsQualifiedName = await resolveAccountsQualifiedName(client)
+          const accountsQualifiedName =
+            await resolveAccountsQualifiedName(client)
           if (!accountsQualifiedName) {
-            return json({ error: 'auth_accounts table not found' }, { status: 404 })
+            return json(
+              { error: 'auth_accounts table not found' },
+              { status: 404 },
+            )
           }
           const accountRow = await client.query(
             `
@@ -89,10 +101,6 @@ export const Route = createFileRoute(
           }
           return json({
             accepted: payload.accepted === true,
-            resetToken:
-              typeof payload.reset_token === 'string'
-                ? payload.reset_token
-                : null,
           })
         } catch (error) {
           return json(
