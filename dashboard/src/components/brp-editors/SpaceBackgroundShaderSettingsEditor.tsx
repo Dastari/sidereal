@@ -6,6 +6,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
@@ -811,16 +812,17 @@ export function SpaceBackgroundShaderSettingsEditor({
           applyPreset(preset)
         }}
       />
-      <button
+      <Button
         type="button"
+        variant="outline"
         disabled={readOnly}
         onClick={() => {
           void copyCurrentAsJson()
         }}
-        className="w-full rounded-md border border-border/60 px-2 py-2 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+        className="h-auto w-full px-2 py-2 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
       >
         Copy As JSON (for Rust default constant)
-      </button>
+      </Button>
       <ToggleField
         label="Enabled"
         checked={parsed.enabled}
@@ -1548,13 +1550,14 @@ function Group({
     >
       <div className="flex items-center gap-2 px-2 py-2">
         <CollapsibleTrigger asChild>
-          <button
+          <Button
             type="button"
-            className="flex flex-1 items-center justify-between rounded-sm px-1 py-1 text-left text-xs font-medium hover:bg-accent"
+            variant="ghost"
+            className="h-auto flex-1 justify-between rounded-sm px-1 py-1 text-left text-xs font-medium hover:bg-accent"
           >
             <span>{title}</span>
             <span className="text-[10px] text-muted-foreground">Expand</span>
-          </button>
+          </Button>
         </CollapsibleTrigger>
         {typeof enabled === 'boolean' && onEnabledChange ? (
           <DebouncedSwitch

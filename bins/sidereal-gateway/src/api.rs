@@ -394,6 +394,7 @@ async fn asset_bootstrap_manifest(
             asset_guid: entry.asset_guid.clone(),
             shader_family: entry.shader_family.clone(),
             dependencies: entry.dependencies.clone(),
+            startup_required: entry.startup_required,
             sha256_hex: entry.sha256_hex.clone(),
             relative_cache_path: entry.relative_cache_path.clone(),
             content_type: entry.content_type.clone(),

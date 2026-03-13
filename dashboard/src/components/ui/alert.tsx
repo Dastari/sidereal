@@ -1,19 +1,22 @@
 import * as React from 'react'
-import { cva, type VariantProps } from 'class-variance-authority'
+import { cva } from 'class-variance-authority'
+import type { VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
 const alertVariants = cva(
-  'relative w-full rounded-xl border px-4 py-3 text-sm',
+  'grid-panel relative w-full rounded-xl border px-4 py-3 text-sm',
   {
     variants: {
       variant: {
         default: 'border-border/80 bg-card/80 text-foreground',
-        info: 'border-primary/35 bg-primary/8 text-foreground',
+        info:
+          'border-primary/45 bg-[color:color-mix(in_oklch,var(--primary)_10%,transparent)] text-foreground',
         warning:
-          'border-amber-500/35 bg-amber-500/10 text-amber-100 dark:text-amber-50',
-        destructive: 'border-destructive/40 bg-destructive/10 text-destructive',
+          'border-warning/45 bg-[color:color-mix(in_oklch,var(--color-warning)_14%,transparent)] text-warning',
+        destructive:
+          'border-destructive/50 bg-[color:color-mix(in_oklch,var(--destructive)_14%,transparent)] text-destructive',
         success:
-          'border-emerald-500/35 bg-emerald-500/10 text-emerald-100 dark:text-emerald-50',
+          'border-success/45 bg-[color:color-mix(in_oklch,var(--color-success)_14%,transparent)] text-success',
       },
     },
     defaultVariants: {

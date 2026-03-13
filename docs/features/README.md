@@ -10,6 +10,9 @@ Update note (2026-03-09):
 - Plan-style docs were moved to `docs/plans/`.
 - This folder now focuses on active contracts, active feature references, and feature-scoped implementation notes/specs.
 
+Update note (2026-03-13):
+- The core systems catalog now lives at `docs/core_systems_catalog_v1.md` as a cross-cutting docs-root reference rather than a feature-folder document.
+
 ## What Belongs Here
 
 1. Active implementation contracts:
@@ -45,6 +48,7 @@ Update note (2026-03-09):
 ## Related Indexes
 
 1. Docs root index: `docs/README.md`
-2. Decision register: `docs/decision_register.md`
-3. Architecture baseline: `docs/sidereal_design_document.md`
-4. Implementation tracker: `docs/sidereal_implementation_checklist.md`
+2. Core systems catalog: `docs/core_systems_catalog_v1.md`
+3. Decision register: `docs/decision_register.md`
+4. Architecture baseline: `docs/sidereal_design_document.md`
+5. Implementation tracker: `docs/sidereal_implementation_checklist.md`

@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { ChevronDown, ChevronRight, FileCode2, Sparkles } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Collapsible,
@@ -109,11 +110,12 @@ export function ShaderLibraryTree({
               <CollapsibleContent>
                 <div className="ml-4 space-y-1 border-l border-border-subtle pl-3">
                   {items.map((entry) => (
-                    <button
+                    <Button
                       key={entry.shaderId}
                       type="button"
+                      variant="ghost"
                       className={cn(
-                        'w-full rounded-md px-3 py-2 text-left transition-colors',
+                        'h-auto w-full justify-start rounded-md px-3 py-2 text-left transition-colors',
                         entry.shaderId === selectedShaderId
                           ? 'bg-primary/10 text-primary'
                           : 'hover:bg-secondary/50 text-foreground/85',
@@ -131,7 +133,7 @@ export function ShaderLibraryTree({
                           </div>
                         </div>
                       </div>
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </CollapsibleContent>

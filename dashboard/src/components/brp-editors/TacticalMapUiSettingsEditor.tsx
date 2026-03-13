@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { DebouncedNumberField } from './DebouncedNumberField'
 import type { ComponentEditorProps } from './types'
+import { Button } from '@/components/ui/button'
 
 type Vec3 = { x: number; y: number; z: number }
 
@@ -490,11 +491,13 @@ function PresetButton({
   onClick: () => void
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant={active ? 'secondary' : 'outline'}
+      size="sm"
       disabled={readOnly}
       className={[
-        'rounded border px-2 py-1 text-xs',
+        'h-auto px-2 py-1 text-xs',
         active
           ? 'border-blue-400 bg-blue-500/20 text-blue-100'
           : 'border-border/60 bg-muted/40 text-foreground',
@@ -503,7 +506,7 @@ function PresetButton({
       onClick={onClick}
     >
       {label}
-    </button>
+    </Button>
   )
 }
 

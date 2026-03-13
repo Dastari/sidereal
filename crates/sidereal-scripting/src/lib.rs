@@ -94,6 +94,7 @@ pub struct ScriptAssetRegistryEntry {
     pub content_type: String,
     pub dependencies: Vec<String>,
     pub bootstrap_required: bool,
+    pub startup_required: bool,
     pub editor_schema: Option<ScriptShaderEditorSchema>,
 }
 
@@ -116,6 +117,14 @@ impl ScriptAssetRegistry {
         self.assets
             .iter()
             .filter(|asset| asset.bootstrap_required)
+            .map(|asset| asset.asset_id.clone())
+            .collect()
+    }
+
+    pub fn startup_required_asset_ids(&self) -> HashSet<String> {
+        self.assets
+            .iter()
+            .filter(|asset| asset.startup_required)
             .map(|asset| asset.asset_id.clone())
             .collect()
     }
@@ -588,6 +597,17 @@ fn decode_asset_registry_module(
                 )));
             }
         };
+        let startup_required = match entry.get::<Value>("startup_required").map_err(|err| {
+            ScriptError::Contract(format!("{context}.startup_required read failed: {err}"))
+        })? {
+            Value::Nil => false,
+            Value::Boolean(value) => value,
+            _ => {
+                return Err(ScriptError::Contract(format!(
+                    "{context}.startup_required must be a boolean when present"
+                )));
+            }
+        };
         let editor_schema = decode_optional_shader_editor_schema(&entry, &context)?;
         assets.push(ScriptAssetRegistryEntry {
             asset_id,
@@ -596,6 +616,7 @@ fn decode_asset_registry_module(
             content_type,
             dependencies,
             bootstrap_required,
+            startup_required,
             editor_schema,
         });
     }

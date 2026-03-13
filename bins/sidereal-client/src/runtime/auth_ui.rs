@@ -5,6 +5,13 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::log::info;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use sidereal_ui::layout;
+use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::typography::text_font;
+use sidereal_ui::widgets::{
+    UiButtonVariant, UiInteractionState, button_surface, input_surface, panel_surface,
+    spawn_hud_frame_chrome,
+};
 
 use super::dev_console::DevConsoleState;
 use super::resources::GatewayHttpAdapter;
@@ -84,6 +91,7 @@ pub fn register_auth_ui(app: &mut App) {
             tick_cursor_blink,
             handle_auth_keyboard_input,
             handle_auth_button_interactions,
+            sync_auth_button_visuals,
             update_auth_text,
             update_auth_field_layout,
             update_auth_field_content,
@@ -92,20 +100,32 @@ pub fn register_auth_ui(app: &mut App) {
     );
 }
 
-fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFonts>) {
+fn setup_auth_screen(
+    mut commands: Commands<'_, '_>,
+    fonts: Res<'_, EmbeddedFonts>,
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
+) {
     info!("client auth UI setup: spawning auth screen");
-    let font_bold = fonts.bold.clone();
-    let font_regular = fonts.regular.clone();
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    let (panel_bg, panel_border, panel_shadow) = panel_surface(theme, glow_intensity);
+    let (submit_bg, submit_border, submit_shadow) = button_surface(
+        theme,
+        UiButtonVariant::Primary,
+        UiInteractionState::Idle,
+        glow_intensity,
+    );
+    let (quit_bg, quit_border, quit_shadow) = button_surface(
+        theme,
+        UiButtonVariant::Outline,
+        UiInteractionState::Idle,
+        glow_intensity,
+    );
 
     commands
         .spawn((
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
+            layout::fullscreen_centered_root(),
             Transform::default(),
             GlobalTransform::default(),
             AuthUiRoot,
@@ -113,67 +133,81 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
         ))
         .with_children(|root| {
             root.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
+                layout::fullscreen_backdrop(),
                 Transform::default(),
                 GlobalTransform::default(),
-                BackgroundColor(Color::srgb(0.03, 0.04, 0.08)),
+                BackgroundColor(theme.colors.background_color()),
                 AuthUiBackdrop,
             ));
 
             root.spawn((
-                Node {
-                    width: Val::Px(540.0),
-                    padding: UiRect::all(Val::Px(30.0)),
-                    border: UiRect::all(Val::Px(2.0)),
-                    border_radius: BorderRadius::all(Val::Px(12.0)),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(14.0),
-                    ..default()
-                },
+                layout::panel(
+                    Val::Px(560.0),
+                    theme.metrics.panel_padding_px,
+                    theme.metrics.row_gap_px,
+                    theme.metrics.panel_radius_px,
+                    theme.metrics.panel_border_px,
+                ),
                 Transform::default(),
                 GlobalTransform::default(),
-                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.92)),
-                BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
+                panel_bg,
+                panel_border,
+                panel_shadow,
             ))
             .with_children(|panel| {
+                spawn_hud_frame_chrome(
+                    panel,
+                    theme,
+                    Some("Auth Terminal"),
+                    &fonts.mono.clone(),
+                    glow_intensity,
+                );
+
                 panel.spawn((
                     Text::new("SIDEREAL"),
-                    TextFont {
-                        font: font_bold.clone(),
-                        font_size: 42.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                    text_font(fonts.display.clone(), 42.0),
+                    TextColor(theme.colors.foreground_color()),
                 ));
 
                 panel.spawn((
                     Text::new("Login"),
-                    TextFont {
-                        font: font_regular.clone(),
-                        font_size: 18.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.76, 0.82, 0.92, 0.95)),
+                    text_font(fonts.mono.clone(), 12.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                     AuthUiFlowTitle,
                 ));
 
-                spawn_input_field(panel, &font_regular, "Email", FocusField::Email, false);
-                spawn_input_field(panel, &font_regular, "Password", FocusField::Password, true);
                 spawn_input_field(
                     panel,
-                    &font_regular,
+                    &fonts,
+                    theme,
+                    glow_intensity,
+                    "Email",
+                    FocusField::Email,
+                    false,
+                );
+                spawn_input_field(
+                    panel,
+                    &fonts,
+                    theme,
+                    glow_intensity,
+                    "Password",
+                    FocusField::Password,
+                    true,
+                );
+                spawn_input_field(
+                    panel,
+                    &fonts,
+                    theme,
+                    glow_intensity,
                     "Reset Token",
                     FocusField::ResetToken,
                     false,
                 );
                 spawn_input_field(
                     panel,
-                    &font_regular,
+                    &fonts,
+                    theme,
+                    glow_intensity,
                     "New Password",
                     FocusField::NewPassword,
                     true,
@@ -183,53 +217,61 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
                     .spawn((
                         Button,
                         AuthUiButton(AuthButtonKind::Submit),
-                        Node {
-                            width: Val::Percent(100.0),
-                            height: Val::Px(46.0),
-                            border_radius: BorderRadius::all(Val::Px(8.0)),
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.2, 0.46, 0.85)),
+                        layout::button(
+                            Val::Percent(100.0),
+                            48.0,
+                            theme.metrics.control_radius_px,
+                            theme.metrics.control_border_px,
+                        ),
+                        submit_bg,
+                        submit_border,
+                        submit_shadow,
                     ))
                     .with_children(|button| {
                         button.spawn((
                             Text::new("Login"),
-                            TextFont {
-                                font: font_bold.clone(),
-                                font_size: 18.0,
-                                ..default()
-                            },
-                            TextColor(Color::WHITE),
+                            text_font(fonts.bold.clone(), 14.0),
+                            TextColor(theme.colors.primary_foreground_color()),
                             AuthUiSubmitLabel,
                         ));
                     });
 
                 panel
                     .spawn((
-                        Node {
-                            width: Val::Percent(100.0),
-                            flex_direction: FlexDirection::Row,
-                            justify_content: JustifyContent::SpaceBetween,
-                            column_gap: Val::Px(8.0),
-                            ..default()
-                        },
+                        layout::grid(2, 34.0, 8.0),
                         Transform::default(),
                         GlobalTransform::default(),
                     ))
                     .with_children(|row| {
-                        spawn_flow_button(row, &font_regular, "Login", AuthAction::Login);
-                        spawn_flow_button(row, &font_regular, "Register", AuthAction::Register);
                         spawn_flow_button(
                             row,
-                            &font_regular,
+                            &fonts,
+                            theme,
+                            glow_intensity,
+                            "Login",
+                            AuthAction::Login,
+                        );
+                        spawn_flow_button(
+                            row,
+                            &fonts,
+                            theme,
+                            glow_intensity,
+                            "Register",
+                            AuthAction::Register,
+                        );
+                        spawn_flow_button(
+                            row,
+                            &fonts,
+                            theme,
+                            glow_intensity,
                             "Forgot Request",
                             AuthAction::ForgotRequest,
                         );
                         spawn_flow_button(
                             row,
-                            &font_regular,
+                            &fonts,
+                            theme,
+                            glow_intensity,
                             "Forgot Confirm",
                             AuthAction::ForgotConfirm,
                         );
@@ -239,38 +281,32 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
                         Button,
                         AuthUiButton(AuthButtonKind::Quit),
                         Node {
-                            width: Val::Px(120.0),
-                            height: Val::Px(36.0),
                             align_self: AlignSelf::FlexEnd,
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            border_radius: BorderRadius::all(Val::Px(6.0)),
-                            ..default()
+                            ..layout::button(
+                                Val::Px(140.0),
+                                38.0,
+                                theme.metrics.control_radius_px,
+                                theme.metrics.control_border_px,
+                            )
                         },
                         Transform::default(),
                         GlobalTransform::default(),
-                        BackgroundColor(Color::srgba(0.18, 0.2, 0.26, 0.85)),
+                        quit_bg,
+                        quit_border,
+                        quit_shadow,
                     ))
                     .with_children(|button| {
                         button.spawn((
                             Text::new("Quit"),
-                            TextFont {
-                                font: font_regular.clone(),
-                                font_size: 14.0,
-                                ..default()
-                            },
-                            TextColor(Color::srgba(0.83, 0.89, 0.95, 0.95)),
+                            text_font(fonts.regular.clone(), 12.0),
+                            TextColor(theme.colors.panel_foreground_color()),
                         ));
                     });
 
                 panel.spawn((
                     Text::new(""),
-                    TextFont {
-                        font: font_regular,
-                        font_size: 14.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.72, 0.84, 0.75, 0.95)),
+                    text_font(fonts.mono.clone(), 12.0),
+                    TextColor(theme.colors.success_color()),
                     AuthUiStatusText,
                 ));
             });
@@ -279,32 +315,26 @@ fn setup_auth_screen(mut commands: Commands<'_, '_>, fonts: Res<'_, EmbeddedFont
 
 fn spawn_input_field(
     parent: &mut ChildSpawnerCommands,
-    font: &Handle<Font>,
+    fonts: &EmbeddedFonts,
+    theme: sidereal_ui::theme::UiTheme,
+    glow_intensity: f32,
     label: &str,
     field: FocusField,
     is_password: bool,
 ) {
+    let (input_bg, input_border, input_shadow) = input_surface(theme, false, glow_intensity);
     parent
         .spawn((
-            Node {
-                width: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                ..default()
-            },
+            layout::vertical_stack(6.0),
             Transform::default(),
             GlobalTransform::default(),
             AuthUiFieldContainer { field },
         ))
         .with_children(|container| {
             container.spawn((
-                Text::new(label),
-                TextFont {
-                    font: font.clone(),
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(Color::srgba(0.72, 0.79, 0.88, 0.95)),
+                Text::new(label.to_ascii_uppercase()),
+                text_font(fonts.bold.clone(), 11.0),
+                TextColor(theme.colors.muted_foreground_color()),
             ));
 
             container
@@ -312,41 +342,29 @@ fn spawn_input_field(
                     Button,
                     AuthUiInputBox { field },
                     AuthUiButton(AuthButtonKind::Focus(field)),
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(42.0),
-                        padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
-                        justify_content: JustifyContent::FlexStart,
-                        align_items: AlignItems::Center,
-                        border: UiRect::all(Val::Px(2.0)),
-                        border_radius: BorderRadius::all(Val::Px(7.0)),
-                        ..default()
-                    },
+                    layout::input_box(
+                        44.0,
+                        theme.metrics.control_radius_px,
+                        theme.metrics.control_border_px,
+                    ),
                     Transform::default(),
                     GlobalTransform::default(),
-                    BackgroundColor(Color::srgba(0.09, 0.11, 0.16, 0.95)),
-                    BorderColor::all(Color::srgba(0.24, 0.28, 0.35, 0.9)),
+                    input_bg,
+                    input_border,
+                    input_shadow,
                 ))
                 .with_children(|input_box| {
                     input_box.spawn((
                         Text::new(""),
-                        TextFont {
-                            font: font.clone(),
-                            font_size: 16.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.9, 0.93, 0.98)),
+                        text_font(fonts.regular.clone(), 16.0),
+                        TextColor(theme.colors.panel_foreground_color()),
                         AuthUiInputText { field, is_password },
                     ));
 
                     input_box.spawn((
                         Text::new("|"),
-                        TextFont {
-                            font: font.clone(),
-                            font_size: 16.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.9, 0.93, 0.98)),
+                        text_font(fonts.mono.clone(), 16.0),
+                        TextColor(theme.colors.glow_color()),
                         AuthUiCursor { field },
                         Visibility::Hidden,
                     ));
@@ -356,47 +374,54 @@ fn spawn_input_field(
 
 fn spawn_flow_button(
     parent: &mut ChildSpawnerCommands,
-    font: &Handle<Font>,
+    fonts: &EmbeddedFonts,
+    theme: sidereal_ui::theme::UiTheme,
+    glow_intensity: f32,
     label: &str,
     action: AuthAction,
 ) {
+    let (bg, border, shadow) = button_surface(
+        theme,
+        UiButtonVariant::Outline,
+        UiInteractionState::Idle,
+        glow_intensity,
+    );
     parent
         .spawn((
             Button,
             AuthUiButton(AuthButtonKind::SwitchFlow(action)),
-            Node {
-                height: Val::Px(34.0),
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
-                border_radius: BorderRadius::all(Val::Px(6.0)),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
+            layout::button(
+                Val::Percent(100.0),
+                34.0,
+                theme.metrics.control_radius_px,
+                theme.metrics.control_border_px,
+            ),
             Transform::default(),
             GlobalTransform::default(),
-            BackgroundColor(Color::srgba(0.18, 0.2, 0.26, 0.85)),
+            bg,
+            border,
+            shadow,
         ))
         .with_children(|button| {
             button.spawn((
                 Text::new(label),
-                TextFont {
-                    font: font.clone(),
-                    font_size: 13.0,
-                    ..default()
-                },
-                TextColor(Color::srgba(0.83, 0.89, 0.95, 0.95)),
+                text_font(fonts.regular.clone(), 10.0),
+                TextColor(theme.colors.panel_foreground_color()),
             ));
         });
 }
 
 fn animate_auth_background(
     time: Res<'_, Time>,
+    active_theme: Res<'_, ActiveUiTheme>,
     mut bg_query: Query<'_, '_, &mut BackgroundColor, With<AuthUiBackdrop>>,
 ) {
+    let theme = theme_definition(active_theme.0);
     let t = time.elapsed_secs();
-    let pulse = 0.03 + 0.015 * (t * 0.5).sin().abs();
+    let pulse = 0.75 + 0.25 * (t * 0.5).sin().abs();
     for mut color in &mut bg_query {
-        *color = BackgroundColor(Color::srgb(pulse, pulse * 1.2, pulse * 1.8));
+        let base = theme.colors.background;
+        *color = BackgroundColor(Color::from(base.with_lightness(base.lightness * pulse)));
     }
 }
 
@@ -481,12 +506,7 @@ fn handle_auth_button_interactions(
     mut interactions: Query<
         '_,
         '_,
-        (
-            &Interaction,
-            &AuthUiButton,
-            &mut BackgroundColor,
-            Option<&AuthUiInputBox>,
-        ),
+        (&Interaction, &AuthUiButton, Option<&AuthUiInputBox>),
         Changed<Interaction>,
     >,
     mut session: ResMut<'_, ClientSession>,
@@ -494,74 +514,100 @@ fn handle_auth_button_interactions(
     gateway_http: Res<'_, GatewayHttpAdapter>,
     mut app_exit: MessageWriter<'_, AppExit>,
 ) {
-    for (interaction, button, mut bg, input_box) in &mut interactions {
+    for (interaction, button, input_box) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
                 if let Some(input) = input_box {
                     session.focus = input.field;
                     session.ui_dirty = true;
-                    *bg = BackgroundColor(Color::srgba(0.12, 0.15, 0.21, 0.98));
                     continue;
                 }
 
                 match button.0 {
                     AuthButtonKind::Submit => {
-                        *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));
                         submit_auth_request(&mut session, request_state.as_mut(), *gateway_http);
                     }
                     AuthButtonKind::SwitchFlow(action) => {
                         session.selected_action = action;
                         session.focus = first_focus_field(action);
                         session.ui_dirty = true;
-                        *bg = BackgroundColor(Color::srgba(0.25, 0.28, 0.36, 0.9));
                     }
                     AuthButtonKind::Focus(field) => {
                         session.focus = field;
                         session.ui_dirty = true;
-                        *bg = BackgroundColor(Color::srgba(0.12, 0.15, 0.21, 0.98));
                     }
                     AuthButtonKind::Quit => {
                         app_exit.write(AppExit::Success);
-                        *bg = BackgroundColor(Color::srgba(0.25, 0.28, 0.36, 0.9));
                     }
                 }
             }
-            Interaction::Hovered => {
-                if input_box.is_some() {
-                    *bg = BackgroundColor(Color::srgba(0.11, 0.13, 0.2, 0.96));
-                } else {
-                    *bg = match button.0 {
-                        AuthButtonKind::Submit => BackgroundColor(Color::srgb(0.24, 0.5, 0.9)),
-                        AuthButtonKind::SwitchFlow(_) => {
-                            BackgroundColor(Color::srgba(0.22, 0.25, 0.32, 0.88))
-                        }
-                        AuthButtonKind::Focus(_) => {
-                            BackgroundColor(Color::srgba(0.11, 0.13, 0.2, 0.96))
-                        }
-                        AuthButtonKind::Quit => {
-                            BackgroundColor(Color::srgba(0.22, 0.25, 0.32, 0.88))
-                        }
-                    };
+            Interaction::Hovered | Interaction::None => {}
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn sync_auth_button_visuals(
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
+    session: Res<'_, ClientSession>,
+    mut query: Query<
+        '_,
+        '_,
+        (
+            &Interaction,
+            &AuthUiButton,
+            Option<&AuthUiInputBox>,
+            &mut BackgroundColor,
+            Option<&mut BorderColor>,
+            Option<&mut BoxShadow>,
+        ),
+    >,
+) {
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    for (interaction, button, input_box, mut bg, border, shadow) in &mut query {
+        let state = match *interaction {
+            Interaction::Pressed => UiInteractionState::Pressed,
+            Interaction::Hovered => UiInteractionState::Hovered,
+            Interaction::None => match button.0 {
+                AuthButtonKind::SwitchFlow(action) if action == session.selected_action => {
+                    UiInteractionState::Selected
                 }
-            }
-            Interaction::None => {
-                if input_box.is_some() {
-                    *bg = BackgroundColor(Color::srgba(0.09, 0.11, 0.16, 0.95));
-                } else {
-                    *bg = match button.0 {
-                        AuthButtonKind::Submit => BackgroundColor(Color::srgb(0.2, 0.46, 0.85)),
-                        AuthButtonKind::SwitchFlow(_) => {
-                            BackgroundColor(Color::srgba(0.18, 0.2, 0.26, 0.85))
-                        }
-                        AuthButtonKind::Focus(_) => {
-                            BackgroundColor(Color::srgba(0.09, 0.11, 0.16, 0.95))
-                        }
-                        AuthButtonKind::Quit => {
-                            BackgroundColor(Color::srgba(0.18, 0.2, 0.26, 0.85))
-                        }
-                    };
+                AuthButtonKind::Focus(field)
+                    if field == session.focus
+                        && is_field_visible(session.selected_action, field) =>
+                {
+                    UiInteractionState::Focused
                 }
-            }
+                _ => UiInteractionState::Idle,
+            },
+        };
+
+        let (next_bg, next_border, next_shadow) = if input_box.is_some() {
+            input_surface(
+                theme,
+                matches!(
+                    state,
+                    UiInteractionState::Focused | UiInteractionState::Pressed
+                ),
+                glow_intensity,
+            )
+        } else {
+            let variant = match button.0 {
+                AuthButtonKind::Submit => UiButtonVariant::Primary,
+                AuthButtonKind::SwitchFlow(_) => UiButtonVariant::Outline,
+                AuthButtonKind::Focus(_) => UiButtonVariant::Outline,
+                AuthButtonKind::Quit => UiButtonVariant::Outline,
+            };
+            button_surface(theme, variant, state, glow_intensity)
+        };
+        *bg = next_bg;
+        if let Some(mut border) = border {
+            *border = next_border;
+        }
+        if let Some(mut shadow) = shadow {
+            *shadow = next_shadow;
         }
     }
 }
@@ -569,6 +615,7 @@ fn handle_auth_button_interactions(
 #[allow(clippy::type_complexity)]
 fn update_auth_text(
     session: Res<'_, ClientSession>,
+    active_theme: Res<'_, ActiveUiTheme>,
     mut text_sets: ParamSet<
         '_,
         '_,
@@ -579,6 +626,7 @@ fn update_auth_text(
         ),
     >,
 ) {
+    let theme = theme_definition(active_theme.0);
     let flow_title = flow_title(session.selected_action);
 
     for mut text in &mut text_sets.p1() {
@@ -594,9 +642,9 @@ fn update_auth_text(
         text.0 = session.status.clone();
         *color =
             if session.status.starts_with("Request failed") || session.status.contains("failed") {
-                TextColor(Color::srgb(0.92, 0.46, 0.46))
+                TextColor(theme.colors.destructive_color())
             } else {
-                TextColor(Color::srgba(0.72, 0.84, 0.75, 0.95))
+                TextColor(theme.colors.success_color())
             };
     }
 }
@@ -604,23 +652,12 @@ fn update_auth_text(
 fn update_auth_field_layout(
     session: Res<'_, ClientSession>,
     mut field_containers: Query<'_, '_, (&AuthUiFieldContainer, &mut Visibility)>,
-    mut input_boxes: Query<'_, '_, (&AuthUiInputBox, &mut BorderColor)>,
 ) {
     for (container, mut visibility) in &mut field_containers {
         *visibility = if is_field_visible(session.selected_action, container.field) {
             Visibility::Visible
         } else {
             Visibility::Hidden
-        };
-    }
-
-    for (input_box, mut border) in &mut input_boxes {
-        let focused = session.focus == input_box.field
-            && is_field_visible(session.selected_action, input_box.field);
-        *border = if focused {
-            BorderColor::all(Color::srgb(0.25, 0.54, 0.92))
-        } else {
-            BorderColor::all(Color::srgba(0.24, 0.28, 0.35, 0.9))
         };
     }
 }

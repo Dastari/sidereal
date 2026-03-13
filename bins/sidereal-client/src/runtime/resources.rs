@@ -366,9 +366,15 @@ pub(crate) struct DebugOverlayDisplayMetrics {
     pub initialized: bool,
 }
 
-#[derive(Debug, Resource, Default)]
+#[derive(Debug, Resource)]
 pub(crate) struct NameplateUiState {
     pub enabled: bool,
+}
+
+impl Default for NameplateUiState {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Resource, Default)]
@@ -714,6 +720,8 @@ pub(crate) struct AssetRootPath(pub String);
 pub(crate) struct EmbeddedFonts {
     pub bold: Handle<Font>,
     pub regular: Handle<Font>,
+    pub display: Handle<Font>,
+    pub mono: Handle<Font>,
 }
 
 #[derive(Resource, Default)]

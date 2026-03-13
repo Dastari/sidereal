@@ -9,7 +9,6 @@ import {
   COMPONENT_TYPE_MAX_VELOCITY_MPS,
   COMPONENT_TYPE_SIZE_M,
   COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS,
-  COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
   COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS,
   COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
@@ -25,7 +24,6 @@ import { HardpointEditor } from './HardpointEditor'
 import { MaxVelocityMpsEditor } from './MaxVelocityMpsEditor'
 import { PlanetBodyShaderSettingsEditor } from './PlanetBodyShaderSettingsEditor'
 import { SizeMEditor } from './SizeMEditor'
-import { SpaceBackgroundShaderSettingsEditor } from './SpaceBackgroundShaderSettingsEditor'
 import { StarfieldShaderSettingsEditor } from './StarfieldShaderSettingsEditor'
 import { TacticalMapUiSettingsEditor } from './TacticalMapUiSettingsEditor'
 import { ThrusterPlumeShaderSettingsEditor } from './ThrusterPlumeShaderSettingsEditor'
@@ -42,8 +40,6 @@ const EDITOR_MAP: Record<string, React.ComponentType<ComponentEditorProps>> = {
   [COMPONENT_TYPE_MAX_VELOCITY_MPS]: MaxVelocityMpsEditor,
   [COMPONENT_TYPE_SIZE_M]: SizeMEditor,
   [COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS]: StarfieldShaderSettingsEditor,
-  [COMPONENT_TYPE_SPACE_BACKGROUND_SHADER_SETTINGS]:
-    SpaceBackgroundShaderSettingsEditor,
   [COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS]: PlanetBodyShaderSettingsEditor,
   [COMPONENT_TYPE_ENVIRONMENT_LIGHTING_STATE]: EnvironmentLightingStateEditor,
   [COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS]:

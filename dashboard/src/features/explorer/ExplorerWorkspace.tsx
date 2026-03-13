@@ -21,6 +21,7 @@ import {
   AppLayout,
   Panel,
   PanelContent,
+  PanelFooter,
   PanelHeader,
 } from '@/components/layout/AppLayout'
 import { GridCanvas } from '@/components/grid/GridCanvas'
@@ -31,7 +32,8 @@ import {
 import { DetailPanel } from '@/components/sidebar/DetailPanel'
 import { StatusBar } from '@/components/sidebar/StatusBar'
 import { Toolbar } from '@/components/sidebar/Toolbar'
-import { Switch } from '@/components/ui/switch'
+import { Button } from '@/components/ui/button'
+import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group'
 import {
   AMMO_COUNT_SUFFIX,
   FUEL_TANK_SUFFIX,
@@ -57,6 +59,7 @@ import {
   playerLabel,
   resolveOwnerTypePath,
 } from '@/features/explorer/explorer-utils'
+import { Switch } from '@/components/ui'
 
 type CameraSnapshot = {
   x: number
@@ -1574,16 +1577,23 @@ export function ExplorerWorkspace({
               <h1 className="text-sm font-semibold text-foreground">
                 {scopeIsDatabase ? 'Database Explorer' : 'Game World Explorer'}
               </h1>
-              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="whitespace-nowrap">Entities Only</span>
-                <Switch
-                  checked={filterMapInvisible}
-                  onCheckedChange={(checked) => {
-                    void setRouteState({ filterMapInvisible: checked })
-                  }}
-                  aria-label="Filter to entities with EntityGuid component"
-                />
-              </label>
+              <ButtonGroup>
+                <ButtonGroupText
+                  asChild
+                  className="gap-3 px-3 text-xs text-muted-foreground border-0 bg-none!"
+                >
+                  <label className="bg-none!">
+                    <span className="whitespace-nowrap">Entities Only</span>
+                    <Switch
+                      checked={filterMapInvisible}
+                      onCheckedChange={(checked) => {
+                        void setRouteState({ filterMapInvisible: checked })
+                      }}
+                      aria-label="Filter to entities with EntityGuid component"
+                    />
+                  </label>
+                </ButtonGroupText>
+              </ButtonGroup>
             </div>
           </PanelHeader>
           <PanelContent>
@@ -1603,14 +1613,16 @@ export function ExplorerWorkspace({
               }
             />
           </PanelContent>
-          <StatusBar
-            sourceMode={sourceMode}
-            liveSourceLabel={activeBrpTab.label}
-            graphStatus={graphStatus}
-            worldStatus={worldStatus}
-            isRefreshing={isRefreshing}
-            onRefresh={loadData}
-          />
+          <PanelFooter>
+            <StatusBar
+              sourceMode={sourceMode}
+              liveSourceLabel={activeBrpTab.label}
+              graphStatus={graphStatus}
+              worldStatus={worldStatus}
+              isRefreshing={isRefreshing}
+              onRefresh={loadData}
+            />
+          </PanelFooter>
         </Panel>
       }
       sidebarWidth={sidebarWidth}
@@ -1674,12 +1686,13 @@ export function ExplorerWorkspace({
             {contextMenu.entityId ? (
               <>
                 <div className="relative group/owner">
-                  <button
+                  <Button
                     type="button"
-                    className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                    variant="ghost"
+                    className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                   >
                     Assign Owner ▸
-                  </button>
+                  </Button>
                   <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/owner:block">
                     {playerEntities.length === 0 ? (
                       <div className="px-2 py-1 text-xs text-muted-foreground">
@@ -1687,10 +1700,11 @@ export function ExplorerWorkspace({
                       </div>
                     ) : (
                       playerEntities.map((player) => (
-                        <button
+                        <Button
                           key={player.id}
                           type="button"
-                          className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                          variant="ghost"
+                          className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                           onClick={() => {
                             setContextMenu((prev) => ({ ...prev, open: false }))
                             if (!player.entityGuid || !contextMenu.entityId)
@@ -1708,14 +1722,15 @@ export function ExplorerWorkspace({
                           }}
                         >
                           {playerLabel(player)}
-                        </button>
+                        </Button>
                       ))
                     )}
                   </div>
                 </div>
-                <button
+                <Button
                   type="button"
-                  className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                  variant="ghost"
+                  className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                   onClick={() => {
                     setContextMenu((prev) => ({ ...prev, open: false }))
                     const targetEntityId = contextMenu.entityId
@@ -1730,10 +1745,11 @@ export function ExplorerWorkspace({
                   }}
                 >
                   Repair & Refuel
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
-                  className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                  variant="ghost"
+                  className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                   onClick={() => {
                     setContextMenu((prev) => ({ ...prev, open: false }))
                     const targetEntityId = contextMenu.entityId
@@ -1750,11 +1766,12 @@ export function ExplorerWorkspace({
                   }}
                 >
                   Move to 0,0
-                </button>
+                </Button>
                 <div className="border-t border-border-subtle my-1" />
-                <button
+                <Button
                   type="button"
-                  className="block w-full rounded px-2 py-1 text-left text-sm text-destructive hover:bg-destructive/10"
+                  variant="ghost"
+                  className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm text-destructive hover:bg-destructive/10"
                   onClick={() => {
                     setContextMenu((prev) => ({ ...prev, open: false }))
                     const targetEntityId = contextMenu.entityId
@@ -1769,24 +1786,26 @@ export function ExplorerWorkspace({
                   }}
                 >
                   Delete Entity
-                </button>
+                </Button>
               </>
             ) : (
               <>
                 <div className="relative group/spawn">
-                  <button
+                  <Button
                     type="button"
-                    className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                    variant="ghost"
+                    className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                   >
                     Spawn Ship ▸
-                  </button>
+                  </Button>
                   <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/spawn:block">
                     {spawnTemplates.length > 0 ? (
                       spawnTemplates.map((template) => (
-                        <button
+                        <Button
                           key={template.templateId}
                           type="button"
-                          className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                          variant="ghost"
+                          className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                           onClick={() => {
                             setContextMenu((prev) => ({ ...prev, open: false }))
                             void handleSpawnTemplate(template.templateId).catch(
@@ -1801,7 +1820,7 @@ export function ExplorerWorkspace({
                           }}
                         >
                           {template.label}
-                        </button>
+                        </Button>
                       ))
                     ) : (
                       <div className="px-2 py-1 text-xs text-muted-foreground">
@@ -1811,12 +1830,13 @@ export function ExplorerWorkspace({
                   </div>
                 </div>
                 <div className="relative group/movehere">
-                  <button
+                  <Button
                     type="button"
-                    className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                    variant="ghost"
+                    className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                   >
                     Move Ship Here ▸
-                  </button>
+                  </Button>
                   <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/movehere:block">
                     {contextMenu.worldX === null ||
                     contextMenu.worldY === null ? (
@@ -1829,10 +1849,11 @@ export function ExplorerWorkspace({
                       </div>
                     ) : (
                       shipEntities.map((ship) => (
-                        <button
+                        <Button
                           key={ship.id}
                           type="button"
-                          className="block w-full rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                          variant="ghost"
+                          className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
                           onClick={() => {
                             setContextMenu((prev) => ({ ...prev, open: false }))
                             if (
@@ -1855,7 +1876,7 @@ export function ExplorerWorkspace({
                           }}
                         >
                           {ship.name}
-                        </button>
+                        </Button>
                       ))
                     )}
                   </div>

@@ -4,6 +4,25 @@
 **Date:** 2026-02-20  
 **Audience:** Frontend developers, AI agents, UI contributors
 
+Update note (2026-03-13):
+
+- Entry-flow migration to the new native `sidereal-ui` kit has started.
+- Auth and character-select screens now target thegridcn-inspired typography and semantic theming direction.
+- Canonical UI font roles are moving to:
+  - primary/body: `Rajdhani`
+  - display/headings: `Orbitron`
+  - mono/telemetry: `Geist Mono`
+- Theme tokens are moving toward an OKLCH-authored semantic palette aligned to the `sidereal-ui` theme registry. Legacy screens may still use older direct `Color::srgb` / `Color::srgba` values until they are migrated.
+
+Update note (2026-03-14):
+
+- `sidereal-ui` primary boxed surfaces should use a thegridcn-style HUD frame treatment.
+- Keep the active semantic theme palette, but prefer square geometry, attached uppercase frame labels, and corner brackets over rounded card shells.
+- Nested composition and basic flex/grid layout should continue to use native Bevy UI through `sidereal-ui::layout`.
+- HUD frames should include subtle scanline overlays inspired by thegridcn.
+- Buttons and inputs should use `Rajdhani` by default; `Geist Mono` remains for telemetry/frame labels where appropriate.
+- Glow should be driven by one shared runtime scalar, `UiVisualSettings.glow_intensity`, where `0.0` disables glow and higher values increase emitted UI bloom.
+
 ## 1. Design Philosophy
 
 Sidereal uses a **dark space-themed aesthetic** that emphasizes:
@@ -11,6 +30,7 @@ Sidereal uses a **dark space-themed aesthetic** that emphasizes:
 - **Consistent spacing and hierarchy** for predictable UX
 - **Subdued colors with strategic accents** to reduce eye strain during long sessions
 - **Modern, minimal design** appropriate for a professional space sim
+- **Angular HUD framing** rather than rounded consumer-app panel styling
 
 ## 2. Color Palette
 
@@ -93,8 +113,11 @@ Color::srgba(0.4, 0.5, 0.65, 1.0)
 ### Fonts
 
 **Primary Font Stack:**
-- Bold: `data/fonts/FiraSans-Bold.ttf` (headers, buttons, emphasis)
-- Regular: `data/fonts/FiraSans-Regular.ttf` (body text, inputs)
+- Body regular: `data/fonts/Rajdhani-Regular.ttf`
+- Body bold: `data/fonts/Rajdhani-Bold.ttf`
+- Display: `data/fonts/Orbitron-Variable.ttf`
+- Mono regular: `data/fonts/GeistMono-Regular.ttf`
+- Mono bold: `data/fonts/GeistMono-Bold.ttf`
 
 ### Font Sizes
 
@@ -136,18 +159,15 @@ margin: UiRect::bottom(Val::Px(8.0))  // Section spacing
 ### Border Radius
 
 ```rust
-// Large panels, dialogs
-border_radius: BorderRadius::all(Val::Px(12.0))
-
-// Buttons, inputs
-border_radius: BorderRadius::all(Val::Px(6.0))
+// Default sidereal-ui panels, buttons, and inputs
+border_radius: BorderRadius::all(Val::Px(0.0))
 ```
 
 ### Border Width
 
 ```rust
 // Panel borders
-border: UiRect::all(Val::Px(2.0))
+border: UiRect::all(Val::Px(1.0))
 
 // Input/button borders
 border: UiRect::all(Val::Px(1.0))
@@ -225,13 +245,19 @@ margin: UiRect::top(Val::Px(8.0))
 
 ```rust
 // Auth panel
-width: Val::Px(540.0)
-padding: UiRect::all(Val::Px(30.0))
-border: UiRect::all(Val::Px(2.0))
-border_radius: BorderRadius::all(Val::Px(12.0))
+width: Val::Px(560.0)
+padding: UiRect::all(Val::Px(28.0))
+border: UiRect::all(Val::Px(1.0))
+border_radius: BorderRadius::all(Val::Px(0.0))
+overflow: Overflow::visible()
 row_gap: Val::Px(14.0)
-background: Color::srgba(0.06, 0.08, 0.12, 0.92)
-border_color: Color::srgba(0.2, 0.3, 0.45, 0.8)
+background: active theme panel token
+border_color: active theme primary/border token
+
+// HUD frame chrome
+attached_title: uppercase mono label above top edge
+corner_brackets: all four corners
+accent_rules: thin top and bottom lines inset from the corners
 
 // Animated backdrop (subtle pulse)
 // Pulses between ~0.03 and ~0.045 over sine wave
@@ -243,7 +269,7 @@ border_color: Color::srgba(0.2, 0.3, 0.45, 0.8)
 width: Val::Px(480.0)
 height: Val::Px(42.0)
 padding: UiRect::axes(Val::Px(12.0), Val::Px(10.0))
-border_radius: BorderRadius::all(Val::Px(6.0))
+border_radius: BorderRadius::all(Val::Px(0.0))
 background: Color::srgba(0.08, 0.1, 0.14, 0.95)
 ```
 
@@ -253,7 +279,7 @@ background: Color::srgba(0.08, 0.1, 0.14, 0.95)
 width: Val::Px(480.0)
 height: Val::Px(46.0)
 margin: UiRect::top(Val::Px(12.0))
-border_radius: BorderRadius::all(Val::Px(6.0))
+border_radius: BorderRadius::all(Val::Px(0.0))
 background: Color::srgba(0.18, 0.3, 0.54, 0.95)
 hover: Color::srgb(0.2, 0.35, 0.65)
 active: Color::srgb(0.16, 0.38, 0.74)
@@ -264,9 +290,15 @@ active: Color::srgb(0.16, 0.38, 0.74)
 ```rust
 height: Val::Px(34.0)
 padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0))
-border_radius: BorderRadius::all(Val::Px(6.0))
+border_radius: BorderRadius::all(Val::Px(0.0))
 background: Color::srgba(0.18, 0.2, 0.26, 0.85)
 ```
+
+**Behavior:**
+- Use `sidereal_ui::widgets::spawn_hud_frame_chrome(...)` on shared primary panels and dialogs unless a screen has a documented exception.
+- Keep the palette driven by the active semantic theme; frame styling should not introduce ad hoc colors.
+- Input labels should render uppercase.
+- Buttons and inputs should receive hover/focus glow from the shared global glow-intensity setting rather than screen-local hardcoded values.
 
 ### 5.3 HUD / In-Game UI
 

@@ -30,6 +30,7 @@ pub struct RuntimeAssetCatalogEntry {
     pub byte_len: u64,
     pub sha256_hex: String,
     pub bootstrap_required: bool,
+    pub startup_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +137,7 @@ pub fn build_runtime_asset_catalog(
             byte_len: bytes.len() as u64,
             sha256_hex,
             bootstrap_required: asset.bootstrap_required,
+            startup_required: asset.startup_required,
         });
     }
     Ok(out)
@@ -153,6 +155,7 @@ pub fn catalog_version(entries: &[RuntimeAssetCatalogEntry]) -> String {
                 entry.shader_family.as_deref().unwrap_or(""),
                 entry.sha256_hex.as_str(),
                 entry.bootstrap_required,
+                entry.startup_required,
                 dependencies,
             )
         })
@@ -161,8 +164,15 @@ pub fn catalog_version(entries: &[RuntimeAssetCatalogEntry]) -> String {
 
     let mut digest = Sha256::new();
     digest.update(b"sidereal-catalog-v1");
-    for (asset_id, asset_guid, shader_family, sha256_hex, bootstrap_required, dependencies) in
-        records
+    for (
+        asset_id,
+        asset_guid,
+        shader_family,
+        sha256_hex,
+        bootstrap_required,
+        startup_required,
+        dependencies,
+    ) in records
     {
         digest.update(b"\nasset:");
         digest.update(asset_id.as_bytes());
@@ -174,6 +184,8 @@ pub fn catalog_version(entries: &[RuntimeAssetCatalogEntry]) -> String {
         digest.update(sha256_hex.as_bytes());
         digest.update(b":");
         digest.update(if bootstrap_required { b"1" } else { b"0" });
+        digest.update(b":");
+        digest.update(if startup_required { b"1" } else { b"0" });
         for dependency in dependencies {
             digest.update(b":dep:");
             digest.update(dependency.as_bytes());
@@ -335,6 +347,7 @@ mod tests {
             byte_len: 7,
             sha256_hex: sha256_hex(b"payload"),
             bootstrap_required: true,
+            startup_required: false,
         };
 
         let materialized = materialize_runtime_asset(&asset_root, &entry).expect("materialize");
@@ -363,9 +376,34 @@ mod tests {
             byte_len: 3,
             sha256_hex: "abc".to_string(),
             bootstrap_required: true,
+            startup_required: false,
         };
         let mut changed_entry = base_entry.clone();
         changed_entry.dependencies.push("texture.b".to_string());
+
+        assert_ne!(
+            catalog_version(&[base_entry]),
+            catalog_version(&[changed_entry])
+        );
+    }
+
+    #[test]
+    fn catalog_version_changes_when_startup_policy_changes() {
+        let base_entry = RuntimeAssetCatalogEntry {
+            asset_id: "audio.music.menu_loop".to_string(),
+            asset_guid: "guid-1".to_string(),
+            shader_family: None,
+            dependencies: Vec::new(),
+            relative_cache_path: "audio/guid-1.ogg".to_string(),
+            source_path: "music/menu-loop.ogg".to_string(),
+            content_type: "audio/ogg".to_string(),
+            byte_len: 3,
+            sha256_hex: "abc".to_string(),
+            bootstrap_required: true,
+            startup_required: false,
+        };
+        let mut changed_entry = base_entry.clone();
+        changed_entry.startup_required = true;
 
         assert_ne!(
             catalog_version(&[base_entry]),

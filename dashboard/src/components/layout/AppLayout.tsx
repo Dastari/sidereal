@@ -1,5 +1,11 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
+import {
+  SidebarNavBody,
+  SidebarNavFooter,
+  SidebarNavFrame,
+  SidebarNavHeader,
+} from '@/components/ui/sidebar-nav'
 
 interface AppLayoutProps {
   children: React.ReactNode
@@ -95,39 +101,37 @@ export function AppLayout({
   }, [isDetailDragging, currentDetailWidth, onDetailPanelResize])
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+    <div className="flex h-full w-full flex-col bg-background">
       {header && (
-        <header className="flex-none border-b border-border bg-card">
+        <header className="grid-header flex-none border-b border-border bg-card">
           {header}
         </header>
       )}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-x-hidden overflow-y-visible">
         {sidebar && (
           <aside
-            className="flex-none border-r border-border bg-card overflow-hidden relative"
+            className="relative flex-none bg-transparent px-2 py-2 z-5"
             style={{ width: currentSidebarWidth }}
           >
             {sidebar}
             <div
               className={cn(
-                'absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/20 transition-colors',
+                'absolute right-0 top-0 h-full w-1 cursor-col-resize transition-colors hover:bg-primary/20',
                 isSidebarDragging && 'bg-primary/40',
               )}
               onMouseDown={handleSidebarMouseDown}
             />
           </aside>
         )}
-        <main className="grow flex overflow-hidden relative bg-card">
-          {children}
-        </main>
+        <main className="grow relative flex bg-card">{children}</main>
         {detailPanel && (
           <aside
-            className="flex-none border-l border-border bg-card overflow-hidden relative"
+            className="relative flex-none bg-transparent px-2 py-2 pl-0 z-5"
             style={{ width: currentDetailWidth }}
           >
             <div
               className={cn(
-                'absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-primary/20 transition-colors',
+                'absolute -left-1.5 top-0 h-full w-1 cursor-col-resize transition-colors hover:bg-primary/20',
                 isDetailDragging && 'bg-primary/40',
               )}
               onMouseDown={handleDetailMouseDown}
@@ -147,11 +151,9 @@ interface PanelProps {
 
 export function Panel({ children, className }: PanelProps) {
   return (
-    <div
-      className={cn('flex h-full flex-col overflow-hidden z-100', className)}
-    >
+    <SidebarNavFrame className={cn('z-100 h-full', className)}>
       {children}
-    </div>
+    </SidebarNavFrame>
   )
 }
 
@@ -163,14 +165,9 @@ export function PanelHeader({
   className?: string
 }) {
   return (
-    <div
-      className={cn(
-        'flex-none px-5 py-3 border-b border-border-subtle',
-        className,
-      )}
-    >
+    <SidebarNavHeader className={cn('flex-none px-5 py-3', className)}>
       {children}
-    </div>
+    </SidebarNavHeader>
   )
 }
 
@@ -181,5 +178,19 @@ export function PanelContent({
   children: React.ReactNode
   className?: string
 }) {
-  return <div className={cn('flex-1 overflow-auto', className)}>{children}</div>
+  return (
+    <SidebarNavBody className={className}>
+      <div className="h-full overflow-auto">{children}</div>
+    </SidebarNavBody>
+  )
+}
+
+export function PanelFooter({
+  children,
+  className,
+}: {
+  children: React.ReactNode
+  className?: string
+}) {
+  return <SidebarNavFooter className={className}>{children}</SidebarNavFooter>
 }

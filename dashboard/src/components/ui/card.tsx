@@ -1,14 +1,15 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
+import { HUDFrame } from '@/components/ui/hud-frame'
 
 const Card = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div
+  <HUDFrame
     ref={ref}
     className={cn(
-      'rounded-lg border border-border bg-card text-card-foreground shadow-sm',
+      'grid-panel border border-border bg-card text-card-foreground shadow-sm',
       className,
     )}
     {...props}

@@ -5,8 +5,9 @@ use uuid::Uuid;
 
 use crate::{
     ActionQueue, AmmoCount, BallisticProjectile, BallisticWeapon, CombatAuthorityEnabled,
-    DamageType, EntityAction, EntityGuid, Hardpoint, HealthPool, MountedOn, OwnerId, ParentGuid,
-    PlayerTag, PublicVisibility, SimulationMotionWriter, WeaponCooldownState,
+    DamageType, Destructible, EntityAction, EntityGuid, Hardpoint, HealthPool, MountedOn, OwnerId,
+    ParentGuid, PendingDestruction, PendingDestructionPhase, PlayerTag, PublicVisibility,
+    SimulationMotionWriter, WeaponCooldownState, WorldPosition, resolve_world_position,
 };
 
 const PROJECTILE_COLLISION_RADIUS_M: f32 = 0.35;
@@ -53,6 +54,23 @@ pub struct BallisticProjectileSpawnedEvent {
     pub projectile_entity: Entity,
     pub shooter_guid: Uuid,
     pub owner_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Message)]
+pub struct EntityDestructionStartedEvent {
+    pub entity: Entity,
+    pub entity_guid: Uuid,
+    pub destruction_profile_id: String,
+    pub effect_origin: Vec2,
+    pub destroy_delay_s: f32,
+}
+
+#[derive(Debug, Clone, Message)]
+pub struct EntityDestroyedEvent {
+    pub entity: Entity,
+    pub entity_guid: Uuid,
+    pub destruction_profile_id: String,
+    pub effect_origin: Vec2,
 }
 
 pub fn bootstrap_weapon_cooldown_state(
@@ -420,6 +438,87 @@ pub fn apply_damage_from_shot_impacts(
             damage: resolved.damage_per_shot,
             damage_type: resolved.damage_type,
         });
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn begin_pending_destructions(
+    mut commands: Commands<'_, '_>,
+    destructibles: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            &'_ HealthPool,
+            &'_ Destructible,
+            Option<&'_ Position>,
+            Option<&'_ WorldPosition>,
+        ),
+        Without<PendingDestruction>,
+    >,
+    mut started_events: MessageWriter<'_, EntityDestructionStartedEvent>,
+) {
+    for (entity, entity_guid, health_pool, destructible, position, world_position) in &destructibles
+    {
+        if health_pool.current > 0.0 {
+            continue;
+        }
+        let destroy_delay_s = destructible.destroy_delay_s.max(0.0);
+        let destruction_profile_id = destructible.destruction_profile_id.clone();
+        commands.entity(entity).insert(PendingDestruction {
+            destruction_profile_id: destruction_profile_id.clone(),
+            remaining_delay_s: destroy_delay_s,
+            phase: PendingDestructionPhase::EffectDelay,
+        });
+        started_events.write(EntityDestructionStartedEvent {
+            entity,
+            entity_guid: entity_guid.0,
+            destruction_profile_id,
+            effect_origin: resolve_world_position(position, world_position).unwrap_or(Vec2::ZERO),
+            destroy_delay_s,
+        });
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn advance_pending_destructions(
+    mut commands: Commands<'_, '_>,
+    time: Res<'_, Time<Fixed>>,
+    mut pending: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            &'_ mut PendingDestruction,
+            Option<&'_ Position>,
+            Option<&'_ WorldPosition>,
+        ),
+    >,
+    mut destroyed_events: MessageWriter<'_, EntityDestroyedEvent>,
+) {
+    let dt_s = time.delta_secs().max(0.0);
+    for (entity, entity_guid, mut pending, position, world_position) in &mut pending {
+        match pending.phase {
+            PendingDestructionPhase::EffectDelay => {
+                pending.remaining_delay_s = (pending.remaining_delay_s - dt_s).max(0.0);
+                if pending.remaining_delay_s > 0.0 {
+                    continue;
+                }
+                pending.phase = PendingDestructionPhase::AwaitDestroyedEventDispatch;
+                destroyed_events.write(EntityDestroyedEvent {
+                    entity,
+                    entity_guid: entity_guid.0,
+                    destruction_profile_id: pending.destruction_profile_id.clone(),
+                    effect_origin: resolve_world_position(position, world_position)
+                        .unwrap_or(Vec2::ZERO),
+                });
+            }
+            PendingDestructionPhase::AwaitDestroyedEventDispatch => {
+                commands.entity(entity).despawn();
+            }
+        }
     }
 }
 

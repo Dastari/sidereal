@@ -91,6 +91,7 @@ pub struct AssetBootstrapManifestEntry {
     pub asset_guid: String,
     pub shader_family: Option<String>,
     pub dependencies: Vec<String>,
+    pub startup_required: bool,
     pub sha256_hex: String,
     pub relative_cache_path: String,
     pub content_type: String,

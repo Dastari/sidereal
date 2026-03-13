@@ -138,8 +138,10 @@ fn render_impact_spark(mesh: VertexOutput) -> vec4<f32> {
 }
 
 fn render_explosion(mesh: VertexOutput) -> vec4<f32> {
-    let uv = mesh.uv * 2.0 - 1.0;
+    let domain_scale = max(effect.params_b.x, 1.0);
+    let uv = (mesh.uv * 2.0 - 1.0) * domain_scale;
     let r = length(uv);
+    let angle = atan2(uv.y, uv.x);
     let age = clamp(effect.identity_a.y, 0.0, 1.0);
     let life = 1.0 - age;
     let intensity = max(effect.identity_a.z, 0.0);
@@ -148,29 +150,40 @@ fn render_explosion(mesh: VertexOutput) -> vec4<f32> {
     let noise_strength = max(effect.params_a.y, 0.0);
 
     let noise = hash21(vec2<f32>(floor((uv.x + 1.2) * 11.0), floor((uv.y + age) * 13.0))) * 2.0 - 1.0;
-    let warped_r = r + noise * noise_strength * 0.08;
+    let distortion_band = smoothstep(0.12, 0.26, r)
+        * smoothstep(0.95, 0.28, r)
+        * life;
+    let distortion_dir = vec2<f32>(cos(angle), sin(angle));
+    let distorted_uv = uv + distortion_dir * distortion_band * noise_strength * 0.16;
+    let distorted_r = length(distorted_uv) + noise * noise_strength * 0.07;
 
-    let core_radius = mix(0.18, 0.04, age);
-    let core = exp(-pow(warped_r / max(core_radius, 0.001), 2.0)) * mix(1.8, 0.35, age);
+    let core_radius = mix(0.32, 0.06, age);
+    let core = smoothstep(core_radius, 0.0, distorted_r) * mix(2.2, 0.55, age);
 
-    let ring_radius = mix(0.14, 0.72 * expansion, age);
-    let ring_width = mix(0.2, 0.08, age);
-    let shock = exp(-pow((warped_r - ring_radius) / max(ring_width, 0.001), 2.0));
+    let shock_radius = mix(0.08, 0.84 * expansion, age);
+    let shock_width = mix(0.22, 0.08, age);
+    let shock = (1.0 - smoothstep(0.0, shock_width, abs(distorted_r - shock_radius)))
+        * mix(1.35, 0.55, age);
 
-    let plume = smoothstep(1.0, 0.12, warped_r)
-        * smoothstep(0.0, 0.55, warped_r)
-        * mix(0.45, 0.22, age);
-    let smoke = smoothstep(1.2, 0.3, warped_r)
-        * smoothstep(0.05, 0.88, warped_r)
+    let plume = smoothstep(1.08, 0.16, distorted_r)
+        * smoothstep(0.02, 0.64, distorted_r)
+        * mix(0.82, 0.28, age);
+    let smoke = smoothstep(1.18, 0.32, distorted_r)
+        * smoothstep(0.12, 0.92, distorted_r)
         * age
-        * 0.38;
+        * 0.46;
+    let light = smoothstep(0.62, 0.0, distorted_r) * mix(1.65, 0.72, age);
 
-    let energy = (core + shock * 1.25 + plume) * intensity;
-    let core_rgb = effect.color_a.rgb * (core * 1.1 + plume * 0.25);
-    let rim_rgb = effect.color_b.rgb * (shock * 1.4 + plume * 0.55);
+    let energy = (core + shock * 1.55 + plume * 0.85 + light) * intensity;
+    let core_rgb = effect.color_a.rgb * (core * 1.45 + light * 0.95 + plume * 0.18);
+    let rim_rgb = effect.color_b.rgb * (shock * 1.9 + plume * 0.72);
     let smoke_rgb = effect.color_c.rgb * smoke;
     let rgb = core_rgb + rim_rgb + smoke_rgb;
-    let out_alpha = clamp((energy + smoke * 0.45) * alpha * mix(1.0, 0.28, age), 0.0, 1.0);
+    let out_alpha = clamp(
+        (energy + smoke * 0.55) * alpha * mix(1.0, 0.34, age),
+        0.0,
+        1.0
+    );
 
     return vec4<f32>(rgb, out_alpha);
 }

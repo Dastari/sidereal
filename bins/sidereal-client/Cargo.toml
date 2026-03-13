@@ -25,6 +25,7 @@ sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime", default
 sidereal-game = { path = "../../crates/sidereal-game" }
 sidereal-net = { path = "../../crates/sidereal-net", features = ["lightyear_protocol"] }
 sidereal-runtime-sync = { path = "../../crates/sidereal-runtime-sync", default-features = false }
+sidereal-ui = { path = "../../crates/sidereal-ui" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

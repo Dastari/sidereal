@@ -4,6 +4,10 @@ Status: Proposed implementation plan
 Date: 2026-03-03  
 Owners: gameplay runtime + replication simulation + AI runtime + client prediction
 
+Update note (2026-03-13):
+- `docs/features/fly_by_wire_thrust_allocation_contract.md` is now the authoritative architecture contract for this work.
+- This plan remains useful as precursor execution material, but implementation slices should be derived from the feature contract so Lua boundaries, Avian integration, and plume ownership stay consistent.
+
 Primary references:
 - `docs/sidereal_design_document.md`
 - `docs/decisions/dr-0013_action_acceptor_control_routing.md`

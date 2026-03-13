@@ -44,7 +44,7 @@ pub const DEFAULT_THRUSTER_PLUME_SHADER_SETTINGS_JSON: &str = r#"{
     kind = "thruster_plume_shader_settings",
     persist = true,
     replicate = true,
-    visibility = [OwnerOnly]
+    visibility = [Public]
 )]
 #[derive(Debug, Clone, Component, Reflect, Serialize, Deserialize, PartialEq)]
 #[reflect(Component, Serialize, Deserialize)]

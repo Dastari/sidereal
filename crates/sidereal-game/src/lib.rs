@@ -27,9 +27,11 @@ pub use collision_outline_generation::{
     generate_rdp_collision_outline_from_sprite_png,
 };
 pub use combat::{
-    BallisticProjectileSpawnedEvent, ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent,
-    apply_damage_from_shot_impacts, bootstrap_weapon_cooldown_state, process_weapon_fire_actions,
-    resolve_shot_impacts, tick_weapon_cooldowns, update_ballistic_projectiles,
+    BallisticProjectileSpawnedEvent, EntityDestroyedEvent, EntityDestructionStartedEvent,
+    ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent, advance_pending_destructions,
+    apply_damage_from_shot_impacts, begin_pending_destructions, bootstrap_weapon_cooldown_state,
+    process_weapon_fire_actions, resolve_shot_impacts, tick_weapon_cooldowns,
+    update_ballistic_projectiles,
 };
 pub use component_meta::*;
 pub use components::*;
@@ -128,6 +130,8 @@ impl Plugin for SiderealGamePlugin {
         app.add_message::<ShotImpactResolvedEvent>();
         app.add_message::<ShotHitEvent>();
         app.add_message::<BallisticProjectileSpawnedEvent>();
+        app.add_message::<EntityDestructionStartedEvent>();
+        app.add_message::<EntityDestroyedEvent>();
 
         let add_hierarchy_rebuild = app
             .world()
@@ -166,6 +170,8 @@ impl Plugin for SiderealGamePlugin {
                 update_ballistic_projectiles,
                 resolve_shot_impacts,
                 apply_damage_from_shot_impacts,
+                begin_pending_destructions,
+                advance_pending_destructions,
                 recompute_total_mass,
                 apply_engine_thrust,
             )

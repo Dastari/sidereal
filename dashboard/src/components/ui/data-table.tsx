@@ -18,6 +18,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { HUDFrame } from '@/components/ui/hud-frame'
 
 export type DataTableSortDirection = 'asc' | 'desc'
 
@@ -296,7 +297,7 @@ export function DataTable<T>({
     const observer = new IntersectionObserver(
       (entries) => {
         const [entry] = entries
-        if (!entry?.isIntersecting) return
+        if (!entry.isIntersecting) return
         if (isLoadingMore) return
         void onLoadMore()
       },
@@ -376,10 +377,9 @@ export function DataTable<T>({
     (event: React.MouseEvent, column: DataTableColumn<T>) => {
       event.preventDefault()
       const startX = event.clientX
-      const startingWidth =
-        internalColumnWidths[column.id] ??
-        column.width ??
-        Math.max(column.minWidth ?? 120, 120)
+      const startingWidth = Object.hasOwn(internalColumnWidths, column.id)
+        ? internalColumnWidths[column.id]
+        : (column.width ?? Math.max(column.minWidth ?? 120, 120))
       const minWidth = column.minWidth ?? 80
       const maxWidth = column.maxWidth ?? 960
 
@@ -460,14 +460,16 @@ export function DataTable<T>({
               >
                 <div className="flex items-center gap-1">
                   {isSortable ? (
-                    <button
+                    <Button
                       type="button"
-                      className="inline-flex items-center gap-1 text-left hover:text-foreground"
+                      variant="ghost"
+                      size="sm"
+                      className="h-auto items-center gap-1 px-0 py-0 text-left hover:text-foreground"
                       onClick={() => updateSortForColumn(column)}
                     >
                       <span>{column.header}</span>
                       {activeSort ? (
-                        effectiveSortState?.direction === 'asc' ? (
+                        effectiveSortState.direction === 'asc' ? (
                           <ArrowUp className="h-3.5 w-3.5" />
                         ) : (
                           <ArrowDown className="h-3.5 w-3.5" />
@@ -475,14 +477,15 @@ export function DataTable<T>({
                       ) : (
                         <ArrowUpDown className="h-3.5 w-3.5 opacity-60" />
                       )}
-                    </button>
+                    </Button>
                   ) : (
                     <span>{column.header}</span>
                   )}
                 </div>
-                <button
+                <Button
                   type="button"
-                  className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize opacity-0 transition-opacity hover:opacity-100"
+                  variant="ghost"
+                  className="absolute right-0 top-0 h-full w-1.5 min-w-0 cursor-col-resize rounded-none border-0 px-0 py-0 opacity-0 transition-opacity hover:opacity-100"
                   onMouseDown={(event) => onColumnResizeStart(event, column)}
                   aria-label={`Resize ${String(column.header)} column`}
                 />
@@ -580,7 +583,7 @@ export function DataTable<T>({
   )
 
   return (
-    <div className={cn('rounded-md border border-border/70', className)}>
+    <HUDFrame className={className}>
       <div
         className={cn(
           'flex flex-wrap items-center gap-3 border-b border-border/70 bg-background/40 px-4 py-3',
@@ -607,7 +610,7 @@ export function DataTable<T>({
                 Columns
               </Button>
             </summary>
-            <div className="absolute right-0 z-20 mt-2 min-w-[220px] rounded-md border border-border bg-card p-2 shadow-lg">
+            <HUDFrame className="absolute right-0 z-20 mt-2 min-w-[220px] p-2 shadow-lg">
               {hideableColumns.map((column) => {
                 const visible = visibleColumnIds.has(column.id)
                 const canHide = column.enableHiding !== false
@@ -633,7 +636,7 @@ export function DataTable<T>({
                   </label>
                 )
               })}
-            </div>
+            </HUDFrame>
           </details>
         ) : null}
 
@@ -712,6 +715,6 @@ export function DataTable<T>({
           </div>
         </div>
       ) : null}
-    </div>
+    </HUDFrame>
   )
 }

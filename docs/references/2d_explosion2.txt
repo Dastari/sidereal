@@ -1,0 +1,64 @@
+#define cycle_interval 5.
+#define t mod(iTime, cycle_interval)
+#define SEED (float(int(iTime) / int(cycle_interval)) / 1000. + .012)
+#define PI 3.141592654
+
+const float particles = 100.;
+const float c = 50.; // drag coeff.
+const float m = 2.; // particle mass
+const float sqrt_c = sqrt(c);
+const float sqrt_m = sqrt(m);
+
+// [0, 1)
+float rand(vec2 co){
+    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+// x: [0, PI] -> [0, 1)
+float rand(float x){
+    return fract(sin(x) * 43758.5453);
+}
+
+// i: (-1, 1)
+vec2 randVec(float i) {
+    float phi = rand(SEED + i + .01) * PI * 2.,
+            r = rand(SEED - i + .02);
+	return vec2(cos(phi), sin(phi)) * r;
+}
+
+vec2 randVecRing(float i) {
+    return normalize(vec2(rand(SEED + i + .001) - .5, rand(SEED + i + .002) - .5));
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+	vec2 uv = fragCoord.xy / iResolution.y - vec2(iResolution.x / iResolution.y / 2., .5);
+    vec4 cl = vec4(0,0,.3,1);
+
+    for (float i = 0.; i < particles; i++) {
+        float seed = i / particles;
+        vec2 p0 = (randVec(seed)) / 10.;
+        vec2 v0 = (randVec(seed + .1)) * .8;
+        
+        vec2 p = p0 - v0 * 2. * sqrt_m * atan(sqrt_c * t / sqrt_m) / sqrt_c;
+
+        float d = smoothstep(.0, 1., 1. - clamp(7. * distance(uv, p), 0., 1.));
+
+        cl += .2 * vec4(1., .9, .5, 1) * mix(d, 0., t / cycle_interval);
+    }
+
+    for (float i = 0.; i < particles; i++) {
+        float seed = i / particles;
+        vec2 p0 = (randVec(seed)) / 50.;
+        vec2 v0 = (randVecRing(seed + .01)) * (.2*rand(seed + .02) + .7);
+        
+        vec2 p = p0 - v0 * 2. * sqrt_m * atan(sqrt_c * t / sqrt_m) / sqrt_c;
+
+        float d = smoothstep(.15, .0, distance(uv, p));
+
+        cl += mix(vec4(.7, .4, .0, 1) * d, -1. * vec4(.1, .1, .1, 1) * d, t / cycle_interval);
+        cl = mix(cl,vec4(.3, .3, .3, 1.), mix(d, 0., 1. - t / cycle_interval));
+    }
+
+    fragColor = cl;
+}

@@ -11,6 +11,23 @@ Update note (2026-03-12):
 - Password reset workflows must return acceptance state only; raw reset tokens must not be rendered back into the browser by default.
 - The database tool now uses route-owned initial data loading through a shared server loader/server function path instead of effect-owned first-render fetches.
 
+Update note (2026-03-13):
+
+- The dashboard now supports a GridCN-aligned visual theme layer on top of the existing semantic token system. `data-theme` is now reserved for the GridCN visual theme family (`tron`, `ares`, `clu`, `athena`, `aphrodite`, `poseidon`), while browser color-scheme continues to be controlled through the existing `light`/`dark` classes and `system` resolution.
+- GridCN intensity (`off`, `light`, `medium`, `heavy`) is now an allowed dashboard visual control, but components must still consume semantic tokens rather than hardcoded per-component colors.
+- The default operator direction remains cool-toned (`tron`-style / blue-cyan family) even though warmer or pink accent themes are technically supported.
+- GridCN frame adoption should stay sharp rather than soft: explorer side panels should prefer the local sidebar-nav shell, bounded technical surfaces should prefer the local HUD-frame wrapper, and large `rounded-xl` panel chrome should not be reintroduced on those GridCN-framed surfaces.
+- 2026-03-14: explorer/tactical grid overlays should use the local GridCN wrapper layer and respect dashboard theme intensity. Decorative scan/grid effects belong on the grid canvas container, not on shell panels or route backgrounds.
+- 2026-03-14: bottom-of-grid HUD readouts should prefer GridCN display components fed by live camera/selection state rather than ad hoc text pills. Keep them in the grid canvas overlay lane and style them from semantic tokens.
+- Modal and confirmation flows should keep using the shared local `Dialog` and `AlertDialog` wrappers, but those wrappers should present as GridCN-framed overlays rather than default rounded card dialogs.
+
+Update note (2026-03-14):
+
+- Segmented selectors should prefer the shared local GridCN-aligned `Tabs` wrapper, and compact grouped controls should prefer the shared local `ButtonGroup` wrapper rather than ad hoc adjacent bordered buttons.
+- Explorer/tool header toggle controls and schema-editor boolean fields should use the shared local `Switch` wrapper inside those grouped control surfaces instead of bespoke label-plus-toggle rows.
+- Shared dashboard buttons, inputs, badges, dropdown menus, and table primitives should continue to route through the local wrapper layer under `dashboard/src/components/ui/`, and those wrappers should stay aligned to the GridCN interaction model rather than falling back to plain shadcn defaults or route-local one-off styling.
+- Single-value editor sliders should prefer the local GridCN-style slider component; keep the shared Radix slider wrapper for true range sliders and other multi-thumb cases that the GridCN custom slider does not cover cleanly.
+
 ## 1. Scope
 
 This guide defines the enforceable UI, theming, routing, validation, and frontend architecture standards for the web frontend under `dashboard/`.
@@ -65,6 +82,11 @@ Forbidden except for tightly scoped bootstrapping or rendering cases:
 - one-off gradients or shadows that are not part of the design system,
 - introducing a new accent color without updating this guide.
 
+GridCN-specific clarification:
+
+- GridCN theme support is allowed only through root theme attributes and semantic token remapping.
+- Do not hardcode `tron`, `ares`, or other theme colors inside component logic when a semantic token or shared utility class can be used instead.
+
 ### 3.2 Dashboard palette direction
 
 The dashboard should stay aligned to the native client mood:
@@ -75,11 +97,17 @@ The dashboard should stay aligned to the native client mood:
 - Secondary emphasis: muted steel/neutral.
 - Success/warning/error should stay close to the native guide’s severity direction.
 
+GridCN theme note:
+
+- Alternate GridCN themes may exist for operator preference, but the default dashboard presentation should stay closest to the `tron` / `poseidon` family rather than the warmer showcase themes.
+- New dashboard work should still look correct with GridCN intensity set to `off` or `light`; do not require `heavy` intensity for basic affordance clarity.
+
 ### 3.3 Typography
 
 Preferred dashboard stack:
 
-- Sans: `Inter`
+- Sans: `Rajdhani`
+- Display: `Orbitron`
 - Mono: `JetBrains Mono`
 
 Use mono only for:
@@ -92,7 +120,13 @@ Use mono only for:
 - diagnostic payloads,
 - tabular numeric views.
 
-Do not introduce novelty fonts for dashboard work.
+Use `Orbitron` sparingly for:
+
+- page/surface titles,
+- compact HUD-like labels,
+- top-level shell chrome.
+
+Do not apply the display font to long-form body copy, dense tables, or normal form fields.
 
 ### 3.4 Spacing and shape
 
@@ -105,8 +139,8 @@ Dashboard spacing should stay compact and regular:
 
 Preferred radii:
 
-- controls: `rounded-md`
-- panels/cards/tables/dialogs: `rounded-xl` or `rounded-2xl` only when the surface is large
+- GridCN-aligned controls and HUD surfaces should stay sharp: prefer `rounded-none`
+- Do not reintroduce `rounded-md`, `rounded-xl`, or pill-shaped chrome on GridCN-framed buttons, inputs, panels, tables, dialogs, or shell navigation
 
 ## 4. shadcn/ui Policy
 

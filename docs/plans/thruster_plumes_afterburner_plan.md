@@ -23,6 +23,20 @@ Implemented in this baseline:
 
 1. `max_afterburner_velocity_mps` now raises the forward thrust governor while afterburner is active (engine-thrust-only cap behavior; no hard velocity clamp).
 
+## Implementation Status Notes (2026-03-13)
+
+1. `ThrusterPlumeShaderSettings` now replicates with public visibility rather than owner-only visibility.
+2. Thruster plume attachment/update now keys off public `EntityLabels` + `MountedOn` instead of the owner-only `Engine` marker, so plume rendering does not disappear when the winning visual lane lacks that gameplay marker.
+3. Native impact: authored plume settings now stay available on the actual rendered lane instead of relying on owner-only state surviving duplicate/lane selection.
+4. WASM impact: no architecture split; the same replicated plume settings now apply to browser clients.
+
+## Implementation Status Notes (2026-03-13, later plume fix)
+
+1. Thruster plume drive state now resolves against the mounted ship UUID when `FlightComputer` lives on a mounted module entity instead of the ship root.
+2. This fixes the local corvette/rocinante case where the plume updater could fail to find throttle/afterburner state even though the engine module and plume settings were present and public.
+3. Native impact: plumes now resume reacting to authoritative throttle/afterburner state on modular ships rather than staying effectively invisible because the lookup never matched.
+4. WASM impact: no architecture split; the same mounted-module resolution logic applies to browser clients.
+
 ## 1. Goal
 
 Add visually responsive spaceship thruster plumes that:

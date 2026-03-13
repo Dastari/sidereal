@@ -9,9 +9,9 @@ import { AccountsPanel } from '@/features/database/AccountsPanel'
 import { TablesPanel } from '@/features/database/TablesPanel'
 import { useDatabaseAdminData } from '@/features/database/useDatabaseAdminData'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Badge } from '@/components/ui'
 
 type DatabaseSection = 'entities' | 'accounts' | 'tables'
 type AccountSortKey = 'email' | 'characters' | 'created'
@@ -274,7 +274,7 @@ export function DatabaseTablesPage({
 
 function SummaryBadge({ label, value }: { label: string; value: number }) {
   return (
-    <Badge variant="outline" className="gap-2 rounded-md px-2.5 py-1">
+    <Badge variant="outline" className="gap-2 px-2.5 py-1">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-mono tabular-nums text-foreground">{value}</span>
     </Badge>

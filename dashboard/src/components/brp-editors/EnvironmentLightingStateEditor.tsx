@@ -6,6 +6,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
 type Vec2Value = { x: number; y: number }
@@ -247,13 +248,14 @@ function Section({
       className="rounded-md border border-border/70 bg-muted/10"
     >
       <CollapsibleTrigger asChild>
-        <button
+        <Button
           type="button"
-          className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium"
+          variant="ghost"
+          className="h-auto w-full justify-between px-3 py-2 text-left text-sm font-medium"
         >
           <span>{title}</span>
           <span className="text-xs text-muted-foreground">Toggle</span>
-        </button>
+        </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-3 border-t border-border/60 px-3 py-3">
         {children}

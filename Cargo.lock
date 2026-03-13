@@ -7473,6 +7473,7 @@ dependencies = [
  "sidereal-game",
  "sidereal-net",
  "sidereal-runtime-sync",
+ "sidereal-ui",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -7653,6 +7654,13 @@ dependencies = [
  "tracing",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "sidereal-ui"
+version = "0.1.0"
+dependencies = [
+ "bevy",
 ]
 
 [[package]]

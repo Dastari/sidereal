@@ -16,6 +16,7 @@ pub mod controlled_entity_guid;
 pub mod cost;
 pub mod damage_type;
 pub mod density;
+pub mod destructible;
 pub mod discovered_static_landmarks;
 pub mod display_name;
 pub mod engine;
@@ -95,6 +96,9 @@ pub use controlled_entity_guid::ControlledEntityGuid;
 pub use cost::Cost;
 pub use damage_type::DamageType;
 pub use density::Density;
+pub use destructible::{
+    DEFAULT_DESTRUCTION_PROFILE_ID, Destructible, PendingDestruction, PendingDestructionPhase,
+};
 pub use discovered_static_landmarks::DiscoveredStaticLandmarks;
 pub use display_name::DisplayName;
 pub use engine::Engine;

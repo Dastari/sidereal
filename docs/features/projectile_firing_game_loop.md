@@ -11,6 +11,7 @@ Implementation status note (2026-03-12):
 3. This restores the existing tracer presentation loop for the starter ship while projectile-backed combat work continues for distinct weapon classes.
 4. Native client ballistic projectile visuals now render immediately from the locally pre-spawned projectile entity before replicated `WorldEntity` adoption, avoiding owner-view muzzle-origin drift caused by waiting for replication/adoption.
 5. WASM impact: no current WASM-specific change in this slice.
+6. 2026-03-13 update: ballistic projectile prespawn now uses an explicit hash derived from shooter GUID, weapon GUID, and the shared Lightyear spawn tick, and the local `WeaponCooldownState` is rollback-registered on the client so fast-turn correction does not desynchronize local fire timing from prespawn matching.
 
 Primary architecture references:
 - `docs/sidereal_design_document.md`

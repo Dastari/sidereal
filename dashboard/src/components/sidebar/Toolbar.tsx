@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
+import { ButtonGroup } from '@/components/ui/button-group'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Tooltip,
@@ -70,27 +71,29 @@ export function Toolbar({
               )
             }}
           >
-            <TabsList className="h-8 gap-1">
-              {showDatabaseTab ? (
-                <TabsTrigger value="database" className="h-6 px-3 text-xs">
-                  Database
-                </TabsTrigger>
-              ) : null}
-              {brpTabs.map((tab) => (
-                <TabsTrigger
-                  key={tab.id}
-                  value={`live:${tab.id}`}
-                  className="h-6 px-3 text-xs"
-                >
-                  {tab.label}
-                </TabsTrigger>
-              ))}
+            <ButtonGroup>
+              <TabsList className="h-8 gap-1">
+                {showDatabaseTab ? (
+                  <TabsTrigger value="database" className="h-6 px-3 text-xs">
+                    Database
+                  </TabsTrigger>
+                ) : null}
+                {brpTabs.map((tab) => (
+                  <TabsTrigger
+                    key={tab.id}
+                    value={`live:${tab.id}`}
+                    className="h-6 px-3 text-xs"
+                  >
+                    {tab.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6"
+                    className="h-8 w-8"
                     onClick={onAddClientTab}
                     aria-label="Add client BRP tab"
                   >
@@ -99,7 +102,7 @@ export function Toolbar({
                 </TooltipTrigger>
                 <TooltipContent>Add client BRP tab</TooltipContent>
               </Tooltip>
-            </TabsList>
+            </ButtonGroup>
           </Tabs>
         </>
       ) : null}

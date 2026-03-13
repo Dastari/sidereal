@@ -65,6 +65,36 @@ For each decision:
 
 ## Decisions
 
+## DR-0034: Fly-By-Wire Thrust Allocation and GNC Stack
+- Status: Proposed
+- Date: 2026-03-13
+- Owners: gameplay / replication / client prediction / AI / scripting
+- Context:
+  - Current flight still aggregates engine capability into one idealized hull-level force/torque budget.
+  - Sidereal needs a shared player/AI/autopilot control stack that respects real mounted actuators and stays Avian-compatible.
+  - The flight-control Lua boundary also needs to be explicit so scripts author goals and profiles, not raw actuation or render ABI.
+- Decision:
+  - Adopt a fly-by-wire control stack where intent/guidance produce desired motion, flight control produces desired wrench, thrust allocation commands explicit actuators, and actuation applies Avian-compatible force/torque.
+  - Drive engine plume presentation from explicit engine actuator/effect components and command/state data.
+  - Keep allocator math, physics application, and render ABI Rust-owned; allow Lua to author validated actuator/profile/effect-reference data and emit high-level motion/navigation intents.
+- Consequences:
+  - Positive:
+    - One shared control stack can serve players, AI, autopilot, and degraded-engine scenarios.
+    - Flight behavior becomes consistent with mounted modules, fuel, and mass/inertia.
+  - Negative:
+    - Existing `FlightComputer` and `Engine` schemas will need to be reworked.
+    - Prediction, scripting, and plume systems must migrate together with the new control stack.
+- Follow-up:
+  - Use the new feature contract as the source-of-truth.
+  - Keep the older advanced fly-by-wire plan only as precursor planning material.
+- Decision doc:
+  - `docs/decisions/dr-0034_fly_by_wire_thrust_allocation_and_gnc_stack.md`
+- References:
+  - `docs/features/fly_by_wire_thrust_allocation_contract.md`
+  - `docs/plans/advanced_fly_by_wire_and_thruster_allocation_plan.md`
+  - `docs/plans/thruster_plumes_afterburner_plan.md`
+  - `docs/features/scripting_support.md`
+
 ## DR-0033: Background World Simulation Tiering
 - Status: Proposed
 - Date: 2026-03-11

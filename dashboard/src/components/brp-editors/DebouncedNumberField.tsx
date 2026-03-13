@@ -1,6 +1,6 @@
 import * as React from 'react'
+import { TheGridSlider } from '@/components/thegridcn/thegrid-slider'
 import { Input } from '@/components/ui/input'
-import { Slider } from '@/components/ui/slider'
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -11,10 +11,10 @@ function decimalsFromStep(step: number): number {
   const normalized = step.toString().toLowerCase()
   if (normalized.includes('e-')) {
     const [, exponent] = normalized.split('e-')
-    return Number.parseInt(exponent ?? '0', 10) || 0
+    return Number.parseInt(exponent, 10) || 0
   }
   const decimal = normalized.split('.')[1]
-  return decimal?.length ?? 0
+  return decimal ? decimal.length : 0
 }
 
 function formatForInput(value: number, step: number): string {
@@ -94,16 +94,14 @@ export function DebouncedNumberField({
     <div className="space-y-1">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={wrapperClassName}>
-        <Slider
-          value={[sliderValue]}
+        <TheGridSlider
+          value={sliderValue}
           min={min}
           max={max}
           step={step}
           disabled={readOnly}
-          onValueChange={(values) => {
-            const v = values[0]
-            if (typeof v !== 'number') return
-            const clamped = clamp(v, min, max)
+          onChange={(next) => {
+            const clamped = clamp(next, min, max)
             setSliderValue(clamped)
             setInputValue(String(clamped))
             scheduleCommit(clamped)

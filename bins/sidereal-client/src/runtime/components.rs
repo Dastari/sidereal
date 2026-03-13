@@ -295,6 +295,11 @@ pub(crate) struct WeaponImpactSpark {
 pub(crate) struct WeaponImpactExplosion {
     pub ttl_s: f32,
     pub max_ttl_s: f32,
+    pub base_scale: f32,
+    pub growth_scale: f32,
+    pub intensity_scale: f32,
+    pub domain_scale: f32,
+    pub screen_distortion_scale: f32,
 }
 
 #[derive(Resource, Default)]

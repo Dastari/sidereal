@@ -722,6 +722,16 @@ local space_background_nebula_uniform_schema = pick_space_background_uniform_sch
   "backlight_bloom_scale",
   "backlight_bloom_threshold",
   "enable_backlight",
+  "enable_light_shafts",
+  "shafts_debug_view",
+  "shaft_intensity",
+  "shaft_quality",
+  "shaft_samples",
+  "shaft_length",
+  "shaft_falloff",
+  "shaft_blend_mode",
+  "shaft_opacity",
+  "shaft_color_rgb",
   "backlight_color_rgb",
 })
 
@@ -1305,6 +1315,7 @@ AssetRegistry.assets = {
     content_type = "audio/ogg",
     dependencies = {},
     bootstrap_required = true,
+    startup_required = false,
   },
   {
     asset_id = "audio.sfx.explosion.asteroid.01",
@@ -1312,6 +1323,7 @@ AssetRegistry.assets = {
     content_type = "audio/ogg",
     dependencies = {},
     bootstrap_required = true,
+    startup_required = false,
   },
   {
     asset_id = "audio.music.deep_space",
@@ -1319,6 +1331,7 @@ AssetRegistry.assets = {
     content_type = "audio/ogg",
     dependencies = {},
     bootstrap_required = true,
+    startup_required = false,
   },
   {
     asset_id = "audio.music.menu_loop",
@@ -1326,6 +1339,7 @@ AssetRegistry.assets = {
     content_type = "audio/ogg",
     dependencies = {},
     bootstrap_required = true,
+    startup_required = true,
   },
 }
 

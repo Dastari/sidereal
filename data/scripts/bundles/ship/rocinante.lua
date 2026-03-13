@@ -88,6 +88,10 @@ function RocinanteBundle.build_graph_records(ctx)
     }),
     component(ship_id, "max_velocity_mps", 100.0),
     component(ship_id, "health_pool", { current = 1000.0, maximum = 1000.0 }),
+    component(ship_id, "destructible", {
+      destruction_profile_id = "explosion_burst",
+      destroy_delay_s = 0.18,
+    }),
     component(ship_id, "owner_id", owner_id),
     component(ship_id, "mass_kg", 15000.0),
     component(ship_id, "size_m", { length = ship_length_m, width = ship_width_m, height = 8.0 }),
@@ -311,6 +315,7 @@ function RocinanteBundle.build_graph_records(ctx)
         component(module_weapon_gatling_fore_id, "weapon_tag", {}),
         component(module_weapon_gatling_fore_id, "ballistic_weapon", {
           weapon_name = "Ballistic Gatling",
+          fire_audio_profile_id = "weapon.ballistic_gatling",
           rpm = 750.0,
           damage_per_shot = 22.0,
           max_range_m = 2200.0,

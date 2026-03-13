@@ -5,14 +5,14 @@ use super::state::AudioAssetDemandState;
 use crate::runtime::assets::{
     AssetCatalogHotReloadState, LocalAssetManager, RuntimeAssetDependencyState,
 };
+use crate::runtime::combat_messages::{
+    RemoteEntityDestructionRuntimeMessage, RemoteWeaponFiredRuntimeMessage,
+};
 use crate::runtime::components::GameplayCamera;
 use crate::runtime::resources::{AssetCacheAdapter, AssetRootPath};
 use bevy::prelude::*;
-use lightyear::prelude::MessageReceiver;
 use sidereal_game::{BallisticWeapon, EntityDestroyedEvent, EntityGuid, ShotFiredEvent};
-use sidereal_net::{ServerEntityDestructionMessage, ServerWeaponFiredMessage};
 use std::collections::HashSet;
-use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::native_backend::{AudioAssetResolver, LoopEmitterRequest, OneShotRequest};
@@ -109,6 +109,7 @@ pub(crate) fn ensure_world_music_system(
 pub(crate) fn receive_local_destruction_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
+    settings: Res<'_, AudioSettings>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
@@ -131,6 +132,7 @@ pub(crate) fn receive_local_destruction_audio_system(
             },
             &resolver,
             &catalog,
+            &settings,
             &mut demand.desired_asset_ids,
         );
     }
@@ -139,19 +141,12 @@ pub(crate) fn receive_local_destruction_audio_system(
 pub(crate) fn receive_remote_destruction_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
+    settings: Res<'_, AudioSettings>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
     mut demand: ResMut<'_, AudioAssetDemandState>,
-    mut receivers: Query<
-        '_,
-        '_,
-        &'_ mut MessageReceiver<ServerEntityDestructionMessage>,
-        (
-            With<lightyear::prelude::client::Client>,
-            With<lightyear::prelude::client::Connected>,
-        ),
-    >,
+    mut events: MessageReader<'_, '_, RemoteEntityDestructionRuntimeMessage>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     let resolver = AudioAssetResolver {
@@ -159,20 +154,20 @@ pub(crate) fn receive_remote_destruction_audio_system(
         asset_manager: &asset_manager,
         cache_adapter: *cache_adapter,
     };
-    for mut receiver in &mut receivers {
-        for message in receiver.receive() {
-            #[cfg(not(target_arch = "wasm32"))]
-            backend.play_one_shot(
-                OneShotRequest {
-                    profile_id: message.destruction_profile_id.as_str(),
-                    cue_id: "explode",
-                    position: Some(Vec2::new(message.origin_xy[0], message.origin_xy[1])),
-                },
-                &resolver,
-                &catalog,
-                &mut demand.desired_asset_ids,
-            );
-        }
+    for event in events.read() {
+        let message = &event.message;
+        #[cfg(not(target_arch = "wasm32"))]
+        backend.play_one_shot(
+            OneShotRequest {
+                profile_id: message.destruction_profile_id.as_str(),
+                cue_id: "explode",
+                position: Some(Vec2::new(message.origin_xy[0], message.origin_xy[1])),
+            },
+            &resolver,
+            &catalog,
+            &settings,
+            &mut demand.desired_asset_ids,
+        );
     }
 }
 
@@ -180,6 +175,7 @@ pub(crate) fn receive_remote_destruction_audio_system(
 pub(crate) fn receive_local_weapon_fire_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
+    settings: Res<'_, AudioSettings>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
@@ -214,6 +210,7 @@ pub(crate) fn receive_local_weapon_fire_audio_system(
             },
             &resolver,
             &catalog,
+            &settings,
             &mut demand.desired_asset_ids,
         );
     }
@@ -223,21 +220,13 @@ pub(crate) fn receive_local_weapon_fire_audio_system(
 pub(crate) fn receive_remote_weapon_fire_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
+    settings: Res<'_, AudioSettings>,
     asset_root: Res<'_, AssetRootPath>,
     asset_manager: Res<'_, LocalAssetManager>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
     time: Res<'_, Time>,
     mut demand: ResMut<'_, AudioAssetDemandState>,
-    weapons: Query<'_, '_, (&'_ BallisticWeapon, &'_ EntityGuid)>,
-    mut receivers: Query<
-        '_,
-        '_,
-        &'_ mut MessageReceiver<ServerWeaponFiredMessage>,
-        (
-            With<lightyear::prelude::client::Client>,
-            With<lightyear::prelude::client::Connected>,
-        ),
-    >,
+    mut events: MessageReader<'_, '_, RemoteWeaponFiredRuntimeMessage>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     let resolver = AudioAssetResolver {
@@ -245,36 +234,27 @@ pub(crate) fn receive_remote_weapon_fire_audio_system(
         asset_manager: &asset_manager,
         cache_adapter: *cache_adapter,
     };
-    let weapon_profile_by_guid = weapons
-        .iter()
-        .filter_map(|(weapon, guid)| {
-            resolve_weapon_fire_profile_id(weapon)
-                .map(|profile_id| (guid.0, (profile_id.to_string(), weapon.cooldown_seconds())))
-        })
-        .collect::<std::collections::HashMap<_, _>>();
-    for mut receiver in &mut receivers {
-        for message in receiver.receive() {
-            let Ok(weapon_guid) = Uuid::parse_str(message.weapon_guid.as_str()) else {
-                continue;
-            };
-            let Some((profile_id, cooldown_s)) = weapon_profile_by_guid.get(&weapon_guid) else {
-                continue;
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            backend.trigger_loop_emitter(
-                LoopEmitterRequest {
-                    key: message.weapon_guid.clone(),
-                    profile_id,
-                    cue_id: "fire",
-                    position: Vec2::new(message.origin_xy[0], message.origin_xy[1]),
-                    release_timeout_s: (*cooldown_s as f64 * 1.75).max(0.14),
-                    now_s: time.elapsed_secs_f64(),
-                },
-                &resolver,
-                &catalog,
-                &mut demand.desired_asset_ids,
-            );
-        }
+    for event in events.read() {
+        let message = &event.message;
+        let Some(profile_id) = message.audio_profile_id.as_deref() else {
+            continue;
+        };
+        let cooldown_s = message.cooldown_s.unwrap_or(60.0 / 750.0);
+        #[cfg(not(target_arch = "wasm32"))]
+        backend.trigger_loop_emitter(
+            LoopEmitterRequest {
+                key: message.weapon_guid.clone(),
+                profile_id,
+                cue_id: "fire",
+                position: Vec2::new(message.origin_xy[0], message.origin_xy[1]),
+                release_timeout_s: (f64::from(cooldown_s) * 1.75).max(0.14),
+                now_s: time.elapsed_secs_f64(),
+            },
+            &resolver,
+            &catalog,
+            &settings,
+            &mut demand.desired_asset_ids,
+        );
     }
 }
 
@@ -336,6 +316,18 @@ fn ensure_music_profile(
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let Some(profile_asset_ids) = catalog.profile_asset_ids(profile_id) else {
+            return;
+        };
+        if catalog.cue(profile_id, cue_id).is_none() {
+            return;
+        }
+        if !profile_asset_ids
+            .iter()
+            .all(|asset_id| asset_manager.is_asset_ready(asset_id))
+        {
+            return;
+        }
         let resolver = AudioAssetResolver {
             asset_root: &asset_root.0,
             asset_manager,

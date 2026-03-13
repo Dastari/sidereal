@@ -6,8 +6,10 @@ import type {
   ShaderEditorFieldSchema,
 } from '@/features/component-schema/types'
 import { Button } from '@/components/ui/button'
+import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group'
+import { HUDFrame } from '@/components/ui/hud-frame'
+import { TheGridSlider } from '@/components/thegridcn/thegrid-slider'
 import { Input } from '@/components/ui/input'
-import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import {
   getComponentPayloadFromNode,
@@ -73,17 +75,24 @@ export function ComponentEditorRenderer({
   }, [payload])
 
   const fields = React.useMemo(
-    () =>
-      entry
-        ? entry.editor_schema.fields.map((field) =>
-            mergeShaderFieldOverrides(
-              field,
-              shaderSchemaEntry?.uniform_schema.find(
-                (schemaField) => schemaField.field_path === field.field_path,
-              ) ?? null,
-            ),
-          )
-        : [],
+    () => {
+      if (!entry) {
+        return []
+      }
+      if (!shaderSchemaEntry) {
+        return entry.editor_schema.fields
+      }
+
+      return shaderSchemaEntry.uniform_schema.flatMap((shaderField) => {
+        const componentField = entry.editor_schema.fields.find(
+          (field) => field.field_path === shaderField.field_path,
+        )
+        if (!componentField) {
+          return []
+        }
+        return [mergeShaderFieldOverrides(componentField, shaderField)]
+      })
+    },
     [entry, shaderSchemaEntry],
   )
 
@@ -131,9 +140,9 @@ export function ComponentEditorRenderer({
   }
   if (fields.length === 0) {
     return (
-      <div className="rounded border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+      <HUDFrame className="border-dashed px-3 py-2 text-xs text-muted-foreground">
         No editor schema fields available for this component.
-      </div>
+      </HUDFrame>
     )
   }
 
@@ -141,7 +150,7 @@ export function ComponentEditorRenderer({
 
   return (
     <div className="space-y-3">
-      <div className="rounded border border-border bg-background/70 px-3 py-2">
+      <HUDFrame className="px-3 py-2">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
           Schema Editor
         </div>
@@ -153,7 +162,7 @@ export function ComponentEditorRenderer({
             Shader schema: {shaderSchemaEntry.asset_id}
           </div>
         ) : null}
-      </div>
+      </HUDFrame>
       <div className="space-y-3">
         {fields.map((field) => (
           <SchemaFieldEditor
@@ -269,15 +278,19 @@ function SchemaFieldEditor({
     case 'Bool':
       return (
         <FieldShell field={field}>
-          <div className="flex items-center justify-end gap-2">
-            <span className="text-xs text-muted-foreground">
-              {checked ? 'On' : 'Off'}
-            </span>
-            <Switch
-              checked={checked}
-              disabled={readOnly}
-              onCheckedChange={onChange}
-            />
+          <div className="flex justify-end">
+            <ButtonGroup>
+              <ButtonGroupText className="justify-center px-3 text-xs text-muted-foreground">
+                {checked ? 'On' : 'Off'}
+              </ButtonGroupText>
+              <ButtonGroupText className="px-3">
+                <Switch
+                  checked={checked}
+                  disabled={readOnly}
+                  onCheckedChange={onChange}
+                />
+              </ButtonGroupText>
+            </ButtonGroup>
           </div>
         </FieldShell>
       )
@@ -388,7 +401,7 @@ function FieldShell({
   children: React.ReactNode
 }) {
   return (
-    <div className="space-y-2 rounded border border-border bg-background/60 px-3 py-2">
+    <HUDFrame className="space-y-2 px-3 py-2">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs font-medium text-foreground">
@@ -405,7 +418,7 @@ function FieldShell({
         ) : null}
       </div>
       {children}
-    </div>
+    </HUDFrame>
   )
 }
 
@@ -432,14 +445,14 @@ function NumberEditor({
     <div className="space-y-2">
       {shouldShowSlider ? (
         <div className="flex items-center gap-2">
-          <Slider
+          <TheGridSlider
             className="flex-1"
             min={min}
             max={max}
             step={step}
-            value={[safeValue]}
+            value={safeValue}
             disabled={readOnly}
-            onValueChange={(next) => onChange(next[0] ?? safeValue)}
+            onChange={(next) => onChange(next)}
           />
           <Input
             className="h-8 w-24 text-xs"

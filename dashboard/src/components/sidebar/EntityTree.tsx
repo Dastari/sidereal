@@ -14,6 +14,7 @@ import {
 import type { WorldEntity } from '@/components/grid/types'
 import type { DataSourceMode } from '@/components/sidebar/Toolbar'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -331,15 +332,15 @@ function EntityTree({
           open={worldRootOpen}
           onOpenChange={() => toggleGroup(ENTITY_ROOT_GROUP_KEY)}
         >
-          <CollapsibleTrigger className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-secondary/50 text-sm font-medium text-foreground/90 transition-colors">
+          <CollapsibleTrigger className="grid-sidebar-nav__item w-full text-sm font-medium text-foreground/90">
             {worldRootOpen ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              <ChevronDown className="grid-sidebar-nav__meta h-4 w-4" />
             ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              <ChevronRight className="grid-sidebar-nav__meta h-4 w-4" />
             )}
             <Sparkles className="h-4 w-4 text-primary" />
             <span>World</span>
-            <span className="ml-auto text-xs text-muted-foreground">
+            <span className="grid-sidebar-nav__meta ml-auto text-xs">
               {entities.length}
             </span>
           </CollapsibleTrigger>
@@ -369,15 +370,15 @@ function EntityTree({
           open={resourcesRootOpen}
           onOpenChange={() => toggleGroup(RESOURCE_ROOT_GROUP_KEY)}
         >
-          <CollapsibleTrigger className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-secondary/50 text-sm font-medium text-foreground/90 transition-colors">
+          <CollapsibleTrigger className="grid-sidebar-nav__item w-full text-sm font-medium text-foreground/90">
             {resourcesRootOpen ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              <ChevronDown className="grid-sidebar-nav__meta h-4 w-4" />
             ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              <ChevronRight className="grid-sidebar-nav__meta h-4 w-4" />
             )}
             <Box className="h-4 w-4 text-primary" />
             <span>Resources</span>
-            <span className="ml-auto text-xs text-muted-foreground">
+            <span className="grid-sidebar-nav__meta ml-auto text-xs">
               {sortedResources.length}
             </span>
           </CollapsibleTrigger>
@@ -389,15 +390,15 @@ function EntityTree({
                   const resourceSelectionId = `${RESOURCE_SELECTION_PREFIX}${resource.typePath}`
                   const isSelectedResource = selectedId === resourceSelectionId
                   return (
-                    <button
+                    <Button
                       key={resource.typePath}
                       type="button"
+                      variant="ghost"
                       onClick={() => onSelect(resourceSelectionId)}
+                      data-active={isSelectedResource ? 'true' : 'false'}
                       className={cn(
-                        'flex items-center gap-2 w-full rounded px-2 py-1 text-left text-sm transition-colors',
-                        isSelectedResource
-                          ? 'bg-primary/15 text-primary'
-                          : 'hover:bg-secondary/50 text-foreground/80',
+                        'grid-sidebar-nav__item h-auto w-full justify-start py-1.5 text-left text-sm',
+                        !isSelectedResource && 'text-foreground/80',
                       )}
                       title={resource.typePath}
                     >
@@ -405,22 +406,23 @@ function EntityTree({
                       <span className="truncate font-mono text-xs">
                         {resource.typePath}
                       </span>
-                    </button>
+                    </Button>
                   )
                   })}
                   {hasHiddenResources ? (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
                       onClick={() => {
                         updateUiState((prev) => ({
                           ...prev,
                           showAllResources: true,
                         }))
                       }}
-                      className="w-full rounded px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+                      className="grid-sidebar-nav__item h-auto w-full justify-start py-1.5 text-left text-xs text-muted-foreground"
                     >
                       Show {sortedResources.length - visibleResources.length} more resources
-                    </button>
+                    </Button>
                   ) : null}
                 </>
               ) : (
@@ -477,15 +479,15 @@ function EntityGroup({
 
   return (
     <Collapsible open={isOpen} onOpenChange={onToggleOpen}>
-      <CollapsibleTrigger className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-secondary/50 text-sm font-medium text-foreground/90 transition-colors">
+      <CollapsibleTrigger className="grid-sidebar-nav__item w-full text-sm font-medium text-foreground/90">
         {isOpen ? (
-          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          <ChevronDown className="grid-sidebar-nav__meta h-4 w-4" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          <ChevronRight className="grid-sidebar-nav__meta h-4 w-4" />
         )}
         <Icon className="h-4 w-4 text-primary" />
         <span className="capitalize">{normalizeGroupLabel(kind)}</span>
-        <span className="ml-auto text-xs text-muted-foreground">
+        <span className="grid-sidebar-nav__meta ml-auto text-xs">
           {entities.length}
         </span>
       </CollapsibleTrigger>
@@ -589,40 +591,47 @@ function EntityTreeNode({
       <div className="flex items-center gap-1 group">
         <span style={{ width: `${depth * 12}px` }} />
         {hasChildren ? (
-          <button
+          <Button
             onClick={() => onToggleNode(entity.id)}
-            className="h-5 w-5 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="h-5 w-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
           >
             {open ? (
               <ChevronDown className="h-3.5 w-3.5" />
             ) : (
               <ChevronRight className="h-3.5 w-3.5" />
             )}
-          </button>
+          </Button>
         ) : (
           <span className="h-5 w-5" />
         )}
 
-        <button
+        <Button
           onClick={handleSelectClick}
           onContextMenu={handleContextMenu}
+          type="button"
+          variant="ghost"
+          data-active={isSelected ? 'true' : 'false'}
           className={cn(
-            'flex items-center gap-2 flex-1 px-2 py-1 rounded-md text-sm transition-colors text-left min-w-0',
-            isSelected
-              ? 'bg-primary/15 text-primary'
-              : 'hover:bg-secondary/50 text-foreground/80',
+            'grid-sidebar-nav__item h-auto min-w-0 flex-1 justify-start gap-2 py-1.5 text-left text-sm',
+            !isSelected && 'text-foreground/80',
           )}
           title={entity.id}
         >
           <Icon className="h-3.5 w-3.5 shrink-0 text-primary/80" />
           <span className="truncate flex-1">{entity.name}</span>
-        </button>
+        </Button>
 
         {entity.entityGuid ? (
-          <button
+          <Button
             onClick={handleCopyGuid}
+            type="button"
+            variant="ghost"
+            size="icon-sm"
             className={cn(
-              'h-7 w-7 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-all shrink-0',
+              'h-7 w-7 rounded-md opacity-0 transition-all shrink-0 group-hover:opacity-100',
               copiedGuid
                 ? 'bg-primary/10 text-primary'
                 : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
@@ -630,15 +639,18 @@ function EntityTreeNode({
             title={copiedGuid ? 'Copied entity GUID' : 'Copy entity GUID'}
           >
             <Copy className="h-3.5 w-3.5" />
-          </button>
+          </Button>
         ) : null}
 
         {sourceMode !== 'liveClient' && (
-          <button
+          <Button
             onClick={handleDeleteClick}
+            type="button"
+            variant="ghost"
+            size="icon-sm"
             disabled={isDeleting}
             className={cn(
-              'h-7 w-7 flex items-center justify-center rounded-md opacity-0 group-hover:opacity-100 transition-all shrink-0',
+              'h-7 w-7 rounded-md opacity-0 transition-all shrink-0 group-hover:opacity-100',
               isDeleting
                 ? 'text-muted-foreground cursor-not-allowed'
                 : 'text-destructive hover:bg-destructive/10 hover:text-destructive',
@@ -648,7 +660,7 @@ function EntityTreeNode({
             <Trash2
               className={cn('h-3.5 w-3.5', isDeleting && 'animate-pulse')}
             />
-          </button>
+          </Button>
         )}
       </div>
 

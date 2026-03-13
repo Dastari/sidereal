@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/sidereal-ui",
   "crates/sidereal-audio",
   "crates/sidereal-component-macros",
   "crates/sidereal-core",

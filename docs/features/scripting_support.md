@@ -1,10 +1,16 @@
 # Scripting Support
 
 **Status:** Active contract and implementation plan
-**Last updated:** 2026-03-12
+**Last updated:** 2026-03-13
 
 Update note (2026-03-12):
 - Added the long-term ownership contract for destruction/lifecycle-driven VFX. Default explosion/fracture/loot behavior should live in Rust-defined authored profiles/components, while Lua remains responsible for high-level preset selection and exceptional event-driven overrides. Native impact: no immediate runtime change; this is a documentation/contract clarification. WASM impact: no direct impact because the authority split remains in shared gameplay/runtime code.
+
+Update note (2026-03-13):
+- Added the target fly-by-wire thrust-allocation contract. For the future flight-control stack, Lua should author validated actuator/profile/effect-reference data and emit high-level motion/navigation intents, but must not drive raw engine throttle, desired wrench, Avian force application, or plume shader ABI directly. Native impact: no immediate runtime change; this is a contract clarification for the planned flight-control replacement. WASM impact: no architecture split because the same shared gameplay/control code remains the target on both platforms.
+
+Update note (2026-03-13):
+- Added the target scriptable UI/dialogue presentation contract. Lua-authored quest/dialogue content should be able to trigger validated client presentation flows such as portraits, progressive text reveal, skip-to-end behavior, and branching player choices through replicated UI payloads rendered by the native `sidereal-ui` layer. Native impact: this defines the intended contract for future narrative/dialogue UI work. WASM impact: no authority split; server-authored scripted content remains authoritative and browser/native clients render the same replicated presentation data.
 
 ## 1. Decision Summary
 
@@ -399,6 +405,51 @@ end
 | World bootstrap | Once at startup | Seed factions, regions, world layer entities |
 | Galaxy layout / solar systems | Once at startup | Procedural or hand-crafted galaxy generation, per-system visuals (see `docs/features/galaxy_world_structure.md`) |
 | Solar system events | Event-driven | System enter/exit triggers, proximity encounters, dynamic world events |
+
+### 3.1.1 Scripted UI Presentation Contract
+
+Narrative and quest-facing UI should be scriptable through Lua-authored content, but the authority split remains strict:
+
+1. Lua on the authoritative host decides **what** should be shown.
+2. Rust validates and emits/replicates a client-facing presentation payload.
+3. The native client `sidereal-ui` layer decides **how** to render that payload.
+4. Player responses are sent back to the authoritative host as validated intent/choice messages.
+
+This applies to future scripted experiences such as:
+
+- contact/portrait dialogs,
+- transmissions and hails,
+- progressive text reveal with skip-to-end,
+- branching dialogue choices,
+- mission board / job offer panels,
+- quest acceptance/completion prompts,
+- scripted alerts or faction notifications.
+
+Required rule:
+
+- Lua must not directly mutate client UI trees or issue arbitrary client-side rendering commands.
+- Lua authors declarative presentation payloads and dialogue state transitions; Rust/client UI renderers consume those payloads through allowlisted schemas.
+
+Illustrative future payload fields:
+
+- `presentation_kind`
+- `dialog_id`
+- `speaker_name`
+- `portrait_asset_id`
+- `body_text`
+- `reveal_mode`
+- `allow_skip_reveal`
+- `choices = [{ id, label, hotkey }]`
+- optional allowlisted theme/style hints
+
+Branch handling contract:
+
+1. The server/script sends a presentation payload with available choice IDs.
+2. The client renders those choices and captures local input only as a selection request.
+3. The authoritative host validates the selected choice for the current dialogue state.
+4. Lua quest/dialogue logic advances to the next branch and emits the next presentation payload or resulting gameplay intent.
+
+This preserves server authority while still allowing heavily script-authored dialogue and mission UX.
 
 ### 3.2 Bad Candidates (Stay in Rust/ECS)
 
@@ -2060,11 +2111,20 @@ Current event producers are combat-driven:
 1. `shot_fired`
 2. `shot_impact`
 3. `damage_applied`
+4. `health_depleted` for `Destructible` entities entering authoritative pending destruction
+5. `before_destroy` for `Destructible` entities after destruction is committed but before despawn
+6. `destroyed` for `Destructible` entities after delay expiry and one targeted script-dispatch tick before final despawn
 
-Not implemented yet:
+Update note (2026-03-13):
+- `health_depleted`, `before_destroy`, and `destroyed` are now emitted by the replication combat bridge for `Destructible` entities.
+- Validated script override intents are still not implemented, so these hooks are currently notification-only.
+- Native impact: targeted entity lifecycle callbacks can now run before final despawn if the entity has `ScriptState.data.event_hooks` configured.
+- WASM impact: no protocol/runtime split; the same lifecycle event names and payload shape apply to browser and native clients.
 
-1. Lifecycle/destruction events such as `health_depleted`, `before_destroy`, `destroyed`, `fractured`, and `loot_spawned` are part of the intended contract but are not emitted by the current runtime event bridge.
-2. Because those events do not exist yet, scripts cannot currently override authoritative destruction/finalization behavior in the live runtime.
+Still not implemented:
+
+1. richer lifecycle/destruction events such as `fractured` and `loot_spawned`,
+2. validated override intents for changing authoritative destruction/finalization behavior in the live runtime.
 
 Payloads are JSON/Lua tables generated by replication combat systems.
 
@@ -2198,7 +2258,8 @@ Quest/mission logic runs on the authoritative host only (dedicated server or loc
 Clients do not execute authoritative quest scripts. Clients receive:
 1. replicated quest state (owner-scoped where needed),
 2. UI metadata (titles, objective text, rewards, waypoint hints),
-3. server-authored progress/fail/complete outcomes.
+3. server-authored progress/fail/complete outcomes,
+4. targeted UI/notification/dialogue presentation payloads when needed.
 
 Optional future client scripting is presentation-only and must not mutate authoritative gameplay state.
 

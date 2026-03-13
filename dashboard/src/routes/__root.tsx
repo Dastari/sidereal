@@ -14,9 +14,15 @@ import {
 } from '@/components/feedback/route-feedback'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import {
+  DEFAULT_GRID_INTENSITY,
+  DEFAULT_GRID_THEME,
+  GRID_INTENSITY_STORAGE_KEY,
+  GRID_THEME_STORAGE_KEY,
+} from '@/lib/grid-theme'
 
 const THEME_STORAGE_KEY = 'sidereal-theme'
-const THEME_INIT_SCRIPT = `(function(){try{var key='${THEME_STORAGE_KEY}';var stored=localStorage.getItem(key);var hasExplicit=stored==='light'||stored==='dark';var resolved=hasExplicit?stored:(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');var root=document.documentElement;root.classList.remove('light','dark');root.classList.add(resolved);root.style.colorScheme=resolved;root.dataset.theme=resolved;}catch(_){}})();`
+const THEME_INIT_SCRIPT = `(function(){try{var colorKey='${THEME_STORAGE_KEY}';var gridKey='${GRID_THEME_STORAGE_KEY}';var intensityKey='${GRID_INTENSITY_STORAGE_KEY}';var storedColor=localStorage.getItem(colorKey);var hasExplicitColor=storedColor==='light'||storedColor==='dark';var resolved=hasExplicitColor?storedColor:(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');var storedGrid=localStorage.getItem(gridKey);var gridTheme=storedGrid||'${DEFAULT_GRID_THEME}';var storedIntensity=localStorage.getItem(intensityKey);var gridIntensity=storedIntensity||'${DEFAULT_GRID_INTENSITY}';var root=document.documentElement;root.classList.remove('light','dark');root.classList.add(resolved);root.style.colorScheme=resolved;root.dataset.colorScheme=resolved;root.dataset.theme=gridTheme;if(gridIntensity==='off'){root.removeAttribute('data-tron-intensity');}else{root.setAttribute('data-tron-intensity',gridIntensity);}}catch(_){}})();`
 
 export const Route = createRootRoute({
   head: () => ({
@@ -39,7 +45,7 @@ export const Route = createRootRoute({
       },
       {
         rel: 'stylesheet',
-        href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap',
+        href: 'https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700&family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap',
       },
     ],
   }),

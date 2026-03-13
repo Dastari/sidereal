@@ -68,9 +68,12 @@ impl Plugin for ClientVisualsPlugin {
                 .after(visuals::ensure_weapon_tracer_pool_system),
             visuals::receive_remote_weapon_tracer_messages_system
                 .after(visuals::ensure_weapon_tracer_pool_system),
+            visuals::receive_remote_destruction_effect_messages_system
+                .after(visuals::ensure_weapon_impact_explosion_pool_system),
             visuals::update_weapon_tracer_visuals_system
                 .after(visuals::emit_weapon_tracer_visuals_system)
                 .after(visuals::receive_remote_weapon_tracer_messages_system)
+                .after(visuals::receive_remote_destruction_effect_messages_system)
                 .after(visuals::ensure_weapon_impact_spark_pool_system)
                 .after(visuals::ensure_weapon_impact_explosion_pool_system),
             visuals::update_weapon_impact_sparks_system

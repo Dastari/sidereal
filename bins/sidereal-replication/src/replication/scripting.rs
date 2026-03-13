@@ -3,10 +3,11 @@ use bevy::prelude::{
 };
 use mlua::{Function, Lua, Table, Value};
 use sidereal_game::{
-    ProceduralSprite, compute_collision_half_extents_from_procedural_sprite,
+    GeneratedComponentRegistry, ProceduralSprite,
+    compute_collision_half_extents_from_procedural_sprite,
     compute_collision_half_extents_from_sprite_length,
     generate_rdp_collision_outline_from_procedural_sprite,
-    generate_rdp_collision_outline_from_sprite_png, generated_component_registry,
+    generate_rdp_collision_outline_from_sprite_png,
 };
 use sidereal_persistence::{
     GraphEntityRecord, ScriptCatalogRecord, ensure_script_catalog_schema, infer_script_family,
@@ -241,10 +242,20 @@ pub fn init_resources(app: &mut App) {
         revision: 1,
         script_path: ASSET_REGISTRY_SCRIPT_REL_PATH.to_string(),
     });
-    app.insert_resource(sidereal_game::GeneratedComponentRegistry {
-        entries: generated_component_registry(),
-        shader_entries,
-    });
+    if let Some(mut generated_registry) = app
+        .world_mut()
+        .get_resource_mut::<GeneratedComponentRegistry>()
+    {
+        generated_registry.shader_entries = shader_entries;
+    } else {
+        bevy::log::warn!(
+            "GeneratedComponentRegistry missing during replication scripting init; inserting shader entries without inferred component schemas"
+        );
+        app.insert_resource(GeneratedComponentRegistry {
+            entries: Vec::new(),
+            shader_entries,
+        });
+    }
     app.insert_resource(AssetRegistrySyncState {
         registry_script_path: asset_registry_script_path,
         last_catalog_revision: 0,
@@ -1686,9 +1697,11 @@ fn inject_generate_collision_outline_fn_cached(
 #[cfg(test)]
 mod tests {
     use super::{
-        load_script_catalog_from_database_or_disk_with_url, scripts_root_dir,
+        init_resources, load_script_catalog_from_database_or_disk_with_url, scripts_root_dir,
         spawn_bundle_graph_records,
     };
+    use bevy::prelude::{App, MinimalPlugins};
+    use sidereal_game::{GeneratedComponentRegistry, SiderealGameCorePlugin};
 
     #[test]
     fn script_catalog_falls_back_to_disk_when_database_is_unreachable() {
@@ -1756,6 +1769,29 @@ mod tests {
         assert_ne!(
             first[0].entity_id, second[0].entity_id,
             "root entity IDs should be random UUIDs when no entity_id override is provided"
+        );
+    }
+
+    #[test]
+    fn init_resources_preserves_inferred_component_editor_schema_entries() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, SiderealGameCorePlugin));
+
+        init_resources(&mut app);
+
+        let registry = app.world().resource::<GeneratedComponentRegistry>();
+        let max_velocity = registry
+            .entries
+            .iter()
+            .find(|entry| entry.component_kind == "max_velocity_mps")
+            .expect("max_velocity_mps mapping should exist");
+        assert!(
+            !max_velocity.editor_schema.fields.is_empty(),
+            "replication scripting init should preserve inferred editor schema fields"
+        );
+        assert!(
+            !registry.shader_entries.is_empty(),
+            "replication scripting init should still populate shader entries"
         );
     }
 }

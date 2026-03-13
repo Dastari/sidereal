@@ -28,6 +28,7 @@ return {
       content_type = "text/plain; charset=utf-8",
       dependencies = {},
       bootstrap_required = true,
+      startup_required = false,
     },
     {
       asset_id = "texture.bg",
@@ -35,6 +36,7 @@ return {
       content_type = "image/png",
       dependencies = { "shader.main" },
       bootstrap_required = false,
+      startup_required = true,
     },
   },
 }
@@ -49,6 +51,7 @@ return {
             .bootstrap_required_asset_ids()
             .contains("shader.main")
     );
+    assert!(registry.startup_required_asset_ids().contains("texture.bg"));
     assert_eq!(
         registry
             .dependencies_by_asset_id()
@@ -73,6 +76,7 @@ return {
       content_type = "text/wgsl",
       dependencies = {},
       bootstrap_required = true,
+      startup_required = false,
     },
   },
 }
@@ -103,6 +107,7 @@ return {
       content_type = "text/wgsl",
       dependencies = {},
       bootstrap_required = true,
+      startup_required = false,
       editor_schema = {
         uniforms = {
           atmosphere_alpha = {
@@ -167,6 +172,7 @@ return {
       content_type = "text/wgsl",
       dependencies = {},
       bootstrap_required = true,
+      startup_required = false,
       editor_schema = {
         uniforms = {
           atmosphere_alpha = {
@@ -199,6 +205,7 @@ return {
       content_type = "image/png",
       dependencies = { "shader.missing" },
       bootstrap_required = false,
+      startup_required = false,
     },
   },
 }

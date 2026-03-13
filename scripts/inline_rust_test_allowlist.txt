@@ -5,6 +5,7 @@ bins/sidereal-client/src/runtime/backdrop.rs
 bins/sidereal-client/src/runtime/debug_overlay.rs
 bins/sidereal-client/src/runtime/input.rs
 bins/sidereal-client/src/runtime/owner_manifest.rs
+bins/sidereal-client/src/runtime/post_process.rs
 bins/sidereal-client/src/runtime/render_layers.rs
 bins/sidereal-client/src/runtime/shaders.rs
 bins/sidereal-client/src/runtime/tactical.rs
@@ -22,6 +23,7 @@ bins/sidereal-replication/src/replication/visibility.rs
 crates/sidereal-asset-runtime/src/lib.rs
 crates/sidereal-core/src/logging.rs
 crates/sidereal-game/src/components/environment_lighting_state.rs
+crates/sidereal-game/src/components/ballistic_projectile.rs
 crates/sidereal-game/src/components/planet_body_shader_settings.rs
 crates/sidereal-game/src/components/runtime_render_layer_definition.rs
 crates/sidereal-game/src/components/runtime_world_visual_stack.rs

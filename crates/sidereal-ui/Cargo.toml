@@ -1,0 +1,9 @@
+[package]
+name = "sidereal-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bevy = { workspace = true, default-features = false, features = ["bevy_color", "bevy_text", "bevy_ui"] }

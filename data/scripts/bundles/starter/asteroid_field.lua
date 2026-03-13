@@ -79,6 +79,10 @@ local function build_single_asteroid(ctx, opts)
     component(asteroid_id, "display_name", display_name),
     component(asteroid_id, "entity_labels", asteroid_labels),
     component(asteroid_id, "health_pool", { current = max_hp, maximum = max_hp }),
+    component(asteroid_id, "destructible", {
+      destruction_profile_id = "destruction.asteroid.default",
+      destroy_delay_s = 0.18,
+    }),
     component(asteroid_id, "owner_id", owner_id),
     component(asteroid_id, "mass_kg", mass_kg),
     component(asteroid_id, "size_m", {

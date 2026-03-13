@@ -12,8 +12,8 @@ use lightyear::prelude::client::{Client, ClientPlugins, Connected};
 use lightyear::prelude::input::native::ClientInputPlugin as NativeClientInputPlugin;
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
-    BallisticProjectileSpawnedEvent, CombatAuthorityEnabled, ShotFiredEvent, ShotHitEvent,
-    ShotImpactResolvedEvent, apply_engine_thrust, bootstrap_weapon_cooldown_state,
+    BallisticProjectileSpawnedEvent, CombatAuthorityEnabled, EntityDestroyedEvent, ShotFiredEvent,
+    ShotHitEvent, ShotImpactResolvedEvent, apply_engine_thrust, bootstrap_weapon_cooldown_state,
     clamp_angular_velocity, process_character_movement_actions, process_flight_actions,
     process_weapon_fire_actions, stabilize_idle_motion, sync_mounted_hierarchy,
     tick_weapon_cooldowns, update_ballistic_projectiles,
@@ -87,7 +87,7 @@ fn init_debug_and_diagnostics_resources(app: &mut App, headless_transport: bool)
 }
 
 fn init_tactical_resources(app: &mut App) {
-    app.insert_resource(NameplateUiState { enabled: false });
+    app.insert_resource(NameplateUiState::default());
     app.insert_resource(HudPerfCounters::default());
     app.insert_resource(CharacterSelectionState::default());
     app.insert_resource(FreeCameraState::default());
@@ -141,6 +141,9 @@ pub(crate) fn configure_client_runtime(
     app.add_message::<ShotImpactResolvedEvent>();
     app.add_message::<ShotHitEvent>();
     app.add_message::<BallisticProjectileSpawnedEvent>();
+    app.add_message::<EntityDestroyedEvent>();
+    app.add_message::<combat_messages::RemoteWeaponFiredRuntimeMessage>();
+    app.add_message::<combat_messages::RemoteEntityDestructionRuntimeMessage>();
 
     app.insert_resource(Time::<Fixed>::from_hz(f64::from(SIM_TICK_HZ)));
     init_transport_resources(
@@ -163,6 +166,20 @@ pub(crate) fn configure_client_runtime(
             audio::sync_audio_runtime_system.after(audio::sync_audio_catalog_defaults_system),
             audio::sync_audio_listener_system.after(audio::sync_audio_runtime_system),
         ),
+    );
+    app.add_systems(
+        Update,
+        combat_messages::fanout_remote_weapon_fired_messages_system
+            .before(audio::receive_remote_weapon_fire_audio_system)
+            .before(visuals::receive_remote_weapon_tracer_messages_system)
+            .run_if(in_state(ClientAppState::InWorld)),
+    );
+    app.add_systems(
+        Update,
+        combat_messages::fanout_remote_destruction_messages_system
+            .before(audio::receive_remote_destruction_audio_system)
+            .before(visuals::receive_remote_destruction_effect_messages_system)
+            .run_if(in_state(ClientAppState::InWorld)),
     );
     app.add_systems(
         Update,
@@ -217,6 +234,7 @@ pub(crate) fn configure_client_runtime(
         headless: headless_transport,
     });
     if !headless_transport {
+        app.add_plugins(post_process::ExplosionDistortionPostProcessPlugin);
         app.add_plugins(plugins::ClientVisualsPlugin);
         app.add_plugins(plugins::ClientLightingPlugin);
         app.add_plugins(plugins::ClientUiPlugin);

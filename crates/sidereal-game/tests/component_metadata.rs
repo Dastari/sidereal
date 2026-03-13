@@ -1,6 +1,6 @@
 use sidereal_game::{
-    CollisionOutlineM, CollisionProfile, Cost, Inventory, SiderealComponentMetadata,
-    VisibilityScope,
+    CollisionOutlineM, CollisionProfile, Cost, Destructible, Inventory, SiderealComponentMetadata,
+    ThrusterPlumeShaderSettings, VisibilityScope,
 };
 
 #[test]
@@ -37,6 +37,24 @@ fn collision_profile_metadata_is_public_and_persisted() {
 fn collision_outline_metadata_is_public_and_persisted() {
     let meta = <CollisionOutlineM as SiderealComponentMetadata>::META;
     assert_eq!(meta.kind, "collision_outline_m");
+    assert!(meta.persist);
+    assert!(meta.replicate);
+    assert_eq!(meta.visibility, &[VisibilityScope::Public]);
+}
+
+#[test]
+fn destructible_metadata_is_persisted_without_replication() {
+    let meta = <Destructible as SiderealComponentMetadata>::META;
+    assert_eq!(meta.kind, "destructible");
+    assert!(meta.persist);
+    assert!(!meta.replicate);
+    assert_eq!(meta.visibility, &[VisibilityScope::OwnerOnly]);
+}
+
+#[test]
+fn thruster_plume_settings_metadata_is_public() {
+    let meta = <ThrusterPlumeShaderSettings as SiderealComponentMetadata>::META;
+    assert_eq!(meta.kind, "thruster_plume_shader_settings");
     assert!(meta.persist);
     assert!(meta.replicate);
     assert_eq!(meta.visibility, &[VisibilityScope::Public]);

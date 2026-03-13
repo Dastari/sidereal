@@ -6,21 +6,26 @@ use crate::runtime::{asset_loading_ui, audio, auth_net, scene, world_loading_ui}
 
 pub(super) fn add_audio_state_systems(app: &mut App) {
     app.add_systems(
-        OnEnter(ClientAppState::Auth),
-        audio::ensure_menu_music_system,
+        Update,
+        audio::ensure_menu_music_system.run_if(in_state(ClientAppState::Auth)),
     );
     app.add_systems(
-        OnEnter(ClientAppState::WorldLoading),
-        audio::ensure_menu_music_system,
+        Update,
+        audio::ensure_menu_music_system.run_if(in_state(ClientAppState::WorldLoading)),
     );
     app.add_systems(
-        OnEnter(ClientAppState::InWorld),
-        audio::ensure_world_music_system,
+        Update,
+        audio::ensure_world_music_system.run_if(in_state(ClientAppState::InWorld)),
     );
 }
 
 pub(super) fn add_menu_and_loading_ui_systems(app: &mut App) {
     app.add_systems(Update, scene::handle_character_select_buttons);
+    app.add_systems(
+        Update,
+        scene::sync_character_select_button_visuals
+            .run_if(in_state(ClientAppState::CharacterSelect)),
+    );
     app.add_systems(Update, auth_net::poll_gateway_request_results);
     app.add_systems(Update, auth_net::poll_asset_bootstrap_request_results);
     app.add_systems(Update, auth_net::trigger_asset_catalog_refresh_requests);

@@ -40,16 +40,16 @@ export function StatusBar({
   const resolvedLiveSourceLabel = liveSourceLabel ?? sourceLabel
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 bg-muted/30 border-t border-border-subtle text-xs">
+    <div className="grid-surface flex items-center justify-between border-t border-border/70 px-4 py-2 text-xs">
       <div className="flex items-center gap-4">
         {/* Graph status */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 rounded-md border border-border/40 bg-background/35 px-2 py-1">
               {graphStatus.connected ? (
-                <Wifi className="h-3.5 w-3.5 text-success" />
+                <Wifi className="grid-dot h-3.5 w-3.5 text-success" />
               ) : (
-                <WifiOff className="h-3.5 w-3.5 text-destructive" />
+                <WifiOff className="grid-dot h-3.5 w-3.5 text-destructive" />
               )}
               <span className="text-muted-foreground">
                 {graphStatus.connected
@@ -71,10 +71,10 @@ export function StatusBar({
         {/* World status */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 rounded-md border border-border/40 bg-background/35 px-2 py-1">
               <Database
                 className={cn(
-                  'h-3.5 w-3.5',
+                  'grid-dot h-3.5 w-3.5',
                   worldStatus.loaded ? 'text-primary' : 'text-muted-foreground',
                 )}
               />

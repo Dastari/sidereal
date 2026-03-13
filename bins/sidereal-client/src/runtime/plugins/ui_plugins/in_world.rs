@@ -35,14 +35,6 @@ pub(super) fn add_in_world_ui_update_systems(app: &mut App) {
     app.add_systems(
         Update,
         (
-            ui::update_entity_nameplate_positions_system.after(ui::sync_entity_nameplates_system),
-            ui::update_segmented_bars_system.after(ui::update_entity_nameplate_positions_system),
-        )
-            .run_if(in_state(ClientAppState::InWorld)),
-    );
-    app.add_systems(
-        Update,
-        (
             pause_menu::toggle_pause_menu_system,
             pause_menu::sync_pause_menu_ui_system.after(pause_menu::toggle_pause_menu_system),
             pause_menu::handle_pause_menu_interactions_system,

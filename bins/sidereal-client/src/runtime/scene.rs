@@ -3,6 +3,12 @@
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use sidereal_ui::layout;
+use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::typography::text_font;
+use sidereal_ui::widgets::{
+    UiButtonVariant, UiInteractionState, button_surface, panel_surface, spawn_hud_frame_chrome,
+};
 
 use super::app_state::{CharacterSelectionState, ClientAppState, ClientSession};
 use super::auth_net;
@@ -29,32 +35,54 @@ pub(super) fn spawn_ui_overlay_camera(mut commands: Commands<'_, '_>) {
 }
 
 pub(super) fn insert_embedded_fonts(app: &mut App) {
-    static BOLD: &[u8] = include_bytes!("../../../../data/fonts/FiraSans-Bold.ttf");
-    static REGULAR: &[u8] = include_bytes!("../../../../data/fonts/FiraSans-Regular.ttf");
+    static BODY_BOLD: &[u8] = include_bytes!("../../../../data/fonts/Rajdhani-Bold.ttf");
+    static BODY_REGULAR: &[u8] = include_bytes!("../../../../data/fonts/Rajdhani-Regular.ttf");
+    static DISPLAY: &[u8] = include_bytes!("../../../../data/fonts/Orbitron-Variable.ttf");
+    static MONO: &[u8] = include_bytes!("../../../../data/fonts/GeistMono-Regular.ttf");
 
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
-    let bold = fonts
-        .add(Font::try_from_bytes(BOLD.to_vec()).expect("embedded FiraSans-Bold.ttf is valid"));
-    let regular = fonts.add(
-        Font::try_from_bytes(REGULAR.to_vec()).expect("embedded FiraSans-Regular.ttf is valid"),
+    let bold = fonts.add(
+        Font::try_from_bytes(BODY_BOLD.to_vec()).expect("embedded Rajdhani-Bold.ttf is valid"),
     );
-    app.insert_resource(EmbeddedFonts { bold, regular });
+    let regular = fonts.add(
+        Font::try_from_bytes(BODY_REGULAR.to_vec())
+            .expect("embedded Rajdhani-Regular.ttf is valid"),
+    );
+    let display = fonts.add(
+        Font::try_from_bytes(DISPLAY.to_vec()).expect("embedded Orbitron-Variable.ttf is valid"),
+    );
+    let mono = fonts
+        .add(Font::try_from_bytes(MONO.to_vec()).expect("embedded GeistMono-Regular.ttf is valid"));
+    app.insert_resource(EmbeddedFonts {
+        bold,
+        regular,
+        display,
+        mono,
+    });
+    app.init_resource::<ActiveUiTheme>();
+    app.init_resource::<UiVisualSettings>();
 }
 
 pub(super) fn setup_character_select_screen(
     mut commands: Commands<'_, '_>,
     fonts: Res<'_, EmbeddedFonts>,
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
     character_selection: Res<'_, CharacterSelectionState>,
 ) {
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    let (panel_bg, panel_border, panel_shadow) = panel_surface(theme, glow_intensity);
+    let (enter_bg, enter_border, enter_shadow) = button_surface(
+        theme,
+        UiButtonVariant::Primary,
+        UiInteractionState::Idle,
+        glow_intensity,
+    );
+
     commands
         .spawn((
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
+            layout::fullscreen_centered_root(),
             Transform::default(),
             GlobalTransform::default(),
             CharacterSelectRoot,
@@ -62,69 +90,70 @@ pub(super) fn setup_character_select_screen(
         ))
         .with_children(|root| {
             root.spawn((
-                Node {
-                    width: Val::Px(560.0),
-                    padding: UiRect::all(Val::Px(24.0)),
-                    border: UiRect::all(Val::Px(2.0)),
-                    border_radius: BorderRadius::all(Val::Px(12.0)),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(12.0),
-                    ..default()
-                },
+                layout::panel(
+                    Val::Px(580.0),
+                    theme.metrics.panel_padding_px,
+                    12.0,
+                    theme.metrics.panel_radius_px,
+                    theme.metrics.panel_border_px,
+                ),
                 Transform::default(),
                 GlobalTransform::default(),
-                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.95)),
-                BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
+                panel_bg,
+                panel_border,
+                panel_shadow,
             ))
             .with_children(|panel| {
+                spawn_hud_frame_chrome(
+                    panel,
+                    theme,
+                    Some("Character Registry"),
+                    &fonts.mono.clone(),
+                    glow_intensity,
+                );
+
                 panel.spawn((
                     Text::new("Character Select"),
-                    TextFont {
-                        font: fonts.bold.clone(),
-                        font_size: 34.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                    text_font(fonts.display.clone(), 32.0),
+                    TextColor(theme.colors.foreground_color()),
                 ));
                 panel.spawn((
                     Text::new("Choose a character, then Enter World."),
-                    TextFont {
-                        font: fonts.regular.clone(),
-                        font_size: 15.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.78, 0.84, 0.92, 0.95)),
+                    text_font(fonts.mono.clone(), 12.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                 ));
 
                 for player_entity_id in &character_selection.characters {
+                    let (button_bg, button_border, button_shadow) = button_surface(
+                        theme,
+                        UiButtonVariant::Secondary,
+                        UiInteractionState::Idle,
+                        glow_intensity,
+                    );
                     panel
                         .spawn((
                             Button,
                             CharacterSelectButton {
                                 player_entity_id: player_entity_id.clone(),
                             },
-                            Node {
-                                width: Val::Percent(100.0),
-                                height: Val::Px(38.0),
-                                justify_content: JustifyContent::FlexStart,
-                                align_items: AlignItems::Center,
-                                padding: UiRect::axes(Val::Px(10.0), Val::Px(0.0)),
-                                border_radius: BorderRadius::all(Val::Px(7.0)),
-                                ..default()
-                            },
+                            layout::leading_button(
+                                Val::Percent(100.0),
+                                40.0,
+                                theme.metrics.control_radius_px,
+                                theme.metrics.control_border_px,
+                                12.0,
+                            ),
                             Transform::default(),
                             GlobalTransform::default(),
-                            BackgroundColor(Color::srgba(0.14, 0.18, 0.24, 0.9)),
+                            button_bg,
+                            button_border,
+                            button_shadow,
                         ))
                         .with_children(|button| {
                             button.spawn((
                                 Text::new(player_entity_id.clone()),
-                                TextFont {
-                                    font: fonts.regular.clone(),
-                                    font_size: 14.0,
-                                    ..default()
-                                },
-                                TextColor(Color::srgb(0.92, 0.95, 1.0)),
+                                text_font(fonts.regular.clone(), 14.0),
+                                TextColor(theme.colors.panel_foreground_color()),
                             ));
                         });
                 }
@@ -133,38 +162,30 @@ pub(super) fn setup_character_select_screen(
                     .spawn((
                         Button,
                         CharacterSelectEnterButton,
-                        Node {
-                            width: Val::Percent(100.0),
-                            height: Val::Px(44.0),
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            border_radius: BorderRadius::all(Val::Px(8.0)),
-                            ..default()
-                        },
+                        layout::button(
+                            Val::Percent(100.0),
+                            46.0,
+                            theme.metrics.control_radius_px,
+                            theme.metrics.control_border_px,
+                        ),
                         Transform::default(),
                         GlobalTransform::default(),
-                        BackgroundColor(Color::srgb(0.2, 0.46, 0.85)),
+                        enter_bg,
+                        enter_border,
+                        enter_shadow,
                     ))
                     .with_children(|button| {
                         button.spawn((
                             Text::new("Enter World"),
-                            TextFont {
-                                font: fonts.bold.clone(),
-                                font_size: 17.0,
-                                ..default()
-                            },
-                            TextColor(Color::WHITE),
+                            text_font(fonts.bold.clone(), 14.0),
+                            TextColor(theme.colors.primary_foreground_color()),
                         ));
                     });
 
                 panel.spawn((
                     Text::new(""),
-                    TextFont {
-                        font: fonts.regular.clone(),
-                        font_size: 13.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.75, 0.83, 0.9, 0.95)),
+                    text_font(fonts.mono.clone(), 12.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                     CharacterSelectStatusText,
                 ));
             });
@@ -181,7 +202,6 @@ pub(super) fn handle_character_select_buttons(
             &Interaction,
             Option<&CharacterSelectButton>,
             Option<&CharacterSelectEnterButton>,
-            &mut BackgroundColor,
         ),
         Changed<Interaction>,
     >,
@@ -197,13 +217,12 @@ pub(super) fn handle_character_select_buttons(
     {
         return;
     }
-    for (interaction, select_button, enter_button, mut bg) in &mut interactions {
+    for (interaction, select_button, enter_button) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
                 if let Some(select_button) = select_button {
                     character_selection.selected_player_entity_id =
                         Some(select_button.player_entity_id.clone());
-                    *bg = BackgroundColor(Color::srgba(0.22, 0.3, 0.42, 0.98));
                 } else if enter_button.is_some() {
                     let Some(selected_player_entity_id) =
                         character_selection.selected_player_entity_id.clone()
@@ -217,26 +236,64 @@ pub(super) fn handle_character_select_buttons(
                         *gateway_http,
                         selected_player_entity_id,
                     );
-                    *bg = BackgroundColor(Color::srgb(0.16, 0.38, 0.74));
                 }
             }
-            Interaction::Hovered => {
-                if enter_button.is_some() {
-                    *bg = BackgroundColor(Color::srgb(0.24, 0.5, 0.9));
-                } else {
-                    *bg = BackgroundColor(Color::srgba(0.18, 0.24, 0.33, 0.95));
-                }
-            }
-            Interaction::None => {
-                if enter_button.is_some() {
-                    *bg = BackgroundColor(Color::srgb(0.2, 0.46, 0.85));
-                } else {
-                    *bg = BackgroundColor(Color::srgba(0.14, 0.18, 0.24, 0.9));
-                }
-            }
+            Interaction::Hovered | Interaction::None => {}
         }
     }
     for mut text in &mut status_texts {
         text.0 = session.status.clone();
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn sync_character_select_button_visuals(
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
+    character_selection: Res<'_, CharacterSelectionState>,
+    mut interactions: Query<
+        '_,
+        '_,
+        (
+            &Interaction,
+            Option<&CharacterSelectButton>,
+            Option<&CharacterSelectEnterButton>,
+            &mut BackgroundColor,
+            &mut BorderColor,
+            &mut BoxShadow,
+        ),
+    >,
+) {
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    for (interaction, select_button, enter_button, mut bg, mut border, mut shadow) in
+        &mut interactions
+    {
+        let variant = if enter_button.is_some() {
+            UiButtonVariant::Primary
+        } else {
+            UiButtonVariant::Secondary
+        };
+        let state = match *interaction {
+            Interaction::Pressed => UiInteractionState::Pressed,
+            Interaction::Hovered => UiInteractionState::Hovered,
+            Interaction::None => {
+                if select_button.is_some_and(|button| {
+                    character_selection
+                        .selected_player_entity_id
+                        .as_ref()
+                        .is_some_and(|selected| selected == &button.player_entity_id)
+                }) {
+                    UiInteractionState::Selected
+                } else {
+                    UiInteractionState::Idle
+                }
+            }
+        };
+        let (next_bg, next_border, next_shadow) =
+            button_surface(theme, variant, state, glow_intensity);
+        *bg = next_bg;
+        *border = next_border;
+        *shadow = next_shadow;
     }
 }

@@ -52,92 +52,98 @@ use super::resources::{
 #[derive(SystemParam)]
 pub(super) struct DebugOverlayTextUiQueries<'w, 's> {
     root_query: Query<'w, 's, &'static mut Visibility, With<DebugOverlayPanelRoot>>,
-    label_text: Query<
+    text_queries: ParamSet<
         'w,
         's,
-        &'static mut Text,
         (
-            With<DebugOverlayPanelLabelText>,
-            Without<DebugOverlayPanelLabelShadowText>,
-            Without<DebugOverlayPanelValueText>,
-            Without<DebugOverlayPanelValueShadowText>,
-        ),
-    >,
-    label_shadow_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (
-            With<DebugOverlayPanelLabelShadowText>,
-            Without<DebugOverlayPanelLabelText>,
-            Without<DebugOverlayPanelValueText>,
-            Without<DebugOverlayPanelValueShadowText>,
-        ),
-    >,
-    value_text: Query<
-        'w,
-        's,
-        (&'static mut Text, &'static mut TextColor),
-        (
-            With<DebugOverlayPanelValueText>,
-            Without<DebugOverlayPanelLabelText>,
-            Without<DebugOverlayPanelLabelShadowText>,
-            Without<DebugOverlayPanelValueShadowText>,
-        ),
-    >,
-    value_shadow_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (
-            With<DebugOverlayPanelValueShadowText>,
-            Without<DebugOverlayPanelLabelText>,
-            Without<DebugOverlayPanelLabelShadowText>,
-            Without<DebugOverlayPanelValueText>,
-        ),
-    >,
-    secondary_label_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (
-            With<DebugOverlayPanelSecondaryLabelText>,
-            Without<DebugOverlayPanelSecondaryLabelShadowText>,
-            Without<DebugOverlayPanelSecondaryValueText>,
-            Without<DebugOverlayPanelSecondaryValueShadowText>,
-        ),
-    >,
-    secondary_label_shadow_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (
-            With<DebugOverlayPanelSecondaryLabelShadowText>,
-            Without<DebugOverlayPanelSecondaryLabelText>,
-            Without<DebugOverlayPanelSecondaryValueText>,
-            Without<DebugOverlayPanelSecondaryValueShadowText>,
-        ),
-    >,
-    secondary_value_text: Query<
-        'w,
-        's,
-        (&'static mut Text, &'static mut TextColor),
-        (
-            With<DebugOverlayPanelSecondaryValueText>,
-            Without<DebugOverlayPanelSecondaryLabelText>,
-            Without<DebugOverlayPanelSecondaryLabelShadowText>,
-            Without<DebugOverlayPanelSecondaryValueShadowText>,
-        ),
-    >,
-    secondary_value_shadow_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (
-            With<DebugOverlayPanelSecondaryValueShadowText>,
-            Without<DebugOverlayPanelSecondaryLabelText>,
-            Without<DebugOverlayPanelSecondaryLabelShadowText>,
-            Without<DebugOverlayPanelSecondaryValueText>,
+            Query<
+                'w,
+                's,
+                &'static mut Text,
+                (
+                    With<DebugOverlayPanelLabelText>,
+                    Without<DebugOverlayPanelLabelShadowText>,
+                    Without<DebugOverlayPanelValueText>,
+                    Without<DebugOverlayPanelValueShadowText>,
+                ),
+            >,
+            Query<
+                'w,
+                's,
+                &'static mut Text,
+                (
+                    With<DebugOverlayPanelLabelShadowText>,
+                    Without<DebugOverlayPanelLabelText>,
+                    Without<DebugOverlayPanelValueText>,
+                    Without<DebugOverlayPanelValueShadowText>,
+                ),
+            >,
+            Query<
+                'w,
+                's,
+                (&'static mut Text, &'static mut TextColor),
+                (
+                    With<DebugOverlayPanelValueText>,
+                    Without<DebugOverlayPanelLabelText>,
+                    Without<DebugOverlayPanelLabelShadowText>,
+                    Without<DebugOverlayPanelValueShadowText>,
+                ),
+            >,
+            Query<
+                'w,
+                's,
+                &'static mut Text,
+                (
+                    With<DebugOverlayPanelValueShadowText>,
+                    Without<DebugOverlayPanelLabelText>,
+                    Without<DebugOverlayPanelLabelShadowText>,
+                    Without<DebugOverlayPanelValueText>,
+                ),
+            >,
+            Query<
+                'w,
+                's,
+                &'static mut Text,
+                (
+                    With<DebugOverlayPanelSecondaryLabelText>,
+                    Without<DebugOverlayPanelSecondaryLabelShadowText>,
+                    Without<DebugOverlayPanelSecondaryValueText>,
+                    Without<DebugOverlayPanelSecondaryValueShadowText>,
+                ),
+            >,
+            Query<
+                'w,
+                's,
+                &'static mut Text,
+                (
+                    With<DebugOverlayPanelSecondaryLabelShadowText>,
+                    Without<DebugOverlayPanelSecondaryLabelText>,
+                    Without<DebugOverlayPanelSecondaryValueText>,
+                    Without<DebugOverlayPanelSecondaryValueShadowText>,
+                ),
+            >,
+            Query<
+                'w,
+                's,
+                (&'static mut Text, &'static mut TextColor),
+                (
+                    With<DebugOverlayPanelSecondaryValueText>,
+                    Without<DebugOverlayPanelSecondaryLabelText>,
+                    Without<DebugOverlayPanelSecondaryLabelShadowText>,
+                    Without<DebugOverlayPanelSecondaryValueShadowText>,
+                ),
+            >,
+            Query<
+                'w,
+                's,
+                &'static mut Text,
+                (
+                    With<DebugOverlayPanelSecondaryValueShadowText>,
+                    Without<DebugOverlayPanelSecondaryLabelText>,
+                    Without<DebugOverlayPanelSecondaryLabelShadowText>,
+                    Without<DebugOverlayPanelSecondaryValueText>,
+                ),
+            >,
         ),
     >,
 }
@@ -351,13 +357,13 @@ pub(super) fn update_debug_overlay_text_ui_system(
         })
         .unwrap_or(DebugSeverity::Normal);
 
-    if let Ok(mut label_text) = ui_queries.label_text.single_mut() {
+    if let Ok(mut label_text) = ui_queries.text_queries.p0().single_mut() {
         label_text.0 = primary_labels_text.clone();
     }
-    if let Ok(mut label_shadow_text) = ui_queries.label_shadow_text.single_mut() {
+    if let Ok(mut label_shadow_text) = ui_queries.text_queries.p1().single_mut() {
         label_shadow_text.0 = primary_labels_text.clone();
     }
-    if let Ok((mut value_text, mut value_text_color)) = ui_queries.value_text.single_mut() {
+    if let Ok((mut value_text, mut value_text_color)) = ui_queries.text_queries.p2().single_mut() {
         value_text.0 = primary_values_text.clone();
         value_text_color.0 = match highest_severity {
             DebugSeverity::Normal => Color::srgb(0.85, 0.92, 1.0),
@@ -365,18 +371,17 @@ pub(super) fn update_debug_overlay_text_ui_system(
             DebugSeverity::Error => Color::srgb(1.0, 0.55, 0.5),
         };
     }
-    if let Ok(mut value_shadow_text) = ui_queries.value_shadow_text.single_mut() {
+    if let Ok(mut value_shadow_text) = ui_queries.text_queries.p3().single_mut() {
         value_shadow_text.0 = primary_values_text;
     }
-    if let Ok(mut secondary_label_text) = ui_queries.secondary_label_text.single_mut() {
+    if let Ok(mut secondary_label_text) = ui_queries.text_queries.p4().single_mut() {
         secondary_label_text.0 = secondary_labels_text.clone();
     }
-    if let Ok(mut secondary_label_shadow_text) = ui_queries.secondary_label_shadow_text.single_mut()
-    {
+    if let Ok(mut secondary_label_shadow_text) = ui_queries.text_queries.p5().single_mut() {
         secondary_label_shadow_text.0 = secondary_labels_text;
     }
     if let Ok((mut secondary_value_text, mut secondary_value_text_color)) =
-        ui_queries.secondary_value_text.single_mut()
+        ui_queries.text_queries.p6().single_mut()
     {
         secondary_value_text.0 = secondary_values_text.clone();
         secondary_value_text_color.0 = match highest_severity {
@@ -385,8 +390,7 @@ pub(super) fn update_debug_overlay_text_ui_system(
             DebugSeverity::Error => Color::srgb(1.0, 0.55, 0.5),
         };
     }
-    if let Ok(mut secondary_value_shadow_text) = ui_queries.secondary_value_shadow_text.single_mut()
-    {
+    if let Ok(mut secondary_value_shadow_text) = ui_queries.text_queries.p7().single_mut() {
         secondary_value_shadow_text.0 = secondary_values_text;
     }
 }
@@ -1975,8 +1979,9 @@ pub(super) fn update_entity_nameplate_positions_system(
         hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
         return;
     };
-    // This runs in `Last` after camera transform updates. Convert the current camera
-    // `Transform` directly so projection uses the final same-frame camera state.
+    // This runs in `PostUpdate` after camera follow/interpolation and transform propagation.
+    // Convert the current camera `Transform` directly so projection uses the final same-frame
+    // gameplay camera state.
     let camera_global = GlobalTransform::from(*camera_transform);
     let Ok(window) = window_query.single() else {
         let elapsed_ms = elapsed_ms(started_at);
@@ -2078,10 +2083,22 @@ pub(super) fn update_entity_nameplate_positions_system(
 
 #[cfg(test)]
 mod tests {
-    use super::{propagate_ui_overlay_layer_system, split_debug_overlay_text_columns};
-    use crate::runtime::components::UiOverlayLayer;
+    use super::{
+        propagate_ui_overlay_layer_system, split_debug_overlay_text_columns,
+        update_debug_overlay_text_ui_system,
+    };
+    use crate::runtime::components::{
+        DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
+        DebugOverlayPanelSecondaryLabelShadowText, DebugOverlayPanelSecondaryLabelText,
+        DebugOverlayPanelSecondaryValueShadowText, DebugOverlayPanelSecondaryValueText,
+        DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, UiOverlayLayer,
+    };
     use crate::runtime::platform::UI_OVERLAY_RENDER_LAYER;
+    use crate::runtime::resources::{
+        ClientInputSendState, DebugOverlaySnapshot, DebugOverlayState, NameplateUiState,
+    };
     use bevy::camera::visibility::RenderLayers;
+    use bevy::diagnostic::DiagnosticsStore;
     use bevy::prelude::*;
 
     #[test]
@@ -2119,5 +2136,51 @@ mod tests {
         assert_eq!(columns[0].values, vec!["1", "2", "3"]);
         assert_eq!(columns[1].labels, vec!["D", "E"]);
         assert_eq!(columns[1].values, vec!["4", "5"]);
+    }
+
+    #[test]
+    fn debug_overlay_text_ui_system_initializes_without_query_conflicts() {
+        let mut app = App::new();
+        app.init_resource::<Time>();
+        app.init_resource::<DiagnosticsStore>();
+        app.init_resource::<DebugOverlaySnapshot>();
+        app.insert_resource(DebugOverlayState {
+            enabled: true,
+            ..Default::default()
+        });
+        app.init_resource::<ClientInputSendState>();
+        app.add_systems(Update, update_debug_overlay_text_ui_system);
+
+        app.world_mut()
+            .spawn((DebugOverlayPanelRoot, Visibility::Hidden));
+        app.world_mut()
+            .spawn((DebugOverlayPanelLabelText, Text::new("")));
+        app.world_mut()
+            .spawn((DebugOverlayPanelLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelValueText,
+            Text::new(""),
+            TextColor(Color::WHITE),
+        ));
+        app.world_mut()
+            .spawn((DebugOverlayPanelValueShadowText, Text::new("")));
+        app.world_mut()
+            .spawn((DebugOverlayPanelSecondaryLabelText, Text::new("")));
+        app.world_mut()
+            .spawn((DebugOverlayPanelSecondaryLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryValueText,
+            Text::new(""),
+            TextColor(Color::WHITE),
+        ));
+        app.world_mut()
+            .spawn((DebugOverlayPanelSecondaryValueShadowText, Text::new("")));
+
+        app.update();
+    }
+
+    #[test]
+    fn nameplates_default_to_enabled() {
+        assert!(NameplateUiState::default().enabled);
     }
 }

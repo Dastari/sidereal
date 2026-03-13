@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
+@import './components/thegridcn-intensity.css';
 
 @keyframes navigation-progress-slide {
   0% {
@@ -100,8 +101,9 @@
   --radius-xl: 1rem;
 
   /* Fonts */
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-sans: 'Rajdhani', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-display: 'Orbitron', 'Rajdhani', system-ui, sans-serif;
 
   /* Animations */
   --animate-fade-in: fade-in 0.2s ease-out;
@@ -361,5 +363,806 @@ body > div:first-child {
   }
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+/* GridCN-aligned theme tokens and chrome utilities */
+
+:root {
+  --glow: oklch(0.75 0.18 195);
+  --glow-muted: oklch(0.5 0.12 195);
+  --panel: color-mix(in oklch, var(--card) 92%, black);
+  --grid-panel-alpha: 0;
+  --grid-panel-blur: 8px;
+  --grid-panel-shadow:
+    0 18px 48px oklch(0 0 0 / 0.4),
+    inset 0 0 0 1px color-mix(in oklch, var(--border) 60%, transparent);
+  --grid-scanline-opacity: 0;
+  --grid-glow-opacity: 0;
+  --grid-bracket-opacity: 0;
+}
+
+[data-tron-intensity='light'] {
+  --grid-panel-alpha: 0.06;
+  --grid-scanline-opacity: 0.045;
+  --grid-glow-opacity: 0.2;
+  --grid-bracket-opacity: 0.22;
+}
+
+[data-tron-intensity='medium'] {
+  --grid-panel-alpha: 0.11;
+  --grid-scanline-opacity: 0.08;
+  --grid-glow-opacity: 0.34;
+  --grid-bracket-opacity: 0.42;
+}
+
+[data-tron-intensity='heavy'] {
+  --grid-panel-alpha: 0.16;
+  --grid-scanline-opacity: 0.12;
+  --grid-glow-opacity: 0.5;
+  --grid-bracket-opacity: 0.6;
+}
+
+[data-theme='tron'] {
+  --background: oklch(0.06 0.02 250);
+  --foreground: oklch(0.95 0.02 220);
+  --card: oklch(0.1 0.02 250);
+  --card-foreground: oklch(0.92 0.02 220);
+  --popover: oklch(0.1 0.02 250);
+  --popover-foreground: oklch(0.92 0.02 220);
+  --primary: oklch(0.75 0.18 195);
+  --primary-foreground: oklch(0.1 0 0);
+  --secondary: oklch(0.18 0.05 200);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.15 0.03 200);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.7 0.15 195);
+  --accent-foreground: oklch(0.1 0 0);
+  --destructive: oklch(0.58 0.24 30);
+  --border: oklch(0.3 0.1 195);
+  --input: oklch(0.2 0.06 195);
+  --ring: oklch(0.75 0.18 195);
+  --sidebar: oklch(0.08 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.02 220);
+  --sidebar-primary: oklch(0.75 0.18 195);
+  --sidebar-primary-foreground: oklch(0.1 0 0);
+  --sidebar-accent: oklch(0.18 0.05 200);
+  --sidebar-accent-foreground: oklch(0.95 0 0);
+  --sidebar-border: oklch(0.3 0.1 195);
+  --sidebar-ring: oklch(0.75 0.18 195);
+  --glow: oklch(0.75 0.18 195);
+  --glow-muted: oklch(0.5 0.12 195);
+}
+
+[data-theme='ares'] {
+  --primary: oklch(0.6 0.25 25);
+  --secondary: oklch(0.65 0.18 55);
+  --accent: oklch(0.7 0.2 50);
+  --border: oklch(0.3 0.12 25);
+  --input: oklch(0.15 0.04 250);
+  --ring: oklch(0.6 0.25 25);
+  --sidebar-primary: oklch(0.6 0.25 25);
+  --sidebar-accent: oklch(0.7 0.2 50);
+  --sidebar-border: oklch(0.3 0.12 25);
+  --sidebar-ring: oklch(0.6 0.25 25);
+  --glow: oklch(0.6 0.25 25);
+  --glow-muted: oklch(0.4 0.15 25);
+}
+
+[data-theme='clu'] {
+  --primary: oklch(0.75 0.2 55);
+  --secondary: oklch(0.18 0.06 50);
+  --accent: oklch(0.7 0.18 55);
+  --border: oklch(0.3 0.1 55);
+  --input: oklch(0.2 0.06 55);
+  --ring: oklch(0.75 0.2 55);
+  --sidebar-primary: oklch(0.75 0.2 55);
+  --sidebar-accent: oklch(0.18 0.06 50);
+  --sidebar-border: oklch(0.3 0.1 55);
+  --sidebar-ring: oklch(0.75 0.2 55);
+  --glow: oklch(0.75 0.2 55);
+  --glow-muted: oklch(0.5 0.12 55);
+}
+
+[data-theme='athena'] {
+  --primary: oklch(0.85 0.18 90);
+  --secondary: oklch(0.18 0.05 85);
+  --accent: oklch(0.8 0.15 90);
+  --border: oklch(0.35 0.1 90);
+  --input: oklch(0.2 0.06 90);
+  --ring: oklch(0.85 0.18 90);
+  --sidebar-primary: oklch(0.85 0.18 90);
+  --sidebar-accent: oklch(0.18 0.05 85);
+  --sidebar-border: oklch(0.35 0.1 90);
+  --sidebar-ring: oklch(0.85 0.18 90);
+  --glow: oklch(0.85 0.18 90);
+  --glow-muted: oklch(0.55 0.12 90);
+}
+
+[data-theme='aphrodite'] {
+  --primary: oklch(0.7 0.22 340);
+  --secondary: oklch(0.18 0.06 340);
+  --accent: oklch(0.65 0.2 340);
+  --border: oklch(0.3 0.1 340);
+  --input: oklch(0.2 0.06 340);
+  --ring: oklch(0.7 0.22 340);
+  --sidebar-primary: oklch(0.7 0.22 340);
+  --sidebar-accent: oklch(0.18 0.06 340);
+  --sidebar-border: oklch(0.3 0.1 340);
+  --sidebar-ring: oklch(0.7 0.22 340);
+  --glow: oklch(0.7 0.22 340);
+  --glow-muted: oklch(0.5 0.15 340);
+}
+
+[data-theme='poseidon'] {
+  --primary: oklch(0.62 0.2 250);
+  --secondary: oklch(0.18 0.05 245);
+  --accent: oklch(0.58 0.18 245);
+  --border: oklch(0.3 0.1 250);
+  --input: oklch(0.18 0.06 250);
+  --ring: oklch(0.62 0.2 250);
+  --sidebar-primary: oklch(0.62 0.2 250);
+  --sidebar-accent: oklch(0.18 0.05 245);
+  --sidebar-border: oklch(0.3 0.1 250);
+  --sidebar-ring: oklch(0.62 0.2 250);
+  --glow: oklch(0.62 0.2 250);
+  --glow-muted: oklch(0.42 0.12 250);
+}
+
+html[data-theme] body {
+  background:
+    radial-gradient(
+      circle at top,
+      color-mix(in oklch, var(--glow) 12%, transparent),
+      transparent 34%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--background) 96%, black),
+      var(--background)
+    );
+}
+
+@layer components {
+  .grid-shell {
+    position: relative;
+    background:
+      radial-gradient(
+        circle at top,
+        color-mix(in oklch, var(--glow) 10%, transparent),
+        transparent 30%
+      ),
+      linear-gradient(180deg, color-mix(in oklch, var(--background) 94%, black), var(--background));
+  }
+
+  .grid-header {
+    border-color: color-mix(in oklch, var(--border) 82%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 88%, transparent),
+        color-mix(in oklch, var(--card) 96%, transparent)
+      );
+    box-shadow:
+      inset 0 -1px 0 color-mix(in oklch, var(--border) 64%, transparent),
+      0 0 22px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+    backdrop-filter: blur(18px);
+  }
+
+  .grid-sidebar-rail {
+    border-color: color-mix(in oklch, var(--sidebar-border) 80%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--sidebar) 94%, transparent),
+        color-mix(in oklch, var(--background) 90%, transparent)
+      );
+    box-shadow: inset -1px 0 0 color-mix(in oklch, var(--border) 40%, transparent);
+  }
+
+  .grid-panel,
+  .grid-surface {
+    position: relative;
+    border-color: color-mix(in oklch, var(--border) 82%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 92%, transparent),
+        color-mix(in oklch, var(--panel) 96%, black)
+      );
+    box-shadow:
+      var(--grid-panel-shadow),
+      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+    backdrop-filter: blur(var(--grid-panel-blur));
+  }
+
+  .grid-panel::before,
+  .grid-surface::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+      linear-gradient(
+        transparent 0,
+        transparent 6px,
+        color-mix(in oklch, var(--glow-muted) 60%, transparent) 7px,
+        transparent 8px
+      );
+    opacity: var(--grid-scanline-opacity);
+    mix-blend-mode: screen;
+  }
+
+  .grid-panel::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    border: 1px solid color-mix(in oklch, var(--glow) calc(var(--grid-bracket-opacity) * 100%), transparent);
+    clip-path: polygon(
+      0 12px,
+      12px 12px,
+      12px 0,
+      calc(100% - 12px) 0,
+      calc(100% - 12px) 12px,
+      100% 12px,
+      100% calc(100% - 12px),
+      calc(100% - 12px) calc(100% - 12px),
+      calc(100% - 12px) 100%,
+      12px 100%,
+      12px calc(100% - 12px),
+      0 calc(100% - 12px)
+    );
+    opacity: var(--grid-bracket-opacity);
+  }
+
+  .grid-hud-frame {
+    box-shadow:
+      var(--grid-panel-shadow),
+      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+    backdrop-filter: blur(var(--grid-panel-blur));
+  }
+
+  .grid-hud-frame > :not(.grid-hud-frame__overlay):not(.grid-hud-frame__corner):not(.grid-hud-frame__label) {
+    position: relative;
+    z-index: 1;
+  }
+
+  .grid-hud-frame__overlay {
+    opacity: calc(var(--grid-scanline-opacity) * 0.7);
+    background-image:
+      linear-gradient(
+        color-mix(in oklch, var(--glow-muted) 26%, transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--glow-muted) 24%, transparent) 1px,
+        transparent 1px
+      );
+    background-size: 20px 20px;
+    mix-blend-mode: screen;
+  }
+
+  .grid-sidebar-nav {
+    box-shadow:
+      var(--grid-panel-shadow),
+      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+  }
+
+  .grid-sidebar-nav__scanline {
+    opacity: calc(var(--grid-scanline-opacity) * 0.75);
+    background:
+      repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        color-mix(in oklch, var(--glow-muted) 22%, transparent) 2px,
+        color-mix(in oklch, var(--glow-muted) 22%, transparent) 4px
+      );
+    mix-blend-mode: screen;
+  }
+
+  .grid-sidebar-nav__header,
+  .grid-sidebar-nav__footer {
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--sidebar) 92%, transparent),
+        color-mix(in oklch, var(--background) 88%, transparent)
+      );
+  }
+
+  .grid-sidebar-nav__section-label {
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: color-mix(in oklch, var(--primary) 80%, var(--foreground));
+  }
+
+  .grid-sidebar-nav__item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    border-radius: calc(var(--radius-md) + 2px);
+    padding: 0.55rem 0.75rem;
+    transition:
+      color 150ms ease,
+      background-color 150ms ease,
+      box-shadow 150ms ease,
+      transform 150ms ease;
+  }
+
+  .grid-sidebar-nav__item:hover {
+    background: color-mix(in oklch, var(--secondary) 64%, transparent);
+    color: color-mix(in oklch, var(--foreground) 88%, var(--primary));
+    transform: translateX(1px);
+  }
+
+  .grid-sidebar-nav__item[data-active='true'],
+  .grid-sidebar-nav__item--active {
+    background: color-mix(in oklch, var(--primary) 10%, transparent);
+    color: var(--primary);
+    box-shadow:
+      inset 2px 0 0 color-mix(in oklch, var(--primary) 80%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 84%), transparent);
+  }
+
+  .grid-sidebar-nav__item[data-active='true'] .grid-sidebar-nav__meta,
+  .grid-sidebar-nav__item--active .grid-sidebar-nav__meta {
+    color: color-mix(in oklch, var(--primary) 78%, var(--foreground));
+  }
+
+  .grid-sidebar-nav__meta {
+    color: color-mix(in oklch, var(--muted-foreground) 88%, transparent);
+  }
+
+  .grid-scan-overlay__scanlines {
+    opacity: var(--tron-scanline-opacity, 0.03);
+    background-image:
+      repeating-linear-gradient(
+        0deg,
+        color-mix(in oklch, var(--primary) 55%, transparent),
+        color-mix(in oklch, var(--primary) 55%, transparent) 1px,
+        transparent 1px,
+        transparent var(--tron-scanline-gap, 3px)
+      );
+    mix-blend-mode: screen;
+  }
+
+  .grid-scan-overlay__grid {
+    opacity: var(--tron-grid-opacity, 0.03);
+    background-image:
+      linear-gradient(
+        color-mix(in oklch, var(--primary) 48%, transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--primary) 48%, transparent) 1px,
+        transparent 1px
+      );
+    mix-blend-mode: screen;
+  }
+
+  .grid-scan-overlay__line {
+    top: -1px;
+    background: color-mix(in oklch, var(--primary) 48%, transparent);
+    box-shadow:
+      0 0 10px color-mix(in oklch, var(--glow) 55%, transparent),
+      0 0 24px color-mix(in oklch, var(--glow) 32%, transparent);
+    animation: tron-vertical-scan 8s linear infinite;
+  }
+
+  .grid-location-display {
+    color: color-mix(in oklch, var(--foreground) 84%, transparent);
+  }
+
+  .grid-location-display__beacon {
+    background: color-mix(in oklch, var(--primary) 86%, transparent);
+    box-shadow: 0 0 10px color-mix(in oklch, var(--glow) 65%, transparent);
+  }
+
+  .grid-location-display__primary,
+  .grid-location-display__status {
+    color: color-mix(in oklch, var(--primary) 86%, var(--foreground));
+  }
+
+  .grid-location-display__text,
+  .grid-location-display__separator {
+    color: color-mix(in oklch, var(--foreground) 76%, transparent);
+  }
+
+  .thegrid-slider__label {
+    color: color-mix(in oklch, var(--muted-foreground) 84%, transparent);
+  }
+
+  .thegrid-slider__value {
+    color: color-mix(in oklch, var(--primary) 86%, var(--foreground));
+  }
+
+  .thegrid-slider__track {
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--primary) 12%, transparent),
+        color-mix(in oklch, var(--secondary) 16%, transparent)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 58%, transparent),
+      0 0 12px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 34%), transparent);
+  }
+
+  .thegrid-slider__range {
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--primary) 72%, transparent),
+        color-mix(in oklch, var(--primary) 48%, transparent)
+      );
+    box-shadow:
+      0 0 12px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 92%), transparent),
+      inset 0 0 0 1px color-mix(in oklch, var(--primary) 44%, transparent);
+  }
+
+  .thegrid-slider__tick--idle {
+    background: color-mix(in oklch, var(--primary) 16%, transparent);
+  }
+
+  .thegrid-slider__tick--active {
+    background: color-mix(in oklch, var(--primary) 54%, transparent);
+  }
+
+  .thegrid-slider__thumb {
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 96%, transparent),
+        color-mix(in oklch, var(--panel) 92%, black)
+      );
+    border: 1px solid color-mix(in oklch, var(--primary) 78%, transparent);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 30%, transparent),
+      0 0 14px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 96%), transparent);
+  }
+
+  .grid-canvas-hud-chip {
+    border: 1px solid color-mix(in oklch, var(--border) 78%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 90%, transparent),
+        color-mix(in oklch, var(--panel) 94%, black)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 38%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 72%), transparent);
+    backdrop-filter: blur(var(--grid-panel-blur));
+  }
+
+  .grid-button-group {
+    box-shadow:
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 76%), transparent);
+  }
+
+  .grid-button-group-text {
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 94%, transparent),
+        color-mix(in oklch, var(--panel) 96%, black)
+      );
+    border-color: color-mix(in oklch, var(--border) 78%, transparent);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 48%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 52%), transparent);
+  }
+
+  .grid-tabs-list {
+    border: 1px solid color-mix(in oklch, var(--border) 74%, transparent);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 40%, transparent),
+      0 0 20px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 56%), transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 92%, transparent),
+        color-mix(in oklch, var(--panel) 96%, black)
+      );
+  }
+
+  .grid-tabs-trigger {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .grid-tabs-trigger[data-state='active'] {
+    color: var(--primary);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--primary) 32%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 74%), transparent);
+  }
+
+  .grid-switch {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 65%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 76%), transparent);
+  }
+
+  .grid-switch-thumb {
+    box-shadow:
+      0 0 0 1px color-mix(in oklch, var(--primary) 60%, transparent),
+      0 0 16px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 96%), transparent);
+  }
+
+  .grid-dialog-overlay,
+  .grid-alert-dialog-overlay {
+    background:
+      radial-gradient(
+        circle at top,
+        color-mix(in oklch, var(--glow) 12%, transparent),
+        transparent 34%
+      ),
+      color-mix(in oklch, black 76%, transparent);
+  }
+
+  .grid-dialog-content,
+  .grid-alert-dialog-content {
+    position: relative;
+    overflow: hidden;
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 94%, transparent),
+        color-mix(in oklch, var(--panel) 96%, black)
+      );
+    box-shadow:
+      var(--grid-panel-shadow),
+      0 0 34px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+  }
+
+  .grid-dialog-content::before,
+  .grid-alert-dialog-content::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(
+        transparent 0,
+        transparent 6px,
+        color-mix(in oklch, var(--glow-muted) 60%, transparent) 7px,
+        transparent 8px
+      );
+    opacity: calc(var(--grid-scanline-opacity) * 0.9);
+    mix-blend-mode: screen;
+  }
+
+  .grid-dialog-content::after,
+  .grid-alert-dialog-content::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border: 1px solid color-mix(in oklch, var(--glow) calc(var(--grid-bracket-opacity) * 100%), transparent);
+    clip-path: polygon(
+      0 12px,
+      12px 12px,
+      12px 0,
+      calc(100% - 12px) 0,
+      calc(100% - 12px) 12px,
+      100% 12px,
+      100% calc(100% - 12px),
+      calc(100% - 12px) calc(100% - 12px),
+      calc(100% - 12px) 100%,
+      12px 100%,
+      12px calc(100% - 12px),
+      0 calc(100% - 12px)
+    );
+    opacity: var(--grid-bracket-opacity);
+  }
+
+  .grid-dialog-content > *,
+  .grid-alert-dialog-content > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .grid-dialog-close {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 55%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 70%), transparent);
+  }
+
+  @keyframes tron-vertical-scan {
+    0% {
+      top: -1px;
+    }
+    100% {
+      top: 100%;
+    }
+  }
+
+  .grid-button {
+    position: relative;
+    border-width: 1px;
+    border-color: color-mix(in oklch, var(--border) 70%, transparent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklch, white 7%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 72%), transparent);
+  }
+
+  .grid-button--default:hover,
+  .grid-button--secondary:hover,
+  .grid-button--outline:hover,
+  .grid-button--ghost:hover {
+    transform: translateY(-1px);
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklch, white 8%, transparent),
+      0 0 24px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+  }
+
+  .grid-button--outline,
+  .grid-button--ghost {
+    color: var(--foreground);
+  }
+
+  .grid-input {
+    border-color: color-mix(in oklch, var(--border) 78%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 90%, transparent),
+        color-mix(in oklch, var(--panel) 96%, black)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 38%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 44%), transparent);
+  }
+
+  .grid-input:focus-visible {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--primary) 34%, transparent),
+      0 0 24px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 78%), transparent);
+  }
+
+  .grid-button--outline:hover,
+  .grid-button--ghost:hover {
+    background: color-mix(in oklch, var(--secondary) 78%, transparent);
+    color: var(--primary);
+  }
+
+  .grid-button--secondary:hover {
+    background: color-mix(in oklch, var(--secondary) 86%, black);
+  }
+
+  .grid-button--destructive:hover {
+    background: color-mix(in oklch, var(--destructive) 92%, black);
+  }
+
+  .grid-badge {
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 50%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 52%), transparent);
+  }
+
+  .grid-badge--outline {
+    background: color-mix(in oklch, var(--card) 82%, transparent);
+  }
+
+  .grid-dropdown-content {
+    box-shadow:
+      var(--grid-panel-shadow),
+      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 82%), transparent);
+  }
+
+  .grid-dropdown-item {
+    transition:
+      background-color 150ms ease,
+      color 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .grid-dropdown-item:focus,
+  .grid-dropdown-item[data-state='open'] {
+    background: color-mix(in oklch, var(--secondary) 66%, transparent);
+    color: var(--primary);
+    box-shadow: inset 2px 0 0 color-mix(in oklch, var(--primary) 70%, transparent);
+  }
+
+  .grid-table-container::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border: 1px solid color-mix(in oklch, var(--glow) calc(var(--grid-bracket-opacity) * 82%), transparent);
+    opacity: calc(var(--grid-bracket-opacity) * 0.7);
+    clip-path: polygon(
+      0 10px,
+      10px 10px,
+      10px 0,
+      calc(100% - 10px) 0,
+      calc(100% - 10px) 10px,
+      100% 10px,
+      100% calc(100% - 10px),
+      calc(100% - 10px) calc(100% - 10px),
+      calc(100% - 10px) 100%,
+      10px 100%,
+      10px calc(100% - 10px),
+      0 calc(100% - 10px)
+    );
+  }
+
+  .grid-table-head {
+    color: color-mix(in oklch, var(--primary) 58%, var(--foreground));
+  }
+
+  .grid-table-row:hover {
+    background: color-mix(in oklch, var(--secondary) 42%, transparent);
+  }
+
+  .grid-table-cell,
+  .grid-table-head {
+    position: relative;
+    z-index: 1;
+  }
+
+  .grid-slider-track {
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--primary) 8%, transparent),
+        color-mix(in oklch, var(--secondary) 14%, transparent)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 55%, transparent),
+      0 0 10px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 24%), transparent);
+  }
+
+  .grid-slider-range {
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--primary) 76%, transparent),
+        color-mix(in oklch, var(--primary) 54%, transparent)
+      );
+    box-shadow:
+      0 0 14px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 92%), transparent),
+      inset 0 0 0 1px color-mix(in oklch, var(--primary) 38%, transparent);
+  }
+
+  .grid-slider-thumb {
+    border-color: color-mix(in oklch, var(--primary) 76%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 96%, transparent),
+        color-mix(in oklch, var(--panel) 92%, black)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 28%, transparent),
+      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+  }
+
+  .grid-dot {
+    box-shadow: 0 0 12px currentColor;
+  }
+
+  .grid-title {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+  }
+
+  .grid-text-glow {
+    text-shadow:
+      0 0 8px color-mix(in oklch, var(--glow) 55%, transparent),
+      0 0 20px color-mix(in oklch, var(--glow-muted) 38%, transparent);
   }
 }

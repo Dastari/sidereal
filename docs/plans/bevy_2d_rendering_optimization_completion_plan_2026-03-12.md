@@ -75,6 +75,13 @@ Update note (2026-03-13, later 5):
 - Native impact: bootstrap/catalog polling should no longer stall the frame loop waiting on task polling, and deeper streamed-asset trees now have explicit regression coverage for dependency-before-parent fetch ordering.
 - WASM impact: no intended divergence. The change stays inside shared client auth/bootstrap/runtime asset code and compiled successfully for the `wasm32-unknown-unknown` target with `bevy/webgpu`.
 
+Update note (2026-03-13, later 6):
+- Phase 3 has partially started and this document now treats that explicitly as current status instead of future-only intent.
+- `bins/sidereal-client/src/runtime/render_layers.rs` now skips registry rebuilds when authored render-layer state is unchanged and uses targeted dirty-entity reassignment passes when the registry generation is stable.
+- `bins/sidereal-client/src/runtime/shaders.rs` now marks runtime shader assignments dirty from relevant authored/component changes and skips steady-state resync when neither the dirty bit nor the catalog reload generation changed.
+- `bins/sidereal-client/src/runtime/assets.rs` now rebuilds runtime asset dependency state only when relevant authored inputs, hot-reload forced asset IDs, or catalog generations change.
+- Phase 3 is not quantitatively closed. The remaining work is to measure whether stable frames are quiet enough, then tighten any still-broad scans that remain visible in the counters.
+
 ## 1. Purpose
 
 This plan is written for a fresh agent with no prior project context.
@@ -124,8 +131,8 @@ As of the March 12 audit, the following work is already landed or materially red
 The following work is still open enough to require code changes:
 
 1. Visibility apply-loop cost remains the top server-side smoothness risk.
-2. Runtime asset completion still risks frame-thread hitches because completion work still uses `block_on(...)` in the polling path.
-3. Shader assignment, render-layer upkeep, and asset dependency refresh still contain always-on client polling.
+2. Quantitative baseline capture and before/after measurement are still missing for the completed Phase 0 through Phase 2 slices.
+3. Shader assignment, render-layer upkeep, and asset dependency refresh have moved toward change-driven execution, but still need re-measurement to confirm that stable frames are quiet enough and to identify any remaining broad scans worth narrowing.
 4. Tactical map and nameplate UI still do expensive per-frame world/UI reconciliation.
 5. Duplicate suppression is improved, but still a transitional runtime tax.
 6. Material-instance pressure and the current camera/pass baseline still need a measured follow-up after the earlier phases are complete.
@@ -169,8 +176,14 @@ Execute the remaining work in this order unless fresh measurement clearly dispro
 - [x] Phase 1 next: split conditional entities into narrower public-visible, faction-visible, discovered-landmark, and ordinary range-checked paths.
 - [ ] Phase 1 next: capture fresh `apply_ms`/visibility-stage measurements and compare against the pre-optimization baseline.
 - [x] Phase 1 exit gate: qualitative native validation indicates visibility apply cost is reduced enough to move to Phase 2, even though the quantitative measurement follow-up is still deferred.
-- [x] Phase 2: asset completion hitch removal and priority enforcement is now in progress in `bins/sidereal-client/src/runtime/assets.rs`.
-- [ ] Phase 3: steady-state client polling removal has not started yet.
+- [x] Phase 2 slice: runtime asset completion no longer blocks the frame loop while polling fetch/persist/index-save completion in `bins/sidereal-client/src/runtime/assets.rs`.
+- [x] Phase 2 slice: bootstrap/auth polling no longer blocks the frame loop while polling gateway/bootstrap completion in `bins/sidereal-client/src/runtime/auth_net.rs`.
+- [x] Phase 2 slice: deterministic runtime asset priority buckets and dependency-before-parent coverage are implemented.
+- [ ] Phase 2 remaining: capture quantitative hitch/baseline evidence and decide whether any additional follow-up is needed after re-measurement.
+- [x] Phase 3 slice: render-layer registry rebuilds are gated on authored-state changes and assignment updates can use targeted dirty-entity passes.
+- [x] Phase 3 slice: runtime shader assignment sync is dirty/catalog-generation driven instead of unconditional steady-state work.
+- [x] Phase 3 slice: runtime asset dependency-state rebuilds are dirty/catalog-generation driven instead of unconditional steady-state rebuilds.
+- [ ] Phase 3 remaining: measure stable-frame counters and narrow any still-broad polling that remains visible after the landed dirty/generation gating.
 - [ ] Phase 4: tactical/nameplate/HUD cost reduction beyond instrumentation has not started yet.
 - [ ] Phase 5: duplicate-presentation/debug cleanup follow-up has not started yet.
 
@@ -178,7 +191,7 @@ Execute the remaining work in this order unless fresh measurement clearly dispro
 
 Status (2026-03-13):
 - In progress.
-- The instrumentation/code changes are partially complete.
+- The instrumentation/code changes needed for this pass are implemented enough to support baseline capture and later phase comparison.
 - The remaining required step is to capture and record a baseline from a representative native run.
 
 Goal:
@@ -297,11 +310,12 @@ Acceptance criteria:
 ## 9. Phase 2: Finish Asset Delivery Optimization
 
 Status (2026-03-13):
-- In progress.
-- The first active slice is landed in `bins/sidereal-client/src/runtime/assets.rs`.
-- Steady-state runtime asset completion no longer relies on `bevy::tasks::block_on(...)` inside the frame loop.
+- Materially implemented, with quantitative validation still pending.
+- `bins/sidereal-client/src/runtime/assets.rs` no longer relies on `bevy::tasks::block_on(...)` inside the frame loop for steady-state runtime asset completion.
+- `bins/sidereal-client/src/runtime/auth_net.rs` no longer relies on `bevy::tasks::block_on(future::poll_once(...))` for frame-driven gateway/bootstrap polling.
 - Cache-index save starts are deferred until the current fetch/persist wave drains.
 - Runtime fetch selection now has explicit deterministic priority buckets for critical shader/material assets, root visuals, immediate render dependencies, and lower-value optional art.
+- Targeted tests now cover fail-closed bootstrap behavior, no duplicate in-flight runtime fetches, and deeper dependency-before-parent ordering.
 
 Goal:
 Keep the new parallel fetch behavior, then remove main-thread completion hitches and make priority rules explicit.
@@ -351,6 +365,13 @@ Acceptance criteria:
 4. Scene visual readiness improves or at minimum stops hitching when assets complete.
 
 ## 10. Phase 3: Finish Steady-State Client Polling Removal
+
+Status (2026-03-13):
+- Partially implemented.
+- `bins/sidereal-client/src/runtime/render_layers.rs` now skips registry rebuilds when authored state is unchanged and uses targeted dirty-entity assignment work when the registry generation is stable.
+- `bins/sidereal-client/src/runtime/shaders.rs` now uses a dirty bit plus catalog reload generation to avoid steady-state shader assignment resync when nothing relevant changed.
+- `bins/sidereal-client/src/runtime/assets.rs` now rebuilds runtime asset dependency state only when relevant authored inputs, forced hot-reload asset IDs, or catalog generations changed.
+- The remaining Phase 3 work is measurement plus any additional narrowing required if stable-frame counters still show avoidable steady-state work.
 
 Goal:
 Convert remaining broad polling in shader assignment, render-layer upkeep, and asset dependency refresh into narrower change-driven or generation-driven work.
@@ -615,10 +636,10 @@ On the first session using this plan, do exactly this:
 
 1. Read the documents listed in Section 2.
 2. Open the files named in Phase 0 and verify which counters/timers already exist.
-3. Build the touched targets so the baseline branch is in a known-good state.
-4. Capture a baseline with the current metrics.
-5. Start Phase 1 only after the baseline exists.
-6. After each phase, record what changed and what improved before moving on.
+3. Build the touched targets so the current branch is in a known-good state before taking new measurements.
+4. Capture or refresh the missing native baseline with the current metrics if it has not yet been recorded for this branch.
+5. Do not restart already-landed Phase 1 through Phase 3 implementation slices; use the current execution-status table to identify the first still-open measurement or implementation item.
+6. After each additional phase or measurement pass, record what changed, what improved or did not improve, and what remains next before moving on.
 
 ## 19. Definition of Done
 

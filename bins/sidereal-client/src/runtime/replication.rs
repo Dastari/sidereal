@@ -8,6 +8,7 @@ use bevy::state::state_scoped::DespawnOnExit;
 use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::prediction::correction::CorrectionPolicy;
 use lightyear::prediction::prelude::{PredictionManager, RollbackMode};
+use lightyear::prelude::LocalTimeline;
 use lightyear::prelude::PreSpawned;
 use lightyear::prelude::client::Client;
 use sidereal_game::{
@@ -85,10 +86,11 @@ fn bootstrap_planar_heading(
 #[allow(clippy::type_complexity)]
 pub(crate) fn mark_new_ballistic_projectiles_prespawned(
     mut commands: Commands<'_, '_>,
+    timeline: Res<'_, LocalTimeline>,
     projectiles: Query<
         '_,
         '_,
-        Entity,
+        (Entity, &'_ BallisticProjectile),
         (
             With<BallisticProjectile>,
             Added<BallisticProjectile>,
@@ -96,8 +98,10 @@ pub(crate) fn mark_new_ballistic_projectiles_prespawned(
         ),
     >,
 ) {
-    for entity in &projectiles {
-        commands.entity(entity).insert(PreSpawned::default());
+    for (entity, projectile) in &projectiles {
+        commands.entity(entity).insert(PreSpawned::new(
+            projectile.prespawn_hash_for_tick(timeline.tick().0),
+        ));
     }
 }
 

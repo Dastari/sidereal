@@ -1,7 +1,7 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract
-Last updated: March 12, 2026
+Last updated: March 14, 2026
 Primary architecture reference: `docs/sidereal_design_document.md`
 Related contract: `docs/features/scripting_support.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
@@ -56,6 +56,7 @@ Core outcomes:
 - `asset_guid`: immutable generated ID for one published payload version; used in gateway URL path.
 - `lua asset registry`: runtime script-authored source of truth describing all known assets and policies.
 - `bootstrap required assets`: assets that must be present before client transitions from `AssetLoading` to `InWorld`.
+- `startup required assets`: assets that must be present before pre-auth/startup UI features may rely on them (for example login-screen music).
 - `runtime optional assets`: non-blocking assets fetched on demand when referenced after world entry.
 - `asset catalog`: generated server artifact derived from Lua registry + build pipeline metadata.
 
@@ -77,6 +78,7 @@ return {
       source_path = "sprites/ships/rocinante.png",
       dependencies = { "shader.sprite.pixel_default" },
       bootstrap_required = true,
+      startup_required = false,
       tags = { "ship", "starter" },
     },
   },
@@ -90,7 +92,13 @@ Rules:
 3. Published `relative_cache_path` values are generated runtime metadata and must not reveal authoring/source-tree layout.
 4. `dependencies` are logical `asset_id` references.
 5. `bootstrap_required = true` marks assets that must be present before `InWorld`.
-6. All fields are validated by Rust loader/schema checks; invalid registry blocks activation.
+6. `startup_required = true` marks assets intended for a future pre-auth/startup preload lane. It is distinct from `bootstrap_required`.
+7. All fields are validated by Rust loader/schema checks; invalid registry blocks activation.
+
+2026-03-14 update:
+1. The Lua asset registry and generated runtime catalog now carry `startup_required` as a first-class policy bit.
+2. `startup_required` is authorable today and intended for pre-auth/login-screen content such as menu music.
+3. The current authenticated `/assets/bootstrap-manifest` flow still enforces only `bootstrap_required`; `startup_required` is reserved for a separate startup manifest/bootstrap path and must not be treated as already active behavior.
 
 ### 5.2 Forbidden runtime patterns
 
@@ -116,6 +124,7 @@ Server-side tooling must build a generated catalog from Lua registry entries:
    - `content_type`
    - dependency list
    - `bootstrap_required`
+   - `startup_required`
 5. Publish payload bytes to gateway-readable storage.
 6. Publish an active catalog version pointer consumed by gateway/replication.
 

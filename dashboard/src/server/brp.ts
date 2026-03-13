@@ -534,10 +534,7 @@ function getEntityGuidFromComponents(
   components: Record<string, unknown>,
 ): string | null {
   for (const [componentPath, value] of Object.entries(components)) {
-    if (
-      !componentPath.endsWith('::EntityGuid') &&
-      !componentPath.includes('entity_guid')
-    ) {
+    if (!componentPath.endsWith('::EntityGuid')) {
       continue
     }
     const found = findStringDeep(value)

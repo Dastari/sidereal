@@ -8,18 +8,16 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::state::state_scoped::DespawnOnExit;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
-use lightyear::prelude::MessageReceiver;
 use lightyear::prelude::input::native::ActionState;
 use sidereal_game::{
     AfterburnerCapability, AfterburnerState, AmmoCount, BallisticProjectile, BallisticWeapon,
-    ControlledEntityGuid, Engine, EntityAction, EntityGuid, FlightComputer, Hardpoint, MountedOn,
-    ParentGuid, PlanetBodyShaderSettings, PlayerTag, ProceduralSprite,
+    ControlledEntityGuid, EntityAction, EntityGuid, EntityLabels, FlightComputer, Hardpoint,
+    MountedOn, ParentGuid, PlanetBodyShaderSettings, PlayerTag, ProceduralSprite,
     RuntimeRenderLayerDefinition, RuntimeWorldVisualPassDefinition, RuntimeWorldVisualStack, SizeM,
     ThrusterPlumeShaderSettings, WorldPosition, generate_procedural_sprite_image_set,
     resolve_world_position,
 };
 use sidereal_net::PlayerInput;
-use sidereal_net::ServerWeaponFiredMessage;
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
 
@@ -48,6 +46,9 @@ use super::resources::CameraMotionState;
 use super::resources::DuplicateVisualResolutionState;
 use super::resources::RuntimeSharedQuadMesh;
 use super::shaders;
+use crate::runtime::combat_messages::{
+    RemoteEntityDestructionRuntimeMessage, RemoteWeaponFiredRuntimeMessage,
+};
 
 const WEAPON_TRACER_POOL_SIZE: usize = 96;
 
@@ -108,6 +109,10 @@ const STREAMED_VISUAL_BASE_LAYER_Z: f32 = 0.2;
 const PROJECTILE_VISUAL_WIDTH_M: f32 = 0.45;
 const PROJECTILE_VISUAL_LENGTH_M: f32 = 2.8;
 const PROJECTILE_VISUAL_Z: f32 = 0.38;
+const DESTRUCTION_EXPLOSION_TTL_S: f32 = 0.65;
+const DESTRUCTION_EXPLOSION_BASE_SCALE: f32 = 8.0;
+const DESTRUCTION_EXPLOSION_GROWTH_SCALE: f32 = 18.0;
+const DESTRUCTION_EXPLOSION_INTENSITY: f32 = 1.45;
 
 enum StreamedVisualMaterialKind {
     Plain,
@@ -234,6 +239,11 @@ fn activate_weapon_impact_explosion(
     };
     explosion.ttl_s = WEAPON_IMPACT_EXPLOSION_TTL_S;
     explosion.max_ttl_s = WEAPON_IMPACT_EXPLOSION_TTL_S;
+    explosion.base_scale = 1.2;
+    explosion.growth_scale = 4.4;
+    explosion.intensity_scale = 1.0;
+    explosion.domain_scale = 1.12;
+    explosion.screen_distortion_scale = 0.0;
     transform.translation = Vec3::new(impact_pos.x, impact_pos.y, 0.43);
     transform.scale = Vec3::splat(1.6);
     if let Some(material) = effect_materials.get_mut(&material_handle.0) {
@@ -243,12 +253,84 @@ fn activate_weapon_impact_explosion(
             1.0,
             0.92,
             0.35,
+            explosion.domain_scale,
             Vec4::new(1.0, 0.92, 0.68, 1.0),
             Vec4::new(1.0, 0.54, 0.16, 1.0),
             Vec4::new(0.24, 0.14, 0.08, 1.0),
         );
     }
     *visibility = Visibility::Visible;
+}
+
+fn activate_destruction_effect(
+    profile_id: &str,
+    impact_pos: Vec2,
+    pool: &mut WeaponImpactExplosionPool,
+    explosions: &mut Query<
+        '_,
+        '_,
+        (
+            &'_ mut WeaponImpactExplosion,
+            &'_ mut Transform,
+            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
+            &'_ mut Visibility,
+        ),
+        WeaponImpactExplosionQueryFilter,
+    >,
+    effect_materials: &mut Assets<RuntimeEffectMaterial>,
+) {
+    if pool.explosions.is_empty() {
+        return;
+    }
+    let explosion_entity = pool.explosions[pool.next_index % pool.explosions.len()];
+    pool.next_index = (pool.next_index + 1) % pool.explosions.len();
+    let Ok((mut explosion, mut transform, material_handle, mut visibility)) =
+        explosions.get_mut(explosion_entity)
+    else {
+        return;
+    };
+    let (core_color, rim_color, smoke_color) = match profile_id {
+        "explosion_burst" => (
+            Vec4::new(1.0, 0.94, 0.76, 1.0),
+            Vec4::new(1.0, 0.58, 0.18, 1.0),
+            Vec4::new(0.22, 0.14, 0.10, 1.0),
+        ),
+        _ => (
+            Vec4::new(1.0, 0.94, 0.76, 1.0),
+            Vec4::new(1.0, 0.58, 0.18, 1.0),
+            Vec4::new(0.22, 0.14, 0.10, 1.0),
+        ),
+    };
+    explosion.ttl_s = DESTRUCTION_EXPLOSION_TTL_S;
+    explosion.max_ttl_s = DESTRUCTION_EXPLOSION_TTL_S;
+    explosion.base_scale = DESTRUCTION_EXPLOSION_BASE_SCALE;
+    explosion.growth_scale = DESTRUCTION_EXPLOSION_GROWTH_SCALE;
+    explosion.intensity_scale = DESTRUCTION_EXPLOSION_INTENSITY;
+    explosion.domain_scale = 1.45;
+    explosion.screen_distortion_scale = 1.0;
+    transform.translation = Vec3::new(impact_pos.x, impact_pos.y, 0.52);
+    transform.scale = Vec3::splat(DESTRUCTION_EXPLOSION_BASE_SCALE);
+    if let Some(material) = effect_materials.get_mut(&material_handle.0) {
+        material.params = RuntimeEffectUniforms::explosion_burst(
+            0.0,
+            DESTRUCTION_EXPLOSION_INTENSITY,
+            1.25,
+            1.0,
+            0.55,
+            explosion.domain_scale,
+            core_color,
+            rim_color,
+            smoke_color,
+        );
+    }
+    *visibility = Visibility::Visible;
+}
+
+fn has_engine_label(labels: &EntityLabels) -> bool {
+    labels
+        .0
+        .iter()
+        .any(|label| label.eq_ignore_ascii_case("engine"))
 }
 
 impl StreamedVisualMaterialKind {
@@ -1086,7 +1168,7 @@ pub(super) fn attach_streamed_visual_assets_system(
 mod tests {
     use super::{
         PROJECTILE_VISUAL_Z, StreamedVisualMaterialKind, WEAPON_IMPACT_SPARK_TTL_S,
-        attach_ballistic_projectile_visuals_system,
+        activate_destruction_effect, attach_ballistic_projectile_visuals_system,
         bootstrap_local_ballistic_projectile_visual_roots_system,
         ensure_planet_body_root_visibility_system, ensure_visual_parent_spatial_components,
         planet_camera_relative_translation, runtime_layer_screen_scale_factor,
@@ -1097,8 +1179,8 @@ mod tests {
     use crate::runtime::backdrop::RuntimeEffectMaterial;
     use crate::runtime::components::{
         BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
-        StreamedVisualAttachmentKind, SuppressedPredictedDuplicateVisual, WeaponImpactSpark,
-        WorldEntity,
+        StreamedVisualAttachmentKind, SuppressedPredictedDuplicateVisual, WeaponImpactExplosion,
+        WeaponImpactExplosionPool, WeaponImpactSpark, WorldEntity,
     };
     use crate::runtime::resources::DuplicateVisualResolutionState;
     use crate::runtime::transforms::{
@@ -1251,6 +1333,86 @@ mod tests {
         assert_eq!(
             *entity_ref.get::<Visibility>().expect("visibility"),
             Visibility::Hidden
+        );
+    }
+
+    #[test]
+    fn destruction_effect_uses_existing_explosion_pool() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<RuntimeEffectMaterial>();
+        app.insert_resource(WeaponImpactExplosionPool {
+            explosions: Vec::new(),
+            next_index: 0,
+        });
+
+        let material = {
+            let mut materials = app
+                .world_mut()
+                .resource_mut::<Assets<RuntimeEffectMaterial>>();
+            materials.add(RuntimeEffectMaterial::default())
+        };
+
+        let explosion = app
+            .world_mut()
+            .spawn((
+                WeaponImpactExplosion {
+                    ttl_s: 0.0,
+                    max_ttl_s: 0.18,
+                    base_scale: 1.2,
+                    growth_scale: 4.4,
+                    intensity_scale: 1.0,
+                    domain_scale: 1.12,
+                    screen_distortion_scale: 0.0,
+                },
+                Transform::default(),
+                MeshMaterial2d(material),
+                Visibility::Hidden,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<WeaponImpactExplosionPool>()
+            .explosions
+            .push(explosion);
+
+        let _ = app.world_mut().run_system_once(
+            |mut pool: ResMut<'_, WeaponImpactExplosionPool>,
+             mut materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
+             mut query: Query<
+                '_,
+                '_,
+                (
+                    &'_ mut WeaponImpactExplosion,
+                    &'_ mut Transform,
+                    &'_ MeshMaterial2d<RuntimeEffectMaterial>,
+                    &'_ mut Visibility,
+                ),
+                super::WeaponImpactExplosionQueryFilter,
+            >| {
+                activate_destruction_effect(
+                    "explosion_burst",
+                    Vec2::new(12.0, -4.0),
+                    &mut pool,
+                    &mut query,
+                    &mut materials,
+                );
+            },
+        );
+
+        let entity_ref = app.world().entity(explosion);
+        let effect = entity_ref
+            .get::<WeaponImpactExplosion>()
+            .expect("explosion effect");
+        let transform = entity_ref.get::<Transform>().expect("transform");
+        assert_eq!(transform.translation.x, 12.0);
+        assert_eq!(transform.translation.y, -4.0);
+        assert!(
+            effect.screen_distortion_scale > 0.0,
+            "destruction effects should opt into screen-space distortion"
+        );
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Visible
         );
     }
 
@@ -2077,10 +2239,14 @@ pub(super) fn attach_thruster_plume_visuals_system(
     engines: Query<
         '_,
         '_,
-        (Entity, &'_ Children, Option<&'_ RuntimeWorldVisualPassSet>),
+        (
+            Entity,
+            &'_ EntityLabels,
+            &'_ Children,
+            Option<&'_ RuntimeWorldVisualPassSet>,
+        ),
         (
             With<WorldEntity>,
-            With<Engine>,
             Without<SuppressedPredictedDuplicateVisual>,
         ),
     >,
@@ -2088,7 +2254,10 @@ pub(super) fn attach_thruster_plume_visuals_system(
     if !shader_materials_enabled() {
         return;
     }
-    for (entity, children, pass_set) in &engines {
+    for (entity, labels, children, pass_set) in &engines {
+        if !has_engine_label(labels) {
+            continue;
+        }
         let has_existing_plume_child = children.iter().any(|child| {
             visual_children.get(child).is_ok_and(|pass| {
                 pass.family == RuntimeWorldVisualFamily::Thruster
@@ -2150,6 +2319,7 @@ pub(super) fn update_thruster_plume_visuals_system(
         '_,
         '_,
         (
+            &'_ EntityLabels,
             &'_ Children,
             &'_ MountedOn,
             Option<&'_ AfterburnerCapability>,
@@ -2161,19 +2331,26 @@ pub(super) fn update_thruster_plume_visuals_system(
         '_,
         (
             &'_ EntityGuid,
+            Option<&'_ MountedOn>,
             &'_ FlightComputer,
             Option<&'_ AfterburnerState>,
         ),
     >,
 ) {
     let mut hull_state = HashMap::<uuid::Uuid, (f32, bool)>::new();
-    for (guid, computer, afterburner_state) in &hulls {
+    for (guid, mounted_on, computer, afterburner_state) in &hulls {
         let thrust_alpha = computer.throttle.max(0.0).clamp(0.0, 1.0);
         let afterburner_active = afterburner_state.is_some_and(|state| state.active);
-        hull_state.insert(guid.0, (thrust_alpha, afterburner_active));
+        let hull_guid = mounted_on
+            .map(|mounted_on| mounted_on.parent_entity_id)
+            .unwrap_or(guid.0);
+        hull_state.insert(hull_guid, (thrust_alpha, afterburner_active));
     }
 
-    for (children, mounted_on, afterburner_capability, plume_settings) in &engines {
+    for (labels, children, mounted_on, afterburner_capability, plume_settings) in &engines {
+        if !has_engine_label(labels) {
+            continue;
+        }
         let Some((thrust_alpha, afterburner_active)) =
             hull_state.get(&mounted_on.parent_entity_id).copied()
         else {
@@ -2424,6 +2601,11 @@ pub(super) fn ensure_weapon_impact_explosion_pool_system(
                 WeaponImpactExplosion {
                     ttl_s: 0.0,
                     max_ttl_s: WEAPON_IMPACT_EXPLOSION_TTL_S,
+                    base_scale: 1.2,
+                    growth_scale: 4.4,
+                    intensity_scale: 1.0,
+                    domain_scale: 1.12,
+                    screen_distortion_scale: 0.0,
                 },
                 Mesh2d(mesh.clone()),
                 MeshMaterial2d(effect_materials.add(RuntimeEffectMaterial {
@@ -2433,6 +2615,7 @@ pub(super) fn ensure_weapon_impact_explosion_pool_system(
                         1.0,
                         0.92,
                         0.35,
+                        1.12,
                         Vec4::new(1.0, 0.92, 0.68, 1.0),
                         Vec4::new(1.0, 0.54, 0.16, 1.0),
                         Vec4::new(0.24, 0.14, 0.08, 1.0),
@@ -2701,15 +2884,7 @@ pub(super) fn emit_weapon_tracer_visuals_system(
 #[allow(clippy::type_complexity)]
 pub(super) fn receive_remote_weapon_tracer_messages_system(
     mut pool: ResMut<'_, WeaponTracerPool>,
-    mut receivers: Query<
-        '_,
-        '_,
-        &'_ mut MessageReceiver<ServerWeaponFiredMessage>,
-        (
-            With<lightyear::prelude::client::Client>,
-            With<lightyear::prelude::client::Connected>,
-        ),
-    >,
+    mut events: MessageReader<'_, '_, RemoteWeaponFiredRuntimeMessage>,
     controlled_roots: Query<'_, '_, &'_ EntityGuid, (With<ControlledEntity>, With<WorldEntity>)>,
     world_entity_guids: Query<'_, '_, (Entity, &'_ EntityGuid), With<WorldEntity>>,
     mut bolts: Query<
@@ -2733,51 +2908,80 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
         .map(|(entity, guid)| (guid.0, entity))
         .collect();
 
-    for mut receiver in &mut receivers {
-        for message in receiver.receive() {
-            let Some(shooter_runtime_id) =
-                sidereal_net::RuntimeEntityId::parse(message.shooter_entity_id.as_str())
-            else {
-                continue;
-            };
-            // Accept authoritative tracer messages even for locally controlled shooters.
-            // This guarantees impact stop/impact VFX parity with server-side hitscan.
+    for event in events.read() {
+        let message = &event.message;
+        let Some(shooter_runtime_id) =
+            sidereal_net::RuntimeEntityId::parse(message.shooter_entity_id.as_str())
+        else {
+            continue;
+        };
+        // Accept authoritative tracer messages even for locally controlled shooters.
+        // This guarantees impact stop/impact VFX parity with server-side hitscan.
 
-            let bolt_entity = pool.bolts[pool.next_index % pool.bolts.len()];
-            pool.next_index = (pool.next_index + 1) % pool.bolts.len();
-            if let Ok((mut transform, _material_handle, mut visibility, mut bolt)) =
-                bolts.get_mut(bolt_entity)
-            {
-                let origin = Vec2::new(message.origin_xy[0], message.origin_xy[1]);
-                let velocity = Vec2::new(message.velocity_xy[0], message.velocity_xy[1]);
-                transform.translation = Vec3::new(origin.x, origin.y, 0.35);
-                if velocity.length_squared() > f32::EPSILON {
-                    transform.rotation = Quat::from_rotation_z(
-                        velocity.to_angle() + WEAPON_TRACER_ROTATION_OFFSET_RAD,
-                    );
-                }
-                bolt.excluded_entity = shooter_entity_by_guid
-                    .get(&shooter_runtime_id.as_uuid())
-                    .copied();
-                bolt.velocity = velocity;
-                bolt.impact_xy = message
-                    .impact_xy
-                    .map(|impact_xy| Vec2::new(impact_xy[0], impact_xy[1]));
-                bolt.ttl_s = message.ttl_s.max(0.01);
-                let speed = velocity.length();
-                let normal = if speed > f32::EPSILON {
-                    let direction = velocity / speed;
-                    Vec2::new(-direction.y, direction.x)
-                } else {
-                    Vec2::ZERO
-                };
-                bolt.lateral_normal = normal;
-                bolt.wiggle_phase_rad = 0.0;
-                bolt.wiggle_freq_hz = WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ;
-                bolt.wiggle_amp_mps = 0.0;
-                *visibility = Visibility::Visible;
+        let bolt_entity = pool.bolts[pool.next_index % pool.bolts.len()];
+        pool.next_index = (pool.next_index + 1) % pool.bolts.len();
+        if let Ok((mut transform, _material_handle, mut visibility, mut bolt)) =
+            bolts.get_mut(bolt_entity)
+        {
+            let origin = Vec2::new(message.origin_xy[0], message.origin_xy[1]);
+            let velocity = Vec2::new(message.velocity_xy[0], message.velocity_xy[1]);
+            transform.translation = Vec3::new(origin.x, origin.y, 0.35);
+            if velocity.length_squared() > f32::EPSILON {
+                transform.rotation =
+                    Quat::from_rotation_z(velocity.to_angle() + WEAPON_TRACER_ROTATION_OFFSET_RAD);
             }
+            bolt.excluded_entity = shooter_entity_by_guid
+                .get(&shooter_runtime_id.as_uuid())
+                .copied();
+            bolt.velocity = velocity;
+            bolt.impact_xy = message
+                .impact_xy
+                .map(|impact_xy| Vec2::new(impact_xy[0], impact_xy[1]));
+            bolt.ttl_s = message.ttl_s.max(0.01);
+            let speed = velocity.length();
+            let normal = if speed > f32::EPSILON {
+                let direction = velocity / speed;
+                Vec2::new(-direction.y, direction.x)
+            } else {
+                Vec2::ZERO
+            };
+            bolt.lateral_normal = normal;
+            bolt.wiggle_phase_rad = 0.0;
+            bolt.wiggle_freq_hz = WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ;
+            bolt.wiggle_amp_mps = 0.0;
+            *visibility = Visibility::Visible;
         }
+    }
+}
+
+pub(super) fn receive_remote_destruction_effect_messages_system(
+    mut pool: ResMut<'_, WeaponImpactExplosionPool>,
+    mut events: MessageReader<'_, '_, RemoteEntityDestructionRuntimeMessage>,
+    mut effect_materials: ResMut<'_, Assets<RuntimeEffectMaterial>>,
+    mut explosions: Query<
+        '_,
+        '_,
+        (
+            &'_ mut WeaponImpactExplosion,
+            &'_ mut Transform,
+            &'_ MeshMaterial2d<RuntimeEffectMaterial>,
+            &'_ mut Visibility,
+        ),
+        WeaponImpactExplosionQueryFilter,
+    >,
+) {
+    if pool.explosions.is_empty() {
+        return;
+    }
+    for event in events.read() {
+        let message = &event.message;
+        activate_destruction_effect(
+            message.destruction_profile_id.as_str(),
+            Vec2::new(message.origin_xy[0], message.origin_xy[1]),
+            &mut pool,
+            &mut explosions,
+            &mut effect_materials,
+        );
     }
 }
 
@@ -2968,14 +3172,15 @@ pub(super) fn update_weapon_impact_explosions_system(
         }
         let t = (explosion.ttl_s / explosion.max_ttl_s).clamp(0.0, 1.0);
         let age_norm = 1.0 - t;
-        transform.scale = Vec3::splat(1.2 + age_norm * 4.4);
+        transform.scale = Vec3::splat(explosion.base_scale + age_norm * explosion.growth_scale);
         if let Some(material) = explosion_materials.get_mut(&material_handle.0) {
             material.params = RuntimeEffectUniforms::explosion_burst(
                 age_norm,
-                1.0 + (1.0 - age_norm) * 0.35,
+                explosion.intensity_scale + (1.0 - age_norm) * 0.35,
                 1.0 + age_norm * 0.5,
                 t * 0.95,
                 0.35 + age_norm * 0.2,
+                explosion.domain_scale,
                 Vec4::new(1.0, 0.94, 0.72, 1.0),
                 Vec4::new(1.0, 0.5, 0.15, 1.0),
                 Vec4::new(0.24, 0.14, 0.08, 1.0),

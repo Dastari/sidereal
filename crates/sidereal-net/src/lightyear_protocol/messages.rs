@@ -96,6 +96,8 @@ pub struct ClientTacticalResnapshotRequestMessage {
 pub struct ServerWeaponFiredMessage {
     pub shooter_entity_id: String,
     pub weapon_guid: String,
+    pub audio_profile_id: Option<String>,
+    pub cooldown_s: Option<f32>,
     pub origin_xy: [f32; 2],
     pub velocity_xy: [f32; 2],
     pub impact_xy: Option<[f32; 2]>,

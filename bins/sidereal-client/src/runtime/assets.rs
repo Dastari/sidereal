@@ -84,6 +84,12 @@ impl LocalAssetManager {
             .filter(|record| record.ready)
             .map(|record| record.relative_cache_path.as_str())
     }
+
+    pub fn is_asset_ready(&self, asset_id: &str) -> bool {
+        self.records_by_asset_id
+            .get(asset_id)
+            .is_some_and(|record| record.ready)
+    }
 }
 
 #[derive(Debug, Resource, Default, Clone)]

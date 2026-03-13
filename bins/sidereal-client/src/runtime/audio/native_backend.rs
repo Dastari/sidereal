@@ -4,6 +4,7 @@ use super::catalog::AudioCatalogState;
 use super::settings::{AudioBusSettings, AudioSettings};
 use crate::runtime::assets::LocalAssetManager;
 use crate::runtime::resources::AssetCacheAdapter;
+use bevy::log::info;
 use bevy::prelude::{Quat, Vec2, Vec3};
 use kira::effect::EffectBuilder;
 use kira::effect::distortion::{DistortionBuilder, DistortionKind};
@@ -216,8 +217,17 @@ impl NativeAudioBackend {
             .ok_or_else(|| format!("unknown audio bus {}", cue.route.bus))?
             .add_sub_track(build_nonspatial_track(&self.send_tracks, cue, true))
             .map_err(|err| err.to_string())?;
+        let asset_id = clip_asset_id_for_playback(&cue.playback)
+            .ok_or_else(|| "audio cue does not reference a clip_asset_id".to_string())?;
         let sound_data = self.load_sound_data(cue, resolver)?;
         let sound = track.play(sound_data).map_err(|err| err.to_string())?;
+        info!(
+            profile_id,
+            cue_id,
+            bus = cue.route.bus.as_str(),
+            asset_id,
+            "audio music started"
+        );
         self.active_music = Some(ActiveMusicPlayback {
             profile_id: profile_id.to_string(),
             cue_id: cue_id.to_string(),
@@ -250,6 +260,8 @@ impl NativeAudioBackend {
                     request.profile_id, request.cue_id
                 )
             })?;
+        let asset_id = clip_asset_id_for_playback(&cue.playback)
+            .ok_or_else(|| "audio cue does not reference a clip_asset_id".to_string())?;
         match cue.spatial.mode.as_str() {
             "world_2d" => {
                 let position = request.position.unwrap_or(Vec2::ZERO);
@@ -265,6 +277,16 @@ impl NativeAudioBackend {
                     .map_err(|err| err.to_string())?;
                 let sound_data = self.load_sound_data(cue, resolver)?;
                 let _ = track.play(sound_data).map_err(|err| err.to_string())?;
+                info!(
+                    profile_id = request.profile_id,
+                    cue_id = request.cue_id,
+                    bus = cue.route.bus.as_str(),
+                    asset_id,
+                    spatial_mode = cue.spatial.mode.as_str(),
+                    position_x = position.x,
+                    position_y = position.y,
+                    "audio one-shot started"
+                );
             }
             _ => {
                 let mut track = self
@@ -275,6 +297,14 @@ impl NativeAudioBackend {
                     .map_err(|err| err.to_string())?;
                 let sound_data = self.load_sound_data(cue, resolver)?;
                 let _ = track.play(sound_data).map_err(|err| err.to_string())?;
+                info!(
+                    profile_id = request.profile_id,
+                    cue_id = request.cue_id,
+                    bus = cue.route.bus.as_str(),
+                    asset_id,
+                    spatial_mode = cue.spatial.mode.as_str(),
+                    "audio one-shot started"
+                );
             }
         }
         Ok(())
@@ -323,8 +353,21 @@ impl NativeAudioBackend {
                 build_spatial_track(&self.send_tracks, cue, false),
             )
             .map_err(|err| err.to_string())?;
+        let asset_id = clip_asset_id_for_playback(&cue.playback)
+            .ok_or_else(|| "audio cue does not reference a clip_asset_id".to_string())?;
         let sound_data = self.load_sound_data(cue, resolver)?;
         let sound = track.play(sound_data).map_err(|err| err.to_string())?;
+        info!(
+            emitter_key = request.key.as_str(),
+            profile_id = request.profile_id,
+            cue_id = request.cue_id,
+            bus = cue.route.bus.as_str(),
+            asset_id,
+            position_x = request.position.x,
+            position_y = request.position.y,
+            release_timeout_s = request.release_timeout_s,
+            "audio loop emitter started"
+        );
         self.active_loops.insert(
             request.key,
             ActiveLoopEmitter {

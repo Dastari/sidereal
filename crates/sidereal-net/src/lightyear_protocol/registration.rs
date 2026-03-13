@@ -3,23 +3,25 @@ use avian2d::prelude::{
 };
 use bevy::prelude::App;
 use core::time::Duration;
-use lightyear::prediction::prelude::PredictionRegistrationExt;
+use lightyear::prediction::prelude::{PredictionAppRegistrationExt, PredictionRegistrationExt};
 use lightyear::prelude::InterpolationRegistrationExt;
 use lightyear::prelude::{
     AppChannelExt, AppComponentExt, AppMessageExt, ChannelMode, ChannelSettings, NetworkDirection,
     ReliableSettings,
 };
+use sidereal_game::WeaponCooldownState;
 use sidereal_game::component_meta::SiderealComponentRegistration;
 
 use super::{
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
     ClientLocalViewModeMessage, ClientRealtimeInputMessage, ClientTacticalResnapshotRequestMessage,
     ControlChannel, InputChannel, ManifestChannel, ServerAssetCatalogVersionMessage,
-    ServerControlAckMessage, ServerControlRejectMessage, ServerOwnerAssetManifestDeltaMessage,
-    ServerOwnerAssetManifestSnapshotMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
-    ServerTacticalContactsDeltaMessage, ServerTacticalContactsSnapshotMessage,
-    ServerTacticalFogDeltaMessage, ServerTacticalFogSnapshotMessage, ServerWeaponFiredMessage,
-    TacticalDeltaChannel, TacticalSnapshotChannel,
+    ServerControlAckMessage, ServerControlRejectMessage, ServerEntityDestructionMessage,
+    ServerOwnerAssetManifestDeltaMessage, ServerOwnerAssetManifestSnapshotMessage,
+    ServerSessionDeniedMessage, ServerSessionReadyMessage, ServerTacticalContactsDeltaMessage,
+    ServerTacticalContactsSnapshotMessage, ServerTacticalFogDeltaMessage,
+    ServerTacticalFogSnapshotMessage, ServerWeaponFiredMessage, TacticalDeltaChannel,
+    TacticalSnapshotChannel,
 };
 
 fn lerp_position(start: Position, other: Position, t: f32) -> Position {
@@ -80,6 +82,8 @@ fn register_lightyear_common_protocol(app: &mut App) {
     app.register_message::<ClientTacticalResnapshotRequestMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerWeaponFiredMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerEntityDestructionMessage>()
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerTacticalFogSnapshotMessage>()
         .add_direction(NetworkDirection::Bidirectional);
@@ -153,6 +157,7 @@ fn register_lightyear_replication_components(app: &mut App, runtime: LightyearRu
     // registered manually with prediction for client-side rollback/resimulation.
     match runtime {
         LightyearRuntime::Client => {
+            app.add_rollback::<WeaponCooldownState>();
             app.register_component::<Position>()
                 .add_prediction()
                 .add_should_rollback(position_should_rollback)

@@ -77,6 +77,10 @@ impl AudioBackendResource {
         let AudioBackendKind::Native(backend) = &mut self.backend else {
             return;
         };
+        if let Err(err) = backend.sync_graph(catalog, settings) {
+            self.log_once(format!("audio graph sync failed: {err}"));
+            return;
+        }
         backend.sync_settings(settings);
         let Some(asset_id) = load_clip_asset_id(catalog, profile_id, cue_id) else {
             self.log_once(format!(
@@ -99,6 +103,7 @@ impl AudioBackendResource {
         request: OneShotRequest<'_>,
         resolver: &AudioAssetResolver<'_>,
         catalog: &AudioCatalogState,
+        settings: &AudioSettings,
         demand_asset_ids: &mut HashSet<String>,
     ) {
         let profile_id = request.profile_id.to_string();
@@ -106,6 +111,10 @@ impl AudioBackendResource {
         let AudioBackendKind::Native(backend) = &mut self.backend else {
             return;
         };
+        if let Err(err) = backend.sync_graph(catalog, settings) {
+            self.log_once(format!("audio graph sync failed: {err}"));
+            return;
+        }
         let Some(asset_id) = load_clip_asset_id(catalog, request.profile_id, request.cue_id) else {
             self.log_once(format!(
                 "audio one-shot cue missing profile_id={} cue_id={}",
@@ -128,6 +137,7 @@ impl AudioBackendResource {
         request: LoopEmitterRequest<'_>,
         resolver: &AudioAssetResolver<'_>,
         catalog: &AudioCatalogState,
+        settings: &AudioSettings,
         demand_asset_ids: &mut HashSet<String>,
     ) {
         let profile_id = request.profile_id.to_string();
@@ -135,6 +145,10 @@ impl AudioBackendResource {
         let AudioBackendKind::Native(backend) = &mut self.backend else {
             return;
         };
+        if let Err(err) = backend.sync_graph(catalog, settings) {
+            self.log_once(format!("audio graph sync failed: {err}"));
+            return;
+        }
         let Some(asset_id) = load_clip_asset_id(catalog, request.profile_id, request.cue_id) else {
             self.log_once(format!(
                 "audio loop cue missing profile_id={} cue_id={}",

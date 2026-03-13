@@ -155,9 +155,11 @@ export function AccountsPanel({
                       {character.displayName ?? '(unnamed)'}
                     </span>
                     <span>{character.playerEntityId.slice(0, 8)}</span>
-                    <button
+                    <Button
                       type="button"
-                      className="rounded p-0.5 transition-colors hover:bg-accent disabled:opacity-50"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-5 w-5 rounded p-0 text-muted-foreground hover:bg-accent"
                       disabled={pending}
                       onClick={() => {
                         setError(null)
@@ -168,7 +170,7 @@ export function AccountsPanel({
                       title="Rename character"
                     >
                       <PencilLine className="h-3 w-3" />
-                    </button>
+                    </Button>
                   </Badge>
                 )
               })}

@@ -20,8 +20,8 @@ import type { DataSourceMode } from '@/components/sidebar/Toolbar'
 import type { GeneratedComponentRegistryResource } from '@/features/component-schema/types'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { HUDFrame } from '@/components/ui/hud-frame'
 import {
   ComponentEditorRenderer,
   getComponentValue,
@@ -34,6 +34,7 @@ import {
   parseGeneratedComponentRegistryResource,
   resolveComponentRegistryEntry,
 } from '@/features/component-schema/registry'
+import { Badge } from '../thegridcn/badge'
 
 interface DetailPanelProps {
   selectedId: string | null
@@ -162,9 +163,7 @@ export function DetailPanel({
                 {selectedResourceTypePath}
               </h2>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
-                <Badge variant="secondary" className="capitalize text-xs">
-                  Resource
-                </Badge>
+                <Badge className="capitalize text-xs">Resource</Badge>
                 {selectedResource?.error ? (
                   <span className="text-xs text-destructive truncate">
                     {selectedResource.error}
@@ -236,18 +235,12 @@ export function DetailPanel({
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               {entityLabels && entityLabels.length > 0 ? (
                 entityLabels.map((label) => (
-                  <Badge
-                    key={label}
-                    variant="secondary"
-                    className="capitalize text-xs"
-                  >
+                  <Badge key={label} className="capitalize text-xs">
                     {label}
                   </Badge>
                 ))
               ) : (
-                <Badge variant="secondary" className="capitalize text-xs">
-                  {kind}
-                </Badge>
+                <Badge className="capitalize text-xs">{kind}</Badge>
               )}
               {worldEntity && (
                 <span className="text-xs text-muted-foreground">
@@ -379,17 +372,18 @@ export function DetailPanel({
                     Parent
                   </h3>
                 </div>
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
                   onClick={() => onSelect(worldEntity.parentEntityId!)}
-                  className="flex items-center gap-2 px-2 py-1 rounded hover:bg-secondary/50 text-sm transition-colors text-left text-foreground"
+                  className="grid-sidebar-nav__item h-auto justify-start px-2 py-1 text-left text-sm text-foreground"
                 >
                   <span className="truncate max-w-[140px]">
                     {entities.find((e) => e.id === worldEntity.parentEntityId)
                       ?.name ?? worldEntity.parentEntityId}
                   </span>
                   <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0 rotate-180" />
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -527,11 +521,12 @@ function EntityRegistryEntryCard({
 }) {
   const [expanded, setExpanded] = React.useState(false)
   return (
-    <div className="border border-border rounded-md overflow-hidden">
-      <button
+    <HUDFrame>
+      <Button
         type="button"
+        variant="ghost"
         onClick={() => setExpanded((prev) => !prev)}
-        className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left"
+        className="grid-sidebar-nav__item h-auto w-full justify-start rounded-none px-3 py-2 text-left"
       >
         <span className="flex-1 text-sm font-medium min-w-0 flex items-baseline gap-2 w-0">
           <span className="font-mono truncate">{entry.entity_id}</span>
@@ -547,7 +542,7 @@ function EntityRegistryEntryCard({
             expanded && 'rotate-90',
           )}
         />
-      </button>
+      </Button>
       {expanded ? (
         <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-1">
           {entry.entity_class ? (
@@ -589,7 +584,7 @@ function EntityRegistryEntryCard({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </HUDFrame>
   )
 }
 
@@ -613,20 +608,17 @@ function GeneratedComponentRegistryView({ value }: { value: unknown }) {
   return (
     <div className="space-y-1">
       {registry.shader_entries.length > 0 ? (
-        <div className="rounded-md border border-border px-3 py-2 text-xs">
+        <HUDFrame className="px-3 py-2 text-xs">
           <div className="font-medium text-foreground">
             Shader editor entries
           </div>
           <div className="mt-1 text-muted-foreground">
             {registry.shader_entries.length} shader assets
           </div>
-        </div>
+        </HUDFrame>
       ) : null}
       {registry.entries.map((entry) => (
-        <div
-          key={entry.type_path}
-          className="rounded-md border border-border px-3 py-2 text-xs"
-        >
+        <HUDFrame key={entry.type_path} className="px-3 py-2 text-xs">
           <div className="font-medium text-foreground">
             {entry.component_kind}
           </div>
@@ -636,7 +628,7 @@ function GeneratedComponentRegistryView({ value }: { value: unknown }) {
           <div className="mt-1 text-muted-foreground">
             {entry.editor_schema.fields.length} fields
           </div>
-        </div>
+        </HUDFrame>
       ))}
     </div>
   )
@@ -868,17 +860,16 @@ function ComponentsList({
               : componentEntry?.component_kind) ?? null
 
           return (
-            <div
-              key={componentKey}
-              className="border border-border rounded-md overflow-hidden"
-            >
-              <button
+            <HUDFrame key={componentKey}>
+              <Button
                 onClick={() => {
                   if (hasProperties) {
                     toggleComponent(componentKey)
                   }
                 }}
-                className="flex items-center gap-2 w-full px-3 py-2 hover:bg-secondary/50 transition-colors text-left"
+                type="button"
+                variant="ghost"
+                className="grid-sidebar-nav__item h-auto w-full justify-start rounded-none px-3 py-2 text-left"
               >
                 <span className="flex-1 text-sm font-medium min-w-0 flex items-baseline gap-2 w-0">
                   <span className="flex-none">{node.label}</span>
@@ -896,7 +887,7 @@ function ComponentsList({
                     )}
                   />
                 )}
-              </button>
+              </Button>
 
               {isExpanded && hasProperties && (
                 <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-3 flex flex-col ">
@@ -961,7 +952,7 @@ function ComponentsList({
                   </div>
                 </div>
               )}
-            </div>
+            </HUDFrame>
           )
         })}
     </div>
@@ -1116,17 +1107,19 @@ function ChildEntitiesSection({
     <PropertySection title="Children" icon={Users}>
       <div className="space-y-1">
         {children.map((child) => (
-          <button
+          <Button
             key={child.id}
             onClick={() => onSelect(child.id)}
-            className="flex items-center gap-2 w-full px-2 py-1 rounded hover:bg-secondary/50 text-sm transition-colors text-left"
+            type="button"
+            variant="ghost"
+            className="grid-sidebar-nav__item h-auto w-full justify-start gap-2 px-2 py-1.5 text-left text-sm"
           >
             <Box className="h-3.5 w-3.5 text-primary/60 flex-none" />
             <span className="truncate flex-1">{child.name}</span>
             <Badge variant="secondary" className="text-xs">
               {child.componentCount}c
             </Badge>
-          </button>
+          </Button>
         ))}
       </div>
     </PropertySection>

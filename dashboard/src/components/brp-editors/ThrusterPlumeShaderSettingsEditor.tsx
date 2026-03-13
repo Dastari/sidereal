@@ -1,7 +1,8 @@
 import * as React from 'react'
-import type { ComponentEditorProps } from './types'
-import { Switch } from '@/components/ui/switch'
 import { DebouncedNumberField } from './DebouncedNumberField'
+import type { ComponentEditorProps } from './types'
+import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 
 type ThrusterPlumeShaderSettings = {
   enabled: boolean
@@ -235,16 +236,17 @@ export function ThrusterPlumeShaderSettingsEditor({
 
   return (
     <div className="space-y-3">
-      <button
+      <Button
         type="button"
+        variant="outline"
         disabled={readOnly}
         onClick={() => {
           void copyCurrentAsJson()
         }}
-        className="w-full rounded-md border border-border/60 px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+        className="h-auto w-full px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
       >
         Copy As JSON (for Rust default constant)
-      </button>
+      </Button>
       <ToggleField
         label="Enabled"
         checked={parsed.enabled}
