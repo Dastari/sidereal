@@ -17,6 +17,7 @@ use sidereal_asset_runtime::{
     RuntimeAssetCatalogEntry, build_runtime_asset_catalog, catalog_version, expand_required_assets,
     hot_reload_poll_interval, materialize_runtime_asset,
 };
+use sidereal_audio::{AudioRegistry, audio_registry_version};
 use sidereal_core::gateway_dtos::{
     AdminSpawnEntityRequest, AdminSpawnEntityResponse, AssetBootstrapManifestEntry,
     AssetBootstrapManifestResponse, AuthTokens, CharacterSummary, CharactersResponse,
@@ -26,7 +27,7 @@ use sidereal_core::gateway_dtos::{
     RegisterRequest, ReloadScriptsFromDiskResponse, ReplicationTransportConfig,
     SaveScriptDraftRequest, SaveScriptDraftResponse, ScriptCatalogDocumentDetailDto,
 };
-use sidereal_scripting::load_asset_registry_from_source;
+use sidereal_scripting::{load_asset_registry_from_source, load_audio_registry_from_source};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -45,7 +46,18 @@ struct RuntimeAssetCatalogCacheState {
     built_at: Option<Instant>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+struct RuntimeAudioCatalogCacheState {
+    scripts_root: String,
+    audio_registry_revision: u64,
+    version: String,
+    registry: AudioRegistry,
+    built_at: Option<Instant>,
+}
+
 static RUNTIME_ASSET_CATALOG_CACHE: OnceLock<Mutex<RuntimeAssetCatalogCacheState>> =
+    OnceLock::new();
+static RUNTIME_AUDIO_CATALOG_CACHE: OnceLock<Mutex<RuntimeAudioCatalogCacheState>> =
     OnceLock::new();
 
 pub fn app(config: AuthConfig) -> Router {
@@ -364,6 +376,7 @@ async fn asset_bootstrap_manifest(
     let access_token = extract_bearer_token(&headers)?;
     let _ = service.me(access_token).await?;
     let catalog = load_runtime_asset_catalog_async().await?;
+    let (audio_catalog_version, audio_catalog) = load_runtime_audio_catalog_async().await?;
     let required_ids = catalog
         .iter()
         .filter(|entry| entry.bootstrap_required)
@@ -396,8 +409,10 @@ async fn asset_bootstrap_manifest(
         .collect::<Vec<_>>();
     Ok(Json(AssetBootstrapManifestResponse {
         catalog_version: catalog_version(&catalog),
+        audio_catalog_version,
         required_assets,
         catalog: catalog_entries,
+        audio_catalog,
     }))
 }
 
@@ -556,6 +571,17 @@ async fn load_runtime_asset_catalog_async() -> Result<Vec<RuntimeAssetCatalogEnt
         })?
 }
 
+async fn load_runtime_audio_catalog_async() -> Result<(String, AudioRegistry), ApiError> {
+    tokio::task::spawn_blocking(load_runtime_audio_catalog)
+        .await
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("runtime audio catalog task failed: {err}"),
+            )
+        })?
+}
+
 fn load_runtime_asset_catalog() -> Result<Vec<RuntimeAssetCatalogEntry>, ApiError> {
     let asset_root = asset_root_dir();
     let scripts_root = scripts_root_dir();
@@ -569,6 +595,20 @@ fn load_runtime_asset_catalog() -> Result<Vec<RuntimeAssetCatalogEntry>, ApiErro
         )
     })?;
     load_runtime_asset_catalog_from_catalog(&script_catalog, asset_root.as_path(), &mut guard)
+}
+
+fn load_runtime_audio_catalog() -> Result<(String, AudioRegistry), ApiError> {
+    let scripts_root = scripts_root_dir();
+    let script_catalog = current_script_catalog(&scripts_root)?;
+    let cache = RUNTIME_AUDIO_CATALOG_CACHE
+        .get_or_init(|| Mutex::new(RuntimeAudioCatalogCacheState::default()));
+    let mut guard = cache.lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "runtime audio catalog cache lock poisoned",
+        )
+    })?;
+    load_runtime_audio_catalog_from_catalog(&script_catalog, &mut guard)
 }
 
 fn load_runtime_asset_catalog_from_catalog(
@@ -637,10 +677,63 @@ fn build_runtime_asset_catalog_from_registry_source(
     })
 }
 
+fn load_runtime_audio_catalog_from_catalog(
+    script_catalog: &ScriptCatalogResource,
+    cache_state: &mut RuntimeAudioCatalogCacheState,
+) -> Result<(String, AudioRegistry), ApiError> {
+    let registry_entry = script_catalog
+        .entries
+        .iter()
+        .find(|entry| entry.script_path == "audio/registry.lua")
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "script catalog missing audio/registry.lua for root {}",
+                    script_catalog.root_dir
+                ),
+            )
+        })?;
+    let scripts_root = script_catalog.root_dir.clone();
+    if cache_state.scripts_root == scripts_root
+        && cache_state.audio_registry_revision == registry_entry.revision
+        && cache_state
+            .built_at
+            .is_some_and(|built_at| built_at.elapsed() < hot_reload_poll_interval())
+    {
+        return Ok((cache_state.version.clone(), cache_state.registry.clone()));
+    }
+
+    let registry =
+        load_audio_registry_from_source(&registry_entry.source, FsPath::new("audio/registry.lua"))
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to load active lua audio registry: {err}"),
+                )
+            })?;
+    let version = audio_registry_version(&registry).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to version audio registry: {err}"),
+        )
+    })?;
+    *cache_state = RuntimeAudioCatalogCacheState {
+        scripts_root,
+        audio_registry_revision: registry_entry.revision,
+        version: version.clone(),
+        registry: registry.clone(),
+        built_at: Some(Instant::now()),
+    };
+    Ok((version, registry))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeAssetCatalogCacheState, load_runtime_asset_catalog_from_catalog, parse_vec3_property,
+        RuntimeAssetCatalogCacheState, RuntimeAudioCatalogCacheState,
+        load_runtime_asset_catalog_from_catalog, load_runtime_audio_catalog_from_catalog,
+        parse_vec3_property,
     };
     use crate::auth::{ScriptCatalogEntry, ScriptCatalogResource};
     use std::path::PathBuf;
@@ -673,6 +766,46 @@ return {
 }
 "#
         .to_string()
+    }
+
+    fn test_audio_registry_source(bus_volume_db: f32) -> String {
+        format!(
+            r#"
+return {{
+  schema_version = 1,
+  buses = {{
+    {{
+      bus_id = "music",
+      parent = "master",
+      default_volume_db = {bus_volume_db},
+    }},
+  }},
+  sends = {{}},
+  environments = {{}},
+  concurrency_groups = {{}},
+  profiles = {{
+    {{
+      profile_id = "music.menu.standard",
+      kind = "music",
+      cues = {{
+        main = {{
+          playback = {{
+            kind = "loop",
+            clip_asset_id = "audio.music.menu_loop",
+          }},
+          route = {{
+            bus = "music",
+          }},
+          spatial = {{
+            mode = "screen_nonpositional",
+          }},
+        }},
+      }},
+    }},
+  }},
+}}
+"#
+        )
     }
 
     #[test]
@@ -731,5 +864,37 @@ return {
         assert_ne!(rebuilt_catalog[0].sha256_hex, first_sha);
 
         let _ = std::fs::remove_dir_all(&asset_root);
+    }
+
+    #[test]
+    fn runtime_audio_catalog_cache_reuses_registry_until_revision_changes() {
+        let make_catalog = |revision, volume_db| ScriptCatalogResource {
+            entries: vec![ScriptCatalogEntry {
+                script_path: "audio/registry.lua".to_string(),
+                source: test_audio_registry_source(volume_db),
+                revision,
+                origin: "test".to_string(),
+            }],
+            revision,
+            root_dir: "/tmp/test-scripts".to_string(),
+        };
+
+        let mut cache_state = RuntimeAudioCatalogCacheState::default();
+        let (first_version, first_registry) =
+            load_runtime_audio_catalog_from_catalog(&make_catalog(1, -4.0), &mut cache_state)
+                .expect("build initial runtime audio catalog");
+        assert_eq!(first_registry.profiles.len(), 1);
+
+        let (cached_version, cached_registry) =
+            load_runtime_audio_catalog_from_catalog(&make_catalog(1, -8.0), &mut cache_state)
+                .expect("reuse cached runtime audio catalog");
+        assert_eq!(cached_version, first_version);
+        assert_eq!(cached_registry.buses[0].default_volume_db, Some(-4.0));
+
+        let (rebuilt_version, rebuilt_registry) =
+            load_runtime_audio_catalog_from_catalog(&make_catalog(2, -8.0), &mut cache_state)
+                .expect("rebuild runtime audio catalog after revision change");
+        assert_ne!(rebuilt_version, first_version);
+        assert_eq!(rebuilt_registry.buses[0].default_volume_db, Some(-8.0));
     }
 }

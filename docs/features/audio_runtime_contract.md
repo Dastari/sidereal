@@ -18,6 +18,12 @@ Primary architecture references:
 3. The corresponding implementation plan now lives in `docs/plans/audio_runtime_implementation_plan_2026-03-13.md`.
 4. Until implementation lands, this document should be treated as the preferred design direction for new audio work.
 
+2026-03-13 implementation update:
+1. Gateway bootstrap now delivers the authored `audio/registry.lua` catalog and an `audio_catalog_version` alongside the asset bootstrap manifest.
+2. Client runtime now owns a split `runtime/audio/` module tree with catalog/settings/backend/system ownership instead of the old embedded menu-music file.
+3. Native client playback now runs through a Kira-backed Sidereal audio runtime with authored bus graph setup, authored menu/world music playback, gatling segmented-loop playback, asteroid destruction one-shots, and listener sync.
+4. `BallisticWeapon.fire_audio_profile_id` is now the canonical gameplay hook for weapon-fire audio authoring, and `ServerWeaponFiredMessage` now carries `weapon_guid` so remote clients can resolve the correct authored profile.
+
 ## 1. Purpose
 
 Define how Sidereal should author, deliver, replicate, mix, spatialize, and play game audio under the existing server-authoritative and Lua-authored asset model.

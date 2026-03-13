@@ -4,6 +4,7 @@ use super::app_state::*;
 use super::assets::{
     AssetCatalogHotReloadState, LocalAssetManager, LocalAssetRecord, RuntimeAssetCatalogRecord,
 };
+use super::audio::AudioCatalogState;
 use super::resources::AssetRootPath;
 use super::resources::{
     AssetCacheAdapter, ClientAuthSyncState, GatewayHttpAdapter, HeadlessAccountSwitchPlan,
@@ -653,6 +654,7 @@ pub fn poll_asset_bootstrap_request_results(
     mut request_state: ResMut<'_, AssetBootstrapRequestState>,
     mut session: ResMut<'_, ClientSession>,
     mut asset_manager: ResMut<'_, LocalAssetManager>,
+    mut audio_catalog: ResMut<'_, AudioCatalogState>,
     mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
 ) {
@@ -678,6 +680,10 @@ pub fn poll_asset_bootstrap_request_results(
             request_state.completed = true;
             request_state.failed = false;
             asset_manager.bootstrap_manifest_seen = true;
+            audio_catalog.apply_registry(
+                payload.manifest.audio_catalog_version.clone(),
+                payload.manifest.audio_catalog.clone(),
+            );
             asset_manager.bootstrap_total_bytes = payload.bootstrap_total_bytes;
             asset_manager.bootstrap_ready_bytes = payload.bootstrap_ready_bytes;
             asset_manager.bootstrap_phase_complete = true;
@@ -1086,6 +1092,7 @@ mod tests {
     use super::{AssetBootstrapRequestState, poll_asset_bootstrap_request_results};
     use crate::runtime::app_state::ClientSession;
     use crate::runtime::assets::{AssetCatalogHotReloadState, LocalAssetManager};
+    use crate::runtime::audio::AudioCatalogState;
     use crate::runtime::dialog_ui::DialogQueue;
     use async_channel::bounded;
     use bevy::prelude::*;
@@ -1101,6 +1108,7 @@ mod tests {
             bootstrap_phase_complete: true,
             ..Default::default()
         });
+        app.insert_resource(AudioCatalogState::default());
         app.insert_resource(AssetCatalogHotReloadState::default());
         app.insert_resource(DialogQueue::default());
         let (sender, receiver) = bounded(1);

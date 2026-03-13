@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime" }
+sidereal-audio = { path = "../../crates/sidereal-audio" }
 sidereal-core = { path = "../../crates/sidereal-core" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread"] }

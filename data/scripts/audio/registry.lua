@@ -163,6 +163,33 @@ AudioRegistry.profiles = {
     },
   },
   {
+    profile_id = "explosion_burst",
+    kind = "destruction",
+    cues = {
+      explode = {
+        playback = {
+          kind = "one_shot",
+          clip_asset_id = "audio.sfx.explosion.asteroid.01",
+        },
+        route = {
+          bus = "sfx",
+          sends = {
+            {
+              send_id = "world_reverb",
+              level_db = -10.0,
+            },
+          },
+        },
+        spatial = {
+          mode = "world_2d",
+          min_distance_m = 10.0,
+          max_distance_m = 300.0,
+          rolloff = "logarithmic",
+        },
+      },
+    },
+  },
+  {
     profile_id = "music.menu.standard",
     kind = "music",
     cues = {

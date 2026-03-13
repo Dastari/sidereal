@@ -7,15 +7,15 @@ use crate::runtime::{asset_loading_ui, audio, auth_net, scene, world_loading_ui}
 pub(super) fn add_audio_state_systems(app: &mut App) {
     app.add_systems(
         OnEnter(ClientAppState::Auth),
-        audio::start_menu_loop_music_system,
+        audio::ensure_menu_music_system,
     );
     app.add_systems(
         OnEnter(ClientAppState::WorldLoading),
-        audio::start_menu_loop_music_system,
+        audio::ensure_menu_music_system,
     );
     app.add_systems(
         OnEnter(ClientAppState::InWorld),
-        audio::stop_menu_loop_music_system,
+        audio::ensure_world_music_system,
     );
 }
 

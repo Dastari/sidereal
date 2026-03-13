@@ -1299,6 +1299,34 @@ AssetRegistry.assets = {
     dependencies = {},
     bootstrap_required = false,
   },
+  {
+    asset_id = "audio.sfx.weapon.ballistic_fire",
+    source_path = "audio/sfx/ballistic_fire.ogg",
+    content_type = "audio/ogg",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "audio.sfx.explosion.asteroid.01",
+    source_path = "audio/sfx/explosion1.ogg",
+    content_type = "audio/ogg",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "audio.music.deep_space",
+    source_path = "music/deep-space.ogg",
+    content_type = "audio/ogg",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
+    asset_id = "audio.music.menu_loop",
+    source_path = "music/menu-loop.ogg",
+    content_type = "audio/ogg",
+    dependencies = {},
+    bootstrap_required = true,
+  },
 }
 
 return AssetRegistry

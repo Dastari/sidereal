@@ -18,6 +18,8 @@ async-channel = "2.5.0"
 avian2d.workspace = true
 bevy = { workspace = true, default-features = false, features = ["2d", "webgpu", "mp3"] }
 bevy_svg = "0.18.0"
+mint = "0.5"
+sidereal-audio = { path = "../../crates/sidereal-audio" }
 sidereal-core = { path = "../../crates/sidereal-core" }
 sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime", default-features = false }
 sidereal-game = { path = "../../crates/sidereal-game" }
@@ -31,6 +33,7 @@ uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy_remote = { workspace = true, default-features = false, features = ["http"] }
+kira = { version = "0.12.0", default-features = false, features = ["cpal", "ogg", "vorbis"] }
 lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", default-features = false, features = ["std", "client", "raw_connection", "udp", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rand.workspace = true

@@ -55,6 +55,7 @@ fn init_asset_runtime_resources(app: &mut App, asset_root: String) {
     app.insert_resource(assets::RuntimeAssetHttpFetchState::default());
     app.insert_resource(RuntimeAssetPerfCounters::default());
     app.insert_resource(OwnedAssetManifestCache::default());
+    audio::init_audio_runtime(app);
 }
 
 fn init_control_and_prediction_resources(app: &mut App) {
@@ -153,6 +154,26 @@ pub(crate) fn configure_client_runtime(
     init_debug_and_diagnostics_resources(app, headless_transport);
     init_tactical_resources(app);
     init_scene_and_render_resources(app);
+    app.add_systems(
+        Update,
+        (
+            audio::sync_audio_catalog_defaults_system,
+            audio::queue_audio_asset_demands_system
+                .after(audio::sync_audio_catalog_defaults_system),
+            audio::sync_audio_runtime_system.after(audio::sync_audio_catalog_defaults_system),
+            audio::sync_audio_listener_system.after(audio::sync_audio_runtime_system),
+        ),
+    );
+    app.add_systems(
+        Update,
+        (
+            audio::receive_local_weapon_fire_audio_system,
+            audio::receive_local_destruction_audio_system,
+            audio::receive_remote_weapon_fire_audio_system,
+            audio::receive_remote_destruction_audio_system,
+        )
+            .run_if(in_state(ClientAppState::InWorld)),
+    );
     app.add_systems(
         FixedUpdate,
         (

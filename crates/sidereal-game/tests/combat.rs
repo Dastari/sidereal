@@ -46,6 +46,7 @@ fn spawn_weapon_fixture(app: &mut App, projectile_speed_mps: f32) -> (Entity, En
             },
             BallisticWeapon {
                 weapon_name: "Test Weapon".to_string(),
+                fire_audio_profile_id: None,
                 rpm: 600.0,
                 damage_per_shot: 12.0,
                 max_range_m: 120.0,

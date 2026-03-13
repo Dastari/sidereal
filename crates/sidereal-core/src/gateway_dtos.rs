@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use sidereal_audio::AudioRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterRequest {
@@ -100,8 +101,10 @@ pub struct AssetBootstrapManifestEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetBootstrapManifestResponse {
     pub catalog_version: String,
+    pub audio_catalog_version: String,
     pub required_assets: Vec<AssetBootstrapManifestEntry>,
     pub catalog: Vec<AssetBootstrapManifestEntry>,
+    pub audio_catalog: AudioRegistry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

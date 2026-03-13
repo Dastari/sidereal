@@ -122,6 +122,7 @@ pub fn broadcast_weapon_fired_messages(
 
         let message = ServerWeaponFiredMessage {
             shooter_entity_id: resolved.shooter_guid.to_string(),
+            weapon_guid: resolved.weapon_guid.to_string(),
             origin_xy: [resolved.origin.x, resolved.origin.y],
             velocity_xy: [initial_velocity.x, initial_velocity.y],
             impact_xy: Some([resolved.impact_pos.x, resolved.impact_pos.y]),

@@ -95,10 +95,19 @@ pub struct ClientTacticalResnapshotRequestMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerWeaponFiredMessage {
     pub shooter_entity_id: String,
+    pub weapon_guid: String,
     pub origin_xy: [f32; 2],
     pub velocity_xy: [f32; 2],
     pub impact_xy: Option<[f32; 2]>,
     pub ttl_s: f32,
+}
+
+/// Server authoritative destruction-effect notification for pre-despawn VFX.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerEntityDestructionMessage {
+    pub entity_id: String,
+    pub origin_xy: [f32; 2],
+    pub destruction_profile_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

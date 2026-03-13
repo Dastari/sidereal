@@ -10,6 +10,8 @@ use crate::{DamageType, EntityGuid};
 #[require(EntityGuid)]
 pub struct BallisticWeapon {
     pub weapon_name: String,
+    #[serde(default)]
+    pub fire_audio_profile_id: Option<String>,
     pub rpm: f32,
     pub damage_per_shot: f32,
     pub max_range_m: f32,
@@ -22,6 +24,7 @@ impl BallisticWeapon {
     pub fn corvette_ballistic_gatling() -> Self {
         Self {
             weapon_name: "Ballistic Gatling".to_string(),
+            fire_audio_profile_id: Some("weapon.ballistic_gatling".to_string()),
             rpm: 720.0,
             damage_per_shot: 12.0,
             max_range_m: 150.0,

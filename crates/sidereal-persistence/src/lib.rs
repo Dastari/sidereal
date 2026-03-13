@@ -648,6 +648,9 @@ pub fn infer_script_family(script_path: &str) -> String {
     if script_path == "assets/registry.lua" {
         return "asset_registry".to_string();
     }
+    if script_path == "audio/registry.lua" {
+        return "audio_registry".to_string();
+    }
     if script_path == "bundles/bundle_registry.lua" {
         return "bundle_registry".to_string();
     }
@@ -1469,6 +1472,7 @@ mod tests {
     fn infer_script_family_classifies_known_roots() {
         assert_eq!(infer_script_family("world/world_init.lua"), "world_init");
         assert_eq!(infer_script_family("assets/registry.lua"), "asset_registry");
+        assert_eq!(infer_script_family("audio/registry.lua"), "audio_registry");
         assert_eq!(
             infer_script_family("bundles/bundle_registry.lua"),
             "bundle_registry"

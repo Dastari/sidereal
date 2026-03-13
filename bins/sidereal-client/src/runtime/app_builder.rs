@@ -1,5 +1,4 @@
 use super::app_setup::configure_client_runtime;
-use super::audio;
 use super::backdrop::{
     AsteroidSpriteShaderMaterial, PlanetVisualMaterial, RuntimeEffectMaterial,
     SpaceBackgroundMaterial, SpaceBackgroundNebulaMaterial, StarfieldMaterial,
@@ -35,7 +34,6 @@ pub(crate) fn build_windowed_client_app(
     app.add_plugins(Material2dPlugin::<TacticalMapOverlayMaterial>::default());
     app.add_plugins(SvgPlugin);
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
-    audio::insert_embedded_menu_loop_audio(&mut app);
     if let Some(mut gizmo_config_store) = app.world_mut().get_resource_mut::<GizmoConfigStore>() {
         let (config, _) =
             gizmo_config_store.config_mut::<bevy::gizmos::config::DefaultGizmoConfigGroup>();
