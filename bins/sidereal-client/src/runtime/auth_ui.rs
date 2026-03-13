@@ -298,7 +298,7 @@ fn setup_auth_screen(
                     .with_children(|button| {
                         button.spawn((
                             Text::new("Quit"),
-                            text_font(fonts.regular.clone(), 12.0),
+                            text_font(fonts.bold.clone(), 12.0),
                             TextColor(theme.colors.panel_foreground_color()),
                         ));
                     });
@@ -356,7 +356,7 @@ fn spawn_input_field(
                 .with_children(|input_box| {
                     input_box.spawn((
                         Text::new(""),
-                        text_font(fonts.regular.clone(), 16.0),
+                        text_font(fonts.bold.clone(), 16.0),
                         TextColor(theme.colors.panel_foreground_color()),
                         AuthUiInputText { field, is_password },
                     ));
@@ -405,7 +405,7 @@ fn spawn_flow_button(
         .with_children(|button| {
             button.spawn((
                 Text::new(label),
-                text_font(fonts.regular.clone(), 10.0),
+                text_font(fonts.bold.clone(), 10.0),
                 TextColor(theme.colors.panel_foreground_color()),
             ));
         });

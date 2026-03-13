@@ -182,77 +182,77 @@ pub fn button_surface(
         (UiButtonVariant::Primary, UiInteractionState::Idle) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.22))),
             BorderColor::all(color(with_alpha(colors.border, 0.9))),
-            glow_box_shadow(colors.glow, 0.16, 14.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Primary, UiInteractionState::Hovered) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.34))),
             BorderColor::all(colors.ring_color()),
-            glow_box_shadow(colors.glow, 0.22, 18.0, glow_intensity),
+            glow_box_shadow(colors.glow, 0.12, 12.0, glow_intensity),
         ),
         (UiButtonVariant::Primary, UiInteractionState::Pressed) => (
             BackgroundColor(colors.primary_color()),
             BorderColor::all(colors.glow_color()),
-            glow_box_shadow(colors.glow, 0.28, 20.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Primary, UiInteractionState::Selected) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.28))),
             BorderColor::all(colors.glow_color()),
-            glow_box_shadow(colors.glow, 0.22, 18.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Primary, UiInteractionState::Focused) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.24))),
             BorderColor::all(colors.ring_color()),
-            glow_box_shadow(colors.glow, 0.18, 16.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Secondary, UiInteractionState::Idle) => (
             BackgroundColor(color(with_alpha(colors.secondary, 0.65))),
             BorderColor::all(color(with_alpha(colors.border, 0.7))),
-            glow_box_shadow(colors.glow_muted, 0.08, 10.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Secondary, UiInteractionState::Hovered) => (
             BackgroundColor(color(with_alpha(colors.secondary, 0.85))),
             BorderColor::all(color(with_alpha(colors.glow_muted, 0.8))),
-            glow_box_shadow(colors.glow_muted, 0.14, 13.0, glow_intensity),
+            glow_box_shadow(colors.glow_muted, 0.08, 10.0, glow_intensity),
         ),
         (UiButtonVariant::Secondary, UiInteractionState::Pressed) => (
             BackgroundColor(color(with_alpha(colors.accent, 0.82))),
             BorderColor::all(colors.glow_color()),
-            glow_box_shadow(colors.glow, 0.18, 15.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Secondary, UiInteractionState::Selected) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.22))),
             BorderColor::all(colors.glow_color()),
-            glow_box_shadow(colors.glow, 0.16, 14.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Secondary, UiInteractionState::Focused) => (
             BackgroundColor(color(with_alpha(colors.input, 0.96))),
             BorderColor::all(colors.ring_color()),
-            glow_box_shadow(colors.glow_muted, 0.14, 13.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Outline, UiInteractionState::Idle) => (
             BackgroundColor(color(with_alpha(colors.panel, 0.5))),
             BorderColor::all(color(with_alpha(colors.border, 0.9))),
-            glow_box_shadow(colors.glow_muted, 0.05, 9.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Outline, UiInteractionState::Hovered) => (
             BackgroundColor(color(with_alpha(colors.secondary, 0.55))),
             BorderColor::all(colors.ring_color()),
-            glow_box_shadow(colors.glow, 0.2, 14.0, glow_intensity),
+            glow_box_shadow(colors.glow, 0.1, 11.0, glow_intensity),
         ),
         (UiButtonVariant::Outline, UiInteractionState::Pressed) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.2))),
             BorderColor::all(colors.glow_color()),
-            glow_box_shadow(colors.glow, 0.16, 14.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Outline, UiInteractionState::Selected) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.16))),
             BorderColor::all(colors.glow_color()),
-            glow_box_shadow(colors.glow, 0.14, 13.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Outline, UiInteractionState::Focused) => (
             BackgroundColor(color(with_alpha(colors.panel, 0.64))),
             BorderColor::all(colors.ring_color()),
-            glow_box_shadow(colors.glow_muted, 0.12, 12.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Ghost, UiInteractionState::Idle) => (
             BackgroundColor(Color::NONE),
@@ -262,22 +262,22 @@ pub fn button_surface(
         (UiButtonVariant::Ghost, UiInteractionState::Hovered) => (
             BackgroundColor(color(with_alpha(colors.secondary, 0.3))),
             BorderColor::all(Color::NONE),
-            glow_box_shadow(colors.glow_muted, 0.08, 10.0, glow_intensity),
+            glow_box_shadow(colors.glow_muted, 0.05, 9.0, glow_intensity),
         ),
         (UiButtonVariant::Ghost, UiInteractionState::Pressed) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.18))),
             BorderColor::all(Color::NONE),
-            glow_box_shadow(colors.glow, 0.1, 10.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Ghost, UiInteractionState::Selected) => (
             BackgroundColor(color(with_alpha(colors.primary, 0.14))),
             BorderColor::all(Color::NONE),
-            glow_box_shadow(colors.glow, 0.08, 9.0, glow_intensity),
+            no_box_shadow(),
         ),
         (UiButtonVariant::Ghost, UiInteractionState::Focused) => (
             BackgroundColor(color(with_alpha(colors.secondary, 0.22))),
             BorderColor::all(Color::NONE),
-            glow_box_shadow(colors.glow_muted, 0.07, 9.0, glow_intensity),
+            no_box_shadow(),
         ),
     }
 }

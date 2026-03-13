@@ -152,7 +152,7 @@ pub(super) fn setup_character_select_screen(
                         .with_children(|button| {
                             button.spawn((
                                 Text::new(player_entity_id.clone()),
-                                text_font(fonts.regular.clone(), 14.0),
+                                text_font(fonts.bold.clone(), 14.0),
                                 TextColor(theme.colors.panel_foreground_color()),
                             ));
                         });

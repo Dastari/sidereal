@@ -298,7 +298,8 @@ background: Color::srgba(0.18, 0.2, 0.26, 0.85)
 - Use `sidereal_ui::widgets::spawn_hud_frame_chrome(...)` on shared primary panels and dialogs unless a screen has a documented exception.
 - Keep the palette driven by the active semantic theme; frame styling should not introduce ad hoc colors.
 - Input labels should render uppercase.
-- Buttons and inputs should receive hover/focus glow from the shared global glow-intensity setting rather than screen-local hardcoded values.
+- Buttons should only emit glow on hover, using the shared global glow-intensity setting rather than screen-local hardcoded values.
+- Inputs may keep subtle focus glow, and button/input body text should prefer bolder `Rajdhani` weights for readability.
 
 ### 5.3 HUD / In-Game UI
 

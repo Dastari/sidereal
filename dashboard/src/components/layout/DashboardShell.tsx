@@ -120,7 +120,7 @@ export function DashboardShell() {
                     variant={active ? 'secondary' : 'ghost'}
                     size="icon"
                     className={cn(
-                      'h-12 w-12',
+                      'h-10 w-10 shadow-none! border-none rounded-md',
                       active &&
                         'bg-primary/18 text-primary shadow-[0_0_22px_color-mix(in_oklch,var(--glow)_42%,transparent)]',
                     )}

@@ -70,16 +70,22 @@ struct ActiveMusicPlayback {
 }
 
 struct ActiveLoopEmitter {
-    track: SpatialTrackHandle,
+    track: ActiveLoopTrack,
     sound: StaticSoundHandle,
     last_trigger_at_s: f64,
     release_timeout_s: f64,
     released: bool,
 }
 
+enum ActiveLoopTrack {
+    Spatial(SpatialTrackHandle),
+    Nonspatial { _track: TrackHandle },
+}
+
 pub(super) struct NativeAudioBackend {
     manager: AudioManager<DefaultBackend>,
     listener: ListenerHandle,
+    listener_position: Vec3,
     main_filter: FilterHandle,
     bus_tracks: HashMap<String, TrackHandle>,
     send_tracks: HashMap<String, SendTrackHandle>,
@@ -110,6 +116,7 @@ impl NativeAudioBackend {
         Ok(Self {
             manager,
             listener,
+            listener_position: Vec3::ZERO,
             main_filter,
             bus_tracks: HashMap::new(),
             send_tracks: HashMap::new(),
@@ -164,6 +171,7 @@ impl NativeAudioBackend {
     }
 
     pub fn sync_listener(&mut self, position: Vec3, rotation: Quat) {
+        self.listener_position = position;
         self.listener
             .set_position(mint_vec3(position), Tween::default());
         self.listener
@@ -264,27 +272,52 @@ impl NativeAudioBackend {
             .ok_or_else(|| "audio cue does not reference a clip_asset_id".to_string())?;
         match cue.spatial.mode.as_str() {
             "world_2d" => {
-                let position = request.position.unwrap_or(Vec2::ZERO);
-                let mut track = self
-                    .bus_tracks
-                    .get_mut(cue.route.bus.as_str())
-                    .ok_or_else(|| format!("unknown audio bus {}", cue.route.bus))?
-                    .add_spatial_sub_track(
-                        self.listener.id(),
-                        mint_vec3(Vec3::new(position.x, position.y, 0.0)),
-                        build_spatial_track(&self.send_tracks, cue, true),
-                    )
-                    .map_err(|err| err.to_string())?;
+                let requested_position = request.position.unwrap_or(Vec2::ZERO);
+                let effective_position = debug_effective_position(
+                    request.profile_id,
+                    requested_position,
+                    self.listener_position,
+                );
+                let listener_xy = self.listener_position.truncate();
+                let distance_m = effective_position.distance(listener_xy);
                 let sound_data = self.load_sound_data(cue, resolver)?;
-                let _ = track.play(sound_data).map_err(|err| err.to_string())?;
+                let force_nonspatial_track = debug_force_nonspatial_track(request.profile_id);
+                if force_nonspatial_track {
+                    let mut track = self
+                        .bus_tracks
+                        .get_mut(cue.route.bus.as_str())
+                        .ok_or_else(|| format!("unknown audio bus {}", cue.route.bus))?
+                        .add_sub_track(build_nonspatial_track(&self.send_tracks, cue, true))
+                        .map_err(|err| err.to_string())?;
+                    let _ = track.play(sound_data).map_err(|err| err.to_string())?;
+                } else {
+                    let mut track = self
+                        .bus_tracks
+                        .get_mut(cue.route.bus.as_str())
+                        .ok_or_else(|| format!("unknown audio bus {}", cue.route.bus))?
+                        .add_spatial_sub_track(
+                            self.listener.id(),
+                            mint_vec3(Vec3::new(effective_position.x, effective_position.y, 0.0)),
+                            build_spatial_track(&self.send_tracks, cue, true),
+                        )
+                        .map_err(|err| err.to_string())?;
+                    let _ = track.play(sound_data).map_err(|err| err.to_string())?;
+                }
                 info!(
                     profile_id = request.profile_id,
                     cue_id = request.cue_id,
                     bus = cue.route.bus.as_str(),
                     asset_id,
                     spatial_mode = cue.spatial.mode.as_str(),
-                    position_x = position.x,
-                    position_y = position.y,
+                    requested_position_x = requested_position.x,
+                    requested_position_y = requested_position.y,
+                    effective_position_x = effective_position.x,
+                    effective_position_y = effective_position.y,
+                    listener_x = listener_xy.x,
+                    listener_y = listener_xy.y,
+                    distance_m,
+                    force_listener_position = debug_force_listener_position(request.profile_id),
+                    force_nonspatial_track,
                     "audio one-shot started"
                 );
             }
@@ -328,10 +361,12 @@ impl NativeAudioBackend {
         if let Some(active) = self.active_loops.get_mut(&request.key)
             && !active.released
         {
-            active.track.set_position(
-                mint_vec3(Vec3::new(request.position.x, request.position.y, 0.0)),
-                Tween::default(),
-            );
+            if let ActiveLoopTrack::Spatial(track) = &mut active.track {
+                track.set_position(
+                    mint_vec3(Vec3::new(request.position.x, request.position.y, 0.0)),
+                    Tween::default(),
+                );
+            }
             active.last_trigger_at_s = request.now_s;
             active.release_timeout_s = request.release_timeout_s;
             return Ok(());
@@ -343,28 +378,52 @@ impl NativeAudioBackend {
             });
         }
 
-        let mut track = self
-            .bus_tracks
-            .get_mut(cue.route.bus.as_str())
-            .ok_or_else(|| format!("unknown audio bus {}", cue.route.bus))?
-            .add_spatial_sub_track(
-                self.listener.id(),
-                mint_vec3(Vec3::new(request.position.x, request.position.y, 0.0)),
-                build_spatial_track(&self.send_tracks, cue, false),
-            )
-            .map_err(|err| err.to_string())?;
+        let effective_position =
+            debug_effective_position(request.profile_id, request.position, self.listener_position);
+        let listener_xy = self.listener_position.truncate();
+        let distance_m = effective_position.distance(listener_xy);
         let asset_id = clip_asset_id_for_playback(&cue.playback)
             .ok_or_else(|| "audio cue does not reference a clip_asset_id".to_string())?;
         let sound_data = self.load_sound_data(cue, resolver)?;
-        let sound = track.play(sound_data).map_err(|err| err.to_string())?;
+        let force_nonspatial_track = debug_force_nonspatial_track(request.profile_id);
+        let (track, sound) = if force_nonspatial_track {
+            let mut track = self
+                .bus_tracks
+                .get_mut(cue.route.bus.as_str())
+                .ok_or_else(|| format!("unknown audio bus {}", cue.route.bus))?
+                .add_sub_track(build_nonspatial_track(&self.send_tracks, cue, false))
+                .map_err(|err| err.to_string())?;
+            let sound = track.play(sound_data).map_err(|err| err.to_string())?;
+            (ActiveLoopTrack::Nonspatial { _track: track }, sound)
+        } else {
+            let mut track = self
+                .bus_tracks
+                .get_mut(cue.route.bus.as_str())
+                .ok_or_else(|| format!("unknown audio bus {}", cue.route.bus))?
+                .add_spatial_sub_track(
+                    self.listener.id(),
+                    mint_vec3(Vec3::new(effective_position.x, effective_position.y, 0.0)),
+                    build_spatial_track(&self.send_tracks, cue, false),
+                )
+                .map_err(|err| err.to_string())?;
+            let sound = track.play(sound_data).map_err(|err| err.to_string())?;
+            (ActiveLoopTrack::Spatial(track), sound)
+        };
         info!(
             emitter_key = request.key.as_str(),
             profile_id = request.profile_id,
             cue_id = request.cue_id,
             bus = cue.route.bus.as_str(),
             asset_id,
-            position_x = request.position.x,
-            position_y = request.position.y,
+            requested_position_x = request.position.x,
+            requested_position_y = request.position.y,
+            effective_position_x = effective_position.x,
+            effective_position_y = effective_position.y,
+            listener_x = listener_xy.x,
+            listener_y = listener_xy.y,
+            distance_m,
+            force_listener_position = debug_force_listener_position(request.profile_id),
+            force_nonspatial_track,
             release_timeout_s = request.release_timeout_s,
             "audio loop emitter started"
         );
@@ -635,4 +694,27 @@ fn mint_quat(value: Quat) -> mint::Quaternion<f32> {
         },
         s: value.w,
     }
+}
+
+fn debug_effective_position(
+    profile_id: &str,
+    requested_position: Vec2,
+    listener_position: Vec3,
+) -> Vec2 {
+    if debug_force_listener_position(profile_id) {
+        listener_position.truncate()
+    } else {
+        requested_position
+    }
+}
+
+fn debug_force_listener_position(profile_id: &str) -> bool {
+    debug_force_nonspatial_track(profile_id)
+}
+
+fn debug_force_nonspatial_track(profile_id: &str) -> bool {
+    matches!(
+        profile_id,
+        "weapon.ballistic_gatling" | "destruction.asteroid.default" | "explosion_burst"
+    )
 }

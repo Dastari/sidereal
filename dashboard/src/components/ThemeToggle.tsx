@@ -34,7 +34,7 @@ export function ThemeToggle() {
         <Button
           variant="ghost"
           size="icon"
-          className="relative overflow-hidden border border-border/50"
+          className="relative overflow-hidden border-border/50 border-0! shadow-none! rounded-md"
         >
           <span
             aria-hidden="true"
