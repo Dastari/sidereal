@@ -67,6 +67,18 @@ pub(crate) struct DebugOverlayPanelLabelShadowText;
 pub(crate) struct DebugOverlayPanelValueShadowText;
 
 #[derive(Component)]
+pub(crate) struct DebugOverlayPanelSecondaryLabelText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelSecondaryValueText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelSecondaryLabelShadowText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelSecondaryValueShadowText;
+
+#[derive(Component)]
 pub(crate) struct LoadingProgressBarFill;
 
 #[derive(Component)]

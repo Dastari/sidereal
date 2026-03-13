@@ -12,7 +12,7 @@ The largest alignment drift is no longer in the authority model. It is in code q
 
 1. The workspace is out of alignment with its own mandatory quality gate because `cargo clippy --workspace --all-targets -- -D warnings` currently fails on active replication and client code.
 2. A stale `SIM_TICK_HZ = 30` constant in shared core diverges from both the design docs and the actual 60 Hz runtime used by client and replication.
-3. Client bootstrap/orchestration remains too monolithic and partly duplicated, especially in `bins/sidereal-client/src/native/mod.rs` and `bins/sidereal-client/src/native/plugins.rs`.
+3. Client bootstrap/orchestration remains too monolithic and partly duplicated, especially in `bins/sidereal-client/src/runtime/mod.rs` and `bins/sidereal-client/src/runtime/plugins.rs`.
 4. Gateway and replication still duplicate world-init/script-catalog validation logic that should now be shared.
 5. The fullscreen/render-layer migration is only partially complete: runtime render-layer records are already authored from Lua, but legacy `FullscreenLayer` compatibility code and stale docs remain active.
 6. Asset cache implementation still diverges from the documented pak/index contract.
@@ -34,17 +34,17 @@ Those are architecture and maintainability problems with direct correctness impl
   - `bins/sidereal-replication/src/replication/runtime_state.rs:32`
   - `bins/sidereal-replication/src/replication/visibility.rs:562`
   - `bins/sidereal-replication/src/replication/visibility.rs:1609`
-  - `bins/sidereal-client/src/native/backdrop.rs:502`
-  - `bins/sidereal-client/src/native/backdrop.rs:580`
-  - `bins/sidereal-client/src/native/backdrop.rs:1904`
-  - `bins/sidereal-client/src/native/replication.rs:69`
-  - `bins/sidereal-client/src/native/replication.rs:178`
-  - `bins/sidereal-client/src/native/replication.rs:860`
-  - `bins/sidereal-client/src/native/replication.rs:869`
-  - `bins/sidereal-client/src/native/ui.rs:158`
-  - `bins/sidereal-client/src/native/ui.rs:166`
-  - `bins/sidereal-client/src/native/visuals.rs:1833`
-  - `bins/sidereal-client/src/native/visuals.rs:2589`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:502`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:580`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:1904`
+  - `bins/sidereal-client/src/runtime/replication.rs:69`
+  - `bins/sidereal-client/src/runtime/replication.rs:178`
+  - `bins/sidereal-client/src/runtime/replication.rs:860`
+  - `bins/sidereal-client/src/runtime/replication.rs:869`
+  - `bins/sidereal-client/src/runtime/ui.rs:158`
+  - `bins/sidereal-client/src/runtime/ui.rs:166`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1833`
+  - `bins/sidereal-client/src/runtime/visuals.rs:2589`
 - Evidence:
   A fresh run on 2026-03-10 failed on dead code, `too_many_arguments`, `type_complexity`, and `needless_option_as_deref` in active runtime modules.
 - Concrete recommendation:
@@ -60,7 +60,7 @@ Those are architecture and maintainability problems with direct correctness impl
   - `docs/sidereal_design_document.md:204`
   - `crates/sidereal-core/src/lib.rs:11`
   - `crates/sidereal-core/tests/id_helpers.rs:19`
-  - `bins/sidereal-client/src/native/mod.rs:147`
+  - `bins/sidereal-client/src/runtime/mod.rs:147`
   - `bins/sidereal-replication/src/main.rs:152`
 - Concrete recommendation:
   Make `sidereal_core::SIM_TICK_HZ` the single authoritative value at 60, update the test, and replace local literal `60.0` inserts with conversions from the shared constant.
@@ -73,10 +73,10 @@ Those are architecture and maintainability problems with direct correctness impl
   The client has moved toward plugins, but major bootstrapping still happens in one large function that manually inserts a long list of resources and runtime toggles. That makes lifecycle ownership harder to reason about and increases the chance of missing state resets during auth/logout/world transitions.
 - Exact references:
   - `AGENTS.md`
-  - `bins/sidereal-client/src/native/mod.rs:103`
-  - `bins/sidereal-client/src/native/mod.rs:147`
-  - `bins/sidereal-client/src/native/mod.rs:157`
-  - `bins/sidereal-client/src/native/mod.rs:208`
+  - `bins/sidereal-client/src/runtime/mod.rs:103`
+  - `bins/sidereal-client/src/runtime/mod.rs:147`
+  - `bins/sidereal-client/src/runtime/mod.rs:157`
+  - `bins/sidereal-client/src/runtime/mod.rs:208`
 - Details:
   `configure_client_runtime()` is still doing physics setup, Lightyear setup, fixed-time setup, asset/cache adapter insertion, debug toggles, world-state resources, tactical resources, hierarchy resources, camera resources, and prediction tuning in one place.
 - Concrete recommendation:
@@ -89,10 +89,10 @@ Those are architecture and maintainability problems with direct correctness impl
 - Why it matters:
   `ClientReplicationPlugin` duplicates large Update chains for headless and non-headless modes. This is brittle because the two paths can drift on ordering or feature coverage without an obvious compile-time signal.
 - Exact references:
-  - `bins/sidereal-client/src/native/plugins.rs:124`
-  - `bins/sidereal-client/src/native/plugins.rs:162`
-  - `bins/sidereal-client/src/native/plugins.rs:223`
-  - `bins/sidereal-client/src/native/plugins.rs:260`
+  - `bins/sidereal-client/src/runtime/plugins.rs:124`
+  - `bins/sidereal-client/src/runtime/plugins.rs:162`
+  - `bins/sidereal-client/src/runtime/plugins.rs:223`
+  - `bins/sidereal-client/src/runtime/plugins.rs:260`
 - Concrete recommendation:
   Build common system tuples once and gate only the genuinely different state-transition and logging behavior. If the headless path truly needs separate semantics, isolate that difference behind smaller helper plugins rather than duplicating the chain.
 
@@ -125,9 +125,9 @@ Those are architecture and maintainability problems with direct correctness impl
 - Why it matters:
   Several files have grown into domain mixtures rather than coherent modules. That makes code review and future ownership harder and is one reason Clippy complexity warnings are concentrating in the same hotspots.
 - Exact references:
-  - `bins/sidereal-client/src/native/visuals.rs`
-  - `bins/sidereal-client/src/native/backdrop.rs`
-  - `bins/sidereal-client/src/native/ui.rs`
+  - `bins/sidereal-client/src/runtime/visuals.rs`
+  - `bins/sidereal-client/src/runtime/backdrop.rs`
+  - `bins/sidereal-client/src/runtime/ui.rs`
   - `bins/sidereal-replication/src/replication/scripting.rs`
   - `bins/sidereal-replication/src/replication/visibility.rs`
 - Inference:
@@ -143,10 +143,10 @@ Those are architecture and maintainability problems with direct correctness impl
   The repeated `too_many_arguments` and `type_complexity` failures indicate that several systems are expressing domain coupling directly through oversized system parameters instead of using smaller resources, helper structs, or `SystemParam` wrappers.
 - Exact references:
   - `bins/sidereal-replication/src/replication/input.rs:373`
-  - `bins/sidereal-client/src/native/backdrop.rs:580`
-  - `bins/sidereal-client/src/native/replication.rs:860`
-  - `bins/sidereal-client/src/native/ui.rs:158`
-  - `bins/sidereal-client/src/native/visuals.rs:1833`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:580`
+  - `bins/sidereal-client/src/runtime/replication.rs:860`
+  - `bins/sidereal-client/src/runtime/ui.rs:158`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1833`
 - Concrete recommendation:
   Introduce explicit `SystemParam` bundles for recurring query/resource sets and move pure data-shaping steps into ordinary Rust helpers. This will also make system ordering intent easier to see.
 
@@ -162,8 +162,8 @@ Those are architecture and maintainability problems with direct correctness impl
   - `data/scripts/world/world_init.lua:11`
   - `data/scripts/world/world_init.lua:22`
   - `data/scripts/world/world_init.lua:33`
-  - `bins/sidereal-client/src/native/backdrop.rs:259`
-  - `bins/sidereal-client/src/native/backdrop.rs:282`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:259`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:282`
   - `docs/features/scripting_support.md:1658`
 - Concrete recommendation:
   Decide whether the migration is complete enough to remove legacy fullscreen compatibility. If yes, delete the fallback path and update docs. If no, update docs to state exactly which runtime still depends on `FullscreenLayer` and why.
@@ -175,13 +175,13 @@ Those are architecture and maintainability problems with direct correctness impl
 - Why it matters:
   The long-term contract is generic runtime behavior with concrete content owned by Lua-authored catalogs. The active shader registry still exposes named handles and slots for specific content concepts such as starfield, asteroid sprite, and tactical map overlay.
 - Exact references:
-  - `bins/sidereal-client/src/native/shaders.rs:164`
-  - `bins/sidereal-client/src/native/shaders.rs:166`
-  - `bins/sidereal-client/src/native/shaders.rs:170`
-  - `bins/sidereal-client/src/native/shaders.rs:172`
-  - `bins/sidereal-client/src/native/shaders.rs:174`
-  - `bins/sidereal-client/src/native/shaders.rs:178`
-  - `bins/sidereal-client/src/native/shaders.rs:214`
+  - `bins/sidereal-client/src/runtime/shaders.rs:164`
+  - `bins/sidereal-client/src/runtime/shaders.rs:166`
+  - `bins/sidereal-client/src/runtime/shaders.rs:170`
+  - `bins/sidereal-client/src/runtime/shaders.rs:172`
+  - `bins/sidereal-client/src/runtime/shaders.rs:174`
+  - `bins/sidereal-client/src/runtime/shaders.rs:178`
+  - `bins/sidereal-client/src/runtime/shaders.rs:214`
 - Concrete recommendation:
   Push concrete shader selection fully behind render-layer/catalog metadata. Rust should keep family/domain behavior and fallback loading, not a hardcoded map of current game content.
 
@@ -192,9 +192,9 @@ Those are architecture and maintainability problems with direct correctness impl
 - Why it matters:
   This is not inherently wrong, but it is another sign that rendering still contains platform/content exceptions in runtime code instead of a cleaner data-driven fallback story.
 - Exact references:
-  - `bins/sidereal-client/src/native/shaders.rs:54`
-  - `bins/sidereal-client/src/native/shaders.rs:109`
-  - `bins/sidereal-client/src/wasm.rs:40`
+  - `bins/sidereal-client/src/runtime/shaders.rs:54`
+  - `bins/sidereal-client/src/runtime/shaders.rs:109`
+  - `bins/sidereal-client/src/platform/wasm.rs:40`
 - Concrete recommendation:
   Keep the WASM fallback mechanism, but move fallback shader source ownership into a narrower platform adapter module or generated asset artifact so runtime rendering code stays generic.
 
@@ -207,8 +207,8 @@ Those are architecture and maintainability problems with direct correctness impl
 - Why it matters:
   The main authority path is still using fixed-step physics, zero gravity for the intended space runtime, and server-side ordering around Avian `PhysicsSystems`. This is one area where the current architecture is defensible.
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs:117`
-  - `bins/sidereal-client/src/native/mod.rs:147`
+  - `bins/sidereal-client/src/runtime/mod.rs:117`
+  - `bins/sidereal-client/src/runtime/mod.rs:147`
   - `bins/sidereal-replication/src/main.rs:133`
   - `bins/sidereal-replication/src/main.rs:152`
   - `bins/sidereal-replication/src/main.rs:244`
@@ -239,8 +239,8 @@ Those are architecture and maintainability problems with direct correctness impl
 - Why it matters:
   The WASM path now boots through `build_windowed_client_app()` and uses shared client configuration. That reduces platform drift and is a meaningful improvement from the older state.
 - Exact references:
-  - `bins/sidereal-client/src/wasm.rs:40`
-  - `bins/sidereal-client/src/wasm.rs:69`
+  - `bins/sidereal-client/src/platform/wasm.rs:40`
+  - `bins/sidereal-client/src/platform/wasm.rs:69`
 - Concrete recommendation:
   Keep converging from this shared bootstrap path instead of reintroducing a separate browser-only client shell.
 
@@ -255,8 +255,8 @@ Those are architecture and maintainability problems with direct correctness impl
 - Exact references:
   - `data/scripts/world/world_init.lua:11`
   - `data/scripts/world/world_init.lua:44`
-  - `bins/sidereal-client/src/native/backdrop.rs:259`
-  - `bins/sidereal-client/src/native/backdrop.rs:297`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:259`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:297`
   - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 - Concrete recommendation:
   Finish the migration by making runtime render-layer records the only authoritative fullscreen layer source, then remove legacy component compatibility and update the feature docs in the same change.
@@ -277,8 +277,8 @@ Those are architecture and maintainability problems with direct correctness impl
   - `crates/sidereal-asset-runtime/src/lib.rs:242`
   - `crates/sidereal-asset-runtime/src/lib.rs:256`
   - `crates/sidereal-asset-runtime/src/lib.rs:272`
-  - `bins/sidereal-client/src/native/auth_net.rs:367`
-  - `bins/sidereal-client/src/native/auth_net.rs:387`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:367`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:387`
 - Concrete recommendation:
   Either implement the documented pak/index cache or revise the contract to describe the current loose-file cache shape as the intended design. Do not leave both stories active.
 
@@ -317,10 +317,10 @@ Those are architecture and maintainability problems with direct correctness impl
 - Why it matters:
   These are not severe individually, but they show parts of the client runtime are still carrying visible transitional work.
 - Exact references:
-  - `bins/sidereal-client/src/native/visuals.rs:323`
-  - `bins/sidereal-client/src/native/pause_menu.rs:1`
-  - `bins/sidereal-client/src/native/render_layers.rs:672`
-  - `bins/sidereal-client/src/native/render_layers.rs:675`
+  - `bins/sidereal-client/src/runtime/visuals.rs:323`
+  - `bins/sidereal-client/src/runtime/pause_menu.rs:1`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:672`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:675`
 - Concrete recommendation:
   Triage them explicitly as either near-term work or dead transitional scaffolding. Do not let low-grade placeholders accumulate indefinitely.
 
@@ -346,12 +346,12 @@ Those are architecture and maintainability problems with direct correctness impl
 
 ### 10.3 Client startup and main loop
 
-1. Native startup flows through `bins/sidereal-client/src/native/mod.rs:103`, which configures Bevy, Avian client-side physics, Lightyear client plugins, fixed-step time, and a large set of runtime resources.
-2. WASM startup now reuses the shared builder via `bins/sidereal-client/src/wasm.rs:40`, swapping only browser-specific HTTP/cache adapters and render/window setup.
-3. `bins/sidereal-client/src/native/plugins.rs:36` bootstraps the app-state flow: auth, character select, world loading, asset loading, and in-world scene setup.
-4. `bins/sidereal-client/src/native/plugins.rs:91` wires transport/message systems.
-5. `bins/sidereal-client/src/native/plugins.rs:124` wires replication adoption, transform synchronization, control handover, owner manifests, tactical snapshots, and runtime asset fetch state.
-6. `bins/sidereal-client/src/native/plugins.rs:300` wires prediction, input send, rollback, interpolation, camera, visuals, UI, and debug/tactical systems.
+1. Native startup flows through `bins/sidereal-client/src/runtime/mod.rs:103`, which configures Bevy, Avian client-side physics, Lightyear client plugins, fixed-step time, and a large set of runtime resources.
+2. WASM startup now reuses the shared builder via `bins/sidereal-client/src/platform/wasm.rs:40`, swapping only browser-specific HTTP/cache adapters and render/window setup.
+3. `bins/sidereal-client/src/runtime/plugins.rs:36` bootstraps the app-state flow: auth, character select, world loading, asset loading, and in-world scene setup.
+4. `bins/sidereal-client/src/runtime/plugins.rs:91` wires transport/message systems.
+5. `bins/sidereal-client/src/runtime/plugins.rs:124` wires replication adoption, transform synchronization, control handover, owner manifests, tactical snapshots, and runtime asset fetch state.
+6. `bins/sidereal-client/src/runtime/plugins.rs:300` wires prediction, input send, rollback, interpolation, camera, visuals, UI, and debug/tactical systems.
 
 ### 10.4 Cross-service data and authority flow
 

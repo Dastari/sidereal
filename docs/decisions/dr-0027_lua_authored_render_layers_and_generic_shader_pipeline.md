@@ -605,7 +605,7 @@ Primary touch targets:
 1. `crates/sidereal-game/src/components/`
 2. `bins/sidereal-replication/src/replication/scripting.rs`
 3. `bins/sidereal-gateway/src/auth/starter_world_scripts.rs`
-4. `bins/sidereal-client/src/native/visuals.rs`
+4. `bins/sidereal-client/src/runtime/visuals.rs`
 5. `docs/features/scripting_support.md`
 
 ### Step 2: Migrate planets onto the authored visual-stack model
@@ -676,11 +676,11 @@ Expected primary touch points:
 2. `crates/sidereal-scripting/src/`
 3. `bins/sidereal-replication/src/replication/scripting.rs`
 4. `bins/sidereal-replication/src/replication/visibility.rs`
-5. `bins/sidereal-client/src/native/shaders.rs`
-6. `bins/sidereal-client/src/native/backdrop.rs`
-7. `bins/sidereal-client/src/native/visuals.rs`
-8. `bins/sidereal-client/src/native/mod.rs`
-9. `bins/sidereal-client/src/native/assets.rs`
+5. `bins/sidereal-client/src/runtime/shaders.rs`
+6. `bins/sidereal-client/src/runtime/backdrop.rs`
+7. `bins/sidereal-client/src/runtime/visuals.rs`
+8. `bins/sidereal-client/src/runtime/mod.rs`
+9. `bins/sidereal-client/src/runtime/assets.rs`
 10. `bins/sidereal-gateway/src/auth/starter_world_scripts.rs`
 
 ## 16. Test Plan

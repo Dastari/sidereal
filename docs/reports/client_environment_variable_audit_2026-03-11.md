@@ -36,12 +36,12 @@ The highest-value findings are:
 - Why it matters:
   The client logs that this flag enables "full local simulation, no reconciliation", which suggests a major runtime-mode switch. The code does not support that claim. Instead, the flag mostly changes diagnostic labeling and suppresses one predicted-adoption path. That makes the variable dangerous because a user could reasonably believe it is a supported local-sim mode when it is not.
 - Exact references:
-  - `bins/sidereal-client/src/native/resources.rs:707`
-  - `bins/sidereal-client/src/native/resources.rs:713`
-  - `bins/sidereal-client/src/native/replication.rs:539`
-  - `bins/sidereal-client/src/native/debug_overlay.rs:1078`
-  - `bins/sidereal-client/src/native/motion.rs:73`
-  - `bins/sidereal-client/src/native/motion.rs:539`
+  - `bins/sidereal-client/src/runtime/resources.rs:707`
+  - `bins/sidereal-client/src/runtime/resources.rs:713`
+  - `bins/sidereal-client/src/runtime/replication.rs:539`
+  - `bins/sidereal-client/src/runtime/debug_overlay.rs:1078`
+  - `bins/sidereal-client/src/runtime/motion.rs:73`
+  - `bins/sidereal-client/src/runtime/motion.rs:539`
 - Details:
   `LocalSimulationDebugMode` is created from `SIDEREAL_CLIENT_PHYSICS_MODE`, but the value is only used to:
   - label debug output as `"local"` vs `"predicted"`,
@@ -63,14 +63,14 @@ The highest-value findings are:
 - Why it matters:
   The client already has resources for debug-gizmo and debug-arrow behavior, but some startup code bypasses those resources and reads the env again. That produces two configuration paths for the same concept and weakens the resource-driven runtime model.
 - Exact references:
-  - `bins/sidereal-client/src/native/resources.rs:204`
-  - `bins/sidereal-client/src/native/resources.rs:217`
-  - `bins/sidereal-client/src/native/mod.rs:185`
-  - `bins/sidereal-client/src/native/mod.rs:186`
-  - `bins/sidereal-client/src/native/mod.rs:352`
-  - `bins/sidereal-client/src/native/scene_world.rs:55`
-  - `bins/sidereal-client/src/native/scene_world.rs:59`
-  - `bins/sidereal-client/src/native/camera.rs:304`
+  - `bins/sidereal-client/src/runtime/resources.rs:204`
+  - `bins/sidereal-client/src/runtime/resources.rs:217`
+  - `bins/sidereal-client/src/runtime/mod.rs:185`
+  - `bins/sidereal-client/src/runtime/mod.rs:186`
+  - `bins/sidereal-client/src/runtime/mod.rs:352`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:55`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:59`
+  - `bins/sidereal-client/src/runtime/camera.rs:304`
 - Details:
   `SIDEREAL_CLIENT_DEBUG_GIZMOS_ON_GAMEPLAY_CAMERA` and `SIDEREAL_CLIENT_DEBUG_ARROW_AS_MESH` are each:
   - parsed into resources during client bootstrap,
@@ -86,11 +86,11 @@ The highest-value findings are:
 - Why it matters:
   These variables are not dead. They materially alter runtime behavior by removing systems or plugin groups. That makes them useful for debugging, but also risky if they quietly become part of normal launch behavior.
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs:210`
-  - `bins/sidereal-client/src/native/mod.rs:265`
-  - `bins/sidereal-client/src/native/mod.rs:291`
-  - `bins/sidereal-client/src/native/plugins.rs:130`
-  - `bins/sidereal-client/src/native/plugins.rs:131`
+  - `bins/sidereal-client/src/runtime/mod.rs:210`
+  - `bins/sidereal-client/src/runtime/mod.rs:265`
+  - `bins/sidereal-client/src/runtime/mod.rs:291`
+  - `bins/sidereal-client/src/runtime/plugins.rs:130`
+  - `bins/sidereal-client/src/runtime/plugins.rs:131`
 - Variables covered:
   - `SIDEREAL_CLIENT_DISABLE_RUNTIME_ASSET_FETCH`
   - `SIDEREAL_CLIENT_DISABLE_REPLICATION_ADOPTION`
@@ -107,11 +107,11 @@ The highest-value findings are:
 - Why it matters:
   Active client behavior currently depends on a large number of env vars spread across startup, transport, prediction, rendering, debug overlay, shader loading, BRP, and headless mode. That is manageable only if there is one canonical contributor-facing reference. Right now there is not.
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs`
-  - `bins/sidereal-client/src/native/resources.rs`
-  - `bins/sidereal-client/src/native/platform.rs`
-  - `bins/sidereal-client/src/native/transport.rs`
-  - `bins/sidereal-client/src/native/auth_net.rs`
+  - `bins/sidereal-client/src/runtime/mod.rs`
+  - `bins/sidereal-client/src/runtime/resources.rs`
+  - `bins/sidereal-client/src/runtime/platform.rs`
+  - `bins/sidereal-client/src/runtime/transport.rs`
+  - `bins/sidereal-client/src/runtime/auth_net.rs`
   - `docs/sidereal_design_document.md:472`
   - `docs/features/prediction_runtime_tuning_and_validation.md:99`
 - Details:
@@ -140,14 +140,14 @@ The highest-value findings are:
 - Why it matters:
   These values directly affect client bootstrap and transport behavior and are not dead config.
 - Exact references:
-  - `bins/sidereal-client/src/native/app_state.rs:100`
-  - `bins/sidereal-client/src/native/mod.rs:397`
-  - `bins/sidereal-client/src/native/mod.rs:409`
-  - `bins/sidereal-client/src/native/transport.rs:97`
-  - `bins/sidereal-client/src/native/transport.rs:103`
-  - `bins/sidereal-client/src/native/transport.rs:115`
-  - `bins/sidereal-client/src/native/transport.rs:124`
-  - `bins/sidereal-client/src/native/transport.rs:163`
+  - `bins/sidereal-client/src/runtime/app_state.rs:100`
+  - `bins/sidereal-client/src/runtime/mod.rs:397`
+  - `bins/sidereal-client/src/runtime/mod.rs:409`
+  - `bins/sidereal-client/src/runtime/transport.rs:97`
+  - `bins/sidereal-client/src/runtime/transport.rs:103`
+  - `bins/sidereal-client/src/runtime/transport.rs:115`
+  - `bins/sidereal-client/src/runtime/transport.rs:124`
+  - `bins/sidereal-client/src/runtime/transport.rs:163`
 - Variables covered:
   - `GATEWAY_URL`
   - `SIDEREAL_CLIENT_HEADLESS`
@@ -166,8 +166,8 @@ The highest-value findings are:
 - Why it matters:
   BRP configuration is handled in one shared place, uses service-specific and generic fallback names, and validates loopback-only plus token requirements.
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs:400`
-  - `bins/sidereal-client/src/native/remote.rs:10`
+  - `bins/sidereal-client/src/runtime/mod.rs:400`
+  - `bins/sidereal-client/src/platform/native/remote.rs:10`
   - `crates/sidereal-core/src/remote_inspect.rs:13`
   - `crates/sidereal-core/src/remote_inspect.rs:16`
   - `crates/sidereal-core/src/remote_inspect.rs:22`

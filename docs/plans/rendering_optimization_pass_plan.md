@@ -51,7 +51,7 @@ That distinction matters for live shader workflows:
 
 ### 3.1 Critical client churn
 
-The top priority remains the proven fullscreen/post-process churn in `bins/sidereal-client/src/native/backdrop.rs`.
+The top priority remains the proven fullscreen/post-process churn in `bins/sidereal-client/src/runtime/backdrop.rs`.
 
 Current problems:
 
@@ -69,9 +69,9 @@ Why this is first:
 
 The next tier is all the frame-polled bookkeeping:
 
-1. `bins/sidereal-client/src/native/render_layers.rs`
-2. `bins/sidereal-client/src/native/assets.rs`
-3. `bins/sidereal-client/src/native/visuals.rs`
+1. `bins/sidereal-client/src/runtime/render_layers.rs`
+2. `bins/sidereal-client/src/runtime/assets.rs`
+3. `bins/sidereal-client/src/runtime/visuals.rs`
 
 Current problems:
 
@@ -177,9 +177,9 @@ Goal: stop rebuilding unchanged fullscreen renderables every frame.
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/backdrop.rs`
-2. `bins/sidereal-client/src/native/resources.rs`
-3. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/backdrop.rs`
+2. `bins/sidereal-client/src/runtime/resources.rs`
+3. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Implementation direction:
 
@@ -258,9 +258,9 @@ Goal: stop recompiling and reassigning layer state every render frame.
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/render_layers.rs`
-2. `bins/sidereal-client/src/native/resources.rs`
-3. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/render_layers.rs`
+2. `bins/sidereal-client/src/runtime/resources.rs`
+3. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Implementation direction:
 
@@ -322,9 +322,9 @@ Goal: stop rescanning all render dependencies every frame.
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/assets.rs`
-2. `bins/sidereal-client/src/native/backdrop.rs`
-3. `bins/sidereal-client/src/native/render_layers.rs`
+1. `bins/sidereal-client/src/runtime/assets.rs`
+2. `bins/sidereal-client/src/runtime/backdrop.rs`
+3. `bins/sidereal-client/src/runtime/render_layers.rs`
 
 Implementation direction:
 
@@ -375,9 +375,9 @@ Goal: recover batching and reduce draw/setup cost while preserving dynamic conte
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/visuals.rs`
-2. `bins/sidereal-client/src/native/backdrop.rs`
-3. `bins/sidereal-client/src/native/shaders.rs`
+1. `bins/sidereal-client/src/runtime/visuals.rs`
+2. `bins/sidereal-client/src/runtime/backdrop.rs`
+3. `bins/sidereal-client/src/runtime/shaders.rs`
 4. `docs/plans/dynamic_runtime_shader_material_plan.md`
 
 Implementation direction:
@@ -439,9 +439,9 @@ Goal: reduce pass/view overhead without regressing required composition behavior
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/scene_world.rs`
-2. `bins/sidereal-client/src/native/scene.rs`
-3. `bins/sidereal-client/src/native/backdrop.rs`
+1. `bins/sidereal-client/src/runtime/scene_world.rs`
+2. `bins/sidereal-client/src/runtime/scene.rs`
+3. `bins/sidereal-client/src/runtime/backdrop.rs`
 
 Review items:
 
@@ -480,9 +480,9 @@ Goal: remove the full-world duplicate scoring pass from the steady-state frame p
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/visuals.rs`
-2. `bins/sidereal-client/src/native/replication.rs`
-3. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/visuals.rs`
+2. `bins/sidereal-client/src/runtime/replication.rs`
+3. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Implementation direction:
 
@@ -542,17 +542,17 @@ Acceptance criteria:
 
 Client render churn and composition:
 
-1. `bins/sidereal-client/src/native/backdrop.rs`
-2. `bins/sidereal-client/src/native/scene_world.rs`
-3. `bins/sidereal-client/src/native/scene.rs`
+1. `bins/sidereal-client/src/runtime/backdrop.rs`
+2. `bins/sidereal-client/src/runtime/scene_world.rs`
+3. `bins/sidereal-client/src/runtime/scene.rs`
 
 Client runtime render bookkeeping:
 
-1. `bins/sidereal-client/src/native/render_layers.rs`
-2. `bins/sidereal-client/src/native/assets.rs`
-3. `bins/sidereal-client/src/native/visuals.rs`
-4. `bins/sidereal-client/src/native/replication.rs`
-5. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/render_layers.rs`
+2. `bins/sidereal-client/src/runtime/assets.rs`
+3. `bins/sidereal-client/src/runtime/visuals.rs`
+4. `bins/sidereal-client/src/runtime/replication.rs`
+5. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Server-side indirect rendering pressure:
 

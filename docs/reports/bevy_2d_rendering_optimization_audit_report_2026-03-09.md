@@ -7,7 +7,7 @@ Limitations: Static code audit only. No live GPU captures, frame captures, packe
 
 ## 1. Executive Summary
 
-The codebase already has one important smoothness improvement wired correctly: the client enables `FrameInterpolationPlugin::<Transform>` and attaches `FrameInterpolate<Transform>` during replicated entity adoption (`bins/sidereal-client/src/native/mod.rs:116-140`, `bins/sidereal-client/src/native/replication.rs:550-563`). This is a real improvement over the prior Lightyear audit state and should be kept.
+The codebase already has one important smoothness improvement wired correctly: the client enables `FrameInterpolationPlugin::<Transform>` and attaches `FrameInterpolate<Transform>` during replicated entity adoption (`bins/sidereal-client/src/runtime/mod.rs:116-140`, `bins/sidereal-client/src/runtime/replication.rs:550-563`). This is a real improvement over the prior Lightyear audit state and should be kept.
 
 The biggest proven rendering-performance problem is elsewhere: the fullscreen and post-process sync systems recreate meshes and material handles for already-existing renderables every `Update`. That is not an optimization opportunity. It is a live churn bug, and it is severe enough to explain frame-time instability, memory growth, and "it gets slower the longer it runs" behavior on its own.
 
@@ -40,9 +40,9 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   Existing fullscreen entities are not simply updated in place. Each `Update`, the code allocates a fresh rectangle mesh handle, clears/rebinds material components, and inserts the render bundle again for existing fullscreen entities and existing post-process passes. That creates continuous asset churn and forces avoidable render-world changes.
 - Evidence:
-  - `bins/sidereal-client/src/native/backdrop.rs:66-119`
-  - `bins/sidereal-client/src/native/backdrop.rs:341-389`
-  - `bins/sidereal-client/src/native/backdrop.rs:451-492`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:66-119`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:341-389`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:451-492`
 - Details:
   `sync_fullscreen_layer_renderables_system()` calls `meshes.add(Rectangle::new(1.0, 1.0))` for already-existing renderables, then reinserts `Mesh2d`, `Transform`, `RenderLayers`, and `NoFrustumCulling`. `sync_runtime_post_process_renderables_system()` does the same. `attach_runtime_fullscreen_material()` also allocates a new `Material2d` asset each time for starfield/space background variants.
 - Recommendation:
@@ -67,8 +67,8 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   In-world rendering currently uses separate cameras for backdrop, gameplay, debug overlay, fullscreen foreground, post-process, and UI overlay. Several are always active. Every extra view increases extraction, render graph work, visibility work, and pass overhead.
 - Evidence:
-  - `bins/sidereal-client/src/native/scene_world.rs:62-154`
-  - `bins/sidereal-client/src/native/scene.rs:16-28`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:62-154`
+  - `bins/sidereal-client/src/runtime/scene.rs:16-28`
 - Details:
   The client spawns:
   1. backdrop camera,
@@ -97,9 +97,9 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   The shader-backed sprite path creates a mesh and a unique `Material2d` instance per entity for asteroid and generic sprite shader cases. That is the opposite of a batch-friendly 2D renderer.
 - Evidence:
-  - `bins/sidereal-client/src/native/visuals.rs:553-599`
-  - `bins/sidereal-client/src/native/backdrop.rs:458-489`
-  - `bins/sidereal-client/src/native/mod.rs:333-340`
+  - `bins/sidereal-client/src/runtime/visuals.rs:553-599`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:458-489`
+  - `bins/sidereal-client/src/runtime/mod.rs:333-340`
 - Details:
   Plain sprites can batch much better. The custom shader paths create `Rectangle` meshes and new material instances for individual entities. Planet passes are likewise material-per-pass-per-entity. Even if Bevy can still optimize some parts, this path is structurally much more expensive than sprite batching.
 - Recommendation:
@@ -122,9 +122,9 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   Fullscreen layers should be non-cullable, but the current implementation keeps them alive through active synchronization passes every frame. That is acceptable only if the number of fullscreen passes stays extremely small and the sync work stays cheap, which it currently does not.
 - Evidence:
-  - `bins/sidereal-client/src/native/backdrop.rs:97-118`
-  - `bins/sidereal-client/src/native/backdrop.rs:366-388`
-  - `bins/sidereal-client/src/native/backdrop.rs:505-539`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:97-118`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:366-388`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:505-539`
 - Recommendation:
   Keep the non-cullable policy, but make the runtime path state-driven rather than per-frame rebinding-driven. Track dirty fullscreen/post-process authored state and only rebuild renderables on change.
 - Expected payoff:
@@ -143,9 +143,9 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   The client performs replication adoption, transform bootstrap, asset queueing, render-layer rebuild, duplicate suppression, visual attach/update, backdrop sync, lighting sync, camera logic, tactical overlay updates, UI updates, audits, and debug text updates in the normal `Update` path. This makes frame time sensitive to too many unrelated concerns.
 - Evidence:
-  - `bins/sidereal-client/src/native/plugins.rs:139-253`
-  - `bins/sidereal-client/src/native/plugins.rs:300-370`
-  - `bins/sidereal-client/src/native/plugins.rs:430-514`
+  - `bins/sidereal-client/src/runtime/plugins.rs:139-253`
+  - `bins/sidereal-client/src/runtime/plugins.rs:300-370`
+  - `bins/sidereal-client/src/runtime/plugins.rs:430-514`
 - Recommendation:
   Split runtime work into:
   1. event/change-driven replication adoption and registry maintenance,
@@ -167,8 +167,8 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   `sync_runtime_render_layer_registry_system()` clones all layer definitions, rules, and post-process stacks into `Vec`s, recompiles them, and may replace the registry resource. `resolve_runtime_render_layer_assignments_system()` then clones entity labels/overrides/current state into another `Vec` and walks every world entity again.
 - Evidence:
-  - `bins/sidereal-client/src/native/render_layers.rs:15-149`
-  - `bins/sidereal-client/src/native/render_layers.rs:151-225`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:15-149`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:151-225`
 - Recommendation:
   Make authored render-layer state incremental.
   1. Recompile the registry only on `Added`, `Changed`, and `RemovedComponents` for layer/rule/post-process entities.
@@ -188,8 +188,8 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   The client still runs a two-pass winner-selection scan over all `WorldEntity` instances to decide which duplicate GUID copy should render. That is a symptom that the entity presentation lifecycle is still too noisy.
 - Evidence:
-  - `bins/sidereal-client/src/native/visuals.rs:243-347`
-  - `bins/sidereal-client/src/native/plugins.rs:303-346`
+  - `bins/sidereal-client/src/runtime/visuals.rs:243-347`
+  - `bins/sidereal-client/src/runtime/plugins.rs:303-346`
 - Recommendation:
   Reduce the need for arbitration by tightening the replicated entity lifecycle.
   1. Prefer one stable displayed runtime entity per GUID class.
@@ -211,9 +211,9 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   `queue_missing_catalog_assets_system()` iterates fullscreen layers, runtime layers, post-process stacks, sprite shader IDs, streamed sprite shader IDs, and streamed visual asset IDs every frame, rebuilds a `HashSet`, expands dependencies, then chooses one next asset to fetch.
 - Evidence:
-  - `bins/sidereal-client/src/native/assets.rs:215-329`
-  - `bins/sidereal-client/src/native/plugins.rs:166-170`
-  - `bins/sidereal-client/src/native/plugins.rs:210-214`
+  - `bins/sidereal-client/src/runtime/assets.rs:215-329`
+  - `bins/sidereal-client/src/runtime/plugins.rs:166-170`
+  - `bins/sidereal-client/src/runtime/plugins.rs:210-214`
 - Recommendation:
   Replace polling discovery with a dirty dependency graph.
   1. Recompute required asset closure when relevant authored/render components change.
@@ -233,8 +233,8 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   A dynamic shader pipeline is directionally correct for this project, but the current runtime still pays for transitional complexity. That matters because the renderer already has too much frame-sensitive work around it.
 - Evidence:
-  - `bins/sidereal-client/src/native/scene_world.rs:55-61`
-  - `bins/sidereal-client/src/native/mod.rs:333-340`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:55-61`
+  - `bins/sidereal-client/src/runtime/mod.rs:333-340`
   - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 - Recommendation:
   Keep the authored render-layer direction, but simplify runtime hot paths:
@@ -287,10 +287,10 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
   6. duplicate render winner suppression.
   These are pragmatic safeguards, but together they mean the display path is still compensating for a noisy replication lifecycle.
 - Evidence:
-  - `bins/sidereal-client/src/native/plugins.rs:139-157`
-  - `bins/sidereal-client/src/native/transforms.rs:1-146`
-  - `bins/sidereal-client/src/native/replication.rs:44-120`
-  - `bins/sidereal-client/src/native/replication.rs:550-585`
+  - `bins/sidereal-client/src/runtime/plugins.rs:139-157`
+  - `bins/sidereal-client/src/runtime/transforms.rs:1-146`
+  - `bins/sidereal-client/src/runtime/replication.rs:44-120`
+  - `bins/sidereal-client/src/runtime/replication.rs:550-585`
 - Recommendation:
   Treat these as transition scaffolding. Reduce the number of emergency repair systems by tightening the adoption contract and ensuring spatially renderable entities arrive with a sufficient baseline component set.
 - Expected payoff:
@@ -307,8 +307,8 @@ The codebase does not read like a pure GPU-bound 2D renderer. It reads like a cl
 - Why it matters:
   The client now enables Lightyear frame interpolation and attaches `FrameInterpolate<Transform>` when replicated entities have spatial motion state.
 - Evidence:
-  - `bins/sidereal-client/src/native/mod.rs:128-140`
-  - `bins/sidereal-client/src/native/replication.rs:559-563`
+  - `bins/sidereal-client/src/runtime/mod.rs:128-140`
+  - `bins/sidereal-client/src/runtime/replication.rs:559-563`
 - Recommendation:
   Keep this. Do not regress back to fixed-tick render stepping.
 - Expected payoff:
@@ -519,28 +519,28 @@ Recommended tools:
 
 ### 14.1 Client runtime pieces most relevant to rendering
 
-- `bins/sidereal-client/src/native/plugins.rs`
+- `bins/sidereal-client/src/runtime/plugins.rs`
   Status: active runtime
   Responsibility: schedules replication adoption, visuals, lighting, UI, and backdrop systems.
-- `bins/sidereal-client/src/native/backdrop.rs`
+- `bins/sidereal-client/src/runtime/backdrop.rs`
   Status: active runtime
   Responsibility: fullscreen layers, post-process renderables, fullscreen materials, backdrop camera sync.
-- `bins/sidereal-client/src/native/visuals.rs`
+- `bins/sidereal-client/src/runtime/visuals.rs`
   Status: active runtime
   Responsibility: streamed visuals, planet passes, thrusters, tracers, duplicate suppression.
-- `bins/sidereal-client/src/native/render_layers.rs`
+- `bins/sidereal-client/src/runtime/render_layers.rs`
   Status: active runtime
   Responsibility: runtime render-layer registry compilation and per-entity assignment.
-- `bins/sidereal-client/src/native/assets.rs`
+- `bins/sidereal-client/src/runtime/assets.rs`
   Status: active runtime
   Responsibility: runtime asset dependency scanning and HTTP fetch queueing.
-- `bins/sidereal-client/src/native/scene_world.rs`
+- `bins/sidereal-client/src/runtime/scene_world.rs`
   Status: active runtime
   Responsibility: in-world cameras and baseline scene entities.
-- `bins/sidereal-client/src/native/camera.rs`
+- `bins/sidereal-client/src/runtime/camera.rs`
   Status: active runtime
   Responsibility: gameplay camera follow, zoom, overlay camera sync.
-- `bins/sidereal-client/src/native/transforms.rs`
+- `bins/sidereal-client/src/runtime/transforms.rs`
   Status: transitional/migration code
   Responsibility: transform fallback/bootstrap for replicated entities.
 

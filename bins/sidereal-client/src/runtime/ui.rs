@@ -27,14 +27,16 @@ use super::assets::{LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetN
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
     ControlledEntity, DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText,
-    DebugOverlayPanelRoot, DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText,
-    EntityNameplateHealthBar, EntityNameplateRoot, GameplayCamera, GameplayHud, HudFuelBarFill,
-    HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
-    LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
-    OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind,
-    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, SuppressedPredictedDuplicateVisual,
-    TacticalMapCursorText, TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle,
-    UiOverlayCamera, UiOverlayLayer, WorldEntity,
+    DebugOverlayPanelRoot, DebugOverlayPanelSecondaryLabelShadowText,
+    DebugOverlayPanelSecondaryLabelText, DebugOverlayPanelSecondaryValueShadowText,
+    DebugOverlayPanelSecondaryValueText, DebugOverlayPanelValueShadowText,
+    DebugOverlayPanelValueText, EntityNameplateHealthBar, EntityNameplateRoot, GameplayCamera,
+    GameplayHud, HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText,
+    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction,
+    OwnedEntitiesPanelButton, OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass,
+    RuntimeScreenOverlayPassKind, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
+    SuppressedPredictedDuplicateVisual, TacticalMapCursorText, TacticalMapMarkerDynamic,
+    TacticalMapOverlayRoot, TacticalMapTitle, UiOverlayCamera, UiOverlayLayer, WorldEntity,
 };
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::ecs_util::queue_despawn_if_exists;
@@ -94,15 +96,82 @@ pub(super) struct DebugOverlayTextUiQueries<'w, 's> {
             Without<DebugOverlayPanelValueText>,
         ),
     >,
+    secondary_label_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<DebugOverlayPanelSecondaryLabelText>,
+            Without<DebugOverlayPanelSecondaryLabelShadowText>,
+            Without<DebugOverlayPanelSecondaryValueText>,
+            Without<DebugOverlayPanelSecondaryValueShadowText>,
+        ),
+    >,
+    secondary_label_shadow_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<DebugOverlayPanelSecondaryLabelShadowText>,
+            Without<DebugOverlayPanelSecondaryLabelText>,
+            Without<DebugOverlayPanelSecondaryValueText>,
+            Without<DebugOverlayPanelSecondaryValueShadowText>,
+        ),
+    >,
+    secondary_value_text: Query<
+        'w,
+        's,
+        (&'static mut Text, &'static mut TextColor),
+        (
+            With<DebugOverlayPanelSecondaryValueText>,
+            Without<DebugOverlayPanelSecondaryLabelText>,
+            Without<DebugOverlayPanelSecondaryLabelShadowText>,
+            Without<DebugOverlayPanelSecondaryValueShadowText>,
+        ),
+    >,
+    secondary_value_shadow_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<DebugOverlayPanelSecondaryValueShadowText>,
+            Without<DebugOverlayPanelSecondaryLabelText>,
+            Without<DebugOverlayPanelSecondaryLabelShadowText>,
+            Without<DebugOverlayPanelSecondaryValueText>,
+        ),
+    >,
 }
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
 const TACTICAL_ICON_WORLD_HEIGHT_M: f32 = 24.0;
 const TACTICAL_CONTACT_SMOOTHING_RATE: f32 = 8.0;
 const TACTICAL_CONTACT_PREDICTION_HORIZON_S: f32 = 0.25;
+const DEBUG_OVERLAY_TEXT_COLUMN_COUNT: usize = 2;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DebugOverlayTextColumn {
+    labels: Vec<String>,
+    values: Vec<String>,
+}
 
 fn elapsed_ms(started_at: Instant) -> f64 {
     started_at.elapsed().as_secs_f64() * 1000.0
+}
+
+fn split_debug_overlay_text_columns(
+    row_pairs: &[(String, String)],
+) -> [DebugOverlayTextColumn; DEBUG_OVERLAY_TEXT_COLUMN_COUNT] {
+    let rows_per_column = row_pairs
+        .len()
+        .div_ceil(DEBUG_OVERLAY_TEXT_COLUMN_COUNT)
+        .max(1);
+    let mut columns = std::array::from_fn(|_| DebugOverlayTextColumn::default());
+    for (index, (label, value)) in row_pairs.iter().enumerate() {
+        let column_index = (index / rows_per_column).min(DEBUG_OVERLAY_TEXT_COLUMN_COUNT - 1);
+        columns[column_index].labels.push(label.clone());
+        columns[column_index].values.push(value.clone());
+    }
+    columns
 }
 
 /// Propagates the UI overlay render layer to all descendants of HUD roots so they are drawn
@@ -243,32 +312,33 @@ pub(super) fn update_debug_overlay_text_ui_system(
         display_metrics.initialized = true;
     }
 
-    let mut labels = Vec::with_capacity(snapshot.text_rows.len() + 2);
-    let mut values = Vec::with_capacity(snapshot.text_rows.len() + 2);
-    labels.push("FPS".to_string());
-    values.push(
+    let mut row_pairs = Vec::with_capacity(snapshot.text_rows.len() + 3);
+    row_pairs.push((
+        "FPS".to_string(),
         display_metrics
             .sampled_fps
             .map(|value| format!("{value:.0}"))
             .unwrap_or_else(|| "--".to_string()),
-    );
-    labels.push("Frame Time".to_string());
-    values.push(
+    ));
+    row_pairs.push((
+        "Frame Time".to_string(),
         display_metrics
             .sampled_frame_ms
             .map(|value| format!("{value:.2} ms"))
             .unwrap_or_else(|| "--.-- ms".to_string()),
-    );
-    labels.push("Sent Input".to_string());
-    values.push(format_sent_input_actions(
-        &input_send_state.last_sent_actions,
+    ));
+    row_pairs.push((
+        "Sent Input".to_string(),
+        format_sent_input_actions(&input_send_state.last_sent_actions),
     ));
     for row in &snapshot.text_rows {
-        labels.push(row.label.clone());
-        values.push(row.value.clone());
+        row_pairs.push((row.label.clone(), row.value.clone()));
     }
-    let labels_text = labels.join("\n");
-    let values_text = values.join("\n");
+    let columns = split_debug_overlay_text_columns(&row_pairs);
+    let primary_labels_text = columns[0].labels.join("\n");
+    let primary_values_text = columns[0].values.join("\n");
+    let secondary_labels_text = columns[1].labels.join("\n");
+    let secondary_values_text = columns[1].values.join("\n");
 
     let highest_severity = snapshot
         .text_rows
@@ -282,13 +352,13 @@ pub(super) fn update_debug_overlay_text_ui_system(
         .unwrap_or(DebugSeverity::Normal);
 
     if let Ok(mut label_text) = ui_queries.label_text.single_mut() {
-        label_text.0 = labels_text.clone();
+        label_text.0 = primary_labels_text.clone();
     }
     if let Ok(mut label_shadow_text) = ui_queries.label_shadow_text.single_mut() {
-        label_shadow_text.0 = labels_text;
+        label_shadow_text.0 = primary_labels_text.clone();
     }
     if let Ok((mut value_text, mut value_text_color)) = ui_queries.value_text.single_mut() {
-        value_text.0 = values_text.clone();
+        value_text.0 = primary_values_text.clone();
         value_text_color.0 = match highest_severity {
             DebugSeverity::Normal => Color::srgb(0.85, 0.92, 1.0),
             DebugSeverity::Warn => Color::srgb(1.0, 0.85, 0.45),
@@ -296,7 +366,28 @@ pub(super) fn update_debug_overlay_text_ui_system(
         };
     }
     if let Ok(mut value_shadow_text) = ui_queries.value_shadow_text.single_mut() {
-        value_shadow_text.0 = values_text;
+        value_shadow_text.0 = primary_values_text;
+    }
+    if let Ok(mut secondary_label_text) = ui_queries.secondary_label_text.single_mut() {
+        secondary_label_text.0 = secondary_labels_text.clone();
+    }
+    if let Ok(mut secondary_label_shadow_text) = ui_queries.secondary_label_shadow_text.single_mut()
+    {
+        secondary_label_shadow_text.0 = secondary_labels_text;
+    }
+    if let Ok((mut secondary_value_text, mut secondary_value_text_color)) =
+        ui_queries.secondary_value_text.single_mut()
+    {
+        secondary_value_text.0 = secondary_values_text.clone();
+        secondary_value_text_color.0 = match highest_severity {
+            DebugSeverity::Normal => Color::srgb(0.85, 0.92, 1.0),
+            DebugSeverity::Warn => Color::srgb(1.0, 0.85, 0.45),
+            DebugSeverity::Error => Color::srgb(1.0, 0.55, 0.5),
+        };
+    }
+    if let Ok(mut secondary_value_shadow_text) = ui_queries.secondary_value_shadow_text.single_mut()
+    {
+        secondary_value_shadow_text.0 = secondary_values_text;
     }
 }
 
@@ -1822,8 +1913,7 @@ pub(super) fn sync_entity_nameplates_system(
     for (nameplate_entity, root) in &existing {
         if !winner_entities.contains(&root.target) {
             queue_despawn_if_exists(&mut commands, nameplate_entity);
-            hud_perf.nameplate_despawned_last =
-                hud_perf.nameplate_despawned_last.saturating_add(1);
+            hud_perf.nameplate_despawned_last = hud_perf.nameplate_despawned_last.saturating_add(1);
         }
     }
     hud_perf.nameplate_targets_last = winner_entities.len();
@@ -1988,9 +2078,9 @@ pub(super) fn update_entity_nameplate_positions_system(
 
 #[cfg(test)]
 mod tests {
-    use super::propagate_ui_overlay_layer_system;
-    use crate::native::components::UiOverlayLayer;
-    use crate::native::platform::UI_OVERLAY_RENDER_LAYER;
+    use super::{propagate_ui_overlay_layer_system, split_debug_overlay_text_columns};
+    use crate::runtime::components::UiOverlayLayer;
+    use crate::runtime::platform::UI_OVERLAY_RENDER_LAYER;
     use bevy::camera::visibility::RenderLayers;
     use bevy::prelude::*;
 
@@ -2011,5 +2101,23 @@ mod tests {
             .get::<RenderLayers>()
             .expect("child render layers should be propagated");
         assert!(layers.intersects(&RenderLayers::layer(UI_OVERLAY_RENDER_LAYER)));
+    }
+
+    #[test]
+    fn debug_overlay_text_rows_split_evenly_across_two_columns() {
+        let rows = vec![
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+            ("C".to_string(), "3".to_string()),
+            ("D".to_string(), "4".to_string()),
+            ("E".to_string(), "5".to_string()),
+        ];
+
+        let columns = split_debug_overlay_text_columns(&rows);
+
+        assert_eq!(columns[0].labels, vec!["A", "B", "C"]);
+        assert_eq!(columns[0].values, vec!["1", "2", "3"]);
+        assert_eq!(columns[1].labels, vec!["D", "E"]);
+        assert_eq!(columns[1].values, vec!["4", "5"]);
     }
 }

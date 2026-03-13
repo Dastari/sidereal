@@ -33,8 +33,8 @@ The architecture is still defensible overall in a few places:
   - `AGENTS.md:44`
   - `AGENTS.md:45`
   - `AGENTS.md:58`
-  - `bins/sidereal-client/src/wasm.rs:6`
-  - `bins/sidereal-client/src/wasm.rs:15`
+  - `bins/sidereal-client/src/platform/wasm.rs:6`
+  - `bins/sidereal-client/src/platform/wasm.rs:15`
   - `bins/sidereal-client/Cargo.toml:16`
   - `bins/sidereal-client/Cargo.toml:27`
 - Details:
@@ -52,8 +52,8 @@ The architecture is still defensible overall in a few places:
   - `AGENTS.md:63`
   - `crates/sidereal-core/src/remote_inspect.rs:53`
   - `crates/sidereal-core/src/remote_inspect.rs:54`
-  - `bins/sidereal-client/src/native/remote.rs:15`
-  - `bins/sidereal-client/src/native/remote.rs:21`
+  - `bins/sidereal-client/src/platform/native/remote.rs:15`
+  - `bins/sidereal-client/src/platform/native/remote.rs:21`
   - `bins/sidereal-replication/src/replication/lifecycle.rs:67`
   - `bins/sidereal-replication/src/replication/lifecycle.rs:72`
 - Details:
@@ -93,11 +93,11 @@ The architecture is still defensible overall in a few places:
 - Evidence:
   - `docs/features/asset_delivery_contract.md:156`
   - `docs/features/asset_delivery_contract.md:165`
-  - `bins/sidereal-client/src/native/bootstrap.rs:91`
-  - `bins/sidereal-client/src/native/bootstrap.rs:95`
-  - `bins/sidereal-client/src/native/bootstrap.rs:189`
-  - `bins/sidereal-client/src/native/bootstrap.rs:191`
-  - `bins/sidereal-client/src/native/replication.rs:258`
+  - `bins/sidereal-client/src/runtime/bootstrap.rs:91`
+  - `bins/sidereal-client/src/runtime/bootstrap.rs:95`
+  - `bins/sidereal-client/src/runtime/bootstrap.rs:189`
+  - `bins/sidereal-client/src/runtime/bootstrap.rs:191`
+  - `bins/sidereal-client/src/runtime/replication.rs:258`
 - Details:
   `transition_asset_loading_to_in_world` trusts `AssetBootstrapRequestState.completed`, but the watchdog mutates `LocalAssetManager.bootstrap_phase_complete` to force forward progress. The user-facing dialogs acknowledge degraded mode, but the contract does not.
 - Recommendation:
@@ -132,15 +132,15 @@ The architecture is still defensible overall in a few places:
   The long-term direction is a generic runtime with content authored in Lua. The client still hardcodes space-specific shader IDs, fullscreen shader routing, asteroid generator IDs, and default ship icon fallbacks.
 - Evidence:
   - `AGENTS.md:61`
-  - `bins/sidereal-client/src/native/shaders.rs:8`
-  - `bins/sidereal-client/src/native/shaders.rs:38`
-  - `bins/sidereal-client/src/native/backdrop.rs:211`
-  - `bins/sidereal-client/src/native/backdrop.rs:232`
-  - `bins/sidereal-client/src/native/backdrop.rs:253`
-  - `bins/sidereal-client/src/native/visuals.rs:62`
-  - `bins/sidereal-client/src/native/visuals.rs:415`
-  - `bins/sidereal-client/src/native/tactical.rs:292`
-  - `bins/sidereal-client/src/native/ui.rs:483`
+  - `bins/sidereal-client/src/runtime/shaders.rs:8`
+  - `bins/sidereal-client/src/runtime/shaders.rs:38`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:211`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:232`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:253`
+  - `bins/sidereal-client/src/runtime/visuals.rs:62`
+  - `bins/sidereal-client/src/runtime/visuals.rs:415`
+  - `bins/sidereal-client/src/runtime/tactical.rs:292`
+  - `bins/sidereal-client/src/runtime/ui.rs:483`
 - Details:
   Some of this is clearly migration code, but it is still on active paths. The current client knows concrete asset IDs like `asteroid_wgsl`, `asteroid_texture_red_png`, `starfield_wgsl`, `space_background_wgsl`, and `map_icon_ship_svg`.
 - Recommendation:
@@ -157,10 +157,10 @@ The architecture is still defensible overall in a few places:
   The repo contract explicitly says large runtime refactors must split mixed concerns into domain modules. Several files are already large enough that review, ownership, and regression isolation are poor.
 - Evidence:
   - `AGENTS.md:56`
-  - `bins/sidereal-client/src/native/visuals.rs` (~1742 lines)
-  - `bins/sidereal-client/src/native/backdrop.rs` (~1391 lines)
-  - `bins/sidereal-client/src/native/ui.rs` (~1663 lines)
-  - `bins/sidereal-client/src/native/auth_net.rs` (~948 lines)
+  - `bins/sidereal-client/src/runtime/visuals.rs` (~1742 lines)
+  - `bins/sidereal-client/src/runtime/backdrop.rs` (~1391 lines)
+  - `bins/sidereal-client/src/runtime/ui.rs` (~1663 lines)
+  - `bins/sidereal-client/src/runtime/auth_net.rs` (~948 lines)
   - `bins/sidereal-replication/src/replication/scripting.rs` (~1854 lines)
   - `bins/sidereal-replication/src/replication/visibility.rs` (~1350 lines)
   - `crates/sidereal-persistence/src/lib.rs` (~1388 lines)
@@ -182,11 +182,11 @@ The architecture is still defensible overall in a few places:
 - Why it matters:
   The current shader path undermines the "Lua-authored/generated catalog" direction. It also creates two parallel runtime sources of truth: streamed shader content and compiled-in `include_str!` WGSL.
 - Evidence:
-  - `bins/sidereal-client/src/native/shaders.rs:38`
-  - `bins/sidereal-client/src/native/shaders.rs:108`
-  - `bins/sidereal-client/src/native/shaders.rs:129`
-  - `bins/sidereal-client/src/native/shaders.rs:150`
-  - `bins/sidereal-client/src/native/shaders.rs:171`
+  - `bins/sidereal-client/src/runtime/shaders.rs:38`
+  - `bins/sidereal-client/src/runtime/shaders.rs:108`
+  - `bins/sidereal-client/src/runtime/shaders.rs:129`
+  - `bins/sidereal-client/src/runtime/shaders.rs:150`
+  - `bins/sidereal-client/src/runtime/shaders.rs:171`
 - Details:
   Some fallback is reasonable, but the current implementation is still oriented around a fixed list of material roles known to Rust. That is defensible only as a short-lived migration layer. The codebase no longer treats it as obviously temporary.
 - Recommendation:
@@ -264,8 +264,8 @@ The architecture is still defensible overall in a few places:
   - `AGENTS.md:62`
   - `crates/sidereal-asset-runtime/src/lib.rs:48`
   - `crates/sidereal-asset-runtime/src/lib.rs:49`
-  - `bins/sidereal-client/src/native/auth_net.rs:353`
-  - `bins/sidereal-client/src/native/assets.rs:107`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:353`
+  - `bins/sidereal-client/src/runtime/assets.rs:107`
 - Details:
   This is another direct code/doc divergence. The current implementation is simpler and acceptable as a temporary dev cache, but it is not the documented cache model.
 - Recommendation:
@@ -280,10 +280,10 @@ The architecture is still defensible overall in a few places:
 - Why it matters:
   The client spins ad hoc OS threads for auth requests, enter-world, bootstrap asset download, and runtime asset fetches. That is workable for native prototypes, but it duplicates state-machine logic, does not map cleanly to WASM, and sidesteps Bevy task/runtime patterns.
 - Evidence:
-  - `bins/sidereal-client/src/native/auth_net.rs:145`
-  - `bins/sidereal-client/src/native/auth_net.rs:313`
-  - `bins/sidereal-client/src/native/auth_net.rs:376`
-  - `bins/sidereal-client/src/native/assets.rs:293`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:145`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:313`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:376`
+  - `bins/sidereal-client/src/runtime/assets.rs:293`
 - Details:
   This is directly proven for the native path. The broader claim that it blocks clean WASM parity is partly inference, but it is a strong inference given the separate WASM scaffold and `reqwest::blocking` native-only dependency layout.
 - Recommendation:
@@ -298,10 +298,10 @@ The architecture is still defensible overall in a few places:
 - Why it matters:
   The codebase still contains temporary comments and placeholder semantics in live modules, which is fine for short migrations but should not become permanent architecture.
 - Evidence:
-  - `bins/sidereal-client/src/native/visuals.rs:151`
-  - `bins/sidereal-client/src/native/pause_menu.rs:1`
+  - `bins/sidereal-client/src/runtime/visuals.rs:151`
+  - `bins/sidereal-client/src/runtime/pause_menu.rs:1`
   - `bins/sidereal-replication/src/replication/assets.rs:1`
-  - `bins/sidereal-client/src/wasm.rs:16`
+  - `bins/sidereal-client/src/platform/wasm.rs:16`
 - Details:
   None of these are individually severe, but together they indicate transitional code sticking around longer than intended.
 - Recommendation:
@@ -362,8 +362,8 @@ Operational loop:
 
 Native path, directly observed:
 
-1. `bins/sidereal-client/src/main.rs` dispatches to `native::run()`.
-2. `native::run()` builds either:
+1. `bins/sidereal-client/src/main.rs` dispatches to `platform::native::run()`.
+2. `platform::native::run()` builds either:
    - a headless minimal app, or
    - a full Bevy app with window/render/material/audio/UI plugins.
 3. Adds Avian physics, `SiderealGameCorePlugin`, Lightyear client plugins, Lightyear Avian plugin, protocol registration, remote-inspect config, fixed time, and a large set of client resources.
@@ -379,7 +379,7 @@ Native operational loop:
 
 WASM path, directly observed:
 
-1. `bins/sidereal-client/src/wasm.rs` only boots Bevy render plugins and logs a scaffold message.
+1. `bins/sidereal-client/src/platform/wasm.rs` only boots Bevy render plugins and logs a scaffold message.
 2. No auth, no transport, no asset state machine, no gameplay runtime, no UI state machine.
 
 ### Data / authority / persistence / replication / asset delivery / scripting / rendering flow
@@ -679,7 +679,7 @@ This appendix is intentionally responsibility-focused. It catalogs the active wo
 
 ### 13.7 Tooling, tests, and transitional pieces worth calling out
 
-- `bins/sidereal-client/src/wasm.rs`
+- `bins/sidereal-client/src/platform/wasm.rs`
   Responsibility: current wasm scaffold entry only.
   Classification: scaffold/placeholder.
 
@@ -687,7 +687,7 @@ This appendix is intentionally responsibility-focused. It catalogs the active wo
   Responsibility: no-op replication asset init hook left in place for wiring stability.
   Classification: transitional/migration code.
 
-- `bins/sidereal-client/src/native/dev_console.rs`
+- `bins/sidereal-client/src/runtime/dev_console.rs`
   Responsibility: desktop/client diagnostics and logging support.
   Classification: tooling-oriented active runtime support, partly native-specific.
 

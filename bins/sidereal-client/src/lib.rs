@@ -1,22 +1,21 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod client_core;
-mod native;
-#[cfg(target_arch = "wasm32")]
-mod wasm;
+mod platform;
+mod runtime;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_native() {
-    native::run();
+    platform::native::run();
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn run_wasm() {
-    wasm::run();
+    platform::wasm::run();
 }
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn boot_sidereal_client() {
-    wasm::run();
+    platform::wasm::run();
 }

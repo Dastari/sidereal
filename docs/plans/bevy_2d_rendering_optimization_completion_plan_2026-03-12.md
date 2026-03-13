@@ -39,6 +39,42 @@ Update note (2026-03-13):
 - Phase 1 is in active implementation, not just planned. The visibility apply path now has a unified visibility evaluator, per-entity policy preparation, and owner/map client lookup buckets.
 - The immediate next work remains inside Phase 1: split the remaining conditional entities into narrower public/faction/discovered/range buckets, then capture fresh `apply_ms` measurements before moving to Phase 2.
 
+Update note (2026-03-13, later):
+- Phase 1 conditional apply-path splitting is now implemented in `bins/sidereal-replication/src/replication/visibility.rs`.
+- Prepared entity apply policy now routes conditional entities through narrower public-visible, faction-visible, discovered-landmark, and ordinary range-checked paths instead of a single generic per-client branch.
+- The hot apply loop still preserves explicit `Authorization -> Delivery -> Payload` ordering, continues to reuse prepared entity facts plus owner/map client lookup buckets, and now avoids repeated faction/discovery/range branching for policy classes that do not need it.
+- Visibility inline tests were tightened to lock the new prepared subpaths to current public/faction/discovered/range semantics.
+- The next Phase 1 work is measurement, not more structural refactoring: capture fresh `apply_ms`/`discovery_and_candidate_ms`/candidate and gain-loss baselines and decide whether Phase 1 is complete enough to move to Phase 2.
+
+Update note (2026-03-13, later 2):
+- The native client debug overlay text panel has been split into two columns and switched to the same font handle used by the in-world dev console while preserving the existing 15px text size.
+- This is a Phase 0 instrumentation usability follow-up so the expanded asset/HUD/render counters remain readable on the default native window size during baseline capture.
+- WASM impact: no behavior divergence intended. The change stays inside shared Bevy UI layout/text code and compiled successfully for the `wasm32-unknown-unknown` client target with `bevy/webgpu`.
+
+Update note (2026-03-13, later 3):
+- Phase 1 is treated as qualitatively complete enough to move forward even though fresh baseline capture was deferred: representative native validation on this branch indicated a significant visible improvement in both server and client performance after the visibility apply-path changes.
+- This is not a quantitative closeout. The Phase 0 and Phase 1 measurement items remain open and should still be captured later so the optimization pass retains before/after evidence.
+- Phase 2 is now in progress in `bins/sidereal-client/src/runtime/assets.rs`.
+- Runtime optional-asset completion no longer uses `bevy::tasks::block_on(...)` in the steady-state frame loop; fetch, persist, and index-save completions are now drained through non-blocking async completion channels.
+- Cache-index saves now wait until the current fetch/persist wave drains, which avoids starting a new save for every completed runtime asset.
+- Runtime asset fetch selection now uses explicit deterministic priority buckets: shader/material-critical assets first, root visual assets second, immediate render dependencies third, and lower-value optional art later, while preserving dependency-before-parent correctness.
+- Native impact: this should further reduce frame hitching when runtime assets complete and make scene-critical visuals become ready in a more intentional order.
+- WASM impact: no intended divergence. The implementation stays inside shared client asset/runtime code and must continue compiling for `wasm32-unknown-unknown` with `bevy/webgpu`.
+
+Update note (2026-03-13, later 4):
+- Phase 2 test coverage has been extended.
+- `bins/sidereal-client/src/runtime/assets.rs` now has targeted coverage that the runtime queue path does not enqueue duplicate fetches for the same in-flight asset.
+- `bins/sidereal-client/src/runtime/auth_net.rs` now has targeted coverage that bootstrap failure leaves the client in a fail-closed state (`failed = true`, bootstrap incomplete, user-visible failure status) instead of silently proceeding.
+- This keeps the current asset-delivery optimization aligned with the plan requirement to preserve bootstrap failure behavior and avoid duplicate concurrent fetches while Phase 2 continues.
+
+Update note (2026-03-13, later 5):
+- Phase 2 items 1 and 2 are now materially complete across both the runtime asset path and the bootstrap/auth asset path.
+- `bins/sidereal-client/src/runtime/auth_net.rs` no longer uses `bevy::tasks::block_on(future::poll_once(...))` in frame-driven gateway/bootstrap polling; those paths now mirror the runtime asset queue model by receiving async completion results through non-blocking channels.
+- This closes the remaining frame-thread wait that was still present after the earlier `runtime/assets.rs` completion-path refactor.
+- `bins/sidereal-client/src/runtime/assets.rs` now has tighter dependency-ordering coverage for multi-hop dependency chains: the runtime fetch selector prefers the deepest unresolved dependency before its ancestors and advances to the next parent only after that dependency is already in flight.
+- Native impact: bootstrap/catalog polling should no longer stall the frame loop waiting on task polling, and deeper streamed-asset trees now have explicit regression coverage for dependency-before-parent fetch ordering.
+- WASM impact: no intended divergence. The change stays inside shared client auth/bootstrap/runtime asset code and compiled successfully for the `wasm32-unknown-unknown` target with `bevy/webgpu`.
+
 ## 1. Purpose
 
 This plan is written for a fresh agent with no prior project context.
@@ -130,10 +166,10 @@ Execute the remaining work in this order unless fresh measurement clearly dispro
 - [x] Phase 1 slice: unified visibility evaluation helper implemented in the replication visibility apply path.
 - [x] Phase 1 slice: per-entity visibility policy preparation implemented for owner-only anchors, global/config entities, and conditional entities.
 - [x] Phase 1 slice: owner and owner-in-map client lookup buckets implemented to short-circuit stable fast paths before generic per-client evaluation.
-- [ ] Phase 1 next: split conditional entities into narrower public-visible, faction-visible, discovered-landmark, and ordinary range-checked paths.
+- [x] Phase 1 next: split conditional entities into narrower public-visible, faction-visible, discovered-landmark, and ordinary range-checked paths.
 - [ ] Phase 1 next: capture fresh `apply_ms`/visibility-stage measurements and compare against the pre-optimization baseline.
-- [ ] Phase 1 exit gate: confirm whether visibility apply cost is reduced enough to move to Phase 2.
-- [ ] Phase 2: asset completion hitch removal and priority enforcement has not started yet.
+- [x] Phase 1 exit gate: qualitative native validation indicates visibility apply cost is reduced enough to move to Phase 2, even though the quantitative measurement follow-up is still deferred.
+- [x] Phase 2: asset completion hitch removal and priority enforcement is now in progress in `bins/sidereal-client/src/runtime/assets.rs`.
 - [ ] Phase 3: steady-state client polling removal has not started yet.
 - [ ] Phase 4: tactical/nameplate/HUD cost reduction beyond instrumentation has not started yet.
 - [ ] Phase 5: duplicate-presentation/debug cleanup follow-up has not started yet.
@@ -156,11 +192,11 @@ Why this phase still exists:
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/resources.rs`
-2. `bins/sidereal-client/src/native/debug_overlay.rs`
-3. `bins/sidereal-client/src/native/plugins.rs`
-4. `bins/sidereal-client/src/native/assets.rs`
-5. `bins/sidereal-client/src/native/ui.rs`
+1. `bins/sidereal-client/src/runtime/resources.rs`
+2. `bins/sidereal-client/src/runtime/debug_overlay.rs`
+3. `bins/sidereal-client/src/runtime/plugins.rs`
+4. `bins/sidereal-client/src/runtime/assets.rs`
+5. `bins/sidereal-client/src/runtime/ui.rs`
 6. `bins/sidereal-replication/src/replication/visibility.rs`
 
 Work:
@@ -194,12 +230,13 @@ Acceptance criteria:
 ## 8. Phase 1: Finish Visibility Cadence Optimization
 
 Status (2026-03-13):
-- In progress.
+- Implemented enough to move on, with measurement follow-up still pending.
 - Three implementation slices are already landed:
   1. unified authorization/candidate-bypass/delivery evaluation,
   2. per-entity policy preparation before the client loop,
   3. client lookup buckets for owner-only and owner-in-map fast paths.
-- The next work is still inside this phase; do not move to Phase 2 yet.
+- A fourth slice is also landed: conditional entities are split into public-visible, faction-visible, discovered-landmark, and ordinary range-checked prepared apply paths.
+- Representative native validation after these changes indicated a significant server/client improvement, so Phase 2 can start even though the quantitative baseline capture was deferred.
 
 Goal:
 Reduce the remaining cost inside the final visibility membership/apply lane without changing visibility semantics.
@@ -244,12 +281,12 @@ Do not do in this phase:
 
 Immediate next tasks (do these in order):
 
-- [ ] Split `PreparedEntityApplyPolicy::Conditional` into narrower subpaths so public-visible, faction-visible, discovered-landmark, and ordinary range-checked entities do not all pay the same generic client-evaluation shape.
-- [ ] Keep authorization ordering explicit: `Authorization -> Delivery -> Payload` must still be obvious in the code after the split.
-- [ ] Reuse the existing prepared entity facts and client lookup buckets; do not reintroduce root/public/faction/landmark derivation inside the inner client loop.
-- [ ] Add or tighten tests for each new conditional subpath so the fast paths are locked to current owner/public/faction/discovered semantics.
+- [x] Split `PreparedEntityApplyPolicy::Conditional` into narrower subpaths so public-visible, faction-visible, discovered-landmark, and ordinary range-checked entities do not all pay the same generic client-evaluation shape.
+- [x] Keep authorization ordering explicit: `Authorization -> Delivery -> Payload` must still be obvious in the code after the split.
+- [x] Reuse the existing prepared entity facts and client lookup buckets; do not reintroduce root/public/faction/landmark derivation inside the inner client loop.
+- [x] Add or tighten tests for each new conditional subpath so the fast paths are locked to current owner/public/faction/discovered semantics.
 - [ ] Capture native or representative runtime measurements for `apply_ms`, `discovery_and_candidate_ms`, `candidates_per_client`, `visible_gains`, and `visible_losses`.
-- [ ] Add a dated status note to this plan with the measurement result and a clear Phase 1 go/no-go decision for moving to Phase 2.
+- [x] Add a dated status note to this plan with a clear Phase 1 go decision for moving to Phase 2. Quantitative measurement remains deferred and is still tracked separately above.
 
 Acceptance criteria:
 
@@ -258,6 +295,13 @@ Acceptance criteria:
 3. No visibility-contract regression is introduced.
 
 ## 9. Phase 2: Finish Asset Delivery Optimization
+
+Status (2026-03-13):
+- In progress.
+- The first active slice is landed in `bins/sidereal-client/src/runtime/assets.rs`.
+- Steady-state runtime asset completion no longer relies on `bevy::tasks::block_on(...)` inside the frame loop.
+- Cache-index save starts are deferred until the current fetch/persist wave drains.
+- Runtime fetch selection now has explicit deterministic priority buckets for critical shader/material assets, root visuals, immediate render dependencies, and lower-value optional art.
 
 Goal:
 Keep the new parallel fetch behavior, then remove main-thread completion hitches and make priority rules explicit.
@@ -270,10 +314,10 @@ Why this is second:
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/auth_net.rs`
-2. `bins/sidereal-client/src/native/assets.rs`
-3. `bins/sidereal-client/src/native/resources.rs`
-4. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/auth_net.rs`
+2. `bins/sidereal-client/src/runtime/assets.rs`
+3. `bins/sidereal-client/src/runtime/resources.rs`
+4. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Work:
 
@@ -319,11 +363,11 @@ Why this is third:
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/shaders.rs`
-2. `bins/sidereal-client/src/native/render_layers.rs`
-3. `bins/sidereal-client/src/native/assets.rs`
-4. `bins/sidereal-client/src/native/resources.rs`
-5. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/shaders.rs`
+2. `bins/sidereal-client/src/runtime/render_layers.rs`
+3. `bins/sidereal-client/src/runtime/assets.rs`
+4. `bins/sidereal-client/src/runtime/resources.rs`
+5. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Work:
 
@@ -364,9 +408,9 @@ Why this is fourth:
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/ui.rs`
-2. `bins/sidereal-client/src/native/resources.rs`
-3. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/ui.rs`
+2. `bins/sidereal-client/src/runtime/resources.rs`
+3. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Work:
 
@@ -412,13 +456,13 @@ Why this is fifth:
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/visuals.rs`
-2. `bins/sidereal-client/src/native/replication.rs`
-3. `bins/sidereal-client/src/native/debug_overlay.rs`
-4. `bins/sidereal-client/src/native/ui.rs`
-5. `bins/sidereal-client/src/native/scene_world.rs`
-6. `bins/sidereal-client/src/native/plugins.rs`
-7. `bins/sidereal-client/src/native/resources.rs`
+1. `bins/sidereal-client/src/runtime/visuals.rs`
+2. `bins/sidereal-client/src/runtime/replication.rs`
+3. `bins/sidereal-client/src/runtime/debug_overlay.rs`
+4. `bins/sidereal-client/src/runtime/ui.rs`
+5. `bins/sidereal-client/src/runtime/scene_world.rs`
+6. `bins/sidereal-client/src/runtime/plugins.rs`
+7. `bins/sidereal-client/src/runtime/resources.rs`
 
 Work:
 
@@ -468,9 +512,9 @@ Why this is late:
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/visuals.rs`
-2. `bins/sidereal-client/src/native/backdrop.rs`
-3. `bins/sidereal-client/src/native/resources.rs`
+1. `bins/sidereal-client/src/runtime/visuals.rs`
+2. `bins/sidereal-client/src/runtime/backdrop.rs`
+3. `bins/sidereal-client/src/runtime/resources.rs`
 4. Any tests covering planet/effect/fullscreen visual correctness
 
 Work:
@@ -510,11 +554,11 @@ Why this is last:
 
 Primary files:
 
-1. `bins/sidereal-client/src/native/scene_world.rs`
-2. `bins/sidereal-client/src/native/camera.rs`
-3. `bins/sidereal-client/src/native/plugins.rs`
-4. `bins/sidereal-client/src/native/mod.rs`
-5. `bins/sidereal-client/src/native/debug_overlay.rs`
+1. `bins/sidereal-client/src/runtime/scene_world.rs`
+2. `bins/sidereal-client/src/runtime/camera.rs`
+3. `bins/sidereal-client/src/runtime/plugins.rs`
+4. `bins/sidereal-client/src/runtime/mod.rs`
+5. `bins/sidereal-client/src/runtime/debug_overlay.rs`
 
 Work:
 

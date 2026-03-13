@@ -115,7 +115,7 @@ If an audit finds code that looks more defensive than the book examples, it must
 - Lightyear protocol/channel registration:
   - `crates/sidereal-net/src/lightyear_protocol/registration.rs`
 - client plugins, prediction stack, Avian integration:
-  - `bins/sidereal-client/src/native/mod.rs`
+  - `bins/sidereal-client/src/runtime/mod.rs`
 - server plugins and replication sender:
   - `bins/sidereal-replication/src/main.rs`
   - `bins/sidereal-replication/src/replication/lifecycle.rs`
@@ -125,7 +125,7 @@ If an audit finds code that looks more defensive than the book examples, it must
 - server-side visibility and delivery:
   - `bins/sidereal-replication/src/replication/visibility.rs`
 - client rollback policy/correction tuning:
-  - `bins/sidereal-client/src/native/replication.rs`
+  - `bins/sidereal-client/src/runtime/replication.rs`
 
 ### 2.2 Concrete observations
 
@@ -173,7 +173,7 @@ This is the first thing to fix for "localhost still doesn't feel smooth".
 
 The client suppresses duplicate predicted/interpolated visuals by GUID and scores winners manually:
 
-- `bins/sidereal-client/src/native/visuals.rs`
+- `bins/sidereal-client/src/runtime/visuals.rs`
 
 That is a strong sign the client does not fully trust the displayed entity lifecycle. If render correctness depends on winner-picking between multiple Lightyear copies, the stack is still too fragile.
 
@@ -181,7 +181,7 @@ That is a strong sign the client does not fully trust the displayed entity lifec
 
 The client still carries fallback systems to prevent origin flashes and deal with interpolated entities before history is ready:
 
-- `bins/sidereal-client/src/native/transforms.rs`
+- `bins/sidereal-client/src/runtime/transforms.rs`
 
 This is pragmatic, but it means the interpolation pipeline is still not "clean native Lightyear". It is patched.
 
@@ -195,7 +195,7 @@ The client:
 
 Relevant files:
 
-- `bins/sidereal-client/src/native/camera.rs`
+- `bins/sidereal-client/src/runtime/camera.rs`
 
 This can make netcode feel worse than it is because multiple visual layers are compensating independently.
 
@@ -203,8 +203,8 @@ This can make netcode feel worse than it is because multiple visual layers are c
 
 The replication plugin ordering shows a large amount of client-side adoption and readiness logic before visuals stabilize:
 
-- `bins/sidereal-client/src/native/plugins.rs`
-- `bins/sidereal-client/src/native/replication.rs`
+- `bins/sidereal-client/src/runtime/plugins.rs`
+- `bins/sidereal-client/src/runtime/replication.rs`
 
 That complexity is likely contributing to the "not smooth" feel, especially during control changes and relevance churn.
 
@@ -241,7 +241,7 @@ Relevant files:
 
 - `docs/features/projectile_firing_game_loop.md`
 - `bins/sidereal-replication/src/replication/combat.rs`
-- `bins/sidereal-client/src/native/visuals.rs`
+- `bins/sidereal-client/src/runtime/visuals.rs`
 
 That means `PreSpawned` bullets are not the primary missing optimization for the current gameplay loop.
 
@@ -407,13 +407,13 @@ Those are valid reasons for local divergence, but they should remain explicit an
 ## 10. File References
 
 - [`crates/sidereal-net/src/lightyear_protocol/registration.rs`](/home/toby/dev/sidereal_v3/crates/sidereal-net/src/lightyear_protocol/registration.rs)
-- [`bins/sidereal-client/src/native/mod.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/mod.rs)
-- [`bins/sidereal-client/src/native/plugins.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/plugins.rs)
-- [`bins/sidereal-client/src/native/replication.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/replication.rs)
-- [`bins/sidereal-client/src/native/transforms.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/transforms.rs)
-- [`bins/sidereal-client/src/native/visuals.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/visuals.rs)
-- [`bins/sidereal-client/src/native/camera.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/camera.rs)
-- [`bins/sidereal-client/src/native/input.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/input.rs)
+- [`bins/sidereal-client/src/runtime/mod.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/mod.rs)
+- [`bins/sidereal-client/src/runtime/plugins.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/plugins.rs)
+- [`bins/sidereal-client/src/runtime/replication.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/replication.rs)
+- [`bins/sidereal-client/src/runtime/transforms.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/transforms.rs)
+- [`bins/sidereal-client/src/runtime/visuals.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/visuals.rs)
+- [`bins/sidereal-client/src/runtime/camera.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/camera.rs)
+- [`bins/sidereal-client/src/runtime/input.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/input.rs)
 - [`bins/sidereal-replication/src/replication/lifecycle.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-replication/src/replication/lifecycle.rs)
 - [`bins/sidereal-replication/src/replication/simulation_entities.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-replication/src/replication/simulation_entities.rs)
 - [`bins/sidereal-replication/src/replication/control.rs`](/home/toby/dev/sidereal_v3/bins/sidereal-replication/src/replication/control.rs)

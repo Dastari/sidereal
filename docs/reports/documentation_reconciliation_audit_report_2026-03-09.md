@@ -110,12 +110,12 @@ The top-level design doc is in much better shape than the rest. The biggest clea
 - Severity: High
 - Files:
   - `docs/sidereal_implementation_checklist.md`
-  - `bins/sidereal-client/src/wasm.rs`
+  - `bins/sidereal-client/src/platform/wasm.rs`
 - What is wrong:
   The checklist still contains items such as:
   - "Remove temporary WASM scaffold-only runtime"
   - "Keep old audits historical only under `docs/archive/`"
-  The current WASM entry now boots the shared windowed client app shell (`bins/sidereal-client/src/wasm.rs`), and the repo now uses `docs/reports/`, not `docs/archive/`.
+  The current WASM entry now boots the shared windowed client app shell (`bins/sidereal-client/src/platform/wasm.rs`), and the repo now uses `docs/reports/`, not `docs/archive/`.
 - What should happen:
   rewrite
 - Short rationale:

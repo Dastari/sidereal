@@ -29,8 +29,8 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   - `AGENTS.md:45`
   - `AGENTS.md:46`
   - `AGENTS.md:59`
-  - `bins/sidereal-client/src/wasm.rs:6`
-  - `bins/sidereal-client/src/wasm.rs:15`
+  - `bins/sidereal-client/src/platform/wasm.rs:6`
+  - `bins/sidereal-client/src/platform/wasm.rs:15`
   - `bins/sidereal-client/Cargo.toml:17`
   - `bins/sidereal-client/Cargo.toml:27`
   - `docs/plans/wasm_parity_implementation_plan.md:32`
@@ -55,7 +55,7 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   - `crates/sidereal-asset-runtime/src/lib.rs:48`
   - `crates/sidereal-core/src/gateway_dtos.rs:79`
   - `bins/sidereal-gateway/src/api.rs:286`
-  - `bins/sidereal-client/src/native/auth_net.rs:380`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:380`
 - Details:
   `expand_required_assets()` exists, but I did not find it used in the gateway manifest path or client bootstrap path. `RuntimeAssetCatalogEntry` and `AssetBootstrapManifestEntry` have no dependency field, so the dependency graph is lost before the client can honor it.
 - Recommendation:
@@ -72,12 +72,12 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   - `docs/features/asset_delivery_contract.md:42`
   - `docs/features/asset_delivery_contract.md:95`
   - `data/scripts/assets/registry.lua:87`
-  - `bins/sidereal-client/src/native/shaders.rs:74`
-  - `bins/sidereal-client/src/native/shaders.rs:97`
-  - `bins/sidereal-client/src/native/shaders.rs:177`
-  - `bins/sidereal-client/src/native/backdrop.rs:724`
-  - `bins/sidereal-client/src/native/backdrop.rs:671`
-  - `bins/sidereal-client/src/native/visuals.rs:56`
+  - `bins/sidereal-client/src/runtime/shaders.rs:74`
+  - `bins/sidereal-client/src/runtime/shaders.rs:97`
+  - `bins/sidereal-client/src/runtime/shaders.rs:177`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:724`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:671`
+  - `bins/sidereal-client/src/runtime/visuals.rs:56`
 - Details:
   The registry defines `sprite_pixel_effect_wgsl`, but the runtime shader registry looks for `sprite_pixel_shader_wgsl`. The same file also hardcodes multiple named shaders instead of resolving runtime families from catalog metadata. Backdrop logic still hardcodes flare texture asset IDs.
 - Recommendation:
@@ -111,9 +111,9 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   - `AGENTS.md:57`
   - `bins/sidereal-replication/src/replication/scripting.rs`
   - `bins/sidereal-replication/src/replication/visibility.rs`
-  - `bins/sidereal-client/src/native/visuals.rs`
-  - `bins/sidereal-client/src/native/backdrop.rs`
-  - `bins/sidereal-client/src/native/ui.rs`
+  - `bins/sidereal-client/src/runtime/visuals.rs`
+  - `bins/sidereal-client/src/runtime/backdrop.rs`
+  - `bins/sidereal-client/src/runtime/ui.rs`
   - `crates/sidereal-persistence/src/lib.rs`
 - Details:
   The current hot spots are not just long; they mix domain rules, ECS mutation, protocol translation, cache logic, render routing, and validation in one place.
@@ -132,8 +132,8 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
 - Evidence:
   - `docs/plans/wasm_parity_implementation_plan.md:35`
   - `docs/plans/wasm_parity_implementation_plan.md:40`
-  - `bins/sidereal-client/src/native/auth_net.rs:345`
-  - `bins/sidereal-client/src/native/assets.rs:273`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:345`
+  - `bins/sidereal-client/src/runtime/assets.rs:273`
   - `bins/sidereal-client/Cargo.toml:20`
 - Details:
   This is partly acknowledged in the parity plan, but it remains on active runtime code paths today.
@@ -150,10 +150,10 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   The render-layer direction in the docs is generic family-based runtime shader ownership. The active shader registry still enumerates named content shaders and maps them to runtime kinds manually.
 - Evidence:
   - `docs/features/asset_delivery_contract.md:180`
-  - `bins/sidereal-client/src/native/shaders.rs:74`
-  - `bins/sidereal-client/src/native/shaders.rs:165`
-  - `bins/sidereal-client/src/native/shaders.rs:172`
-  - `bins/sidereal-client/src/native/shaders.rs:183`
+  - `bins/sidereal-client/src/runtime/shaders.rs:74`
+  - `bins/sidereal-client/src/runtime/shaders.rs:165`
+  - `bins/sidereal-client/src/runtime/shaders.rs:172`
+  - `bins/sidereal-client/src/runtime/shaders.rs:183`
 - Details:
   This is currently workable, but it keeps the client coupled to specific content IDs and duplicates authoring knowledge that should live in data.
 - Recommendation:
@@ -167,11 +167,11 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   Backdrop behavior still chooses specific flare texture asset IDs and named shader IDs directly in code. That works against the Lua-authored content direction and makes visual iteration harder.
 - Evidence:
   - `AGENTS.md:62`
-  - `bins/sidereal-client/src/native/backdrop.rs:671`
-  - `bins/sidereal-client/src/native/backdrop.rs:682`
-  - `bins/sidereal-client/src/native/backdrop.rs:704`
-  - `bins/sidereal-client/src/native/backdrop.rs:724`
-  - `bins/sidereal-client/src/native/backdrop.rs:746`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:671`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:682`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:704`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:724`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:746`
 - Recommendation:
   Author backdrop texture/shader bindings in the render-layer/content schema, not in the Rust render system.
 
@@ -186,7 +186,7 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
 - Evidence:
   - `bins/sidereal-replication/src/main.rs:33`
   - `bins/sidereal-replication/src/plugins.rs:44`
-  - `bins/sidereal-client/src/native/mod.rs:159`
+  - `bins/sidereal-client/src/runtime/mod.rs:159`
 - Recommendation:
   Keep the current fixed-step and single-writer motion discipline. Refactor effort is better spent elsewhere first.
 
@@ -217,9 +217,9 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
 - Evidence:
   - `docs/features/scripting_support.md`
   - `data/scripts/assets/registry.lua:56`
-  - `bins/sidereal-client/src/native/shaders.rs:74`
-  - `bins/sidereal-client/src/native/backdrop.rs:671`
-  - `bins/sidereal-client/src/native/visuals.rs:56`
+  - `bins/sidereal-client/src/runtime/shaders.rs:74`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:671`
+  - `bins/sidereal-client/src/runtime/visuals.rs:56`
 - Details:
   This is broader than the single `sprite_pixel_*` mismatch. The runtime still “knows” specific content IDs that should be authored data.
 - Recommendation:
@@ -237,8 +237,8 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   - `AGENTS.md:63`
   - `docs/features/asset_delivery_contract.md:194`
   - `crates/sidereal-asset-runtime/src/lib.rs:208`
-  - `bins/sidereal-client/src/native/auth_net.rs:324`
-  - `bins/sidereal-client/src/native/auth_net.rs:359`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:324`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:359`
 - Recommendation:
   Either finish the documented packed-cache design or explicitly downgrade the docs to describe the current loose-file cache as transitional. Right now the implementation and contract disagree.
 
@@ -269,7 +269,7 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
   Leaving unused contract helpers around makes the code look more complete than it is and hides missing implementation work.
 - Evidence:
   - `crates/sidereal-asset-runtime/src/lib.rs:48`
-  - `bins/sidereal-client/src/native/shaders.rs:233`
+  - `bins/sidereal-client/src/runtime/shaders.rs:233`
 - Details:
   `expand_required_assets()` exists but is not used in the manifest/bootstrap path. Shader direct-path fallback also appears to assume an alternate rooted location that does not line up with the normal streamed cache path.
 - Recommendation:
@@ -304,9 +304,9 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
 
 ### 10.3 Client startup and main loop
 
-1. Native entry (`bins/sidereal-client/src/native/mod.rs`) builds the full Bevy app, physics, Lightyear client plugins, remote inspection config, shared game core, resources, and native plugin stack.
-2. WASM entry (`bins/sidereal-client/src/wasm.rs`) currently does not do that; it boots rendering plus shared game core only.
-3. Native plugin composition from `bins/sidereal-client/src/native/plugins.rs` groups runtime into:
+1. Native entry (`bins/sidereal-client/src/runtime/mod.rs`) builds the full Bevy app, physics, Lightyear client plugins, remote inspection config, shared game core, resources, and native plugin stack.
+2. WASM entry (`bins/sidereal-client/src/platform/wasm.rs`) currently does not do that; it boots rendering plus shared game core only.
+3. Native plugin composition from `bins/sidereal-client/src/runtime/plugins.rs` groups runtime into:
    - bootstrap/state setup
    - transport/auth session flow
    - replication adoption and transform sync
@@ -450,7 +450,7 @@ Those are architecture and correctness problems, not cleanup trivia. If they rem
 
 ### 12.3 Transitional or placeholder items worth calling out
 
-- `bins/sidereal-client/src/wasm.rs`
+- `bins/sidereal-client/src/platform/wasm.rs`
   Responsibility: current browser entrypoint.
   Classification: scaffold/placeholder.
 - `crates/sidereal-asset-runtime`

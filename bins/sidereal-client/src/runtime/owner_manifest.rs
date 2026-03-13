@@ -118,7 +118,7 @@ pub fn receive_owner_asset_manifest_messages(
 #[cfg(test)]
 mod tests {
     use super::{apply_owner_manifest_delta, apply_owner_manifest_snapshot};
-    use crate::native::resources::OwnedAssetManifestCache;
+    use crate::runtime::resources::OwnedAssetManifestCache;
     use sidereal_net::{
         OwnedAssetEntry, ServerOwnerAssetManifestDeltaMessage,
         ServerOwnerAssetManifestSnapshotMessage,

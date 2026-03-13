@@ -1839,10 +1839,10 @@ mod tests {
         BackdropRenderPerfCounters, FullscreenRenderCache, StarfieldMaterial,
         sync_runtime_post_process_renderables_system,
     };
-    use crate::native::assets::LocalAssetManager;
-    use crate::native::components::{ClientSceneEntity, RuntimeFullscreenRenderable};
-    use crate::native::resources::{AssetCacheAdapter, AssetRootPath, CacheFuture};
-    use crate::native::shaders::{
+    use crate::runtime::assets::LocalAssetManager;
+    use crate::runtime::components::{ClientSceneEntity, RuntimeFullscreenRenderable};
+    use crate::runtime::resources::{AssetCacheAdapter, AssetRootPath, CacheFuture};
+    use crate::runtime::shaders::{
         self, RuntimeShaderAssignmentSyncState, RuntimeShaderAssignments,
     };
     use bevy::prelude::*;

@@ -47,14 +47,14 @@ This audit exists because several native-runtime bugs were not "Lightyear is mis
 
 The audit reviewed:
 
-- client plugin scheduling in [plugins.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/plugins.rs)
-- client app wiring in [mod.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/mod.rs)
+- client plugin scheduling in [plugins.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/plugins.rs)
+- client app wiring in [mod.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/mod.rs)
 - client transform/motion/render systems in:
-  - [replication.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/replication.rs)
-  - [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/motion.rs)
-  - [transforms.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/transforms.rs)
-  - [camera.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/camera.rs)
-  - [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/visuals.rs)
+  - [replication.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/replication.rs)
+  - [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/motion.rs)
+  - [transforms.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/transforms.rs)
+  - [camera.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/camera.rs)
+  - [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/visuals.rs)
 - server plugin scheduling in [plugins.rs](/home/toby/dev/sidereal_v3/bins/sidereal-replication/src/plugins.rs) and [main.rs](/home/toby/dev/sidereal_v3/bins/sidereal-replication/src/main.rs)
 - server control/replication/visibility systems in:
   - [control.rs](/home/toby/dev/sidereal_v3/bins/sidereal-replication/src/replication/control.rs)
@@ -69,14 +69,14 @@ The audit reviewed:
 
 These are the only systems that should affect authoritative local controlled motion on the client:
 
-- [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/motion.rs): `apply_predicted_input_to_action_queue`
-- shared gameplay in [mod.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/mod.rs):
+- [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/motion.rs): `apply_predicted_input_to_action_queue`
+- shared gameplay in [mod.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/mod.rs):
   - `process_character_movement_actions`
   - `process_flight_actions`
   - `apply_engine_thrust`
   - `update_ballistic_projectiles`
-- [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/motion.rs): `enforce_controlled_planar_motion`
-- shared gameplay in [mod.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/mod.rs):
+- [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/motion.rs): `enforce_controlled_planar_motion`
+- shared gameplay in [mod.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/mod.rs):
   - `stabilize_idle_motion`
   - `clamp_angular_velocity`
 
@@ -88,28 +88,28 @@ Important invariant:
 
 These systems write `Transform` or follow transforms but are not authoritative motion writers:
 
-- [transforms.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/transforms.rs)
+- [transforms.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/transforms.rs)
   - confirmed-only transform sync
   - interpolated no-history bootstrap
-- [camera.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/camera.rs)
+- [camera.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/camera.rs)
   - gameplay camera transform
   - UI/debug overlay camera transforms
-- [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/visuals.rs)
+- [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/visuals.rs)
   - streamed visual child transforms
   - planet visual pass transforms
   - thruster plume transforms
   - projectile/tracer/impact VFX transforms
-- [ui.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/ui.rs)
+- [ui.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/ui.rs)
   - screen-space overlay transforms only
-- [backdrop.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/backdrop.rs)
+- [backdrop.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/backdrop.rs)
   - fullscreen/background camera-space transforms only
 
 ### 3.3 Control/runtime tag writers
 
 These systems do not own motion directly but decide which entity is allowed to own it:
 
-- [replication.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/replication.rs): `sync_controlled_entity_tags_system`
-- [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/motion.rs): `enforce_motion_ownership_for_world_entities`
+- [replication.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/replication.rs): `sync_controlled_entity_tags_system`
+- [motion.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/motion.rs): `enforce_motion_ownership_for_world_entities`
 
 These are high-risk systems because a wrong decision here produces "feels jerky" symptoms even when the physics/prediction code itself is correct.
 
@@ -172,7 +172,7 @@ Fix:
 
 Relevant code:
 
-- [plugins.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/plugins.rs)
+- [plugins.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/plugins.rs)
 
 Why this was missed by the earlier Lightyear audit:
 
@@ -222,7 +222,7 @@ Severity: medium
 
 Problem:
 
-- [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/visuals.rs): `update_streamed_visual_layer_transforms_system`
+- [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/visuals.rs): `update_streamed_visual_layer_transforms_system`
 - rewrites `StreamedVisualChild` transforms every frame from `camera_motion.world_position_xy` and render-layer parallax
 
 Current status:
@@ -242,7 +242,7 @@ Severity: medium
 
 Problem:
 
-- [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/visuals.rs): `suppress_duplicate_predicted_interpolated_visuals_system`
+- [visuals.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/visuals.rs): `suppress_duplicate_predicted_interpolated_visuals_system`
 - this still decides which clone is visible per GUID
 
 ### 5.6 2026-03-09 update: interpolated observer reveal and transform recovery are intentional Sidereal safeguards
@@ -256,7 +256,7 @@ Problem:
 
 Fix:
 
-- [transforms.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/transforms.rs):
+- [transforms.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/transforms.rs):
   - `reveal_world_entities_when_initial_transform_ready` now allows interpolated entities to reveal from their current sampled pose, not only from history/confirmed state
   - `sync_frame_interpolation_markers_for_world_entities` keeps `FrameInterpolate<Transform>` aligned with late-arriving spatial clones
   - `recover_stalled_interpolated_world_entity_transforms` is a narrow late-frame safeguard that only re-seeds/snap-recovers observer transforms when the Lightyear visual lane is obviously stale or uninitialized
@@ -279,7 +279,7 @@ Problem:
 
 Fix:
 
-- [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/debug_overlay.rs): `draw_debug_overlay_system`
+- [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/debug_overlay.rs): `draw_debug_overlay_system`
 - root winner selection now respects explicit `Visibility::Hidden` but does not use `ViewVisibility` as an eligibility gate
 
 Why this is correct:
@@ -293,7 +293,7 @@ Severity: medium
 
 Problem:
 
-- [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/debug_overlay.rs): `draw_debug_overlay_system`
+- [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/debug_overlay.rs): `draw_debug_overlay_system`
 - the overlay queried all `WorldEntity` roots and drew collision AABBs/outlines from every matching copy
 - in Sidereal, a logical entity can legitimately have:
   - a confirmed replicated root
@@ -329,7 +329,7 @@ Severity: medium
 
 Problem:
 
-- [replication.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/replication.rs): `adopt_native_lightyear_replicated_entities`
+- [replication.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/replication.rs): `adopt_native_lightyear_replicated_entities`
 - canonical runtime mapping is pinned to the confirmed `Replicated` entity
 - predicted/interpolated clone resolution is done later by GUID queries
 

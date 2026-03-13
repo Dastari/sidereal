@@ -1,94 +1,16 @@
-mod auth_ui;
-mod dev_console;
-mod dialog_ui;
-mod ecs_util;
-
-mod app_state;
-mod asset_loading_ui;
-mod assets;
-mod audio;
-mod auth_net;
-mod backdrop;
-mod bootstrap;
-mod camera;
-mod components;
-mod config;
-mod control;
-mod debug_overlay;
-mod input;
-mod lighting;
-mod logout;
-mod motion;
-mod owner_manifest;
-mod pause_menu;
-mod platform;
-#[cfg(not(target_arch = "wasm32"))]
-mod platform_io;
-mod plugins;
-#[cfg(not(target_arch = "wasm32"))]
-mod remote;
-mod render_layers;
-mod replication;
-mod resources;
-mod scene;
-mod scene_world;
-mod shaders;
-mod tactical;
-mod transforms;
-mod transport;
-mod ui;
-mod visuals;
-mod world_loading_ui;
-
-pub(crate) use app_state::*;
-pub(crate) use auth_net::submit_auth_request;
-pub(crate) use backdrop::{
-    AsteroidSpriteShaderMaterial, PlanetVisualMaterial, RuntimeEffectMaterial,
-    SpaceBackgroundMaterial, SpaceBackgroundNebulaMaterial, StarfieldMaterial,
-    StreamedSpriteShaderMaterial, TacticalMapOverlayMaterial,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use config::*;
-#[allow(unused_imports)]
-pub(crate) use dev_console::build_log_capture_layer;
-pub(crate) use platform::*;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use remote::*;
-pub(crate) use resources::*;
+use super::*;
 
 use avian2d::prelude::*;
-use bevy::app::PluginGroupBuilder;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::asset::{AssetApp, AssetPlugin};
-use bevy::camera::visibility::RenderLayers;
-use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
-use bevy::gizmos::config::GizmoConfigStore;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::log::LogPlugin;
 use bevy::prelude::*;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::render::RenderPlugin;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::render::settings::RenderCreation;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::scene::ScenePlugin;
-use bevy::sprite_render::Material2dPlugin;
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::window::{PresentMode, Window, WindowPlugin, WindowResizeConstraints};
-use bevy_svg::prelude::SvgPlugin;
-
 use lightyear::avian2d::plugin::AvianReplicationMode;
 use lightyear::avian2d::prelude::LightyearAvianPlugin;
 use lightyear::frame_interpolation::FrameInterpolationPlugin;
 use lightyear::input::native::prelude::NativeStateSequence;
 use lightyear::input::plugin::InputPlugin as LightyearInputProtocolPlugin;
-use lightyear::prelude::client::ClientPlugins;
-use lightyear::prelude::client::{Client, Connected};
+use lightyear::prelude::client::{Client, ClientPlugins, Connected};
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::input::native::ClientInputPlugin as NativeClientInputPlugin;
 use sidereal_core::SIM_TICK_HZ;
-#[cfg(not(target_arch = "wasm32"))]
-use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_game::{
     BallisticProjectileSpawnedEvent, CombatAuthorityEnabled, ShotFiredEvent, ShotHitEvent,
     ShotImpactResolvedEvent, apply_engine_thrust, bootstrap_weapon_cooldown_state,
@@ -98,13 +20,7 @@ use sidereal_game::{
 };
 use sidereal_net::register_lightyear_client_protocol;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
-#[cfg(not(target_arch = "wasm32"))]
-use std::fs::OpenOptions;
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::Write;
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use tracing_subscriber::FmtSubscriber;
 
 fn init_transport_resources(
     app: &mut App,
@@ -285,164 +201,6 @@ pub(crate) fn configure_client_runtime(
         app.add_plugins(plugins::ClientUiPlugin);
         app.add_plugins(plugins::ClientDiagnosticsPlugin);
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn build_headless_client_app(
-    asset_root: String,
-    gateway_http_adapter: GatewayHttpAdapter,
-    asset_cache_adapter: AssetCacheAdapter,
-) -> App {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins);
-    app.add_plugins(bevy::log::LogPlugin::default());
-    app.add_plugins(bevy::transform::TransformPlugin);
-    app.add_plugins(AssetPlugin::default());
-    app.add_plugins(ScenePlugin);
-    // Avian's collider cache reads mesh asset events even in headless mode.
-    app.add_message::<bevy::asset::AssetEvent<Mesh>>();
-    app.init_asset::<Mesh>();
-    app.init_asset::<Image>();
-    app.init_asset::<bevy::shader::Shader>();
-    configure_client_runtime(
-        &mut app,
-        asset_root,
-        true,
-        gateway_http_adapter,
-        asset_cache_adapter,
-    );
-    app
-}
-
-pub(crate) fn build_windowed_client_app(
-    default_plugins: PluginGroupBuilder,
-    asset_root: String,
-    gateway_http_adapter: GatewayHttpAdapter,
-    asset_cache_adapter: AssetCacheAdapter,
-) -> App {
-    let mut app = App::new();
-    app.insert_resource(ClearColor(Color::BLACK));
-    app.add_plugins(default_plugins);
-    app.add_plugins(Material2dPlugin::<StarfieldMaterial>::default());
-    app.add_plugins(Material2dPlugin::<SpaceBackgroundMaterial>::default());
-    app.add_plugins(Material2dPlugin::<SpaceBackgroundNebulaMaterial>::default());
-    app.add_plugins(Material2dPlugin::<StreamedSpriteShaderMaterial>::default());
-    app.add_plugins(Material2dPlugin::<AsteroidSpriteShaderMaterial>::default());
-    app.add_plugins(Material2dPlugin::<PlanetVisualMaterial>::default());
-    app.add_plugins(Material2dPlugin::<RuntimeEffectMaterial>::default());
-    app.add_plugins(Material2dPlugin::<TacticalMapOverlayMaterial>::default());
-    app.add_plugins(SvgPlugin);
-    app.add_plugins(FrameTimeDiagnosticsPlugin::default());
-    audio::insert_embedded_menu_loop_audio(&mut app);
-    if let Some(mut gizmo_config_store) = app.world_mut().get_resource_mut::<GizmoConfigStore>() {
-        let (config, _) =
-            gizmo_config_store.config_mut::<bevy::gizmos::config::DefaultGizmoConfigGroup>();
-        config.render_layers = RenderLayers::layer(DEBUG_OVERLAY_RENDER_LAYER);
-    }
-    configure_client_runtime(
-        &mut app,
-        asset_root,
-        false,
-        gateway_http_adapter,
-        asset_cache_adapter,
-    );
-    app
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn run() {
-    match apply_process_cli() {
-        Ok(CliAction::Run) => {}
-        Ok(CliAction::Help(help)) => {
-            println!("{help}");
-            return;
-        }
-        Err(err) => {
-            emit_startup_tracing_error(&err.to_string());
-            std::process::exit(2);
-        }
-    }
-    dev_console::install_panic_file_hook();
-
-    let headless_transport = std::env::var("SIDEREAL_CLIENT_HEADLESS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let remote_cfg = match RemoteInspectConfig::from_env("CLIENT", 15714) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            emit_startup_tracing_error(&format!("invalid CLIENT BRP config: {err}"));
-            std::process::exit(2);
-        }
-    };
-
-    let asset_root = std::env::var("SIDEREAL_ASSET_ROOT").unwrap_or_else(|_| ".".to_string());
-    let mut app = if headless_transport {
-        build_headless_client_app(
-            asset_root.clone(),
-            platform_io::native_gateway_http_adapter(),
-            platform_io::native_asset_cache_adapter(),
-        )
-    } else {
-        build_windowed_client_app(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        present_mode: PresentMode::AutoVsync,
-                        resizable: true,
-                        resize_constraints: WindowResizeConstraints {
-                            min_width: MIN_WINDOW_WIDTH,
-                            min_height: MIN_WINDOW_HEIGHT,
-                            ..default()
-                        },
-                        ..default()
-                    }),
-                    ..default()
-                })
-                .set(bevy::asset::AssetPlugin {
-                    file_path: asset_root.clone(),
-                    ..Default::default()
-                })
-                .set(LogPlugin {
-                    custom_layer: dev_console::build_log_capture_layer,
-                    fmt_layer: dev_console::build_file_fmt_layer,
-                    ..default()
-                })
-                .set(RenderPlugin {
-                    render_creation: RenderCreation::Automatic(platform::configured_wgpu_settings()),
-                    ..Default::default()
-                }),
-            asset_root.clone(),
-            platform_io::native_gateway_http_adapter(),
-            platform_io::native_asset_cache_adapter(),
-        )
-    };
-
-    configure_remote(&mut app, &remote_cfg);
-    app.run();
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn log_startup_error_line(message: &str) {
-    let path = dev_console::log_file_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn emit_startup_tracing_error(message: &str) {
-    log_startup_error_line(message);
-    let subscriber = FmtSubscriber::builder()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .without_time()
-        .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        tracing::error!("{message}");
-    });
 }
 
 fn log_client_transport_connected(

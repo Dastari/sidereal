@@ -144,9 +144,9 @@ Definition of done:
 
 Current issues:
 
-- `bins/sidereal-client/src/native/backdrop.rs:502`
-- `bins/sidereal-client/src/native/backdrop.rs:580`
-- `bins/sidereal-client/src/native/backdrop.rs:1904`
+- `bins/sidereal-client/src/runtime/backdrop.rs:502`
+- `bins/sidereal-client/src/runtime/backdrop.rs:580`
+- `bins/sidereal-client/src/runtime/backdrop.rs:1904`
 
 Action:
 
@@ -165,10 +165,10 @@ Definition of done:
 
 Current issues:
 
-- `bins/sidereal-client/src/native/replication.rs:69`
-- `bins/sidereal-client/src/native/replication.rs:178`
-- `bins/sidereal-client/src/native/replication.rs:860`
-- `bins/sidereal-client/src/native/replication.rs:869`
+- `bins/sidereal-client/src/runtime/replication.rs:69`
+- `bins/sidereal-client/src/runtime/replication.rs:178`
+- `bins/sidereal-client/src/runtime/replication.rs:860`
+- `bins/sidereal-client/src/runtime/replication.rs:869`
 
 Action:
 
@@ -188,8 +188,8 @@ Definition of done:
 
 Current issues:
 
-- `bins/sidereal-client/src/native/ui.rs:158`
-- `bins/sidereal-client/src/native/ui.rs:166`
+- `bins/sidereal-client/src/runtime/ui.rs:158`
+- `bins/sidereal-client/src/runtime/ui.rs:166`
 
 Action:
 
@@ -206,8 +206,8 @@ Definition of done:
 
 Current issues:
 
-- `bins/sidereal-client/src/native/visuals.rs:1833`
-- `bins/sidereal-client/src/native/visuals.rs:2589`
+- `bins/sidereal-client/src/runtime/visuals.rs:1833`
+- `bins/sidereal-client/src/runtime/visuals.rs:2589`
 
 Action:
 
@@ -291,8 +291,8 @@ Make client runtime ownership legible and reduce scheduling duplication without 
 
 ### Problems being fixed
 
-1. `bins/sidereal-client/src/native/mod.rs` centralizes too many resource insertions and runtime concerns.
-2. `bins/sidereal-client/src/native/plugins.rs` duplicates large headless/non-headless system chains.
+1. `bins/sidereal-client/src/runtime/mod.rs` centralizes too many resource insertions and runtime concerns.
+2. `bins/sidereal-client/src/runtime/plugins.rs` duplicates large headless/non-headless system chains.
 3. The current layout makes lifecycle resets, bootstrap ordering, and ownership boundaries harder to reason about.
 
 ### Design intent
@@ -307,6 +307,12 @@ The client should read like a composition of domain plugins with explicit owners
 6. UI/tactical/diagnostics
 
 The app entrypoint should configure cross-cutting runtime primitives and then hand off to domain plugins.
+
+2026-03-13 status note:
+The shared client runtime extraction is now partially landed. The remaining shared app wiring that had still been sitting in `bins/sidereal-client/src/runtime/mod.rs` has been split into `bins/sidereal-client/src/runtime/app_setup.rs` and `bins/sidereal-client/src/runtime/app_builder.rs`, while native-only startup remains under `bins/sidereal-client/src/platform/native/entry.rs`.
+
+2026-03-13 follow-up note:
+The shared plugin composition has also been split by domain under `bins/sidereal-client/src/runtime/plugins/` (`bootstrap_plugins.rs`, `replication_plugins.rs`, `presentation_plugins.rs`, `ui_plugins/`). `bins/sidereal-client/src/runtime/plugins.rs` is now a thin re-export layer instead of the direct implementation for every client plugin, and the `ui_plugins` domain has been split again into focused submodules for menu/loading, in-world UI, post-update/debug render wiring, and logout flow.
 
 ### Proposed refactor structure
 
@@ -460,7 +466,7 @@ Resolve the current ambiguous state where Lua-authored runtime render layers exi
 ### Problems being fixed
 
 1. `data/scripts/world/world_init.lua` already authors fullscreen runtime render layers.
-2. `bins/sidereal-client/src/native/backdrop.rs` still falls back to legacy `FullscreenLayer`.
+2. `bins/sidereal-client/src/runtime/backdrop.rs` still falls back to legacy `FullscreenLayer`.
 3. `docs/features/scripting_support.md` still describes fullscreen bootstrap migration as pending.
 
 ### Decision required
@@ -616,7 +622,7 @@ Reduce the amount of content-specific shader/material routing still embedded in 
 
 ### Problems being fixed
 
-1. `bins/sidereal-client/src/native/shaders.rs` still names current content-specific shader slots and handles.
+1. `bins/sidereal-client/src/runtime/shaders.rs` still names current content-specific shader slots and handles.
 2. Runtime rendering still knows about concrete concepts such as starfield, asteroid sprite, and tactical map overlay in hardcoded Rust routing.
 
 ### Scope caution
@@ -652,12 +658,12 @@ Clean up small but persistent evidence of transitional state after the major wor
 
 ### Items to review
 
-1. `bins/sidereal-client/src/native/visuals.rs:323`
+1. `bins/sidereal-client/src/runtime/visuals.rs:323`
    - TODO for symmetric fade-out behavior
-2. `bins/sidereal-client/src/native/pause_menu.rs:1`
+2. `bins/sidereal-client/src/runtime/pause_menu.rs:1`
    - explicit placeholder note
-3. `bins/sidereal-client/src/native/render_layers.rs:672`
-4. `bins/sidereal-client/src/native/render_layers.rs:675`
+3. `bins/sidereal-client/src/runtime/render_layers.rs:672`
+4. `bins/sidereal-client/src/runtime/render_layers.rs:675`
    - temporary test/scaffold naming that may or may not still be appropriate
 
 ### Actions

@@ -5,11 +5,12 @@ use super::components::{StreamedSpriteShaderAssetId, StreamedVisualAssetId};
 use super::resources::AssetRootPath;
 use super::resources::{AssetCacheAdapter, GatewayHttpAdapter, RuntimeAssetPerfCounters};
 use super::shaders;
+use async_channel::{Receiver, TryRecvError, bounded};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
-use bevy::tasks::{IoTaskPool, Task, futures_lite::future};
+use bevy::tasks::IoTaskPool;
 use bevy_svg::prelude::Svg;
 use lightyear::prelude::MessageReceiver;
 use lightyear::prelude::client::{Client, Connected};
@@ -122,20 +123,20 @@ impl RuntimeAssetHttpFetchState {
 struct RuntimeAssetFetchTask {
     asset_id: String,
     queued_at: Instant,
-    task: Task<Result<RuntimeAssetFetchResult, String>>,
+    receiver: Receiver<Result<RuntimeAssetFetchResult, String>>,
 }
 
 #[derive(Debug)]
 struct RuntimeAssetPersistTask {
     asset_id: String,
     queued_at: Instant,
-    task: Task<Result<RuntimeAssetPersistResult, String>>,
+    receiver: Receiver<Result<RuntimeAssetPersistResult, String>>,
 }
 
 #[derive(Debug)]
 struct RuntimeAssetSaveIndexTask {
     queued_at: Instant,
-    task: Task<Result<(), String>>,
+    receiver: Receiver<Result<(), String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +165,10 @@ const MAX_CONCURRENT_RUNTIME_ASSET_FETCHES: usize = 4;
 #[derive(Debug, Resource, Default)]
 pub(crate) struct RuntimeAssetDependencyState {
     pub candidate_asset_ids: HashSet<String>,
+    pub critical_asset_ids: HashSet<String>,
+    pub root_visual_asset_ids: HashSet<String>,
+    pub immediate_dependency_asset_ids: HashSet<String>,
+    pub lower_value_asset_ids: HashSet<String>,
     pub catalog_reload_generation: u64,
     pub forced_asset_ids_signature: u64,
     pub dependency_graph_rebuilds: u64,
@@ -179,6 +184,27 @@ impl Default for RuntimeAssetDependencyDirtyState {
     fn default() -> Self {
         Self { dirty: true }
     }
+}
+
+fn runtime_save_index_can_start(fetch_state: &RuntimeAssetHttpFetchState) -> bool {
+    fetch_state.cache_index_dirty
+        && fetch_state.save_index_task.is_none()
+        && fetch_state.pending_fetches.is_empty()
+        && fetch_state.pending_persists.is_empty()
+}
+
+fn try_recv_runtime_task_result<T>(receiver: &Receiver<T>) -> Option<T> {
+    match receiver.try_recv() {
+        Ok(result) => Some(result),
+        Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => None,
+    }
+}
+
+#[derive(Debug, Default)]
+struct RuntimeAssetPriorityBuckets {
+    critical_asset_ids: HashSet<String>,
+    root_visual_asset_ids: HashSet<String>,
+    lower_value_asset_ids: HashSet<String>,
 }
 
 fn expand_catalog_dependencies(
@@ -301,7 +327,16 @@ pub(super) fn sync_runtime_asset_dependency_state_system(world: &mut World) {
             .get_resource::<AssetCatalogHotReloadState>()
             .expect("asset hot reload state should be initialized")
             .clone();
-        collect_runtime_asset_dependency_candidates(world, &asset_manager, &hot_reload)
+        let priority_buckets =
+            collect_runtime_asset_priority_buckets(world, &asset_manager, &hot_reload);
+        let candidate_asset_ids =
+            collect_runtime_asset_dependency_candidates(&priority_buckets, &asset_manager);
+        dependency_state.critical_asset_ids = priority_buckets.critical_asset_ids.clone();
+        dependency_state.root_visual_asset_ids = priority_buckets.root_visual_asset_ids.clone();
+        dependency_state.immediate_dependency_asset_ids =
+            collect_immediate_render_dependency_asset_ids(&priority_buckets, &asset_manager);
+        dependency_state.lower_value_asset_ids = priority_buckets.lower_value_asset_ids;
+        candidate_asset_ids
     };
     dependency_state.candidate_asset_ids = candidate_asset_ids;
     dependency_state.catalog_reload_generation = catalog_reload_generation;
@@ -443,7 +478,7 @@ pub(super) fn queue_missing_catalog_assets_system(
     }
     while fetch_state.pending_fetches.len() < MAX_CONCURRENT_RUNTIME_ASSET_FETCHES {
         let Some(next_asset_id) = next_runtime_asset_fetch_candidate(
-            &dependency_state.candidate_asset_ids,
+            &dependency_state,
             &asset_manager,
             &asset_root.0,
             *cache_adapter,
@@ -506,30 +541,40 @@ pub(super) fn queue_missing_catalog_assets_system(
         perf.fetches_queued = perf.fetches_queued.saturating_add(1);
         let access_token = access_token.clone();
         let gateway_http = *gateway_http;
-        fetch_state.pending_fetches.push(RuntimeAssetFetchTask {
-            asset_id: asset_id.clone(),
-            queued_at: Instant::now(),
-            task: IoTaskPool::get().spawn(async move {
-                let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
-                let payload_sha = sha256_hex(&payload);
-                if payload_sha != catalog.sha256_hex {
-                    return Err(format!(
-                        "runtime asset checksum mismatch asset_id={} expected={} got={}",
-                        asset_id, catalog.sha256_hex, payload_sha
-                    ));
+        let fetch_task_asset_id = asset_id.clone();
+        let queued_asset_id = asset_id.clone();
+        let (sender, receiver) = bounded(1);
+        IoTaskPool::get()
+            .spawn(async move {
+                let result = async move {
+                    let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
+                    let payload_sha = sha256_hex(&payload);
+                    if payload_sha != catalog.sha256_hex {
+                        return Err(format!(
+                            "runtime asset checksum mismatch asset_id={} expected={} got={}",
+                            queued_asset_id, catalog.sha256_hex, payload_sha
+                        ));
+                    }
+                    Ok(RuntimeAssetFetchResult {
+                        asset_id,
+                        relative_cache_path: catalog.relative_cache_path,
+                        content_type: catalog.content_type,
+                        byte_len: payload.len() as u64,
+                        asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(
+                            &payload_sha,
+                        ),
+                        sha256_hex: payload_sha,
+                        payload,
+                    })
                 }
-                Ok(RuntimeAssetFetchResult {
-                    asset_id,
-                    relative_cache_path: catalog.relative_cache_path,
-                    content_type: catalog.content_type,
-                    byte_len: payload.len() as u64,
-                    asset_version: sidereal_asset_runtime::asset_version_from_sha256_hex(
-                        &payload_sha,
-                    ),
-                    sha256_hex: payload_sha,
-                    payload,
-                })
-            }),
+                .await;
+                let _ = sender.send(result).await;
+            })
+            .detach();
+        fetch_state.pending_fetches.push(RuntimeAssetFetchTask {
+            asset_id: fetch_task_asset_id,
+            queued_at: Instant::now(),
+            receiver,
         });
     }
     perf.pending_fetch_count = fetch_state.pending_fetches.len();
@@ -564,9 +609,9 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     let mut completed_results = Vec::new();
     let mut task_index = 0usize;
     while task_index < fetch_state.pending_fetches.len() {
-        let Some(result) = bevy::tasks::block_on(future::poll_once(
-            &mut fetch_state.pending_fetches[task_index].task,
-        )) else {
+        let Some(result) =
+            try_recv_runtime_task_result(&fetch_state.pending_fetches[task_index].receiver)
+        else {
             task_index += 1;
             continue;
         };
@@ -592,25 +637,34 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
                 } else {
                     let asset_root = asset_root.0.clone();
                     let cache_adapter = *cache_adapter;
+                    let persist_asset_id = result.asset_id.clone();
+                    let (sender, receiver) = bounded(1);
+                    IoTaskPool::get()
+                        .spawn(async move {
+                            let result = async move {
+                                (cache_adapter.write_asset)(
+                                    asset_root,
+                                    result.relative_cache_path.clone(),
+                                    result.payload,
+                                )
+                                .await?;
+                                Ok(RuntimeAssetPersistResult {
+                                    asset_id: result.asset_id,
+                                    relative_cache_path: result.relative_cache_path,
+                                    content_type: result.content_type,
+                                    byte_len: result.byte_len,
+                                    asset_version: result.asset_version,
+                                    sha256_hex: result.sha256_hex,
+                                })
+                            }
+                            .await;
+                            let _ = sender.send(result).await;
+                        })
+                        .detach();
                     fetch_state.pending_persists.push(RuntimeAssetPersistTask {
-                        asset_id: result.asset_id.clone(),
+                        asset_id: persist_asset_id,
                         queued_at: Instant::now(),
-                        task: IoTaskPool::get().spawn(async move {
-                            (cache_adapter.write_asset)(
-                                asset_root,
-                                result.relative_cache_path.clone(),
-                                result.payload,
-                            )
-                            .await?;
-                            Ok(RuntimeAssetPersistResult {
-                                asset_id: result.asset_id,
-                                relative_cache_path: result.relative_cache_path,
-                                content_type: result.content_type,
-                                byte_len: result.byte_len,
-                                asset_version: result.asset_version,
-                                sha256_hex: result.sha256_hex,
-                            })
-                        }),
+                        receiver,
                     });
                 }
             }
@@ -630,9 +684,9 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     let mut completed_persists = Vec::new();
     let mut persist_index = 0usize;
     while persist_index < fetch_state.pending_persists.len() {
-        let Some(result) = bevy::tasks::block_on(future::poll_once(
-            &mut fetch_state.pending_persists[persist_index].task,
-        )) else {
+        let Some(result) =
+            try_recv_runtime_task_result(&fetch_state.pending_persists[persist_index].receiver)
+        else {
             persist_index += 1;
             continue;
         };
@@ -703,7 +757,7 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
     }
 
     if let Some(save_index_task) = fetch_state.save_index_task.as_mut()
-        && let Some(result) = bevy::tasks::block_on(future::poll_once(&mut save_index_task.task))
+        && let Some(result) = try_recv_runtime_task_result(&save_index_task.receiver)
     {
         let save_index_ms = save_index_task.queued_at.elapsed().as_secs_f64() * 1000.0;
         perf.save_index_last_ms = save_index_ms;
@@ -718,16 +772,22 @@ pub(super) fn poll_runtime_asset_http_fetches_system(
         }
     }
 
-    if fetch_state.cache_index_dirty && fetch_state.save_index_task.is_none() {
+    if runtime_save_index_can_start(&fetch_state) {
         fetch_state.cache_index_dirty = false;
         let asset_root = asset_root.0.clone();
         let cache_index = asset_manager.cache_index.clone();
         let cache_adapter = *cache_adapter;
+        let (sender, receiver) = bounded(1);
+        IoTaskPool::get()
+            .spawn(async move {
+                let result = (cache_adapter.save_index)(asset_root, cache_index).await;
+                let _ = sender.send(result).await;
+            })
+            .detach();
         perf.save_index_starts = perf.save_index_starts.saturating_add(1);
         fetch_state.save_index_task = Some(RuntimeAssetSaveIndexTask {
             queued_at: Instant::now(),
-            task: IoTaskPool::get()
-                .spawn(async move { (cache_adapter.save_index)(asset_root, cache_index).await }),
+            receiver,
         });
     }
     perf.pending_fetch_count = fetch_state.pending_fetches.len();
@@ -765,22 +825,25 @@ fn asset_present_in_cache_or_source(
         .is_some()
 }
 
-fn collect_runtime_asset_dependency_candidates(
+fn collect_runtime_asset_priority_buckets(
     world: &mut World,
     asset_manager: &LocalAssetManager,
     hot_reload: &AssetCatalogHotReloadState,
-) -> HashSet<String> {
-    let mut candidate_asset_ids = hot_reload
-        .forced_asset_ids
-        .iter()
-        .filter(|asset_id| asset_manager.catalog_by_asset_id.contains_key(*asset_id))
-        .cloned()
-        .collect::<HashSet<_>>();
+) -> RuntimeAssetPriorityBuckets {
+    let mut priority_buckets = RuntimeAssetPriorityBuckets {
+        lower_value_asset_ids: hot_reload
+            .forced_asset_ids
+            .iter()
+            .filter(|asset_id| asset_manager.catalog_by_asset_id.contains_key(*asset_id))
+            .cloned()
+            .collect(),
+        ..Default::default()
+    };
 
     let mut fullscreen_layers = world.query::<&FullscreenLayer>();
     for layer in fullscreen_layers.iter(world) {
         insert_asset_id(
-            &mut candidate_asset_ids,
+            &mut priority_buckets.critical_asset_ids,
             Some(layer.shader_asset_id.as_str()),
         );
     }
@@ -788,12 +851,18 @@ fn collect_runtime_asset_dependency_candidates(
     let mut runtime_render_layers = world.query::<&RuntimeRenderLayerDefinition>();
     for layer in runtime_render_layers.iter(world) {
         insert_asset_id(
-            &mut candidate_asset_ids,
+            &mut priority_buckets.critical_asset_ids,
             Some(layer.shader_asset_id.as_str()),
         );
-        insert_asset_id(&mut candidate_asset_ids, layer.params_asset_id.as_deref());
+        insert_asset_id(
+            &mut priority_buckets.critical_asset_ids,
+            layer.params_asset_id.as_deref(),
+        );
         for binding in &layer.texture_bindings {
-            insert_asset_id(&mut candidate_asset_ids, Some(binding.asset_id.as_str()));
+            insert_asset_id(
+                &mut priority_buckets.critical_asset_ids,
+                Some(binding.asset_id.as_str()),
+            );
         }
     }
 
@@ -801,12 +870,18 @@ fn collect_runtime_asset_dependency_candidates(
     for stack in runtime_post_process_stacks.iter(world) {
         for pass in &stack.passes {
             insert_asset_id(
-                &mut candidate_asset_ids,
+                &mut priority_buckets.critical_asset_ids,
                 Some(pass.shader_asset_id.as_str()),
             );
-            insert_asset_id(&mut candidate_asset_ids, pass.params_asset_id.as_deref());
+            insert_asset_id(
+                &mut priority_buckets.critical_asset_ids,
+                pass.params_asset_id.as_deref(),
+            );
             for binding in &pass.texture_bindings {
-                insert_asset_id(&mut candidate_asset_ids, Some(binding.asset_id.as_str()));
+                insert_asset_id(
+                    &mut priority_buckets.critical_asset_ids,
+                    Some(binding.asset_id.as_str()),
+                );
             }
         }
     }
@@ -814,22 +889,56 @@ fn collect_runtime_asset_dependency_candidates(
     let mut sprite_shader_asset_ids = world.query::<&SpriteShaderAssetId>();
     for sprite_shader_asset_id in sprite_shader_asset_ids.iter(world) {
         insert_asset_id(
-            &mut candidate_asset_ids,
+            &mut priority_buckets.critical_asset_ids,
             sprite_shader_asset_id.0.as_deref(),
         );
     }
 
     let mut streamed_sprite_shader_asset_ids = world.query::<&StreamedSpriteShaderAssetId>();
     for streamed in streamed_sprite_shader_asset_ids.iter(world) {
-        insert_asset_id(&mut candidate_asset_ids, Some(streamed.0.as_str()));
+        insert_asset_id(
+            &mut priority_buckets.critical_asset_ids,
+            Some(streamed.0.as_str()),
+        );
     }
 
     let mut streamed_visual_asset_ids = world.query::<&StreamedVisualAssetId>();
     for visual in streamed_visual_asset_ids.iter(world) {
-        insert_asset_id(&mut candidate_asset_ids, Some(visual.0.as_str()));
+        insert_asset_id(
+            &mut priority_buckets.root_visual_asset_ids,
+            Some(visual.0.as_str()),
+        );
     }
 
+    priority_buckets
+}
+
+fn collect_runtime_asset_dependency_candidates(
+    priority_buckets: &RuntimeAssetPriorityBuckets,
+    asset_manager: &LocalAssetManager,
+) -> HashSet<String> {
+    let mut candidate_asset_ids = priority_buckets.critical_asset_ids.clone();
+    candidate_asset_ids.extend(priority_buckets.root_visual_asset_ids.iter().cloned());
+    candidate_asset_ids.extend(priority_buckets.lower_value_asset_ids.iter().cloned());
     expand_catalog_dependencies(candidate_asset_ids, asset_manager)
+}
+
+fn collect_immediate_render_dependency_asset_ids(
+    priority_buckets: &RuntimeAssetPriorityBuckets,
+    asset_manager: &LocalAssetManager,
+) -> HashSet<String> {
+    let mut dependency_asset_ids = HashSet::new();
+    for asset_id in priority_buckets
+        .critical_asset_ids
+        .iter()
+        .chain(priority_buckets.root_visual_asset_ids.iter())
+    {
+        let Some(catalog) = asset_manager.catalog_by_asset_id.get(asset_id) else {
+            continue;
+        };
+        dependency_asset_ids.extend(catalog.dependencies.iter().cloned());
+    }
+    dependency_asset_ids
 }
 
 fn insert_asset_id(asset_ids: &mut HashSet<String>, maybe_asset_id: Option<&str>) {
@@ -841,30 +950,117 @@ fn insert_asset_id(asset_ids: &mut HashSet<String>, maybe_asset_id: Option<&str>
 }
 
 fn next_runtime_asset_fetch_candidate(
-    candidate_asset_ids: &HashSet<String>,
+    dependency_state: &RuntimeAssetDependencyState,
     asset_manager: &LocalAssetManager,
     asset_root: &str,
     cache_adapter: AssetCacheAdapter,
     in_flight_asset_ids: &HashSet<String>,
 ) -> Option<String> {
-    let next_asset_id = candidate_asset_ids
+    let mut covered_priority_asset_ids = HashSet::new();
+    for target_asset_ids in [
+        &dependency_state.critical_asset_ids,
+        &dependency_state.root_visual_asset_ids,
+        &dependency_state.immediate_dependency_asset_ids,
+        &dependency_state.lower_value_asset_ids,
+    ] {
+        if let Some(next_asset_id) = next_runtime_asset_fetch_candidate_from_targets(
+            target_asset_ids,
+            &dependency_state.candidate_asset_ids,
+            asset_manager,
+            asset_root,
+            cache_adapter,
+            in_flight_asset_ids,
+            &mut covered_priority_asset_ids,
+        ) {
+            return Some(next_asset_id);
+        }
+    }
+
+    let mut remaining_asset_ids = dependency_state
+        .candidate_asset_ids
         .iter()
-        .filter(|asset_id| asset_manager.catalog_by_asset_id.contains_key(*asset_id))
-        .filter(|asset_id| !in_flight_asset_ids.contains(*asset_id))
-        .find(|asset_id| {
-            !asset_present_in_cache_or_source(asset_id, asset_manager, asset_root, cache_adapter)
-        })?
-        .clone();
-    let catalog = asset_manager.catalog_by_asset_id.get(&next_asset_id)?;
-    catalog
-        .dependencies
-        .iter()
-        .find(|dependency| {
-            !asset_present_in_cache_or_source(dependency, asset_manager, asset_root, cache_adapter)
-                && !in_flight_asset_ids.contains(*dependency)
-        })
-        .cloned()
-        .or(Some(next_asset_id))
+        .collect::<Vec<_>>();
+    remaining_asset_ids.sort_unstable();
+    for asset_id in remaining_asset_ids {
+        if covered_priority_asset_ids.contains(asset_id.as_str()) {
+            continue;
+        }
+        if let Some(next_asset_id) = resolve_next_runtime_asset_target(
+            asset_id,
+            &dependency_state.candidate_asset_ids,
+            asset_manager,
+            asset_root,
+            cache_adapter,
+            in_flight_asset_ids,
+            &mut HashSet::new(),
+        ) {
+            return Some(next_asset_id);
+        }
+    }
+
+    None
+}
+
+fn next_runtime_asset_fetch_candidate_from_targets(
+    target_asset_ids: &HashSet<String>,
+    candidate_asset_ids: &HashSet<String>,
+    asset_manager: &LocalAssetManager,
+    asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
+    in_flight_asset_ids: &HashSet<String>,
+    covered_priority_asset_ids: &mut HashSet<String>,
+) -> Option<String> {
+    let mut sorted_asset_ids = target_asset_ids.iter().collect::<Vec<_>>();
+    sorted_asset_ids.sort_unstable();
+    for asset_id in sorted_asset_ids {
+        covered_priority_asset_ids.insert(asset_id.clone());
+        if let Some(next_asset_id) = resolve_next_runtime_asset_target(
+            asset_id,
+            candidate_asset_ids,
+            asset_manager,
+            asset_root,
+            cache_adapter,
+            in_flight_asset_ids,
+            &mut HashSet::new(),
+        ) {
+            return Some(next_asset_id);
+        }
+    }
+    None
+}
+
+fn resolve_next_runtime_asset_target(
+    asset_id: &str,
+    candidate_asset_ids: &HashSet<String>,
+    asset_manager: &LocalAssetManager,
+    asset_root: &str,
+    cache_adapter: AssetCacheAdapter,
+    in_flight_asset_ids: &HashSet<String>,
+    visited_asset_ids: &mut HashSet<String>,
+) -> Option<String> {
+    if !candidate_asset_ids.contains(asset_id) || !visited_asset_ids.insert(asset_id.to_string()) {
+        return None;
+    }
+    let catalog = asset_manager.catalog_by_asset_id.get(asset_id)?;
+    for dependency in &catalog.dependencies {
+        if let Some(next_asset_id) = resolve_next_runtime_asset_target(
+            dependency,
+            candidate_asset_ids,
+            asset_manager,
+            asset_root,
+            cache_adapter,
+            in_flight_asset_ids,
+            visited_asset_ids,
+        ) {
+            return Some(next_asset_id);
+        }
+    }
+    if in_flight_asset_ids.contains(asset_id)
+        || asset_present_in_cache_or_source(asset_id, asset_manager, asset_root, cache_adapter)
+    {
+        return None;
+    }
+    Some(asset_id.to_string())
 }
 
 fn hash_asset_ids(asset_ids: &HashSet<String>) -> u64 {
@@ -881,16 +1077,24 @@ fn hash_asset_ids(asset_ids: &HashSet<String>) -> u64 {
 mod tests {
     use super::{
         AssetCatalogHotReloadState, LocalAssetManager, RuntimeAssetCatalogRecord,
-        RuntimeAssetDependencyDirtyState, RuntimeAssetDependencyState,
+        RuntimeAssetDependencyDirtyState, RuntimeAssetDependencyState, RuntimeAssetHttpFetchState,
         mark_runtime_asset_dependency_state_dirty_system, next_runtime_asset_fetch_candidate,
+        queue_missing_catalog_assets_system, runtime_save_index_can_start,
         sync_runtime_asset_dependency_state_system,
     };
-    use crate::native::components::StreamedVisualAssetId;
-    use crate::native::resources::AssetCacheAdapter;
+    use crate::runtime::app_state::ClientSession;
+    use crate::runtime::components::StreamedVisualAssetId;
+    use crate::runtime::resources::AssetRootPath;
+    use crate::runtime::resources::{
+        AssetCacheAdapter, GatewayHttpAdapter, RuntimeAssetPerfCounters,
+    };
+    use async_channel::bounded;
     use bevy::prelude::*;
+    use bevy::tasks::{IoTaskPool, TaskPool};
     use sidereal_asset_runtime::AssetCacheIndex;
     use sidereal_game::RuntimeRenderLayerDefinition;
     use std::collections::{HashMap, HashSet};
+    use std::time::Instant;
 
     fn test_asset_manager(entries: &[(&str, &[&str])]) -> LocalAssetManager {
         let mut catalog_by_asset_id = HashMap::new();
@@ -995,9 +1199,14 @@ mod tests {
     #[test]
     fn fetch_candidate_prefers_unresolved_dependency_before_parent() {
         let asset_manager = test_asset_manager(&[("root", &["dep"]), ("dep", &[])]);
-        let candidate_asset_ids = HashSet::from(["root".to_string(), "dep".to_string()]);
+        let dependency_state = RuntimeAssetDependencyState {
+            candidate_asset_ids: HashSet::from(["root".to_string(), "dep".to_string()]),
+            root_visual_asset_ids: HashSet::from(["root".to_string()]),
+            immediate_dependency_asset_ids: HashSet::from(["dep".to_string()]),
+            ..Default::default()
+        };
         let selected = next_runtime_asset_fetch_candidate(
-            &candidate_asset_ids,
+            &dependency_state,
             &asset_manager,
             "data",
             AssetCacheAdapter {
@@ -1011,5 +1220,194 @@ mod tests {
             &HashSet::new(),
         );
         assert_eq!(selected.as_deref(), Some("dep"));
+    }
+
+    #[test]
+    fn fetch_candidate_prefers_deepest_unresolved_dependency_before_ancestor() {
+        let asset_manager =
+            test_asset_manager(&[("root", &["mid"]), ("mid", &["leaf"]), ("leaf", &[])]);
+        let dependency_state = RuntimeAssetDependencyState {
+            candidate_asset_ids: HashSet::from([
+                "root".to_string(),
+                "mid".to_string(),
+                "leaf".to_string(),
+            ]),
+            root_visual_asset_ids: HashSet::from(["root".to_string()]),
+            immediate_dependency_asset_ids: HashSet::from(["mid".to_string()]),
+            ..Default::default()
+        };
+        let selected = next_runtime_asset_fetch_candidate(
+            &dependency_state,
+            &asset_manager,
+            "data",
+            AssetCacheAdapter {
+                prepare_root: |_| Box::pin(async { Ok(()) }),
+                load_index: |_| Box::pin(async { Ok(AssetCacheIndex::default()) }),
+                save_index: |_, _| Box::pin(async { Ok(()) }),
+                read_valid_asset: |_, _, _| Box::pin(async { Ok(None) }),
+                write_asset: |_, _, _| Box::pin(async { Ok(()) }),
+                read_valid_asset_sync: |_, _, _| None,
+            },
+            &HashSet::new(),
+        );
+        assert_eq!(selected.as_deref(), Some("leaf"));
+    }
+
+    #[test]
+    fn fetch_candidate_advances_to_parent_when_deep_dependency_is_in_flight() {
+        let asset_manager =
+            test_asset_manager(&[("root", &["mid"]), ("mid", &["leaf"]), ("leaf", &[])]);
+        let dependency_state = RuntimeAssetDependencyState {
+            candidate_asset_ids: HashSet::from([
+                "root".to_string(),
+                "mid".to_string(),
+                "leaf".to_string(),
+            ]),
+            root_visual_asset_ids: HashSet::from(["root".to_string()]),
+            immediate_dependency_asset_ids: HashSet::from(["mid".to_string()]),
+            ..Default::default()
+        };
+        let selected = next_runtime_asset_fetch_candidate(
+            &dependency_state,
+            &asset_manager,
+            "data",
+            AssetCacheAdapter {
+                prepare_root: |_| Box::pin(async { Ok(()) }),
+                load_index: |_| Box::pin(async { Ok(AssetCacheIndex::default()) }),
+                save_index: |_, _| Box::pin(async { Ok(()) }),
+                read_valid_asset: |_, _, _| Box::pin(async { Ok(None) }),
+                write_asset: |_, _, _| Box::pin(async { Ok(()) }),
+                read_valid_asset_sync: |_, _, _| None,
+            },
+            &HashSet::from(["leaf".to_string()]),
+        );
+        assert_eq!(selected.as_deref(), Some("mid"));
+    }
+
+    #[test]
+    fn fetch_candidate_prioritizes_critical_assets_before_visual_and_optional_work() {
+        let asset_manager = test_asset_manager(&[
+            ("shader_a", &[]),
+            ("shader_b", &[]),
+            ("visual_root", &[]),
+            ("optional_art", &[]),
+        ]);
+        let dependency_state = RuntimeAssetDependencyState {
+            candidate_asset_ids: HashSet::from([
+                "shader_b".to_string(),
+                "shader_a".to_string(),
+                "visual_root".to_string(),
+                "optional_art".to_string(),
+            ]),
+            critical_asset_ids: HashSet::from(["shader_b".to_string(), "shader_a".to_string()]),
+            root_visual_asset_ids: HashSet::from(["visual_root".to_string()]),
+            lower_value_asset_ids: HashSet::from(["optional_art".to_string()]),
+            ..Default::default()
+        };
+        let selected = next_runtime_asset_fetch_candidate(
+            &dependency_state,
+            &asset_manager,
+            "data",
+            AssetCacheAdapter {
+                prepare_root: |_| Box::pin(async { Ok(()) }),
+                load_index: |_| Box::pin(async { Ok(AssetCacheIndex::default()) }),
+                save_index: |_, _| Box::pin(async { Ok(()) }),
+                read_valid_asset: |_, _, _| Box::pin(async { Ok(None) }),
+                write_asset: |_, _, _| Box::pin(async { Ok(()) }),
+                read_valid_asset_sync: |_, _, _| None,
+            },
+            &HashSet::new(),
+        );
+        assert_eq!(selected.as_deref(), Some("shader_a"));
+    }
+
+    #[test]
+    fn save_index_waits_for_fetch_and_persist_drain() {
+        let mut fetch_state = RuntimeAssetHttpFetchState {
+            cache_index_dirty: true,
+            ..Default::default()
+        };
+        assert!(runtime_save_index_can_start(&fetch_state));
+
+        fetch_state
+            .pending_fetches
+            .push(super::RuntimeAssetFetchTask {
+                asset_id: "asset-a".to_string(),
+                queued_at: Instant::now(),
+                receiver: bounded(1).1,
+            });
+        assert!(!runtime_save_index_can_start(&fetch_state));
+        fetch_state.pending_fetches.clear();
+
+        fetch_state
+            .pending_persists
+            .push(super::RuntimeAssetPersistTask {
+                asset_id: "asset-a".to_string(),
+                queued_at: Instant::now(),
+                receiver: bounded(1).1,
+            });
+        assert!(!runtime_save_index_can_start(&fetch_state));
+        fetch_state.pending_persists.clear();
+
+        fetch_state.save_index_task = Some(super::RuntimeAssetSaveIndexTask {
+            queued_at: Instant::now(),
+            receiver: bounded(1).1,
+        });
+        assert!(!runtime_save_index_can_start(&fetch_state));
+    }
+
+    #[test]
+    fn queue_missing_catalog_assets_does_not_duplicate_in_flight_asset_fetches() {
+        IoTaskPool::get_or_init(TaskPool::new);
+
+        let mut app = App::new();
+        app.insert_resource(test_asset_manager(&[("critical_shader", &[])]));
+        app.insert_resource(RuntimeAssetDependencyState {
+            candidate_asset_ids: HashSet::from(["critical_shader".to_string()]),
+            critical_asset_ids: HashSet::from(["critical_shader".to_string()]),
+            ..Default::default()
+        });
+        app.insert_resource(RuntimeAssetHttpFetchState::default());
+        app.insert_resource(RuntimeAssetPerfCounters::default());
+        app.insert_resource(AssetRootPath("data".to_string()));
+        app.insert_resource(Time::<()>::default());
+        app.insert_resource(GatewayHttpAdapter {
+            login: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            register: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            request_password_reset: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            confirm_password_reset: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            fetch_me: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            fetch_characters: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            enter_world: |_, _, _| Box::pin(async { unreachable!("unused in test") }),
+            fetch_bootstrap_manifest: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            fetch_asset_bytes: |_, _| Box::pin(async { Ok(b"shader".to_vec()) }),
+        });
+        app.insert_resource(AssetCacheAdapter {
+            prepare_root: |_| Box::pin(async { Ok(()) }),
+            load_index: |_| Box::pin(async { Ok(AssetCacheIndex::default()) }),
+            save_index: |_, _| Box::pin(async { Ok(()) }),
+            read_valid_asset: |_, _, _| Box::pin(async { Ok(None) }),
+            write_asset: |_, _, _| Box::pin(async { Ok(()) }),
+            read_valid_asset_sync: |_, _, _| None,
+        });
+        app.insert_resource(ClientSession {
+            access_token: Some("token".to_string()),
+            ..Default::default()
+        });
+        app.add_systems(Update, queue_missing_catalog_assets_system);
+
+        app.update();
+        {
+            let fetch_state = app.world().resource::<RuntimeAssetHttpFetchState>();
+            assert_eq!(fetch_state.pending_fetches.len(), 1);
+            assert!(fetch_state.in_flight_asset_ids.contains("critical_shader"));
+        }
+
+        app.update();
+        let fetch_state = app.world().resource::<RuntimeAssetHttpFetchState>();
+        let perf = app.world().resource::<RuntimeAssetPerfCounters>();
+        assert_eq!(fetch_state.pending_fetches.len(), 1);
+        assert_eq!(fetch_state.in_flight_asset_ids_len(), 1);
+        assert_eq!(perf.fetches_queued, 1);
     }
 }

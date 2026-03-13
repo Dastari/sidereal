@@ -11,7 +11,7 @@ use sidereal_core::gateway_dtos::{
     PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest,
 };
 
-use super::resources::{AssetCacheAdapter, GatewayHttpAdapter};
+use crate::runtime::{AssetCacheAdapter, CacheFuture, GatewayFuture, GatewayHttpAdapter};
 
 fn decode_api_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, String> {
     let status = response.status();
@@ -135,10 +135,7 @@ fn native_login(gateway_url: String, payload: LoginRequest) -> Result<AuthTokens
     post_json(format!("{gateway_url}/auth/login"), None, &payload)
 }
 
-fn native_login_async(
-    gateway_url: String,
-    payload: LoginRequest,
-) -> super::resources::GatewayFuture<AuthTokens> {
+fn native_login_async(gateway_url: String, payload: LoginRequest) -> GatewayFuture<AuthTokens> {
     Box::pin(async move { native_login(gateway_url, payload) })
 }
 
@@ -149,7 +146,7 @@ fn native_register(gateway_url: String, payload: RegisterRequest) -> Result<Auth
 fn native_register_async(
     gateway_url: String,
     payload: RegisterRequest,
-) -> super::resources::GatewayFuture<AuthTokens> {
+) -> GatewayFuture<AuthTokens> {
     Box::pin(async move { native_register(gateway_url, payload) })
 }
 
@@ -167,7 +164,7 @@ fn native_request_password_reset(
 fn native_request_password_reset_async(
     gateway_url: String,
     payload: PasswordResetRequest,
-) -> super::resources::GatewayFuture<PasswordResetResponse> {
+) -> GatewayFuture<PasswordResetResponse> {
     Box::pin(async move { native_request_password_reset(gateway_url, payload) })
 }
 
@@ -186,7 +183,7 @@ fn native_confirm_password_reset(
 fn native_confirm_password_reset_async(
     gateway_url: String,
     payload: PasswordResetConfirmRequest,
-) -> super::resources::GatewayFuture<()> {
+) -> GatewayFuture<()> {
     Box::pin(async move { native_confirm_password_reset(gateway_url, payload) })
 }
 
@@ -194,10 +191,7 @@ fn native_fetch_me(gateway_url: String, access_token: String) -> Result<MeRespon
     get_json(format!("{gateway_url}/auth/me"), Some(&access_token))
 }
 
-fn native_fetch_me_async(
-    gateway_url: String,
-    access_token: String,
-) -> super::resources::GatewayFuture<MeResponse> {
+fn native_fetch_me_async(gateway_url: String, access_token: String) -> GatewayFuture<MeResponse> {
     Box::pin(async move { native_fetch_me(gateway_url, access_token) })
 }
 
@@ -214,7 +208,7 @@ fn native_fetch_characters(
 fn native_fetch_characters_async(
     gateway_url: String,
     access_token: String,
-) -> super::resources::GatewayFuture<CharactersResponse> {
+) -> GatewayFuture<CharactersResponse> {
     Box::pin(async move { native_fetch_characters(gateway_url, access_token) })
 }
 
@@ -234,7 +228,7 @@ fn native_enter_world_async(
     gateway_url: String,
     access_token: String,
     payload: EnterWorldRequest,
-) -> super::resources::GatewayFuture<EnterWorldResponse> {
+) -> GatewayFuture<EnterWorldResponse> {
     Box::pin(async move { native_enter_world(gateway_url, access_token, payload) })
 }
 
@@ -251,7 +245,7 @@ fn native_fetch_bootstrap_manifest(
 fn native_fetch_bootstrap_manifest_async(
     gateway_url: String,
     access_token: String,
-) -> super::resources::GatewayFuture<AssetBootstrapManifestResponse> {
+) -> GatewayFuture<AssetBootstrapManifestResponse> {
     Box::pin(async move { native_fetch_bootstrap_manifest(gateway_url, access_token) })
 }
 
@@ -259,14 +253,11 @@ fn native_fetch_asset_bytes(url: String, access_token: String) -> Result<Vec<u8>
     get_bytes(url, Some(&access_token))
 }
 
-fn native_fetch_asset_bytes_async(
-    url: String,
-    access_token: String,
-) -> super::resources::GatewayFuture<Vec<u8>> {
+fn native_fetch_asset_bytes_async(url: String, access_token: String) -> GatewayFuture<Vec<u8>> {
     Box::pin(async move { native_fetch_asset_bytes(url, access_token) })
 }
 
-pub(super) fn native_gateway_http_adapter() -> GatewayHttpAdapter {
+pub(crate) fn native_gateway_http_adapter() -> GatewayHttpAdapter {
     GatewayHttpAdapter {
         login: native_login_async,
         register: native_register_async,
@@ -280,20 +271,18 @@ pub(super) fn native_gateway_http_adapter() -> GatewayHttpAdapter {
     }
 }
 
-fn native_prepare_cache_root_async(asset_root: String) -> super::resources::CacheFuture<()> {
+fn native_prepare_cache_root_async(asset_root: String) -> CacheFuture<()> {
     Box::pin(async move { prepare_cache_root(&asset_root) })
 }
 
-fn native_load_cache_index_async(
-    asset_root: String,
-) -> super::resources::CacheFuture<AssetCacheIndex> {
+fn native_load_cache_index_async(asset_root: String) -> CacheFuture<AssetCacheIndex> {
     Box::pin(async move { Ok(load_cache_index_for_asset_root(&asset_root)) })
 }
 
 fn native_save_cache_index_async(
     asset_root: String,
     cache_index: AssetCacheIndex,
-) -> super::resources::CacheFuture<()> {
+) -> CacheFuture<()> {
     Box::pin(async move { save_cache_index_for_asset_root(&asset_root, &cache_index) })
 }
 
@@ -301,7 +290,7 @@ fn native_read_cached_asset_if_valid_async(
     asset_root: String,
     relative_cache_path: String,
     expected_sha256: String,
-) -> super::resources::CacheFuture<Option<Vec<u8>>> {
+) -> CacheFuture<Option<Vec<u8>>> {
     Box::pin(async move {
         Ok(read_cached_asset_if_valid(
             &asset_root,
@@ -315,11 +304,11 @@ fn native_write_cached_asset_async(
     asset_root: String,
     relative_cache_path: String,
     bytes: Vec<u8>,
-) -> super::resources::CacheFuture<()> {
+) -> CacheFuture<()> {
     Box::pin(async move { write_cached_asset(&asset_root, &relative_cache_path, &bytes) })
 }
 
-pub(super) fn native_asset_cache_adapter() -> AssetCacheAdapter {
+pub(crate) fn native_asset_cache_adapter() -> AssetCacheAdapter {
     AssetCacheAdapter {
         prepare_root: native_prepare_cache_root_async,
         load_index: native_load_cache_index_async,

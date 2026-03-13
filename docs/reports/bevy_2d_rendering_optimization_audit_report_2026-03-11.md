@@ -17,7 +17,7 @@ The game still does not read like a client that is primarily limited by simple 2
 The most important current conclusions:
 
 1. The strongest bottleneck is still upstream of the renderer: replication visibility rebuild/apply work in [`bins/sidereal-replication/src/replication/visibility.rs:667`](bins/sidereal-replication/src/replication/visibility.rs:667).
-2. The client still pays a large amount of render-adjacent CPU work each frame in [`bins/sidereal-client/src/native/plugins.rs:260`](bins/sidereal-client/src/native/plugins.rs:260), [`bins/sidereal-client/src/native/render_layers.rs:20`](bins/sidereal-client/src/native/render_layers.rs:20), [`bins/sidereal-client/src/native/shaders.rs:640`](bins/sidereal-client/src/native/shaders.rs:640), and [`bins/sidereal-client/src/native/ui.rs:1696`](bins/sidereal-client/src/native/ui.rs:1696).
+2. The client still pays a large amount of render-adjacent CPU work each frame in [`bins/sidereal-client/src/runtime/plugins.rs:260`](bins/sidereal-client/src/runtime/plugins.rs:260), [`bins/sidereal-client/src/runtime/render_layers.rs:20`](bins/sidereal-client/src/runtime/render_layers.rs:20), [`bins/sidereal-client/src/runtime/shaders.rs:640`](bins/sidereal-client/src/runtime/shaders.rs:640), and [`bins/sidereal-client/src/runtime/ui.rs:1696`](bins/sidereal-client/src/runtime/ui.rs:1696).
 3. The renderer is likely not primarily GPU-bound in normal gameplay. The code suggests the main pain is unstable cadence and CPU work around the render path, not raw sprite fill cost.
 4. The current render-layer direction is still correct and should be kept. The problem is the amount of transitional and content-specific Rust logic still wrapped around it.
 
@@ -49,11 +49,11 @@ The most important current conclusions:
 - Why it matters:
   In-world `Update` and `PostUpdate` still run a long chain of systems for replicated adoption, asset dependency maintenance, render-layer registry sync, layer assignment, duplicate suppression, visual attachment, fullscreen sync, lighting, HUD, tactical overlays, camera sync, and visual transform updates. Even if each piece is individually reasonable, the aggregate cost competes directly with smooth presentation.
 - Exact references:
-  - [`bins/sidereal-client/src/native/plugins.rs:109`](bins/sidereal-client/src/native/plugins.rs:109)
-  - [`bins/sidereal-client/src/native/plugins.rs:139`](bins/sidereal-client/src/native/plugins.rs:139)
-  - [`bins/sidereal-client/src/native/plugins.rs:260`](bins/sidereal-client/src/native/plugins.rs:260)
-  - [`bins/sidereal-client/src/native/plugins.rs:359`](bins/sidereal-client/src/native/plugins.rs:359)
-  - [`bins/sidereal-client/src/native/plugins.rs:430`](bins/sidereal-client/src/native/plugins.rs:430)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:109`](bins/sidereal-client/src/runtime/plugins.rs:109)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:139`](bins/sidereal-client/src/runtime/plugins.rs:139)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:260`](bins/sidereal-client/src/runtime/plugins.rs:260)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:359`](bins/sidereal-client/src/runtime/plugins.rs:359)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:430`](bins/sidereal-client/src/runtime/plugins.rs:430)
 - Concrete recommendation:
   Budget the hot path explicitly. Move more of this work behind dirty checks, state changes, or lower-frequency lanes. The client schedule is now big enough that optimization should start with schedule shape, not micro-tuning individual systems.
 
@@ -65,11 +65,11 @@ The most important current conclusions:
 - Why it matters:
   The client still keeps duplicate winner-selection state and a suppression pass alive in the hot path. That is a direct signal that the presentation lifecycle is still compensating for replicated adoption/handoff complexity instead of receiving one clearly renderable winner.
 - Exact references:
-  - [`bins/sidereal-client/src/native/visuals.rs:374`](bins/sidereal-client/src/native/visuals.rs:374)
-  - [`bins/sidereal-client/src/native/visuals.rs:591`](bins/sidereal-client/src/native/visuals.rs:591)
-  - [`bins/sidereal-client/src/native/replication.rs:471`](bins/sidereal-client/src/native/replication.rs:471)
-  - [`bins/sidereal-client/src/native/replication.rs:797`](bins/sidereal-client/src/native/replication.rs:797)
-  - [`bins/sidereal-client/src/native/transforms.rs:174`](bins/sidereal-client/src/native/transforms.rs:174)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:374`](bins/sidereal-client/src/runtime/visuals.rs:374)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:591`](bins/sidereal-client/src/runtime/visuals.rs:591)
+  - [`bins/sidereal-client/src/runtime/replication.rs:471`](bins/sidereal-client/src/runtime/replication.rs:471)
+  - [`bins/sidereal-client/src/runtime/replication.rs:797`](bins/sidereal-client/src/runtime/replication.rs:797)
+  - [`bins/sidereal-client/src/runtime/transforms.rs:174`](bins/sidereal-client/src/runtime/transforms.rs:174)
 - Concrete recommendation:
   Resolve winner selection closer to adoption/control-handoff and make duplicate suppression the rare fallback, not a standing visual maintenance system.
 
@@ -81,14 +81,14 @@ The most important current conclusions:
 - Why it matters:
   The in-world scene still uses distinct backdrop, planet, gameplay, debug overlay, fullscreen foreground, post-process, and UI overlay camera lanes. This can be justified in a mature pipeline, but it is expensive baseline render/extraction overhead while other CPU-heavy systems are still broad and unstable.
 - Exact references:
-  - [`bins/sidereal-client/src/native/scene.rs:16`](bins/sidereal-client/src/native/scene.rs:16)
-  - [`bins/sidereal-client/src/native/scene_world.rs:38`](bins/sidereal-client/src/native/scene_world.rs:38)
-  - [`bins/sidereal-client/src/native/scene_world.rs:61`](bins/sidereal-client/src/native/scene_world.rs:61)
-  - [`bins/sidereal-client/src/native/scene_world.rs:86`](bins/sidereal-client/src/native/scene_world.rs:86)
-  - [`bins/sidereal-client/src/native/scene_world.rs:101`](bins/sidereal-client/src/native/scene_world.rs:101)
-  - [`bins/sidereal-client/src/native/scene_world.rs:127`](bins/sidereal-client/src/native/scene_world.rs:127)
-  - [`bins/sidereal-client/src/native/scene_world.rs:142`](bins/sidereal-client/src/native/scene_world.rs:142)
-  - [`bins/sidereal-client/src/native/scene_world.rs:156`](bins/sidereal-client/src/native/scene_world.rs:156)
+  - [`bins/sidereal-client/src/runtime/scene.rs:16`](bins/sidereal-client/src/runtime/scene.rs:16)
+  - [`bins/sidereal-client/src/runtime/scene_world.rs:38`](bins/sidereal-client/src/runtime/scene_world.rs:38)
+  - [`bins/sidereal-client/src/runtime/scene_world.rs:61`](bins/sidereal-client/src/runtime/scene_world.rs:61)
+  - [`bins/sidereal-client/src/runtime/scene_world.rs:86`](bins/sidereal-client/src/runtime/scene_world.rs:86)
+  - [`bins/sidereal-client/src/runtime/scene_world.rs:101`](bins/sidereal-client/src/runtime/scene_world.rs:101)
+  - [`bins/sidereal-client/src/runtime/scene_world.rs:127`](bins/sidereal-client/src/runtime/scene_world.rs:127)
+  - [`bins/sidereal-client/src/runtime/scene_world.rs:142`](bins/sidereal-client/src/runtime/scene_world.rs:142)
+  - [`bins/sidereal-client/src/runtime/scene_world.rs:156`](bins/sidereal-client/src/runtime/scene_world.rs:156)
 - Concrete recommendation:
   Count passes and cameras as a budgeted resource. Re-evaluate whether fullscreen foreground and post-process must remain separate always-on camera lanes right now. The debug overlay camera should not stay active by default.
 
@@ -100,12 +100,12 @@ The most important current conclusions:
 - Why it matters:
   Shared quad mesh caching exists, so the old “reallocate fullscreen mesh every frame” concern is gone. The remaining render-path cost is material diversity: fullscreen materials, planet multi-pass materials, asteroid materials, thruster/effect materials, projectile/tracer/spark effect materials, and per-path custom `Material2d` usage. That reduces batching and increases render-world churn.
 - Exact references:
-  - [`bins/sidereal-client/src/native/backdrop.rs:624`](bins/sidereal-client/src/native/backdrop.rs:624)
-  - [`bins/sidereal-client/src/native/visuals.rs:781`](bins/sidereal-client/src/native/visuals.rs:781)
-  - [`bins/sidereal-client/src/native/visuals.rs:1317`](bins/sidereal-client/src/native/visuals.rs:1317)
-  - [`bins/sidereal-client/src/native/visuals.rs:1851`](bins/sidereal-client/src/native/visuals.rs:1851)
-  - [`bins/sidereal-client/src/native/visuals.rs:2188`](bins/sidereal-client/src/native/visuals.rs:2188)
-  - [`bins/sidereal-client/src/native/debug_overlay.rs:125`](bins/sidereal-client/src/native/debug_overlay.rs:125)
+  - [`bins/sidereal-client/src/runtime/backdrop.rs:624`](bins/sidereal-client/src/runtime/backdrop.rs:624)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:781`](bins/sidereal-client/src/runtime/visuals.rs:781)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:1317`](bins/sidereal-client/src/runtime/visuals.rs:1317)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:1851`](bins/sidereal-client/src/runtime/visuals.rs:1851)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:2188`](bins/sidereal-client/src/runtime/visuals.rs:2188)
+  - [`bins/sidereal-client/src/runtime/debug_overlay.rs:125`](bins/sidereal-client/src/runtime/debug_overlay.rs:125)
 - Concrete recommendation:
   Reduce entity-unique material instances where shared buckets are sufficient. Planet and effect paths need an explicit material-instance budget.
 
@@ -119,9 +119,9 @@ The most important current conclusions:
 - Why it matters:
   The render-layer registry and assignment code is more incremental than before, but it still runs active authored-state checks every frame. Shader assignment inference also still scans runtime render layers and shader-bearing entities every frame.
 - Exact references:
-  - [`bins/sidereal-client/src/native/render_layers.rs:20`](bins/sidereal-client/src/native/render_layers.rs:20)
-  - [`bins/sidereal-client/src/native/render_layers.rs:195`](bins/sidereal-client/src/native/render_layers.rs:195)
-  - [`bins/sidereal-client/src/native/shaders.rs:640`](bins/sidereal-client/src/native/shaders.rs:640)
+  - [`bins/sidereal-client/src/runtime/render_layers.rs:20`](bins/sidereal-client/src/runtime/render_layers.rs:20)
+  - [`bins/sidereal-client/src/runtime/render_layers.rs:195`](bins/sidereal-client/src/runtime/render_layers.rs:195)
+  - [`bins/sidereal-client/src/runtime/shaders.rs:640`](bins/sidereal-client/src/runtime/shaders.rs:640)
 - Concrete recommendation:
   Move further toward change-driven authored render-state maintenance. The current code is acceptable migration logic, but not a final cheap hot path.
 
@@ -133,9 +133,9 @@ The most important current conclusions:
 - Why it matters:
   Tactical overlays, nameplate synchronization, owned-entity panel updates, and runtime screen overlay pass updates all stay active in the in-world `Update` path. This is render-adjacent CPU work that can easily dominate a 2D frame even when the GPU is fine.
 - Exact references:
-  - [`bins/sidereal-client/src/native/plugins.rs:359`](bins/sidereal-client/src/native/plugins.rs:359)
-  - [`bins/sidereal-client/src/native/ui.rs:1696`](bins/sidereal-client/src/native/ui.rs:1696)
-  - [`bins/sidereal-client/src/native/ui.rs:1811`](bins/sidereal-client/src/native/ui.rs:1811)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:359`](bins/sidereal-client/src/runtime/plugins.rs:359)
+  - [`bins/sidereal-client/src/runtime/ui.rs:1696`](bins/sidereal-client/src/runtime/ui.rs:1696)
+  - [`bins/sidereal-client/src/runtime/ui.rs:1811`](bins/sidereal-client/src/runtime/ui.rs:1811)
 - Concrete recommendation:
   Lower tactical/nameplate update frequency, separate data refresh from presentation interpolation, and add counters for visible overlay elements.
 
@@ -147,9 +147,9 @@ The most important current conclusions:
 - Why it matters:
   When a streamed WGSL asset arrives, the client can immediately reinstall runtime shader assets. That is directionally correct for hot-reload/content iteration, but it is also a hitch vector in normal runtime if shader fetches happen during active play.
 - Exact references:
-  - [`bins/sidereal-client/src/native/assets.rs:549`](bins/sidereal-client/src/native/assets.rs:549)
-  - [`bins/sidereal-client/src/native/shaders.rs:538`](bins/sidereal-client/src/native/shaders.rs:538)
-  - [`bins/sidereal-client/src/native/shaders.rs:560`](bins/sidereal-client/src/native/shaders.rs:560)
+  - [`bins/sidereal-client/src/runtime/assets.rs:549`](bins/sidereal-client/src/runtime/assets.rs:549)
+  - [`bins/sidereal-client/src/runtime/shaders.rs:538`](bins/sidereal-client/src/runtime/shaders.rs:538)
+  - [`bins/sidereal-client/src/runtime/shaders.rs:560`](bins/sidereal-client/src/runtime/shaders.rs:560)
 - Concrete recommendation:
   Separate dev hot-reload behavior from normal runtime behavior, or at least batch shader reloads so one asset arrival does not immediately force a visible pipeline churn.
 
@@ -161,10 +161,10 @@ The most important current conclusions:
 - Why it matters:
   Even where final draw visibility is controlled, several maintenance systems still query broad sets of world entities or child visuals. That means the renderer is paying CPU-side upkeep for entities that are not materially contributing to the frame.
 - Exact references:
-  - [`bins/sidereal-client/src/native/visuals.rs:1245`](bins/sidereal-client/src/native/visuals.rs:1245)
-  - [`bins/sidereal-client/src/native/visuals.rs:1636`](bins/sidereal-client/src/native/visuals.rs:1636)
-  - [`bins/sidereal-client/src/native/visuals.rs:1910`](bins/sidereal-client/src/native/visuals.rs:1910)
-  - [`bins/sidereal-client/src/native/visuals.rs:2472`](bins/sidereal-client/src/native/visuals.rs:2472)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:1245`](bins/sidereal-client/src/runtime/visuals.rs:1245)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:1636`](bins/sidereal-client/src/runtime/visuals.rs:1636)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:1910`](bins/sidereal-client/src/runtime/visuals.rs:1910)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:2472`](bins/sidereal-client/src/runtime/visuals.rs:2472)
 - Concrete recommendation:
   Narrow maintenance queries by visibility state, camera relevance, or active-pass membership where possible.
 

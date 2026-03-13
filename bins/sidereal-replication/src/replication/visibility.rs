@@ -1952,7 +1952,9 @@ pub fn update_network_visibility(
     let mut client_entities_by_player_id = HashMap::<String, Vec<Entity>>::new();
     let mut map_mode_client_entities_by_player_id = HashMap::<String, Vec<Entity>>::new();
     for client_state in &scratch.client_states {
-        let Some(client_context) = client_context_cache.by_client.get(&client_state.client_entity)
+        let Some(client_context) = client_context_cache
+            .by_client
+            .get(&client_state.client_entity)
         else {
             continue;
         };
@@ -2056,14 +2058,20 @@ pub fn update_network_visibility(
                     desired_visible_clients.insert(client_state.client_entity);
                 }
             }
-            PreparedEntityApplyPolicy::Conditional(policy) => {
+            PreparedEntityApplyPolicy::PublicVisible(_)
+            | PreparedEntityApplyPolicy::FactionVisible(_)
+            | PreparedEntityApplyPolicy::DiscoveredLandmark(_)
+            | PreparedEntityApplyPolicy::RangeChecked(_) => {
                 // Owner-in-map-view is a stable fast path once authorization resolves
                 // to Owner. Seed those clients up front so the generic loop focuses on
                 // client-varying range/faction/discovery work instead of repeating the
                 // same owner-map bypass check for every client candidate.
-                let owner_map_clients = policy.owner_player_id.as_ref().and_then(|owner_player_id| {
-                    map_mode_client_entities_by_player_id.get(owner_player_id.as_str())
-                });
+                let owner_map_clients =
+                    prepared_policy
+                        .owner_player_id()
+                        .and_then(|owner_player_id| {
+                            map_mode_client_entities_by_player_id.get(owner_player_id)
+                        });
                 if let Some(owner_map_clients) = owner_map_clients {
                     for client_entity in owner_map_clients {
                         desired_visible_clients.insert(*client_entity);
@@ -2078,7 +2086,7 @@ pub fn update_network_visibility(
                     else {
                         continue;
                     };
-                    if policy.controlled_owner_client == Some(client_entity) {
+                    if prepared_policy.controlled_owner_client() == Some(client_entity) {
                         // Hard guarantee: the owning client must always receive state for
                         // their currently controlled entity, independent of visibility/range.
                         desired_visible_clients.insert(client_entity);
@@ -2086,30 +2094,11 @@ pub fn update_network_visibility(
                     }
                     let visibility_context =
                         PlayerVisibilityContextRef::from_cached_client_context(client_context);
-                    let is_discovered_static_landmark = policy.is_discovered_for_client(client_context);
-                    let landmark_delivery_range_m = if is_discovered_static_landmark {
-                        client_context.delivery_range_m * policy.discovered_delivery_scale
-                    } else {
-                        client_context.delivery_range_m
-                    };
-                    let effective_entity_extent_m = if is_discovered_static_landmark {
-                        policy.discovered_extent_m
-                    } else {
-                        policy.authorization_extent_m
-                    };
                     let in_candidates = client_state.candidate_entities.contains(&entity);
-                    let visibility_eval = evaluate_visibility_for_client(
-                        visibility_context.player_entity_id,
-                        policy.owner_player_id.as_deref(),
-                        policy.is_public,
-                        policy.is_faction_visible,
-                        is_discovered_static_landmark,
-                        policy.entity_faction_id.as_deref(),
-                        policy.entity_position,
-                        policy.authorization_extent_m,
-                        effective_entity_extent_m,
+                    let visibility_eval = evaluate_prepared_entity_policy_for_client(
+                        &prepared_policy,
+                        client_context,
                         &visibility_context,
-                        landmark_delivery_range_m,
                         matches!(visibility_context.view_mode, ClientLocalViewMode::Map),
                     );
                     if !in_candidates && !visibility_eval.bypass_candidate {
@@ -2123,10 +2112,10 @@ pub fn update_network_visibility(
                                 visibility_context.player_entity_id,
                                 in_candidates,
                                 visibility_eval.bypass_candidate,
-                                policy.owner_player_id.as_deref(),
-                                policy.is_public,
-                                policy.is_faction_visible,
-                                policy.entity_position,
+                                prepared_policy.owner_player_id(),
+                                prepared_policy.is_public_visibility(),
+                                prepared_policy.is_faction_visibility(),
+                                prepared_policy.entity_position(),
                                 visibility_context.observer_anchor_position,
                             );
                         }
@@ -2145,12 +2134,12 @@ pub fn update_network_visibility(
                             visibility_context.player_entity_id,
                             in_candidates,
                             visibility_eval.bypass_candidate,
-                            policy.owner_player_id.as_deref(),
-                            policy.is_public,
-                            policy.is_faction_visible,
+                            prepared_policy.owner_player_id(),
+                            prepared_policy.is_public_visibility(),
+                            prepared_policy.is_faction_visibility(),
                             visibility_eval.authorization,
                             visibility_eval.delivery_ok,
-                            policy.entity_position,
+                            prepared_policy.entity_position(),
                             visibility_context.observer_anchor_position,
                             current_visible_clients.contains(&client_entity),
                             if visibility_eval.should_be_visible {
@@ -2429,30 +2418,32 @@ enum PreparedLandmarkVisibilityPolicy {
 
 #[derive(Debug, Clone, PartialEq)]
 enum PreparedEntityApplyPolicy {
-    OwnerOnlyAnchor {
-        owner_player_id: Option<String>,
-    },
+    OwnerOnlyAnchor { owner_player_id: Option<String> },
     GlobalVisible,
-    Conditional(PreparedConditionalEntityApplyPolicy),
+    PublicVisible(PreparedPublicEntityApplyPolicy),
+    FactionVisible(PreparedFactionEntityApplyPolicy),
+    DiscoveredLandmark(PreparedDiscoveredLandmarkApplyPolicy),
+    RangeChecked(PreparedRangeCheckedEntityApplyPolicy),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct PreparedConditionalEntityApplyPolicy {
+struct PreparedConditionalEntityApplyCommon {
     owner_player_id: Option<String>,
-    entity_faction_id: Option<String>,
-    is_public: bool,
-    is_faction_visible: bool,
     entity_position: Option<Vec3>,
     authorization_extent_m: f32,
-    discovered_extent_m: f32,
-    discovered_delivery_scale: f32,
-    landmark_policy: PreparedLandmarkVisibilityPolicy,
     controlled_owner_client: Option<Entity>,
 }
 
-impl PreparedConditionalEntityApplyPolicy {
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedLandmarkDeliveryPolicy {
+    visibility_policy: PreparedLandmarkVisibilityPolicy,
+    discovered_extent_m: f32,
+    discovered_delivery_scale: f32,
+}
+
+impl PreparedLandmarkDeliveryPolicy {
     fn is_discovered_for_client(&self, client_context: &CachedClientVisibilityContext) -> bool {
-        match self.landmark_policy {
+        match self.visibility_policy {
             PreparedLandmarkVisibilityPolicy::None => false,
             PreparedLandmarkVisibilityPolicy::AlwaysKnown => true,
             PreparedLandmarkVisibilityPolicy::PlayerDiscovered(guid) => {
@@ -2460,8 +2451,91 @@ impl PreparedConditionalEntityApplyPolicy {
             }
         }
     }
+
+    fn delivery_profile_for_client(
+        &self,
+        client_context: &CachedClientVisibilityContext,
+        default_extent_m: f32,
+        default_delivery_range_m: f32,
+    ) -> (bool, f32, f32) {
+        if self.is_discovered_for_client(client_context) {
+            (
+                true,
+                self.discovered_extent_m,
+                default_delivery_range_m * self.discovered_delivery_scale,
+            )
+        } else {
+            (false, default_extent_m, default_delivery_range_m)
+        }
+    }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedPublicEntityApplyPolicy {
+    common: PreparedConditionalEntityApplyCommon,
+    landmark_delivery: Option<PreparedLandmarkDeliveryPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedFactionEntityApplyPolicy {
+    common: PreparedConditionalEntityApplyCommon,
+    entity_faction_id: Option<String>,
+    landmark_delivery: Option<PreparedLandmarkDeliveryPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedDiscoveredLandmarkApplyPolicy {
+    common: PreparedConditionalEntityApplyCommon,
+    landmark_delivery: PreparedLandmarkDeliveryPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedRangeCheckedEntityApplyPolicy {
+    common: PreparedConditionalEntityApplyCommon,
+}
+
+impl PreparedEntityApplyPolicy {
+    fn owner_player_id(&self) -> Option<&str> {
+        match self {
+            Self::OwnerOnlyAnchor { owner_player_id } => owner_player_id.as_deref(),
+            Self::GlobalVisible => None,
+            Self::PublicVisible(policy) => policy.common.owner_player_id.as_deref(),
+            Self::FactionVisible(policy) => policy.common.owner_player_id.as_deref(),
+            Self::DiscoveredLandmark(policy) => policy.common.owner_player_id.as_deref(),
+            Self::RangeChecked(policy) => policy.common.owner_player_id.as_deref(),
+        }
+    }
+
+    fn controlled_owner_client(&self) -> Option<Entity> {
+        match self {
+            Self::OwnerOnlyAnchor { .. } | Self::GlobalVisible => None,
+            Self::PublicVisible(policy) => policy.common.controlled_owner_client,
+            Self::FactionVisible(policy) => policy.common.controlled_owner_client,
+            Self::DiscoveredLandmark(policy) => policy.common.controlled_owner_client,
+            Self::RangeChecked(policy) => policy.common.controlled_owner_client,
+        }
+    }
+
+    fn entity_position(&self) -> Option<Vec3> {
+        match self {
+            Self::OwnerOnlyAnchor { .. } | Self::GlobalVisible => None,
+            Self::PublicVisible(policy) => policy.common.entity_position,
+            Self::FactionVisible(policy) => policy.common.entity_position,
+            Self::DiscoveredLandmark(policy) => policy.common.entity_position,
+            Self::RangeChecked(policy) => policy.common.entity_position,
+        }
+    }
+
+    fn is_public_visibility(&self) -> bool {
+        matches!(self, Self::PublicVisible(_))
+    }
+
+    fn is_faction_visibility(&self) -> bool {
+        matches!(self, Self::FactionVisible(_))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn prepare_entity_apply_policy(
     cached: &CachedVisibilityEntity,
     root_public: bool,
@@ -2481,7 +2555,10 @@ fn prepare_entity_apply_policy(
         .owner_player_id
         .clone()
         .or_else(|| root_owner_player_id.cloned());
-    let entity_faction_id = cached.faction_id.clone().or_else(|| root_faction_id.cloned());
+    let entity_faction_id = cached
+        .faction_id
+        .clone()
+        .or_else(|| root_faction_id.cloned());
     if cached.is_player_tag {
         if owner_player_id.is_none() {
             owner_player_id = cached.guid.map(|guid| guid.to_string());
@@ -2492,29 +2569,207 @@ fn prepare_entity_apply_policy(
         return PreparedEntityApplyPolicy::GlobalVisible;
     }
     let landmark_policy = match (cached.static_landmark.as_ref(), cached.guid) {
-        (Some(landmark), _) if landmark.always_known => PreparedLandmarkVisibilityPolicy::AlwaysKnown,
+        (Some(landmark), _) if landmark.always_known => {
+            PreparedLandmarkVisibilityPolicy::AlwaysKnown
+        }
         (Some(_), Some(guid)) => PreparedLandmarkVisibilityPolicy::PlayerDiscovered(guid),
         _ => PreparedLandmarkVisibilityPolicy::None,
     };
-    PreparedEntityApplyPolicy::Conditional(PreparedConditionalEntityApplyPolicy {
+    let common = PreparedConditionalEntityApplyCommon {
         owner_player_id,
-        entity_faction_id,
-        is_public,
-        is_faction_visible: cached.faction_visibility,
         entity_position,
         authorization_extent_m: entity_extent_m,
-        discovered_extent_m: effective_discovered_landmark_extent_m(
-            entity_extent_m,
-            resolved_world_layer,
-            runtime_world_visual_stack,
-        ),
-        discovered_delivery_scale: 1.0 / runtime_layer_parallax_factor(resolved_world_layer),
-        landmark_policy,
         controlled_owner_client: controlled_by.map(|binding| binding.owner),
-    })
+    };
+    let landmark_delivery = (!matches!(landmark_policy, PreparedLandmarkVisibilityPolicy::None))
+        .then(|| PreparedLandmarkDeliveryPolicy {
+            visibility_policy: landmark_policy,
+            discovered_extent_m: effective_discovered_landmark_extent_m(
+                entity_extent_m,
+                resolved_world_layer,
+                runtime_world_visual_stack,
+            ),
+            discovered_delivery_scale: 1.0 / runtime_layer_parallax_factor(resolved_world_layer),
+        });
+
+    if is_public {
+        return PreparedEntityApplyPolicy::PublicVisible(PreparedPublicEntityApplyPolicy {
+            common,
+            landmark_delivery,
+        });
+    }
+    if cached.faction_visibility {
+        return PreparedEntityApplyPolicy::FactionVisible(PreparedFactionEntityApplyPolicy {
+            common,
+            entity_faction_id,
+            landmark_delivery,
+        });
+    }
+    if let Some(landmark_delivery) = landmark_delivery {
+        return PreparedEntityApplyPolicy::DiscoveredLandmark(
+            PreparedDiscoveredLandmarkApplyPolicy {
+                common,
+                landmark_delivery,
+            },
+        );
+    }
+    PreparedEntityApplyPolicy::RangeChecked(PreparedRangeCheckedEntityApplyPolicy { common })
+}
+
+fn evaluate_prepared_entity_policy_for_client(
+    prepared_policy: &PreparedEntityApplyPolicy,
+    client_context: &CachedClientVisibilityContext,
+    visibility_context: &PlayerVisibilityContextRef<'_>,
+    owner_bypasses_delivery_scope: bool,
+) -> VisibilityEvaluation {
+    match prepared_policy {
+        PreparedEntityApplyPolicy::OwnerOnlyAnchor { .. }
+        | PreparedEntityApplyPolicy::GlobalVisible => VisibilityEvaluation {
+            authorization: None,
+            bypass_candidate: false,
+            delivery_ok: false,
+            should_be_visible: false,
+        },
+        PreparedEntityApplyPolicy::PublicVisible(policy) => {
+            let authorization = authorize_owner_visibility(
+                visibility_context.player_entity_id,
+                policy.common.owner_player_id.as_deref(),
+            )
+            .or(Some(VisibilityAuthorization::Public));
+            let (_, delivery_extent_m, delivery_range_m) = policy
+                .landmark_delivery
+                .as_ref()
+                .map(|landmark| {
+                    landmark.delivery_profile_for_client(
+                        client_context,
+                        policy.common.authorization_extent_m,
+                        client_context.delivery_range_m,
+                    )
+                })
+                .unwrap_or((
+                    false,
+                    policy.common.authorization_extent_m,
+                    client_context.delivery_range_m,
+                ));
+            finalize_visibility_evaluation(
+                authorization,
+                policy.common.entity_position,
+                delivery_extent_m,
+                visibility_context,
+                delivery_range_m,
+                owner_bypasses_delivery_scope,
+            )
+        }
+        PreparedEntityApplyPolicy::FactionVisible(policy) => {
+            let authorization = authorize_owner_visibility(
+                visibility_context.player_entity_id,
+                policy.common.owner_player_id.as_deref(),
+            )
+            .or_else(|| {
+                authorize_faction_visibility(
+                    policy.entity_faction_id.as_deref(),
+                    visibility_context,
+                )
+            });
+            let (_, delivery_extent_m, delivery_range_m) = policy
+                .landmark_delivery
+                .as_ref()
+                .map(|landmark| {
+                    landmark.delivery_profile_for_client(
+                        client_context,
+                        policy.common.authorization_extent_m,
+                        client_context.delivery_range_m,
+                    )
+                })
+                .unwrap_or((
+                    false,
+                    policy.common.authorization_extent_m,
+                    client_context.delivery_range_m,
+                ));
+            finalize_visibility_evaluation(
+                authorization,
+                policy.common.entity_position,
+                delivery_extent_m,
+                visibility_context,
+                delivery_range_m,
+                owner_bypasses_delivery_scope,
+            )
+        }
+        PreparedEntityApplyPolicy::DiscoveredLandmark(policy) => {
+            let (is_discovered_static_landmark, delivery_extent_m, delivery_range_m) =
+                policy.landmark_delivery.delivery_profile_for_client(
+                    client_context,
+                    policy.common.authorization_extent_m,
+                    client_context.delivery_range_m,
+                );
+            let authorization = authorize_owner_visibility(
+                visibility_context.player_entity_id,
+                policy.common.owner_player_id.as_deref(),
+            )
+            .or_else(|| authorize_discovered_landmark_visibility(is_discovered_static_landmark));
+            finalize_visibility_evaluation(
+                authorization,
+                policy.common.entity_position,
+                delivery_extent_m,
+                visibility_context,
+                delivery_range_m,
+                owner_bypasses_delivery_scope,
+            )
+        }
+        PreparedEntityApplyPolicy::RangeChecked(policy) => {
+            let authorization = authorize_owner_visibility(
+                visibility_context.player_entity_id,
+                policy.common.owner_player_id.as_deref(),
+            )
+            .or_else(|| {
+                authorize_range_visibility(
+                    policy.common.entity_position,
+                    policy.common.authorization_extent_m,
+                    visibility_context,
+                )
+            });
+            finalize_visibility_evaluation(
+                authorization,
+                policy.common.entity_position,
+                policy.common.authorization_extent_m,
+                visibility_context,
+                client_context.delivery_range_m,
+                owner_bypasses_delivery_scope,
+            )
+        }
+    }
+}
+
+fn finalize_visibility_evaluation(
+    authorization: Option<VisibilityAuthorization>,
+    entity_position: Option<Vec3>,
+    delivery_extent_m: f32,
+    visibility_context: &PlayerVisibilityContextRef<'_>,
+    delivery_range_m: f32,
+    owner_bypasses_delivery_scope: bool,
+) -> VisibilityEvaluation {
+    let delivery_ok = authorization.is_some_and(|authorization| {
+        if owner_bypasses_delivery_scope && matches!(authorization, VisibilityAuthorization::Owner)
+        {
+            return true;
+        }
+        passes_delivery_scope(
+            entity_position,
+            delivery_extent_m,
+            visibility_context,
+            delivery_range_m,
+        )
+    });
+    VisibilityEvaluation {
+        authorization,
+        bypass_candidate: authorization.is_some(),
+        delivery_ok,
+        should_be_visible: authorization.is_some() && delivery_ok,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn evaluate_visibility_for_client(
     player_entity_id: &str,
     owner_player_id: Option<&str>,
@@ -2540,23 +2795,14 @@ fn evaluate_visibility_for_client(
         authorization_extent_m,
         visibility_context,
     );
-    let delivery_ok = authorization.is_some_and(|authorization| {
-        if owner_bypasses_delivery_scope && matches!(authorization, VisibilityAuthorization::Owner) {
-            return true;
-        }
-        passes_delivery_scope(
-            entity_position,
-            delivery_extent_m,
-            visibility_context,
-            delivery_range_m,
-        )
-    });
-    VisibilityEvaluation {
+    finalize_visibility_evaluation(
         authorization,
-        bypass_candidate: authorization.is_some(),
-        delivery_ok,
-        should_be_visible: authorization.is_some() && delivery_ok,
-    }
+        entity_position,
+        delivery_extent_m,
+        visibility_context,
+        delivery_range_m,
+        owner_bypasses_delivery_scope,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2573,23 +2819,57 @@ pub(crate) fn authorize_visibility(
 ) -> Option<VisibilityAuthorization> {
     // Ownership/public/faction are policy exceptions and must be evaluated
     // before any spatial delivery narrowing.
-    if owner_player_id.is_some_and(|owner| owner == player_entity_id) {
-        return Some(VisibilityAuthorization::Owner);
+    if let Some(authorization) = authorize_owner_visibility(player_entity_id, owner_player_id) {
+        return Some(authorization);
     }
     if is_faction_visibility
-        && visibility_context
-            .player_faction_id
-            .zip(entity_faction_id)
-            .is_some_and(|(player_faction, entity_faction)| player_faction == entity_faction)
+        && let Some(authorization) =
+            authorize_faction_visibility(entity_faction_id, visibility_context)
     {
-        return Some(VisibilityAuthorization::Faction);
+        return Some(authorization);
     }
     if is_public_visibility {
         return Some(VisibilityAuthorization::Public);
     }
-    if is_discovered_static_landmark {
-        return Some(VisibilityAuthorization::DiscoveredStaticLandmark);
+    if let Some(authorization) =
+        authorize_discovered_landmark_visibility(is_discovered_static_landmark)
+    {
+        return Some(authorization);
     }
+    authorize_range_visibility(entity_position, entity_extent_m, visibility_context)
+}
+
+fn authorize_owner_visibility(
+    player_entity_id: &str,
+    owner_player_id: Option<&str>,
+) -> Option<VisibilityAuthorization> {
+    owner_player_id
+        .is_some_and(|owner| owner == player_entity_id)
+        .then_some(VisibilityAuthorization::Owner)
+}
+
+fn authorize_faction_visibility(
+    entity_faction_id: Option<&str>,
+    visibility_context: &PlayerVisibilityContextRef<'_>,
+) -> Option<VisibilityAuthorization> {
+    visibility_context
+        .player_faction_id
+        .zip(entity_faction_id)
+        .is_some_and(|(player_faction, entity_faction)| player_faction == entity_faction)
+        .then_some(VisibilityAuthorization::Faction)
+}
+
+fn authorize_discovered_landmark_visibility(
+    is_discovered_static_landmark: bool,
+) -> Option<VisibilityAuthorization> {
+    is_discovered_static_landmark.then_some(VisibilityAuthorization::DiscoveredStaticLandmark)
+}
+
+fn authorize_range_visibility(
+    entity_position: Option<Vec3>,
+    entity_extent_m: f32,
+    visibility_context: &PlayerVisibilityContextRef<'_>,
+) -> Option<VisibilityAuthorization> {
     let target_position = entity_position?;
     visibility_context
         .visibility_sources
@@ -2617,6 +2897,25 @@ fn passes_delivery_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cached_client_visibility_context(
+        player_entity_id: &str,
+        player_faction_id: Option<&str>,
+        delivery_range_m: f32,
+        visibility_sources: Vec<(Vec3, f32)>,
+        discovered_static_landmarks: impl IntoIterator<Item = uuid::Uuid>,
+    ) -> CachedClientVisibilityContext {
+        CachedClientVisibilityContext {
+            player_entity_id: player_entity_id.to_string(),
+            player_entity: None,
+            observer_anchor_position: Some(Vec3::ZERO),
+            visibility_sources,
+            discovered_static_landmarks: discovered_static_landmarks.into_iter().collect(),
+            player_faction_id: player_faction_id.map(str::to_string),
+            view_mode: ClientLocalViewMode::Tactical,
+            delivery_range_m,
+        }
+    }
 
     #[test]
     fn candidate_mode_defaults_to_spatial_grid() {
@@ -2847,7 +3146,10 @@ mod tests {
             DEFAULT_VIEW_RANGE_M,
             true,
         );
-        assert_eq!(map_owner.authorization, Some(VisibilityAuthorization::Owner));
+        assert_eq!(
+            map_owner.authorization,
+            Some(VisibilityAuthorization::Owner)
+        );
         assert!(map_owner.bypass_candidate);
         assert!(map_owner.delivery_ok);
         assert!(map_owner.should_be_visible);
@@ -2898,7 +3200,7 @@ mod tests {
             PreparedEntityApplyPolicy::GlobalVisible
         ));
 
-        let discovered = CachedVisibilityEntity {
+        let public_landmark = CachedVisibilityEntity {
             guid: Some(uuid::Uuid::new_v4()),
             static_landmark: Some(StaticLandmark {
                 kind: "Landmark".to_string(),
@@ -2910,8 +3212,8 @@ mod tests {
             public_visibility: true,
             ..Default::default()
         };
-        let PreparedEntityApplyPolicy::Conditional(policy) = prepare_entity_apply_policy(
-            &discovered,
+        let PreparedEntityApplyPolicy::PublicVisible(policy) = prepare_entity_apply_policy(
+            &public_landmark,
             false,
             None,
             None,
@@ -2921,14 +3223,261 @@ mod tests {
             None,
             None,
         ) else {
-            panic!("expected conditional policy");
+            panic!("expected public-visible policy");
         };
-        assert!(policy.is_public);
         assert!(matches!(
-            policy.landmark_policy,
-            PreparedLandmarkVisibilityPolicy::PlayerDiscovered(_)
+            policy
+                .landmark_delivery
+                .as_ref()
+                .map(|landmark| landmark.visibility_policy),
+            Some(PreparedLandmarkVisibilityPolicy::PlayerDiscovered(_))
         ));
-        assert_eq!(policy.authorization_extent_m, 6.0);
+        assert_eq!(policy.common.authorization_extent_m, 6.0);
+
+        let faction_visible = CachedVisibilityEntity {
+            faction_visibility: true,
+            faction_id: Some("alpha".to_string()),
+            ..Default::default()
+        };
+        let PreparedEntityApplyPolicy::FactionVisible(policy) = prepare_entity_apply_policy(
+            &faction_visible,
+            false,
+            None,
+            None,
+            Some(Vec3::ZERO),
+            8.0,
+            None,
+            None,
+            None,
+        ) else {
+            panic!("expected faction-visible policy");
+        };
+        assert_eq!(policy.entity_faction_id.as_deref(), Some("alpha"));
+        assert!(policy.landmark_delivery.is_none());
+
+        let discovered_landmark_guid = uuid::Uuid::new_v4();
+        let discovered_landmark = CachedVisibilityEntity {
+            guid: Some(discovered_landmark_guid),
+            static_landmark: Some(StaticLandmark {
+                kind: "Landmark".to_string(),
+                discoverable: true,
+                always_known: false,
+                discovery_radius_m: None,
+                use_extent_for_discovery: false,
+            }),
+            ..Default::default()
+        };
+        let PreparedEntityApplyPolicy::DiscoveredLandmark(policy) = prepare_entity_apply_policy(
+            &discovered_landmark,
+            false,
+            None,
+            None,
+            Some(Vec3::ZERO),
+            5.0,
+            None,
+            None,
+            None,
+        ) else {
+            panic!("expected discovered-landmark policy");
+        };
+        assert!(matches!(
+            policy.landmark_delivery.visibility_policy,
+            PreparedLandmarkVisibilityPolicy::PlayerDiscovered(guid)
+                if guid == discovered_landmark_guid
+        ));
+
+        let range_checked = CachedVisibilityEntity::default();
+        assert!(matches!(
+            prepare_entity_apply_policy(
+                &range_checked,
+                false,
+                None,
+                None,
+                Some(Vec3::ZERO),
+                3.0,
+                None,
+                None,
+                None,
+            ),
+            PreparedEntityApplyPolicy::RangeChecked(_)
+        ));
+    }
+
+    #[test]
+    fn prepared_policy_evaluation_preserves_specialized_authorization_paths() {
+        let public_policy = prepare_entity_apply_policy(
+            &CachedVisibilityEntity {
+                public_visibility: true,
+                ..Default::default()
+            },
+            false,
+            None,
+            None,
+            Some(Vec3::new(100.0, 0.0, 0.0)),
+            0.0,
+            None,
+            None,
+            None,
+        );
+        let public_client =
+            cached_client_visibility_context("player-public", None, 300.0, Vec::new(), []);
+        let public_visibility_context =
+            PlayerVisibilityContextRef::from_cached_client_context(&public_client);
+        let public_eval = evaluate_prepared_entity_policy_for_client(
+            &public_policy,
+            &public_client,
+            &public_visibility_context,
+            false,
+        );
+        assert_eq!(
+            public_eval.authorization,
+            Some(VisibilityAuthorization::Public)
+        );
+        assert!(public_eval.bypass_candidate);
+        assert!(public_eval.should_be_visible);
+
+        let faction_policy = prepare_entity_apply_policy(
+            &CachedVisibilityEntity {
+                faction_visibility: true,
+                faction_id: Some("alpha".to_string()),
+                ..Default::default()
+            },
+            false,
+            None,
+            None,
+            Some(Vec3::new(100.0, 0.0, 0.0)),
+            0.0,
+            None,
+            None,
+            None,
+        );
+        let faction_client = cached_client_visibility_context(
+            "player-faction",
+            Some("alpha"),
+            300.0,
+            Vec::new(),
+            [],
+        );
+        let faction_visibility_context =
+            PlayerVisibilityContextRef::from_cached_client_context(&faction_client);
+        let faction_eval = evaluate_prepared_entity_policy_for_client(
+            &faction_policy,
+            &faction_client,
+            &faction_visibility_context,
+            false,
+        );
+        assert_eq!(
+            faction_eval.authorization,
+            Some(VisibilityAuthorization::Faction)
+        );
+        assert!(faction_eval.should_be_visible);
+
+        let other_faction_client = cached_client_visibility_context(
+            "player-faction-other",
+            Some("beta"),
+            300.0,
+            Vec::new(),
+            [],
+        );
+        let other_faction_visibility_context =
+            PlayerVisibilityContextRef::from_cached_client_context(&other_faction_client);
+        let other_faction_eval = evaluate_prepared_entity_policy_for_client(
+            &faction_policy,
+            &other_faction_client,
+            &other_faction_visibility_context,
+            false,
+        );
+        assert_eq!(other_faction_eval.authorization, None);
+        assert!(!other_faction_eval.bypass_candidate);
+        assert!(!other_faction_eval.should_be_visible);
+
+        let discovered_landmark_guid = uuid::Uuid::new_v4();
+        let discovered_policy = prepare_entity_apply_policy(
+            &CachedVisibilityEntity {
+                guid: Some(discovered_landmark_guid),
+                static_landmark: Some(StaticLandmark {
+                    kind: "Landmark".to_string(),
+                    discoverable: true,
+                    always_known: false,
+                    discovery_radius_m: None,
+                    use_extent_for_discovery: false,
+                }),
+                ..Default::default()
+            },
+            false,
+            None,
+            None,
+            Some(Vec3::new(100.0, 0.0, 0.0)),
+            0.0,
+            None,
+            None,
+            None,
+        );
+        let discovered_client = cached_client_visibility_context(
+            "player-discovered",
+            None,
+            300.0,
+            Vec::new(),
+            [discovered_landmark_guid],
+        );
+        let discovered_visibility_context =
+            PlayerVisibilityContextRef::from_cached_client_context(&discovered_client);
+        let discovered_eval = evaluate_prepared_entity_policy_for_client(
+            &discovered_policy,
+            &discovered_client,
+            &discovered_visibility_context,
+            false,
+        );
+        assert_eq!(
+            discovered_eval.authorization,
+            Some(VisibilityAuthorization::DiscoveredStaticLandmark)
+        );
+        assert!(discovered_eval.should_be_visible);
+
+        let undiscovered_client =
+            cached_client_visibility_context("player-undiscovered", None, 300.0, Vec::new(), []);
+        let undiscovered_visibility_context =
+            PlayerVisibilityContextRef::from_cached_client_context(&undiscovered_client);
+        let undiscovered_eval = evaluate_prepared_entity_policy_for_client(
+            &discovered_policy,
+            &undiscovered_client,
+            &undiscovered_visibility_context,
+            false,
+        );
+        assert_eq!(undiscovered_eval.authorization, None);
+        assert!(!undiscovered_eval.should_be_visible);
+
+        let range_policy = prepare_entity_apply_policy(
+            &CachedVisibilityEntity::default(),
+            false,
+            None,
+            None,
+            Some(Vec3::new(150.0, 0.0, 0.0)),
+            10.0,
+            None,
+            None,
+            None,
+        );
+        let range_client = cached_client_visibility_context(
+            "player-range",
+            None,
+            300.0,
+            vec![(Vec3::ZERO, 200.0)],
+            [],
+        );
+        let range_visibility_context =
+            PlayerVisibilityContextRef::from_cached_client_context(&range_client);
+        let range_eval = evaluate_prepared_entity_policy_for_client(
+            &range_policy,
+            &range_client,
+            &range_visibility_context,
+            false,
+        );
+        assert_eq!(
+            range_eval.authorization,
+            Some(VisibilityAuthorization::Range)
+        );
+        assert!(range_eval.should_be_visible);
     }
 
     #[test]

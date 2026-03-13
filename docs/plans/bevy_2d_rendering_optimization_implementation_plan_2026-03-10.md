@@ -10,7 +10,7 @@ Primary input:
 Update note (2026-03-10):
 - This plan was revised after the refreshed March 10 audit superseded the earlier same-day draft.
 - The previous plan over-prioritized fullscreen/post-process churn based on an incorrect earlier finding.
-- Shared fullscreen quad caching already exists in `bins/sidereal-client/src/native/backdrop.rs:643`.
+- Shared fullscreen quad caching already exists in `bins/sidereal-client/src/runtime/backdrop.rs:643`.
 - The highest-priority work is now:
   1. instrumentation,
   2. replication visibility cadence,
@@ -118,14 +118,14 @@ Work:
 
 Files expected:
 
-1. `bins/sidereal-client/src/native/resources.rs`
-2. `bins/sidereal-client/src/native/plugins.rs`
-3. `bins/sidereal-client/src/native/shaders.rs`
-4. `bins/sidereal-client/src/native/render_layers.rs`
-5. `bins/sidereal-client/src/native/assets.rs`
-6. `bins/sidereal-client/src/native/ui.rs`
-7. `bins/sidereal-client/src/native/visuals.rs`
-8. `bins/sidereal-client/src/native/backdrop.rs`
+1. `bins/sidereal-client/src/runtime/resources.rs`
+2. `bins/sidereal-client/src/runtime/plugins.rs`
+3. `bins/sidereal-client/src/runtime/shaders.rs`
+4. `bins/sidereal-client/src/runtime/render_layers.rs`
+5. `bins/sidereal-client/src/runtime/assets.rs`
+6. `bins/sidereal-client/src/runtime/ui.rs`
+7. `bins/sidereal-client/src/runtime/visuals.rs`
+8. `bins/sidereal-client/src/runtime/backdrop.rs`
 9. `bins/sidereal-replication/src/replication/visibility.rs`
 
 Acceptance criteria:
@@ -200,10 +200,10 @@ Work:
 
 Files expected:
 
-1. `bins/sidereal-client/src/native/auth_net.rs`
-2. `bins/sidereal-client/src/native/assets.rs`
-3. `bins/sidereal-client/src/native/resources.rs`
-4. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/auth_net.rs`
+2. `bins/sidereal-client/src/runtime/assets.rs`
+3. `bins/sidereal-client/src/runtime/resources.rs`
+4. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Tests:
 
@@ -242,10 +242,10 @@ Work:
 
 Files expected:
 
-1. `bins/sidereal-client/src/native/shaders.rs`
-2. `bins/sidereal-client/src/native/render_layers.rs`
-3. `bins/sidereal-client/src/native/resources.rs`
-4. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/shaders.rs`
+2. `bins/sidereal-client/src/runtime/render_layers.rs`
+3. `bins/sidereal-client/src/runtime/resources.rs`
+4. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Tests:
 
@@ -287,9 +287,9 @@ Work:
 
 Files expected:
 
-1. `bins/sidereal-client/src/native/ui.rs`
-2. `bins/sidereal-client/src/native/resources.rs`
-3. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/ui.rs`
+2. `bins/sidereal-client/src/runtime/resources.rs`
+3. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Tests:
 
@@ -317,12 +317,12 @@ Work:
 
 Files expected:
 
-1. `bins/sidereal-client/src/native/visuals.rs`
-2. `bins/sidereal-client/src/native/debug_overlay.rs`
-3. `bins/sidereal-client/src/native/ui.rs`
-4. `bins/sidereal-client/src/native/scene_world.rs`
-5. `bins/sidereal-client/src/native/plugins.rs`
-6. `bins/sidereal-client/src/native/resources.rs`
+1. `bins/sidereal-client/src/runtime/visuals.rs`
+2. `bins/sidereal-client/src/runtime/debug_overlay.rs`
+3. `bins/sidereal-client/src/runtime/ui.rs`
+4. `bins/sidereal-client/src/runtime/scene_world.rs`
+5. `bins/sidereal-client/src/runtime/plugins.rs`
+6. `bins/sidereal-client/src/runtime/resources.rs`
 
 Tests:
 
@@ -354,9 +354,9 @@ Work:
 
 Files expected:
 
-1. `bins/sidereal-client/src/native/visuals.rs`
-2. `bins/sidereal-client/src/native/backdrop.rs`
-3. `bins/sidereal-client/src/native/resources.rs`
+1. `bins/sidereal-client/src/runtime/visuals.rs`
+2. `bins/sidereal-client/src/runtime/backdrop.rs`
+3. `bins/sidereal-client/src/runtime/resources.rs`
 
 Tests:
 

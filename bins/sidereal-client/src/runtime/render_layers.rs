@@ -617,8 +617,8 @@ mod tests {
     use super::{
         resolve_runtime_render_layer_assignments_system, sync_runtime_render_layer_registry_system,
     };
-    use crate::native::components::{ResolvedRuntimeRenderLayer, WorldEntity};
-    use crate::native::resources::{
+    use crate::runtime::components::{ResolvedRuntimeRenderLayer, WorldEntity};
+    use crate::runtime::resources::{
         CompiledRuntimeRenderLayerRule, RenderLayerPerfCounters, RuntimeRenderLayerAssignmentCache,
         RuntimeRenderLayerRegistry, RuntimeRenderLayerRegistryState,
     };

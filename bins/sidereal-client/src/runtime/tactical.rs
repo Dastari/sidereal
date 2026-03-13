@@ -279,7 +279,7 @@ mod tests {
         apply_tactical_contacts_delta, apply_tactical_contacts_snapshot, apply_tactical_fog_delta,
         apply_tactical_fog_snapshot,
     };
-    use crate::native::resources::{TacticalContactsCache, TacticalFogCache};
+    use crate::runtime::resources::{TacticalContactsCache, TacticalFogCache};
     use sidereal_net::{
         GridCell, ServerTacticalContactsDeltaMessage, ServerTacticalContactsSnapshotMessage,
         ServerTacticalFogDeltaMessage, ServerTacticalFogSnapshotMessage, TacticalContact,

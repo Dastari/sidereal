@@ -682,5 +682,5 @@ Entity shard handoff at system boundaries is a future concern and is orthogonal 
 - `data/scripts/bundles/*.lua` -- script-authored entity graph record generation.
 - `crates/sidereal-runtime-sync/src/lib.rs` -- position hydration (f64 truncation site).
 - `crates/sidereal-game/src/entities/fullscreen_layers.rs` -- backdrop entity bundles.
-- `bins/sidereal-client/src/native/backdrop.rs` -- client backdrop rendering and shader materials.
+- `bins/sidereal-client/src/runtime/backdrop.rs` -- client backdrop rendering and shader materials.
 - `data/scripts/world/world_init.lua` -- world bootstrap script.

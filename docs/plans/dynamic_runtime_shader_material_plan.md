@@ -209,10 +209,10 @@ Hard requirement: client runtime must never crash/panic due to missing or invali
 ## 7. Migration Scope for Existing Hardcoded Paths
 
 The following runtime hardcoded references are migration targets:
-1. `bins/sidereal-client/src/native/assets.rs`
-2. `bins/sidereal-client/src/native/backdrop.rs`
-3. `bins/sidereal-client/src/native/platform.rs`
-4. `bins/sidereal-client/src/native/shaders.rs`
+1. `bins/sidereal-client/src/runtime/assets.rs`
+2. `bins/sidereal-client/src/runtime/backdrop.rs`
+3. `bins/sidereal-client/src/runtime/platform.rs`
+4. `bins/sidereal-client/src/runtime/shaders.rs`
 5. `bins/sidereal-gateway/src/api.rs`
 6. `bins/sidereal-gateway/tests/api_helpers.rs`
 7. `crates/sidereal-asset-runtime/src/lib.rs`

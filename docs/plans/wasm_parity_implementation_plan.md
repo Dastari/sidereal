@@ -64,7 +64,7 @@ This is not "just add another Lightyear transport." The current native client st
 
 ### 2.1 What already helps parity
 
-- Client behavior is already decomposed into plugins under `bins/sidereal-client/src/native/plugins.rs`.
+- Client behavior is already decomposed into plugins under `bins/sidereal-client/src/runtime/plugins.rs`.
 - Most gameplay/prediction logic is already shared via:
   - `crates/sidereal-game`
   - `crates/sidereal-net`
@@ -73,10 +73,10 @@ This is not "just add another Lightyear transport." The current native client st
 
 ### 2.2 What is still outstanding today
 
-- `bins/sidereal-client/src/wasm.rs` now boots the shared gameplay runtime shell, but it still needs live browser validation against gateway + replication.
+- `bins/sidereal-client/src/platform/wasm.rs` now boots the shared gameplay runtime shell, but it still needs live browser validation against gateway + replication.
 - `bins/sidereal-client/Cargo.toml`
   - intentionally keeps the shared lib target `rlib`-only for native/Windows build stability; any future wasm packaging/export flow must handle browser artifact emission explicitly.
-- `bins/sidereal-client/src/native/remote.rs` remains native-only by design for now; BRP is intentionally absent from wasm.
+- `bins/sidereal-client/src/platform/native/remote.rs` remains native-only by design for now; BRP is intentionally absent from wasm.
 - Browser transport/caching now compiles end to end, but parity-critical runtime behavior still needs integration coverage.
 - The asset delivery contract’s long-term physical packed-cache target is still follow-up work; the current browser adapter exposes the required byte-backed/indexed semantics through platform storage.
 - Browser/WASM currently runs with shader materials disabled by default as a temporary mitigation for browser-only WebGPU/Bevy fullscreen/material shader failures; use `SIDEREAL_ENABLE_SHADER_MATERIALS=1` only for focused browser shader debugging.
@@ -124,15 +124,15 @@ Current browser runtime note:
 
 ## 4.2 File-level follow-up areas still worth checking
 
-- `bins/sidereal-client/src/wasm.rs`
+- `bins/sidereal-client/src/platform/wasm.rs`
   - needs live browser validation against real gateway + replication endpoints.
-- `bins/sidereal-client/src/native/input.rs`
+- `bins/sidereal-client/src/runtime/input.rs`
   - needs explicit parity validation for browser focus/blur and local-intent ownership semantics.
-- `bins/sidereal-client/src/native/dialog_ui.rs`
+- `bins/sidereal-client/src/runtime/dialog_ui.rs`
   - needs explicit confirmation that persistent dialog UX matches native behavior in browser runtime.
-- `bins/sidereal-client/src/native/platform.rs`
+- `bins/sidereal-client/src/runtime/platform.rs`
   - still needs a cleanup audit for native-only helper behavior that may not belong in shared runtime code.
-- `bins/sidereal-client/src/native/dev_console.rs`
+- `bins/sidereal-client/src/runtime/dev_console.rs`
   - still needs a wasm-compatibility audit for any file/device assumptions.
 - `crates/sidereal-net/tests/lightyear_protocol.rs`
   - currently covers basic registration, but not the stronger regression cases around protocol/input split boundaries.
@@ -173,7 +173,7 @@ Stop treating WASM as a second app.
 
 Required work:
 
-- [x] Extract common client app construction from `bins/sidereal-client/src/native/mod.rs` into shared entry helpers.
+- [x] Extract common client app construction from `bins/sidereal-client/src/runtime/mod.rs` into shared entry helpers.
 - [x] Make the shared entry own:
   - core Bevy plugin wiring,
   - fixed timestep setup,
@@ -181,17 +181,20 @@ Required work:
   - shared client plugins,
   - shared runtime state machine.
 - [x] Keep platform-specific entry files thin:
-  - `native/mod.rs` sets native adapters/plugins,
-  - `wasm.rs` sets wasm adapters/plugins,
+  - `platform/native/entry.rs` sets native adapters/plugins,
+  - `platform/wasm.rs` sets wasm adapters/plugins,
   - both call the same shared app-builder.
-- [x] Remove the scaffold-only behavior from `wasm.rs`.
+- [x] Remove the scaffold-only behavior from `platform/wasm.rs`.
 
 Concrete target shape:
 
 - `build_windowed_client_app(...) -> App`
-- `build_headless_client_app(...) -> App`
-- `native::run()` provides native adapters and native-only diagnostics
-- `wasm::run()` provides wasm adapters and browser render settings
+- `platform::native::build_headless_client_app(... ) -> App`
+- `platform::native::run()` provides native adapters and native-only diagnostics
+- `platform::wasm::run()` provides wasm adapters and browser render settings
+
+2026-03-13 status note:
+The shared runtime builder/setup responsibilities now live in `bins/sidereal-client/src/runtime/app_builder.rs` and `bins/sidereal-client/src/runtime/app_setup.rs`; `bins/sidereal-client/src/runtime/mod.rs` is now a thin module/re-export layer rather than the direct app-construction implementation file.
 
 Exit criteria:
 
@@ -258,7 +261,7 @@ Replace the UDP-only client bootstrap with a wasm transport boundary.
 
 Required work on client:
 
-- [x] Replace `bins/sidereal-client/src/native/transport.rs` with:
+- [x] Replace `bins/sidereal-client/src/runtime/transport.rs` with:
   - shared transport orchestration,
   - native UDP adapter,
   - wasm browser transport adapter.
@@ -292,7 +295,7 @@ The current auth/world-entry path is native-only even before gameplay starts.
 
 Required work:
 
-- [x] Replace blocking HTTP in `bins/sidereal-client/src/native/auth_net.rs` with a platform adapter interface.
+- [x] Replace blocking HTTP in `bins/sidereal-client/src/runtime/auth_net.rs` with a platform adapter interface.
 - [x] Preserve current flow semantics:
   - login/register/password reset,
   - `/auth/me`,
@@ -323,9 +326,9 @@ Required work:
 
 - [x] Extract cache-index operations from `crates/sidereal-asset-runtime/src/lib.rs` behind storage backends.
 - [x] Replace direct filesystem calls in:
-  - `bins/sidereal-client/src/native/auth_net.rs`
-  - `bins/sidereal-client/src/native/assets.rs`
-  - `bins/sidereal-client/src/native/shaders.rs`
+  - `bins/sidereal-client/src/runtime/auth_net.rs`
+  - `bins/sidereal-client/src/runtime/assets.rs`
+  - `bins/sidereal-client/src/runtime/shaders.rs`
 - [x] Define a logical cache backend with identical semantics across platforms:
   - load/save cache index,
   - probe cached payload,
@@ -351,9 +354,9 @@ Rendering parity still depends on local shader/source path assumptions.
 
 Required work:
 
-- [x] Replace direct local shader-source reads in `bins/sidereal-client/src/native/shaders.rs` with asset-backend-driven resolution.
+- [x] Replace direct local shader-source reads in `bins/sidereal-client/src/runtime/shaders.rs` with asset-backend-driven resolution.
 - [x] Ensure shader/material installation can consume cached bytes or validated runtime assets instead of assuming local files.
-- [ ] Audit `bins/sidereal-client/src/native/platform.rs`, `dev_console.rs`, and any file-based debug helpers for wasm-incompatible behavior.
+- [ ] Audit `bins/sidereal-client/src/runtime/platform.rs`, `dev_console.rs`, and any file-based debug helpers for wasm-incompatible behavior.
 - [x] Keep the same render-layer/material semantics across native and wasm.
 
 Exit criteria:
@@ -407,23 +410,23 @@ Exit criteria:
 
 - `bins/sidereal-client/Cargo.toml`
 - `bins/sidereal-client/src/main.rs`
-- `bins/sidereal-client/src/native/mod.rs`
-- `bins/sidereal-client/src/wasm.rs`
+- `bins/sidereal-client/src/runtime/mod.rs`
+- `bins/sidereal-client/src/platform/wasm.rs`
 
 ## 6.2 Protocol and input registration
 
 - `crates/sidereal-net/src/lightyear_protocol/registration.rs`
-- `bins/sidereal-client/src/native/input.rs`
+- `bins/sidereal-client/src/runtime/input.rs`
 
 ## 6.3 Transport boundary
 
-- `bins/sidereal-client/src/native/transport.rs`
+- `bins/sidereal-client/src/runtime/transport.rs`
 - replication transport/server bootstrap files
 
 ## 6.4 Auth and asset HTTP boundary
 
-- `bins/sidereal-client/src/native/auth_net.rs`
-- `bins/sidereal-client/src/native/assets.rs`
+- `bins/sidereal-client/src/runtime/auth_net.rs`
+- `bins/sidereal-client/src/runtime/assets.rs`
 
 ## 6.5 Cache/storage backend
 
@@ -432,7 +435,7 @@ Exit criteria:
 
 ## 6.6 Render/shader asset resolution
 
-- `bins/sidereal-client/src/native/shaders.rs`
+- `bins/sidereal-client/src/runtime/shaders.rs`
 - any file-based render helper usage
 
 ## 7. Risks and Misconceptions
@@ -464,7 +467,7 @@ The project contract explicitly requires the same asset state machine and valida
 
 ## 8. Definition of Done
 
-- [x] `bins/sidereal-client/src/wasm.rs` no longer boots a scaffold app.
+- [x] `bins/sidereal-client/src/platform/wasm.rs` no longer boots a scaffold app.
 - [x] Native and wasm both use one shared client app-builder and one shared state machine.
 - [x] Shared runtime crates compile for wasm.
 - [x] Protocol registration is target-agnostic and no longer hardcodes native input plugin wiring.

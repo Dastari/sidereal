@@ -1094,14 +1094,14 @@ mod tests {
         sync_unadopted_ballistic_projectile_visual_roots_system,
         update_weapon_impact_sparks_system,
     };
-    use crate::native::backdrop::RuntimeEffectMaterial;
-    use crate::native::components::{
+    use crate::runtime::backdrop::RuntimeEffectMaterial;
+    use crate::runtime::components::{
         BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
         StreamedVisualAttachmentKind, SuppressedPredictedDuplicateVisual, WeaponImpactSpark,
         WorldEntity,
     };
-    use crate::native::resources::DuplicateVisualResolutionState;
-    use crate::native::transforms::{
+    use crate::runtime::resources::DuplicateVisualResolutionState;
+    use crate::runtime::transforms::{
         reveal_world_entities_when_initial_transform_ready,
         sync_interpolated_world_entity_transforms_without_history,
     };
@@ -1182,7 +1182,7 @@ mod tests {
         );
         assert_eq!(offset, Vec2::new(-200.0, -40.0));
 
-        let layer = crate::native::components::ResolvedRuntimeRenderLayer {
+        let layer = crate::runtime::components::ResolvedRuntimeRenderLayer {
             layer_id: "midground_planets".to_string(),
             definition: sidereal_game::RuntimeRenderLayerDefinition {
                 layer_id: "midground_planets".to_string(),

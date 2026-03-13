@@ -182,7 +182,8 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         .runtime_asset_fetch_state
         .as_ref()
         .in_flight_asset_ids_len();
-    snapshot.stats.runtime_pending_fetch_count = stats_inputs.runtime_asset_perf.pending_fetch_count;
+    snapshot.stats.runtime_pending_fetch_count =
+        stats_inputs.runtime_asset_perf.pending_fetch_count;
     snapshot.stats.runtime_pending_persist_count =
         stats_inputs.runtime_asset_perf.pending_persist_count;
     snapshot.stats.runtime_asset_fetch_poll_last_ms =
@@ -980,8 +981,7 @@ fn build_debug_text_rows(
             label: "Persist ms".to_string(),
             value: format!(
                 "{:>4.1}/{:>4.1}",
-                stats.runtime_asset_persist_task_last_ms,
-                stats.runtime_asset_persist_task_max_ms
+                stats.runtime_asset_persist_task_last_ms, stats.runtime_asset_persist_task_max_ms
             ),
             severity: DebugSeverity::Normal,
         },
@@ -989,8 +989,7 @@ fn build_debug_text_rows(
             label: "SaveIdx ms".to_string(),
             value: format!(
                 "{:>4.1}/{:>4.1}",
-                stats.runtime_asset_save_index_last_ms,
-                stats.runtime_asset_save_index_max_ms
+                stats.runtime_asset_save_index_last_ms, stats.runtime_asset_save_index_max_ms
             ),
             severity: DebugSeverity::Normal,
         },
@@ -1142,23 +1141,22 @@ fn angle_delta_rad(a: f32, b: f32) -> f32 {
 mod tests {
     use super::{
         AuxiliaryDebugCandidate, ConfirmedGhostPose, RootDebugCandidate, angle_delta_rad,
-        build_debug_text_rows, collect_debug_overlay_snapshot_system,
-        resolve_auxiliary_candidate, resolve_root_candidates,
+        build_debug_text_rows, collect_debug_overlay_snapshot_system, resolve_auxiliary_candidate,
+        resolve_root_candidates,
     };
-    use crate::native::app_state::{ClientSession, LocalPlayerViewState};
-    use crate::native::assets::{
+    use crate::runtime::app_state::{ClientSession, LocalPlayerViewState};
+    use crate::runtime::assets::{
         LocalAssetManager, RuntimeAssetDependencyState, RuntimeAssetHttpFetchState,
     };
-    use crate::native::backdrop::{
+    use crate::runtime::backdrop::{
         AsteroidSpriteShaderMaterial, PlanetVisualMaterial, RuntimeEffectMaterial,
         StreamedSpriteShaderMaterial,
     };
-    use crate::native::components::{WeaponImpactSparkPool, WeaponTracerPool, WorldEntity};
-    use crate::native::resources::{
+    use crate::runtime::components::{WeaponImpactSparkPool, WeaponTracerPool, WorldEntity};
+    use crate::runtime::resources::{
         DebugCollisionShape, DebugEntityLane, DebugOverlayEntity, DebugOverlayMode,
-        DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats,
-        DuplicateVisualResolutionState, HudPerfCounters, RenderLayerPerfCounters,
-        RuntimeAssetPerfCounters,
+        DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DuplicateVisualResolutionState,
+        HudPerfCounters, RenderLayerPerfCounters, RuntimeAssetPerfCounters,
     };
     use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
@@ -1504,7 +1502,10 @@ mod tests {
         };
 
         let rows = build_debug_text_rows(&stats, None, &[]);
-        let labels = rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>();
+        let labels = rows
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>();
 
         assert!(labels.contains(&"Fetch/Persist"));
         assert!(labels.contains(&"Asset Poll ms"));

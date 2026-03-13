@@ -46,12 +46,12 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   The client has plugin names, but much of the real ownership still sits in large cross-domain files. `native/mod.rs` still owns major runtime composition and resource insertion, `plugins.rs` still wires most hot-path scheduling, and `visuals.rs` / `backdrop.rs` each combine multiple unrelated domains. This is not just style drift; it directly raises regression risk because lifecycle resets, schedule ordering, and runtime ownership are hard to review in isolation.
 - Exact references:
-  - [`bins/sidereal-client/src/native/mod.rs:100`](bins/sidereal-client/src/native/mod.rs:100)
-  - [`bins/sidereal-client/src/native/mod.rs:169`](bins/sidereal-client/src/native/mod.rs:169)
-  - [`bins/sidereal-client/src/native/plugins.rs:29`](bins/sidereal-client/src/native/plugins.rs:29)
-  - [`bins/sidereal-client/src/native/plugins.rs:109`](bins/sidereal-client/src/native/plugins.rs:109)
-  - [`bins/sidereal-client/src/native/visuals.rs:1`](bins/sidereal-client/src/native/visuals.rs:1)
-  - [`bins/sidereal-client/src/native/backdrop.rs:1`](bins/sidereal-client/src/native/backdrop.rs:1)
+  - [`bins/sidereal-client/src/runtime/mod.rs:100`](bins/sidereal-client/src/runtime/mod.rs:100)
+  - [`bins/sidereal-client/src/runtime/mod.rs:169`](bins/sidereal-client/src/runtime/mod.rs:169)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:29`](bins/sidereal-client/src/runtime/plugins.rs:29)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:109`](bins/sidereal-client/src/runtime/plugins.rs:109)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:1`](bins/sidereal-client/src/runtime/visuals.rs:1)
+  - [`bins/sidereal-client/src/runtime/backdrop.rs:1`](bins/sidereal-client/src/runtime/backdrop.rs:1)
 - Concrete recommendation:
   Split by ownership boundary, not by file size alone:
   - prediction/adoption
@@ -70,9 +70,9 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Exact references:
   - [`docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`](docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md)
   - [`docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`](docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md)
-  - [`bins/sidereal-client/src/native/shaders.rs:640`](bins/sidereal-client/src/native/shaders.rs:640)
-  - [`bins/sidereal-client/src/native/backdrop.rs:85`](bins/sidereal-client/src/native/backdrop.rs:85)
-  - [`bins/sidereal-client/src/native/visuals.rs:198`](bins/sidereal-client/src/native/visuals.rs:198)
+  - [`bins/sidereal-client/src/runtime/shaders.rs:640`](bins/sidereal-client/src/runtime/shaders.rs:640)
+  - [`bins/sidereal-client/src/runtime/backdrop.rs:85`](bins/sidereal-client/src/runtime/backdrop.rs:85)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:198`](bins/sidereal-client/src/runtime/visuals.rs:198)
 - Concrete recommendation:
   Reduce Rust-side named slot inference. Keep Rust responsible for shader-family/domain plumbing and fallback loading, but move concrete selection and compatibility decisions fully behind authored metadata where possible.
 
@@ -87,7 +87,7 @@ The main risks have shifted. The current problems are less about blatant contrac
   - [`docs/features/asset_delivery_contract.md:226`](docs/features/asset_delivery_contract.md:226)
   - [`crates/sidereal-asset-runtime/src/lib.rs:190`](crates/sidereal-asset-runtime/src/lib.rs:190)
   - [`crates/sidereal-asset-runtime/src/lib.rs:256`](crates/sidereal-asset-runtime/src/lib.rs:256)
-  - [`bins/sidereal-client/src/native/assets.rs:267`](bins/sidereal-client/src/native/assets.rs:267)
+  - [`bins/sidereal-client/src/runtime/assets.rs:267`](bins/sidereal-client/src/runtime/assets.rs:267)
   - [`bins/sidereal-gateway/src/api.rs:401`](bins/sidereal-gateway/src/api.rs:401)
 - Concrete recommendation:
   Either implement the documented packed-cache format or explicitly downgrade the docs to describe the current loose-file cache as the active contract. Do not leave this as an implicit migration forever.
@@ -113,10 +113,10 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   The client still has a whole subsystem dedicated to tracking duplicate entity GUID groups, choosing a winner, and hiding losers. The implementation is incremental rather than a naive full scan, but it still means duplicate presentation remains an active hot-path concern instead of being resolved closer to adoption/handoff boundaries.
 - Exact references:
-  - [`bins/sidereal-client/src/native/visuals.rs:374`](bins/sidereal-client/src/native/visuals.rs:374)
-  - [`bins/sidereal-client/src/native/visuals.rs:591`](bins/sidereal-client/src/native/visuals.rs:591)
-  - [`bins/sidereal-client/src/native/replication.rs:471`](bins/sidereal-client/src/native/replication.rs:471)
-  - [`bins/sidereal-client/src/native/replication.rs:797`](bins/sidereal-client/src/native/replication.rs:797)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:374`](bins/sidereal-client/src/runtime/visuals.rs:374)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:591`](bins/sidereal-client/src/runtime/visuals.rs:591)
+  - [`bins/sidereal-client/src/runtime/replication.rs:471`](bins/sidereal-client/src/runtime/replication.rs:471)
+  - [`bins/sidereal-client/src/runtime/replication.rs:797`](bins/sidereal-client/src/runtime/replication.rs:797)
 - Concrete recommendation:
   Make duplicate resolution a narrower lifecycle concern around replicated adoption/control-handoff instead of a persistent render-maintenance concern.
 
@@ -131,7 +131,7 @@ The main risks have shifted. The current problems are less about blatant contrac
   - [`bins/sidereal-replication/src/plugins.rs:56`](bins/sidereal-replication/src/plugins.rs:56)
   - [`bins/sidereal-replication/src/replication/input.rs:231`](bins/sidereal-replication/src/replication/input.rs:231)
   - [`bins/sidereal-client/src/client_core.rs:4`](bins/sidereal-client/src/client_core.rs:4)
-  - [`bins/sidereal-client/src/wasm.rs:37`](bins/sidereal-client/src/wasm.rs:37)
+  - [`bins/sidereal-client/src/platform/wasm.rs:37`](bins/sidereal-client/src/platform/wasm.rs:37)
 - Concrete recommendation:
   Do not relax server authority or split shared client/runtime code again while addressing the current hot-path issues.
 
@@ -144,9 +144,9 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   The codebase no longer looks inconsistent because of basic style or warning discipline. The bigger consistency problem is that a handful of large files now carry too many responsibilities and therefore force inconsistent local patterns inside themselves.
 - Exact references:
-  - [`bins/sidereal-client/src/native/visuals.rs`](bins/sidereal-client/src/native/visuals.rs)
-  - [`bins/sidereal-client/src/native/backdrop.rs`](bins/sidereal-client/src/native/backdrop.rs)
-  - [`bins/sidereal-client/src/native/debug_overlay.rs`](bins/sidereal-client/src/native/debug_overlay.rs)
+  - [`bins/sidereal-client/src/runtime/visuals.rs`](bins/sidereal-client/src/runtime/visuals.rs)
+  - [`bins/sidereal-client/src/runtime/backdrop.rs`](bins/sidereal-client/src/runtime/backdrop.rs)
+  - [`bins/sidereal-client/src/runtime/debug_overlay.rs`](bins/sidereal-client/src/runtime/debug_overlay.rs)
   - [`bins/sidereal-replication/src/replication/visibility.rs`](bins/sidereal-replication/src/replication/visibility.rs)
 - Concrete recommendation:
   Split by query/mutation boundary and runtime responsibility. Avoid continuing to add new behavior to these files.
@@ -158,7 +158,7 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   An empty active plugin is small, but it is still runtime-facing scaffolding and adds noise when reading the client composition.
 - Exact references:
-  - [`bins/sidereal-client/src/native/plugins.rs:572`](bins/sidereal-client/src/native/plugins.rs:572)
+  - [`bins/sidereal-client/src/runtime/plugins.rs:572`](bins/sidereal-client/src/runtime/plugins.rs:572)
 - Concrete recommendation:
   Either delete it until it has real ownership or move actual diagnostics ownership into it.
 
@@ -171,8 +171,8 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   Lua-authored `RuntimeRenderLayerDefinition` is live, but `FullscreenLayer` compatibility still exists in active fullscreen sync. That means the migration is not yet cleanly finished.
 - Exact references:
-  - [`bins/sidereal-client/src/native/backdrop.rs:85`](bins/sidereal-client/src/native/backdrop.rs:85)
-  - [`bins/sidereal-client/src/native/backdrop.rs:141`](bins/sidereal-client/src/native/backdrop.rs:141)
+  - [`bins/sidereal-client/src/runtime/backdrop.rs:85`](bins/sidereal-client/src/runtime/backdrop.rs:85)
+  - [`bins/sidereal-client/src/runtime/backdrop.rs:141`](bins/sidereal-client/src/runtime/backdrop.rs:141)
   - [`docs/features/visibility_replication_contract.md:49`](docs/features/visibility_replication_contract.md:49)
 - Concrete recommendation:
   Decide whether legacy `FullscreenLayer` is still required. If not, remove it and update docs in the same change.
@@ -185,7 +185,7 @@ The main risks have shifted. The current problems are less about blatant contrac
   Runtime layer validation, phase/domain checks, and authored-rule compilation are good structural decisions for this project. The issue is not the existence of render layers; it is the residual hardcoded content logic around them.
 - Exact references:
   - [`crates/sidereal-game/src/render_layers.rs`](crates/sidereal-game/src/render_layers.rs)
-  - [`bins/sidereal-client/src/native/render_layers.rs:20`](bins/sidereal-client/src/native/render_layers.rs:20)
+  - [`bins/sidereal-client/src/runtime/render_layers.rs:20`](bins/sidereal-client/src/runtime/render_layers.rs:20)
 - Concrete recommendation:
   Preserve the architecture. Simplify the transitional Rust-side content routing around it.
 
@@ -198,7 +198,7 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   The authoritative flow still uses fixed schedules, server-side physics ownership, and direct Avian components without reintroducing the old gameplay mirror-motion lane.
 - Exact references:
-  - [`bins/sidereal-client/src/native/mod.rs:169`](bins/sidereal-client/src/native/mod.rs:169)
+  - [`bins/sidereal-client/src/runtime/mod.rs:169`](bins/sidereal-client/src/runtime/mod.rs:169)
   - [`bins/sidereal-replication/src/main.rs:98`](bins/sidereal-replication/src/main.rs:98)
   - [`docs/sidereal_design_document.md:33`](docs/sidereal_design_document.md:33)
 - Concrete recommendation:
@@ -213,8 +213,8 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   The WASM client now boots through the shared windowed client builder rather than a separate render shell. That materially reduces future parity cost and is worth preserving.
 - Exact references:
-  - [`bins/sidereal-client/src/wasm.rs:37`](bins/sidereal-client/src/wasm.rs:37)
-  - [`bins/sidereal-client/src/native/mod.rs:278`](bins/sidereal-client/src/native/mod.rs:278)
+  - [`bins/sidereal-client/src/platform/wasm.rs:37`](bins/sidereal-client/src/platform/wasm.rs:37)
+  - [`bins/sidereal-client/src/runtime/mod.rs:278`](bins/sidereal-client/src/runtime/mod.rs:278)
 - Concrete recommendation:
   Continue keeping transport/platform differences at the boundary only.
 
@@ -258,9 +258,9 @@ The main risks have shifted. The current problems are less about blatant contrac
 - Why it matters:
   The workspace has clearly improved since March 10, but transitional logic remains concentrated in the same client render/presentation areas. That is the cleanup surface to keep reducing after the main visibility work.
 - Exact references:
-  - [`bins/sidereal-client/src/native/backdrop.rs:141`](bins/sidereal-client/src/native/backdrop.rs:141)
-  - [`bins/sidereal-client/src/native/visuals.rs:374`](bins/sidereal-client/src/native/visuals.rs:374)
-  - [`bins/sidereal-client/src/native/replication.rs:433`](bins/sidereal-client/src/native/replication.rs:433)
+  - [`bins/sidereal-client/src/runtime/backdrop.rs:141`](bins/sidereal-client/src/runtime/backdrop.rs:141)
+  - [`bins/sidereal-client/src/runtime/visuals.rs:374`](bins/sidereal-client/src/runtime/visuals.rs:374)
+  - [`bins/sidereal-client/src/runtime/replication.rs:433`](bins/sidereal-client/src/runtime/replication.rs:433)
 - Concrete recommendation:
   Treat these as explicit follow-up workstreams rather than letting them accumulate by default.
 
@@ -282,8 +282,8 @@ The main risks have shifted. The current problems are less about blatant contrac
 
 ### 10.3 Client startup and main loop
 
-1. Native `main.rs` calls `native::run()`. WASM `main.rs` calls `wasm::run()`, which uses the shared windowed client builder.
-2. `bins/sidereal-client/src/native/mod.rs` composes Bevy default/runtime plugins, Lightyear client/prediction plugins, Avian integration, runtime resources, and client-specific plugins.
+1. Native `main.rs` calls `platform::native::run()`. WASM `main.rs` calls `wasm::run()`, which uses the shared windowed client builder.
+2. `bins/sidereal-client/src/runtime/mod.rs` composes Bevy default/runtime plugins, Lightyear client/prediction plugins, Avian integration, runtime resources, and client-specific plugins.
 3. Startup/OnEnter systems build UI cameras, auth UI, world scene cameras, and bootstrap state.
 4. `Update` handles transport/auth messages, replicated entity adoption, asset dependency and fetch maintenance, render-layer registry/assignment sync, fullscreen/world visual sync, lighting, UI, tactical overlays, and pause/logout behavior.
 5. `PostUpdate` applies interpolation/correction-adjacent transform recovery, camera follow, visual transform updates, and debug snapshotting before transform propagation.

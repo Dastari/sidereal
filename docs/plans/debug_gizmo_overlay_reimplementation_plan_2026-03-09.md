@@ -47,7 +47,7 @@ That has made the overlay itself part of the debugging problem. We need a replac
 
 ## 2. Why A Full Reimplementation Is Justified
 
-The current overlay in [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/debug_overlay.rs) has already required multiple corrective passes:
+The current overlay in [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/debug_overlay.rs) has already required multiple corrective passes:
 
 - dedupe stable duplicate roots by GUID,
 - stop using `ViewVisibility` for winner selection,
@@ -138,7 +138,7 @@ That gives us:
 
 ## 6.1 Resources
 
-Introduce the following resources in `bins/sidereal-client/src/native/resources.rs` or a new dedicated debug module:
+Introduce the following resources in `bins/sidereal-client/src/runtime/resources.rs` or a new dedicated debug module:
 
 ```rust
 #[derive(Resource, Default)]
@@ -529,7 +529,7 @@ Suggested ownership:
 - `text_panel.rs`: UI nodes + fixed-width text formatting
 - `metrics.rs`: runtime counters and formatting helpers
 
-This avoids continuing monolithic growth in [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/native/debug_overlay.rs).
+This avoids continuing monolithic growth in [debug_overlay.rs](/home/toby/dev/sidereal_v3/bins/sidereal-client/src/runtime/debug_overlay.rs).
 
 ## 13. Rollout Plan
 

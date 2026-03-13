@@ -7264,6 +7264,7 @@ dependencies = [
 name = "sidereal-client"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "avian2d",
  "bevy",
  "bevy_remote",

@@ -49,13 +49,13 @@ The highest-value problems have shifted:
 - Why it matters:
   Runtime composition is cleaner than before, but ownership is still concentrated in a few large files. `native/mod.rs` still inserts large resource families and wires fixed/update/render scheduling. `plugins.rs`, `visuals.rs`, `backdrop.rs`, and `debug_overlay.rs` still carry too many responsibilities at once. That makes schedule ordering and regression review harder than it should be.
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs:109`
-  - `bins/sidereal-client/src/native/mod.rs:187`
-  - `bins/sidereal-client/src/native/mod.rs:236`
-  - `bins/sidereal-client/src/native/plugins.rs:268`
-  - `bins/sidereal-client/src/native/visuals.rs`
-  - `bins/sidereal-client/src/native/backdrop.rs`
-  - `bins/sidereal-client/src/native/debug_overlay.rs`
+  - `bins/sidereal-client/src/runtime/mod.rs:109`
+  - `bins/sidereal-client/src/runtime/mod.rs:187`
+  - `bins/sidereal-client/src/runtime/mod.rs:236`
+  - `bins/sidereal-client/src/runtime/plugins.rs:268`
+  - `bins/sidereal-client/src/runtime/visuals.rs`
+  - `bins/sidereal-client/src/runtime/backdrop.rs`
+  - `bins/sidereal-client/src/runtime/debug_overlay.rs`
 - Concrete recommendation:
   Split by runtime ownership boundary, not by arbitrary line count:
   - render-layer registry and assignment
@@ -104,8 +104,8 @@ The highest-value problems have shifted:
 - Exact references:
   - `bins/sidereal-replication/src/main.rs:84`
   - `bins/sidereal-replication/src/main.rs:120`
-  - `bins/sidereal-client/src/native/mod.rs:194`
-  - `bins/sidereal-client/src/native/mod.rs:224`
+  - `bins/sidereal-client/src/runtime/mod.rs:194`
+  - `bins/sidereal-client/src/runtime/mod.rs:224`
   - `bins/sidereal-gateway/src/main.rs:39`
 - Concrete recommendation:
   Keep the authority flow and shared fixed-step model intact while simplifying the surrounding runtime.
@@ -119,10 +119,10 @@ The highest-value problems have shifted:
 - Why it matters:
   `RuntimeShaderAssignmentSyncState` now gates `sync_runtime_shader_assignments_system()` behind `dirty || catalog_reloaded`. The dirty-marking system exists and watches exactly the right change/removal signals, but it does not appear to be scheduled anywhere in the client runtime. If so, runtime shader assignment changes after startup will stop propagating unless the asset catalog reloads. That is a live behavior regression, not just cleanup.
 - Exact references:
-  - `bins/sidereal-client/src/native/shaders.rs:316`
-  - `bins/sidereal-client/src/native/shaders.rs:655`
-  - `bins/sidereal-client/src/native/shaders.rs:721`
-  - `bins/sidereal-client/src/native/plugins.rs:284`
+  - `bins/sidereal-client/src/runtime/shaders.rs:316`
+  - `bins/sidereal-client/src/runtime/shaders.rs:655`
+  - `bins/sidereal-client/src/runtime/shaders.rs:721`
+  - `bins/sidereal-client/src/runtime/plugins.rs:284`
   - search evidence: `rg -n "mark_runtime_shader_assignments_dirty_system|sync_runtime_shader_assignments_system" bins/sidereal-client/src/native -S`
 - Concrete recommendation:
   Schedule `mark_runtime_shader_assignments_dirty_system` in the same runtime path as the sync system, before the sync system runs. Add a regression test proving that changes to `RuntimeRenderLayerDefinition`, `SpriteShaderAssetId`, `StreamedSpriteShaderAssetId`, `TacticalMapUiSettings`, `PlanetBodyShaderSettings`, or `ProceduralSprite` cause assignment recomputation without a catalog reload.
@@ -134,12 +134,12 @@ The highest-value problems have shifted:
 - Why it matters:
   The workspace no longer looks weak because of warning debt or gross style violations. The bigger consistency problem is that a few large files mix many domains, so each file develops its own local conventions and schedule assumptions.
 - Exact references:
-  - `bins/sidereal-client/src/native/visuals.rs` (2787 lines)
-  - `bins/sidereal-client/src/native/backdrop.rs` (1962 lines)
-  - `bins/sidereal-client/src/native/debug_overlay.rs` (1342 lines)
+  - `bins/sidereal-client/src/runtime/visuals.rs` (2787 lines)
+  - `bins/sidereal-client/src/runtime/backdrop.rs` (1962 lines)
+  - `bins/sidereal-client/src/runtime/debug_overlay.rs` (1342 lines)
   - `bins/sidereal-replication/src/replication/visibility.rs` (2800 lines)
-  - `bins/sidereal-client/src/native/plugins.rs` (589 lines)
-  - `bins/sidereal-client/src/native/mod.rs` (451 lines)
+  - `bins/sidereal-client/src/runtime/plugins.rs` (589 lines)
+  - `bins/sidereal-client/src/runtime/mod.rs` (451 lines)
 - Concrete recommendation:
   Stop adding new behavior to these files except for extraction work. Treat them as decomposition targets, not extension points.
 
@@ -150,7 +150,7 @@ The highest-value problems have shifted:
 - Why it matters:
   Empty runtime plugin shells make client composition harder to read and imply ownership that does not actually exist.
 - Exact references:
-  - `bins/sidereal-client/src/native/plugins.rs:585`
+  - `bins/sidereal-client/src/runtime/plugins.rs:585`
 - Concrete recommendation:
   Either delete it until it owns real diagnostics behavior or move actual diagnostics ownership into it.
 
@@ -163,9 +163,9 @@ The highest-value problems have shifted:
 - Why it matters:
   The authored runtime render-layer model is live, but the fullscreen sync path still accepts legacy `FullscreenLayer` input and synthesizes `legacy:*` layer IDs. The scripting docs also still say world init seeds legacy fullscreen layers. That means the migration is not complete and transitional compatibility is still in active runtime code.
 - Exact references:
-  - `bins/sidereal-client/src/native/backdrop.rs:85`
-  - `bins/sidereal-client/src/native/backdrop.rs:141`
-  - `bins/sidereal-client/src/native/backdrop.rs:291`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:85`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:141`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:291`
   - `docs/features/scripting_support.md:1844`
   - `docs/features/scripting_support.md:1850`
 - Concrete recommendation:
@@ -178,8 +178,8 @@ The highest-value problems have shifted:
 - Why it matters:
   Runtime layer definitions, phase/domain validation, and the shader-family model are a better long-term fit than hardcoded rendering branches. The issue is not the architecture. The issue is incomplete migration and residual content-specific logic around it.
 - Exact references:
-  - `bins/sidereal-client/src/native/render_layers.rs`
-  - `bins/sidereal-client/src/native/shaders.rs`
+  - `bins/sidereal-client/src/runtime/render_layers.rs`
+  - `bins/sidereal-client/src/runtime/shaders.rs`
   - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
   - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
 - Concrete recommendation:
@@ -194,7 +194,7 @@ The highest-value problems have shifted:
 - Why it matters:
   The active runtime still uses fixed schedules, explicit motion ownership discipline, and Avian authoritative motion components without reintroducing the old mirror-motion approach prohibited by AGENTS.
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs:236`
+  - `bins/sidereal-client/src/runtime/mod.rs:236`
   - `bins/sidereal-replication/src/plugins.rs:68`
   - `bins/sidereal-replication/src/main.rs:129`
 - Concrete recommendation:
@@ -209,9 +209,9 @@ The highest-value problems have shifted:
 - Why it matters:
   The client still routes both headless/windowed/native/WASM setups through a shared runtime configuration path rather than diverging into separate gameplay runtimes. That keeps later parity recovery tractable.
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs:187`
-  - `bins/sidereal-client/src/native/mod.rs:287`
-  - `bins/sidereal-client/src/native/mod.rs:313`
+  - `bins/sidereal-client/src/runtime/mod.rs:187`
+  - `bins/sidereal-client/src/runtime/mod.rs:287`
+  - `bins/sidereal-client/src/runtime/mod.rs:313`
   - `bins/sidereal-client/src/main.rs`
 - Concrete recommendation:
   Continue keeping platform differences at the transport and platform-IO boundary only.
@@ -255,9 +255,9 @@ The highest-value problems have shifted:
 - Why it matters:
   The codebase is cleaner than March 10 and March 11, but a recognizable class of transitional code remains clustered in rendering and presentation paths: legacy fullscreen support, empty diagnostics scaffolding, and broad duplicate/assignment management systems. That is now targeted cleanup work rather than a repo-wide problem.
 - Exact references:
-  - `bins/sidereal-client/src/native/backdrop.rs:291`
-  - `bins/sidereal-client/src/native/plugins.rs:585`
-  - `bins/sidereal-client/src/native/shaders.rs:655`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:291`
+  - `bins/sidereal-client/src/runtime/plugins.rs:585`
+  - `bins/sidereal-client/src/runtime/shaders.rs:655`
 - Concrete recommendation:
   Treat these as explicit deletion/migration tasks with owners and follow them through to removal.
 
@@ -289,10 +289,10 @@ The highest-value problems have shifted:
 
 ### Client startup and main loop
 
-1. Native startup parses env/CLI and chooses headless vs windowed app construction in `bins/sidereal-client/src/native/mod.rs:348`.
-2. Windowed mode installs Bevy default plugins, material plugins, SVG support, diagnostics, logging, and WGPU configuration in `bins/sidereal-client/src/native/mod.rs:313`.
-3. Shared runtime wiring then installs Avian, Lightyear client plugins, protocol registration, fixed tick, transport resources, asset resources, prediction/control resources, tactical/UI resources, and scene/render resources in `bins/sidereal-client/src/native/mod.rs:187`.
-4. Fixed-step gameplay and motion ownership systems are wired in `bins/sidereal-client/src/native/mod.rs:236`.
+1. Native startup parses env/CLI and chooses headless vs windowed app construction in `bins/sidereal-client/src/runtime/mod.rs:348`.
+2. Windowed mode installs Bevy default plugins, material plugins, SVG support, diagnostics, logging, and WGPU configuration in `bins/sidereal-client/src/runtime/mod.rs:313`.
+3. Shared runtime wiring then installs Avian, Lightyear client plugins, protocol registration, fixed tick, transport resources, asset resources, prediction/control resources, tactical/UI resources, and scene/render resources in `bins/sidereal-client/src/runtime/mod.rs:187`.
+4. Fixed-step gameplay and motion ownership systems are wired in `bins/sidereal-client/src/runtime/mod.rs:236`.
 5. Client behavior is split into plugin groups:
    - bootstrap
    - transport
@@ -302,8 +302,8 @@ The highest-value problems have shifted:
    - lighting
    - UI
    - diagnostics scaffold
-   Refs: `bins/sidereal-client/src/native/mod.rs:266`, `bins/sidereal-client/src/native/plugins.rs:30`.
-6. In the visuals path, update-time work includes runtime shader assignment sync, render-layer registry sync, duplicate visual suppression, streamed visual attachment, fullscreen/backdrop sync, and effect pool maintenance in `bins/sidereal-client/src/native/plugins.rs:268`.
+   Refs: `bins/sidereal-client/src/runtime/mod.rs:266`, `bins/sidereal-client/src/runtime/plugins.rs:30`.
+6. In the visuals path, update-time work includes runtime shader assignment sync, render-layer registry sync, duplicate visual suppression, streamed visual attachment, fullscreen/backdrop sync, and effect pool maintenance in `bins/sidereal-client/src/runtime/plugins.rs:268`.
 
 ### Cross-service data / authority / persistence / asset / scripting / rendering flow
 

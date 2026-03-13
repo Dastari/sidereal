@@ -9,9 +9,9 @@ Limitations: Static code audit only. No live frame captures, GPU timings, packet
 
 Update note (2026-03-12):
 - The March 10 critical visibility finding is no longer accurate in its original form. The replication server now maintains a persistent visibility entity cache, persistent client-context cache, persistent spatial index, split landmark-discovery lane, and diff-based membership cache in `bins/sidereal-replication/src/replication/visibility.rs`.
-- The March 10 asset-bootstrap serialization finding is also no longer accurate in its original form. Required bootstrap fetches now run with bounded parallelism (`MAX_PARALLEL_BOOTSTRAP_FETCHES = 4`) in `bins/sidereal-client/src/native/auth_net.rs`.
-- Runtime lazy asset fetches are likewise no longer single-flight. They now allow up to four concurrent fetches in `bins/sidereal-client/src/native/assets.rs`.
-- The project has also added render/asset/visibility telemetry hooks that materially improve auditability, especially in `bins/sidereal-client/src/native/debug_overlay.rs`, `bins/sidereal-client/src/native/resources.rs`, and `bins/sidereal-replication/src/replication/visibility.rs`.
+- The March 10 asset-bootstrap serialization finding is also no longer accurate in its original form. Required bootstrap fetches now run with bounded parallelism (`MAX_PARALLEL_BOOTSTRAP_FETCHES = 4`) in `bins/sidereal-client/src/runtime/auth_net.rs`.
+- Runtime lazy asset fetches are likewise no longer single-flight. They now allow up to four concurrent fetches in `bins/sidereal-client/src/runtime/assets.rs`.
+- The project has also added render/asset/visibility telemetry hooks that materially improve auditability, especially in `bins/sidereal-client/src/runtime/debug_overlay.rs`, `bins/sidereal-client/src/runtime/resources.rs`, and `bins/sidereal-replication/src/replication/visibility.rs`.
 
 ## 1. Executive Summary
 
@@ -44,8 +44,8 @@ The current highest-leverage risks are now:
 
 2. `Asset delivery is serialized in both bootstrap and lazy runtime fetch paths`
    - No longer true.
-   - Bootstrap now uses `MAX_PARALLEL_BOOTSTRAP_FETCHES = 4` and bounded parallel task submission in `bins/sidereal-client/src/native/auth_net.rs:111` and `bins/sidereal-client/src/native/auth_net.rs:402-475`.
-   - Runtime asset fetch now uses `MAX_CONCURRENT_RUNTIME_ASSET_FETCHES = 4` in `bins/sidereal-client/src/native/assets.rs:100-145` and `bins/sidereal-client/src/native/assets.rs:344-449`.
+   - Bootstrap now uses `MAX_PARALLEL_BOOTSTRAP_FETCHES = 4` and bounded parallel task submission in `bins/sidereal-client/src/runtime/auth_net.rs:111` and `bins/sidereal-client/src/runtime/auth_net.rs:402-475`.
+   - Runtime asset fetch now uses `MAX_CONCURRENT_RUNTIME_ASSET_FETCHES = 4` in `bins/sidereal-client/src/runtime/assets.rs:100-145` and `bins/sidereal-client/src/runtime/assets.rs:344-449`.
 
 ### Findings that remain, but in a reduced form
 
@@ -84,11 +84,11 @@ The current highest-leverage risks are now:
 - Confidence: Proven
 - Main impact: `main-thread stalls`, `asset hitching`, `late visual completion`
 - Exact references:
-  - `bins/sidereal-client/src/native/auth_net.rs:111`
-  - `bins/sidereal-client/src/native/auth_net.rs:402-475`
-  - `bins/sidereal-client/src/native/assets.rs:134`
-  - `bins/sidereal-client/src/native/assets.rs:344-449`
-  - `bins/sidereal-client/src/native/assets.rs:452-540`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:111`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:402-475`
+  - `bins/sidereal-client/src/runtime/assets.rs:134`
+  - `bins/sidereal-client/src/runtime/assets.rs:344-449`
+  - `bins/sidereal-client/src/runtime/assets.rs:452-540`
 - Why it matters:
   - The fetch side is now correctly parallelized.
   - The completion side still uses `bevy::tasks::block_on(...)` inside the frame-driven polling system for task completion, cache writes, and cache-index saves.
@@ -106,11 +106,11 @@ The current highest-leverage risks are now:
 - Confidence: Proven
 - Main impact: `client CPU`, `frame pacing`
 - Exact references:
-  - `bins/sidereal-client/src/native/shaders.rs:640-760`
-  - `bins/sidereal-client/src/native/render_layers.rs:20-192`
-  - `bins/sidereal-client/src/native/render_layers.rs:195-278`
-  - `bins/sidereal-client/src/native/assets.rs:170-237`
-  - `bins/sidereal-client/src/native/plugins.rs:281-348`
+  - `bins/sidereal-client/src/runtime/shaders.rs:640-760`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:20-192`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:195-278`
+  - `bins/sidereal-client/src/runtime/assets.rs:170-237`
+  - `bins/sidereal-client/src/runtime/plugins.rs:281-348`
 - Why it matters:
   - `sync_runtime_shader_assignments_system()` still scans authored layer and sprite-shader state every `Update`.
   - `sync_runtime_render_layer_registry_system()` now early-outs correctly, but it still runs every frame and still counts authored definitions/rules/stacks.
@@ -130,12 +130,12 @@ The current highest-leverage risks are now:
 - Confidence: Proven
 - Main impact: `client CPU`, `frame pacing`, `perceived slowness`
 - Exact references:
-  - `bins/sidereal-client/src/native/ui.rs:521-800`
-  - `bins/sidereal-client/src/native/ui.rs:847-892`
-  - `bins/sidereal-client/src/native/ui.rs:1670-1773`
-  - `bins/sidereal-client/src/native/ui.rs:1776-1895`
-  - `bins/sidereal-client/src/native/plugins.rs:417-425`
-  - `bins/sidereal-client/src/native/plugins.rs:491-495`
+  - `bins/sidereal-client/src/runtime/ui.rs:521-800`
+  - `bins/sidereal-client/src/runtime/ui.rs:847-892`
+  - `bins/sidereal-client/src/runtime/ui.rs:1670-1773`
+  - `bins/sidereal-client/src/runtime/ui.rs:1776-1895`
+  - `bins/sidereal-client/src/runtime/plugins.rs:417-425`
+  - `bins/sidereal-client/src/runtime/plugins.rs:491-495`
 - Why it matters:
   - Tactical map overlay still rebuilds `existing_marker_entities`, walks all live contacts, smooths them, transforms them to screen space, and upserts SVG marker entities every frame while enabled.
   - Nameplate sync still rebuilds `winner_entities` and nameplate target maps.
@@ -154,10 +154,10 @@ The current highest-leverage risks are now:
 - Confidence: Strong inference
 - Main impact: `draw-state churn`, `batching loss`, `client CPU`, `client GPU`
 - Exact references:
-  - `bins/sidereal-client/src/native/visuals.rs:1396-1595`
-  - `bins/sidereal-client/src/native/visuals.rs:2107-2167`
-  - `bins/sidereal-client/src/native/backdrop.rs:546-621`
-  - `bins/sidereal-client/src/native/debug_overlay.rs:140-187`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1396-1595`
+  - `bins/sidereal-client/src/runtime/visuals.rs:2107-2167`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:546-621`
+  - `bins/sidereal-client/src/runtime/debug_overlay.rs:140-187`
 - Why it matters:
   - Planet visuals still allocate unique `PlanetVisualMaterial` handles per entity/pass for body, cloud back/front, and ring back/front.
   - Effect pools still allocate unique `RuntimeEffectMaterial` handles per pooled tracer/spark entity at pool creation.
@@ -176,11 +176,11 @@ The current highest-leverage risks are now:
 - Confidence: Proven
 - Main impact: `render extraction`, `pass overhead`, `frame pacing`
 - Exact references:
-  - `bins/sidereal-client/src/native/scene_world.rs:61-201`
-  - `bins/sidereal-client/src/native/camera.rs:281-357`
-  - `bins/sidereal-client/src/native/plugins.rs:447-465`
-  - `bins/sidereal-client/src/native/mod.rs:385-387`
-  - `bins/sidereal-client/src/native/debug_overlay.rs:140-187`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:61-201`
+  - `bins/sidereal-client/src/runtime/camera.rs:281-357`
+  - `bins/sidereal-client/src/runtime/plugins.rs:447-465`
+  - `bins/sidereal-client/src/runtime/mod.rs:385-387`
+  - `bins/sidereal-client/src/runtime/debug_overlay.rs:140-187`
 - Why it matters:
   - In-world scene setup still uses backdrop, planet-body, gameplay, fullscreen-foreground, post-process, UI overlay, and optional debug overlay cameras.
   - This is not necessarily wrong, but it is a high baseline for a client that still has hot-path CPU work elsewhere.
@@ -197,10 +197,10 @@ The current highest-leverage risks are now:
 - Confidence: Proven
 - Main impact: `client CPU`, `presentation complexity`
 - Exact references:
-  - `bins/sidereal-client/src/native/visuals.rs:374-679`
-  - `bins/sidereal-client/src/native/replication.rs:901-967`
-  - `bins/sidereal-client/src/native/ui.rs:1670-1705`
-  - `bins/sidereal-client/src/native/debug_overlay.rs:182-187`
+  - `bins/sidereal-client/src/runtime/visuals.rs:374-679`
+  - `bins/sidereal-client/src/runtime/replication.rs:901-967`
+  - `bins/sidereal-client/src/runtime/ui.rs:1670-1705`
+  - `bins/sidereal-client/src/runtime/debug_overlay.rs:182-187`
 - Why it matters:
   - The code still has to pick lane winners and suppress losers.
   - That logic still influences camera follow, UI, and visual attachment behavior.
@@ -215,9 +215,9 @@ The current highest-leverage risks are now:
 - Confidence: Proven
 - Main impact: `smoothness`, `correctness`
 - Exact references:
-  - `bins/sidereal-client/src/native/plugins.rs:431-468`
-  - `bins/sidereal-client/src/native/transforms.rs:127-317`
-  - `bins/sidereal-client/src/native/camera.rs:97-275`
+  - `bins/sidereal-client/src/runtime/plugins.rs:431-468`
+  - `bins/sidereal-client/src/runtime/transforms.rs:127-317`
+  - `bins/sidereal-client/src/runtime/camera.rs:97-275`
 - Why it matters:
   - Camera follow is still deliberately scheduled after Lightyear interpolation and visual correction.
   - The client still seeds interpolation when history is missing and recovers obviously stalled interpolated transforms.

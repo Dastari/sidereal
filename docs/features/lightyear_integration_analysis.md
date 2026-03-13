@@ -59,7 +59,7 @@ This document evaluates what Lightyear features are used, what is bypassed, and 
 
 ### 3.1 Custom Prediction Reconciliation
 
-**File**: `bins/sidereal-client/src/native/motion.rs` — `reconcile_controlled_prediction_with_confirmed`
+**File**: `bins/sidereal-client/src/runtime/motion.rs` — `reconcile_controlled_prediction_with_confirmed`
 
 The custom system reads `Confirmed<Position>`, `Confirmed<Rotation>`, `Confirmed<LinearVelocity>` and applies threshold-based correction:
 
@@ -78,7 +78,7 @@ Additional stabilization:
 
 ### 3.2 Custom Visual Smoothing for Remote Entities
 
-**File**: `bins/sidereal-client/src/native/transforms.rs` — `sync_world_entity_transforms_from_physics`
+**File**: `bins/sidereal-client/src/runtime/transforms.rs` — `sync_world_entity_transforms_from_physics`
 
 All non-controlled entities use exponential visual smoothing:
 
@@ -93,7 +93,7 @@ With a snap threshold of 64m. Controlled entities and nearby collision proxies g
 
 ### 3.3 Custom Control Swap Protocol
 
-**Files**: `bins/sidereal-replication/src/replication/control.rs`, `bins/sidereal-client/src/native/replication.rs`
+**Files**: `bins/sidereal-replication/src/replication/control.rs`, `bins/sidereal-client/src/runtime/replication.rs`
 
 Entirely custom message-based protocol:
 1. Client sends `ClientControlRequestMessage` with sequence number
@@ -613,9 +613,9 @@ These are incremental improvements to the existing pipeline that maintain full c
 - `docs/features/visibility_replication_contract.md`
 - `docs/features/galaxy_world_structure.md`
 - `crates/sidereal-net/src/lightyear_protocol/registration.rs`
-- `bins/sidereal-client/src/native/motion.rs`
-- `bins/sidereal-client/src/native/transforms.rs`
-- `bins/sidereal-client/src/native/replication.rs`
+- `bins/sidereal-client/src/runtime/motion.rs`
+- `bins/sidereal-client/src/runtime/transforms.rs`
+- `bins/sidereal-client/src/runtime/replication.rs`
 - `bins/sidereal-replication/src/replication/control.rs`
 - `bins/sidereal-replication/src/replication/simulation_entities.rs`
 - `bins/sidereal-replication/src/replication/visibility.rs`
@@ -625,9 +625,9 @@ These are incremental improvements to the existing pipeline that maintain full c
 - `docs/sidereal_design_document.md`
 - `docs/features/visibility_replication_contract.md`
 - `crates/sidereal-net/src/lightyear_protocol/registration.rs`
-- `bins/sidereal-client/src/native/motion.rs`
-- `bins/sidereal-client/src/native/transforms.rs`
-- `bins/sidereal-client/src/native/replication.rs`
+- `bins/sidereal-client/src/runtime/motion.rs`
+- `bins/sidereal-client/src/runtime/transforms.rs`
+- `bins/sidereal-client/src/runtime/replication.rs`
 - `bins/sidereal-replication/src/replication/control.rs`
 - `bins/sidereal-replication/src/replication/simulation_entities.rs`
 - [Lightyear 0.26.4 docs](https://docs.rs/lightyear/0.26.4/lightyear/)

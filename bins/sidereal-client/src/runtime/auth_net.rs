@@ -10,9 +10,10 @@ use super::resources::{
     HeadlessTransportMode, LogoutCleanupRequested, PendingDisconnectNotify,
     SessionReadyWatchdogConfig, SessionReadyWatchdogState,
 };
+use async_channel::{Receiver, TryRecvError, bounded};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
-use bevy::tasks::{IoTaskPool, Task, futures_lite::future};
+use bevy::tasks::{IoTaskPool, Task};
 use lightyear::prelude::{MessageReceiver, MessageSender, Transport};
 use sidereal_asset_runtime::{AssetCacheIndexRecord, asset_version_from_sha256_hex, sha256_hex};
 use sidereal_core::gateway_dtos::{
@@ -65,7 +66,11 @@ fn validate_world_entry_transport(
 
 #[derive(Resource, Default)]
 pub struct GatewayRequestState {
-    pending: Option<Task<GatewayRequestResult>>,
+    pending: Option<GatewayRequestTask>,
+}
+
+struct GatewayRequestTask {
+    receiver: Receiver<GatewayRequestResult>,
 }
 
 #[derive(Debug)]
@@ -102,10 +107,14 @@ enum EnterWorldRequestResult {
 
 #[derive(Resource, Default)]
 pub struct AssetBootstrapRequestState {
-    pending: Option<Task<Result<AssetBootstrapRequestResult, String>>>,
+    pending: Option<AssetBootstrapRequestTask>,
     pub submitted: bool,
     pub completed: bool,
     pub failed: bool,
+}
+
+struct AssetBootstrapRequestTask {
+    receiver: Receiver<Result<AssetBootstrapRequestResult, String>>,
 }
 
 const MAX_PARALLEL_BOOTSTRAP_FETCHES: usize = 4;
@@ -139,6 +148,13 @@ struct AssetBootstrapFetchedAsset {
     payload: Vec<u8>,
 }
 
+fn try_recv_pending_result<T>(receiver: &Receiver<T>) -> Option<T> {
+    match receiver.try_recv() {
+        Ok(result) => Some(result),
+        Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => None,
+    }
+}
+
 pub fn init_gateway_request_state(app: &mut App) {
     app.insert_resource(GatewayRequestState::default());
     app.insert_resource(AssetBootstrapRequestState::default());
@@ -163,85 +179,91 @@ pub fn submit_auth_request(
     let new_password = session.new_password.clone();
     session.status = "Submitting request...".to_string();
     session.ui_dirty = true;
-    request_state.pending = Some(IoTaskPool::get().spawn(async move {
-        let result: Result<(Option<AuthTokens>, Option<String>), String> = match selected_action {
-            AuthAction::Login => (gateway_http.login)(
-                gateway_url.clone(),
-                LoginRequest {
-                    email: email.clone(),
-                    password: password.clone(),
-                },
-            )
-            .await
-            .map(|tokens| (Some(tokens), None::<String>)),
-            AuthAction::Register => (gateway_http.register)(
-                gateway_url.clone(),
-                RegisterRequest {
-                    email: email.clone(),
-                    password: password.clone(),
-                },
-            )
-            .await
-            .map(|tokens| (Some(tokens), None::<String>)),
-            AuthAction::ForgotRequest => (gateway_http.request_password_reset)(
-                gateway_url.clone(),
-                PasswordResetRequest {
-                    email: email.clone(),
-                },
-            )
-            .await
-            .map(|resp| (None, resp.reset_token)),
-            AuthAction::ForgotConfirm => (gateway_http.confirm_password_reset)(
-                gateway_url.clone(),
-                PasswordResetConfirmRequest {
-                    reset_token: reset_token.clone(),
-                    new_password: new_password.clone(),
-                },
-            )
-            .await
-            .map(|()| (None, None::<String>)),
-        };
-
-        match result {
-            Ok((Some(tokens), _)) => {
-                match fetch_auth_me(gateway_http, &gateway_url, &tokens.access_token).await {
-                    Ok(me) => match fetch_auth_characters(
-                        gateway_http,
-                        &gateway_url,
-                        &tokens.access_token,
+    let (sender, receiver) = bounded(1);
+    IoTaskPool::get()
+        .spawn(async move {
+            let auth_result: Result<(Option<AuthTokens>, Option<String>), String> =
+                match selected_action {
+                    AuthAction::Login => (gateway_http.login)(
+                        gateway_url.clone(),
+                        LoginRequest {
+                            email: email.clone(),
+                            password: password.clone(),
+                        },
                     )
                     .await
-                    {
-                        Ok(characters) => {
-                            GatewayRequestResult::Auth(AuthRequestResult::LoginOrRegister {
-                                tokens,
-                                me,
-                                characters,
-                            })
-                        }
+                    .map(|tokens| (Some(tokens), None::<String>)),
+                    AuthAction::Register => (gateway_http.register)(
+                        gateway_url.clone(),
+                        RegisterRequest {
+                            email: email.clone(),
+                            password: password.clone(),
+                        },
+                    )
+                    .await
+                    .map(|tokens| (Some(tokens), None::<String>)),
+                    AuthAction::ForgotRequest => (gateway_http.request_password_reset)(
+                        gateway_url.clone(),
+                        PasswordResetRequest {
+                            email: email.clone(),
+                        },
+                    )
+                    .await
+                    .map(|resp| (None, resp.reset_token)),
+                    AuthAction::ForgotConfirm => (gateway_http.confirm_password_reset)(
+                        gateway_url.clone(),
+                        PasswordResetConfirmRequest {
+                            reset_token: reset_token.clone(),
+                            new_password: new_password.clone(),
+                        },
+                    )
+                    .await
+                    .map(|()| (None, None::<String>)),
+                };
+
+            let request_result = match auth_result {
+                Ok((Some(tokens), _)) => {
+                    match fetch_auth_me(gateway_http, &gateway_url, &tokens.access_token).await {
+                        Ok(me) => match fetch_auth_characters(
+                            gateway_http,
+                            &gateway_url,
+                            &tokens.access_token,
+                        )
+                        .await
+                        {
+                            Ok(characters) => {
+                                GatewayRequestResult::Auth(AuthRequestResult::LoginOrRegister {
+                                    tokens,
+                                    me,
+                                    characters,
+                                })
+                            }
+                            Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(
+                                format!("Auth OK but character lookup failed: {err}"),
+                            )),
+                        },
                         Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
-                            "Auth OK but character lookup failed: {err}"
+                            "Auth OK but profile lookup failed: {err}"
                         ))),
-                    },
-                    Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
-                        "Auth OK but profile lookup failed: {err}"
-                    ))),
+                    }
                 }
-            }
-            Ok((None, reset_token)) => {
-                if selected_action == AuthAction::ForgotRequest {
-                    GatewayRequestResult::Auth(AuthRequestResult::PasswordResetRequested {
-                        reset_token,
-                    })
-                } else {
-                    GatewayRequestResult::Auth(AuthRequestResult::PasswordResetConfirmed)
+                Ok((None, reset_token)) => {
+                    if selected_action == AuthAction::ForgotRequest {
+                        GatewayRequestResult::Auth(AuthRequestResult::PasswordResetRequested {
+                            reset_token,
+                        })
+                    } else {
+                        GatewayRequestResult::Auth(AuthRequestResult::PasswordResetConfirmed)
+                    }
                 }
-            }
-            Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
-                "Request failed: {err}"
-            ))),
-        }
-    }));
+                Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
+                    "Request failed: {err}"
+                ))),
+            };
+            let _ = sender.send(request_result).await;
+        })
+        .detach();
+    request_state.pending = Some(GatewayRequestTask { receiver });
 }
 
 fn fetch_auth_me(
@@ -296,24 +318,34 @@ pub fn submit_enter_world_request(
     session.status = "Submitting Enter World request...".to_string();
     session.ui_dirty = true;
 
-    request_state.pending = Some(IoTaskPool::get().spawn(async move {
-        match enter_world_request(gateway_http, &gateway_url, &access_token, &requested_player)
+    let (sender, receiver) = bounded(1);
+    IoTaskPool::get()
+        .spawn(async move {
+            let result = match enter_world_request(
+                gateway_http,
+                &gateway_url,
+                &access_token,
+                &requested_player,
+            )
             .await
-        {
-            Ok(response) if response.accepted => {
-                GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
-                    player_entity_id: requested_player,
-                    replication_transport: response.replication_transport,
-                })
-            }
-            Ok(_) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Rejected {
-                reason: "Enter World request rejected by gateway.".to_string(),
-            }),
-            Err(err) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Error(format!(
-                "Enter World failed: {err}"
-            ))),
-        }
-    }));
+            {
+                Ok(response) if response.accepted => {
+                    GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
+                        player_entity_id: requested_player,
+                        replication_transport: response.replication_transport,
+                    })
+                }
+                Ok(_) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Rejected {
+                    reason: "Enter World request rejected by gateway.".to_string(),
+                }),
+                Err(err) => GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Error(
+                    format!("Enter World failed: {err}"),
+                )),
+            };
+            let _ = sender.send(result).await;
+        })
+        .detach();
+    request_state.pending = Some(GatewayRequestTask { receiver });
 }
 
 pub fn submit_asset_bootstrap_request(
@@ -345,165 +377,174 @@ pub fn submit_asset_bootstrap_request(
         gateway_url, asset_root
     );
 
-    request_state.pending = Some(IoTaskPool::get().spawn(async move {
-        info!("asset bootstrap task starting");
-        info!("asset bootstrap preparing cache root");
-        (cache_adapter.prepare_root)(asset_root.clone()).await?;
-        info!("asset bootstrap cache root prepared");
-        info!("asset bootstrap requesting manifest from gateway");
-        let manifest =
-            (gateway_http.fetch_bootstrap_manifest)(gateway_url.clone(), access_token.clone())
-                .await?;
-        info!(
-            "asset bootstrap manifest fetched: required_assets={} catalog_assets={}",
-            manifest.required_assets.len(),
-            manifest.catalog.len()
-        );
-        let mut cache_index = (cache_adapter.load_index)(asset_root.clone()).await?;
-        let mut records = Vec::<AssetBootstrapRecord>::new();
-        let mut bootstrap_total_bytes = 0u64;
-        let mut bootstrap_ready_bytes = 0u64;
-
-        for entry in &manifest.catalog {
-            let ready = (cache_adapter.read_valid_asset)(
-                asset_root.clone(),
-                entry.relative_cache_path.clone(),
-                entry.sha256_hex.clone(),
-            )
-            .await?
-            .is_some();
-            records.push(AssetBootstrapRecord {
-                asset_id: entry.asset_id.clone(),
-                relative_cache_path: entry.relative_cache_path.clone(),
-                content_type: entry.content_type.clone(),
-                byte_len: entry.byte_len,
-                asset_version: asset_version_from_sha256_hex(&entry.sha256_hex),
-                sha256_hex: entry.sha256_hex.clone(),
-                ready,
-            });
-        }
-
-        let mut missing_required_assets = Vec::new();
-        for required in &manifest.required_assets {
-            bootstrap_total_bytes = bootstrap_total_bytes.saturating_add(required.byte_len);
-            let satisfied = (cache_adapter.read_valid_asset)(
-                asset_root.clone(),
-                required.relative_cache_path.clone(),
-                required.sha256_hex.clone(),
-            )
-            .await?
-            .is_some();
-            if !satisfied {
-                missing_required_assets.push(required.clone());
-            }
-            bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
-        }
-
-        let mut pending_fetches = Vec::<Task<Result<AssetBootstrapFetchedAsset, String>>>::new();
-        for required in missing_required_assets {
-            let gateway_http = gateway_http;
-            let gateway_url = gateway_url.clone();
-            let access_token = access_token.clone();
-            pending_fetches.push(IoTaskPool::get().spawn(async move {
-                let url = if required.url.starts_with("http://") || required.url.starts_with("https://")
-                {
-                    required.url.clone()
-                } else {
-                    format!("{gateway_url}{}", required.url)
-                };
+    let (sender, receiver) = bounded(1);
+    IoTaskPool::get()
+        .spawn(async move {
+            let result = async move {
+                info!("asset bootstrap task starting");
+                info!("asset bootstrap preparing cache root");
+                (cache_adapter.prepare_root)(asset_root.clone()).await?;
+                info!("asset bootstrap cache root prepared");
+                info!("asset bootstrap requesting manifest from gateway");
+                let manifest =
+                    (gateway_http.fetch_bootstrap_manifest)(gateway_url.clone(), access_token.clone())
+                        .await?;
                 info!(
-                    "asset bootstrap download starting: asset_id={} relative_cache_path={} bytes={}",
-                    required.asset_id, required.relative_cache_path, required.byte_len
+                    "asset bootstrap manifest fetched: required_assets={} catalog_assets={}",
+                    manifest.required_assets.len(),
+                    manifest.catalog.len()
                 );
-                let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
-                let payload_sha = sha256_hex(&payload);
-                if payload_sha != required.sha256_hex {
-                    return Err(format!(
-                        "asset checksum mismatch asset_id={} expected={} got={}",
-                        required.asset_id, required.sha256_hex, payload_sha
-                    ));
+                let mut cache_index = (cache_adapter.load_index)(asset_root.clone()).await?;
+                let mut records = Vec::<AssetBootstrapRecord>::new();
+                let mut bootstrap_total_bytes = 0u64;
+                let mut bootstrap_ready_bytes = 0u64;
+
+                for entry in &manifest.catalog {
+                    let ready = (cache_adapter.read_valid_asset)(
+                        asset_root.clone(),
+                        entry.relative_cache_path.clone(),
+                        entry.sha256_hex.clone(),
+                    )
+                    .await?
+                    .is_some();
+                    records.push(AssetBootstrapRecord {
+                        asset_id: entry.asset_id.clone(),
+                        relative_cache_path: entry.relative_cache_path.clone(),
+                        content_type: entry.content_type.clone(),
+                        byte_len: entry.byte_len,
+                        asset_version: asset_version_from_sha256_hex(&entry.sha256_hex),
+                        sha256_hex: entry.sha256_hex.clone(),
+                        ready,
+                    });
                 }
-                Ok(AssetBootstrapFetchedAsset {
-                    asset_id: required.asset_id,
-                    relative_cache_path: required.relative_cache_path,
-                    byte_len: required.byte_len,
-                    sha256_hex: required.sha256_hex,
-                    payload,
+
+                let mut missing_required_assets = Vec::new();
+                for required in &manifest.required_assets {
+                    bootstrap_total_bytes = bootstrap_total_bytes.saturating_add(required.byte_len);
+                    let satisfied = (cache_adapter.read_valid_asset)(
+                        asset_root.clone(),
+                        required.relative_cache_path.clone(),
+                        required.sha256_hex.clone(),
+                    )
+                    .await?
+                    .is_some();
+                    if !satisfied {
+                        missing_required_assets.push(required.clone());
+                    }
+                    bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
+                }
+
+                let mut pending_fetches = Vec::<Task<Result<AssetBootstrapFetchedAsset, String>>>::new();
+                for required in missing_required_assets {
+                    let gateway_http = gateway_http;
+                    let gateway_url = gateway_url.clone();
+                    let access_token = access_token.clone();
+                    pending_fetches.push(IoTaskPool::get().spawn(async move {
+                        let url = if required.url.starts_with("http://")
+                            || required.url.starts_with("https://")
+                        {
+                            required.url.clone()
+                        } else {
+                            format!("{gateway_url}{}", required.url)
+                        };
+                        info!(
+                            "asset bootstrap download starting: asset_id={} relative_cache_path={} bytes={}",
+                            required.asset_id, required.relative_cache_path, required.byte_len
+                        );
+                        let payload = (gateway_http.fetch_asset_bytes)(url, access_token).await?;
+                        let payload_sha = sha256_hex(&payload);
+                        if payload_sha != required.sha256_hex {
+                            return Err(format!(
+                                "asset checksum mismatch asset_id={} expected={} got={}",
+                                required.asset_id, required.sha256_hex, payload_sha
+                            ));
+                        }
+                        Ok(AssetBootstrapFetchedAsset {
+                            asset_id: required.asset_id,
+                            relative_cache_path: required.relative_cache_path,
+                            byte_len: required.byte_len,
+                            sha256_hex: required.sha256_hex,
+                            payload,
+                        })
+                    }));
+                    if pending_fetches.len() >= MAX_PARALLEL_BOOTSTRAP_FETCHES {
+                        let fetched = pending_fetches.remove(0).await?;
+                        (cache_adapter.write_asset)(
+                            asset_root.clone(),
+                            fetched.relative_cache_path.clone(),
+                            fetched.payload,
+                        )
+                        .await?;
+                        info!(
+                            "asset bootstrap cache write complete: asset_id={} relative_cache_path={} bytes={}",
+                            fetched.asset_id, fetched.relative_cache_path, fetched.byte_len
+                        );
+                        cache_index.by_asset_id.insert(
+                            fetched.asset_id,
+                            AssetCacheIndexRecord {
+                                asset_version: asset_version_from_sha256_hex(&fetched.sha256_hex),
+                                sha256_hex: fetched.sha256_hex,
+                            },
+                        );
+                    }
+                }
+
+                for pending in pending_fetches {
+                    let fetched = pending.await?;
+                    (cache_adapter.write_asset)(
+                        asset_root.clone(),
+                        fetched.relative_cache_path.clone(),
+                        fetched.payload,
+                    )
+                    .await?;
+                    info!(
+                        "asset bootstrap cache write complete: asset_id={} relative_cache_path={} bytes={}",
+                        fetched.asset_id, fetched.relative_cache_path, fetched.byte_len
+                    );
+                    cache_index.by_asset_id.insert(
+                        fetched.asset_id,
+                        AssetCacheIndexRecord {
+                            asset_version: asset_version_from_sha256_hex(&fetched.sha256_hex),
+                            sha256_hex: fetched.sha256_hex,
+                        },
+                    );
+                }
+
+                for required in &manifest.required_assets {
+                    let version = asset_version_from_sha256_hex(&required.sha256_hex);
+                    cache_index.by_asset_id.insert(
+                        required.asset_id.clone(),
+                        AssetCacheIndexRecord {
+                            asset_version: version,
+                            sha256_hex: required.sha256_hex.clone(),
+                        },
+                    );
+                }
+                (cache_adapter.save_index)(asset_root.clone(), cache_index.clone()).await?;
+
+                for record in &mut records {
+                    if manifest
+                        .required_assets
+                        .iter()
+                        .any(|required| required.asset_id == record.asset_id)
+                    {
+                        record.ready = true;
+                    }
+                }
+
+                Ok(AssetBootstrapRequestResult {
+                    manifest,
+                    records,
+                    cache_index,
+                    bootstrap_total_bytes,
+                    bootstrap_ready_bytes,
                 })
-            }));
-            if pending_fetches.len() >= MAX_PARALLEL_BOOTSTRAP_FETCHES {
-                let fetched = pending_fetches.remove(0).await?;
-                (cache_adapter.write_asset)(
-                    asset_root.clone(),
-                    fetched.relative_cache_path.clone(),
-                    fetched.payload,
-                )
-                .await?;
-                info!(
-                    "asset bootstrap cache write complete: asset_id={} relative_cache_path={} bytes={}",
-                    fetched.asset_id, fetched.relative_cache_path, fetched.byte_len
-                );
-                cache_index.by_asset_id.insert(
-                    fetched.asset_id,
-                    AssetCacheIndexRecord {
-                        asset_version: asset_version_from_sha256_hex(&fetched.sha256_hex),
-                        sha256_hex: fetched.sha256_hex,
-                    },
-                );
             }
-        }
-
-        for pending in pending_fetches {
-            let fetched = pending.await?;
-            (cache_adapter.write_asset)(
-                asset_root.clone(),
-                fetched.relative_cache_path.clone(),
-                fetched.payload,
-            )
-            .await?;
-            info!(
-                "asset bootstrap cache write complete: asset_id={} relative_cache_path={} bytes={}",
-                fetched.asset_id, fetched.relative_cache_path, fetched.byte_len
-            );
-            cache_index.by_asset_id.insert(
-                fetched.asset_id,
-                AssetCacheIndexRecord {
-                    asset_version: asset_version_from_sha256_hex(&fetched.sha256_hex),
-                    sha256_hex: fetched.sha256_hex,
-                },
-            );
-        }
-
-        for required in &manifest.required_assets {
-            let version = asset_version_from_sha256_hex(&required.sha256_hex);
-            cache_index.by_asset_id.insert(
-                required.asset_id.clone(),
-                AssetCacheIndexRecord {
-                    asset_version: version,
-                    sha256_hex: required.sha256_hex.clone(),
-                },
-            );
-        }
-        (cache_adapter.save_index)(asset_root.clone(), cache_index.clone()).await?;
-
-        for record in &mut records {
-            if manifest
-                .required_assets
-                .iter()
-                .any(|required| required.asset_id == record.asset_id)
-            {
-                record.ready = true;
-            }
-        }
-
-        Ok(AssetBootstrapRequestResult {
-            manifest,
-            records,
-            cache_index,
-            bootstrap_total_bytes,
-            bootstrap_ready_bytes,
+            .await;
+            let _ = sender.send(result).await;
         })
-    }));
+        .detach();
+    request_state.pending = Some(AssetBootstrapRequestTask { receiver });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -520,10 +561,10 @@ pub fn poll_gateway_request_results(
     cache_adapter: Res<'_, AssetCacheAdapter>,
     mut asset_bootstrap_state: ResMut<'_, AssetBootstrapRequestState>,
 ) {
-    let Some(task) = request_state.pending.as_mut() else {
+    let Some(task) = request_state.pending.as_ref() else {
         return;
     };
-    let Some(payload) = bevy::tasks::block_on(future::poll_once(task)) else {
+    let Some(payload) = try_recv_pending_result(&task.receiver) else {
         return;
     };
     request_state.pending = None;
@@ -615,10 +656,10 @@ pub fn poll_asset_bootstrap_request_results(
     mut hot_reload: ResMut<'_, AssetCatalogHotReloadState>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
 ) {
-    let Some(task) = request_state.pending.as_mut() else {
+    let Some(task) = request_state.pending.as_ref() else {
         return;
     };
-    let Some(result) = bevy::tasks::block_on(future::poll_once(task)) else {
+    let Some(result) = try_recv_pending_result(&task.receiver) else {
         return;
     };
     request_state.pending = None;
@@ -1037,5 +1078,64 @@ pub fn receive_lightyear_session_denied_messages(
             );
             next_state.set(ClientAppState::CharacterSelect);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AssetBootstrapRequestState, poll_asset_bootstrap_request_results};
+    use crate::runtime::app_state::ClientSession;
+    use crate::runtime::assets::{AssetCatalogHotReloadState, LocalAssetManager};
+    use crate::runtime::dialog_ui::DialogQueue;
+    use async_channel::bounded;
+    use bevy::prelude::*;
+    use bevy::tasks::{IoTaskPool, TaskPool};
+
+    #[test]
+    fn bootstrap_failure_marks_request_failed_and_preserves_fail_closed_state() {
+        IoTaskPool::get_or_init(TaskPool::new);
+
+        let mut app = App::new();
+        app.insert_resource(ClientSession::default());
+        app.insert_resource(LocalAssetManager {
+            bootstrap_phase_complete: true,
+            ..Default::default()
+        });
+        app.insert_resource(AssetCatalogHotReloadState::default());
+        app.insert_resource(DialogQueue::default());
+        let (sender, receiver) = bounded(1);
+        IoTaskPool::get()
+            .spawn(async move {
+                let _ = sender
+                    .send(Err("required asset download failed".to_string()))
+                    .await;
+            })
+            .detach();
+        app.insert_resource(AssetBootstrapRequestState {
+            pending: Some(super::AssetBootstrapRequestTask { receiver }),
+            submitted: true,
+            completed: false,
+            failed: false,
+        });
+        app.add_systems(Update, poll_asset_bootstrap_request_results);
+
+        app.update();
+        app.update();
+
+        let request_state = app.world().resource::<AssetBootstrapRequestState>();
+        let session = app.world().resource::<ClientSession>();
+        let asset_manager = app.world().resource::<LocalAssetManager>();
+
+        assert!(request_state.pending.is_none());
+        assert!(request_state.submitted);
+        assert!(!request_state.completed);
+        assert!(request_state.failed);
+        assert!(asset_manager.bootstrap_manifest_seen);
+        assert!(!asset_manager.bootstrap_phase_complete);
+        assert_eq!(
+            session.status,
+            "Asset bootstrap failed: required asset download failed"
+        );
+        assert!(session.ui_dirty);
     }
 }

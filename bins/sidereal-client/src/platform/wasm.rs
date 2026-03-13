@@ -16,7 +16,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::native::{self, AssetCacheAdapter, CacheFuture, GatewayFuture, GatewayHttpAdapter};
+use crate::runtime::{self, AssetCacheAdapter, CacheFuture, GatewayFuture, GatewayHttpAdapter};
 
 const WASM_CACHE_DB_NAME: &str = "sidereal_asset_cache";
 const WASM_CACHE_DB_VERSION: u32 = 1;
@@ -37,7 +37,7 @@ thread_local! {
 }
 
 pub(crate) fn run() {
-    let mut app = native::build_windowed_client_app(
+    let mut app = runtime::build_windowed_client_app(
         DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
@@ -48,7 +48,7 @@ pub(crate) fn run() {
                 ..Default::default()
             })
             .set(LogPlugin {
-                custom_layer: native::build_log_capture_layer,
+                custom_layer: runtime::build_log_capture_layer,
                 ..Default::default()
             })
             .set(RenderPlugin {
@@ -62,7 +62,7 @@ pub(crate) fn run() {
         wasm_gateway_http_adapter(),
         wasm_asset_cache_adapter(),
     );
-    if let Some(mut session) = app.world_mut().get_resource_mut::<native::ClientSession>() {
+    if let Some(mut session) = app.world_mut().get_resource_mut::<runtime::ClientSession>() {
         session.gateway_url = browser_gateway_url();
     }
     app.add_systems(Startup, || {

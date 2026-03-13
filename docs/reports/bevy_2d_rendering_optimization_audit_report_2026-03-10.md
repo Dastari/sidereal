@@ -8,7 +8,7 @@ Limitations: Static code audit only. No live frame captures, RenderDoc traces, T
 
 Update note (2026-03-10):
 - This report supersedes the earlier same-day draft.
-- After re-auditing the client and replication code, the strongest bottlenecks are broad ECS polling, serialized asset delivery, per-instance material pressure, UI/per-view update cost, and replication visibility cadence. The prior claim that fullscreen quads are reallocated every frame was incorrect; fullscreen quad caching already exists in `bins/sidereal-client/src/native/backdrop.rs:643`.
+- After re-auditing the client and replication code, the strongest bottlenecks are broad ECS polling, serialized asset delivery, per-instance material pressure, UI/per-view update cost, and replication visibility cadence. The prior claim that fullscreen quads are reallocated every frame was incorrect; fullscreen quad caching already exists in `bins/sidereal-client/src/runtime/backdrop.rs:643`.
 
 ## 1. Executive Summary
 
@@ -17,10 +17,10 @@ The game does not read like a normal-play 2D client that is primarily GPU-bound.
 The most likely reasons the game feels slow are:
 
 1. The replication server rebuilds visibility scratch state and reevaluates visibility for every replicated entity against every client every fixed tick in `bins/sidereal-replication/src/replication/visibility.rs:594`.
-2. Client asset readiness is serialized twice: required bootstrap assets are downloaded one-by-one in `bins/sidereal-client/src/native/auth_net.rs:308`, and runtime optional assets are fetched one-at-a-time in `bins/sidereal-client/src/native/assets.rs:334`.
-3. The client still has several broad polling systems in the hot path, especially shader assignment inference in `bins/sidereal-client/src/native/shaders.rs:640`, render-layer registry/assignment maintenance in `bins/sidereal-client/src/native/render_layers.rs:20` and `bins/sidereal-client/src/native/render_layers.rs:195`, and UI/world overlay work in `bins/sidereal-client/src/native/ui.rs:356` and `bins/sidereal-client/src/native/ui.rs:1696`.
-4. The renderer is still paying for many custom `Material2d` instances for planet passes, effect passes, asteroid passes, and fullscreen/post-process bindings in `bins/sidereal-client/src/native/visuals.rs:1357`, `bins/sidereal-client/src/native/visuals.rs:1892`, `bins/sidereal-client/src/native/visuals.rs:2139`, `bins/sidereal-client/src/native/visuals.rs:2192`, and `bins/sidereal-client/src/native/backdrop.rs:502`.
-5. The runtime clearly still has presentation-lifecycle instability around prediction/interpolation handoff, which hurts smoothness even though the project already made the correct decision to render after Lightyear interpolation/correction in `bins/sidereal-client/src/native/plugins.rs`.
+2. Client asset readiness is serialized twice: required bootstrap assets are downloaded one-by-one in `bins/sidereal-client/src/runtime/auth_net.rs:308`, and runtime optional assets are fetched one-at-a-time in `bins/sidereal-client/src/runtime/assets.rs:334`.
+3. The client still has several broad polling systems in the hot path, especially shader assignment inference in `bins/sidereal-client/src/runtime/shaders.rs:640`, render-layer registry/assignment maintenance in `bins/sidereal-client/src/runtime/render_layers.rs:20` and `bins/sidereal-client/src/runtime/render_layers.rs:195`, and UI/world overlay work in `bins/sidereal-client/src/runtime/ui.rs:356` and `bins/sidereal-client/src/runtime/ui.rs:1696`.
+4. The renderer is still paying for many custom `Material2d` instances for planet passes, effect passes, asteroid passes, and fullscreen/post-process bindings in `bins/sidereal-client/src/runtime/visuals.rs:1357`, `bins/sidereal-client/src/runtime/visuals.rs:1892`, `bins/sidereal-client/src/runtime/visuals.rs:2139`, `bins/sidereal-client/src/runtime/visuals.rs:2192`, and `bins/sidereal-client/src/runtime/backdrop.rs:502`.
+5. The runtime clearly still has presentation-lifecycle instability around prediction/interpolation handoff, which hurts smoothness even though the project already made the correct decision to render after Lightyear interpolation/correction in `bins/sidereal-client/src/runtime/plugins.rs`.
 
 The architecture that should be preserved:
 
@@ -75,10 +75,10 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `startup hitching`, `memory/bandwidth`, `frame pacing` indirectly via late visual completion
 - Exact references:
-  - `bins/sidereal-client/src/native/auth_net.rs:308`
-  - `bins/sidereal-client/src/native/auth_net.rs:552`
-  - `bins/sidereal-client/src/native/assets.rs:334`
-  - `bins/sidereal-client/src/native/assets.rs:509`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:308`
+  - `bins/sidereal-client/src/runtime/auth_net.rs:552`
+  - `bins/sidereal-client/src/runtime/assets.rs:334`
+  - `bins/sidereal-client/src/runtime/assets.rs:509`
 - Why it matters:
   - Required bootstrap assets are checked and, if needed, fetched and written one-by-one inside a single async task.
   - Optional runtime fetches allow only one in-flight asset task because `RuntimeAssetHttpFetchState` stores a single `pending` task and the queue path early-returns while it exists.
@@ -101,10 +101,10 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `client CPU`, `architecture/maintainability`
 - Exact references:
-  - `bins/sidereal-client/src/native/shaders.rs:640`
-  - `bins/sidereal-client/src/native/render_layers.rs:20`
-  - `bins/sidereal-client/src/native/render_layers.rs:195`
-  - `bins/sidereal-client/src/native/render_layers.rs:530`
+  - `bins/sidereal-client/src/runtime/shaders.rs:640`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:20`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:195`
+  - `bins/sidereal-client/src/runtime/render_layers.rs:530`
 - Why it matters:
   - `sync_runtime_shader_assignments_system()` scans layer definitions and sprite shader references every `Update`.
   - Render-layer registry sync still polls for authored changes every frame.
@@ -126,13 +126,13 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `client CPU`, `client GPU`, `frame pacing`
 - Exact references:
-  - `bins/sidereal-client/src/native/scene.rs:13`
-  - `bins/sidereal-client/src/native/scene_world.rs:38`
-  - `bins/sidereal-client/src/native/scene_world.rs:65`
-  - `bins/sidereal-client/src/native/scene_world.rs:90`
-  - `bins/sidereal-client/src/native/scene_world.rs:116`
-  - `bins/sidereal-client/src/native/scene_world.rs:131`
-  - `bins/sidereal-client/src/native/scene_world.rs:145`
+  - `bins/sidereal-client/src/runtime/scene.rs:13`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:38`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:65`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:90`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:116`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:131`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:145`
 - Why it matters:
   - In-world uses backdrop, gameplay, fullscreen foreground, post-process, and UI overlay cameras, with a debug overlay camera available on top.
   - Extra cameras are not automatically wrong, but they multiply extraction/pass overhead.
@@ -152,12 +152,12 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Strong inference
 - Main impact: `client CPU`, `client GPU`
 - Exact references:
-  - `bins/sidereal-client/src/native/backdrop.rs:502`
-  - `bins/sidereal-client/src/native/visuals.rs:1357`
-  - `bins/sidereal-client/src/native/visuals.rs:1676`
-  - `bins/sidereal-client/src/native/visuals.rs:1892`
-  - `bins/sidereal-client/src/native/visuals.rs:2139`
-  - `bins/sidereal-client/src/native/visuals.rs:2192`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:502`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1357`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1676`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1892`
+  - `bins/sidereal-client/src/runtime/visuals.rs:2139`
+  - `bins/sidereal-client/src/runtime/visuals.rs:2192`
 - Why it matters:
   - Shared quad mesh caching already exists, which is correct.
   - The remaining pressure comes from per-pass and per-entity `Material2d` instances for planets, thrusters, tracers, sparks, asteroid variants, and fullscreen/post-process bindings.
@@ -177,10 +177,10 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `client CPU`, `frame pacing`
 - Exact references:
-  - `bins/sidereal-client/src/native/ui.rs:356`
-  - `bins/sidereal-client/src/native/ui.rs:949`
-  - `bins/sidereal-client/src/native/ui.rs:1590`
-  - `bins/sidereal-client/src/native/ui.rs:1696`
+  - `bins/sidereal-client/src/runtime/ui.rs:356`
+  - `bins/sidereal-client/src/runtime/ui.rs:949`
+  - `bins/sidereal-client/src/runtime/ui.rs:1590`
+  - `bins/sidereal-client/src/runtime/ui.rs:1696`
 - Why it matters:
   - Tactical overlay rebuilds dynamic markers and smooths all contacts every frame.
   - Runtime screen overlay material state is updated every frame.
@@ -201,11 +201,11 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `client GPU`, `client CPU`
 - Exact references:
-  - `bins/sidereal-client/src/native/backdrop.rs:59`
-  - `bins/sidereal-client/src/native/backdrop.rs:580`
-  - `bins/sidereal-client/src/native/visuals.rs:1357`
-  - `bins/sidereal-client/src/native/visuals.rs:1676`
-  - `bins/sidereal-client/src/native/visuals.rs:1760`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:59`
+  - `bins/sidereal-client/src/runtime/backdrop.rs:580`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1357`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1676`
+  - `bins/sidereal-client/src/runtime/visuals.rs:1760`
 - Why it matters:
   - Fullscreen layers and planet passes deliberately use `NoFrustumCulling` where a world-frustum test is incorrect or insufficient.
   - Planet visuals then apply manual projected-view culling, which is directionally right.
@@ -226,10 +226,10 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `frame pacing`
 - Exact references:
-  - `bins/sidereal-client/src/native/mod.rs:129`
-  - `bins/sidereal-client/src/native/transforms.rs:111`
-  - `bins/sidereal-client/src/native/transforms.rs:174`
-  - `bins/sidereal-client/src/native/plugins.rs`
+  - `bins/sidereal-client/src/runtime/mod.rs:129`
+  - `bins/sidereal-client/src/runtime/transforms.rs:111`
+  - `bins/sidereal-client/src/runtime/transforms.rs:174`
+  - `bins/sidereal-client/src/runtime/plugins.rs`
 - Why it matters:
   - Lightyear frame interpolation is enabled.
   - The client seeds interpolation markers and recovers obviously stalled interpolated transforms.
@@ -249,10 +249,10 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `frame pacing`, `architecture/maintainability`
 - Exact references:
-  - `bins/sidereal-client/src/native/visuals.rs:356`
-  - `bins/sidereal-client/src/native/replication.rs:781`
-  - `bins/sidereal-client/src/native/replication.rs:847`
-  - `bins/sidereal-client/src/native/resources.rs:301`
+  - `bins/sidereal-client/src/runtime/visuals.rs:356`
+  - `bins/sidereal-client/src/runtime/replication.rs:781`
+  - `bins/sidereal-client/src/runtime/replication.rs:847`
+  - `bins/sidereal-client/src/runtime/resources.rs:301`
 - Why it matters:
   - The client still keeps duplicate-lifecycle machinery alive and hides the loser rather than preventing the duplicate from being a render concern in the first place.
   - The path is more incremental than a naive full rescan, but it remains transitional complexity in the hot path.
@@ -270,9 +270,9 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `architecture/maintainability`
 - Exact references:
-  - `bins/sidereal-client/src/native/visuals.rs` (2687 lines)
-  - `bins/sidereal-client/src/native/backdrop.rs` (1930 lines)
-  - `bins/sidereal-client/src/native/ui.rs` (1847 lines)
+  - `bins/sidereal-client/src/runtime/visuals.rs` (2687 lines)
+  - `bins/sidereal-client/src/runtime/backdrop.rs` (1930 lines)
+  - `bins/sidereal-client/src/runtime/ui.rs` (1847 lines)
   - `bins/sidereal-replication/src/replication/visibility.rs` (1741 lines)
 - Why it matters:
   - The repo explicitly says large runtime refactors should split mixed concerns into domain modules.
@@ -294,7 +294,7 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven
 - Main impact: `architecture/maintainability`, `startup hitching`
 - Exact references:
-  - `bins/sidereal-client/src/native/shaders.rs:640`
+  - `bins/sidereal-client/src/runtime/shaders.rs:640`
   - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
   - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
 - Why it matters:
@@ -315,9 +315,9 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Proven plus inference
 - Main impact: `startup hitching`
 - Exact references:
-  - `bins/sidereal-client/src/native/scene_world.rs:38`
-  - `bins/sidereal-client/src/native/shaders.rs:569`
-  - `bins/sidereal-client/src/native/shaders.rs:640`
+  - `bins/sidereal-client/src/runtime/scene_world.rs:38`
+  - `bins/sidereal-client/src/runtime/shaders.rs:569`
+  - `bins/sidereal-client/src/runtime/shaders.rs:640`
 - Why it matters:
   - Streamed shaders are reinstalled on scene entry and when assignment generation changes.
   - That can cause hitches around world entry or hot reload.
@@ -338,10 +338,10 @@ The game can feel slow even when raw FPS is acceptable because several costs aff
 - Confidence: Strong inference
 - Main impact: `frame pacing`, `replication churn`
 - Exact references:
-  - `bins/sidereal-client/src/native/replication.rs:520`
-  - `bins/sidereal-client/src/native/replication.rs:781`
-  - `bins/sidereal-client/src/native/transforms.rs:174`
-  - `bins/sidereal-client/src/native/bootstrap.rs:86`
+  - `bins/sidereal-client/src/runtime/replication.rs:520`
+  - `bins/sidereal-client/src/runtime/replication.rs:781`
+  - `bins/sidereal-client/src/runtime/transforms.rs:174`
+  - `bins/sidereal-client/src/runtime/bootstrap.rs:86`
 - Why it matters:
   - Deferred predicted adoption, conflicting marker cleanup, initial-visual gating, and stalled-transform recovery all exist for good reasons, but together they indicate a lifecycle that can still get noisy under churn.
   - That kind of noise often feels like render slowness even when the GPU is not the limiting factor.
@@ -389,14 +389,14 @@ The main server-side contributors are:
 - Evidence:
   - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md` section 5.0 item 8 still describes client-only cached fullscreen renderable copies.
   - `docs/features/visibility_replication_contract.md` 2026-03-09 update says those client-local fullscreen copies were removed.
-  - Current runtime matches the newer contract: fullscreen renderables are attached to the authored fullscreen entities in `bins/sidereal-client/src/native/backdrop.rs:59` and `bins/sidereal-client/src/native/backdrop.rs:580`.
+  - Current runtime matches the newer contract: fullscreen renderables are attached to the authored fullscreen entities in `bins/sidereal-client/src/runtime/backdrop.rs:59` and `bins/sidereal-client/src/runtime/backdrop.rs:580`.
 - Recommendation:
   - Update `DR-0027` with a dated 2026-03-10 note so the active runtime path is not ambiguous.
 
 ### D2. Runtime shader assignment is still more hardcoded than `DR-0029` implies
 
 - Evidence:
-  - `bins/sidereal-client/src/native/shaders.rs:640` still infers families from special layer IDs and first-match query order.
+  - `bins/sidereal-client/src/runtime/shaders.rs:640` still infers families from special layer IDs and first-match query order.
 - Recommendation:
   - Document this as an explicit transitional state in `DR-0029` or close the gap in code.
 
@@ -404,31 +404,31 @@ The main server-side contributors are:
 
 ### 10.1 Asset/bootstrap to client-ready rendering
 
-1. Client runtime boots Bevy/Avian/Lightyear and registers material families in `bins/sidereal-client/src/native/mod.rs`.
-2. Gateway bootstrap manifest is requested and processed in `bins/sidereal-client/src/native/auth_net.rs:308` and `bins/sidereal-client/src/native/auth_net.rs:552`.
-3. World scene spawn reloads streamed shaders and creates the in-world camera/pass stack in `bins/sidereal-client/src/native/scene_world.rs:38`.
-4. Runtime optional asset discovery watches authored layer/visual references in `bins/sidereal-client/src/native/assets.rs:160`.
-5. Visual systems attach streamed sprites, planet passes, effects, overlays, and fullscreen layers in `bins/sidereal-client/src/native/plugins.rs` via `visuals`, `backdrop`, and `ui`.
+1. Client runtime boots Bevy/Avian/Lightyear and registers material families in `bins/sidereal-client/src/runtime/mod.rs`.
+2. Gateway bootstrap manifest is requested and processed in `bins/sidereal-client/src/runtime/auth_net.rs:308` and `bins/sidereal-client/src/runtime/auth_net.rs:552`.
+3. World scene spawn reloads streamed shaders and creates the in-world camera/pass stack in `bins/sidereal-client/src/runtime/scene_world.rs:38`.
+4. Runtime optional asset discovery watches authored layer/visual references in `bins/sidereal-client/src/runtime/assets.rs:160`.
+5. Visual systems attach streamed sprites, planet passes, effects, overlays, and fullscreen layers in `bins/sidereal-client/src/runtime/plugins.rs` via `visuals`, `backdrop`, and `ui`.
 
 ### 10.2 Replicated entity arrival to visible draw
 
-1. Lightyear/Avian replication clones arrive and are adopted in `bins/sidereal-client/src/native/replication.rs:520`.
-2. Spatial/visibility/bootstrap components are ensured in `bins/sidereal-client/src/native/replication.rs:48`.
-3. Frame interpolation markers and fallback transform seeding are maintained in `bins/sidereal-client/src/native/transforms.rs:111` and `bins/sidereal-client/src/native/transforms.rs:174`.
-4. Render-layer assignment resolves in `bins/sidereal-client/src/native/render_layers.rs:195`.
-5. Visual children/materials attach in `bins/sidereal-client/src/native/visuals.rs:763` and `bins/sidereal-client/src/native/visuals.rs:1357`.
+1. Lightyear/Avian replication clones arrive and are adopted in `bins/sidereal-client/src/runtime/replication.rs:520`.
+2. Spatial/visibility/bootstrap components are ensured in `bins/sidereal-client/src/runtime/replication.rs:48`.
+3. Frame interpolation markers and fallback transform seeding are maintained in `bins/sidereal-client/src/runtime/transforms.rs:111` and `bins/sidereal-client/src/runtime/transforms.rs:174`.
+4. Render-layer assignment resolves in `bins/sidereal-client/src/runtime/render_layers.rs:195`.
+5. Visual children/materials attach in `bins/sidereal-client/src/runtime/visuals.rs:763` and `bins/sidereal-client/src/runtime/visuals.rs:1357`.
 
 ### 10.3 Camera-relative/world-layer transform derivation
 
 1. Authoritative world positions remain in physics/world-space components.
 2. Camera follow resolves after interpolation/correction.
-3. Layer parallax and screen-scale derive render-local offsets in `bins/sidereal-client/src/native/visuals.rs:1822` and related helpers.
+3. Layer parallax and screen-scale derive render-local offsets in `bins/sidereal-client/src/runtime/visuals.rs:1822` and related helpers.
 
 ### 10.4 Fullscreen background/foreground/post-process execution
 
-1. Fullscreen authored ECS entities are synchronized into renderable fullscreen state in `bins/sidereal-client/src/native/backdrop.rs:59`.
-2. Authored post-process stacks spawn/maintain client renderable passes in `bins/sidereal-client/src/native/backdrop.rs:317`.
-3. Backdrop/fullscreen transforms are normalized to the current viewport in `bins/sidereal-client/src/native/backdrop.rs:692` and `bins/sidereal-client/src/native/backdrop.rs:723`.
+1. Fullscreen authored ECS entities are synchronized into renderable fullscreen state in `bins/sidereal-client/src/runtime/backdrop.rs:59`.
+2. Authored post-process stacks spawn/maintain client renderable passes in `bins/sidereal-client/src/runtime/backdrop.rs:317`.
+3. Backdrop/fullscreen transforms are normalized to the current viewport in `bins/sidereal-client/src/runtime/backdrop.rs:692` and `bins/sidereal-client/src/runtime/backdrop.rs:723`.
 
 ### 10.5 Prediction/reconciliation/interpolation to final presented motion
 
@@ -573,13 +573,13 @@ Missing telemetry that should be added:
 
 ### 14.1 Client runtime plugins/systems/resources
 
-- `ClientVisualsPlugin` in `bins/sidereal-client/src/native/plugins.rs`: active runtime
-- `ClientLightingPlugin` in `bins/sidereal-client/src/native/plugins.rs`: active runtime
-- `ClientUiPlugin` in `bins/sidereal-client/src/native/plugins.rs`: active runtime
-- `RuntimeShaderAssignments` in `bins/sidereal-client/src/native/shaders.rs`: active runtime, transitional implementation
-- `DuplicateVisualResolutionState` in `bins/sidereal-client/src/native/resources.rs`: transitional/migration code
-- `DebugOverlayState`, `DebugOverlaySnapshot` in `bins/sidereal-client/src/native/resources.rs`: debug/diagnostic
-- `UiOverlayCamera`, backdrop/gameplay/post-process camera stack in `bins/sidereal-client/src/native/scene.rs` and `bins/sidereal-client/src/native/scene_world.rs`: active runtime
+- `ClientVisualsPlugin` in `bins/sidereal-client/src/runtime/plugins.rs`: active runtime
+- `ClientLightingPlugin` in `bins/sidereal-client/src/runtime/plugins.rs`: active runtime
+- `ClientUiPlugin` in `bins/sidereal-client/src/runtime/plugins.rs`: active runtime
+- `RuntimeShaderAssignments` in `bins/sidereal-client/src/runtime/shaders.rs`: active runtime, transitional implementation
+- `DuplicateVisualResolutionState` in `bins/sidereal-client/src/runtime/resources.rs`: transitional/migration code
+- `DebugOverlayState`, `DebugOverlaySnapshot` in `bins/sidereal-client/src/runtime/resources.rs`: debug/diagnostic
+- `UiOverlayCamera`, backdrop/gameplay/post-process camera stack in `bins/sidereal-client/src/runtime/scene.rs` and `bins/sidereal-client/src/runtime/scene_world.rs`: active runtime
 
 ### 14.2 Replication server plugins/systems/resources
 
@@ -591,8 +591,8 @@ Missing telemetry that should be added:
 
 ### 14.3 Gateway/bootstrap/asset-delivery pieces
 
-- Asset bootstrap manifest fetch path in `bins/sidereal-client/src/native/auth_net.rs`: active runtime
-- Runtime asset cache/index in `bins/sidereal-client/src/native/assets.rs` and `crates/sidereal-asset-runtime`: active runtime
+- Asset bootstrap manifest fetch path in `bins/sidereal-client/src/runtime/auth_net.rs`: active runtime
+- Runtime asset cache/index in `bins/sidereal-client/src/runtime/assets.rs` and `crates/sidereal-asset-runtime`: active runtime
 - Gateway asset manifest/payload routes and runtime catalog build path: active runtime
 - Catalog hot reload invalidation path in replication `assets.rs`: active runtime
 

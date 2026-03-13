@@ -793,7 +793,7 @@ For each decision:
   - `docs/features/scripting_support.md`
   - `docs/features/asset_delivery_contract.md`
   - `docs/sidereal_design_document.md`
-  - `bins/sidereal-client/src/native/mod.rs`
+  - `bins/sidereal-client/src/runtime/mod.rs`
 
 ## DR-0019: Lua Asset Registry Authority and Gateway HTTP Asset Delivery
 - Status: Accepted

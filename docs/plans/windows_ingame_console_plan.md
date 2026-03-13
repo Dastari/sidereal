@@ -8,8 +8,8 @@ Primary references:
 - `AGENTS.md`
 - `docs/ui_design_guide.md`
 - `bins/sidereal-client/src/main.rs`
-- `bins/sidereal-client/src/native/mod.rs`
-- `bins/sidereal-client/src/native/plugins.rs`
+- `bins/sidereal-client/src/runtime/mod.rs`
+- `bins/sidereal-client/src/runtime/plugins.rs`
 
 ## 1. Objective
 
@@ -93,7 +93,7 @@ Implementation note:
 ## 4.4 In-Game Console UI
 
 Create a dedicated module, recommended path:
-- `bins/sidereal-client/src/native/dev_console.rs`
+- `bins/sidereal-client/src/runtime/dev_console.rs`
 
 Register in `native/plugins.rs` under `ClientUiPlugin`.
 

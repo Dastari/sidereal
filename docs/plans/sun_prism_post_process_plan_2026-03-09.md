@@ -9,8 +9,8 @@ Primary references:
 - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
 - `docs/plans/dynamic_runtime_shader_material_plan.md`
 - `docs/plans/rendering_optimization_pass_plan.md`
-- `bins/sidereal-client/src/native/backdrop.rs`
-- `bins/sidereal-client/src/native/lighting.rs`
+- `bins/sidereal-client/src/runtime/backdrop.rs`
+- `bins/sidereal-client/src/runtime/lighting.rs`
 
 ## 1. Goal
 
@@ -50,7 +50,7 @@ Using the post-process phase keeps the effect:
 
 ## 3. Current Constraints
 
-The current runtime already supports authored `RuntimePostProcessStack` data, but the active client implementation still routes post-process execution through a limited set of fixed fullscreen material families in `bins/sidereal-client/src/native/backdrop.rs`.
+The current runtime already supports authored `RuntimePostProcessStack` data, but the active client implementation still routes post-process execution through a limited set of fixed fullscreen material families in `bins/sidereal-client/src/runtime/backdrop.rs`.
 
 That means the practical implementation path is:
 
@@ -151,8 +151,8 @@ This keeps:
 Files:
 
 1. `data/shaders/sun_prism_post.wgsl`
-2. `bins/sidereal-client/src/native/shaders.rs`
-3. `bins/sidereal-client/src/native/backdrop.rs`
+2. `bins/sidereal-client/src/runtime/shaders.rs`
+3. `bins/sidereal-client/src/runtime/backdrop.rs`
 
 Work:
 
@@ -172,9 +172,9 @@ Shader contract:
 
 Files:
 
-1. `bins/sidereal-client/src/native/backdrop.rs`
-2. `bins/sidereal-client/src/native/lighting.rs`
-3. `bins/sidereal-client/src/native/components.rs` or `resources.rs` if a shared resource is cleaner
+1. `bins/sidereal-client/src/runtime/backdrop.rs`
+2. `bins/sidereal-client/src/runtime/lighting.rs`
+3. `bins/sidereal-client/src/runtime/components.rs` or `resources.rs` if a shared resource is cleaner
 
 Work:
 
@@ -198,8 +198,8 @@ Selection rule for v1:
 
 Files:
 
-1. `bins/sidereal-client/src/native/backdrop.rs`
-2. `bins/sidereal-client/src/native/plugins.rs`
+1. `bins/sidereal-client/src/runtime/backdrop.rs`
+2. `bins/sidereal-client/src/runtime/plugins.rs`
 
 Work:
 

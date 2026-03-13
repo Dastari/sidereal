@@ -173,7 +173,7 @@ Current native input maps `Space` to `Brake`, so key mapping must change:
 
 Files:
 
-1. `bins/sidereal-client/src/native/input.rs`
+1. `bins/sidereal-client/src/runtime/input.rs`
 2. `crates/sidereal-net/src/lightyear_protocol/input.rs` (extend action construction path for fire input)
 
 Maintain identical behavior for native and WASM builds (same gameplay/input path, platform-only transport differences).

@@ -46,12 +46,12 @@ High-density files:
 - `bins/sidereal-replication/src/tests/visibility.rs`: 11
 - `bins/sidereal-gateway/tests/auth_flow.rs`: 11
 - `bins/sidereal-replication/src/replication/visibility.rs`: 10
-- `bins/sidereal-client/src/native/visuals.rs`: 9
+- `bins/sidereal-client/src/runtime/visuals.rs`: 9
 - `bins/sidereal-gateway/tests/auth_helpers.rs`: 8
 - `bins/sidereal-replication/src/replication/tactical.rs`: 7
 - `bins/sidereal-replication/src/replication/scripting.rs`: 7
-- `bins/sidereal-client/src/native/debug_overlay.rs`: 7
-- `bins/sidereal-client/src/native/render_layers.rs`: 6
+- `bins/sidereal-client/src/runtime/debug_overlay.rs`: 7
+- `bins/sidereal-client/src/runtime/render_layers.rs`: 6
 - `bins/sidereal-gateway/src/auth/starter_world_scripts.rs`: 6
 
 ## 3. Keep Criteria

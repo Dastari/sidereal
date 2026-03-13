@@ -434,7 +434,7 @@ Docs:
 Client:
 
 1. likely minimal for first pass unless a reduced landmark product lane is introduced
-2. projected planet render-bounds follow-up likely lives in `bins/sidereal-client/src/native/visuals.rs`
+2. projected planet render-bounds follow-up likely lives in `bins/sidereal-client/src/runtime/visuals.rs`
 
 ## 12. Testing Plan
 
