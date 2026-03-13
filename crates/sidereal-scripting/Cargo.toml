@@ -9,6 +9,7 @@ authors.workspace = true
 mlua.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sidereal-audio = { path = "../sidereal-audio" }
 sidereal-game = { path = "../sidereal-game" }
 sidereal-persistence = { path = "../sidereal-persistence" }
 thiserror.workspace = true

@@ -1,3 +1,5 @@
+mod audio_registry;
+
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
@@ -13,6 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::{debug, error, info};
+
+pub use audio_registry::{load_audio_registry_from_root, load_audio_registry_from_source};
 
 #[derive(Debug, Error)]
 pub enum ScriptError {

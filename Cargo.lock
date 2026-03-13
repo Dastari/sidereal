@@ -7261,6 +7261,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sidereal-audio"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sidereal-client"
 version = "0.1.0"
 dependencies = [
@@ -7438,6 +7447,7 @@ dependencies = [
  "mlua",
  "serde",
  "serde_json",
+ "sidereal-audio",
  "sidereal-game",
  "sidereal-persistence",
  "thiserror 2.0.18",

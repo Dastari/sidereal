@@ -7,8 +7,15 @@ Owners: gameplay runtime + replication + client audio/visuals
 Primary architecture references:
 - `docs/sidereal_design_document.md`
 - `docs/features/visibility_replication_contract.md`
+- `docs/features/audio_runtime_contract.md`
+- `docs/plans/audio_runtime_implementation_plan_2026-03-13.md`
 - `docs/decisions/dr-0013_action_acceptor_control_routing.md`
 - `docs/component_authoring_guide.md`
+
+2026-03-13 update:
+1. Detailed audio authoring/runtime/backend direction now lives in `docs/features/audio_runtime_contract.md`.
+2. The detailed implementation plan now lives in `docs/plans/audio_runtime_implementation_plan_2026-03-13.md`.
+3. This plan remains the combat-focused rollout plan; the feature contract and implementation plan should be treated as the deeper source of truth for audio-specific design details.
 
 ## 1. Goal
 
