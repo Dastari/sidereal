@@ -11,7 +11,9 @@ import type {
 import type { DataSourceMode } from '@/components/sidebar/Toolbar'
 import { GridScanOverlay } from '@/components/thegridcn/grid-scan-overlay'
 import { LocationDisplay } from '@/components/thegridcn/location-display'
+import { Reticle } from '@/components/thegridcn/reticle'
 import { useGridThemeColors } from '@/hooks/use-grid-theme-colors'
+import { DEFAULT_GRID_INTENSITY } from '@/lib/grid-theme'
 import { useTheme } from '@/hooks/use-theme'
 import { cn } from '@/lib/utils'
 
@@ -119,15 +121,27 @@ export function GridCanvas({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const labelsCanvasRef = useRef<HTMLCanvasElement>(null)
+  const [hasMounted, setHasMounted] = useState(false)
   const { resolvedTheme, gridTheme, gridIntensity } = useTheme()
+  const effectiveGridIntensity = hasMounted
+    ? gridIntensity
+    : DEFAULT_GRID_INTENSITY
   const themeColors = useGridThemeColors(
     `${resolvedTheme}:${gridTheme}:${gridIntensity}`,
   )
-  const scanOverlayEnabled = gridIntensity !== 'off'
+  const scanOverlayEnabled = effectiveGridIntensity !== 'off'
   const scanOverlaySpeed =
-    gridIntensity === 'heavy' ? 5.5 : gridIntensity === 'light' ? 10 : 7.5
+    effectiveGridIntensity === 'heavy'
+      ? 5.5
+      : effectiveGridIntensity === 'light'
+        ? 10
+        : 7.5
   const scanOverlayGridSize =
-    gridIntensity === 'heavy' ? 72 : gridIntensity === 'light' ? 108 : 88
+    effectiveGridIntensity === 'heavy'
+      ? 72
+      : effectiveGridIntensity === 'light'
+        ? 108
+        : 88
 
   const cameraRef = useRef<Camera>({ x: 0, y: 0, zoom: 0.5 })
   const draggingRef = useRef(false)
@@ -155,6 +169,10 @@ export function GridCanvas({
 
   const { init, resize, render } = useGridRenderer(canvasRef, themeColors)
   const renderNodesRef = useRef<Map<string, ExpandedNode>>(new Map())
+
+  useEffect(() => {
+    setHasMounted(true)
+  }, [])
 
   const syncCameraHudState = useCallback(() => {
     const camera = cameraRef.current
@@ -456,20 +474,7 @@ export function GridCanvas({
         ctx.fill()
       }
 
-      if (id === selectedId) {
-        const [sr, sg, sb] = themeColors.selectionRing
-        ctx.lineWidth = Math.max(1.5, 2 * dpr)
-        ctx.strokeStyle = `rgba(${Math.round(sr * 255)}, ${Math.round(sg * 255)}, ${Math.round(sb * 255)}, 0.95)`
-        ctx.beginPath()
-        ctx.arc(
-          screenPos.x,
-          screenPos.y,
-          markerRadius + 2.5 * dpr,
-          0,
-          Math.PI * 2,
-        )
-        ctx.stroke()
-      } else if (id === hoveredId) {
+      if (id === hoveredId) {
         ctx.lineWidth = Math.max(1, 1.5 * dpr)
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)'
         ctx.beginPath()
@@ -493,20 +498,21 @@ export function GridCanvas({
     if (
       selectedPlayerVisibilityOverlay &&
       Number.isFinite(exploredCellSizeM) &&
-      exploredCellSizeM > 0
+      (exploredCellSizeM ?? 0) > 0
     ) {
+      const exploredCellSize = exploredCellSizeM ?? 0
       ctx.save()
       ctx.fillStyle = 'rgba(7, 10, 16, 0.78)'
       ctx.fillRect(0, 0, labelsCanvas.width, labelsCanvas.height)
       ctx.globalCompositeOperation = 'destination-out'
       for (const cell of selectedPlayerVisibilityOverlay.explored_cells) {
         if (!Number.isFinite(cell.x) || !Number.isFinite(cell.y)) continue
-        const minX = cell.x * exploredCellSizeM
-        const minY = cell.y * exploredCellSizeM
+        const minX = cell.x * exploredCellSize
+        const minY = cell.y * exploredCellSize
         const cornerA = worldToScreen(minX, minY)
         const cornerB = worldToScreen(
-          minX + exploredCellSizeM,
-          minY + exploredCellSizeM,
+          minX + exploredCellSize,
+          minY + exploredCellSize,
         )
         const rectX = Math.min(cornerA.x, cornerB.x)
         const rectY = Math.min(cornerA.y, cornerB.y)
@@ -919,6 +925,43 @@ export function GridCanvas({
         : 'SERVER FEED'
   }, [focusNode, isPanning, selectedId, sourceMode])
 
+  const selectedReticlePosition = React.useMemo(() => {
+    if (!selectedId) {
+      return null
+    }
+    const selectedNode = allNodes.get(selectedId)
+    const container = containerRef.current
+    if (!selectedNode || !container) {
+      return null
+    }
+    const dpr =
+      typeof window === 'undefined'
+        ? 1
+        : Math.max(window.devicePixelRatio || 1, 1)
+    const cssZoom = cameraHudState.zoom / dpr
+    const x =
+      (selectedNode.x - cameraHudState.x) * cssZoom +
+      container.clientWidth * 0.5
+    const y =
+      container.clientHeight * 0.5 -
+      (selectedNode.y - cameraHudState.y) * cssZoom
+    if (
+      x < -64 ||
+      x > container.clientWidth + 64 ||
+      y < -64 ||
+      y > container.clientHeight + 64
+    ) {
+      return null
+    }
+    return { x, y }
+  }, [
+    allNodes,
+    cameraHudState.x,
+    cameraHudState.y,
+    cameraHudState.zoom,
+    selectedId,
+  ])
+
   // Mouse handlers
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -1103,7 +1146,19 @@ export function GridCanvas({
           'absolute inset-0 z-[2] h-full w-full pointer-events-none',
         )}
       />
-      <div className="grid-canvas-hud-chip absolute bottom-4 left-4 z-[3] px-3 py-2">
+      {selectedReticlePosition ? (
+        <div
+          className="pointer-events-none absolute z-[3]"
+          style={{
+            left: selectedReticlePosition.x,
+            top: selectedReticlePosition.y,
+            transform: 'translate(-50%, -50%)',
+          }}
+        >
+          <Reticle size={64} variant="scanning" />
+        </div>
+      ) : null}
+      <div className="grid-canvas-hud-chip absolute bottom-4 left-4 z-[4] px-3 py-2">
         <LocationDisplay
           sector={locationSector}
           grid={locationGrid}

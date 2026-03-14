@@ -296,8 +296,8 @@ export function useGridRenderer(
         let ni = 0
 
         for (const [id, node] of nodes) {
-          const entityLabels = node.properties?.entity_labels as
-            | string[]
+          const entityLabels = node.properties.entity_labels as
+            | Array<string>
             | undefined
           const color = getEntityColor(node.kind, entityLabels)
           const baseSize = node.depth === 0 ? 20 : 12

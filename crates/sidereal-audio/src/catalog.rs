@@ -14,6 +14,8 @@ pub struct AudioRegistry {
     #[serde(default)]
     pub concurrency_groups: Vec<AudioConcurrencyGroup>,
     #[serde(default)]
+    pub clips: Vec<AudioClipDefinition>,
+    #[serde(default)]
     pub profiles: Vec<AudioProfileDefinition>,
 }
 
@@ -59,6 +61,29 @@ pub struct AudioConcurrencyGroup {
     pub group_id: String,
     pub max_instances: u32,
     pub scope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AudioClipDefinition {
+    pub clip_asset_id: String,
+    #[serde(default)]
+    pub defaults: AudioClipPlaybackDefaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AudioClipPlaybackDefaults {
+    #[serde(default)]
+    pub intro_start_s: Option<f32>,
+    #[serde(default)]
+    pub loop_start_s: Option<f32>,
+    #[serde(default)]
+    pub loop_end_s: Option<f32>,
+    #[serde(default)]
+    pub outro_start_s: Option<f32>,
+    #[serde(default)]
+    pub clip_end_s: Option<f32>,
+    #[serde(default)]
+    pub loop_region: Option<AudioLoopRegion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

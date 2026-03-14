@@ -1,6 +1,6 @@
 import * as React from 'react'
-import type { ComponentEditorProps } from './types'
 import { DebouncedNumberField } from './DebouncedNumberField'
+import type { ComponentEditorProps } from './types'
 
 type Engine = {
   burn_rate_kg_s: number

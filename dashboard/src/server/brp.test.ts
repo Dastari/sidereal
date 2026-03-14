@@ -13,7 +13,7 @@ describe('getLiveWorldSnapshot', () => {
       ok: true,
       status: 200,
       statusText: 'OK',
-      text: async () =>
+      text: () =>
         JSON.stringify({
           jsonrpc: '2.0',
           id: 'test',

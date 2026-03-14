@@ -297,6 +297,11 @@ pub(crate) struct DebugOverlayStats {
     pub nameplate_sync_max_ms: f64,
     pub nameplate_position_last_ms: f64,
     pub nameplate_position_max_ms: f64,
+    pub nameplate_camera_candidates_last: usize,
+    pub nameplate_camera_active_last: usize,
+    pub nameplate_missing_target_last: usize,
+    pub nameplate_projection_failures_last: usize,
+    pub nameplate_viewport_culled_last: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -416,10 +421,15 @@ pub(crate) struct HudPerfCounters {
     pub nameplate_position_runs: u64,
     pub nameplate_position_last_ms: f64,
     pub nameplate_position_max_ms: f64,
+    pub nameplate_camera_candidates_last: usize,
+    pub nameplate_camera_active_last: usize,
     pub nameplate_entity_data_last: usize,
     pub nameplate_visible_last: usize,
     pub nameplate_hidden_last: usize,
     pub nameplate_health_updates_last: usize,
+    pub nameplate_missing_target_last: usize,
+    pub nameplate_projection_failures_last: usize,
+    pub nameplate_viewport_culled_last: usize,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -722,6 +732,7 @@ pub(crate) struct EmbeddedFonts {
     pub regular: Handle<Font>,
     pub display: Handle<Font>,
     pub mono: Handle<Font>,
+    pub mono_bold: Handle<Font>,
 }
 
 #[derive(Resource, Default)]

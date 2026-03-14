@@ -2,6 +2,10 @@
 
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use sidereal_ui::layout;
+use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::typography::text_font;
+use sidereal_ui::widgets::{panel_surface, spawn_hud_frame_chrome};
 
 use super::app_state::{ClientAppState, ClientSession};
 use super::assets::LocalAssetManager;
@@ -22,50 +26,52 @@ pub(super) struct AssetLoadingBarFill;
 pub(super) fn setup_asset_loading_screen(
     mut commands: Commands<'_, '_>,
     fonts: Res<'_, EmbeddedFonts>,
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
 ) {
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    let (panel_bg, panel_border, panel_shadow) = panel_surface(theme, glow_intensity);
     commands
         .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.03, 0.05, 0.1, 0.96)),
+            layout::fullscreen_centered_root(),
+            BackgroundColor(theme.colors.background_color()),
             AssetLoadingRoot,
             DespawnOnExit(ClientAppState::AssetLoading),
         ))
         .with_children(|root| {
             root.spawn((
                 Node {
-                    width: Val::Px(520.0),
-                    padding: UiRect::all(Val::Px(24.0)),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(12.0),
-                    ..default()
+                    ..layout::panel(
+                        Val::Px(520.0),
+                        theme.metrics.panel_padding_px,
+                        12.0,
+                        theme.metrics.panel_radius_px,
+                        theme.metrics.panel_border_px,
+                    )
                 },
-                BackgroundColor(Color::srgba(0.07, 0.1, 0.16, 0.9)),
+                panel_bg,
+                panel_border,
+                panel_shadow,
             ))
             .with_children(|panel| {
+                spawn_hud_frame_chrome(
+                    panel,
+                    theme,
+                    Some("Asset Bootstrap"),
+                    &fonts.mono,
+                    glow_intensity,
+                );
+
                 panel.spawn((
                     Text::new("Preparing Assets"),
-                    TextFont {
-                        font: fonts.bold.clone(),
-                        font_size: 34.0,
-                        ..default()
-                    },
-                    TextColor(Color::WHITE),
+                    text_font(fonts.display.clone(), 34.0),
+                    TextColor(theme.colors.foreground_color()),
                 ));
                 panel.spawn((
                     Text::new("Waiting for bootstrap manifest..."),
-                    TextFont {
-                        font: fonts.regular.clone(),
-                        font_size: 18.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.84, 0.9, 1.0, 0.95)),
+                    text_font(fonts.regular.clone(), 18.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                     AssetLoadingText,
                 ));
                 panel
@@ -76,8 +82,8 @@ pub(super) fn setup_asset_loading_screen(
                             border: UiRect::all(Val::Px(1.0)),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.12, 0.16, 0.24, 0.9)),
-                        BorderColor::all(Color::srgba(0.8, 0.9, 1.0, 0.85)),
+                        BackgroundColor(theme.colors.input_color().with_alpha(0.9)),
+                        BorderColor::all(theme.colors.border_color()),
                     ))
                     .with_children(|bar| {
                         bar.spawn((
@@ -86,18 +92,14 @@ pub(super) fn setup_asset_loading_screen(
                                 height: Val::Percent(100.0),
                                 ..default()
                             },
-                            BackgroundColor(Color::srgb(0.35, 0.84, 1.0)),
+                            BackgroundColor(theme.colors.primary_color()),
                             AssetLoadingBarFill,
                         ));
                     });
                 panel.spawn((
                     Text::new(""),
-                    TextFont {
-                        font: fonts.regular.clone(),
-                        font_size: 14.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.72, 0.81, 0.93, 0.95)),
+                    text_font(fonts.mono.clone(), 14.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                     AssetLoadingStatusText,
                 ));
             });

@@ -229,8 +229,8 @@ fn setup_auth_screen(
                     ))
                     .with_children(|button| {
                         button.spawn((
-                            Text::new("Login"),
-                            text_font(fonts.bold.clone(), 14.0),
+                            Text::new("LOGIN"),
+                            text_font(fonts.mono_bold.clone(), 18.0),
                             TextColor(theme.colors.primary_foreground_color()),
                             AuthUiSubmitLabel,
                         ));
@@ -297,8 +297,8 @@ fn setup_auth_screen(
                     ))
                     .with_children(|button| {
                         button.spawn((
-                            Text::new("Quit"),
-                            text_font(fonts.bold.clone(), 12.0),
+                            Text::new("QUIT"),
+                            text_font(fonts.mono_bold.clone(), 16.0),
                             TextColor(theme.colors.panel_foreground_color()),
                         ));
                     });
@@ -404,8 +404,8 @@ fn spawn_flow_button(
         ))
         .with_children(|button| {
             button.spawn((
-                Text::new(label),
-                text_font(fonts.bold.clone(), 10.0),
+                Text::new(label.to_ascii_uppercase()),
+                text_font(fonts.mono_bold.clone(), 15.0),
                 TextColor(theme.colors.panel_foreground_color()),
             ));
         });
@@ -635,7 +635,7 @@ fn update_auth_text(
 
     let submit_label = submit_label(session.selected_action);
     for mut text in &mut text_sets.p2() {
-        text.0 = submit_label.to_string();
+        text.0 = submit_label.to_ascii_uppercase();
     }
 
     for (mut text, mut color) in &mut text_sets.p0() {

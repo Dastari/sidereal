@@ -1,14 +1,13 @@
-import * as React from 'react'
 import {
   COMPONENT_TYPE_CHARACTER_MOVEMENT_CONTROLLER,
   COMPONENT_TYPE_DENSITY,
   COMPONENT_TYPE_ENGINE,
-  COMPONENT_TYPE_HARDPOINT,
-  COMPONENT_TYPE_FLIGHT_TUNING,
   COMPONENT_TYPE_ENVIRONMENT_LIGHTING_STATE,
+  COMPONENT_TYPE_FLIGHT_TUNING,
+  COMPONENT_TYPE_HARDPOINT,
   COMPONENT_TYPE_MAX_VELOCITY_MPS,
-  COMPONENT_TYPE_SIZE_M,
   COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS,
+  COMPONENT_TYPE_SIZE_M,
   COMPONENT_TYPE_STARFIELD_SHADER_SETTINGS,
   COMPONENT_TYPE_TACTICAL_MAP_UI_SETTINGS,
   COMPONENT_TYPE_THRUSTER_PLUME_SHADER_SETTINGS,
@@ -27,6 +26,7 @@ import { SizeMEditor } from './SizeMEditor'
 import { StarfieldShaderSettingsEditor } from './StarfieldShaderSettingsEditor'
 import { TacticalMapUiSettingsEditor } from './TacticalMapUiSettingsEditor'
 import { ThrusterPlumeShaderSettingsEditor } from './ThrusterPlumeShaderSettingsEditor'
+import type * as React from 'react'
 import type { ComponentEditorProps } from './types'
 import type { GraphNode } from '@/components/grid/types'
 

@@ -1,28 +1,9 @@
 import * as React from 'react'
+import { TheGridNumberInput } from '@/components/thegridcn/thegrid-number-input'
 import { TheGridSlider } from '@/components/thegridcn/thegrid-slider'
-import { Input } from '@/components/ui/input'
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
-}
-
-function decimalsFromStep(step: number): number {
-  if (!Number.isFinite(step) || step <= 0) return 0
-  const normalized = step.toString().toLowerCase()
-  if (normalized.includes('e-')) {
-    const [, exponent] = normalized.split('e-')
-    return Number.parseInt(exponent, 10) || 0
-  }
-  const decimal = normalized.split('.')[1]
-  return decimal ? decimal.length : 0
-}
-
-function formatForInput(value: number, step: number): string {
-  const decimals = decimalsFromStep(step)
-  if (decimals === 0) {
-    return String(Math.round(value))
-  }
-  return value.toFixed(decimals).replace(/\.?0+$/, '')
 }
 
 type DebouncedNumberFieldProps = {
@@ -52,13 +33,11 @@ export function DebouncedNumberField({
 }: DebouncedNumberFieldProps) {
   const safe = Number.isFinite(value) ? clamp(value, min, max) : min
   const [sliderValue, setSliderValue] = React.useState(safe)
-  const [inputValue, setInputValue] = React.useState(formatForInput(safe, step))
   const timerRef = React.useRef<number | null>(null)
 
   React.useEffect(() => {
     setSliderValue(safe)
-    setInputValue(formatForInput(safe, step))
-  }, [safe, step])
+  }, [safe])
 
   React.useEffect(() => {
     return () => {
@@ -103,44 +82,23 @@ export function DebouncedNumberField({
           onChange={(next) => {
             const clamped = clamp(next, min, max)
             setSliderValue(clamped)
-            setInputValue(String(clamped))
             scheduleCommit(clamped)
           }}
           className="flex-1"
         />
-        <Input
-          type="number"
-          value={inputValue}
+        <TheGridNumberInput
+          value={sliderValue}
           min={min}
           max={max}
           step={step}
           readOnly={readOnly}
-          onChange={(event) => {
-            const raw = event.target.value
-            setInputValue(raw)
-            const next = Number.parseFloat(raw)
-            if (Number.isFinite(next)) {
-              setSliderValue(clamp(next, min, max))
-            }
+          onChange={(next) => {
+            const clamped = clamp(next, min, max)
+            setSliderValue(clamped)
+            commitNow(clamped)
           }}
-          onBlur={() => {
-            const next = Number.parseFloat(inputValue)
-            if (Number.isFinite(next)) {
-              const clamped = clamp(next, min, max)
-              setSliderValue(clamped)
-              setInputValue(formatForInput(clamped, step))
-              commitNow(clamped)
-            } else {
-              setInputValue(formatForInput(sliderValue, step))
-            }
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.currentTarget.blur()
-            }
-          }}
-          className={inputClassName}
-          aria-label={`${label} value`}
+          className="shrink-0"
+          inputClassName={inputClassName}
         />
       </div>
     </div>

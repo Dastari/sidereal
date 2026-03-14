@@ -188,6 +188,7 @@ pub(crate) fn configure_client_runtime(
             audio::receive_local_destruction_audio_system,
             audio::receive_remote_weapon_fire_audio_system,
             audio::receive_remote_destruction_audio_system,
+            audio::debug_audio_probe_system,
         )
             .run_if(in_state(ClientAppState::InWorld)),
     );

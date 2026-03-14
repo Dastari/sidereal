@@ -59,7 +59,7 @@ import {
   playerLabel,
   resolveOwnerTypePath,
 } from '@/features/explorer/explorer-utils'
-import { Switch } from '@/components/ui'
+import { HUDFrame, Switch } from '@/components/ui'
 
 type CameraSnapshot = {
   x: number
@@ -371,6 +371,8 @@ export function ExplorerWorkspace({
     },
     [setRouteState],
   )
+  const isLiveBrpMode =
+    sourceMode === 'liveServer' || sourceMode === 'liveClient'
   const isServerBrpMode =
     sourceMode === 'liveServer' && activeBrpTab.kind === 'server'
   const resourceSelectionId =
@@ -1347,7 +1349,8 @@ export function ExplorerWorkspace({
       point: { x: number; y: number },
       worldPoint?: { x: number; y: number },
     ) => {
-      if (!isServerBrpMode) return
+      if (!isLiveBrpMode) return
+      if (!isServerBrpMode && !entityId) return
       setContextMenu({
         open: true,
         x: point.x,
@@ -1357,7 +1360,7 @@ export function ExplorerWorkspace({
         worldY: worldPoint?.y ?? null,
       })
     },
-    [isServerBrpMode],
+    [isLiveBrpMode, isServerBrpMode],
   )
 
   const handleSpawnTemplate = useCallback(
@@ -1634,7 +1637,10 @@ export function ExplorerWorkspace({
         setDetailPanelWidth(width)
       }}
       detailPanel={
-        <Panel>
+        <HUDFrame
+          label={entities.find((e) => e.id === selectedId)?.name ?? 'Details'}
+          className=" h-full"
+        >
           <DetailPanel
             selectedId={selectedId}
             entities={entities}
@@ -1651,7 +1657,7 @@ export function ExplorerWorkspace({
             onComponentUpdate={handleComponentUpdate}
             onClose={() => updateSelection(null)}
           />
-        </Panel>
+        </HUDFrame>
       }
     >
       <GridCanvas
@@ -1672,7 +1678,7 @@ export function ExplorerWorkspace({
         onCameraStateChange={handleCameraStateChange}
         onContextMenuRequest={handleOpenContextMenu}
       />
-      {contextMenu.open && isServerBrpMode && (
+      {contextMenu.open && isLiveBrpMode && (
         <div
           className="fixed z-[300] min-w-56 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -1685,89 +1691,98 @@ export function ExplorerWorkspace({
           <div className="space-y-1">
             {contextMenu.entityId ? (
               <>
-                <div className="relative group/owner">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                  >
-                    Assign Owner ▸
-                  </Button>
-                  <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/owner:block">
-                    {playerEntities.length === 0 ? (
-                      <div className="px-2 py-1 text-xs text-muted-foreground">
-                        No players available
+                {isServerBrpMode ? (
+                  <>
+                    <div className="relative group/owner">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                      >
+                        Assign Owner ▸
+                      </Button>
+                      <div className="absolute left-full top-0 z-[320] hidden min-w-64 rounded-md border border-border bg-card/95 p-1 shadow-lg backdrop-blur group-hover/owner:block">
+                        {playerEntities.length === 0 ? (
+                          <div className="px-2 py-1 text-xs text-muted-foreground">
+                            No players available
+                          </div>
+                        ) : (
+                          playerEntities.map((player) => (
+                            <Button
+                              key={player.id}
+                              type="button"
+                              variant="ghost"
+                              className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                              onClick={() => {
+                                setContextMenu((prev) => ({
+                                  ...prev,
+                                  open: false,
+                                }))
+                                if (!player.entityGuid || !contextMenu.entityId)
+                                  return
+                                void handleAssignOwner(
+                                  contextMenu.entityId,
+                                  player.entityGuid,
+                                ).catch((error) => {
+                                  setContextStatusText(
+                                    error instanceof Error
+                                      ? error.message
+                                      : 'owner assignment failed',
+                                  )
+                                })
+                              }}
+                            >
+                              {playerLabel(player)}
+                            </Button>
+                          ))
+                        )}
                       </div>
-                    ) : (
-                      playerEntities.map((player) => (
-                        <Button
-                          key={player.id}
-                          type="button"
-                          variant="ghost"
-                          className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                          onClick={() => {
-                            setContextMenu((prev) => ({ ...prev, open: false }))
-                            if (!player.entityGuid || !contextMenu.entityId)
-                              return
-                            void handleAssignOwner(
-                              contextMenu.entityId,
-                              player.entityGuid,
-                            ).catch((error) => {
-                              setContextStatusText(
-                                error instanceof Error
-                                  ? error.message
-                                  : 'owner assignment failed',
-                              )
-                            })
-                          }}
-                        >
-                          {playerLabel(player)}
-                        </Button>
-                      ))
-                    )}
-                  </div>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                  onClick={() => {
-                    setContextMenu((prev) => ({ ...prev, open: false }))
-                    const targetEntityId = contextMenu.entityId
-                    if (!targetEntityId) return
-                    void handleRepairRefuel(targetEntityId).catch((error) => {
-                      setContextStatusText(
-                        error instanceof Error
-                          ? error.message
-                          : 'repair/refuel failed',
-                      )
-                    })
-                  }}
-                >
-                  Repair & Refuel
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
-                  onClick={() => {
-                    setContextMenu((prev) => ({ ...prev, open: false }))
-                    const targetEntityId = contextMenu.entityId
-                    if (!targetEntityId) return
-                    void handleMoveShipTo(targetEntityId, 0, 0).catch(
-                      (error) => {
-                        setContextStatusText(
-                          error instanceof Error
-                            ? error.message
-                            : 'move failed',
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                      onClick={() => {
+                        setContextMenu((prev) => ({ ...prev, open: false }))
+                        const targetEntityId = contextMenu.entityId
+                        if (!targetEntityId) return
+                        void handleRepairRefuel(targetEntityId).catch(
+                          (error) => {
+                            setContextStatusText(
+                              error instanceof Error
+                                ? error.message
+                                : 'repair/refuel failed',
+                            )
+                          },
                         )
-                      },
-                    )
-                  }}
-                >
-                  Move to 0,0
-                </Button>
-                <div className="border-t border-border-subtle my-1" />
+                      }}
+                    >
+                      Repair & Refuel
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-auto w-full justify-start rounded px-2 py-1 text-left text-sm hover:bg-secondary/60"
+                      onClick={() => {
+                        setContextMenu((prev) => ({ ...prev, open: false }))
+                        const targetEntityId = contextMenu.entityId
+                        if (!targetEntityId) return
+                        void handleMoveShipTo(targetEntityId, 0, 0).catch(
+                          (error) => {
+                            setContextStatusText(
+                              error instanceof Error
+                                ? error.message
+                                : 'move failed',
+                            )
+                          },
+                        )
+                      }}
+                    >
+                      Move to 0,0
+                    </Button>
+                    <div className="border-t border-border-subtle my-1" />
+                  </>
+                ) : null}
                 <Button
                   type="button"
                   variant="ghost"
@@ -1788,7 +1803,7 @@ export function ExplorerWorkspace({
                   Delete Entity
                 </Button>
               </>
-            ) : (
+            ) : isServerBrpMode ? (
               <>
                 <div className="relative group/spawn">
                   <Button
@@ -1882,7 +1897,7 @@ export function ExplorerWorkspace({
                   </div>
                 </div>
               </>
-            )}
+            ) : null}
           </div>
         </div>
       )}

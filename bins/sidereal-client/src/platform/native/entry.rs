@@ -5,6 +5,7 @@ use bevy::render::RenderPlugin;
 use bevy::render::settings::RenderCreation;
 use bevy::scene::ScenePlugin;
 use bevy::window::{PresentMode, Window, WindowPlugin, WindowResizeConstraints};
+use bevy::winit::WinitSettings;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -111,6 +112,9 @@ pub(crate) fn run() {
     };
 
     configure_remote(&mut app, &remote_cfg);
+    if !headless_transport {
+        app.insert_resource(WinitSettings::continuous());
+    }
     app.run();
 }
 

@@ -2,6 +2,10 @@
 
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use sidereal_ui::layout;
+use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::typography::text_font;
+use sidereal_ui::widgets::{panel_surface, spawn_hud_frame_chrome};
 
 use super::app_state::{ClientAppState, ClientSession};
 use super::resources::EmbeddedFonts;
@@ -18,64 +22,60 @@ pub(super) struct WorldLoadingHintText;
 pub(super) fn setup_world_loading_screen(
     mut commands: Commands<'_, '_>,
     fonts: Res<'_, EmbeddedFonts>,
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
 ) {
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    let (panel_bg, panel_border, panel_shadow) = panel_surface(theme, glow_intensity);
     commands
         .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.02, 0.03, 0.06, 0.98)),
+            layout::fullscreen_centered_root(),
+            BackgroundColor(theme.colors.background_color()),
             WorldLoadingRoot,
             DespawnOnExit(ClientAppState::WorldLoading),
         ))
         .with_children(|root| {
             root.spawn((
                 Node {
-                    width: Val::Px(560.0),
-                    padding: UiRect::all(Val::Px(24.0)),
-                    border_radius: BorderRadius::all(Val::Px(12.0)),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(14.0),
-                    ..default()
+                    ..layout::panel(
+                        Val::Px(560.0),
+                        theme.metrics.panel_padding_px,
+                        theme.metrics.row_gap_px,
+                        theme.metrics.panel_radius_px,
+                        theme.metrics.panel_border_px,
+                    )
                 },
                 Transform::default(),
                 GlobalTransform::default(),
-                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.95)),
-                BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
+                panel_bg,
+                panel_border,
+                panel_shadow,
             ))
             .with_children(|panel| {
+                spawn_hud_frame_chrome(
+                    panel,
+                    theme,
+                    Some("World Bootstrap"),
+                    &fonts.mono,
+                    glow_intensity,
+                );
+
                 panel.spawn((
                     Text::new("Entering World"),
-                    TextFont {
-                        font: fonts.bold.clone(),
-                        font_size: 34.0,
-                        ..default()
-                    },
-                    TextColor(Color::WHITE),
+                    text_font(fonts.display.clone(), 34.0),
+                    TextColor(theme.colors.foreground_color()),
                 ));
                 panel.spawn((
                     Text::new("Connecting to replication and waiting for your player entity."),
-                    TextFont {
-                        font: fonts.regular.clone(),
-                        font_size: 18.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.84, 0.9, 1.0, 0.95)),
+                    text_font(fonts.regular.clone(), 18.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                     WorldLoadingHintText,
                 ));
                 panel.spawn((
                     Text::new(""),
-                    TextFont {
-                        font: fonts.regular.clone(),
-                        font_size: 14.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.72, 0.81, 0.93, 0.95)),
+                    text_font(fonts.mono.clone(), 14.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                     WorldLoadingStatusText,
                 ));
             });

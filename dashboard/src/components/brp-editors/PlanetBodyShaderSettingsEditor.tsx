@@ -5,10 +5,10 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { TheGridNumberInput } from '@/components/thegridcn/thegrid-number-input'
 import { TheGridSlider } from '@/components/thegridcn/thegrid-slider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 
 type Vec2Value = { x: number; y: number }
@@ -196,25 +196,6 @@ function clamp(value: number, min: number, max: number): number {
 
 function roundToStep(value: number, step: number): number {
   return Math.round(value / step) * step
-}
-
-function decimalsFromStep(step: number): number {
-  if (!Number.isFinite(step) || step <= 0) return 0
-  const normalized = step.toString().toLowerCase()
-  if (normalized.includes('e-')) {
-    const [, exponent] = normalized.split('e-')
-    return Number.parseInt(exponent, 10) || 0
-  }
-  const decimal = normalized.split('.')[1]
-  return decimal.length
-}
-
-function formatForInput(value: number, step: number): string {
-  const decimals = decimalsFromStep(step)
-  if (decimals === 0) {
-    return String(Math.round(value))
-  }
-  return value.toFixed(decimals).replace(/\.?0+$/, '')
 }
 
 function parseNumber(value: unknown, fallback: number): number {
@@ -558,47 +539,28 @@ function NumericField({
 }) {
   const safe = Number.isFinite(value) ? clamp(value, min, max) : min
   const [localValue, setLocalValue] = React.useState(safe)
-  const [inputValue, setInputValue] = React.useState(formatForInput(safe, step))
   const commitSlider = useDebouncedCommit(onChange)
 
   React.useEffect(() => {
     setLocalValue(safe)
-    setInputValue(formatForInput(safe, step))
-  }, [safe, step])
+  }, [safe])
 
   return (
     <div className="space-y-1 rounded-md border border-border/60 p-2">
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs text-muted-foreground">{label}</div>
-        <Input
-          type="number"
-          value={inputValue}
+        <TheGridNumberInput
+          value={localValue}
           min={min}
           max={max}
           step={step}
           readOnly={readOnly}
-          onChange={(event) => {
-            const raw = event.target.value
-            setInputValue(raw)
-            const next = Number.parseFloat(raw)
-            if (!Number.isFinite(next)) return
+          onChange={(next) => {
             const clamped = clamp(next, min, max)
             setLocalValue(clamped)
             onChange(clamped)
           }}
-          onBlur={() => {
-            const next = Number.parseFloat(inputValue)
-            if (!Number.isFinite(next)) {
-              setInputValue(formatForInput(localValue, step))
-              return
-            }
-            const clamped = clamp(next, min, max)
-            setLocalValue(clamped)
-            setInputValue(formatForInput(clamped, step))
-            onChange(clamped)
-          }}
-          className="h-9 w-28 font-mono text-xs"
-          aria-label={`${label} value`}
+          inputClassName="w-28 text-xs"
         />
       </div>
       <TheGridSlider
@@ -610,7 +572,6 @@ function NumericField({
         onChange={(next) => {
           const clamped = clamp(next, min, max)
           setLocalValue(clamped)
-          setInputValue(String(clamped))
         }}
         onCommit={(next) => commitSlider(clamp(next, min, max))}
       />

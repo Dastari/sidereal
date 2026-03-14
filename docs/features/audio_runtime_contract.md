@@ -24,6 +24,11 @@ Primary architecture references:
 3. Native client playback now runs through a Kira-backed Sidereal audio runtime with authored bus graph setup, authored menu/world music playback, gatling segmented-loop playback, asteroid destruction one-shots, and listener sync.
 4. `BallisticWeapon.fire_audio_profile_id` is now the canonical gameplay hook for weapon-fire audio authoring, and `ServerWeaponFiredMessage` now carries `weapon_guid` so remote clients can resolve the correct authored profile.
 
+2026-03-14 implementation update:
+1. `audio/registry.lua` now supports an optional top-level `clips` section for clip-level playback defaults authored in Lua.
+2. Clip defaults are merged into cue playback at registry load time before validation and catalog delivery.
+3. Cue-local playback fields remain authoritative when present; clip defaults only fill missing playback markers.
+
 ## 1. Purpose
 
 Define how Sidereal should author, deliver, replicate, mix, spatialize, and play game audio under the existing server-authoritative and Lua-authored asset model.
@@ -36,6 +41,12 @@ This document is the answer to:
 4. how audio should be triggered over the network,
 5. what Bevy can and cannot do for us directly,
 6. what a durable Sidereal audio runtime must support beyond the initial weapon/explosion slice.
+
+Authoring precedence:
+
+1. Raw payload delivery metadata remains in `data/scripts/assets/registry.lua`.
+2. Audio clip defaults and audio cue/profile semantics live in `data/scripts/audio/registry.lua`.
+3. Cue-local playback fields override clip defaults when both are present.
 
 ## 2. Current Baseline
 

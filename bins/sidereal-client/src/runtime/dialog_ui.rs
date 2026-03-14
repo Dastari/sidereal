@@ -1,6 +1,12 @@
 use super::ecs_util::queue_despawn_if_exists;
 use bevy::log::info;
 use bevy::prelude::*;
+use sidereal_ui::layout;
+use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::typography::text_font;
+use sidereal_ui::widgets::{
+    UiButtonVariant, UiInteractionState, button_surface, panel_surface, spawn_hud_frame_chrome,
+};
 
 /// Dialog UI System for client-side error/info/warning modals
 ///
@@ -129,6 +135,8 @@ fn show_next_dialog(
     mut commands: Commands,
     mut dialog_queue: ResMut<DialogQueue>,
     fonts: Res<super::EmbeddedFonts>,
+    active_theme: Res<ActiveUiTheme>,
+    visual_settings: Res<UiVisualSettings>,
     existing: Query<Entity, With<DialogRoot>>,
 ) {
     if !existing.is_empty() {
@@ -149,9 +157,15 @@ fn show_next_dialog(
         dialog.title, dialog.severity
     );
     dialog_queue.current = Some(dialog.clone());
-
-    let font_bold = fonts.bold.clone();
-    let font_regular = fonts.regular.clone();
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    let (panel_bg, _, panel_shadow) = panel_surface(theme, glow_intensity);
+    let (button_bg, button_border, button_shadow) = button_surface(
+        theme,
+        UiButtonVariant::Outline,
+        UiInteractionState::Idle,
+        glow_intensity,
+    );
 
     let (title_color, border_color) = match dialog.severity {
         DialogSeverity::Info => (Color::srgb(0.6, 0.8, 1.0), Color::srgba(0.3, 0.5, 0.7, 0.8)),
@@ -163,63 +177,48 @@ fn show_next_dialog(
     };
 
     commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            DialogRoot,
-            ZIndex(1000),
-        ))
+        .spawn((layout::fullscreen_centered_root(), DialogRoot, ZIndex(1000)))
         .with_children(|root| {
             root.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                layout::fullscreen_backdrop(),
+                BackgroundColor(theme.colors.overlay_color()),
                 DialogBackdrop,
             ));
 
             root.spawn((
                 Node {
-                    width: Val::Px(600.0),
                     max_width: Val::Percent(90.0),
-                    padding: UiRect::all(Val::Px(28.0)),
-                    border: UiRect::all(Val::Px(2.0)),
-                    border_radius: BorderRadius::all(Val::Px(12.0)),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(18.0),
-                    ..default()
+                    ..layout::panel(
+                        Val::Px(600.0),
+                        theme.metrics.panel_padding_px,
+                        18.0,
+                        theme.metrics.panel_radius_px,
+                        theme.metrics.panel_border_px,
+                    )
                 },
-                BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.96)),
+                panel_bg,
+                panel_shadow,
                 BorderColor::all(border_color),
             ))
             .with_children(|panel| {
+                spawn_hud_frame_chrome(
+                    panel,
+                    theme,
+                    Some(severity_label(dialog.severity)),
+                    &fonts.mono,
+                    glow_intensity,
+                );
+
                 panel.spawn((
                     Text::new(&dialog.title),
-                    TextFont {
-                        font: font_bold.clone(),
-                        font_size: 28.0,
-                        ..default()
-                    },
+                    text_font(fonts.display.clone(), 28.0),
                     TextColor(title_color),
                 ));
 
                 panel.spawn((
                     Text::new(&dialog.message),
-                    TextFont {
-                        font: font_regular.clone(),
-                        font_size: 16.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.85, 0.9, 0.95)),
+                    text_font(fonts.regular.clone(), 16.0),
+                    TextColor(theme.colors.foreground_color()),
                     Node {
                         max_width: Val::Percent(100.0),
                         ..default()
@@ -229,30 +228,26 @@ fn show_next_dialog(
                 panel
                     .spawn((
                         Button,
+                        DialogOkayButton,
                         Node {
-                            width: Val::Px(120.0),
-                            height: Val::Px(44.0),
                             margin: UiRect::top(Val::Px(8.0)),
                             align_self: AlignSelf::FlexEnd,
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            border: UiRect::all(Val::Px(1.0)),
-                            border_radius: BorderRadius::all(Val::Px(6.0)),
-                            ..default()
+                            ..layout::button(
+                                Val::Px(120.0),
+                                44.0,
+                                theme.metrics.control_radius_px,
+                                theme.metrics.control_border_px,
+                            )
                         },
-                        BackgroundColor(Color::srgba(0.15, 0.2, 0.3, 0.9)),
-                        BorderColor::all(Color::srgba(0.3, 0.4, 0.55, 0.9)),
-                        DialogOkayButton,
+                        button_bg,
+                        button_border,
+                        button_shadow,
                     ))
                     .with_children(|button| {
                         button.spawn((
                             Text::new("OKAY"),
-                            TextFont {
-                                font: font_bold.clone(),
-                                font_size: 16.0,
-                                ..default()
-                            },
-                            TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                            text_font(fonts.mono_bold.clone(), 18.0),
+                            TextColor(theme.colors.panel_foreground_color()),
                         ));
                     });
             });
@@ -263,14 +258,23 @@ fn show_next_dialog(
 fn handle_dialog_interactions(
     mut commands: Commands,
     mut dialog_queue: ResMut<DialogQueue>,
+    active_theme: Res<ActiveUiTheme>,
+    visual_settings: Res<UiVisualSettings>,
     mut interaction_query: Query<
-        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        (
+            &Interaction,
+            &mut BackgroundColor,
+            &mut BorderColor,
+            &mut BoxShadow,
+        ),
         (Changed<Interaction>, With<DialogOkayButton>),
     >,
     dialog_root: Query<Entity, With<DialogRoot>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
-    for (interaction, mut bg_color, mut border_color) in &mut interaction_query {
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    for (interaction, mut bg_color, mut border_color, mut shadow) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
                 info!("client dialog dismissed via button");
@@ -279,15 +283,18 @@ fn handle_dialog_interactions(
                     queue_despawn_if_exists(&mut commands, entity);
                 }
             }
-            Interaction::Hovered => {
-                *bg_color = BackgroundColor(Color::srgba(0.2, 0.25, 0.35, 0.9));
-                *border_color = BorderColor::all(Color::srgba(0.4, 0.5, 0.65, 1.0));
-            }
-            Interaction::None => {
-                *bg_color = BackgroundColor(Color::srgba(0.15, 0.2, 0.3, 0.9));
-                *border_color = BorderColor::all(Color::srgba(0.3, 0.4, 0.55, 0.9));
-            }
+            Interaction::Hovered | Interaction::None => {}
         }
+        let state = match *interaction {
+            Interaction::Pressed => UiInteractionState::Pressed,
+            Interaction::Hovered => UiInteractionState::Hovered,
+            Interaction::None => UiInteractionState::Idle,
+        };
+        let (next_bg, next_border, next_shadow) =
+            button_surface(theme, UiButtonVariant::Outline, state, glow_intensity);
+        *bg_color = next_bg;
+        *border_color = next_border;
+        *shadow = next_shadow;
     }
 
     if !dialog_root.is_empty()
@@ -298,5 +305,13 @@ fn handle_dialog_interactions(
         for entity in &dialog_root {
             queue_despawn_if_exists(&mut commands, entity);
         }
+    }
+}
+
+fn severity_label(severity: DialogSeverity) -> &'static str {
+    match severity {
+        DialogSeverity::Info => "Info",
+        DialogSeverity::Warning => "Warning",
+        DialogSeverity::Error => "Error",
     }
 }

@@ -20,6 +20,7 @@ Update note (2026-03-14):
 - Keep the active semantic theme palette, but prefer square geometry, attached uppercase frame labels, and corner brackets over rounded card shells.
 - Nested composition and basic flex/grid layout should continue to use native Bevy UI through `sidereal-ui::layout`.
 - HUD frames should include subtle scanline overlays inspired by thegridcn.
+- Energy meters / segmented power bars should use the same scanline background treatment and corner chrome language as HUD frames.
 - Buttons and inputs should use `Rajdhani` by default; `Geist Mono` remains for telemetry/frame labels where appropriate.
 - Glow should be driven by one shared runtime scalar, `UiVisualSettings.glow_intensity`, where `0.0` disables glow and higher values increase emitted UI bloom.
 
@@ -299,7 +300,10 @@ background: Color::srgba(0.18, 0.2, 0.26, 0.85)
 - Keep the palette driven by the active semantic theme; frame styling should not introduce ad hoc colors.
 - Input labels should render uppercase.
 - Buttons should only emit glow on hover, using the shared global glow-intensity setting rather than screen-local hardcoded values.
-- Inputs may keep subtle focus glow, and button/input body text should prefer bolder `Rajdhani` weights for readability.
+- Inputs may keep subtle focus glow.
+- 2026-03-14: All in-game button labels should use the dev-console mono face (`Geist Mono` in the embedded font set), render uppercase, and bias toward larger/bolder sizing than body copy.
+- 2026-03-14: Global UI glow should stay restrained by default; hover bloom is allowed, but panels and controls should avoid broad ambient halos.
+- 2026-03-14: Frame/panel glow should read as a tight rectangular emission with short falloff, not a broad rounded bloom; control glow should use the same shape with even shorter falloff.
 
 ### 5.3 HUD / In-Game UI
 
@@ -316,6 +320,12 @@ color: Color::srgb(0.8, 0.95, 0.9)  // Slightly green-tinted for "active"
 - Top-right for system indicators
 - Bottom-right for controls/help text
 - Center-screen for critical alerts only
+
+**Meters:**
+- Fuel, health, and similar power bars should use segmented energy-meter styling rather than flat progress bars.
+- Meter shells should support per-instance color overrides for active fill, border/corner chrome, and scanline tint.
+- 2026-03-14: The lower-left in-world telemetry block for speed, position, health, and fuel should sit directly on the gameplay view without a legacy outer panel shell.
+- 2026-03-14: Speed, position, health, and fuel labels should share a fixed-width label column, matched label color, and larger mono label typography so value starts align cleanly.
 
 ## 6. State Management and Cleanup
 

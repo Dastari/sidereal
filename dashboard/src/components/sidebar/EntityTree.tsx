@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
-  Copy,
   Globe,
   Hexagon,
   Rocket,
@@ -30,7 +29,10 @@ interface EntityTreeProps {
   onSelect: (id: string) => void
   sourceMode: DataSourceMode
   onDelete: (entityId: string) => Promise<void>
-  onContextMenuRequest?: (entityId: string, point: { x: number; y: number }) => void
+  onContextMenuRequest?: (
+    entityId: string,
+    point: { x: number; y: number },
+  ) => void
   uiState?: EntityTreeUiState
   onUiStateChange?: (next: EntityTreeUiState) => void
 }
@@ -117,9 +119,7 @@ function EntityTree({
   const search = effectiveUiState.search
 
   const updateUiState = React.useCallback(
-    (
-      updater: (prev: EntityTreeUiState) => EntityTreeUiState,
-    ) => {
+    (updater: (prev: EntityTreeUiState) => EntityTreeUiState) => {
       const baseline = uiState ?? localUiState
       const next = updater(baseline)
       setLocalUiState(next)
@@ -149,15 +149,6 @@ function EntityTree({
 
     const children = new Map<string, Array<WorldEntity>>()
     const roots = new Map<string, Array<WorldEntity>>()
-
-    const hasLabelGrouping = entities.some(
-      (e) =>
-        (e.entity_labels && e.entity_labels.length >= 2) ||
-        ((e as WorldEntity & { sidereal_labels?: Array<string> })
-          .sidereal_labels?.length ?? 0) >= 2,
-    )
-    const useDatabaseLabelGrouping =
-      sourceMode === 'database' && hasLabelGrouping
 
     function getGroupKey(entity: WorldEntity): string {
       const labelKey = getLabelGroupKey(entity)
@@ -235,7 +226,9 @@ function EntityTree({
       includedIds.add(entity.id)
       if (!entity.parentEntityId) return
       const parent =
-        byId.get(entity.parentEntityId) ?? byGuid.get(entity.parentEntityId) ?? null
+        byId.get(entity.parentEntityId) ??
+        byGuid.get(entity.parentEntityId) ??
+        null
       if (parent) {
         includeAncestors(parent)
       }
@@ -243,19 +236,23 @@ function EntityTree({
 
     for (const entity of entities) {
       const labelText = entity.entity_labels?.join(' ') ?? ''
-      const matches = `${entity.name} ${entity.kind} ${entity.entityGuid ?? ''} ${labelText}`
-        .toLowerCase()
-        .includes(needle)
+      const matches =
+        `${entity.name} ${entity.kind} ${entity.entityGuid ?? ''} ${labelText}`
+          .toLowerCase()
+          .includes(needle)
       if (matches) {
         includeAncestors(entity)
       }
     }
 
     return sortedGroups
-      .map(([groupKey, items]) => [
-        groupKey,
-        items.filter((entity) => includedIds.has(entity.id)),
-      ] as const)
+      .map(
+        ([groupKey, items]) =>
+          [
+            groupKey,
+            items.filter((entity) => includedIds.has(entity.id)),
+          ] as const,
+      )
       .filter(([, items]) => items.length > 0)
   }, [entities, search, sortedGroups])
 
@@ -275,27 +272,36 @@ function EntityTree({
     [openGroups, sourceMode],
   )
 
-  const toggleGroup = React.useCallback((kind: string) => {
-    updateUiState((prev) => ({
-      ...prev,
-      openGroups: { ...prev.openGroups, [kind]: !(prev.openGroups[kind] ?? true) },
-    }))
-  }, [updateUiState])
+  const toggleGroup = React.useCallback(
+    (kind: string) => {
+      updateUiState((prev) => ({
+        ...prev,
+        openGroups: {
+          ...prev.openGroups,
+          [kind]: !(prev.openGroups[kind] ?? true),
+        },
+      }))
+    },
+    [updateUiState],
+  )
 
   const isNodeOpen = React.useCallback(
     (entityId: string) => openNodes[entityId] ?? true,
     [openNodes],
   )
 
-  const toggleNode = React.useCallback((entityId: string) => {
-    updateUiState((prev) => ({
-      ...prev,
-      openNodes: {
-        ...prev.openNodes,
-        [entityId]: !(prev.openNodes[entityId] ?? true),
-      },
-    }))
-  }, [updateUiState])
+  const toggleNode = React.useCallback(
+    (entityId: string) => {
+      updateUiState((prev) => ({
+        ...prev,
+        openNodes: {
+          ...prev.openNodes,
+          [entityId]: !(prev.openNodes[entityId] ?? true),
+        },
+      }))
+    },
+    [updateUiState],
+  )
 
   const worldRootOpen = isGroupOpen(ENTITY_ROOT_GROUP_KEY)
   const resourcesRootOpen = isGroupOpen(RESOURCE_ROOT_GROUP_KEY)
@@ -387,27 +393,28 @@ function EntityTree({
               {sortedResources.length > 0 ? (
                 <>
                   {visibleResources.map((resource) => {
-                  const resourceSelectionId = `${RESOURCE_SELECTION_PREFIX}${resource.typePath}`
-                  const isSelectedResource = selectedId === resourceSelectionId
-                  return (
-                    <Button
-                      key={resource.typePath}
-                      type="button"
-                      variant="ghost"
-                      onClick={() => onSelect(resourceSelectionId)}
-                      data-active={isSelectedResource ? 'true' : 'false'}
-                      className={cn(
-                        'grid-sidebar-nav__item h-auto w-full justify-start py-1.5 text-left text-sm',
-                        !isSelectedResource && 'text-foreground/80',
-                      )}
-                      title={resource.typePath}
-                    >
-                      <Box className="h-3.5 w-3.5 shrink-0 text-primary/80" />
-                      <span className="truncate font-mono text-xs">
-                        {resource.typePath}
-                      </span>
-                    </Button>
-                  )
+                    const resourceSelectionId = `${RESOURCE_SELECTION_PREFIX}${resource.typePath}`
+                    const isSelectedResource =
+                      selectedId === resourceSelectionId
+                    return (
+                      <Button
+                        key={resource.typePath}
+                        type="button"
+                        variant="ghost"
+                        onClick={() => onSelect(resourceSelectionId)}
+                        data-active={isSelectedResource ? 'true' : 'false'}
+                        className={cn(
+                          'grid-sidebar-nav__item h-auto w-full justify-start py-1.5 text-left text-sm',
+                          !isSelectedResource && 'text-foreground/80',
+                        )}
+                        title={resource.typePath}
+                      >
+                        <Box className="h-3.5 w-3.5 shrink-0 text-primary/80" />
+                        <span className="truncate font-mono text-xs">
+                          {resource.typePath}
+                        </span>
+                      </Button>
+                    )
                   })}
                   {hasHiddenResources ? (
                     <Button
@@ -421,7 +428,8 @@ function EntityTree({
                       }}
                       className="grid-sidebar-nav__item h-auto w-full justify-start py-1.5 text-left text-xs text-muted-foreground"
                     >
-                      Show {sortedResources.length - visibleResources.length} more resources
+                      Show {sortedResources.length - visibleResources.length}{' '}
+                      more resources
                     </Button>
                   ) : null}
                 </>
@@ -453,7 +461,10 @@ interface EntityGroupProps {
   onSelect: (id: string) => void
   sourceMode: DataSourceMode
   onDelete: (entityId: string) => Promise<void>
-  onContextMenuRequest?: (entityId: string, point: { x: number; y: number }) => void
+  onContextMenuRequest?: (
+    entityId: string,
+    point: { x: number; y: number },
+  ) => void
   childrenByParent: Map<string, Array<WorldEntity>>
   isOpen: boolean
   onToggleOpen: () => void
@@ -520,7 +531,10 @@ interface EntityTreeNodeProps {
   depth: number
   sourceMode: DataSourceMode
   onDelete: (entityId: string) => Promise<void>
-  onContextMenuRequest?: (entityId: string, point: { x: number; y: number }) => void
+  onContextMenuRequest?: (
+    entityId: string,
+    point: { x: number; y: number },
+  ) => void
   childrenByParent: Map<string, Array<WorldEntity>>
   isNodeOpen: (id: string) => boolean
   onToggleNode: (id: string) => void
@@ -543,7 +557,6 @@ function EntityTreeNode({
   onSelect,
 }: EntityTreeNodeProps) {
   const [isDeleting, setIsDeleting] = React.useState(false)
-  const [copiedGuid, setCopiedGuid] = React.useState(false)
   const children = childrenByParent.get(entity.id) ?? []
   const hasChildren = children.length > 0
   const open = hasChildren ? isNodeOpen(entity.id) : false
@@ -572,18 +585,6 @@ function EntityTreeNode({
     if (!onContextMenuRequest) return
     e.preventDefault()
     onContextMenuRequest(entity.id, { x: e.clientX, y: e.clientY })
-  }
-
-  const handleCopyGuid = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!entity.entityGuid) return
-    try {
-      await navigator.clipboard.writeText(entity.entityGuid)
-      setCopiedGuid(true)
-      window.setTimeout(() => setCopiedGuid(false), 1200)
-    } catch (error) {
-      console.error('Failed to copy entity guid:', error)
-    }
   }
 
   return (
@@ -624,7 +625,7 @@ function EntityTreeNode({
           <span className="truncate flex-1">{entity.name}</span>
         </Button>
 
-        {entity.entityGuid ? (
+        {/* {entity.entityGuid ? (
           <Button
             onClick={handleCopyGuid}
             type="button"
@@ -640,28 +641,26 @@ function EntityTreeNode({
           >
             <Copy className="h-3.5 w-3.5" />
           </Button>
-        ) : null}
+        ) : null} */}
 
-        {sourceMode !== 'liveClient' && (
-          <Button
-            onClick={handleDeleteClick}
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            disabled={isDeleting}
-            className={cn(
-              'h-7 w-7 rounded-md opacity-0 transition-all shrink-0 group-hover:opacity-100',
-              isDeleting
-                ? 'text-muted-foreground cursor-not-allowed'
-                : 'text-destructive hover:bg-destructive/10 hover:text-destructive',
-            )}
-            title={`Delete ${entity.name}`}
-          >
-            <Trash2
-              className={cn('h-3.5 w-3.5', isDeleting && 'animate-pulse')}
-            />
-          </Button>
-        )}
+        <Button
+          onClick={handleDeleteClick}
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          disabled={isDeleting}
+          className={cn(
+            'h-7 w-7 rounded-md opacity-0 transition-all shrink-0 group-hover:opacity-100',
+            isDeleting
+              ? 'text-muted-foreground cursor-not-allowed'
+              : 'text-destructive hover:bg-destructive/10 hover:text-destructive',
+          )}
+          title={`Delete ${entity.name}`}
+        >
+          <Trash2
+            className={cn('h-3.5 w-3.5', isDeleting && 'animate-pulse')}
+          />
+        </Button>
       </div>
 
       {hasChildren && open && (

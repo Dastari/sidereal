@@ -223,6 +223,16 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
     snapshot.stats.nameplate_sync_max_ms = stats_inputs.hud_perf.nameplate_sync_max_ms;
     snapshot.stats.nameplate_position_last_ms = stats_inputs.hud_perf.nameplate_position_last_ms;
     snapshot.stats.nameplate_position_max_ms = stats_inputs.hud_perf.nameplate_position_max_ms;
+    snapshot.stats.nameplate_camera_candidates_last =
+        stats_inputs.hud_perf.nameplate_camera_candidates_last;
+    snapshot.stats.nameplate_camera_active_last =
+        stats_inputs.hud_perf.nameplate_camera_active_last;
+    snapshot.stats.nameplate_missing_target_last =
+        stats_inputs.hud_perf.nameplate_missing_target_last;
+    snapshot.stats.nameplate_projection_failures_last =
+        stats_inputs.hud_perf.nameplate_projection_failures_last;
+    snapshot.stats.nameplate_viewport_culled_last =
+        stats_inputs.hud_perf.nameplate_viewport_culled_last;
 
     let logical_control_guid = player_view_state
         .controlled_entity_id
@@ -884,7 +894,7 @@ fn build_debug_text_rows(
             },
         },
         DebugTextRow {
-            label: "Active Cameras".to_string(),
+            label: "Cameras".to_string(),
             value: format!("{:>4}", stats.active_camera_count),
             severity: DebugSeverity::Normal,
         },
@@ -931,6 +941,21 @@ fn build_debug_text_rows(
         DebugTextRow {
             label: "Spark Pool".to_string(),
             value: format!("{:>3}/{:>3}", stats.active_sparks, stats.spark_pool_size),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Layer Rebuilds".to_string(),
+            value: format!("{:>4}", stats.render_layer_registry_rebuilds),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Layer Recompute".to_string(),
+            value: format!("{:>4}", stats.render_layer_assignment_recomputes),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Layer Skips".to_string(),
+            value: format!("{:>4}", stats.render_layer_assignment_skips),
             severity: DebugSeverity::Normal,
         },
         DebugTextRow {
@@ -994,21 +1019,6 @@ fn build_debug_text_rows(
             severity: DebugSeverity::Normal,
         },
         DebugTextRow {
-            label: "Layer Rebuilds".to_string(),
-            value: format!("{:>4}", stats.render_layer_registry_rebuilds),
-            severity: DebugSeverity::Normal,
-        },
-        DebugTextRow {
-            label: "Layer Recompute".to_string(),
-            value: format!("{:>4}", stats.render_layer_assignment_recomputes),
-            severity: DebugSeverity::Normal,
-        },
-        DebugTextRow {
-            label: "Layer Skips".to_string(),
-            value: format!("{:>4}", stats.render_layer_assignment_skips),
-            severity: DebugSeverity::Normal,
-        },
-        DebugTextRow {
             label: "Tact Mk/Cont".to_string(),
             value: format!(
                 "{:>3}/{:>3}",
@@ -1065,6 +1075,28 @@ fn build_debug_text_rows(
             value: format!(
                 "{:>4.1}/{:>4.1}",
                 stats.nameplate_position_last_ms, stats.nameplate_position_max_ms
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Plate Cam".to_string(),
+            value: format!(
+                "{:>2}/{:>2}",
+                stats.nameplate_camera_active_last, stats.nameplate_camera_candidates_last
+            ),
+            severity: if stats.nameplate_camera_active_last == 1 {
+                DebugSeverity::Normal
+            } else {
+                DebugSeverity::Warn
+            },
+        },
+        DebugTextRow {
+            label: "Plate Miss/Proj".to_string(),
+            value: format!(
+                "{:>2}/{:>2}/{:>2}",
+                stats.nameplate_missing_target_last,
+                stats.nameplate_projection_failures_last,
+                stats.nameplate_viewport_culled_last
             ),
             severity: DebugSeverity::Normal,
         },
@@ -1516,5 +1548,7 @@ mod tests {
         assert!(labels.contains(&"Plates"));
         assert!(labels.contains(&"HP Updates"));
         assert!(labels.contains(&"Plate Pos ms"));
+        assert!(labels.contains(&"Plate Cam"));
+        assert!(labels.contains(&"Plate Miss/Proj"));
     }
 }

@@ -1,7 +1,6 @@
 import { parseAsStringLiteral } from 'nuqs'
 import type { ReactNode } from 'react'
 import type {
-  ExpandedNode,
   GraphEdge,
   GraphNode,
   PlayerVisibilityOverlay,
@@ -319,16 +318,18 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
     if (edge.label !== 'HAS_COMPONENT') continue
     const componentNode = nodesById.get(edge.to)
     if (!componentNode) continue
+    const componentProps = componentNode.properties ?? {}
     const existing = componentsByEntityId.get(edge.from)
     if (existing) {
-      existing.push(componentNode.properties)
+      existing.push(componentProps)
     } else {
-      componentsByEntityId.set(edge.from, [componentNode.properties])
+      componentsByEntityId.set(edge.from, [componentProps])
     }
   }
 
   const entities = graph.nodes.flatMap((node) => {
-    if (typeof node.properties.component_kind === 'string') {
+    const nodeProperties = node.properties ?? {}
+    if (typeof nodeProperties.component_kind === 'string') {
       return []
     }
 
@@ -368,24 +369,24 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
     const vel = velocityProps
       ? extractPositionFromComponentProps(velocityProps)
       : null
-    const rawLabels = node.properties.entity_labels
+    const rawLabels = nodeProperties.entity_labels
     const entityLabels = Array.isArray(rawLabels)
       ? rawLabels.map((value) => (typeof value === 'string' ? value : String(value)))
       : undefined
     const parentEntityId =
       parentGuidFromComponent ??
-      (typeof node.properties.parent_entity_id === 'string'
-        ? node.properties.parent_entity_id
+      (typeof nodeProperties.parent_entity_id === 'string'
+        ? nodeProperties.parent_entity_id
         : mountedOnProps
-            ? extractParentGuidFromComponentProps(mountedOnProps)
-            : undefined)
+          ? extractParentGuidFromComponentProps(mountedOnProps) ?? undefined
+          : undefined)
     const entityGuid =
       entityGuidFromComponent ??
       (looksLikeUuid(node.id) ? node.id.toLowerCase() : undefined)
     const kind =
-      typeof node.properties.entity_type === 'string' &&
-      node.properties.entity_type.length > 0
-        ? node.properties.entity_type
+      typeof nodeProperties.entity_type === 'string' &&
+      nodeProperties.entity_type.length > 0
+        ? nodeProperties.entity_type
         : typeof node.kind === 'string' && node.kind !== 'Entity'
           ? node.kind
           : 'entity'
@@ -393,12 +394,12 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
     return [
       {
         id: node.id,
-        name: displayName ?? String(node.properties.name ?? node.label ?? node.id),
+        name: displayName ?? String(nodeProperties.name ?? node.label ?? node.id),
         kind,
-        parentEntityId,
+        ...(parentEntityId ? { parentEntityId } : {}),
         entity_labels: entityLabels?.length ? entityLabels : undefined,
         hasPosition: pos !== null,
-        shardId: asFiniteNumber(node.properties.shard_id) ?? 1,
+        shardId: asFiniteNumber(nodeProperties.shard_id) ?? 1,
         x: pos?.[0] ?? 0,
         y: pos?.[1] ?? 0,
         vx: vel?.[0] ?? 0,

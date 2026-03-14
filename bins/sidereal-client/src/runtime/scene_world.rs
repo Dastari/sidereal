@@ -6,6 +6,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite_render::{ColorMaterial, MeshMaterial2d};
 use bevy::state::state_scoped::DespawnOnExit;
+use sidereal_ui::theme::{ActiveUiTheme, theme_definition};
+use sidereal_ui::widgets::spawn_scanline_overlay;
 
 use super::app_state::{ClientAppState, ClientSession};
 use super::assets::LocalAssetManager;
@@ -33,11 +35,13 @@ use super::resources::{
 use super::shaders;
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
+const HUD_TELEMETRY_LABEL_WIDTH_PX: f32 = 84.0;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_world_scene(
     mut commands: Commands<'_, '_>,
     fonts: Res<'_, EmbeddedFonts>,
+    active_theme: Res<'_, ActiveUiTheme>,
     mut session: ResMut<'_, ClientSession>,
     mut shaders_assets: ResMut<'_, Assets<bevy::shader::Shader>>,
     mut meshes: ResMut<'_, Assets<Mesh>>,
@@ -51,6 +55,7 @@ pub(super) fn spawn_world_scene(
     shader_assignments: Res<'_, shaders::RuntimeShaderAssignments>,
     cache_adapter: Res<'_, AssetCacheAdapter>,
 ) {
+    let theme = theme_definition(active_theme.0);
     *starfield_motion = StarfieldMotionState::default();
     *camera_motion = CameraMotionState::default();
     shaders::reload_streamed_shaders(
@@ -359,16 +364,13 @@ pub(super) fn spawn_world_scene(
                 position_type: PositionType::Absolute,
                 left: px(14),
                 bottom: px(14),
-                width: px(330),
-                padding: UiRect::all(px(12)),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)),
+                width: px(360),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(8),
+                row_gap: px(10),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.92)),
-            BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
+            BackgroundColor(Color::NONE),
+            BorderColor::all(Color::NONE),
             GameplayHud,
             UiOverlayLayer,
             RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
@@ -387,21 +389,25 @@ pub(super) fn spawn_world_scene(
                 .with_children(|row| {
                     row.spawn((
                         Text::new("SPEED"),
+                        Node {
+                            width: px(HUD_TELEMETRY_LABEL_WIDTH_PX),
+                            ..default()
+                        },
                         TextFont {
-                            font: fonts.bold.clone(),
+                            font: fonts.mono_bold.clone(),
                             font_size: 16.0,
                             ..default()
                         },
-                        TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                        TextColor(theme.colors.muted_foreground_color()),
                     ));
                     row.spawn((
                         Text::new("--.- m/s"),
                         TextFont {
-                            font: fonts.bold.clone(),
-                            font_size: 20.0,
+                            font: fonts.display.clone(),
+                            font_size: 22.0,
                             ..default()
                         },
-                        TextColor(Color::srgb(0.35, 0.85, 1.0)),
+                        TextColor(theme.colors.primary_color()),
                         HudSpeedValueText,
                     ));
                 });
@@ -416,21 +422,25 @@ pub(super) fn spawn_world_scene(
                 .with_children(|row| {
                     row.spawn((
                         Text::new("POSITION"),
+                        Node {
+                            width: px(HUD_TELEMETRY_LABEL_WIDTH_PX),
+                            ..default()
+                        },
                         TextFont {
-                            font: fonts.bold.clone(),
+                            font: fonts.mono_bold.clone(),
                             font_size: 16.0,
                             ..default()
                         },
-                        TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                        TextColor(theme.colors.muted_foreground_color()),
                     ));
                     row.spawn((
-                        Text::new("(--, --)"),
+                        Text::new("SECTOR E00-N00"),
                         TextFont {
-                            font: fonts.bold.clone(),
-                            font_size: 20.0,
+                            font: fonts.display.clone(),
+                            font_size: 22.0,
                             ..default()
                         },
-                        TextColor(Color::srgb(0.35, 0.85, 1.0)),
+                        TextColor(theme.colors.primary_color()),
                         HudPositionValueText,
                     ));
                 });
@@ -443,18 +453,30 @@ pub(super) fn spawn_world_scene(
                     ..default()
                 },))
                 .with_children(|row| {
+                    let health_style = SegmentedBarStyle {
+                        segments: 20,
+                        active_color: Color::srgb(0.28, 0.9, 0.4),
+                        inactive_color: Color::srgba(0.15, 0.2, 0.28, 0.85),
+                        shell_color: Color::srgba(0.08, 0.12, 0.09, 0.88),
+                        border_color: Color::srgba(0.22, 0.65, 0.32, 0.88),
+                        corner_color: Color::srgba(0.32, 0.95, 0.46, 0.78),
+                        scanline_primary_color: Color::srgba(0.2, 0.8, 0.32, 0.07),
+                        scanline_secondary_color: Color::srgba(0.16, 0.55, 0.26, 0.04),
+                        segment_width_px: 9.0,
+                        segment_gap_px: 2.0,
+                    };
                     row.spawn((
                         Node {
-                            width: px(56),
+                            width: px(HUD_TELEMETRY_LABEL_WIDTH_PX),
                             ..default()
                         },
                         Text::new("HEALTH"),
                         TextFont {
-                            font: fonts.bold.clone(),
-                            font_size: 13.0,
+                            font: fonts.mono_bold.clone(),
+                            font_size: 16.0,
                             ..default()
                         },
-                        TextColor(Color::srgba(0.83, 0.89, 0.95, 0.95)),
+                        TextColor(theme.colors.muted_foreground_color()),
                     ));
                     row.spawn((
                         Node {
@@ -462,31 +484,34 @@ pub(super) fn spawn_world_scene(
                             // Keep integer segment widths to avoid fractional flex distribution jitter.
                             width: px(220),
                             height: px(14),
-                            column_gap: px(2.0),
+                            column_gap: px(health_style.segment_gap_px),
                             align_items: AlignItems::Stretch,
                             border: UiRect::all(px(1.0)),
                             padding: UiRect::all(px(1.0)),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.1, 0.1, 0.14, 0.85)),
-                        BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
-                        SegmentedBarStyle {
-                            segments: 20,
-                            active_color: Color::srgb(0.35, 0.85, 1.0),
-                            inactive_color: Color::srgba(0.15, 0.2, 0.28, 0.85),
-                        },
+                        BackgroundColor(health_style.shell_color),
+                        BorderColor::all(health_style.border_color),
+                        health_style,
                         SegmentedBarValue { ratio: 1.0 },
                         HudHealthBarFill,
                     ))
                     .with_children(|bar| {
-                        for index in 0..20u8 {
+                        spawn_scanline_overlay(
+                            bar,
+                            health_style.scanline_primary_color,
+                            health_style.scanline_secondary_color,
+                            5,
+                            1.0,
+                        );
+                        for index in 0..health_style.segments {
                             bar.spawn((
                                 Node {
-                                    width: px(9.0),
+                                    width: px(health_style.segment_width_px),
                                     height: percent(100.0),
                                     ..default()
                                 },
-                                BackgroundColor(Color::srgba(0.15, 0.2, 0.28, 0.85)),
+                                BackgroundColor(health_style.inactive_color),
                                 SegmentedBarSegment { index },
                             ));
                         }
@@ -501,18 +526,30 @@ pub(super) fn spawn_world_scene(
                     ..default()
                 },))
                 .with_children(|row| {
+                    let fuel_style = SegmentedBarStyle {
+                        segments: 20,
+                        active_color: Color::srgb(0.3, 0.78, 1.0),
+                        inactive_color: Color::srgba(0.15, 0.2, 0.28, 0.85),
+                        shell_color: Color::srgba(0.08, 0.11, 0.16, 0.88),
+                        border_color: Color::srgba(0.22, 0.58, 0.88, 0.88),
+                        corner_color: Color::srgba(0.4, 0.85, 1.0, 0.78),
+                        scanline_primary_color: Color::srgba(0.2, 0.7, 1.0, 0.08),
+                        scanline_secondary_color: Color::srgba(0.16, 0.5, 0.78, 0.04),
+                        segment_width_px: 9.0,
+                        segment_gap_px: 2.0,
+                    };
                     row.spawn((
                         Node {
-                            width: px(56),
+                            width: px(HUD_TELEMETRY_LABEL_WIDTH_PX),
                             ..default()
                         },
                         Text::new("FUEL"),
                         TextFont {
-                            font: fonts.bold.clone(),
-                            font_size: 13.0,
+                            font: fonts.mono_bold.clone(),
+                            font_size: 16.0,
                             ..default()
                         },
-                        TextColor(Color::srgba(0.83, 0.89, 0.95, 0.95)),
+                        TextColor(theme.colors.muted_foreground_color()),
                     ));
                     row.spawn((
                         Node {
@@ -520,31 +557,34 @@ pub(super) fn spawn_world_scene(
                             // Keep integer segment widths to avoid fractional flex distribution jitter.
                             width: px(220),
                             height: px(14),
-                            column_gap: px(2.0),
+                            column_gap: px(fuel_style.segment_gap_px),
                             align_items: AlignItems::Stretch,
                             border: UiRect::all(px(1.0)),
                             padding: UiRect::all(px(1.0)),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.1, 0.1, 0.14, 0.85)),
-                        BorderColor::all(Color::srgba(0.2, 0.3, 0.45, 0.8)),
-                        SegmentedBarStyle {
-                            segments: 20,
-                            active_color: Color::srgb(0.3, 0.78, 1.0),
-                            inactive_color: Color::srgba(0.15, 0.2, 0.28, 0.85),
-                        },
+                        BackgroundColor(fuel_style.shell_color),
+                        BorderColor::all(fuel_style.border_color),
+                        fuel_style,
                         SegmentedBarValue { ratio: 1.0 },
                         HudFuelBarFill,
                     ))
                     .with_children(|bar| {
-                        for index in 0..20u8 {
+                        spawn_scanline_overlay(
+                            bar,
+                            fuel_style.scanline_primary_color,
+                            fuel_style.scanline_secondary_color,
+                            5,
+                            1.0,
+                        );
+                        for index in 0..fuel_style.segments {
                             bar.spawn((
                                 Node {
-                                    width: px(9.0),
+                                    width: px(fuel_style.segment_width_px),
                                     height: percent(100.0),
                                     ..default()
                                 },
-                                BackgroundColor(Color::srgba(0.15, 0.2, 0.28, 0.85)),
+                                BackgroundColor(fuel_style.inactive_color),
                                 SegmentedBarSegment { index },
                             ));
                         }

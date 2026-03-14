@@ -3,17 +3,26 @@
 @import 'shadcn/tailwind.css';
 @import './components/thegridcn-intensity.css';
 
-@keyframes navigation-progress-slide {
+@keyframes grid-progress-slide {
   0% {
-    transform: translateX(-35%);
+    transform: translateX(-52%);
   }
   100% {
-    transform: translateX(320%);
+    transform: translateX(178%);
   }
 }
 
-.navigation-progress-bar {
-  animation: navigation-progress-slide 0.9s linear infinite;
+@keyframes grid-reticle-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.grid-progress__indicator--indeterminate {
+  animation: grid-progress-slide 1.15s linear infinite;
   will-change: transform;
 }
 
@@ -888,15 +897,184 @@ html[data-theme] body {
   }
 
   .grid-switch {
+    border-radius: 0;
+    border-color: color-mix(in oklch, var(--border) 76%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 94%, transparent),
+        color-mix(in oklch, var(--panel) 94%, black)
+      );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 65%, transparent),
       0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 76%), transparent);
   }
 
+  .grid-switch[data-state='checked'] {
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--primary) 78%, transparent),
+        color-mix(in oklch, var(--primary) 58%, transparent)
+      );
+    border-color: color-mix(in oklch, var(--primary) 84%, transparent);
+  }
+
   .grid-switch-thumb {
+    border: 1px solid color-mix(in oklch, var(--primary) 72%, transparent);
     box-shadow:
       0 0 0 1px color-mix(in oklch, var(--primary) 60%, transparent),
       0 0 16px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 96%), transparent);
+  }
+
+  .grid-reticle {
+    color: color-mix(in oklch, var(--primary) 88%, var(--foreground));
+    filter: drop-shadow(
+        0 0 10px
+          color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 92%), transparent)
+      )
+      drop-shadow(
+        0 0 24px
+          color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 44%), transparent)
+      );
+  }
+
+  .grid-reticle[data-variant='locked'] {
+    color: color-mix(in oklch, var(--warning) 72%, var(--primary));
+  }
+
+  .grid-reticle[data-variant='scanning'] {
+    color: color-mix(in oklch, var(--accent) 78%, var(--primary));
+  }
+
+  .grid-reticle__ring,
+  .grid-reticle__line,
+  .grid-reticle__bracket,
+  .grid-reticle__scanner-ring {
+    stroke: currentColor;
+  }
+
+  .grid-reticle__ring--outer {
+    opacity: 0.28;
+  }
+
+  .grid-reticle__ring--inner {
+    opacity: 0.54;
+  }
+
+  .grid-reticle__line {
+    opacity: 0.92;
+  }
+
+  .grid-reticle__bracket {
+    opacity: 0.98;
+  }
+
+  .grid-reticle__dot {
+    fill: currentColor;
+    opacity: 0.92;
+  }
+
+  .grid-reticle--animated .grid-reticle__scanner {
+    animation: grid-reticle-rotate 3.2s linear infinite;
+  }
+
+  .grid-progress {
+    background: transparent;
+  }
+
+  .grid-progress__track {
+    border-top: 1px solid color-mix(in oklch, var(--border) 62%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 90%, transparent),
+        color-mix(in oklch, var(--panel) 96%, black)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 22%, transparent),
+      0 0 16px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 36%), transparent);
+  }
+
+  .grid-progress__indicator {
+    width: 100%;
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--primary) 0%, transparent) 0%,
+        color-mix(in oklch, var(--primary) 84%, transparent) 42%,
+        color-mix(in oklch, var(--foreground) 90%, transparent) 52%,
+        color-mix(in oklch, var(--primary) 0%, transparent) 100%
+      );
+    box-shadow:
+      0 0 12px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 86%), transparent),
+      0 0 28px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 46%), transparent);
+  }
+
+  .grid-progress[data-variant='warning'] .grid-progress__indicator {
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--warning) 0%, transparent) 0%,
+        color-mix(in oklch, var(--warning) 84%, transparent) 42%,
+        color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
+        color-mix(in oklch, var(--warning) 0%, transparent) 100%
+      );
+  }
+
+  .grid-progress[data-variant='success'] .grid-progress__indicator {
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--success) 0%, transparent) 0%,
+        color-mix(in oklch, var(--success) 82%, transparent) 42%,
+        color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
+        color-mix(in oklch, var(--success) 0%, transparent) 100%
+      );
+  }
+
+  .grid-progress[data-variant='danger'] .grid-progress__indicator {
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--destructive) 0%, transparent) 0%,
+        color-mix(in oklch, var(--destructive) 82%, transparent) 42%,
+        color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
+        color-mix(in oklch, var(--destructive) 0%, transparent) 100%
+      );
+  }
+
+  .grid-progress__indicator-glow {
+    background:
+      linear-gradient(
+        90deg,
+        transparent,
+        color-mix(in oklch, white 26%, transparent),
+        transparent
+      );
+    mix-blend-mode: screen;
+  }
+
+  .grid-progress__indicator-scan {
+    background-image: repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 8px,
+      color-mix(in oklch, white 16%, transparent) 8px,
+      color-mix(in oklch, white 16%, transparent) 11px
+    );
+    opacity: 0.34;
+  }
+
+  .grid-progress__scanline {
+    background-image: repeating-linear-gradient(
+      180deg,
+      transparent 0,
+      transparent 1px,
+      rgba(0, 0, 0, 0.22) 1px,
+      rgba(0, 0, 0, 0.22) 2px
+    );
+    opacity: 0.24;
   }
 
   .grid-dialog-overlay,
@@ -1148,6 +1326,59 @@ html[data-theme] body {
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 28%, transparent),
       0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+  }
+
+  .thegrid-number-input__label {
+    color: color-mix(in oklch, var(--muted-foreground) 84%, transparent);
+  }
+
+  .thegrid-number-input__frame {
+    border: 1px solid color-mix(in oklch, var(--border) 62%, transparent);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--card) 94%, transparent),
+        color-mix(in oklch, var(--panel) 94%, black)
+      );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--border) 34%, transparent),
+      0 0 14px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 58%), transparent);
+  }
+
+  .thegrid-number-input__button {
+    color: color-mix(in oklch, var(--foreground) 34%, transparent);
+    transition:
+      background-color 150ms ease,
+      color 150ms ease;
+  }
+
+  .thegrid-number-input__button:hover:not(:disabled) {
+    background: color-mix(in oklch, var(--primary) 12%, transparent);
+    color: color-mix(in oklch, var(--primary) 82%, var(--foreground));
+  }
+
+  .thegrid-number-input__button:disabled {
+    cursor: not-allowed;
+    opacity: 0.3;
+  }
+
+  .thegrid-number-input__button--decrement {
+    border-right: 1px solid color-mix(in oklch, var(--border) 48%, transparent);
+  }
+
+  .thegrid-number-input__button--increment {
+    border-left: 1px solid color-mix(in oklch, var(--border) 48%, transparent);
+  }
+
+  .thegrid-number-input__input {
+    color: color-mix(in oklch, var(--foreground) 76%, transparent);
+    -moz-appearance: textfield;
+  }
+
+  .thegrid-number-input__input::-webkit-outer-spin-button,
+  .thegrid-number-input__input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
   }
 
   .grid-dot {

@@ -9,7 +9,7 @@ export type ShaderCatalogEntry = {
   assetId: string | null
   shaderRole: string | null
   bootstrapRequired: boolean | null
-  dependencies: string[]
+  dependencies: Array<string>
   sourcePath: string
   cachePath: string | null
   sourceExists: boolean
@@ -41,7 +41,7 @@ type AssetRegistryEntry = {
   sourcePath: string
   shaderRole: string | null
   bootstrapRequired: boolean
-  dependencies: string[]
+  dependencies: Array<string>
 }
 
 const WGSL_EXTENSION = '.wgsl'
@@ -140,12 +140,12 @@ function sanitizeUploadFilename(filename: string): string {
   return basename
 }
 
-function extractLuaQuotedStrings(raw: string): string[] {
+function extractLuaQuotedStrings(raw: string): Array<string> {
   const matches = raw.match(/"([^"]+)"/g) ?? []
   return matches.map((match) => match.slice(1, -1))
 }
 
-export function parseAssetRegistryEntries(source: string): AssetRegistryEntry[] {
+export function parseAssetRegistryEntries(source: string): Array<AssetRegistryEntry> {
   const assetsMarker = 'AssetRegistry.assets'
   const markerIndex = source.indexOf(assetsMarker)
   if (markerIndex === -1) {
@@ -177,7 +177,7 @@ export function parseAssetRegistryEntries(source: string): AssetRegistryEntry[] 
   }
 
   const listBody = source.slice(listStart + 1, listEnd)
-  const entries: AssetRegistryEntry[] = []
+  const entries: Array<AssetRegistryEntry> = []
   let entryStart = -1
   depth = 0
 

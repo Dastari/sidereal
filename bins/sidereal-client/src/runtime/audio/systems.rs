@@ -15,7 +15,9 @@ use sidereal_game::{BallisticWeapon, EntityDestroyedEvent, EntityGuid, ShotFired
 use std::collections::HashSet;
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::native_backend::{AudioAssetResolver, LoopEmitterRequest, OneShotRequest};
+use super::native_backend::{
+    AudioAssetResolver, DebugProbeMode, LoopEmitterRequest, OneShotRequest,
+};
 
 pub(crate) fn sync_audio_catalog_defaults_system(
     catalog: Res<'_, AudioCatalogState>,
@@ -104,6 +106,51 @@ pub(crate) fn ensure_world_music_system(
         "music.world.deep_space",
         "main",
     );
+}
+
+pub(crate) fn debug_audio_probe_system(
+    #[cfg(not(target_arch = "wasm32"))] keys: Res<'_, ButtonInput<KeyCode>>,
+    #[cfg(not(target_arch = "wasm32"))] mut backend: NonSendMut<'_, AudioBackendResource>,
+    #[cfg(not(target_arch = "wasm32"))] catalog: Res<'_, AudioCatalogState>,
+    #[cfg(not(target_arch = "wasm32"))] asset_root: Res<'_, AssetRootPath>,
+    #[cfg(not(target_arch = "wasm32"))] asset_manager: Res<'_, LocalAssetManager>,
+    #[cfg(not(target_arch = "wasm32"))] cache_adapter: Res<'_, AssetCacheAdapter>,
+) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let resolver = AudioAssetResolver {
+            asset_root: &asset_root.0,
+            asset_manager: &asset_manager,
+            cache_adapter: *cache_adapter,
+        };
+        if keys.just_pressed(KeyCode::F6) {
+            backend.play_debug_probe(
+                DebugProbeMode::RootNonspatial,
+                "destruction.asteroid.default",
+                "explode",
+                &catalog,
+                &resolver,
+            );
+        }
+        if keys.just_pressed(KeyCode::F7) {
+            backend.play_debug_probe(
+                DebugProbeMode::RootSpatialAtListener,
+                "destruction.asteroid.default",
+                "explode",
+                &catalog,
+                &resolver,
+            );
+        }
+        if keys.just_pressed(KeyCode::F8) {
+            backend.play_debug_probe(
+                DebugProbeMode::RootSpatialOffsetRight,
+                "destruction.asteroid.default",
+                "explode",
+                &catalog,
+                &resolver,
+            );
+        }
+    }
 }
 
 pub(crate) fn receive_local_destruction_audio_system(

@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
+import type { BrpTarget } from '@/server/brp'
 import { isReadOnlyBrpMethod } from '@/lib/brp-read'
 import {
   brpPortSchema,
@@ -7,7 +8,6 @@ import {
   brpTargetSchema,
 } from '@/lib/schemas/dashboard'
 import { requireDashboardAdmin } from '@/server/dashboard-auth'
-import type { BrpTarget } from '@/server/brp'
 import { callBrp, getBrpUrl, getLiveWorldSnapshot } from '@/server/brp'
 
 type BrpRequestBody = {

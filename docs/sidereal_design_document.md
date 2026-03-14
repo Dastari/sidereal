@@ -489,6 +489,7 @@ Implementation note:
 - 2026-03-11 update: native client runtime configuration now supports command-line overrides as well as environment variables. `sidereal-client --help` is the canonical discovery surface for native launch options, and CLI flags take precedence over env vars for the current process.
 - 2026-03-11 update: env-driven debug toggles and diagnostic kill-switch startup flags were removed from the native client startup surface. Native startup config is now limited to real transport/render/bootstrap/runtime tuning inputs rather than debug-only launch switches.
 - 2026-03-11 update: native client bootstrap now initializes runtime resources by domain (transport, asset runtime, control/prediction, diagnostics, tactical/UI, scene/render), and shared replication/control scheduling is composed once before headless-vs-interactive divergences are applied. This keeps entrypoint ownership closer to documented domain boundaries without introducing a native-only runtime fork.
+- 2026-03-14 update: native windowed client now runs the Bevy/winit event loop in continuous mode even while unfocused. Native impact: alt-tabbed local clients keep ticking prediction/replication/UI maintenance instead of dropping into Bevy's default low-power unfocused mode, which reduces oversized rollback aborts and stale delta-cache mismatches after refocus. WASM impact: no WASM impact; browser focus/background throttling behavior remains platform-managed.
 
 ## 11. Engineering Boundaries
 

@@ -39,6 +39,7 @@ pub(super) fn insert_embedded_fonts(app: &mut App) {
     static BODY_REGULAR: &[u8] = include_bytes!("../../../../data/fonts/Rajdhani-Regular.ttf");
     static DISPLAY: &[u8] = include_bytes!("../../../../data/fonts/Orbitron-Variable.ttf");
     static MONO: &[u8] = include_bytes!("../../../../data/fonts/GeistMono-Regular.ttf");
+    static MONO_BOLD: &[u8] = include_bytes!("../../../../data/fonts/GeistMono-Bold.ttf");
 
     let mut fonts = app.world_mut().resource_mut::<Assets<Font>>();
     let bold = fonts.add(
@@ -53,11 +54,15 @@ pub(super) fn insert_embedded_fonts(app: &mut App) {
     );
     let mono = fonts
         .add(Font::try_from_bytes(MONO.to_vec()).expect("embedded GeistMono-Regular.ttf is valid"));
+    let mono_bold = fonts.add(
+        Font::try_from_bytes(MONO_BOLD.to_vec()).expect("embedded GeistMono-Bold.ttf is valid"),
+    );
     app.insert_resource(EmbeddedFonts {
         bold,
         regular,
         display,
         mono,
+        mono_bold,
     });
     app.init_resource::<ActiveUiTheme>();
     app.init_resource::<UiVisualSettings>();
@@ -151,8 +156,8 @@ pub(super) fn setup_character_select_screen(
                         ))
                         .with_children(|button| {
                             button.spawn((
-                                Text::new(player_entity_id.clone()),
-                                text_font(fonts.bold.clone(), 14.0),
+                                Text::new(player_entity_id.to_ascii_uppercase()),
+                                text_font(fonts.mono_bold.clone(), 17.0),
                                 TextColor(theme.colors.panel_foreground_color()),
                             ));
                         });
@@ -176,8 +181,8 @@ pub(super) fn setup_character_select_screen(
                     ))
                     .with_children(|button| {
                         button.spawn((
-                            Text::new("Enter World"),
-                            text_font(fonts.bold.clone(), 14.0),
+                            Text::new("ENTER WORLD"),
+                            text_font(fonts.mono_bold.clone(), 18.0),
                             TextColor(theme.colors.primary_foreground_color()),
                         ));
                     });

@@ -1,6 +1,6 @@
 use crate::{
-    AudioConcurrencyGroup, AudioCueDefinition, AudioEffectDefinition, AudioProfileDefinition,
-    AudioRegistry, AudioRegistryError,
+    AudioClipDefinition, AudioConcurrencyGroup, AudioCueDefinition, AudioEffectDefinition,
+    AudioProfileDefinition, AudioRegistry, AudioRegistryError,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -22,6 +22,7 @@ pub fn validate_audio_registry(registry: &AudioRegistry) -> Result<(), AudioRegi
         "sends",
     )?;
     let concurrency_group_ids = validate_concurrency_groups(&registry.concurrency_groups)?;
+    validate_clips(&registry.clips)?;
 
     validate_environments(registry, &bus_ids, &send_ids)?;
     validate_profiles(registry, &bus_ids, &send_ids, &concurrency_group_ids)?;
@@ -135,6 +136,57 @@ fn validate_concurrency_groups(
         }
     }
     Ok(group_ids)
+}
+
+fn validate_clips(clips: &[AudioClipDefinition]) -> Result<(), AudioRegistryError> {
+    let mut clip_asset_ids = HashSet::<String>::new();
+    for clip in clips {
+        if clip.clip_asset_id.trim().is_empty() {
+            return Err(AudioRegistryError::Contract(
+                "clips entries must have non-empty clip_asset_id".to_string(),
+            ));
+        }
+        if !clip_asset_ids.insert(clip.clip_asset_id.clone()) {
+            return Err(AudioRegistryError::Contract(format!(
+                "clips duplicates clip_asset_id={}",
+                clip.clip_asset_id
+            )));
+        }
+        validate_clip_defaults(clip)?;
+    }
+    Ok(())
+}
+
+fn validate_clip_defaults(clip: &AudioClipDefinition) -> Result<(), AudioRegistryError> {
+    let defaults = &clip.defaults;
+    if let Some(loop_region) = &defaults.loop_region
+        && !(loop_region.start_s.is_finite()
+            && loop_region.end_s.is_finite()
+            && loop_region.start_s >= 0.0
+            && loop_region.end_s > loop_region.start_s)
+    {
+        return Err(AudioRegistryError::Contract(format!(
+            "clip {} loop_region must satisfy 0 <= start < end",
+            clip.clip_asset_id
+        )));
+    }
+    for (name, value) in [
+        ("intro_start_s", defaults.intro_start_s),
+        ("loop_start_s", defaults.loop_start_s),
+        ("loop_end_s", defaults.loop_end_s),
+        ("outro_start_s", defaults.outro_start_s),
+        ("clip_end_s", defaults.clip_end_s),
+    ] {
+        if let Some(value) = value
+            && !(value.is_finite() && value >= 0.0)
+        {
+            return Err(AudioRegistryError::Contract(format!(
+                "clip {} {} must be finite and >= 0",
+                clip.clip_asset_id, name
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_environments(

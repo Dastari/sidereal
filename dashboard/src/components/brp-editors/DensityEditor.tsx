@@ -1,6 +1,6 @@
 import * as React from 'react'
-import type { ComponentEditorProps } from './types'
 import { DebouncedNumberField } from './DebouncedNumberField'
+import type { ComponentEditorProps } from './types'
 
 const MIN = 0
 const MAX = 1

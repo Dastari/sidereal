@@ -57,6 +57,12 @@ pub(super) struct LoopEmitterRequest<'a> {
     pub now_s: f64,
 }
 
+pub(super) enum DebugProbeMode {
+    RootNonspatial,
+    RootSpatialAtListener,
+    RootSpatialOffsetRight,
+}
+
 struct CachedClip {
     sha256_hex: String,
     sound: StaticSoundData,
@@ -74,6 +80,7 @@ struct ActiveLoopEmitter {
     sound: StaticSoundHandle,
     last_trigger_at_s: f64,
     release_timeout_s: f64,
+    outro_start_s: Option<f64>,
     released: bool,
 }
 
@@ -434,6 +441,7 @@ impl NativeAudioBackend {
                 sound,
                 last_trigger_at_s: request.now_s,
                 release_timeout_s: request.release_timeout_s,
+                outro_start_s: segmented_outro_start_s(&cue.playback),
                 released: false,
             },
         );
@@ -445,6 +453,9 @@ impl NativeAudioBackend {
         for (key, active) in &mut self.active_loops {
             if !active.released && now_s - active.last_trigger_at_s >= active.release_timeout_s {
                 active.sound.set_loop_region(None);
+                if let Some(outro_start_s) = active.outro_start_s {
+                    active.sound.seek_to(outro_start_s);
+                }
                 active.released = true;
             }
             if active.released && active.sound.state() == PlaybackState::Stopped {
@@ -461,6 +472,67 @@ impl NativeAudioBackend {
         if stop_music {
             self.active_music = None;
         }
+    }
+
+    pub fn play_debug_probe(
+        &mut self,
+        mode: DebugProbeMode,
+        profile_id: &str,
+        cue_id: &str,
+        catalog: &AudioCatalogState,
+        resolver: &AudioAssetResolver<'_>,
+    ) -> Result<(), String> {
+        let cue = catalog
+            .cue(profile_id, cue_id)
+            .ok_or_else(|| format!("missing audio cue profile_id={profile_id} cue_id={cue_id}"))?;
+        let asset_id = clip_asset_id_for_playback(&cue.playback)
+            .ok_or_else(|| "audio cue does not reference a clip_asset_id".to_string())?;
+        let sound_data = self.load_sound_data(cue, resolver)?;
+
+        match mode {
+            DebugProbeMode::RootNonspatial => {
+                let _ = self
+                    .manager
+                    .play(sound_data)
+                    .map_err(|err| err.to_string())?;
+                info!(
+                    profile_id,
+                    cue_id, asset_id, "audio debug probe played root nonspatial"
+                );
+            }
+            DebugProbeMode::RootSpatialAtListener | DebugProbeMode::RootSpatialOffsetRight => {
+                let position = match mode {
+                    DebugProbeMode::RootSpatialAtListener => self.listener_position,
+                    DebugProbeMode::RootSpatialOffsetRight => {
+                        self.listener_position + Vec3::new(25.0, 0.0, 0.0)
+                    }
+                    DebugProbeMode::RootNonspatial => Vec3::ZERO,
+                };
+                let mut track = self
+                    .manager
+                    .add_spatial_sub_track(
+                        self.listener.id(),
+                        mint_vec3(position),
+                        SpatialTrackBuilder::new()
+                            .persist_until_sounds_finish(true)
+                            .distances((1.0, 300.0))
+                            .spatialization_strength(1.0),
+                    )
+                    .map_err(|err| err.to_string())?;
+                let _ = track.play(sound_data).map_err(|err| err.to_string())?;
+                info!(
+                    profile_id,
+                    cue_id,
+                    asset_id,
+                    position_x = position.x,
+                    position_y = position.y,
+                    listener_x = self.listener_position.x,
+                    listener_y = self.listener_position.y,
+                    "audio debug probe played root spatial"
+                );
+            }
+        }
+        Ok(())
     }
 
     fn load_sound_data(
@@ -521,10 +593,11 @@ fn apply_playback_config(
     playback: &AudioPlaybackDefinition,
 ) -> StaticSoundData {
     let mut configured = sound.clone();
-    if let (Some(start_s), Some(end_s)) = (playback.intro_start_s, playback.clip_end_s)
-        && end_s > start_s
+    let slice_start_s = playback_slice_start_s(playback);
+    if let Some(end_s) = playback.clip_end_s
+        && end_s > slice_start_s
     {
-        configured = configured.slice(f64::from(start_s)..f64::from(end_s));
+        configured = configured.slice(f64::from(slice_start_s)..f64::from(end_s));
     } else if let Some(end_s) = playback.clip_end_s {
         configured = configured.slice(..f64::from(end_s));
     }
@@ -546,7 +619,14 @@ fn apply_playback_config(
             });
             match (loop_start, loop_end) {
                 (Some(start_s), Some(end_s)) if end_s > start_s => {
-                    configured.loop_region(f64::from(start_s)..f64::from(end_s))
+                    let relative_start_s = start_s - slice_start_s;
+                    let relative_end_s = end_s - slice_start_s;
+                    if relative_end_s > relative_start_s && relative_start_s >= 0.0 {
+                        configured
+                            .loop_region(f64::from(relative_start_s)..f64::from(relative_end_s))
+                    } else {
+                        configured
+                    }
                 }
                 _ => configured,
             }
@@ -717,4 +797,14 @@ fn debug_force_nonspatial_track(profile_id: &str) -> bool {
         profile_id,
         "weapon.ballistic_gatling" | "destruction.asteroid.default" | "explosion_burst"
     )
+}
+
+fn playback_slice_start_s(playback: &AudioPlaybackDefinition) -> f32 {
+    playback.intro_start_s.unwrap_or(0.0)
+}
+
+fn segmented_outro_start_s(playback: &AudioPlaybackDefinition) -> Option<f64> {
+    let outro_start_s = playback.outro_start_s?;
+    let slice_start_s = playback_slice_start_s(playback);
+    (outro_start_s >= slice_start_s).then_some(f64::from(outro_start_s - slice_start_s))
 }

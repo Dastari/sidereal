@@ -1,7 +1,8 @@
 use super::catalog::AudioCatalogState;
 #[cfg(not(target_arch = "wasm32"))]
 use super::native_backend::{
-    AudioAssetResolver, LoopEmitterRequest, NativeAudioBackend, OneShotRequest, load_clip_asset_id,
+    AudioAssetResolver, DebugProbeMode, LoopEmitterRequest, NativeAudioBackend, OneShotRequest,
+    load_clip_asset_id,
 };
 use super::null_backend::NullAudioBackend;
 use super::settings::AudioSettings;
@@ -170,6 +171,25 @@ impl AudioBackendResource {
         if let AudioBackendKind::Native(backend) = &mut self.backend {
             backend.sync_settings(settings);
             backend.tick(now_s);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn play_debug_probe(
+        &mut self,
+        mode: DebugProbeMode,
+        profile_id: &str,
+        cue_id: &str,
+        catalog: &AudioCatalogState,
+        resolver: &AudioAssetResolver<'_>,
+    ) {
+        let AudioBackendKind::Native(backend) = &mut self.backend else {
+            return;
+        };
+        if let Err(err) = backend.play_debug_probe(mode, profile_id, cue_id, catalog, resolver) {
+            self.log_once(format!(
+                "audio debug probe failed profile_id={profile_id} cue_id={cue_id}: {err}"
+            ));
         }
     }
 

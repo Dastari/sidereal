@@ -4,7 +4,7 @@ use crate::{
 };
 use mlua::Value;
 use serde_json::Value as JsonValue;
-use sidereal_audio::{AudioRegistry, validate_audio_registry};
+use sidereal_audio::{AudioRegistry, apply_clip_defaults, validate_audio_registry};
 use std::path::Path;
 
 pub fn load_audio_registry_from_root(scripts_root: &Path) -> Result<AudioRegistry, ScriptError> {
@@ -25,12 +25,13 @@ pub fn load_audio_registry_from_source(
 fn decode_audio_registry_module(module: &LoadedLuaModule) -> Result<AudioRegistry, ScriptError> {
     let mut root_json = lua_value_to_json(Value::Table(module.root().clone()))?;
     normalize_audio_registry_json(&mut root_json);
-    let registry: AudioRegistry = serde_json::from_value(root_json).map_err(|err| {
+    let mut registry: AudioRegistry = serde_json::from_value(root_json).map_err(|err| {
         ScriptError::Contract(format!(
             "{}: audio registry decode failed: {err}",
             module.script_path().display()
         ))
     })?;
+    apply_clip_defaults(&mut registry);
     validate_audio_registry(&registry).map_err(|err| {
         ScriptError::Contract(format!("{}: {err}", module.script_path().display()))
     })?;
@@ -47,8 +48,8 @@ fn normalize_audio_registry_json(value: &mut JsonValue) {
         JsonValue::Object(map) => {
             for (key, entry) in map.iter_mut() {
                 match key.as_str() {
-                    "buses" | "sends" | "environments" | "concurrency_groups" | "profiles"
-                    | "effects" | "variants" => normalize_empty_object_to_array(entry),
+                    "buses" | "sends" | "environments" | "concurrency_groups" | "clips"
+                    | "profiles" | "effects" | "variants" => normalize_empty_object_to_array(entry),
                     "bus_effect_overrides" => normalize_nested_object_values_to_arrays(entry),
                     _ => {}
                 }

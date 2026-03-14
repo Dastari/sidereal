@@ -1,5 +1,6 @@
 {
   "name": "sidereal-dashboard",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,9 +11,9 @@
     "build": "pnpm run build:shader-preview-wasm && pnpm run build:game-client-wasm && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "lint": "eslint",
+    "lint": "eslint src",
     "format": "prettier --check .",
-    "check": "prettier --write . && eslint --fix"
+    "check": "prettier --write . && eslint src --fix"
   },
   "dependencies": {
     "@faker-js/faker": "^10.3.0",
@@ -58,9 +59,11 @@
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.4.0",
     "@types/pg": "^8.18.0",
+    "@types/prismjs": "^1.26.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
+    "@webgpu/types": "^0.1.69",
     "jsdom": "^28.1.0",
     "prettier": "^3.8.1",
     "shadcn": "^4.0.5",

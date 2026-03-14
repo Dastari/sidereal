@@ -50,17 +50,8 @@ export type GridThemeColors = {
   /** Resolve dot color from kind and optional entity_labels (entity_label wins: player=green, Ship=red, else default=foreground). */
   getEntityColor: (
     kind: string,
-    entityLabels?: string[],
+    entityLabels?: Array<string>,
   ) => [number, number, number]
-}
-
-const ENTITY_CSS_VARS: Record<string, string> = {
-  ship: '--color-entity-ship',
-  station: '--color-entity-station',
-  asteroid: '--color-entity-asteroid',
-  planet: '--color-entity-planet',
-  component: '--color-entity-default',
-  default: '--color-entity-default',
 }
 
 const FALLBACK_COLORS: GridThemeColors = {
@@ -96,7 +87,7 @@ export function getGridThemeColors(root?: HTMLElement): GridThemeColors {
 
   const getEntityColor = (
     _kind: string,
-    entityLabels?: string[],
+    entityLabels?: Array<string>,
   ): [number, number, number] => {
     if (entityLabels?.length) {
       const labels = entityLabels.map((l) => String(l).toLowerCase())

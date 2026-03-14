@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { decodeSoundId } from '@/features/audio-studio/types'
 
 export const uuidSchema = z.string().uuid()
 
@@ -31,6 +32,55 @@ export const renameCharacterBodySchema = z.object({
     .min(2, 'displayName must be between 2 and 64 characters')
     .max(64, 'displayName must be between 2 and 64 characters'),
 })
+
+export const audioStudioSoundIdSchema = z
+  .string()
+  .trim()
+  .min(1, 'soundId is required')
+  .refine((value) => decodeSoundId(value) !== null, 'Invalid sound id')
+
+export const audioStudioParamsSchema = z.object({
+  soundId: audioStudioSoundIdSchema,
+})
+
+const audioStudioMarkerValueSchema = z
+  .number()
+  .finite('marker value must be a finite number')
+  .min(0, 'marker values must be greater than or equal to 0')
+  .nullable()
+
+export const audioStudioMarkerBodySchema = z
+  .object({
+    intro_start_s: audioStudioMarkerValueSchema,
+    loop_start_s: audioStudioMarkerValueSchema,
+    loop_end_s: audioStudioMarkerValueSchema,
+    outro_start_s: audioStudioMarkerValueSchema,
+    clip_end_s: audioStudioMarkerValueSchema,
+  })
+  .superRefine((value, ctx) => {
+    const orderedPairs = [
+      ['intro_start_s', 'loop_start_s'],
+      ['loop_start_s', 'loop_end_s'],
+      ['loop_end_s', 'outro_start_s'],
+      ['outro_start_s', 'clip_end_s'],
+    ] as const
+
+    for (const [leftKey, rightKey] of orderedPairs) {
+      const left = value[leftKey]
+      const right = value[rightKey]
+      if (left === null || right === null) {
+        continue
+      }
+      const isStrict = leftKey === 'loop_start_s'
+      if ((isStrict && left >= right) || (!isStrict && left > right)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${leftKey} must be ${isStrict ? 'less than' : 'less than or equal to'} ${rightKey}`,
+          path: [rightKey],
+        })
+      }
+    }
+  })
 
 export const spawnEntityBodySchema = z.object({
   player_entity_id: uuidSchema,

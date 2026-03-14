@@ -4,7 +4,13 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
-  variant?: 'default' | 'success' | 'warning' | 'danger' | 'outline'
+  variant?:
+    | 'default'
+    | 'secondary'
+    | 'success'
+    | 'warning'
+    | 'danger'
+    | 'outline'
   size?: 'sm' | 'md'
   dot?: boolean
   pulse?: boolean
@@ -21,6 +27,7 @@ export function Badge({
 }: BadgeProps) {
   const variants: Record<string, string> = {
     default: 'border-primary/30 bg-primary/10 text-primary',
+    secondary: 'border-border/40 bg-secondary/20 text-secondary-foreground',
     success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
     warning: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
     danger: 'border-red-500/30 bg-red-500/10 text-red-400',
@@ -29,6 +36,7 @@ export function Badge({
 
   const dotColors: Record<string, string> = {
     default: 'bg-primary',
+    secondary: 'bg-secondary-foreground',
     success: 'bg-emerald-400',
     warning: 'bg-amber-400',
     danger: 'bg-red-400',

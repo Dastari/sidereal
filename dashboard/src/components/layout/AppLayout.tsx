@@ -103,7 +103,7 @@ export function AppLayout({
   return (
     <div className="flex h-full w-full flex-col bg-background">
       {header && (
-        <header className="grid-header flex-none border-b border-border bg-card">
+        <header className="flex-none border-b border-border bg-card">
           {header}
         </header>
       )}
@@ -151,7 +151,7 @@ interface PanelProps {
 
 export function Panel({ children, className }: PanelProps) {
   return (
-    <SidebarNavFrame className={cn('z-100 h-full', className)}>
+    <SidebarNavFrame className={cn('z-1 h-full', className)}>
       {children}
     </SidebarNavFrame>
   )

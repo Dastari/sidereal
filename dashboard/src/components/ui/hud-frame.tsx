@@ -2,7 +2,7 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 export const hudFrameClassName =
-  'grid-hud-frame relative isolate overflow-hidden border border-border/80 bg-card/70 text-card-foreground'
+  'grid-hud-frame relative isolate border border-border/80 bg-card/70 text-card-foreground'
 
 interface HUDFrameProps extends React.HTMLAttributes<HTMLDivElement> {
   label?: string

@@ -383,8 +383,8 @@ function mapCompilationInfo(
 ): Array<ShaderPreviewDiagnostic> {
   return info.messages.map((message) => ({
     message: message.message,
-    line: message.lineNum ?? null,
-    column: message.linePos ?? null,
+    line: message.lineNum,
+    column: message.linePos,
     type:
       message.type === 'warning' || message.type === 'info'
         ? message.type
@@ -420,8 +420,8 @@ function buildPreviewTextureData(
   label: string,
   width: number,
   height: number,
-): Uint8Array {
-  const data = new Uint8Array(width * height * 4)
+): Uint8Array<ArrayBuffer> {
+  const data = new Uint8Array(new ArrayBuffer(width * height * 4))
   const lower = label.toLowerCase()
 
   for (let y = 0; y < height; y += 1) {

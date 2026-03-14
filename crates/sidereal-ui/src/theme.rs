@@ -34,7 +34,7 @@ impl UiVisualSettings {
 impl Default for UiVisualSettings {
     fn default() -> Self {
         Self {
-            glow_intensity: 0.55,
+            glow_intensity: 0.3,
         }
     }
 }

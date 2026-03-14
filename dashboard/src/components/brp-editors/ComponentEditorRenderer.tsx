@@ -5,9 +5,9 @@ import type {
   GeneratedComponentRegistryResource,
   ShaderEditorFieldSchema,
 } from '@/features/component-schema/types'
-import { Button } from '@/components/ui/button'
 import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group'
 import { HUDFrame } from '@/components/ui/hud-frame'
+import { TheGridNumberInput } from '@/components/thegridcn/thegrid-number-input'
 import { TheGridSlider } from '@/components/thegridcn/thegrid-slider'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -64,67 +64,53 @@ export function ComponentEditorRenderer({
     [entry, generatedComponentRegistry],
   )
   const [draftValue, setDraftValue] = React.useState(payload)
-  const [saveState, setSaveState] = React.useState<
-    'idle' | 'pending' | 'saving' | 'saved' | 'error'
-  >('idle')
-  const [errorText, setErrorText] = React.useState<string | null>(null)
   const saveSequenceRef = React.useRef(0)
 
   React.useEffect(() => {
     setDraftValue(payload)
   }, [payload])
 
-  const fields = React.useMemo(
-    () => {
-      if (!entry) {
+  const fields = React.useMemo(() => {
+    if (!entry) {
+      return []
+    }
+    if (!shaderSchemaEntry) {
+      return entry.editor_schema.fields
+    }
+
+    return shaderSchemaEntry.uniform_schema.flatMap((shaderField) => {
+      const componentField = entry.editor_schema.fields.find(
+        (field) => field.field_path === shaderField.field_path,
+      )
+      if (!componentField) {
         return []
       }
-      if (!shaderSchemaEntry) {
-        return entry.editor_schema.fields
-      }
-
-      return shaderSchemaEntry.uniform_schema.flatMap((shaderField) => {
-        const componentField = entry.editor_schema.fields.find(
-          (field) => field.field_path === shaderField.field_path,
-        )
-        if (!componentField) {
-          return []
-        }
-        return [mergeShaderFieldOverrides(componentField, shaderField)]
-      })
-    },
-    [entry, shaderSchemaEntry],
-  )
+      return [mergeShaderFieldOverrides(componentField, shaderField)]
+    })
+  }, [entry, shaderSchemaEntry])
 
   React.useEffect(() => {
     if (readOnly || !entry) {
-      setSaveState('idle')
-      setErrorText(null)
       return
     }
 
     const nextDirty = JSON.stringify(draftValue) !== JSON.stringify(payload)
     if (!nextDirty) {
-      setSaveState((current) => (current === 'error' ? current : 'idle'))
       return
     }
 
-    setSaveState('pending')
-    setErrorText(null)
     const saveSequence = saveSequenceRef.current + 1
     saveSequenceRef.current = saveSequence
     const timeoutId = window.setTimeout(() => {
-      setSaveState('saving')
-      Promise.resolve(onUpdate(entry.type_path, entry.component_kind, draftValue))
+      Promise.resolve(
+        onUpdate(entry.type_path, entry.component_kind, draftValue),
+      )
         .then(() => {
           if (saveSequenceRef.current !== saveSequence) return
-          setSaveState('saved')
-          setErrorText(null)
         })
         .catch((error: unknown) => {
           if (saveSequenceRef.current !== saveSequence) return
-          setSaveState('error')
-          setErrorText(
+          console.error(
             error instanceof Error ? error.message : 'Component update failed',
           )
         })
@@ -146,15 +132,10 @@ export function ComponentEditorRenderer({
     )
   }
 
-  const dirty = JSON.stringify(draftValue) !== JSON.stringify(payload)
-
   return (
     <div className="space-y-3">
-      <HUDFrame className="px-3 py-2">
-        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Schema Editor
-        </div>
-        <div className="font-mono text-[11px] text-muted-foreground">
+      <HUDFrame className="px-3 py-2" label="Schema Editor">
+        <div className="truncate font-mono text-[11px] text-muted-foreground">
           {entry.type_path}
         </div>
         {shaderSchemaEntry ? (
@@ -177,30 +158,6 @@ export function ComponentEditorRenderer({
             }}
           />
         ))}
-      </div>
-      <div className="flex items-center justify-end gap-2">
-        <div className="mr-auto text-[11px] text-muted-foreground">
-          {readOnly
-            ? 'Read only'
-            : saveState === 'pending'
-              ? 'Auto-applying...'
-              : saveState === 'saving'
-                ? 'Saving...'
-                : saveState === 'saved'
-                  ? 'Saved'
-                  : saveState === 'error'
-                    ? errorText ?? 'Save failed'
-                    : 'Auto-apply enabled'}
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={!dirty}
-          onClick={() => setDraftValue(payload)}
-        >
-          Reset
-        </Button>
       </div>
     </div>
   )
@@ -401,16 +358,16 @@ function FieldShell({
   children: React.ReactNode
 }) {
   return (
-    <HUDFrame className="space-y-2 px-3 py-2">
+    <HUDFrame className="px-3 py-2" label={field.display_name}>
       <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
+        {/* <div className="min-w-0 flex flex-row items-center gap-2">
           <div className="text-xs font-medium text-foreground">
             {field.display_name}
           </div>
           <div className="truncate font-mono text-[11px] text-muted-foreground">
             {field.field_path}
           </div>
-        </div>
+        </div> */}
         {field.unit ? (
           <span className="shrink-0 text-[11px] text-muted-foreground">
             {field.unit}
@@ -439,7 +396,6 @@ function NumberEditor({
   const min = field.min ?? undefined
   const max = field.max ?? undefined
   const shouldShowSlider = min !== undefined && max !== undefined
-  const displayValue = formatNumericInputValue(safeValue, step)
 
   return (
     <div className="space-y-2">
@@ -454,34 +410,26 @@ function NumberEditor({
             disabled={readOnly}
             onChange={(next) => onChange(next)}
           />
-          <Input
-            className="h-8 w-24 text-xs"
-            type="number"
+          <TheGridNumberInput
+            className="shrink-0"
+            inputClassName="w-24"
             disabled={readOnly}
             min={min}
             max={max}
             step={step}
-            value={displayValue}
-            onChange={(event) => {
-              const next = Number(event.target.value)
-              onChange(Number.isFinite(next) ? next : 0)
-            }}
+            value={safeValue}
+            onChange={(next) => onChange(next)}
           />
         </div>
       ) : null}
       {!shouldShowSlider ? (
-        <Input
-          className="h-8 text-xs"
-          type="number"
+        <TheGridNumberInput
           disabled={readOnly}
           min={min}
           max={max}
           step={step}
-          value={displayValue}
-          onChange={(event) => {
-            const next = Number(event.target.value)
-            onChange(Number.isFinite(next) ? next : 0)
-          }}
+          value={safeValue}
+          onChange={(next) => onChange(next)}
         />
       ) : null}
     </div>
@@ -509,18 +457,15 @@ function VectorEditor({
   return (
     <div className="grid grid-cols-2 gap-2">
       {channels.map((channelValue, index) => (
-        <Input
+        <TheGridNumberInput
           key={index}
-          className="h-8 text-xs"
-          type="number"
+          inputClassName="w-full"
           step={step}
           min={min}
           max={max}
           disabled={readOnly}
-          value={formatNumericInputValue(channelValue, step)}
-          onChange={(event) => {
-            const next = Number(event.target.value)
-            if (!Number.isFinite(next)) return
+          value={channelValue}
+          onChange={(next) => {
             const nextChannels = [...channels]
             nextChannels[index] = next
             onChange(writeVectorValue(value, nextChannels))
@@ -577,17 +522,14 @@ function ColorEditor({
               <div className="mb-1 text-center text-[10px] font-medium uppercase leading-none text-muted-foreground">
                 {labels[index]}
               </div>
-              <Input
-                className="h-8 min-w-0 px-2 text-xs"
-                type="number"
+              <TheGridNumberInput
+                inputClassName="w-full"
                 step={step}
                 min={min}
                 max={max}
                 disabled={readOnly}
-                value={formatNumericInputValue(channelValue, step)}
-                onChange={(event) => {
-                  const next = Number(event.target.value)
-                  if (!Number.isFinite(next)) return
+                value={channelValue}
+                onChange={(next) => {
                   const nextChannels = [...channels]
                   nextChannels[index] = next
                   onChange(writeVectorValue(value, nextChannels))
@@ -601,7 +543,10 @@ function ColorEditor({
   )
 }
 
-function normalizeVectorValue(value: unknown, dimensions: number): Array<number> {
+function normalizeVectorValue(
+  value: unknown,
+  dimensions: number,
+): Array<number> {
   if (Array.isArray(value)) {
     return Array.from({ length: dimensions }, (_, index) =>
       typeof value[index] === 'number' ? value[index] : 0,
@@ -623,7 +568,11 @@ function writeVectorValue(
   currentValue: unknown,
   channels: Array<number>,
 ): Array<number> | Record<string, number> {
-  if (typeof currentValue === 'object' && currentValue !== null && !Array.isArray(currentValue)) {
+  if (
+    typeof currentValue === 'object' &&
+    currentValue !== null &&
+    !Array.isArray(currentValue)
+  ) {
     const record = currentValue as Record<string, unknown>
     const keys = ['x', 'y', 'z', 'w']
     const next: Record<string, number> = {}
@@ -641,32 +590,6 @@ function writeVectorValue(
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
-}
-
-function numericStepPrecision(step: number): number {
-  if (!Number.isFinite(step) || step <= 0) {
-    return 2
-  }
-  const normalized = step.toString().toLowerCase()
-  if (normalized.includes('e-')) {
-    const exponent = Number(normalized.split('e-')[1] ?? '0')
-    return Number.isFinite(exponent) ? Math.min(exponent, 6) : 2
-  }
-  const fraction = normalized.split('.')[1] ?? ''
-  return Math.min(fraction.length, 6)
-}
-
-function formatNumericInputValue(value: number, step: number): string {
-  if (!Number.isFinite(value)) {
-    return '0'
-  }
-  const precision = numericStepPrecision(step)
-  if (precision <= 0) {
-    return Math.round(value).toString()
-  }
-  return value
-    .toFixed(precision)
-    .replace(/\.?0+$/, '')
 }
 
 function rgbChannelsToHex([r, g, b]: Array<number>): string {

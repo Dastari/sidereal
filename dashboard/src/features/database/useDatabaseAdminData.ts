@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { DatabaseAdminPayload } from '@/features/database/types'
 import { apiPost } from '@/lib/api/client'
 import { loadDatabaseAdminData } from '@/lib/server-fns/database-admin'
-import type { DatabaseAdminPayload } from '@/features/database/types'
 
 const EMPTY_PAYLOAD: DatabaseAdminPayload = {
   summary: {

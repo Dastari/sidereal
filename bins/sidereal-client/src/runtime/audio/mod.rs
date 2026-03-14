@@ -12,10 +12,11 @@ use bevy::prelude::*;
 pub(crate) use catalog::AudioCatalogState;
 pub(crate) use settings::AudioSettings;
 pub(crate) use systems::{
-    ensure_menu_music_system, ensure_world_music_system, queue_audio_asset_demands_system,
-    receive_local_destruction_audio_system, receive_local_weapon_fire_audio_system,
-    receive_remote_destruction_audio_system, receive_remote_weapon_fire_audio_system,
-    sync_audio_catalog_defaults_system, sync_audio_listener_system, sync_audio_runtime_system,
+    debug_audio_probe_system, ensure_menu_music_system, ensure_world_music_system,
+    queue_audio_asset_demands_system, receive_local_destruction_audio_system,
+    receive_local_weapon_fire_audio_system, receive_remote_destruction_audio_system,
+    receive_remote_weapon_fire_audio_system, sync_audio_catalog_defaults_system,
+    sync_audio_listener_system, sync_audio_runtime_system,
 };
 
 pub(crate) fn init_audio_runtime(app: &mut App) {

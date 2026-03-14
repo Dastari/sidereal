@@ -92,6 +92,19 @@ AudioRegistry.concurrency_groups = {
   },
 }
 
+AudioRegistry.clips = {
+  {
+    clip_asset_id = "audio.sfx.weapon.ballistic_fire",
+    defaults = {
+      intro_start_s = 0.0222,
+      loop_start_s = 0.0828,
+      loop_end_s = 0.3728,
+      outro_start_s = 0.3728,
+      clip_end_s = 2.87,
+    },
+  },
+}
+
 AudioRegistry.profiles = {
   {
     profile_id = "weapon.ballistic_gatling",
@@ -101,11 +114,6 @@ AudioRegistry.profiles = {
         playback = {
           kind = "segmented_loop",
           clip_asset_id = "audio.sfx.weapon.ballistic_fire",
-          intro_start_s = 0.0,
-          loop_start_s = 1.0,
-          loop_end_s = 2.0,
-          outro_start_s = 2.0,
-          clip_end_s = 4.0,
         },
         route = {
           bus = "sfx",

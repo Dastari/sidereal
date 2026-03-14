@@ -31,16 +31,6 @@ type BrpQueryRow = {
   has?: Record<string, unknown>
 }
 
-const EXCLUDED_UI_COMPONENT_TYPE_PATHS = [
-  'bevy_ui::ui_transform::UiTransform',
-  'bevy_ui::ui_node::Node',
-  'bevy_ui::node::Node',
-  'bevy_camera::camera::Camera',
-  'bevy_window::window::Window',
-  'bevy_window::window::PrimaryWindow',
-  'bevy_window::monitor::Monitor',
-] as const
-
 export type BrpTarget = 'server' | 'client' | 'hostClient'
 export type BrpCallOptions = {
   target?: BrpTarget
@@ -723,7 +713,7 @@ export async function getLiveWorldSnapshot(
         },
         filter: {
           with: [],
-          without: [...EXCLUDED_UI_COMPONENT_TYPE_PATHS],
+          without: [],
         },
         strict: false,
       },
@@ -740,23 +730,12 @@ export async function getLiveWorldSnapshot(
   const rows = (
     Array.isArray(queryRes.result) ? queryRes.result : []
   ) as Array<BrpQueryRow>
-  const filteredRows = rows.filter((row) => {
-    const components = row.components ?? {}
-    if (Object.keys(components).length === 0) {
-      return false
-    }
-    return !Object.keys(components).some((componentPath) =>
-      componentPath.startsWith('bevy_ui::') ||
-      componentPath === 'bevy_camera::camera::Camera' ||
-      componentPath.startsWith('bevy_window::window::'),
-    )
-  })
   const entities: Array<LiveWorldEntity> = []
   const nodes: Array<LiveGraphNode> = []
   const edges: Array<LiveGraphEdge> = []
 
   const sampledAtMs = Date.now()
-  filteredRows.forEach((row) => {
+  rows.forEach((row) => {
     const entityId = String(row.entity)
     const components = row.components ?? {}
     const extractedName = getNameFromComponents(components)

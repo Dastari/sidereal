@@ -1,8 +1,10 @@
 mod catalog;
+mod defaults;
 mod error;
 mod validate;
 
 pub use catalog::*;
+pub use defaults::apply_clip_defaults;
 pub use error::AudioRegistryError;
 pub use validate::validate_audio_registry;
 

@@ -26,6 +26,13 @@ pub(crate) struct SegmentedBarStyle {
     pub segments: u8,
     pub active_color: Color,
     pub inactive_color: Color,
+    pub shell_color: Color,
+    pub border_color: Color,
+    pub corner_color: Color,
+    pub scanline_primary_color: Color,
+    pub scanline_secondary_color: Color,
+    pub segment_width_px: f32,
+    pub segment_gap_px: f32,
 }
 
 #[derive(Component, Clone, Copy)]

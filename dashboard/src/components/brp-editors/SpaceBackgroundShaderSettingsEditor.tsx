@@ -1850,7 +1850,7 @@ function SelectField({
 }: {
   label: string
   value: string
-  options: Array<{ value: string; label: string }>
+  options: ReadonlyArray<{ value: string; label: string }>
   readOnly: boolean
   onChange: (next: string) => void
 }) {

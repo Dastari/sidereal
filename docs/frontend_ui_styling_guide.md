@@ -27,6 +27,7 @@ Update note (2026-03-14):
 - Explorer/tool header toggle controls and schema-editor boolean fields should use the shared local `Switch` wrapper inside those grouped control surfaces instead of bespoke label-plus-toggle rows.
 - Shared dashboard buttons, inputs, badges, dropdown menus, and table primitives should continue to route through the local wrapper layer under `dashboard/src/components/ui/`, and those wrappers should stay aligned to the GridCN interaction model rather than falling back to plain shadcn defaults or route-local one-off styling.
 - Single-value editor sliders should prefer the local GridCN-style slider component; keep the shared Radix slider wrapper for true range sliders and other multi-thumb cases that the GridCN custom slider does not cover cleanly.
+- Numeric inputs in the component-editing surfaces should prefer the local GridCN number-input wrapper instead of plain text/number fields when the control is editing numeric gameplay/component values directly.
 
 ## 1. Scope
 

@@ -10,6 +10,7 @@ import {
   Users,
   X,
 } from 'lucide-react'
+import { Badge } from '../thegridcn/badge'
 import type {
   ExpandedNode,
   GraphEdge,
@@ -34,7 +35,6 @@ import {
   parseGeneratedComponentRegistryResource,
   resolveComponentRegistryEntry,
 } from '@/features/component-schema/registry'
-import { Badge } from '../thegridcn/badge'
 
 interface DetailPanelProps {
   selectedId: string | null
@@ -91,12 +91,6 @@ export function DetailPanel({
     : undefined
   const expandedNode = selectedId ? expandedNodes.get(selectedId) : undefined
   const graphNode = selectedId ? graphNodes.get(selectedId) : undefined
-  const name =
-    worldEntity?.name ||
-    expandedNode?.label ||
-    graphNode?.label ||
-    selectedId ||
-    ''
   const kind =
     worldEntity?.kind || expandedNode?.kind || graphNode?.kind || 'unknown'
   const entityLabels = worldEntity?.entity_labels
@@ -231,7 +225,6 @@ export function DetailPanel({
       <div className="flex-none p-5 border-b border-border-subtle">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <h2 className="font-semibold text-foreground truncate">{name}</h2>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               {entityLabels && entityLabels.length > 0 ? (
                 entityLabels.map((label) => (
@@ -241,11 +234,6 @@ export function DetailPanel({
                 ))
               ) : (
                 <Badge className="capitalize text-xs">{kind}</Badge>
-              )}
-              {worldEntity && (
-                <span className="text-xs text-muted-foreground">
-                  Shard {worldEntity.shardId}
-                </span>
               )}
             </div>
           </div>
@@ -305,35 +293,8 @@ export function DetailPanel({
             </>
           )}
 
-          {/* Identity: show Bevy entity ID and gameplay EntityGuid separately. */}
           <div>
-            <div className="flex items-center justify-between gap-2 mb-2 w-full">
-              <div className="flex items-center gap-2 min-w-0">
-                <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Bevy ID
-                </h3>
-              </div>
-              <div className="flex items-center gap-1 flex-1 min-w-0 justify-end">
-                <span className="text-xs text-foreground font-mono tabular-nums min-w-0 break-all text-right">
-                  {selectedId}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                  aria-label="Copy Bevy ID"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(selectedId)
-                  }}
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-          </div>
-          <div>
-            <div className="flex items-center justify-between gap-2 mb-2 w-full">
+            <div className="flex items-left justify-between gap-2 mb-2 w-full flex-col">
               <div className="flex items-center gap-2 min-w-0">
                 <Layers className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -396,7 +357,7 @@ export function DetailPanel({
           />
 
           {/* Graph properties (exclude entity_labels) */}
-          {graphNode?.properties &&
+          {/* {graphNode?.properties &&
             Object.keys(graphNode.properties).length > 0 && (
               <PropertySection title="Graph Properties" icon={Box}>
                 {Object.entries(graphNode.properties)
@@ -405,7 +366,7 @@ export function DetailPanel({
                     <PropertyRow key={key} label={key} value={value} mono />
                   ))}
               </PropertySection>
-            )}
+            )} */}
 
           {/* Expanded node properties */}
           {expandedNode?.properties &&
@@ -890,7 +851,7 @@ function ComponentsList({
               </Button>
 
               {isExpanded && hasProperties && (
-                <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-3 flex flex-col ">
+                <div className="px-3 py-2 bg-secondary/20 border-t border-border space-y-3 flex flex-col pt-4">
                   {!hasStructuredEditor ? (
                     <div className="space-y-1 flex flex-row">
                       <div className="space-y-1 flex flex-col grow">
@@ -1116,7 +1077,7 @@ function ChildEntitiesSection({
           >
             <Box className="h-3.5 w-3.5 text-primary/60 flex-none" />
             <span className="truncate flex-1">{child.name}</span>
-            <Badge variant="secondary" className="text-xs">
+            <Badge variant="outline" className="text-xs">
               {child.componentCount}c
             </Badge>
           </Button>

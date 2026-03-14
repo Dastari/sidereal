@@ -17,7 +17,7 @@ type LoginBody = {
 export const Route = createFileRoute('/api/dashboard-session')({
   server: {
     handlers: {
-      GET: async ({ request }) => {
+      GET: ({ request }) => {
         const session = getDashboardSession(request)
         return json({
           authenticated: session?.role === 'admin',
@@ -70,7 +70,7 @@ export const Route = createFileRoute('/api/dashboard-session')({
           },
         )
       },
-      DELETE: async ({ request }) => {
+      DELETE: ({ request }) => {
         const crossOriginFailure = rejectCrossOriginMutation(request)
         if (crossOriginFailure) {
           return crossOriginFailure

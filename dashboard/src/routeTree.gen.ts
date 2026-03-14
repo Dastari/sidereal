@@ -17,6 +17,7 @@ import { Route as ApiGraphRouteImport } from './routes/api.graph'
 import { Route as ApiDatabaseRouteImport } from './routes/api.database'
 import { Route as ApiDashboardSessionRouteImport } from './routes/api.dashboard-session'
 import { Route as ApiBrpRouteImport } from './routes/api.brp'
+import { Route as DashboardSoundStudioRouteImport } from './routes/_dashboard.sound-studio'
 import { Route as DashboardShaderWorkshopRouteImport } from './routes/_dashboard.shader-workshop'
 import { Route as DashboardSettingsRouteImport } from './routes/_dashboard.settings'
 import { Route as DashboardScriptEditorRouteImport } from './routes/_dashboard.script-editor'
@@ -27,7 +28,9 @@ import { Route as DashboardDatabaseIndexRouteImport } from './routes/_dashboard.
 import { Route as ApiShadersUploadRouteImport } from './routes/api.shaders.upload'
 import { Route as ApiShadersShaderIdRouteImport } from './routes/api.shaders.$shaderId'
 import { Route as ApiDeleteEntityEntityIdRouteImport } from './routes/api.delete-entity.$entityId'
+import { Route as ApiAudioCuesSoundIdRouteImport } from './routes/api.audio-cues.$soundId'
 import { Route as ApiAdminSpawnEntityRouteImport } from './routes/api.admin.spawn-entity'
+import { Route as DashboardSoundStudioSoundIdRouteImport } from './routes/_dashboard.sound-studio.$soundId'
 import { Route as DashboardShaderWorkshopShaderIdRouteImport } from './routes/_dashboard.shader-workshop.$shaderId'
 import { Route as DashboardGameWorldEntityGuidRouteImport } from './routes/_dashboard.game-world.$entityGuid'
 import { Route as DashboardDatabaseTablesRouteImport } from './routes/_dashboard.database.tables'
@@ -74,6 +77,11 @@ const ApiBrpRoute = ApiBrpRouteImport.update({
   id: '/api/brp',
   path: '/api/brp',
   getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardSoundStudioRoute = DashboardSoundStudioRouteImport.update({
+  id: '/sound-studio',
+  path: '/sound-studio',
+  getParentRoute: () => DashboardRoute,
 } as any)
 const DashboardShaderWorkshopRoute = DashboardShaderWorkshopRouteImport.update({
   id: '/shader-workshop',
@@ -125,11 +133,22 @@ const ApiDeleteEntityEntityIdRoute = ApiDeleteEntityEntityIdRouteImport.update({
   path: '/api/delete-entity/$entityId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAudioCuesSoundIdRoute = ApiAudioCuesSoundIdRouteImport.update({
+  id: '/api/audio-cues/$soundId',
+  path: '/api/audio-cues/$soundId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminSpawnEntityRoute = ApiAdminSpawnEntityRouteImport.update({
   id: '/api/admin/spawn-entity',
   path: '/api/admin/spawn-entity',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DashboardSoundStudioSoundIdRoute =
+  DashboardSoundStudioSoundIdRouteImport.update({
+    id: '/$soundId',
+    path: '/$soundId',
+    getParentRoute: () => DashboardSoundStudioRoute,
+  } as any)
 const DashboardShaderWorkshopShaderIdRoute =
   DashboardShaderWorkshopShaderIdRouteImport.update({
     id: '/$shaderId',
@@ -181,6 +200,7 @@ export interface FileRoutesByFullPath {
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
+  '/sound-studio': typeof DashboardSoundStudioRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
   '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
@@ -191,7 +211,9 @@ export interface FileRoutesByFullPath {
   '/database/tables': typeof DashboardDatabaseTablesRoute
   '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
+  '/sound-studio/$soundId': typeof DashboardSoundStudioSoundIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
+  '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
@@ -206,6 +228,7 @@ export interface FileRoutesByTo {
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
+  '/sound-studio': typeof DashboardSoundStudioRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
   '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
@@ -217,7 +240,9 @@ export interface FileRoutesByTo {
   '/database/tables': typeof DashboardDatabaseTablesRoute
   '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
+  '/sound-studio/$soundId': typeof DashboardSoundStudioSoundIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
+  '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
@@ -235,6 +260,7 @@ export interface FileRoutesById {
   '/_dashboard/script-editor': typeof DashboardScriptEditorRoute
   '/_dashboard/settings': typeof DashboardSettingsRoute
   '/_dashboard/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
+  '/_dashboard/sound-studio': typeof DashboardSoundStudioRouteWithChildren
   '/api/brp': typeof ApiBrpRoute
   '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
@@ -246,7 +272,9 @@ export interface FileRoutesById {
   '/_dashboard/database/tables': typeof DashboardDatabaseTablesRoute
   '/_dashboard/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/_dashboard/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
+  '/_dashboard/sound-studio/$soundId': typeof DashboardSoundStudioSoundIdRoute
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
+  '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
@@ -265,6 +293,7 @@ export interface FileRouteTypes {
     | '/script-editor'
     | '/settings'
     | '/shader-workshop'
+    | '/sound-studio'
     | '/api/brp'
     | '/api/dashboard-session'
     | '/api/database'
@@ -275,7 +304,9 @@ export interface FileRouteTypes {
     | '/database/tables'
     | '/game-world/$entityGuid'
     | '/shader-workshop/$shaderId'
+    | '/sound-studio/$soundId'
     | '/api/admin/spawn-entity'
+    | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
@@ -290,6 +321,7 @@ export interface FileRouteTypes {
     | '/script-editor'
     | '/settings'
     | '/shader-workshop'
+    | '/sound-studio'
     | '/api/brp'
     | '/api/dashboard-session'
     | '/api/database'
@@ -301,7 +333,9 @@ export interface FileRouteTypes {
     | '/database/tables'
     | '/game-world/$entityGuid'
     | '/shader-workshop/$shaderId'
+    | '/sound-studio/$soundId'
     | '/api/admin/spawn-entity'
+    | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
@@ -318,6 +352,7 @@ export interface FileRouteTypes {
     | '/_dashboard/script-editor'
     | '/_dashboard/settings'
     | '/_dashboard/shader-workshop'
+    | '/_dashboard/sound-studio'
     | '/api/brp'
     | '/api/dashboard-session'
     | '/api/database'
@@ -329,7 +364,9 @@ export interface FileRouteTypes {
     | '/_dashboard/database/tables'
     | '/_dashboard/game-world/$entityGuid'
     | '/_dashboard/shader-workshop/$shaderId'
+    | '/_dashboard/sound-studio/$soundId'
     | '/api/admin/spawn-entity'
+    | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
@@ -347,6 +384,7 @@ export interface RootRouteChildren {
   ApiGraphRoute: typeof ApiGraphRoute
   ApiShadersRoute: typeof ApiShadersRouteWithChildren
   ApiAdminSpawnEntityRoute: typeof ApiAdminSpawnEntityRoute
+  ApiAudioCuesSoundIdRoute: typeof ApiAudioCuesSoundIdRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
 }
 
@@ -407,6 +445,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/brp'
       preLoaderRoute: typeof ApiBrpRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_dashboard/sound-studio': {
+      id: '/_dashboard/sound-studio'
+      path: '/sound-studio'
+      fullPath: '/sound-studio'
+      preLoaderRoute: typeof DashboardSoundStudioRouteImport
+      parentRoute: typeof DashboardRoute
     }
     '/_dashboard/shader-workshop': {
       id: '/_dashboard/shader-workshop'
@@ -478,12 +523,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDeleteEntityEntityIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/audio-cues/$soundId': {
+      id: '/api/audio-cues/$soundId'
+      path: '/api/audio-cues/$soundId'
+      fullPath: '/api/audio-cues/$soundId'
+      preLoaderRoute: typeof ApiAudioCuesSoundIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/spawn-entity': {
       id: '/api/admin/spawn-entity'
       path: '/api/admin/spawn-entity'
       fullPath: '/api/admin/spawn-entity'
       preLoaderRoute: typeof ApiAdminSpawnEntityRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_dashboard/sound-studio/$soundId': {
+      id: '/_dashboard/sound-studio/$soundId'
+      path: '/$soundId'
+      fullPath: '/sound-studio/$soundId'
+      preLoaderRoute: typeof DashboardSoundStudioSoundIdRouteImport
+      parentRoute: typeof DashboardSoundStudioRoute
     }
     '/_dashboard/shader-workshop/$shaderId': {
       id: '/_dashboard/shader-workshop/$shaderId'
@@ -579,6 +638,17 @@ const DashboardShaderWorkshopRouteWithChildren =
     DashboardShaderWorkshopRouteChildren,
   )
 
+interface DashboardSoundStudioRouteChildren {
+  DashboardSoundStudioSoundIdRoute: typeof DashboardSoundStudioSoundIdRoute
+}
+
+const DashboardSoundStudioRouteChildren: DashboardSoundStudioRouteChildren = {
+  DashboardSoundStudioSoundIdRoute: DashboardSoundStudioSoundIdRoute,
+}
+
+const DashboardSoundStudioRouteWithChildren =
+  DashboardSoundStudioRoute._addFileChildren(DashboardSoundStudioRouteChildren)
+
 interface DashboardRouteChildren {
   DashboardDatabaseRoute: typeof DashboardDatabaseRouteWithChildren
   DashboardGameClientRoute: typeof DashboardGameClientRoute
@@ -586,6 +656,7 @@ interface DashboardRouteChildren {
   DashboardScriptEditorRoute: typeof DashboardScriptEditorRoute
   DashboardSettingsRoute: typeof DashboardSettingsRoute
   DashboardShaderWorkshopRoute: typeof DashboardShaderWorkshopRouteWithChildren
+  DashboardSoundStudioRoute: typeof DashboardSoundStudioRouteWithChildren
   DashboardIndexRoute: typeof DashboardIndexRoute
 }
 
@@ -596,6 +667,7 @@ const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardScriptEditorRoute: DashboardScriptEditorRoute,
   DashboardSettingsRoute: DashboardSettingsRoute,
   DashboardShaderWorkshopRoute: DashboardShaderWorkshopRouteWithChildren,
+  DashboardSoundStudioRoute: DashboardSoundStudioRouteWithChildren,
   DashboardIndexRoute: DashboardIndexRoute,
 }
 
@@ -642,6 +714,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiGraphRoute: ApiGraphRoute,
   ApiShadersRoute: ApiShadersRouteWithChildren,
   ApiAdminSpawnEntityRoute: ApiAdminSpawnEntityRoute,
+  ApiAudioCuesSoundIdRoute: ApiAudioCuesSoundIdRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,
 }
 export const routeTree = rootRouteImport

@@ -1,7 +1,7 @@
 import * as React from 'react'
-import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
 import type { ComponentEditorProps } from './types'
+import { TheGridNumberInput } from '@/components/thegridcn/thegrid-number-input'
+import { Switch } from '@/components/ui/switch'
 
 type SizeM = {
   length: number
@@ -77,33 +77,18 @@ function LinkedDimensionField({
   return (
     <label className="space-y-1">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <Input
-        type="number"
-        value={inputValue}
+      <TheGridNumberInput
+        value={Number.parseFloat(inputValue)}
         min={MIN_SIZE_M}
         max={MAX_SIZE_M}
         step={STEP_SIZE_M}
         readOnly={readOnly}
-        onChange={(event) => {
-          const raw = event.target.value
-          setInputValue(raw)
-          const next = Number.parseFloat(raw)
-          if (Number.isFinite(next)) {
-            onCommit(next)
-          }
-        }}
-        onBlur={() => {
-          const next = Number.parseFloat(inputValue)
-          if (!Number.isFinite(next)) {
-            setInputValue(formatForInput(safeValue))
-            return
-          }
+        onChange={(next) => {
           const sanitized = clamp(roundToStep(next))
           setInputValue(formatForInput(sanitized))
           onCommit(sanitized)
         }}
-        className="w-full text-right font-mono text-sm"
-        aria-label={`${label} value`}
+        inputClassName="w-full text-right text-sm"
       />
     </label>
   )

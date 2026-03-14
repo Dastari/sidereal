@@ -1,6 +1,6 @@
 import * as React from 'react'
-import type { ComponentEditorProps } from './types'
 import { DebouncedNumberField } from './DebouncedNumberField'
+import type { ComponentEditorProps } from './types'
 
 type Hardpoint = {
   hardpoint_id: string
@@ -22,8 +22,8 @@ function finiteOr(value: unknown, fallback: number): number {
 function parseTupleN(
   value: unknown,
   expectedLength: number,
-  fallback: number[],
-): number[] {
+  fallback: Array<number>,
+): Array<number> {
   if (!Array.isArray(value)) {
     return fallback
   }

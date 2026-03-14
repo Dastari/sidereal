@@ -17,6 +17,13 @@ use sidereal_game::{
     TacticalMapUiSettings, TacticalPresentationDefaults,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
+use sidereal_ui::layout;
+use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::typography::text_font;
+use sidereal_ui::widgets::{
+    UiButtonVariant, UiInteractionState, button_surface, panel_surface, spawn_hud_corner_frame,
+    spawn_hud_frame_chrome, spawn_scanline_overlay,
+};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -318,31 +325,50 @@ pub(super) fn update_debug_overlay_text_ui_system(
         display_metrics.initialized = true;
     }
 
-    let mut row_pairs = Vec::with_capacity(snapshot.text_rows.len() + 3);
-    row_pairs.push((
+    let mut header_row_pairs = Vec::with_capacity(3);
+    header_row_pairs.push((
         "FPS".to_string(),
         display_metrics
             .sampled_fps
             .map(|value| format!("{value:.0}"))
             .unwrap_or_else(|| "--".to_string()),
     ));
-    row_pairs.push((
+    header_row_pairs.push((
         "Frame Time".to_string(),
         display_metrics
             .sampled_frame_ms
             .map(|value| format!("{value:.2} ms"))
             .unwrap_or_else(|| "--.-- ms".to_string()),
     ));
-    row_pairs.push((
+    header_row_pairs.push((
         "Sent Input".to_string(),
         format_sent_input_actions(&input_send_state.last_sent_actions),
     ));
+    let mut row_pairs = Vec::with_capacity(snapshot.text_rows.len());
     for row in &snapshot.text_rows {
         row_pairs.push((row.label.clone(), row.value.clone()));
     }
     let columns = split_debug_overlay_text_columns(&row_pairs);
-    let primary_labels_text = columns[0].labels.join("\n");
-    let primary_values_text = columns[0].values.join("\n");
+    let header_labels_text = header_row_pairs
+        .iter()
+        .map(|(label, _)| label.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let header_values_text = header_row_pairs
+        .iter()
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let primary_labels_text = if columns[0].labels.is_empty() {
+        header_labels_text.clone()
+    } else {
+        format!("{header_labels_text}\n\n{}", columns[0].labels.join("\n"))
+    };
+    let primary_values_text = if columns[0].values.is_empty() {
+        header_values_text.clone()
+    } else {
+        format!("{header_values_text}\n\n{}", columns[0].values.join("\n"))
+    };
     let secondary_labels_text = columns[1].labels.join("\n");
     let secondary_values_text = columns[1].values.join("\n");
 
@@ -1426,10 +1452,25 @@ fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
         .is_some_and(|(l, r)| l == r)
 }
 
+fn format_sector_code(x: f32, y: f32) -> String {
+    let sector_size = 1000.0;
+    let sector_x = (x / sector_size).floor() as i32;
+    let sector_y = (y / sector_size).floor() as i32;
+    let east_west = if sector_x >= 0 { 'E' } else { 'W' };
+    let north_south = if sector_y >= 0 { 'N' } else { 'S' };
+    format!(
+        "{east_west}{:02}-{north_south}{:02}",
+        sector_x.abs(),
+        sector_y.abs()
+    )
+}
+
 #[allow(clippy::type_complexity)]
 pub(super) fn update_owned_entities_panel_system(
     mut commands: Commands<'_, '_>,
     fonts: Res<'_, EmbeddedFonts>,
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     manifest_cache: Res<'_, OwnedAssetManifestCache>,
@@ -1478,6 +1519,9 @@ pub(super) fn update_owned_entities_panel_system(
     panel_state.last_entity_ids = entity_ids.clone();
     panel_state.last_selected_id = selected_id.clone();
     panel_state.last_detached_mode = player_view_state.detached_free_camera;
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    let (panel_bg, panel_border, panel_shadow) = panel_surface(theme, glow_intensity);
 
     for panel in &existing_panels {
         queue_despawn_if_exists(&mut commands, panel);
@@ -1489,16 +1533,17 @@ pub(super) fn update_owned_entities_panel_system(
                 position_type: PositionType::Absolute,
                 right: px(12),
                 top: px(12),
-                width: px(280),
-                padding: UiRect::all(px(10)),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(8),
-                ..default()
+                ..layout::panel(
+                    px(280),
+                    10.0,
+                    8.0,
+                    theme.metrics.panel_radius_px,
+                    theme.metrics.panel_border_px,
+                )
             },
-            BackgroundColor(Color::srgba(0.04, 0.07, 0.11, 0.88)),
-            BorderColor::all(Color::srgba(0.22, 0.34, 0.48, 0.92)),
+            panel_bg,
+            panel_border,
+            panel_shadow,
             OwnedEntitiesPanelRoot,
             GameplayHud,
             UiOverlayLayer,
@@ -1507,97 +1552,102 @@ pub(super) fn update_owned_entities_panel_system(
             DespawnOnExit(ClientAppState::InWorld),
         ))
         .with_children(|panel| {
+            spawn_hud_frame_chrome(
+                panel,
+                theme,
+                Some("Owned Fleet"),
+                &fonts.mono,
+                glow_intensity,
+            );
             panel.spawn((
                 Text::new("Owned Ships"),
-                TextFont {
-                    font: fonts.bold.clone(),
-                    font_size: 18.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.9, 0.95, 1.0)),
+                text_font(fonts.bold.clone(), 18.0),
+                TextColor(theme.colors.foreground_color()),
             ));
 
             let free_roam_selected = selected_id
                 .as_deref()
                 .is_some_and(|selected| ids_refer_to_same_guid(selected, local_player_entity_id))
                 && !player_view_state.detached_free_camera;
+            let free_roam_state = if free_roam_selected {
+                UiInteractionState::Selected
+            } else {
+                UiInteractionState::Idle
+            };
+            let (free_roam_bg, free_roam_border, free_roam_shadow) = button_surface(
+                theme,
+                UiButtonVariant::Secondary,
+                free_roam_state,
+                glow_intensity,
+            );
             panel
                 .spawn((
                     Button,
                     OwnedEntitiesPanelButton {
                         action: OwnedEntitiesPanelAction::FreeRoam,
                     },
-                    Node {
-                        width: percent(100.0),
-                        height: px(34),
-                        justify_content: JustifyContent::FlexStart,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(px(10), px(0)),
-                        border_radius: BorderRadius::all(px(6)),
-                        ..default()
-                    },
-                    BackgroundColor(if free_roam_selected {
-                        Color::srgba(0.26, 0.4, 0.56, 0.96)
-                    } else {
-                        Color::srgba(0.15, 0.2, 0.28, 0.92)
-                    }),
+                    layout::leading_button(
+                        percent(100.0),
+                        34.0,
+                        theme.metrics.control_radius_px,
+                        theme.metrics.control_border_px,
+                        10.0,
+                    ),
+                    free_roam_bg,
+                    free_roam_border,
+                    free_roam_shadow,
                 ))
                 .with_children(|button| {
                     button.spawn((
-                        Text::new("Free Roam"),
-                        TextFont {
-                            font: fonts.regular.clone(),
-                            font_size: 14.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.95, 0.97, 1.0)),
+                        Text::new("FREE ROAM"),
+                        text_font(fonts.mono_bold.clone(), 17.0),
+                        TextColor(theme.colors.panel_foreground_color()),
                     ));
                 });
             if owned_ship_rows.is_empty() {
                 panel.spawn((
                     Text::new("No owned entities visible"),
-                    TextFont {
-                        font: fonts.regular.clone(),
-                        font_size: 13.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgba(0.75, 0.82, 0.9, 0.9)),
+                    text_font(fonts.regular.clone(), 13.0),
+                    TextColor(theme.colors.muted_foreground_color()),
                 ));
             } else {
                 for (entity_id, display_label) in owned_ship_rows {
                     let is_selected = selected_id.as_deref().is_some_and(|selected| {
                         ids_refer_to_same_guid(selected, entity_id.as_str())
                     });
+                    let button_state = if is_selected {
+                        UiInteractionState::Selected
+                    } else {
+                        UiInteractionState::Idle
+                    };
+                    let (button_bg, button_border, button_shadow) = button_surface(
+                        theme,
+                        UiButtonVariant::Secondary,
+                        button_state,
+                        glow_intensity,
+                    );
                     panel
                         .spawn((
                             Button,
                             OwnedEntitiesPanelButton {
                                 action: OwnedEntitiesPanelAction::ControlEntity(entity_id),
                             },
-                            Node {
-                                width: percent(100.0),
-                                height: px(34),
-                                justify_content: JustifyContent::FlexStart,
-                                align_items: AlignItems::Center,
-                                padding: UiRect::axes(px(10), px(0)),
-                                border_radius: BorderRadius::all(px(6)),
-                                ..default()
-                            },
-                            BackgroundColor(if is_selected {
-                                Color::srgba(0.26, 0.4, 0.56, 0.96)
-                            } else {
-                                Color::srgba(0.15, 0.2, 0.28, 0.92)
-                            }),
+                            layout::leading_button(
+                                percent(100.0),
+                                34.0,
+                                theme.metrics.control_radius_px,
+                                theme.metrics.control_border_px,
+                                10.0,
+                            ),
+                            button_bg,
+                            button_border,
+                            button_shadow,
                         ))
                         .with_children(|button| {
                             button.spawn((
-                                Text::new(display_label),
-                                TextFont {
-                                    font: fonts.regular.clone(),
-                                    font_size: 14.0,
-                                    ..default()
-                                },
-                                TextColor(Color::srgb(0.95, 0.97, 1.0)),
+                                Text::new(display_label.to_ascii_uppercase()),
+                                text_font(fonts.mono_bold.clone(), 17.0),
+                                TextColor(theme.colors.panel_foreground_color()),
                             ));
                         });
                 }
@@ -1607,6 +1657,8 @@ pub(super) fn update_owned_entities_panel_system(
 
 #[allow(clippy::type_complexity)]
 pub(super) fn handle_owned_entities_panel_buttons(
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
     mut interactions: Query<
         '_,
         '_,
@@ -1614,6 +1666,8 @@ pub(super) fn handle_owned_entities_panel_buttons(
             &Interaction,
             &OwnedEntitiesPanelButton,
             &mut BackgroundColor,
+            &mut BorderColor,
+            &mut BoxShadow,
         ),
         Changed<Interaction>,
     >,
@@ -1622,7 +1676,9 @@ pub(super) fn handle_owned_entities_panel_buttons(
     mut control_request_state: ResMut<'_, ClientControlRequestState>,
     mut panel_state: ResMut<'_, OwnedEntitiesPanelState>,
 ) {
-    for (interaction, button, mut color) in &mut interactions {
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
+    for (interaction, button, mut color, mut border, mut shadow) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
                 match &button.action {
@@ -1656,11 +1712,13 @@ pub(super) fn handle_owned_entities_panel_buttons(
                     }
                 }
                 panel_state.last_selected_id = None;
-                *color = BackgroundColor(Color::srgba(0.26, 0.4, 0.56, 0.96));
             }
-            Interaction::Hovered => {
-                *color = BackgroundColor(Color::srgba(0.2, 0.29, 0.41, 0.96));
-            }
+            Interaction::Hovered => {}
+            Interaction::None => {}
+        }
+        let state = match *interaction {
+            Interaction::Pressed => UiInteractionState::Pressed,
+            Interaction::Hovered => UiInteractionState::Hovered,
             Interaction::None => {
                 let is_selected = match &button.action {
                     OwnedEntitiesPanelAction::FreeRoam => {
@@ -1677,13 +1735,18 @@ pub(super) fn handle_owned_entities_panel_buttons(
                         player_view_state.desired_controlled_entity_id.as_ref() == Some(entity_id)
                     }
                 };
-                *color = BackgroundColor(if is_selected {
-                    Color::srgba(0.26, 0.4, 0.56, 0.96)
+                if is_selected {
+                    UiInteractionState::Selected
                 } else {
-                    Color::srgba(0.15, 0.2, 0.28, 0.92)
-                });
+                    UiInteractionState::Idle
+                }
             }
-        }
+        };
+        let (next_bg, next_border, next_shadow) =
+            button_surface(theme, UiButtonVariant::Secondary, state, glow_intensity);
+        *color = next_bg;
+        *border = next_border;
+        *shadow = next_shadow;
     }
 }
 
@@ -1775,7 +1838,7 @@ pub(super) fn update_hud_system(
         text.0 = format!("{:.1} m/s", speed);
     }
     if let Ok(mut text) = text_queries.p1().single_mut() {
-        text.0 = format!("({:.0}, {:.0})", pos.x, pos.y);
+        text.0 = format!("SECTOR {}", format_sector_code(pos.x, pos.y));
     }
     if let Ok(mut fill) = bar_value_queries.p0().single_mut() {
         fill.ratio = health_ratio;
@@ -1830,13 +1893,25 @@ pub(super) fn sync_entity_nameplates_system(
     hud_perf.nameplate_targets_last = 0;
     hud_perf.nameplate_spawned_last = 0;
     hud_perf.nameplate_despawned_last = 0;
-    let mut existing_targets = HashMap::<Entity, Entity>::new();
+    let mut existing_targets = HashMap::<Entity, Vec<Entity>>::new();
     for (entity, root) in &existing {
-        existing_targets.insert(root.target, entity);
+        existing_targets.entry(root.target).or_default().push(entity);
         // UI nameplate roots are HUD-only entities and must not be tagged as world entities.
         // This keeps UI/world queries disjoint and avoids stale top-left plate positions.
         commands.entity(entity).remove::<WorldEntity>();
         commands.entity(entity).remove::<GameplayHud>();
+    }
+
+    for entities in existing_targets.values_mut() {
+        if entities.len() <= 1 {
+            continue;
+        }
+        entities.sort_unstable_by_key(|entity| entity.to_bits());
+        for duplicate in entities.iter().skip(1) {
+            queue_despawn_if_exists(&mut commands, *duplicate);
+            hud_perf.nameplate_despawned_last = hud_perf.nameplate_despawned_last.saturating_add(1);
+        }
+        entities.truncate(1);
     }
 
     let mut winner_entities = HashSet::<Entity>::new();
@@ -1860,6 +1935,7 @@ pub(super) fn sync_entity_nameplates_system(
         hud_perf.nameplate_spawned_last = hud_perf.nameplate_spawned_last.saturating_add(1);
         commands
             .spawn((
+                Name::new("Nameplate"),
                 Node {
                     position_type: PositionType::Absolute,
                     width: px(100),
@@ -1875,47 +1951,68 @@ pub(super) fn sync_entity_nameplates_system(
                 DespawnOnExit(ClientAppState::InWorld),
             ))
             .with_children(|plate| {
+                let health_style = SegmentedBarStyle {
+                    segments: 16,
+                    active_color: Color::srgb(0.22, 0.9, 0.34),
+                    inactive_color: Color::srgba(0.08, 0.22, 0.10, 0.85),
+                    shell_color: Color::srgba(0.05, 0.08, 0.05, 0.75),
+                    border_color: Color::srgba(0.18, 0.35, 0.18, 0.8),
+                    corner_color: Color::srgba(0.32, 0.95, 0.46, 0.72),
+                    scanline_primary_color: Color::srgba(0.2, 0.8, 0.32, 0.06),
+                    scanline_secondary_color: Color::srgba(0.16, 0.55, 0.26, 0.03),
+                    segment_width_px: 5.0,
+                    segment_gap_px: 1.0,
+                };
                 plate
                     .spawn((
+                        Name::new("NameplateHealthBar"),
                         Node {
                             // 16 segments @ 5px + 15 gaps @ 1px + 2px padding = 97px total.
                             // Fixed-width segments avoid uneven fractional flex spacing.
                             width: px(97.0),
                             height: px(8.0),
-                            column_gap: px(1.0),
+                            column_gap: px(health_style.segment_gap_px),
                             align_items: AlignItems::Stretch,
                             border: UiRect::all(px(1.0)),
                             padding: UiRect::all(px(1.0)),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.05, 0.08, 0.05, 0.75)),
-                        BorderColor::all(Color::srgba(0.18, 0.35, 0.18, 0.8)),
-                        SegmentedBarStyle {
-                            segments: 16,
-                            active_color: Color::srgb(0.22, 0.9, 0.34),
-                            inactive_color: Color::srgba(0.08, 0.22, 0.10, 0.85),
-                        },
+                        BackgroundColor(health_style.shell_color),
+                        BorderColor::all(health_style.border_color),
+                        health_style,
                         SegmentedBarValue { ratio: 1.0 },
                         EntityNameplateHealthBar { target: *entity },
                     ))
                     .with_children(|bar| {
-                        for index in 0..16u8 {
+                        spawn_scanline_overlay(
+                            bar,
+                            health_style.scanline_primary_color,
+                            health_style.scanline_secondary_color,
+                            4,
+                            1.0,
+                        );
+                        for index in 0..health_style.segments {
                             bar.spawn((
                                 Node {
-                                    width: px(5.0),
+                                    width: px(health_style.segment_width_px),
                                     height: percent(100.0),
                                     ..default()
                                 },
-                                BackgroundColor(Color::srgba(0.15, 0.2, 0.28, 0.85)),
+                                BackgroundColor(health_style.inactive_color),
                                 SegmentedBarSegment { index },
                             ));
                         }
+                        spawn_hud_corner_frame(bar, health_style.corner_color, 3.0, 1.0);
                     });
             });
     }
 
     for (nameplate_entity, root) in &existing {
-        if !winner_entities.contains(&root.target) {
+        if !winner_entities.contains(&root.target)
+            || existing_targets
+                .get(&root.target)
+                .is_some_and(|entities| entities.first().copied() != Some(nameplate_entity))
+        {
             queue_despawn_if_exists(&mut commands, nameplate_entity);
             hud_perf.nameplate_despawned_last = hud_perf.nameplate_despawned_last.saturating_add(1);
         }
@@ -1944,7 +2041,6 @@ pub(super) fn update_entity_nameplate_positions_system(
             Entity,
             &GlobalTransform,
             Option<&Visibility>,
-            Option<&ViewVisibility>,
             Option<&SizeM>,
             Option<&HealthPool>,
         ),
@@ -1953,15 +2049,20 @@ pub(super) fn update_entity_nameplate_positions_system(
             Without<SuppressedPredictedDuplicateVisual>,
         ),
     >,
-    gameplay_camera: Query<'_, '_, (&Camera, &Transform), With<GameplayCamera>>,
+    gameplay_camera: Query<'_, '_, (Entity, &Camera, &Transform), With<GameplayCamera>>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let started_at = Instant::now();
     hud_perf.nameplate_position_runs = hud_perf.nameplate_position_runs.saturating_add(1);
+    hud_perf.nameplate_camera_candidates_last = 0;
+    hud_perf.nameplate_camera_active_last = 0;
     hud_perf.nameplate_entity_data_last = 0;
     hud_perf.nameplate_visible_last = 0;
     hud_perf.nameplate_hidden_last = 0;
     hud_perf.nameplate_health_updates_last = 0;
+    hud_perf.nameplate_missing_target_last = 0;
+    hud_perf.nameplate_projection_failures_last = 0;
+    hud_perf.nameplate_viewport_culled_last = 0;
     if !nameplate_state.enabled {
         for (_, _, mut visibility) in &mut roots {
             *visibility = Visibility::Hidden;
@@ -1973,7 +2074,26 @@ pub(super) fn update_entity_nameplate_positions_system(
         return;
     }
 
-    let Ok((camera, camera_transform)) = gameplay_camera.single() else {
+    let mut selected_camera: Option<(Entity, bool, &Camera, &Transform)> = None;
+    for (entity, camera, transform) in &gameplay_camera {
+        hud_perf.nameplate_camera_candidates_last =
+            hud_perf.nameplate_camera_candidates_last.saturating_add(1);
+        if camera.is_active {
+            hud_perf.nameplate_camera_active_last =
+                hud_perf.nameplate_camera_active_last.saturating_add(1);
+        }
+        let candidate = (entity, camera.is_active, camera, transform);
+        if selected_camera.is_none_or(|(current_entity, current_active, _, _)| {
+            if camera.is_active != current_active {
+                return camera.is_active;
+            }
+            entity.to_bits() < current_entity.to_bits()
+        }) {
+            selected_camera = Some(candidate);
+        }
+    }
+    let Some((_camera_entity, _camera_is_active, camera, camera_transform)) = selected_camera
+    else {
         let elapsed_ms = elapsed_ms(started_at);
         hud_perf.nameplate_position_last_ms = elapsed_ms;
         hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
@@ -1991,18 +2111,17 @@ pub(super) fn update_entity_nameplate_positions_system(
     };
 
     let mut entity_data_by_entity = HashMap::<Entity, (Vec3, f32, f32)>::new();
-    for (entity, global_transform, visibility, view_visibility, size_m, health_pool) in
-        &world_entities
-    {
+    for (entity, global_transform, visibility, size_m, health_pool) in &world_entities {
         let Some(health_pool) = health_pool else {
             continue;
         };
         if visibility.is_some_and(|visibility| *visibility == Visibility::Hidden) {
             continue;
         }
-        if view_visibility.is_some_and(|view_visibility| !view_visibility.get()) {
-            continue;
-        }
+        // Root-level `ViewVisibility` is not reliable for nameplates because many runtime visuals
+        // are attached as renderable children while the authoritative world root only carries the
+        // gameplay transform/components. The viewport projection and explicit bounds checks below
+        // are the nameplate system's canonical visibility test.
         let health_ratio = if health_pool.maximum > 0.0 {
             (health_pool.current / health_pool.maximum).clamp(0.0, 1.0)
         } else {
@@ -2025,18 +2144,26 @@ pub(super) fn update_entity_nameplate_positions_system(
         else {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
+            hud_perf.nameplate_missing_target_last =
+                hud_perf.nameplate_missing_target_last.saturating_add(1);
             continue;
         };
         let center_world = Vec3::new(world_pos.x, world_pos.y, 0.0);
         let Ok(viewport_pos) = camera.world_to_viewport(&camera_global, center_world) else {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
+            hud_perf.nameplate_projection_failures_last = hud_perf
+                .nameplate_projection_failures_last
+                .saturating_add(1);
             continue;
         };
         let top_world = Vec3::new(world_pos.x, world_pos.y + *half_extent_world, 0.0);
         let Ok(top_viewport_pos) = camera.world_to_viewport(&camera_global, top_world) else {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
+            hud_perf.nameplate_projection_failures_last = hud_perf
+                .nameplate_projection_failures_last
+                .saturating_add(1);
             continue;
         };
         // Hide plate once the entity itself is fully outside viewport bounds.
@@ -2044,6 +2171,10 @@ pub(super) fn update_entity_nameplate_positions_system(
         let right_world = Vec3::new(world_pos.x + *half_extent_world, world_pos.y, 0.0);
         let Ok(right_viewport_pos) = camera.world_to_viewport(&camera_global, right_world) else {
             *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
+            hud_perf.nameplate_projection_failures_last = hud_perf
+                .nameplate_projection_failures_last
+                .saturating_add(1);
             continue;
         };
         let extent_px_x = (right_viewport_pos.x - viewport_pos.x).abs().max(1.0);
@@ -2055,6 +2186,8 @@ pub(super) fn update_entity_nameplate_positions_system(
         {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
+            hud_perf.nameplate_viewport_culled_last =
+                hud_perf.nameplate_viewport_culled_last.saturating_add(1);
             continue;
         }
         let plate_width = 100.0;
@@ -2085,21 +2218,24 @@ pub(super) fn update_entity_nameplate_positions_system(
 mod tests {
     use super::{
         propagate_ui_overlay_layer_system, split_debug_overlay_text_columns,
-        update_debug_overlay_text_ui_system,
+        sync_entity_nameplates_system, update_debug_overlay_text_ui_system,
     };
     use crate::runtime::components::{
         DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
         DebugOverlayPanelSecondaryLabelShadowText, DebugOverlayPanelSecondaryLabelText,
         DebugOverlayPanelSecondaryValueShadowText, DebugOverlayPanelSecondaryValueText,
-        DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, UiOverlayLayer,
+        DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, EntityNameplateRoot,
+        UiOverlayLayer, WorldEntity,
     };
     use crate::runtime::platform::UI_OVERLAY_RENDER_LAYER;
     use crate::runtime::resources::{
-        ClientInputSendState, DebugOverlaySnapshot, DebugOverlayState, NameplateUiState,
+        ClientInputSendState, DebugOverlaySnapshot, DebugOverlayState,
+        DuplicateVisualResolutionState, HudPerfCounters, NameplateUiState,
     };
     use bevy::camera::visibility::RenderLayers;
     use bevy::diagnostic::DiagnosticsStore;
     use bevy::prelude::*;
+    use sidereal_game::{EntityAction, EntityGuid, HealthPool};
 
     #[test]
     fn ui_overlay_layer_propagates_to_new_children_only_when_needed() {
@@ -2180,7 +2316,184 @@ mod tests {
     }
 
     #[test]
+    fn debug_overlay_sent_input_stays_in_primary_header_block() {
+        let mut app = App::new();
+        app.init_resource::<Time>();
+        app.init_resource::<DiagnosticsStore>();
+        app.insert_resource(DebugOverlayState {
+            enabled: true,
+            ..Default::default()
+        });
+        app.insert_resource(DebugOverlaySnapshot {
+            text_rows: vec![
+                super::super::resources::DebugTextRow {
+                    label: "Predicted".to_string(),
+                    value: "1".to_string(),
+                    severity: super::super::resources::DebugSeverity::Normal,
+                },
+                super::super::resources::DebugTextRow {
+                    label: "Confirmed".to_string(),
+                    value: "2".to_string(),
+                    severity: super::super::resources::DebugSeverity::Normal,
+                },
+                super::super::resources::DebugTextRow {
+                    label: "Interpolated".to_string(),
+                    value: "3".to_string(),
+                    severity: super::super::resources::DebugSeverity::Normal,
+                },
+                super::super::resources::DebugTextRow {
+                    label: "Cameras".to_string(),
+                    value: "7".to_string(),
+                    severity: super::super::resources::DebugSeverity::Normal,
+                },
+            ],
+            ..Default::default()
+        });
+        app.insert_resource(ClientInputSendState {
+            last_sent_actions: vec![
+                EntityAction::Left,
+                EntityAction::LongitudinalNeutral,
+                EntityAction::AfterburnerOff,
+            ],
+            ..Default::default()
+        });
+        app.add_systems(Update, update_debug_overlay_text_ui_system);
+
+        app.world_mut()
+            .spawn((DebugOverlayPanelRoot, Visibility::Hidden));
+        app.world_mut()
+            .spawn((DebugOverlayPanelLabelText, Text::new("")));
+        app.world_mut()
+            .spawn((DebugOverlayPanelLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelValueText,
+            Text::new(""),
+            TextColor(Color::WHITE),
+        ));
+        app.world_mut()
+            .spawn((DebugOverlayPanelValueShadowText, Text::new("")));
+        app.world_mut()
+            .spawn((DebugOverlayPanelSecondaryLabelText, Text::new("")));
+        app.world_mut()
+            .spawn((DebugOverlayPanelSecondaryLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryValueText,
+            Text::new(""),
+            TextColor(Color::WHITE),
+        ));
+        app.world_mut()
+            .spawn((DebugOverlayPanelSecondaryValueShadowText, Text::new("")));
+
+        app.update();
+
+        let primary_labels_value = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<&Text, With<DebugOverlayPanelLabelText>>()
+                .single(world)
+                .expect("primary labels")
+                .0
+                .clone()
+        };
+        let secondary_labels_value = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<&Text, With<DebugOverlayPanelSecondaryLabelText>>()
+                .single(world)
+                .expect("secondary labels")
+                .0
+                .clone()
+        };
+
+        assert!(primary_labels_value.contains("Sent Input"));
+        assert!(!secondary_labels_value.contains("Sent Input"));
+    }
+
+    #[test]
     fn nameplates_default_to_enabled() {
         assert!(NameplateUiState::default().enabled);
+    }
+
+    #[test]
+    fn sync_entity_nameplates_system_names_spawned_roots() {
+        let mut app = App::new();
+        app.init_resource::<HudPerfCounters>();
+        app.init_resource::<DuplicateVisualResolutionState>();
+        app.add_systems(Update, sync_entity_nameplates_system);
+
+        let guid = uuid::Uuid::new_v4();
+        let target = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                HealthPool {
+                    current: 10.0,
+                    maximum: 10.0,
+                },
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<DuplicateVisualResolutionState>()
+            .winner_by_guid
+            .insert(guid, target);
+
+        app.update();
+
+        let mut query = app
+            .world_mut()
+            .query_filtered::<(&Name, &EntityNameplateRoot), Without<WorldEntity>>();
+        let (name, _) = query.single(app.world()).expect("spawned nameplate root");
+        assert_eq!(name.as_str(), "Nameplate");
+    }
+
+    #[test]
+    fn sync_entity_nameplates_system_despawns_duplicate_roots_for_same_target() {
+        let mut app = App::new();
+        app.init_resource::<HudPerfCounters>();
+        app.init_resource::<DuplicateVisualResolutionState>();
+        app.add_systems(Update, sync_entity_nameplates_system);
+
+        let guid = uuid::Uuid::new_v4();
+        let target = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                HealthPool {
+                    current: 10.0,
+                    maximum: 10.0,
+                },
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<DuplicateVisualResolutionState>()
+            .winner_by_guid
+            .insert(guid, target);
+
+        let first = app
+            .world_mut()
+            .spawn((Name::new("Nameplate"), EntityNameplateRoot { target }))
+            .id();
+        let second = app
+            .world_mut()
+            .spawn((Name::new("Nameplate"), EntityNameplateRoot { target }))
+            .id();
+
+        app.update();
+        app.update();
+
+        let mut query = app.world_mut().query::<(Entity, &EntityNameplateRoot)>();
+        let remaining = query
+            .iter(app.world())
+            .filter(|(_, root)| root.target == target)
+            .map(|(entity, _)| entity)
+            .collect::<Vec<_>>();
+
+        assert_eq!(remaining.len(), 1, "only one nameplate root should remain");
+        assert!(
+            remaining[0] == first || remaining[0] == second,
+            "one of the original duplicate roots should survive"
+        );
     }
 }

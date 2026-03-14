@@ -94,9 +94,8 @@ export function DashboardAdminAccess() {
         ) : null}
         {authenticated ? (
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
-            className="border-0! shadow-none! bg-transparent!"
             disabled={pending}
             onClick={() => void handleLogout()}
           >
