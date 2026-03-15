@@ -8,7 +8,7 @@ use sidereal_asset_runtime::AssetCacheIndex;
 use sidereal_core::gateway_dtos::{
     AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
     EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
-    PasswordResetRequest, PasswordResetResponse, RegisterRequest,
+    PasswordResetRequest, PasswordResetResponse, RegisterRequest, StartupAssetManifestResponse,
 };
 use sidereal_game::EntityAction;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -36,8 +36,10 @@ pub(crate) struct GatewayHttpAdapter {
     pub fetch_me: fn(String, String) -> GatewayFuture<MeResponse>,
     pub fetch_characters: fn(String, String) -> GatewayFuture<CharactersResponse>,
     pub enter_world: fn(String, String, EnterWorldRequest) -> GatewayFuture<EnterWorldResponse>,
+    pub fetch_startup_manifest: fn(String) -> GatewayFuture<StartupAssetManifestResponse>,
     pub fetch_bootstrap_manifest:
         fn(String, String) -> GatewayFuture<AssetBootstrapManifestResponse>,
+    pub fetch_public_asset_bytes: fn(String) -> GatewayFuture<Vec<u8>>,
     pub fetch_asset_bytes: fn(String, String) -> GatewayFuture<Vec<u8>>,
 }
 
@@ -120,9 +122,11 @@ pub(crate) struct TacticalFogCache {
     pub sequence: u64,
     pub generated_at_tick: u64,
     pub last_sequence_mismatch_log_at_s: f64,
+    pub revision: u64,
     pub cell_size_m: f32,
     pub explored_cells: Vec<sidereal_net::GridCell>,
     pub live_cells: Vec<sidereal_net::GridCell>,
+    pub revealed_cells: HashSet<sidereal_net::GridCell>,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -131,6 +135,7 @@ pub(crate) struct TacticalContactsCache {
     pub sequence: u64,
     pub generated_at_tick: u64,
     pub last_sequence_mismatch_log_at_s: f64,
+    pub revision: u64,
     pub contacts_by_entity_id: HashMap<String, sidereal_net::TacticalContact>,
 }
 
@@ -245,6 +250,22 @@ pub(crate) struct DebugControlledLane {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DebugOverlayStats {
+    pub window_focused: bool,
+    pub focus_transitions: u64,
+    pub last_focus_change_age_s: f64,
+    pub observed_unfocused_duration_s: f64,
+    pub observed_unfocused_frames: u64,
+    pub last_update_delta_ms: f64,
+    pub max_update_delta_ms: f64,
+    pub last_stall_gap_ms: f64,
+    pub last_stall_gap_estimated_ticks: u32,
+    pub max_stall_gap_ms: f64,
+    pub max_stall_gap_estimated_ticks: u32,
+    pub fixed_runs_last_frame: u32,
+    pub fixed_runs_max_frame: u32,
+    pub fixed_overstep_ms: f64,
+    pub rollback_budget_ticks: u16,
+    pub rollback_budget_ms: f64,
     pub predicted_count: usize,
     pub confirmed_count: usize,
     pub interpolated_count: usize,
@@ -308,6 +329,9 @@ pub(crate) struct DebugOverlayStats {
 pub(crate) struct DebugTextRow {
     pub label: String,
     pub value: String,
+    // Severity is kept in the snapshot so future per-row styling can use it without
+    // re-deriving diagnostic state from the rendered text.
+    #[allow(dead_code)]
     pub severity: DebugSeverity,
 }
 
@@ -371,6 +395,26 @@ pub(crate) struct DebugOverlayDisplayMetrics {
     pub initialized: bool,
 }
 
+#[derive(Debug, Resource, Default)]
+pub(crate) struct RuntimeStallDiagnostics {
+    pub window_focused: bool,
+    pub focus_initialized: bool,
+    pub focus_transitions: u64,
+    pub last_focus_change_at_s: f64,
+    pub observed_unfocused_duration_s: f64,
+    pub observed_unfocused_frames: u64,
+    pub last_update_delta_ms: f64,
+    pub max_update_delta_ms: f64,
+    pub last_stall_gap_ms: f64,
+    pub last_stall_gap_estimated_ticks: u32,
+    pub max_stall_gap_ms: f64,
+    pub max_stall_gap_estimated_ticks: u32,
+    pub fixed_runs_current_frame: u32,
+    pub fixed_runs_last_frame: u32,
+    pub fixed_runs_max_frame: u32,
+    pub fixed_overstep_ms: f64,
+}
+
 #[derive(Debug, Resource)]
 pub(crate) struct NameplateUiState {
     pub enabled: bool,
@@ -380,6 +424,19 @@ impl Default for NameplateUiState {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NameplateRegistryEntry {
+    pub root: Entity,
+    pub health_fill: Entity,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct NameplateRegistry {
+    pub active_by_target: HashMap<Entity, NameplateRegistryEntry>,
+    pub free_entries: Vec<NameplateRegistryEntry>,
+    pub allocated_entries: usize,
 }
 
 #[derive(Debug, Resource, Default)]

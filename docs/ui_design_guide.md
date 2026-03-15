@@ -20,6 +20,7 @@ Update note (2026-03-14):
 - Keep the active semantic theme palette, but prefer square geometry, attached uppercase frame labels, and corner brackets over rounded card shells.
 - Nested composition and basic flex/grid layout should continue to use native Bevy UI through `sidereal-ui::layout`.
 - HUD frames should include subtle scanline overlays inspired by thegridcn.
+- 2026-03-15: scanline overlays should be texture/shader-backed (single tiled image overlay), not generated as per-line child node stacks.
 - Energy meters / segmented power bars should use the same scanline background treatment and corner chrome language as HUD frames.
 - Buttons and inputs should use `Rajdhani` by default; `Geist Mono` remains for telemetry/frame labels where appropriate.
 - Glow should be driven by one shared runtime scalar, `UiVisualSettings.glow_intensity`, where `0.0` disables glow and higher values increase emitted UI bloom.

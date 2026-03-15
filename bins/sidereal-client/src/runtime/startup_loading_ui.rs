@@ -1,4 +1,4 @@
-//! Dedicated pre-world asset loading screen.
+//! Dedicated pre-auth startup asset loading screen.
 
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
@@ -12,18 +12,18 @@ use super::assets::LocalAssetManager;
 use super::resources::EmbeddedFonts;
 
 #[derive(Component)]
-pub(super) struct AssetLoadingRoot;
+pub(super) struct StartupLoadingRoot;
 
 #[derive(Component)]
-pub(super) struct AssetLoadingText;
+pub(super) struct StartupLoadingText;
 
 #[derive(Component)]
-pub(super) struct AssetLoadingStatusText;
+pub(super) struct StartupLoadingStatusText;
 
 #[derive(Component)]
-pub(super) struct AssetLoadingBarFill;
+pub(super) struct StartupLoadingBarFill;
 
-pub(super) fn setup_asset_loading_screen(
+pub(super) fn setup_startup_loading_screen(
     mut commands: Commands<'_, '_>,
     mut images: ResMut<'_, Assets<Image>>,
     fonts: Res<'_, EmbeddedFonts>,
@@ -37,14 +37,14 @@ pub(super) fn setup_asset_loading_screen(
         .spawn((
             layout::fullscreen_centered_root(),
             BackgroundColor(theme.colors.background_color()),
-            AssetLoadingRoot,
-            DespawnOnExit(ClientAppState::AssetLoading),
+            StartupLoadingRoot,
+            DespawnOnExit(ClientAppState::StartupLoading),
         ))
         .with_children(|root| {
             root.spawn((
                 Node {
                     ..layout::panel(
-                        Val::Px(520.0),
+                        Val::Px(540.0),
                         theme.metrics.panel_padding_px,
                         12.0,
                         theme.metrics.panel_radius_px,
@@ -60,21 +60,21 @@ pub(super) fn setup_asset_loading_screen(
                     panel,
                     &mut images,
                     theme,
-                    Some("Asset Bootstrap"),
+                    Some("Startup Preload"),
                     &fonts.mono,
                     glow_intensity,
                 );
 
                 panel.spawn((
-                    Text::new("Preparing Assets"),
+                    Text::new("Preparing Startup Assets"),
                     text_font(fonts.display.clone(), 34.0),
                     TextColor(theme.colors.foreground_color()),
                 ));
                 panel.spawn((
-                    Text::new("Waiting for bootstrap manifest..."),
+                    Text::new("Waiting for startup manifest..."),
                     text_font(fonts.regular.clone(), 18.0),
                     TextColor(theme.colors.muted_foreground_color()),
-                    AssetLoadingText,
+                    StartupLoadingText,
                 ));
                 panel
                     .spawn((
@@ -95,34 +95,34 @@ pub(super) fn setup_asset_loading_screen(
                                 ..default()
                             },
                             BackgroundColor(theme.colors.primary_color()),
-                            AssetLoadingBarFill,
+                            StartupLoadingBarFill,
                         ));
                     });
                 panel.spawn((
                     Text::new(""),
                     text_font(fonts.mono.clone(), 14.0),
                     TextColor(theme.colors.muted_foreground_color()),
-                    AssetLoadingStatusText,
+                    StartupLoadingStatusText,
                 ));
             });
         });
 }
 
-pub(super) fn update_asset_loading_screen(
+pub(super) fn update_startup_loading_screen(
     asset_manager: Res<'_, LocalAssetManager>,
     session: Res<'_, ClientSession>,
     mut loading_text_query: Query<
         '_,
         '_,
         &'_ mut Text,
-        (With<AssetLoadingText>, Without<AssetLoadingStatusText>),
+        (With<StartupLoadingText>, Without<StartupLoadingStatusText>),
     >,
-    mut bar_query: Query<'_, '_, &'_ mut Node, With<AssetLoadingBarFill>>,
+    mut bar_query: Query<'_, '_, &'_ mut Node, With<StartupLoadingBarFill>>,
     mut status_query: Query<
         '_,
         '_,
         &'_ mut Text,
-        (With<AssetLoadingStatusText>, Without<AssetLoadingText>),
+        (With<StartupLoadingStatusText>, Without<StartupLoadingText>),
     >,
 ) {
     let Ok(mut loading_text) = loading_text_query.single_mut() else {
@@ -134,14 +134,15 @@ pub(super) fn update_asset_loading_screen(
     let Ok(mut status_text) = status_query.single_mut() else {
         return;
     };
-    let pct = (asset_manager.bootstrap_progress() * 100.0)
+
+    let pct = (asset_manager.startup_progress() * 100.0)
         .round()
         .clamp(0.0, 100.0);
     bar_node.width = Val::Percent(pct);
-    loading_text.0 = if asset_manager.bootstrap_manifest_seen {
-        format!("Loading required assets... {}%", pct as i32)
+    loading_text.0 = if asset_manager.startup_manifest_seen {
+        format!("Loading startup-required assets... {}%", pct as i32)
     } else {
-        "Waiting for bootstrap manifest...".to_string()
+        "Waiting for startup manifest...".to_string()
     };
     status_text.0 = session.status.clone();
 }

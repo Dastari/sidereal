@@ -109,6 +109,15 @@ pub struct AssetBootstrapManifestResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartupAssetManifestResponse {
+    pub catalog_version: String,
+    pub audio_catalog_version: String,
+    pub required_assets: Vec<AssetBootstrapManifestEntry>,
+    pub catalog: Vec<AssetBootstrapManifestEntry>,
+    pub audio_catalog: AudioRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminSpawnEntityRequest {
     pub player_entity_id: String,
     pub bundle_id: String,

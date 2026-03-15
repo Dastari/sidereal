@@ -16,8 +16,7 @@ pub mod tactical;
 pub mod visibility;
 
 pub use simulation_entities::{
-    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
-    SimulatedControlledEntity,
+    PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity,
 };
 
 use std::sync::OnceLock;

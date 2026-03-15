@@ -30,6 +30,16 @@ fn sort_dedup_cells(cells: &mut Vec<sidereal_net::GridCell>) {
     cells.dedup();
 }
 
+fn refresh_revealed_cells(cache: &mut TacticalFogCache) {
+    cache.revealed_cells.clear();
+    cache
+        .revealed_cells
+        .extend(cache.explored_cells.iter().copied());
+    cache
+        .revealed_cells
+        .extend(cache.live_cells.iter().copied());
+}
+
 fn apply_tactical_fog_snapshot(
     cache: &mut TacticalFogCache,
     local_player_id: &str,
@@ -45,6 +55,8 @@ fn apply_tactical_fog_snapshot(
     cache.live_cells = message.live_cells.clone();
     sort_dedup_cells(&mut cache.explored_cells);
     sort_dedup_cells(&mut cache.live_cells);
+    refresh_revealed_cells(cache);
+    cache.revision = cache.revision.saturating_add(1);
 }
 
 fn apply_tactical_fog_delta(
@@ -91,8 +103,10 @@ fn apply_tactical_fog_delta(
     cache.live_cells = live.into_iter().collect();
     sort_dedup_cells(&mut cache.explored_cells);
     sort_dedup_cells(&mut cache.live_cells);
+    refresh_revealed_cells(cache);
     cache.sequence = message.sequence;
     cache.generated_at_tick = message.generated_at_tick;
+    cache.revision = cache.revision.saturating_add(1);
     false
 }
 
@@ -112,6 +126,7 @@ fn apply_tactical_contacts_snapshot(
             .contacts_by_entity_id
             .insert(contact.entity_id.clone(), contact.clone());
     }
+    cache.revision = cache.revision.saturating_add(1);
 }
 
 fn apply_tactical_contacts_delta(
@@ -146,6 +161,7 @@ fn apply_tactical_contacts_delta(
     }
     cache.sequence = message.sequence;
     cache.generated_at_tick = message.generated_at_tick;
+    cache.revision = cache.revision.saturating_add(1);
     false
 }
 
@@ -340,6 +356,8 @@ mod tests {
         assert!(cache.explored_cells.contains(&GridCell { x: 3, y: 3 }));
         assert!(cache.live_cells.contains(&GridCell { x: 3, y: 3 }));
         assert!(!cache.live_cells.contains(&GridCell { x: 1, y: 1 }));
+        assert!(cache.revealed_cells.contains(&GridCell { x: 3, y: 3 }));
+        assert_eq!(cache.revision, 2);
     }
 
     #[test]
@@ -411,5 +429,6 @@ mod tests {
         );
         assert!(cache.contacts_by_entity_id.contains_key("c"));
         assert!(!cache.contacts_by_entity_id.contains_key("b"));
+        assert_eq!(cache.revision, 2);
     }
 }

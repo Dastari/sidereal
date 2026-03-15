@@ -49,6 +49,29 @@ fn resolve_confirmed_planar_pose(
     Some((planar_position, heading))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn interpolated_presentation_ready(
+    position: Option<&Position>,
+    rotation: Option<&Rotation>,
+    world_position: Option<&WorldPosition>,
+    world_rotation: Option<&WorldRotation>,
+    confirmed_position: Option<&Confirmed<Position>>,
+    confirmed_rotation: Option<&Confirmed<Rotation>>,
+    position_history: Option<&ConfirmedHistory<Position>>,
+    rotation_history: Option<&ConfirmedHistory<Rotation>>,
+) -> bool {
+    let history_ready = position_history.and_then(|history| history.end()).is_some()
+        && rotation_history.and_then(|history| history.end()).is_some();
+    let is_static_world_spatial = position.is_none()
+        && rotation.is_none()
+        && (world_position.is_some() || world_rotation.is_some());
+    history_ready
+        || resolve_confirmed_planar_pose(confirmed_position, confirmed_rotation).is_some()
+        || (is_static_world_spatial
+            && resolve_current_planar_pose(position, rotation, world_position, world_rotation)
+                .is_some())
+}
+
 /// Fallback sync for Confirmed-only world entities.
 ///
 /// Predicted/Interpolated entities are synced by LightyearAvian when
@@ -370,25 +393,40 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
                 ready = true;
             }
         } else if is_interpolated {
-            let history_ready = position_history.and_then(|h| h.end()).is_some()
-                && rotation_history.and_then(|h| h.end()).is_some();
-            if history_ready {
+            if interpolated_presentation_ready(
+                position,
+                rotation,
+                world_position,
+                world_rotation,
+                confirmed_position,
+                confirmed_rotation,
+                position_history,
+                rotation_history,
+            ) {
                 ready = true;
-            } else if let Some((planar_position, heading)) =
-                resolve_current_planar_pose(position, rotation, world_position, world_rotation)
-            {
-                // Interpolated observers can legitimately arrive with one good sampled pose before
-                // they have a second history sample. Keeping them hidden until the source moves
-                // again is what caused "ship is invisible until it moves" on fresh observers.
-                source_position = Some(planar_position);
-                source_heading = Some(heading);
-                ready = true;
+                if let Some((planar_position, heading)) =
+                    resolve_confirmed_planar_pose(confirmed_position, confirmed_rotation)
+                {
+                    source_position = Some(planar_position);
+                    source_heading = Some(heading);
+                } else if position.is_none()
+                    && rotation.is_none()
+                    && (world_position.is_some() || world_rotation.is_some())
+                    && let Some((planar_position, heading)) = resolve_current_planar_pose(
+                        position,
+                        rotation,
+                        world_position,
+                        world_rotation,
+                    )
+                {
+                    source_position = Some(planar_position);
+                    source_heading = Some(heading);
+                }
             } else if let Some((planar_position, heading)) =
                 resolve_confirmed_planar_pose(confirmed_position, confirmed_rotation)
             {
                 source_position = Some(planar_position);
                 source_heading = Some(heading);
-                ready = true;
             }
         } else if let (Some(planar_position), Some(heading)) = (
             resolve_world_position(position, world_position),
@@ -419,5 +457,61 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
                 elapsed_s: 0.0,
                 duration_s: 0.16,
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        interpolated_presentation_ready, reveal_world_entities_when_initial_transform_ready,
+    };
+    use crate::runtime::components::{PendingInitialVisualReady, WorldEntity};
+    use avian2d::prelude::{Position, Rotation};
+    use bevy::prelude::*;
+    use lightyear::prelude::Interpolated;
+
+    #[test]
+    fn interpolated_presentation_ready_rejects_dynamic_current_pose_without_confirmed_or_history() {
+        assert!(!interpolated_presentation_ready(
+            Some(&Position(Vec2::ZERO)),
+            Some(&Rotation::IDENTITY),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn reveal_keeps_dynamic_interpolated_entity_hidden_without_authoritative_pose() {
+        let mut app = App::new();
+        app.add_systems(Update, reveal_world_entities_when_initial_transform_ready);
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                PendingInitialVisualReady,
+                Interpolated,
+                Position(Vec2::ZERO),
+                Rotation::IDENTITY,
+                Transform::default(),
+                Visibility::Visible,
+            ))
+            .id();
+
+        app.update();
+
+        let entity_ref = app.world().entity(entity);
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Hidden
+        );
+        assert!(
+            entity_ref.contains::<PendingInitialVisualReady>(),
+            "entity should remain pending until it has confirmed pose or interpolation history"
+        );
     }
 }

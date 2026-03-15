@@ -32,6 +32,8 @@ mod resources;
 mod scene;
 mod scene_world;
 mod shaders;
+mod startup_assets;
+mod startup_loading_ui;
 mod tactical;
 mod transforms;
 mod transport;

@@ -19,6 +19,7 @@ export interface WorldEntity {
   shardId: number
   x: number
   y: number
+  rotationRad?: number
   vx: number
   vy: number
   sampledAtMs: number
@@ -47,6 +48,7 @@ export interface ExpandedNode {
   parentId: string | null
   x: number
   y: number
+  rotationRad?: number
   label: string
   kind: string
   isExpanded: boolean

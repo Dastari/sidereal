@@ -16,6 +16,14 @@ Update note (2026-03-14):
 - The replacement must be client-visibility-scoped, disclosure-aware, and robust under duplicate-winner churn, partial replication, and target data loss.
 - This is intentionally written as a feature-plan scaffold with explicit placeholders so later implementation details can be added without replacing the core contract.
 
+Update note (2026-03-14, implementation follow-up):
+- The client runtime now uses pooled lightweight nameplate entries instead of rebuilding the previous segmented-bar subtree per target during steady-state play.
+- Nameplate eligibility now keys off canonical presentation winners emitted by duplicate-visual suppression, which removes one local winner-reconstruction pass from the HUD path.
+- Tactical map overlay updates now cache fog revisions and revealed-cell membership so the fog mask is not regenerated every frame when neither fog state nor map view parameters changed.
+- Tactical contact smoothing now only rebuilds membership/target state when contact cache revisions change; steady-state interpolation no longer rebuilds the contact membership set every frame.
+- Native impact: lower steady-state HUD/overlay CPU cost, less UI entity churn, and cleaner winner-driven presentation ownership for in-world overlays.
+- WASM impact: no platform-specific divergence was introduced; the same shared client runtime logic now drives native and WASM behavior.
+
 ## 1. Purpose
 
 Replace the current nameplate implementation with a bounded, disclosure-aware client presentation system that:

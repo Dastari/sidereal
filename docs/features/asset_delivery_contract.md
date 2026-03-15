@@ -1,7 +1,7 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract
-Last updated: March 14, 2026
+Last updated: March 15, 2026
 Primary architecture reference: `docs/sidereal_design_document.md`
 Related contract: `docs/features/scripting_support.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
@@ -15,7 +15,7 @@ Core outcomes:
 
 1. Asset definitions (IDs, classes, dependencies, preload policy) are authored in Lua, not Rust.
 2. Server builds authoritative asset metadata/checksums from the Lua registry.
-3. Client enters a dedicated `AssetLoading` state before `InWorld` and validates/downloads required assets.
+3. Client enters a dedicated `StartupLoading` state before `Auth` and a dedicated `AssetLoading` state before `InWorld`, validating/downloading the required asset sets for each lifecycle stage.
 4. Asset payloads are fetched through authenticated gateway HTTP route `/assets/<asset_guid>`.
 5. Runtime cache is checksum-verified and reused across sessions.
 
@@ -92,13 +92,18 @@ Rules:
 3. Published `relative_cache_path` values are generated runtime metadata and must not reveal authoring/source-tree layout.
 4. `dependencies` are logical `asset_id` references.
 5. `bootstrap_required = true` marks assets that must be present before `InWorld`.
-6. `startup_required = true` marks assets intended for a future pre-auth/startup preload lane. It is distinct from `bootstrap_required`.
+6. `startup_required = true` marks assets that must be present before pre-auth/startup UI features may rely on them. It is distinct from `bootstrap_required`.
 7. All fields are validated by Rust loader/schema checks; invalid registry blocks activation.
 
 2026-03-14 update:
 1. The Lua asset registry and generated runtime catalog now carry `startup_required` as a first-class policy bit.
 2. `startup_required` is authorable today and intended for pre-auth/login-screen content such as menu music.
-3. The current authenticated `/assets/bootstrap-manifest` flow still enforces only `bootstrap_required`; `startup_required` is reserved for a separate startup manifest/bootstrap path and must not be treated as already active behavior.
+
+2026-03-15 implementation update:
+1. Gateway now exposes a public startup manifest route at `GET /startup-assets/manifest`.
+2. Gateway now exposes a public startup payload route at `GET /startup-assets/<asset_guid>` and serves only assets authored with `startup_required = true`.
+3. Client now enters `StartupLoading` before `Auth`, validates/downloads `startup_required` assets into the shared cache, applies the startup audio catalog subset, and only then transitions into the auth UI.
+4. The authenticated `/assets/bootstrap-manifest` path remains the authoritative `bootstrap_required` lane for pre-world and in-world runtime content.
 
 ### 5.2 Forbidden runtime patterns
 
@@ -151,7 +156,21 @@ Current implementation note:
 - Response: asset bytes with metadata headers (`content-type`, checksum header, cache headers).
 - Unknown/unauthorized `asset_guid` returns fail-closed error.
 
-### 7.2 Startup metadata payload
+### 7.2 Startup manifest route
+
+- Route: `GET /startup-assets/manifest`
+- Auth: not required.
+- Scope: returns only `startup_required` assets plus startup-safe dependency closure and a startup-safe audio catalog subset.
+- Response: startup catalog version, startup audio catalog version, required startup assets, and startup catalog entries.
+
+### 7.3 Startup payload route
+
+- Route: `GET /startup-assets/<asset_guid>`
+- Auth: not required.
+- Scope: serves only assets authored with `startup_required = true`.
+- Unknown/non-startup `asset_guid` returns fail-closed error.
+
+### 7.4 Bootstrap metadata payload
 
 Before world entry, client receives a JSON manifest from server (via gateway API or session bootstrap response) containing at minimum:
 
@@ -178,9 +197,21 @@ Before world entry, client receives a JSON manifest from server (via gateway API
 
 Client entry flow is:
 
-`Auth -> CharacterSelect -> WorldLoading -> AssetLoading -> InWorld`
+`StartupLoading -> Auth -> CharacterSelect -> WorldLoading -> AssetLoading -> InWorld`
 
-### 8.1 AssetLoading requirements
+### 8.1 StartupLoading requirements
+
+In `StartupLoading`, client must:
+
+1. Fetch the public startup manifest from gateway.
+2. Load the shared local cache index/metadata.
+3. Verify startup-required assets by checksum.
+4. Download missing/stale startup-required assets via `/startup-assets/<asset_guid>`.
+5. Commit validated startup assets to the shared local cache and cache index.
+6. Apply the startup audio catalog subset so pre-auth UI audio can resolve authored profile IDs.
+7. Transition to `Auth` only after the startup-required asset pass has either completed successfully or failed-soft with surfaced error state.
+
+### 8.2 AssetLoading requirements
 
 In `AssetLoading`, client must:
 
@@ -193,7 +224,7 @@ In `AssetLoading`, client must:
 7. Required-asset stalls may surface warning/error dialogs and retry behavior, but they must not force bootstrap completion in degraded mode.
 8. Browser/WASM implementations may use platform storage primitives behind the cache adapter, but the gameplay/runtime layer must still consume validated asset bytes through the shared cache/index contract.
 
-### 8.2 Runtime lazy fetch
+### 8.3 Runtime lazy fetch
 
 2026-03-12 native impact: runtime optional-asset completion now persists cache payload bytes and saves the cache index off the main frame thread; dependency graph refresh and shader-assignment refresh are dirty-driven instead of full always-on polling every update.
 2026-03-12 WASM impact: no contract change; browser/WASM clients keep the same shared asset state machine, and the native-only async cache persistence path does not change byte-backed WASM mounting requirements.
@@ -209,7 +240,7 @@ After entering world:
 7. Runtime lazy fetch expands dependency closure from catalog metadata and fetches unresolved dependencies before attaching the root asset.
 8. Browser/WASM shader/image/SVG attach paths mount from cached payload bytes through runtime loaders, not through direct `data/cache_stream/...` path loads.
 
-### 8.3 Live asset hot reload
+### 8.4 Live asset hot reload
 
 2026-03-09 native impact: native client now listens for authoritative catalog-version invalidations and refreshes manifest/cache state live while already in-world.
 2026-03-09 WASM impact: no WASM-specific contract change; browser clients are expected to follow the same manifest invalidation and byte-backed cache refresh path when the shared runtime path is enabled.

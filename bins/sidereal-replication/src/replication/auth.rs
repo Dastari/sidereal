@@ -17,16 +17,14 @@ use sidereal_net::{
     PlayerEntityId, ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 
-use crate::replication::control::{ClientControlRequestOrder, owner_only_replicate};
+use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
     RealtimeInputActivityByPlayer, canonical_player_entity_id,
 };
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::visibility::{ClientVisibilityRegistry, VisibilityClientContextCache};
-use crate::replication::{
-    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
-};
+use crate::replication::{PlayerControlledEntityMap, PlayerRuntimeEntityMap};
 
 #[derive(Resource, Default)]
 pub(crate) struct AuthenticatedClientBindings {
@@ -196,7 +194,6 @@ pub fn receive_client_disconnect_notify(
 #[allow(clippy::too_many_arguments)]
 pub fn receive_client_auth_messages(
     mut commands: Commands<'_, '_>,
-    mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
     server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     time: Res<'_, Time<Real>>,
@@ -212,7 +209,7 @@ pub fn receive_client_auth_messages(
         ),
         With<ClientOf>,
     >,
-    controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
+    _controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
     player_entities: Query<'_, '_, (Entity, &'_ sidereal_game::EntityGuid), With<PlayerTag>>,
     player_accounts: Query<'_, '_, &'_ AccountId, With<PlayerTag>>,
@@ -338,13 +335,7 @@ pub fn receive_client_auth_messages(
                     continue;
                 }
             }
-            if let Some(player_entity) = player_entity {
-                // Player anchor entities are owner-only replication targets.
-                commands
-                    .entity(player_entity)
-                    .remove::<lightyear::prelude::InterpolationTarget>()
-                    .insert(owner_only_replicate(client_entity));
-            } else {
+            if player_entity.is_none() {
                 warn!(
                     "replication auth: player entity not found for {}; owner-only player replication target not applied",
                     message_player_wire
@@ -459,22 +450,6 @@ pub fn receive_client_auth_messages(
                     );
                 }
                 continue;
-            }
-
-            if let Some(&controlled_entity) = controlled_entity_map
-                .by_player_entity_id
-                .get(&message_player_id)
-            {
-                pending_controlled_by
-                    .bindings
-                    .push((client_entity, controlled_entity));
-            } else if let Some(&player_entity) = player_entity_map
-                .by_player_entity_id
-                .get(&message_player_wire)
-            {
-                pending_controlled_by
-                    .bindings
-                    .push((client_entity, player_entity));
             }
 
             info!(

@@ -28,6 +28,7 @@ pub(crate) struct SegmentedBarStyle {
     pub inactive_color: Color,
     pub shell_color: Color,
     pub border_color: Color,
+    #[allow(dead_code)]
     pub corner_color: Color,
     pub scanline_primary_color: Color,
     pub scanline_secondary_color: Color,
@@ -47,13 +48,15 @@ pub(crate) struct SegmentedBarSegment {
 
 #[derive(Component)]
 pub(crate) struct EntityNameplateRoot {
-    pub target: Entity,
+    pub target: Option<Entity>,
+    pub health_fill: Entity,
 }
 
 #[derive(Component)]
-pub(crate) struct EntityNameplateHealthBar {
-    pub target: Entity,
-}
+pub(crate) struct EntityNameplateHealthFill;
+
+#[derive(Component)]
+pub(crate) struct ActiveNameplateEntry;
 
 #[derive(Component)]
 pub(crate) struct LoadingOverlayText;
@@ -202,6 +205,9 @@ pub(crate) struct RemoteEntity;
 
 #[derive(Component)]
 pub(crate) struct NearbyCollisionProxy;
+
+#[derive(Component)]
+pub(crate) struct CanonicalPresentationEntity;
 
 #[derive(Component, Clone)]
 pub(crate) struct StreamedVisualAssetId(pub String);

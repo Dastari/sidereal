@@ -54,6 +54,10 @@ pub(crate) struct LocalAssetManager {
     pub catalog_version: Option<String>,
     pub cache_index: AssetCacheIndex,
     pub cache_index_loaded: bool,
+    pub startup_manifest_seen: bool,
+    pub startup_phase_complete: bool,
+    pub startup_total_bytes: u64,
+    pub startup_ready_bytes: u64,
     pub bootstrap_manifest_seen: bool,
     pub bootstrap_phase_complete: bool,
     pub bootstrap_total_bytes: u64,
@@ -75,6 +79,13 @@ impl LocalAssetManager {
             };
         }
         (self.bootstrap_ready_bytes as f32 / self.bootstrap_total_bytes as f32).clamp(0.0, 1.0)
+    }
+
+    pub fn startup_progress(&self) -> f32 {
+        if self.startup_total_bytes == 0 {
+            return if self.startup_manifest_seen { 1.0 } else { 0.0 };
+        }
+        (self.startup_ready_bytes as f32 / self.startup_total_bytes as f32).clamp(0.0, 1.0)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1385,7 +1396,9 @@ mod tests {
             fetch_me: |_, _| Box::pin(async { unreachable!("unused in test") }),
             fetch_characters: |_, _| Box::pin(async { unreachable!("unused in test") }),
             enter_world: |_, _, _| Box::pin(async { unreachable!("unused in test") }),
+            fetch_startup_manifest: |_| Box::pin(async { unreachable!("unused in test") }),
             fetch_bootstrap_manifest: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            fetch_public_asset_bytes: |_| Box::pin(async { Ok(b"shader".to_vec()) }),
             fetch_asset_bytes: |_, _| Box::pin(async { Ok(b"shader".to_vec()) }),
         });
         app.insert_resource(AssetCacheAdapter {

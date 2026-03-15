@@ -9,6 +9,7 @@ use sidereal_core::gateway_dtos::{
     AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
     EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
     PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest,
+    StartupAssetManifestResponse,
 };
 
 use crate::runtime::{AssetCacheAdapter, CacheFuture, GatewayFuture, GatewayHttpAdapter};
@@ -249,8 +250,28 @@ fn native_fetch_bootstrap_manifest_async(
     Box::pin(async move { native_fetch_bootstrap_manifest(gateway_url, access_token) })
 }
 
+fn native_fetch_startup_manifest(
+    gateway_url: String,
+) -> Result<StartupAssetManifestResponse, String> {
+    get_json(format!("{gateway_url}/startup-assets/manifest"), None)
+}
+
+fn native_fetch_startup_manifest_async(
+    gateway_url: String,
+) -> GatewayFuture<StartupAssetManifestResponse> {
+    Box::pin(async move { native_fetch_startup_manifest(gateway_url) })
+}
+
 fn native_fetch_asset_bytes(url: String, access_token: String) -> Result<Vec<u8>, String> {
     get_bytes(url, Some(&access_token))
+}
+
+fn native_fetch_public_asset_bytes(url: String) -> Result<Vec<u8>, String> {
+    get_bytes(url, None)
+}
+
+fn native_fetch_public_asset_bytes_async(url: String) -> GatewayFuture<Vec<u8>> {
+    Box::pin(async move { native_fetch_public_asset_bytes(url) })
 }
 
 fn native_fetch_asset_bytes_async(url: String, access_token: String) -> GatewayFuture<Vec<u8>> {
@@ -266,7 +287,9 @@ pub(crate) fn native_gateway_http_adapter() -> GatewayHttpAdapter {
         fetch_me: native_fetch_me_async,
         fetch_characters: native_fetch_characters_async,
         enter_world: native_enter_world_async,
+        fetch_startup_manifest: native_fetch_startup_manifest_async,
         fetch_bootstrap_manifest: native_fetch_bootstrap_manifest_async,
+        fetch_public_asset_bytes: native_fetch_public_asset_bytes_async,
         fetch_asset_bytes: native_fetch_asset_bytes_async,
     }
 }

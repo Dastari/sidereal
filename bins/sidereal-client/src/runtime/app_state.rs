@@ -9,6 +9,7 @@ use super::resources::HeadlessTransportMode;
 #[states(scoped_entities)]
 pub(crate) enum ClientAppState {
     #[default]
+    StartupLoading,
     Auth,
     CharacterSelect,
     WorldLoading,

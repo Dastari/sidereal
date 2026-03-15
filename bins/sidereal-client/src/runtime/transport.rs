@@ -4,12 +4,13 @@ use bevy::log::info;
 #[cfg(target_arch = "wasm32")]
 use bevy::log::warn;
 use bevy::prelude::*;
-use lightyear::prelude::Linked;
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::UdpIo;
 #[cfg(target_arch = "wasm32")]
 use lightyear::prelude::client::WebTransportClientIo;
-use lightyear::prelude::client::{Client, Connect, Connected, RawClient};
+use lightyear::prelude::client::{
+    Client, Connect, Connected, InputDelayConfig, InputTimelineConfig, RawClient,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::{
     ChannelRegistry, MessageManager, PeerAddr, ReplicationReceiver, Transport,
@@ -18,7 +19,7 @@ use lightyear::prelude::{
 use lightyear::prelude::{
     ChannelRegistry, MessageManager, PeerAddr, ReplicationReceiver, Transport,
 };
-use lightyear::prelude::{LocalAddr, LocalId, PeerId, RemoteId};
+use lightyear::prelude::{LocalAddr, SyncConfig};
 use sidereal_net::{
     ControlChannel, InputChannel, ManifestChannel, TacticalDeltaChannel, TacticalSnapshotChannel,
 };
@@ -235,27 +236,22 @@ pub fn ensure_client_transport_channels(
     }
 }
 
-pub fn ensure_raw_client_connected_after_linked(
-    trigger: On<Add, Linked>,
-    query: Query<'_, '_, (Option<&'_ LocalAddr>, Has<Connected>), With<RawClient>>,
+pub fn configure_client_input_timeline_on_add(
+    trigger: On<Add, Client>,
+    query: Query<'_, '_, Option<&'_ InputTimelineConfig>, With<Client>>,
     mut commands: Commands<'_, '_>,
 ) {
-    let Ok((local_addr, connected)) = query.get(trigger.entity) else {
+    let Ok(existing_config) = query.get(trigger.entity) else {
         return;
     };
-    if connected {
+    if existing_config.is_some() {
         return;
     }
 
-    let mut entity_commands = commands.entity(trigger.entity);
-    entity_commands.insert((Connected, RemoteId(PeerId::Server)));
-    if let Some(local_addr) = local_addr {
-        entity_commands.insert(LocalId(PeerId::Raw(local_addr.0)));
-    }
-    info!(
-        "client repaired missing Connected after Linked for client_entity={:?} has_local_addr={}",
-        trigger.entity,
-        local_addr.is_some()
+    commands.entity(trigger.entity).insert(
+        InputTimelineConfig::default()
+            .with_sync_config(SyncConfig::default())
+            .with_input_delay(InputDelayConfig::fixed_input_delay(0)),
     );
 }
 

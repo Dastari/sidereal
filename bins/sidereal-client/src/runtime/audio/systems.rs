@@ -125,7 +125,7 @@ pub(crate) fn debug_audio_probe_system(
         };
         if keys.just_pressed(KeyCode::F6) {
             backend.play_debug_probe(
-                DebugProbeMode::RootNonspatial,
+                DebugProbeMode::Nonspatial,
                 "destruction.asteroid.default",
                 "explode",
                 &catalog,
@@ -134,7 +134,7 @@ pub(crate) fn debug_audio_probe_system(
         }
         if keys.just_pressed(KeyCode::F7) {
             backend.play_debug_probe(
-                DebugProbeMode::RootSpatialAtListener,
+                DebugProbeMode::SpatialAtListener,
                 "destruction.asteroid.default",
                 "explode",
                 &catalog,
@@ -143,7 +143,7 @@ pub(crate) fn debug_audio_probe_system(
         }
         if keys.just_pressed(KeyCode::F8) {
             backend.play_debug_probe(
-                DebugProbeMode::RootSpatialOffsetRight,
+                DebugProbeMode::SpatialOffsetRight,
                 "destruction.asteroid.default",
                 "explode",
                 &catalog,
@@ -153,6 +153,7 @@ pub(crate) fn debug_audio_probe_system(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn receive_local_destruction_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
@@ -185,6 +186,7 @@ pub(crate) fn receive_local_destruction_audio_system(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn receive_remote_destruction_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,

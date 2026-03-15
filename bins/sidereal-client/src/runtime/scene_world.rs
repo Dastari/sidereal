@@ -460,8 +460,8 @@ pub(super) fn spawn_world_scene(
                         shell_color: Color::srgba(0.08, 0.12, 0.09, 0.88),
                         border_color: Color::srgba(0.22, 0.65, 0.32, 0.88),
                         corner_color: Color::srgba(0.32, 0.95, 0.46, 0.78),
-                        scanline_primary_color: Color::srgba(0.2, 0.8, 0.32, 0.07),
-                        scanline_secondary_color: Color::srgba(0.16, 0.55, 0.26, 0.04),
+                        scanline_primary_color: Color::srgba(0.2, 0.8, 0.32, 0.018),
+                        scanline_secondary_color: Color::srgba(0.16, 0.55, 0.26, 0.009),
                         segment_width_px: 9.0,
                         segment_gap_px: 2.0,
                     };
@@ -499,10 +499,12 @@ pub(super) fn spawn_world_scene(
                     .with_children(|bar| {
                         spawn_scanline_overlay(
                             bar,
+                            &mut images,
                             health_style.scanline_primary_color,
                             health_style.scanline_secondary_color,
-                            5,
                             1.0,
+                            3.0,
+                            2,
                         );
                         for index in 0..health_style.segments {
                             bar.spawn((
@@ -533,8 +535,8 @@ pub(super) fn spawn_world_scene(
                         shell_color: Color::srgba(0.08, 0.11, 0.16, 0.88),
                         border_color: Color::srgba(0.22, 0.58, 0.88, 0.88),
                         corner_color: Color::srgba(0.4, 0.85, 1.0, 0.78),
-                        scanline_primary_color: Color::srgba(0.2, 0.7, 1.0, 0.08),
-                        scanline_secondary_color: Color::srgba(0.16, 0.5, 0.78, 0.04),
+                        scanline_primary_color: Color::srgba(0.2, 0.7, 1.0, 0.02),
+                        scanline_secondary_color: Color::srgba(0.16, 0.5, 0.78, 0.01),
                         segment_width_px: 9.0,
                         segment_gap_px: 2.0,
                     };
@@ -572,10 +574,12 @@ pub(super) fn spawn_world_scene(
                     .with_children(|bar| {
                         spawn_scanline_overlay(
                             bar,
+                            &mut images,
                             fuel_style.scanline_primary_color,
                             fuel_style.scanline_secondary_color,
-                            5,
                             1.0,
+                            3.0,
+                            2,
                         );
                         for index in 0..fuel_style.segments {
                             bar.spawn((

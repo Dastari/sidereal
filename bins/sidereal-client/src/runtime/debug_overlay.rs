@@ -3,10 +3,12 @@
 use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
+use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
     CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ParentGuid,
-    PlanetBodyShaderSettings, PlayerTag, SizeM,
+    PlanetBodyShaderSettings, PlayerTag, SizeM, WorldPosition, WorldRotation,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::HashMap;
@@ -27,9 +29,10 @@ use super::dev_console::{DevConsoleState, is_console_open};
 use super::resources::{
     DebugCollisionShape, DebugControlledLane, DebugEntityLane, DebugOverlayEntity,
     DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DebugSeverity, DebugTextRow,
-    DuplicateVisualResolutionState, HudPerfCounters, RenderLayerPerfCounters,
-    RuntimeAssetPerfCounters,
+    DuplicateVisualResolutionState, HudPerfCounters, PredictionCorrectionTuning,
+    RenderLayerPerfCounters, RuntimeAssetPerfCounters, RuntimeStallDiagnostics,
 };
+use super::transforms::interpolated_presentation_ready;
 
 const DEBUG_OVERLAY_Z_OFFSET: f32 = 6.0;
 const REPLICATED_OVERLAY_Z_STEP: f32 = 0.0;
@@ -44,6 +47,7 @@ const VELOCITY_ARROW_SHAFT_THICKNESS: f32 = 0.18;
 const VELOCITY_ARROW_HEAD_LENGTH: f32 = 0.7;
 const VELOCITY_ARROW_HEAD_THICKNESS: f32 = 0.12;
 const VELOCITY_ARROW_HEAD_SPREAD_RAD: f32 = 0.7;
+const DEBUG_STALL_GAP_THRESHOLD_MS: f64 = 100.0;
 
 #[derive(SystemParam)]
 pub(crate) struct DebugOverlayStatsInputs<'w, 's> {
@@ -85,12 +89,69 @@ pub(crate) fn debug_overlay_enabled(debug_overlay: Res<'_, DebugOverlayState>) -
     debug_overlay.enabled
 }
 
+pub(crate) fn count_fixed_update_runs_for_debug_diagnostics_system(
+    mut diagnostics: ResMut<'_, RuntimeStallDiagnostics>,
+) {
+    diagnostics.fixed_runs_current_frame = diagnostics.fixed_runs_current_frame.saturating_add(1);
+}
+
+pub(crate) fn track_runtime_stall_diagnostics_system(
+    real_time: Res<'_, Time<Real>>,
+    fixed_time: Res<'_, Time<Fixed>>,
+    windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
+    mut diagnostics: ResMut<'_, RuntimeStallDiagnostics>,
+) {
+    let now_s = real_time.elapsed_secs_f64();
+    let update_delta_ms = real_time.delta_secs_f64() * 1000.0;
+    diagnostics.last_update_delta_ms = update_delta_ms;
+    diagnostics.max_update_delta_ms = diagnostics.max_update_delta_ms.max(update_delta_ms);
+    diagnostics.fixed_runs_last_frame = diagnostics.fixed_runs_current_frame;
+    diagnostics.fixed_runs_max_frame = diagnostics
+        .fixed_runs_max_frame
+        .max(diagnostics.fixed_runs_last_frame);
+    diagnostics.fixed_runs_current_frame = 0;
+    diagnostics.fixed_overstep_ms = fixed_time.overstep().as_secs_f64() * 1000.0;
+
+    let window_focused = windows
+        .single()
+        .map(|window| window.focused)
+        .unwrap_or(true);
+    if !diagnostics.focus_initialized {
+        diagnostics.window_focused = window_focused;
+        diagnostics.focus_initialized = true;
+        diagnostics.last_focus_change_at_s = now_s;
+    } else if diagnostics.window_focused != window_focused {
+        diagnostics.window_focused = window_focused;
+        diagnostics.focus_transitions = diagnostics.focus_transitions.saturating_add(1);
+        diagnostics.last_focus_change_at_s = now_s;
+    }
+
+    if !window_focused {
+        diagnostics.observed_unfocused_duration_s += real_time.delta_secs_f64();
+        diagnostics.observed_unfocused_frames =
+            diagnostics.observed_unfocused_frames.saturating_add(1);
+    }
+
+    if update_delta_ms >= DEBUG_STALL_GAP_THRESHOLD_MS {
+        let estimated_ticks = (real_time.delta_secs_f64() * f64::from(SIM_TICK_HZ)).ceil() as u32;
+        diagnostics.last_stall_gap_ms = update_delta_ms;
+        diagnostics.last_stall_gap_estimated_ticks = estimated_ticks;
+        if update_delta_ms > diagnostics.max_stall_gap_ms {
+            diagnostics.max_stall_gap_ms = update_delta_ms;
+            diagnostics.max_stall_gap_estimated_ticks = estimated_ticks;
+        }
+    }
+}
+
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_debug_overlay_snapshot_system(
     debug_overlay: Res<'_, DebugOverlayState>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    real_time: Res<'_, Time<Real>>,
+    prediction_tuning: Res<'_, PredictionCorrectionTuning>,
+    runtime_stall_diagnostics: Res<'_, RuntimeStallDiagnostics>,
     mut snapshot: ResMut<'_, DebugOverlaySnapshot>,
     entities: Query<
         '_,
@@ -120,8 +181,12 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 Has<lightyear::prelude::Predicted>,
                 Has<SuppressedPredictedDuplicateVisual>,
                 Has<PlanetBodyShaderSettings>,
-                Has<ConfirmedHistory<Position>>,
-                Has<ConfirmedHistory<Rotation>>,
+                Option<&'_ Position>,
+                Option<&'_ Rotation>,
+                Option<&'_ WorldPosition>,
+                Option<&'_ WorldRotation>,
+                Option<&'_ ConfirmedHistory<Position>>,
+                Option<&'_ ConfirmedHistory<Rotation>>,
                 Option<&'_ lightyear::prelude::Confirmed<Position>>,
                 Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
             ),
@@ -139,6 +204,31 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
     if !debug_overlay.enabled {
         return;
     }
+
+    snapshot.stats.window_focused = runtime_stall_diagnostics.window_focused;
+    snapshot.stats.focus_transitions = runtime_stall_diagnostics.focus_transitions;
+    snapshot.stats.last_focus_change_age_s = if runtime_stall_diagnostics.focus_initialized {
+        (real_time.elapsed_secs_f64() - runtime_stall_diagnostics.last_focus_change_at_s).max(0.0)
+    } else {
+        0.0
+    };
+    snapshot.stats.observed_unfocused_duration_s =
+        runtime_stall_diagnostics.observed_unfocused_duration_s;
+    snapshot.stats.observed_unfocused_frames = runtime_stall_diagnostics.observed_unfocused_frames;
+    snapshot.stats.last_update_delta_ms = runtime_stall_diagnostics.last_update_delta_ms;
+    snapshot.stats.max_update_delta_ms = runtime_stall_diagnostics.max_update_delta_ms;
+    snapshot.stats.last_stall_gap_ms = runtime_stall_diagnostics.last_stall_gap_ms;
+    snapshot.stats.last_stall_gap_estimated_ticks =
+        runtime_stall_diagnostics.last_stall_gap_estimated_ticks;
+    snapshot.stats.max_stall_gap_ms = runtime_stall_diagnostics.max_stall_gap_ms;
+    snapshot.stats.max_stall_gap_estimated_ticks =
+        runtime_stall_diagnostics.max_stall_gap_estimated_ticks;
+    snapshot.stats.fixed_runs_last_frame = runtime_stall_diagnostics.fixed_runs_last_frame;
+    snapshot.stats.fixed_runs_max_frame = runtime_stall_diagnostics.fixed_runs_max_frame;
+    snapshot.stats.fixed_overstep_ms = runtime_stall_diagnostics.fixed_overstep_ms;
+    snapshot.stats.rollback_budget_ticks = prediction_tuning.max_rollback_ticks;
+    snapshot.stats.rollback_budget_ms =
+        f64::from(prediction_tuning.max_rollback_ticks) * 1000.0 / f64::from(SIM_TICK_HZ);
 
     snapshot.stats.mesh_asset_count = stats_inputs.mesh_assets.iter().count();
     snapshot.stats.active_camera_count = stats_inputs.cameras.iter().count();
@@ -261,8 +351,12 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             is_predicted,
             is_suppressed_duplicate,
             is_planet,
-            has_position_history,
-            has_rotation_history,
+            position,
+            rotation,
+            world_position,
+            world_rotation,
+            position_history,
+            rotation_history,
             confirmed_position,
             confirmed_rotation,
         ),
@@ -327,6 +421,17 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             anomaly_messages.push(format!("remote guid {} resolved as Predicted", guid.0));
         }
 
+        let interpolated_ready = interpolated_presentation_ready(
+            position,
+            rotation,
+            world_position,
+            world_rotation,
+            confirmed_position,
+            confirmed_rotation,
+            position_history,
+            rotation_history,
+        );
+
         if let Some(parent_root_guid) = mounted_on
             .map(|mounted_on| mounted_on.parent_entity_id)
             .or_else(|| parent_guid.map(|parent_guid| parent_guid.0))
@@ -338,7 +443,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 is_replicated,
                 is_interpolated,
                 is_predicted,
-                interpolated_ready: has_position_history && has_rotation_history,
+                interpolated_ready,
             });
             continue;
         }
@@ -351,7 +456,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 is_replicated,
                 is_interpolated,
                 is_predicted,
-                interpolated_ready: has_position_history && has_rotation_history,
+                interpolated_ready,
                 has_confirmed_wrappers: confirmed_position.is_some()
                     && confirmed_rotation.is_some(),
                 confirmed_pose: confirmed_position.zip(confirmed_rotation).map(
@@ -854,7 +959,74 @@ fn build_debug_text_rows(
     controlled_lane: Option<DebugControlledLane>,
     anomaly_messages: &[String],
 ) -> Vec<DebugTextRow> {
+    let stall_severity =
+        if stats.last_stall_gap_estimated_ticks > u32::from(stats.rollback_budget_ticks) {
+            DebugSeverity::Error
+        } else if stats.last_stall_gap_estimated_ticks
+            > (u32::from(stats.rollback_budget_ticks) / 2).max(1)
+        {
+            DebugSeverity::Warn
+        } else {
+            DebugSeverity::Normal
+        };
     let mut rows = vec![
+        DebugTextRow {
+            label: "Window Focus".to_string(),
+            value: format!(
+                "{} @ {:>4.1}s",
+                if stats.window_focused { "on" } else { "off" },
+                stats.last_focus_change_age_s
+            ),
+            severity: if stats.window_focused {
+                DebugSeverity::Normal
+            } else {
+                DebugSeverity::Warn
+            },
+        },
+        DebugTextRow {
+            label: "Upd/Fix/Ov".to_string(),
+            value: format!(
+                "{:>4.1}ms {:>2}/{:>2} {:>4.1}ms",
+                stats.last_update_delta_ms,
+                stats.fixed_runs_last_frame,
+                stats.fixed_runs_max_frame,
+                stats.fixed_overstep_ms
+            ),
+            severity: if stats.fixed_runs_last_frame > 1 || stats.fixed_overstep_ms > 16.7 {
+                DebugSeverity::Warn
+            } else {
+                DebugSeverity::Normal
+            },
+        },
+        DebugTextRow {
+            label: "Stall Gap".to_string(),
+            value: format!(
+                "{:>5.0}ms ~{:>3}t ({:>5.0}/{:>3})",
+                stats.last_stall_gap_ms,
+                stats.last_stall_gap_estimated_ticks,
+                stats.max_stall_gap_ms,
+                stats.max_stall_gap_estimated_ticks
+            ),
+            severity: stall_severity,
+        },
+        DebugTextRow {
+            label: "Rollback Win".to_string(),
+            value: format!(
+                "{:>3}t {:>4.0}ms",
+                stats.rollback_budget_ticks, stats.rollback_budget_ms
+            ),
+            severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Unfocus Obs".to_string(),
+            value: format!(
+                "{:>4.1}s {:>4}f {:>3}x",
+                stats.observed_unfocused_duration_s,
+                stats.observed_unfocused_frames,
+                stats.focus_transitions
+            ),
+            severity: DebugSeverity::Normal,
+        },
         DebugTextRow {
             label: "Predicted".to_string(),
             value: format!("{:>4}", stats.predicted_count),
@@ -1188,7 +1360,8 @@ mod tests {
     use crate::runtime::resources::{
         DebugCollisionShape, DebugEntityLane, DebugOverlayEntity, DebugOverlayMode,
         DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DuplicateVisualResolutionState,
-        HudPerfCounters, RenderLayerPerfCounters, RuntimeAssetPerfCounters,
+        HudPerfCounters, PredictionCorrectionTuning, RenderLayerPerfCounters,
+        RuntimeAssetPerfCounters, RuntimeStallDiagnostics,
     };
     use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
@@ -1462,9 +1635,12 @@ mod tests {
         app.insert_resource(RuntimeAssetHttpFetchState::default());
         app.insert_resource(RuntimeAssetPerfCounters::default());
         app.insert_resource(HudPerfCounters::default());
+        app.insert_resource(PredictionCorrectionTuning::from_env());
         app.insert_resource(RenderLayerPerfCounters::default());
+        app.insert_resource(RuntimeStallDiagnostics::default());
         app.insert_resource(DuplicateVisualResolutionState::default());
         app.insert_resource(DebugOverlaySnapshot::default());
+        app.insert_resource(Time::<Real>::default());
         app.insert_resource(Assets::<Mesh>::default());
         app.insert_resource(Assets::<StreamedSpriteShaderMaterial>::default());
         app.insert_resource(Assets::<AsteroidSpriteShaderMaterial>::default());
@@ -1507,6 +1683,13 @@ mod tests {
     #[test]
     fn debug_text_rows_include_asset_and_hud_perf_metrics() {
         let stats = DebugOverlayStats {
+            window_focused: true,
+            last_update_delta_ms: 16.7,
+            fixed_runs_last_frame: 1,
+            fixed_runs_max_frame: 3,
+            fixed_overstep_ms: 2.0,
+            rollback_budget_ticks: 100,
+            rollback_budget_ms: 1666.7,
             runtime_pending_fetch_count: 2,
             runtime_pending_persist_count: 1,
             runtime_asset_fetch_poll_last_ms: 1.5,
@@ -1545,6 +1728,9 @@ mod tests {
         assert!(labels.contains(&"SaveIdx ms"));
         assert!(labels.contains(&"Tact Mk/Cont"));
         assert!(labels.contains(&"Tact ms"));
+        assert!(labels.contains(&"Window Focus"));
+        assert!(labels.contains(&"Stall Gap"));
+        assert!(labels.contains(&"Rollback Win"));
         assert!(labels.contains(&"Plates"));
         assert!(labels.contains(&"HP Updates"));
         assert!(labels.contains(&"Plate Pos ms"));

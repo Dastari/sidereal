@@ -79,6 +79,7 @@ fn init_control_and_prediction_resources(app: &mut App) {
 fn init_debug_and_diagnostics_resources(app: &mut App, headless_transport: bool) {
     app.insert_resource(DebugOverlayState::default());
     app.insert_resource(DebugOverlaySnapshot::default());
+    app.insert_resource(RuntimeStallDiagnostics::default());
     app.insert_resource(shaders::RuntimeShaderAssignments::default());
     app.insert_resource(shaders::RuntimeShaderAssignmentSyncState::default());
     if headless_transport {
@@ -88,6 +89,7 @@ fn init_debug_and_diagnostics_resources(app: &mut App, headless_transport: bool)
 
 fn init_tactical_resources(app: &mut App) {
     app.insert_resource(NameplateUiState::default());
+    app.insert_resource(NameplateRegistry::default());
     app.insert_resource(HudPerfCounters::default());
     app.insert_resource(CharacterSelectionState::default());
     app.insert_resource(FreeCameraState::default());
@@ -221,7 +223,7 @@ pub(crate) fn configure_client_runtime(
         sync_mounted_hierarchy.before(bevy::transform::TransformSystems::Propagate),
     );
     app.add_observer(log_client_transport_connected);
-    app.add_observer(transport::ensure_raw_client_connected_after_linked);
+    app.add_observer(transport::configure_client_input_timeline_on_add);
     app.add_plugins(plugins::ClientBootstrapPlugin {
         headless: headless_transport,
     });

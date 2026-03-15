@@ -26,6 +26,7 @@ use sidereal_core::gateway_dtos::{
     PasswordResetRequest, PasswordResetResponse, PublishScriptResponse, RefreshRequest,
     RegisterRequest, ReloadScriptsFromDiskResponse, ReplicationTransportConfig,
     SaveScriptDraftRequest, SaveScriptDraftResponse, ScriptCatalogDocumentDetailDto,
+    StartupAssetManifestResponse,
 };
 use sidereal_scripting::{load_asset_registry_from_source, load_audio_registry_from_source};
 use std::path::{Path as FsPath, PathBuf};
@@ -99,6 +100,11 @@ pub fn app_with_service(service: SharedAuthService) -> Router {
         .route(
             "/admin/scripts/publish/{*script_path}",
             post(publish_script_draft),
+        )
+        .route("/startup-assets/manifest", get(startup_asset_manifest))
+        .route(
+            "/startup-assets/{asset_guid}",
+            get(fetch_startup_asset_by_guid),
         )
         .route("/assets/bootstrap-manifest", get(asset_bootstrap_manifest))
         .route("/assets/{asset_guid}", get(fetch_asset_by_guid))
@@ -417,6 +423,62 @@ async fn asset_bootstrap_manifest(
     }))
 }
 
+async fn startup_asset_manifest() -> Result<Json<StartupAssetManifestResponse>, ApiError> {
+    let catalog = load_runtime_asset_catalog_async().await?;
+    let (_audio_catalog_version, audio_catalog) = load_runtime_audio_catalog_async().await?;
+    let required_ids = catalog
+        .iter()
+        .filter(|entry| entry.startup_required)
+        .map(|entry| entry.asset_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let dependencies_by_asset_id = catalog
+        .iter()
+        .map(|entry| (entry.asset_id.clone(), entry.dependencies.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let required_ids = expand_required_assets(&required_ids, &dependencies_by_asset_id);
+    let startup_catalog = catalog
+        .iter()
+        .filter(|entry| required_ids.contains(&entry.asset_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut catalog_entries = startup_catalog
+        .iter()
+        .map(|entry| AssetBootstrapManifestEntry {
+            asset_id: entry.asset_id.clone(),
+            asset_guid: entry.asset_guid.clone(),
+            shader_family: entry.shader_family.clone(),
+            dependencies: entry
+                .dependencies
+                .iter()
+                .filter(|dependency_id| required_ids.contains(*dependency_id))
+                .cloned()
+                .collect(),
+            startup_required: entry.startup_required,
+            sha256_hex: entry.sha256_hex.clone(),
+            relative_cache_path: entry.relative_cache_path.clone(),
+            content_type: entry.content_type.clone(),
+            byte_len: entry.byte_len,
+            url: format!("/startup-assets/{}", entry.asset_guid),
+        })
+        .collect::<Vec<_>>();
+    catalog_entries.sort_by(|a, b| a.asset_id.cmp(&b.asset_id));
+    let startup_audio_catalog = subset_audio_registry_for_asset_ids(&audio_catalog, &required_ids);
+    let startup_audio_catalog_version =
+        audio_registry_version(&startup_audio_catalog).map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to version startup audio registry: {err}"),
+            )
+        })?;
+    Ok(Json(StartupAssetManifestResponse {
+        catalog_version: catalog_version(&startup_catalog),
+        audio_catalog_version: startup_audio_catalog_version,
+        required_assets: catalog_entries.clone(),
+        catalog: catalog_entries,
+        audio_catalog: startup_audio_catalog,
+    }))
+}
+
 async fn fetch_asset_by_guid(
     State(service): State<SharedAuthService>,
     headers: HeaderMap,
@@ -428,6 +490,20 @@ async fn fetch_asset_by_guid(
     let catalog = load_runtime_asset_catalog_async().await?;
     let Some(entry) = catalog.iter().find(|entry| entry.asset_guid == asset_guid) else {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown asset_guid"));
+    };
+    stream_asset_file(entry).await
+}
+
+async fn fetch_startup_asset_by_guid(Path(asset_guid): Path<String>) -> Result<Response, ApiError> {
+    let catalog = load_runtime_asset_catalog_async().await?;
+    let Some(entry) = catalog
+        .iter()
+        .find(|entry| entry.asset_guid == asset_guid && entry.startup_required)
+    else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown startup asset_guid",
+        ));
     };
     stream_asset_file(entry).await
 }
@@ -729,12 +805,128 @@ fn load_runtime_audio_catalog_from_catalog(
     Ok((version, registry))
 }
 
+fn subset_audio_registry_for_asset_ids(
+    registry: &AudioRegistry,
+    available_asset_ids: &std::collections::HashSet<String>,
+) -> AudioRegistry {
+    let kept_profiles = registry
+        .profiles
+        .iter()
+        .filter(|profile| {
+            let referenced_asset_ids = profile
+                .cues
+                .values()
+                .flat_map(|cue| {
+                    cue.playback.clip_asset_id.iter().cloned().chain(
+                        cue.playback
+                            .variants
+                            .iter()
+                            .map(|variant| variant.clip_asset_id.clone()),
+                    )
+                })
+                .collect::<std::collections::HashSet<_>>();
+            !referenced_asset_ids.is_empty()
+                && referenced_asset_ids
+                    .iter()
+                    .all(|asset_id| available_asset_ids.contains(asset_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let used_bus_ids = kept_profiles
+        .iter()
+        .flat_map(|profile| profile.cues.values().map(|cue| cue.route.bus.clone()))
+        .collect::<std::collections::HashSet<_>>();
+    let used_send_ids = kept_profiles
+        .iter()
+        .flat_map(|profile| {
+            profile
+                .cues
+                .values()
+                .flat_map(|cue| cue.route.sends.iter().map(|send| send.send_id.clone()))
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let used_concurrency_group_ids = kept_profiles
+        .iter()
+        .flat_map(|profile| {
+            profile.cues.values().filter_map(|cue| {
+                cue.concurrency
+                    .as_ref()
+                    .and_then(|concurrency| concurrency.group_id.clone())
+            })
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let used_clip_asset_ids = kept_profiles
+        .iter()
+        .flat_map(|profile| {
+            profile.cues.values().flat_map(|cue| {
+                cue.playback.clip_asset_id.iter().cloned().chain(
+                    cue.playback
+                        .variants
+                        .iter()
+                        .map(|variant| variant.clip_asset_id.clone()),
+                )
+            })
+        })
+        .collect::<std::collections::HashSet<_>>();
+
+    let buses_by_id = registry
+        .buses
+        .iter()
+        .map(|bus| (bus.bus_id.clone(), bus))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut kept_bus_ids = used_bus_ids;
+    let mut pending_bus_ids = kept_bus_ids.iter().cloned().collect::<Vec<_>>();
+    while let Some(bus_id) = pending_bus_ids.pop() {
+        let Some(parent_id) = buses_by_id
+            .get(&bus_id)
+            .and_then(|bus| bus.parent.as_ref())
+            .cloned()
+        else {
+            continue;
+        };
+        if parent_id != "master" && kept_bus_ids.insert(parent_id.clone()) {
+            pending_bus_ids.push(parent_id);
+        }
+    }
+
+    AudioRegistry {
+        schema_version: registry.schema_version,
+        buses: registry
+            .buses
+            .iter()
+            .filter(|bus| kept_bus_ids.contains(&bus.bus_id))
+            .cloned()
+            .collect(),
+        sends: registry
+            .sends
+            .iter()
+            .filter(|send| used_send_ids.contains(&send.send_id))
+            .cloned()
+            .collect(),
+        environments: Vec::new(),
+        concurrency_groups: registry
+            .concurrency_groups
+            .iter()
+            .filter(|group| used_concurrency_group_ids.contains(&group.group_id))
+            .cloned()
+            .collect(),
+        clips: registry
+            .clips
+            .iter()
+            .filter(|clip| used_clip_asset_ids.contains(&clip.clip_asset_id))
+            .cloned()
+            .collect(),
+        profiles: kept_profiles,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         RuntimeAssetCatalogCacheState, RuntimeAudioCatalogCacheState,
         load_runtime_asset_catalog_from_catalog, load_runtime_audio_catalog_from_catalog,
-        parse_vec3_property,
+        parse_vec3_property, subset_audio_registry_for_asset_ids,
     };
     use crate::auth::{ScriptCatalogEntry, ScriptCatalogResource};
     use std::path::PathBuf;
@@ -793,6 +985,24 @@ return {{
           playback = {{
             kind = "loop",
             clip_asset_id = "audio.music.menu_loop",
+          }},
+          route = {{
+            bus = "music",
+          }},
+          spatial = {{
+            mode = "screen_nonpositional",
+          }},
+        }},
+      }},
+    }},
+    {{
+      profile_id = "music.world.deep_space",
+      kind = "music",
+      cues = {{
+        main = {{
+          playback = {{
+            kind = "loop",
+            clip_asset_id = "audio.music.deep_space",
           }},
           route = {{
             bus = "music",
@@ -884,7 +1094,7 @@ return {{
         let (first_version, first_registry) =
             load_runtime_audio_catalog_from_catalog(&make_catalog(1, -4.0), &mut cache_state)
                 .expect("build initial runtime audio catalog");
-        assert_eq!(first_registry.profiles.len(), 1);
+        assert_eq!(first_registry.profiles.len(), 2);
 
         let (cached_version, cached_registry) =
             load_runtime_audio_catalog_from_catalog(&make_catalog(1, -8.0), &mut cache_state)
@@ -897,5 +1107,25 @@ return {{
                 .expect("rebuild runtime audio catalog after revision change");
         assert_ne!(rebuilt_version, first_version);
         assert_eq!(rebuilt_registry.buses[0].default_volume_db, Some(-8.0));
+    }
+
+    #[test]
+    fn startup_audio_subset_keeps_only_profiles_with_available_assets() {
+        let registry = sidereal_scripting::load_audio_registry_from_source(
+            &test_audio_registry_source(-4.0),
+            std::path::Path::new("audio/registry.lua"),
+        )
+        .expect("load test audio registry");
+        let available_asset_ids = ["audio.music.menu_loop".to_string()]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+
+        let subset = subset_audio_registry_for_asset_ids(&registry, &available_asset_ids);
+
+        assert_eq!(subset.profiles.len(), 1);
+        assert_eq!(subset.profiles[0].profile_id, "music.menu.standard");
+        assert_eq!(subset.clips.len(), 0);
+        assert_eq!(subset.buses.len(), 1);
+        assert_eq!(subset.buses[0].bus_id, "music");
     }
 }

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use crate::runtime::app_state::ClientAppState;
 use crate::runtime::{
     asset_loading_ui, auth_net, auth_ui, bootstrap, dialog_ui, logout, replication, scene,
-    scene_world, transport, world_loading_ui,
+    scene_world, startup_assets, startup_loading_ui, transport, world_loading_ui,
 };
 
 pub(crate) struct ClientBootstrapPlugin {
@@ -14,7 +14,16 @@ pub(crate) struct ClientBootstrapPlugin {
 fn configure_non_headless_bootstrap(app: &mut App) {
     scene::insert_embedded_fonts(app);
     auth_net::init_gateway_request_state(app);
+    startup_assets::init_startup_asset_request_state(app);
     app.init_state::<ClientAppState>();
+    app.add_systems(
+        OnEnter(ClientAppState::StartupLoading),
+        (
+            startup_loading_ui::setup_startup_loading_screen,
+            startup_assets::submit_startup_asset_request_system,
+        )
+            .chain(),
+    );
     app.add_systems(
         OnEnter(ClientAppState::Auth),
         logout::purge_stale_world_and_transport_on_enter_auth_system,

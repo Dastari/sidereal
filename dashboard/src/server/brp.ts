@@ -48,6 +48,7 @@ export type LiveWorldEntity = {
   shardId: number
   x: number
   y: number
+  rotationRad?: number
   vx: number
   vy: number
   sampledAtMs: number
@@ -696,6 +697,81 @@ function getVelocityFromComponents(
   return null
 }
 
+function getRotationFromComponents(
+  components: Record<string, unknown>,
+): number | null {
+  const readRotation = (candidate: unknown): number | null => {
+    const direct = asNumber(candidate)
+    if (direct !== null) return direct
+
+    if (Array.isArray(candidate)) {
+      if (candidate.length >= 4) {
+        const z = asNumber(candidate[2])
+        const w = asNumber(candidate[3])
+        if (z !== null && w !== null) {
+          return 2 * Math.atan2(z, w)
+        }
+      }
+      if (candidate.length >= 2) {
+        const sin = asNumber(candidate[0])
+        const cos = asNumber(candidate[1])
+        if (sin !== null && cos !== null) {
+          return Math.atan2(sin, cos)
+        }
+      }
+    }
+
+    if (!candidate || typeof candidate !== 'object') {
+      return null
+    }
+
+    const record = candidate as Record<string, unknown>
+    const nested = readRotation(
+      record.value ?? record.rotation ?? record.Rotation ?? record['0'],
+    )
+    if (nested !== null) return nested
+
+    const sin = asNumber(record.sin)
+    const cos = asNumber(record.cos)
+    if (sin !== null && cos !== null) {
+      return Math.atan2(sin, cos)
+    }
+
+    const z = asNumber(record.z)
+    const w = asNumber(record.w)
+    if (z !== null && w !== null) {
+      return 2 * Math.atan2(z, w)
+    }
+
+    return null
+  }
+
+  for (const [componentPath, value] of Object.entries(components)) {
+    const isAvianRotation =
+      componentPath.endsWith('::Rotation') &&
+      componentPath.includes('physics_transform::transform::Rotation')
+    const isWorldRotation =
+      componentPath.endsWith('::WorldRotation') ||
+      componentPath.includes('::world_rotation::')
+    const isTransform =
+      componentPath.endsWith('::Transform') ||
+      componentPath.includes('transform::Transform')
+
+    if (!isAvianRotation && !isWorldRotation && !isTransform) {
+      continue
+    }
+
+    const rotation = isTransform && value && typeof value === 'object'
+      ? readRotation((value as Record<string, unknown>).rotation)
+      : readRotation(value)
+    if (rotation !== null && Number.isFinite(rotation)) {
+      return rotation
+    }
+  }
+
+  return null
+}
+
 export async function getLiveWorldSnapshot(
   options: BrpCallOptions | BrpTarget = {},
 ): Promise<LiveWorldSnapshot> {
@@ -746,6 +822,7 @@ export async function getLiveWorldSnapshot(
     const kind = getKindFromComponents(components)
     const xy = getPositionFromComponents(components)
     const velocity = getVelocityFromComponents(components)
+    const rotationRad = getRotationFromComponents(components)
     const hasPosition = xy !== null
     const x = xy ? xy[0] : 0
     const y = xy ? xy[1] : 0
@@ -772,6 +849,7 @@ export async function getLiveWorldSnapshot(
       shardId: 1,
       x,
       y,
+      ...(rotationRad !== null ? { rotationRad } : {}),
       vx,
       vy,
       sampledAtMs,
@@ -787,6 +865,7 @@ export async function getLiveWorldSnapshot(
       properties: {
         source: 'bevy_remote',
         entity: row.entity,
+        ...(rotationRad !== null ? { rotationRad } : {}),
         mapVisible,
         componentCount: componentEntries.length,
       },

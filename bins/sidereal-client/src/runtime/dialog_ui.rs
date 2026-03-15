@@ -133,6 +133,7 @@ pub fn register_dialog_ui(app: &mut App) {
 
 fn show_next_dialog(
     mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
     mut dialog_queue: ResMut<DialogQueue>,
     fonts: Res<super::EmbeddedFonts>,
     active_theme: Res<ActiveUiTheme>,
@@ -203,6 +204,7 @@ fn show_next_dialog(
             .with_children(|panel| {
                 spawn_hud_frame_chrome(
                     panel,
+                    &mut images,
                     theme,
                     Some(severity_label(dialog.severity)),
                     &fonts.mono,

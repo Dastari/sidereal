@@ -25,8 +25,7 @@ use crate::replication::scripting::{
     AssetRegistryResource, EntityRegistryResource, ScriptCatalogResource,
 };
 use crate::replication::simulation_entities::{
-    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
-    reload_runtime_world_from_persistence,
+    PlayerControlledEntityMap, PlayerRuntimeEntityMap, reload_runtime_world_from_persistence,
 };
 use crate::replication::visibility::{
     ClientLocalViewModeRegistry, ClientObserverAnchorPositionMap, ClientVisibilityRegistry,
@@ -452,15 +451,11 @@ fn perform_admin_reset(world: &mut World) -> Result<usize, String> {
     let mut player_entity_map = world
         .remove_resource::<PlayerRuntimeEntityMap>()
         .unwrap_or_default();
-    let mut pending_controlled_by = world
-        .remove_resource::<PendingControlledByBindings>()
-        .unwrap_or_default();
     let mut persistence_schema = world
         .remove_resource::<PersistenceSchemaInitState>()
         .unwrap_or_default();
     controlled_entity_map.by_player_entity_id.clear();
     player_entity_map.by_player_entity_id.clear();
-    pending_controlled_by.bindings.clear();
     persistence_schema.0 = false;
 
     let mut command_queue = CommandQueue::default();
@@ -481,7 +476,6 @@ fn perform_admin_reset(world: &mut World) -> Result<usize, String> {
     command_queue.apply(world);
     world.insert_resource(controlled_entity_map);
     world.insert_resource(player_entity_map);
-    world.insert_resource(pending_controlled_by);
     world.insert_resource(persistence_schema);
     Ok(hydrated_count)
 }

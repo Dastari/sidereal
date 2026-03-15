@@ -288,6 +288,16 @@ fn wasm_fetch_bootstrap_manifest(
     })
 }
 
+fn wasm_fetch_startup_manifest(
+    gateway_url: String,
+) -> GatewayFuture<sidereal_core::gateway_dtos::StartupAssetManifestResponse> {
+    Box::pin(async move { get_json(format!("{gateway_url}/startup-assets/manifest"), None).await })
+}
+
+fn wasm_fetch_public_asset_bytes(url: String) -> GatewayFuture<Vec<u8>> {
+    Box::pin(async move { get_bytes(url, None).await })
+}
+
 fn wasm_fetch_asset_bytes(url: String, access_token: String) -> GatewayFuture<Vec<u8>> {
     Box::pin(async move { get_bytes(url, Some(access_token)).await })
 }
@@ -301,7 +311,9 @@ fn wasm_gateway_http_adapter() -> GatewayHttpAdapter {
         fetch_me: wasm_fetch_me,
         fetch_characters: wasm_fetch_characters,
         enter_world: wasm_enter_world,
+        fetch_startup_manifest: wasm_fetch_startup_manifest,
         fetch_bootstrap_manifest: wasm_fetch_bootstrap_manifest,
+        fetch_public_asset_bytes: wasm_fetch_public_asset_bytes,
         fetch_asset_bytes: wasm_fetch_asset_bytes,
     }
 }

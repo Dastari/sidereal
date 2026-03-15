@@ -85,7 +85,6 @@ impl Plugin for ReplicationControlPlugin {
         app.add_systems(
             FixedUpdate,
             (
-                control::sync_player_anchor_replication_mode,
                 combat::mark_new_ballistic_projectiles_prespawned
                     .after(sidereal_game::process_weapon_fire_actions),
                 combat::configure_ballistic_projectile_replication
@@ -98,6 +97,11 @@ impl Plugin for ReplicationControlPlugin {
             )
                 .chain()
                 .after(PhysicsSystems::Writeback),
+        );
+        app.add_systems(
+            PostUpdate,
+            control::reconcile_control_replication_roles
+                .before(lightyear::prelude::ReplicationBufferSystems::BeforeBuffer),
         );
     }
 }
@@ -234,18 +238,6 @@ impl Plugin for ReplicationRuntimeScriptingPlugin {
             )
                 .chain()
                 .before(PhysicsSystems::Prepare),
-        );
-    }
-}
-
-pub(crate) struct ReplicationBootstrapBridgePlugin;
-
-impl Plugin for ReplicationBootstrapBridgePlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            PostUpdate,
-            simulation_entities::apply_pending_controlled_by_bindings
-                .after(lightyear::prelude::ReplicationBufferSystems::AfterBuffer),
         );
     }
 }

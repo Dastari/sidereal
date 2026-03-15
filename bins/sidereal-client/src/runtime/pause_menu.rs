@@ -52,6 +52,7 @@ pub(super) fn toggle_pause_menu_system(
 
 pub(super) fn sync_pause_menu_ui_system(
     mut commands: Commands<'_, '_>,
+    mut images: ResMut<'_, Assets<Image>>,
     fonts: Res<'_, super::EmbeddedFonts>,
     active_theme: Res<'_, ActiveUiTheme>,
     visual_settings: Res<'_, UiVisualSettings>,
@@ -96,6 +97,7 @@ pub(super) fn sync_pause_menu_ui_system(
                 .with_children(|panel| {
                     spawn_hud_frame_chrome(
                         panel,
+                        &mut images,
                         theme,
                         Some("Pause Menu"),
                         &fonts.mono,

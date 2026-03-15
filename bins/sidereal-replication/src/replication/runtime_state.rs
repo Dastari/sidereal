@@ -140,6 +140,7 @@ pub fn log_player_control_state_changes(
 
 pub fn update_client_observer_anchor_positions(
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
+    controlled_entity_map: Res<'_, crate::replication::PlayerControlledEntityMap>,
     anchor_positions: Query<
         '_,
         '_,
@@ -152,21 +153,38 @@ pub fn update_client_observer_anchor_positions(
     mut position_map: ResMut<'_, ClientObserverAnchorPositionMap>,
 ) {
     for (player_entity_id, player_entity) in &player_entities.by_player_entity_id {
-        if let Ok((position, global, transform)) = anchor_positions.get(*player_entity) {
-            // Contract: observer anchor uses world-space transform; prefer GlobalTransform.
+        let canonical_player_entity_id =
+            sidereal_net::PlayerEntityId::parse(player_entity_id.as_str())
+                .map(sidereal_net::PlayerEntityId::canonical_wire_id)
+                .unwrap_or_else(|| player_entity_id.clone());
+        let controlled_entity = sidereal_net::PlayerEntityId::parse(player_entity_id.as_str())
+            .and_then(|player_id| {
+                controlled_entity_map
+                    .by_player_entity_id
+                    .get(&player_id)
+                    .copied()
+            });
+        let observer_anchor_entities = controlled_entity
+            .into_iter()
+            .chain(std::iter::once(*player_entity));
+
+        for observer_anchor_entity in observer_anchor_entities {
+            let Ok((position, global, transform)) = anchor_positions.get(observer_anchor_entity)
+            else {
+                continue;
+            };
+            // Contract: observer anchor follows the currently controlled entity when one exists.
+            // Fall back to the persisted player anchor for free-roam or incomplete bootstrap.
             let world = global
                 .map(GlobalTransform::translation)
                 .or_else(|| transform.map(|t| t.translation))
                 .or_else(|| position.map(|p| p.0.extend(0.0)))
                 .unwrap_or(Vec3::ZERO);
-            let canonical_player_entity_id =
-                sidereal_net::PlayerEntityId::parse(player_entity_id.as_str())
-                    .map(sidereal_net::PlayerEntityId::canonical_wire_id)
-                    .unwrap_or_else(|| player_entity_id.clone());
             position_map.update_position(player_entity_id, world);
             if canonical_player_entity_id != *player_entity_id {
                 position_map.update_position(canonical_player_entity_id.as_str(), world);
             }
+            break;
         }
     }
 }
@@ -213,5 +231,96 @@ pub fn compute_controlled_entity_visibility_ranges(
         } else if visibility_range.is_some() {
             commands.entity(entity).remove::<VisibilityRangeM>();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_client_observer_anchor_positions;
+    use crate::replication::PlayerRuntimeEntityMap;
+    use crate::replication::simulation_entities::PlayerControlledEntityMap;
+    use crate::replication::visibility::ClientObserverAnchorPositionMap;
+    use avian2d::prelude::Position;
+    use bevy::prelude::*;
+    use sidereal_net::PlayerEntityId;
+    use uuid::Uuid;
+
+    #[test]
+    fn observer_anchor_prefers_controlled_entity_position() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<PlayerRuntimeEntityMap>();
+        app.init_resource::<PlayerControlledEntityMap>();
+        app.init_resource::<ClientObserverAnchorPositionMap>();
+        app.add_systems(Update, update_client_observer_anchor_positions);
+
+        let player_id =
+            PlayerEntityId(Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").unwrap());
+        let player_entity = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(0.0, 0.0, 0.0)),
+            ))
+            .id();
+        let ship_entity = app
+            .world_mut()
+            .spawn((
+                Position(Vec2::new(250.0, -125.0)),
+                Transform::from_xyz(250.0, -125.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(250.0, -125.0, 0.0)),
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(player_id.canonical_wire_id(), player_entity);
+        app.world_mut()
+            .resource_mut::<PlayerControlledEntityMap>()
+            .by_player_entity_id
+            .insert(player_id, ship_entity);
+
+        app.update();
+
+        let stored = app
+            .world()
+            .resource::<ClientObserverAnchorPositionMap>()
+            .get_position(player_id.canonical_wire_id().as_str());
+        assert_eq!(stored, Some(Vec3::new(250.0, -125.0, 0.0)));
+    }
+
+    #[test]
+    fn observer_anchor_falls_back_to_player_anchor_when_not_controlling_ship() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<PlayerRuntimeEntityMap>();
+        app.init_resource::<PlayerControlledEntityMap>();
+        app.init_resource::<ClientObserverAnchorPositionMap>();
+        app.add_systems(Update, update_client_observer_anchor_positions);
+
+        let player_id =
+            PlayerEntityId(Uuid::parse_str("8e5fa817-a5a6-48e1-bb54-8d3f59df1ea4").unwrap());
+        let player_entity = app
+            .world_mut()
+            .spawn((
+                Position(Vec2::new(42.0, 84.0)),
+                Transform::from_xyz(42.0, 84.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(42.0, 84.0, 0.0)),
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(player_id.canonical_wire_id(), player_entity);
+
+        app.update();
+
+        let stored = app
+            .world()
+            .resource::<ClientObserverAnchorPositionMap>()
+            .get_position(player_id.canonical_wire_id().as_str());
+        assert_eq!(stored, Some(Vec3::new(42.0, 84.0, 0.0)));
     }
 }

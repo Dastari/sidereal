@@ -1,4 +1,4 @@
-use avian2d::prelude::Position;
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
@@ -1343,7 +1343,7 @@ fn apply_visibility_membership_diff(
     desired_visible_clients: &HashSet<Entity>,
     visible_gains: &mut usize,
     visible_losses: &mut usize,
-) {
+) -> usize {
     let gained_clients = desired_visible_clients
         .iter()
         .filter(|client_entity| !current_visible_clients.contains(client_entity))
@@ -1367,6 +1367,28 @@ fn apply_visibility_membership_diff(
 
     current_visible_clients.clear();
     current_visible_clients.extend(desired_visible_clients.iter().copied());
+
+    gained_clients.len()
+}
+
+fn queue_visibility_gain_spatial_resend(commands: &mut Commands<'_, '_>, entity: Entity) {
+    commands.queue(move |world: &mut World| {
+        let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
+            return;
+        };
+        if let Some(mut position) = entity_mut.get_mut::<Position>() {
+            position.set_changed();
+        }
+        if let Some(mut rotation) = entity_mut.get_mut::<Rotation>() {
+            rotation.set_changed();
+        }
+        if let Some(mut linear_velocity) = entity_mut.get_mut::<LinearVelocity>() {
+            linear_velocity.set_changed();
+        }
+        if let Some(mut angular_velocity) = entity_mut.get_mut::<AngularVelocity>() {
+            angular_velocity.set_changed();
+        }
+    });
 }
 
 fn remove_entity_from_cell_index(index: &mut VisibilitySpatialIndex, entity: Entity) {
@@ -2032,13 +2054,20 @@ pub fn update_network_visibility(
                 desired_visible_clients.insert(client_state.client_entity);
             }
             let current_visible_clients = membership_cache.by_entity.entry(entity).or_default();
-            apply_visibility_membership_diff(
+            let gained_count = apply_visibility_membership_diff(
                 &mut replication_state,
                 current_visible_clients,
                 &desired_visible_clients,
                 &mut visible_gains,
                 &mut visible_losses,
             );
+            if gained_count > 0 && entity_position.is_some() {
+                // Some stationary spatial roots were observed to spawn for newly visible clients
+                // with a default origin pose until a later movement delta arrived. Force one
+                // resend of the current replicated motion state on visibility gain so late-join
+                // observers receive an authoritative bootstrap even when the entity is idle.
+                queue_visibility_gain_spatial_resend(&mut commands, entity);
+            }
             continue;
         }
 
@@ -2153,13 +2182,16 @@ pub fn update_network_visibility(
             }
         }
         let current_visible_clients = membership_cache.by_entity.entry(entity).or_default();
-        apply_visibility_membership_diff(
+        let gained_count = apply_visibility_membership_diff(
             &mut replication_state,
             current_visible_clients,
             &desired_visible_clients,
             &mut visible_gains,
             &mut visible_losses,
         );
+        if gained_count > 0 && entity_position.is_some() {
+            queue_visibility_gain_spatial_resend(&mut commands, entity);
+        }
     }
     let apply_ms = apply_started_at.elapsed().as_secs_f64() * 1000.0;
     let occupied_cells = spatial_index.entities_by_cell.len();
@@ -3491,13 +3523,14 @@ mod tests {
         let mut visible_gains = 0usize;
         let mut visible_losses = 0usize;
 
-        apply_visibility_membership_diff(
+        let gained_count = apply_visibility_membership_diff(
             &mut replication_state,
             &mut current_visible_clients,
             &desired_visible_clients,
             &mut visible_gains,
             &mut visible_losses,
         );
+        assert_eq!(gained_count, 1);
 
         assert_eq!(visible_gains, 1);
         assert_eq!(visible_losses, 1);

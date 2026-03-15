@@ -11,11 +11,13 @@ const HUD_FRAME_CORNER_SIZE_PX: f32 = 18.0;
 const HUD_FRAME_CORNER_STROKE_PX: f32 = 2.0;
 const HUD_FRAME_TITLE_LEFT_PX: f32 = 14.0;
 const HUD_FRAME_TITLE_TOP_PX: f32 = -13.0;
-const HUD_FRAME_SCANLINE_COUNT: usize = 14;
-const HUD_FRAME_SCANLINE_INSET_PX: f32 = 8.0;
+const HUD_FRAME_SCANLINE_INSET_PX: f32 = 2.0;
+const HUD_FRAME_SCANLINE_STRIDE_PX: f32 = 4.0;
+const HUD_FRAME_SCANLINE_THICKNESS_PX: usize = 2;
 
 pub fn spawn_hud_frame_chrome(
     parent: &mut ChildSpawnerCommands,
+    images: &mut Assets<Image>,
     theme: UiTheme,
     title: Option<&str>,
     title_font: &Handle<Font>,
@@ -33,10 +35,12 @@ pub fn spawn_hud_frame_chrome(
     );
     spawn_scanline_overlay(
         parent,
-        color(with_alpha(theme.colors.glow_muted, 0.05)),
-        color(with_alpha(theme.colors.glow_muted, 0.025)),
-        HUD_FRAME_SCANLINE_COUNT,
+        images,
+        color(with_alpha(theme.colors.primary, 0.003)),
+        color(with_alpha(theme.colors.primary, 0.003)),
         HUD_FRAME_SCANLINE_INSET_PX,
+        HUD_FRAME_SCANLINE_STRIDE_PX,
+        HUD_FRAME_SCANLINE_THICKNESS_PX,
     );
 
     parent.spawn((

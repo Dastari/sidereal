@@ -1,6 +1,6 @@
 //! Fullscreen/backdrop and streamed visual lifecycle systems.
 
-use avian2d::prelude::{Position, SpatialQuery, SpatialQueryFilter};
+use avian2d::prelude::{Position, Rotation, SpatialQuery, SpatialQueryFilter};
 use bevy::asset::{AssetId, RenderAssetUsages};
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::ecs::system::SystemParam;
@@ -8,14 +8,15 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::state::state_scoped::DespawnOnExit;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
+use lightyear::prelude::Confirmed;
 use lightyear::prelude::input::native::ActionState;
 use sidereal_game::{
     AfterburnerCapability, AfterburnerState, AmmoCount, BallisticProjectile, BallisticWeapon,
     ControlledEntityGuid, EntityAction, EntityGuid, EntityLabels, FlightComputer, Hardpoint,
     MountedOn, ParentGuid, PlanetBodyShaderSettings, PlayerTag, ProceduralSprite,
     RuntimeRenderLayerDefinition, RuntimeWorldVisualPassDefinition, RuntimeWorldVisualStack, SizeM,
-    ThrusterPlumeShaderSettings, WorldPosition, generate_procedural_sprite_image_set,
-    resolve_world_position,
+    ThrusterPlumeShaderSettings, WorldPosition, WorldRotation,
+    generate_procedural_sprite_image_set, resolve_world_position,
 };
 use sidereal_net::PlayerInput;
 use std::collections::HashMap;
@@ -29,14 +30,14 @@ use super::backdrop::{
     RuntimeEffectUniforms, SharedWorldLightingUniforms, StreamedSpriteShaderMaterial,
 };
 use super::components::{
-    BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
-    PendingVisibilityFadeIn, PlanetBodyCamera, ResolvedRuntimeRenderLayer,
-    RuntimeWorldVisualFamily, RuntimeWorldVisualPass, RuntimeWorldVisualPassKind,
-    RuntimeWorldVisualPassSet, StreamedSpriteShaderAssetId, StreamedVisualAssetId,
-    StreamedVisualAttached, StreamedVisualAttachmentKind, StreamedVisualChild,
-    SuppressedPredictedDuplicateVisual, WeaponImpactExplosion, WeaponImpactExplosionPool,
-    WeaponImpactSpark, WeaponImpactSparkPool, WeaponTracerBolt, WeaponTracerCooldowns,
-    WeaponTracerPool, WorldEntity,
+    BallisticProjectileVisualAttached, CanonicalPresentationEntity, ControlledEntity,
+    PendingInitialVisualReady, PendingVisibilityFadeIn, PlanetBodyCamera,
+    ResolvedRuntimeRenderLayer, RuntimeWorldVisualFamily, RuntimeWorldVisualPass,
+    RuntimeWorldVisualPassKind, RuntimeWorldVisualPassSet, StreamedSpriteShaderAssetId,
+    StreamedVisualAssetId, StreamedVisualAttached, StreamedVisualAttachmentKind,
+    StreamedVisualChild, SuppressedPredictedDuplicateVisual, WeaponImpactExplosion,
+    WeaponImpactExplosionPool, WeaponImpactSpark, WeaponImpactSparkPool, WeaponTracerBolt,
+    WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
 };
 use super::ecs_util::queue_despawn_if_exists;
 use super::lighting::{CameraLocalLightSet, WorldLightingState};
@@ -46,6 +47,7 @@ use super::resources::CameraMotionState;
 use super::resources::DuplicateVisualResolutionState;
 use super::resources::RuntimeSharedQuadMesh;
 use super::shaders;
+use super::transforms::interpolated_presentation_ready;
 use crate::runtime::combat_messages::{
     RemoteEntityDestructionRuntimeMessage, RemoteWeaponFiredRuntimeMessage,
 };
@@ -639,6 +641,12 @@ fn collect_duplicate_visual_dirty_guid_changes(
     mark_dirty_duplicate_visual_guids_for_changes::<ControlledEntity>(world, state);
     mark_dirty_duplicate_visual_guids_for_changes::<lightyear::prelude::Interpolated>(world, state);
     mark_dirty_duplicate_visual_guids_for_changes::<lightyear::prelude::Predicted>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<Position>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<Rotation>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<WorldPosition>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<WorldRotation>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<Confirmed<Position>>(world, state);
+    mark_dirty_duplicate_visual_guids_for_changes::<Confirmed<Rotation>>(world, state);
     mark_dirty_duplicate_visual_guids_for_additions::<ConfirmedHistory<avian2d::prelude::Position>>(
         world, state,
     );
@@ -773,9 +781,16 @@ fn recompute_duplicate_visual_group(
         let is_controlled = entity_ref.contains::<ControlledEntity>();
         let is_interpolated = entity_ref.contains::<lightyear::prelude::Interpolated>();
         let is_predicted = entity_ref.contains::<lightyear::prelude::Predicted>();
-        let interpolated_ready = entity_ref
-            .contains::<ConfirmedHistory<avian2d::prelude::Position>>()
-            && entity_ref.contains::<ConfirmedHistory<avian2d::prelude::Rotation>>();
+        let interpolated_ready = interpolated_presentation_ready(
+            entity_ref.get::<Position>(),
+            entity_ref.get::<Rotation>(),
+            entity_ref.get::<WorldPosition>(),
+            entity_ref.get::<WorldRotation>(),
+            entity_ref.get::<Confirmed<Position>>(),
+            entity_ref.get::<Confirmed<Rotation>>(),
+            entity_ref.get::<ConfirmedHistory<avian2d::prelude::Position>>(),
+            entity_ref.get::<ConfirmedHistory<avian2d::prelude::Rotation>>(),
+        );
         let score = if is_controlled {
             3
         } else if is_interpolated && interpolated_ready {
@@ -825,15 +840,24 @@ fn recompute_duplicate_visual_group(
                 .get(&guid)
                 .is_some_and(|winner| *winner != entity);
         let is_suppressed = entity_ref.contains::<SuppressedPredictedDuplicateVisual>();
+        let is_canonical = entity_ref.contains::<CanonicalPresentationEntity>();
         let mut entity_mut = world.entity_mut(entity);
         if should_suppress {
             if !is_suppressed {
                 entity_mut.insert(SuppressedPredictedDuplicateVisual);
             }
+            if is_canonical {
+                entity_mut.remove::<CanonicalPresentationEntity>();
+            }
             entity_mut.insert(Visibility::Hidden);
-        } else if is_suppressed {
-            entity_mut.remove::<SuppressedPredictedDuplicateVisual>();
-            entity_mut.insert(Visibility::Visible);
+        } else {
+            if is_suppressed {
+                entity_mut.remove::<SuppressedPredictedDuplicateVisual>();
+                entity_mut.insert(Visibility::Visible);
+            }
+            if !is_canonical {
+                entity_mut.insert(CanonicalPresentationEntity);
+            }
         }
     }
 }
@@ -1178,9 +1202,10 @@ mod tests {
     };
     use crate::runtime::backdrop::RuntimeEffectMaterial;
     use crate::runtime::components::{
-        BallisticProjectileVisualAttached, ControlledEntity, PendingInitialVisualReady,
-        StreamedVisualAttachmentKind, SuppressedPredictedDuplicateVisual, WeaponImpactExplosion,
-        WeaponImpactExplosionPool, WeaponImpactSpark, WorldEntity,
+        BallisticProjectileVisualAttached, CanonicalPresentationEntity, ControlledEntity,
+        PendingInitialVisualReady, StreamedVisualAttachmentKind,
+        SuppressedPredictedDuplicateVisual, WeaponImpactExplosion, WeaponImpactExplosionPool,
+        WeaponImpactSpark, WorldEntity,
     };
     use crate::runtime::resources::DuplicateVisualResolutionState;
     use crate::runtime::transforms::{
@@ -1191,7 +1216,7 @@ mod tests {
     use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
     use bevy::sprite_render::MeshMaterial2d;
-    use lightyear::prelude::Interpolated;
+    use lightyear::prelude::{Confirmed, Interpolated};
     use sidereal_game::{BallisticProjectile, DamageType, EntityGuid, PlanetBodyShaderSettings};
 
     #[test]
@@ -1589,8 +1614,18 @@ mod tests {
         );
         assert!(
             app.world()
+                .entity(controlled)
+                .contains::<CanonicalPresentationEntity>()
+        );
+        assert!(
+            app.world()
                 .entity(fallback)
                 .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+        assert!(
+            !app.world()
+                .entity(fallback)
+                .contains::<CanonicalPresentationEntity>()
         );
 
         app.world_mut()
@@ -1612,8 +1647,18 @@ mod tests {
         );
         assert!(
             !app.world()
+                .entity(controlled)
+                .contains::<CanonicalPresentationEntity>()
+        );
+        assert!(
+            !app.world()
                 .entity(fallback)
                 .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+        assert!(
+            app.world()
+                .entity(fallback)
+                .contains::<CanonicalPresentationEntity>()
         );
         assert_eq!(
             app.world()
@@ -1621,6 +1666,115 @@ mod tests {
                 .winner_by_guid
                 .get(&guid),
             Some(&fallback)
+        );
+    }
+
+    #[test]
+    fn duplicate_visual_prefers_interpolated_clone_with_authoritative_pose_before_history() {
+        let mut app = App::new();
+        app.init_resource::<DuplicateVisualResolutionState>();
+        app.add_systems(
+            Update,
+            suppress_duplicate_predicted_interpolated_visuals_system,
+        );
+
+        let guid = uuid::Uuid::new_v4();
+        let confirmed = app
+            .world_mut()
+            .spawn((WorldEntity, EntityGuid(guid), Visibility::Visible))
+            .id();
+        let interpolated = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                Interpolated,
+                Position(Vec2::new(25.0, -12.0)),
+                Rotation::from(Quat::from_rotation_z(0.6)),
+                Confirmed(Position(Vec2::new(25.0, -12.0))),
+                Confirmed(Rotation::from(Quat::from_rotation_z(0.6))),
+                Visibility::Visible,
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<DuplicateVisualResolutionState>()
+                .winner_by_guid
+                .get(&guid),
+            Some(&interpolated)
+        );
+        assert!(
+            app.world()
+                .entity(confirmed)
+                .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+        assert!(
+            !app.world()
+                .entity(interpolated)
+                .contains::<SuppressedPredictedDuplicateVisual>()
+        );
+        assert!(
+            app.world()
+                .entity(interpolated)
+                .contains::<CanonicalPresentationEntity>()
+        );
+    }
+
+    #[test]
+    fn duplicate_visual_recomputes_when_interpolated_pose_changes_from_invalid_to_valid() {
+        let mut app = App::new();
+        app.init_resource::<DuplicateVisualResolutionState>();
+        app.add_systems(
+            Update,
+            suppress_duplicate_predicted_interpolated_visuals_system,
+        );
+
+        let guid = uuid::Uuid::new_v4();
+        let confirmed = app
+            .world_mut()
+            .spawn((WorldEntity, EntityGuid(guid), Visibility::Visible))
+            .id();
+        let interpolated = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                Interpolated,
+                Position(Vec2::splat(f32::NAN)),
+                Rotation::from(Quat::from_rotation_z(0.0)),
+                Visibility::Visible,
+            ))
+            .id();
+
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<DuplicateVisualResolutionState>()
+                .winner_by_guid
+                .get(&guid),
+            Some(&confirmed)
+        );
+
+        app.world_mut()
+            .entity_mut(interpolated)
+            .insert(Position(Vec2::new(48.0, -12.0)));
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<DuplicateVisualResolutionState>()
+                .winner_by_guid
+                .get(&guid),
+            Some(&interpolated)
+        );
+        assert!(
+            app.world()
+                .entity(interpolated)
+                .contains::<CanonicalPresentationEntity>()
         );
     }
 }

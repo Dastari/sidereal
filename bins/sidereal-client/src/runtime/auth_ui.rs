@@ -102,6 +102,7 @@ pub fn register_auth_ui(app: &mut App) {
 
 fn setup_auth_screen(
     mut commands: Commands<'_, '_>,
+    mut images: ResMut<'_, Assets<Image>>,
     fonts: Res<'_, EmbeddedFonts>,
     active_theme: Res<'_, ActiveUiTheme>,
     visual_settings: Res<'_, UiVisualSettings>,
@@ -157,6 +158,7 @@ fn setup_auth_screen(
             .with_children(|panel| {
                 spawn_hud_frame_chrome(
                     panel,
+                    &mut images,
                     theme,
                     Some("Auth Terminal"),
                     &fonts.mono.clone(),

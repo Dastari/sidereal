@@ -2,7 +2,10 @@ use bevy::prelude::*;
 
 use crate::runtime::app_state::ClientAppState;
 use crate::runtime::camera::{audit_active_world_cameras_system, gate_gameplay_camera_system};
-use crate::runtime::debug_overlay::toggle_debug_overlay_system;
+use crate::runtime::debug_overlay::{
+    count_fixed_update_runs_for_debug_diagnostics_system, toggle_debug_overlay_system,
+    track_runtime_stall_diagnostics_system,
+};
 use crate::runtime::{bootstrap, owner_manifest, pause_menu, tactical, ui, visuals};
 
 pub(super) fn add_in_world_ui_update_systems(app: &mut App) {
@@ -24,8 +27,14 @@ pub(super) fn add_in_world_ui_update_systems(app: &mut App) {
             ui::update_hud_system,
             ui::sync_entity_nameplates_system
                 .after(visuals::suppress_duplicate_predicted_interpolated_visuals_system),
+            track_runtime_stall_diagnostics_system,
             toggle_debug_overlay_system,
         )
+            .run_if(in_state(ClientAppState::InWorld)),
+    );
+    app.add_systems(
+        FixedUpdate,
+        count_fixed_update_runs_for_debug_diagnostics_system
             .run_if(in_state(ClientAppState::InWorld)),
     );
     app.add_systems(

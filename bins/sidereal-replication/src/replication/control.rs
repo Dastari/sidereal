@@ -2,8 +2,8 @@ use bevy::log::{info, warn};
 use bevy::prelude::*;
 use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
-    ControlledBy, InterpolationTarget, MessageReceiver, NetworkTarget, PredictionTarget, RemoteId,
-    Replicate, ReplicationState, Server, ServerMultiMessageSender,
+    ControlledBy, InterpolationTarget, Lifetime, MessageReceiver, NetworkTarget, PredictionTarget,
+    RemoteId, Replicate, Server, ServerMultiMessageSender,
 };
 use sidereal_game::{
     ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag,
@@ -17,8 +17,7 @@ use sidereal_net::{
 
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::{
-    PendingControlledByBindings, PlayerControlledEntityMap, PlayerRuntimeEntityMap,
-    SimulatedControlledEntity, debug_env,
+    PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity, debug_env,
 };
 
 #[derive(Resource, Default)]
@@ -61,69 +60,6 @@ pub(crate) fn owner_interpolation_target(client_entity: Entity) -> Interpolation
     // The persisted player anchor is owner-only. When it is not the active predicted entity we keep
     // it interpolated only for that owner rather than broadcasting it as a generic observer target.
     InterpolationTarget::manual(vec![client_entity])
-}
-
-fn force_replication_respawn_for_client(
-    commands: &mut Commands<'_, '_>,
-    entity: Entity,
-    client_entity: Entity,
-    reason: &'static str,
-) {
-    commands.queue(move |world: &mut World| {
-        let mut forced = false;
-        let mut state_snapshot = None;
-        if let Some(mut replication_state) = world.get_mut::<ReplicationState>(entity) {
-            let before_snapshot = format!("before({replication_state:?})");
-            // Lightyear applies Predicted/Interpolated markers from the spawn action it sends to a
-            // given receiver. Sidereal's dynamic control handoff can retarget prediction after the
-            // entity was already visible, so we intentionally re-arm the sender-local spawn path by
-            // cycling visibility through Lost -> Gained for that specific client.
-            replication_state.lose_visibility(client_entity);
-            replication_state.gain_visibility(client_entity);
-            state_snapshot = Some(format!("{before_snapshot} after({replication_state:?})"));
-            forced = true;
-        }
-        if forced && control_debug_logging_enabled() {
-            info!(
-                "server control handover forced sender-local respawn entity={:?} client={:?} reason={} state={}",
-                entity,
-                client_entity,
-                reason,
-                state_snapshot.unwrap_or_else(|| "<missing-state>".to_string())
-            );
-        }
-    });
-}
-
-fn clear_controlled_binding_for_client(
-    commands: &mut Commands<'_, '_>,
-    client_entity: Entity,
-    controlled_entities: &Query<'_, '_, (Entity, Option<&'_ ControlledBy>), With<ActionQueue>>,
-    player_entities: &Query<'_, '_, &'_ EntityGuid, With<PlayerTag>>,
-) {
-    for (entity, controlled_by) in controlled_entities {
-        if controlled_by.is_some_and(|binding| binding.owner == client_entity) {
-            commands
-                .entity(entity)
-                .remove::<(ControlledBy, PredictionTarget)>();
-            if player_entities.get(entity).is_ok() {
-                commands
-                    .entity(entity)
-                    .remove::<InterpolationTarget>()
-                    .insert(owner_only_replicate(client_entity));
-            } else {
-                commands
-                    .entity(entity)
-                    .insert(InterpolationTarget::to_clients(NetworkTarget::All));
-            }
-            force_replication_respawn_for_client(
-                commands,
-                entity,
-                client_entity,
-                "handoff_previous_target_mode_change",
-            );
-        }
-    }
 }
 
 fn neutralize_control_intent_on_handoff(
@@ -173,14 +109,12 @@ pub fn receive_client_control_requests(
         ),
         With<SimulatedControlledEntity>,
     >,
-    controlled_entities: Query<'_, '_, (Entity, Option<&'_ ControlledBy>), With<ActionQueue>>,
     player_guids: Query<'_, '_, &'_ EntityGuid, With<PlayerTag>>,
     player_controlled: Query<'_, '_, &'_ ControlledEntityGuid, With<PlayerTag>>,
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut order_state: ResMut<'_, ClientControlRequestOrder>,
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
-    mut pending_controlled_by: ResMut<'_, PendingControlledByBindings>,
 ) {
     let now_s = time.elapsed_secs_f64();
     for (client_entity, link_of, remote_id, mut receiver) in &mut receivers {
@@ -426,18 +360,6 @@ pub fn receive_client_control_requests(
             let rebind_required = currently_bound_entity != resolved_target_entity;
             if rebind_required {
                 neutralize_control_intent_on_handoff(&mut commands, currently_bound_entity);
-                clear_controlled_binding_for_client(
-                    &mut commands,
-                    client_entity,
-                    &controlled_entities,
-                    &player_guids,
-                );
-                pending_controlled_by
-                    .bindings
-                    .retain(|(queued_client, _)| *queued_client != client_entity);
-                pending_controlled_by
-                    .bindings
-                    .push((client_entity, resolved_target_entity));
             }
 
             if control_debug_logging_enabled() {
@@ -471,9 +393,101 @@ pub fn receive_client_control_requests(
     }
 }
 
-#[allow(clippy::type_complexity)]
-pub fn sync_player_anchor_replication_mode(
+fn maybe_set_controlled_by(
+    entity_commands: &mut EntityCommands<'_>,
+    current: Option<&ControlledBy>,
+    desired_owner: Option<Entity>,
+) {
+    match desired_owner {
+        Some(owner)
+            if current.is_some_and(|controlled_by| {
+                controlled_by.owner == owner && controlled_by.lifetime == Lifetime::Persistent
+            }) => {}
+        Some(owner) => {
+            entity_commands.insert(ControlledBy {
+                owner,
+                lifetime: Lifetime::Persistent,
+            });
+        }
+        None if current.is_some() => {
+            entity_commands.remove::<ControlledBy>();
+        }
+        None => {}
+    }
+}
+
+fn maybe_set_replicate(
+    entity_commands: &mut EntityCommands<'_>,
+    current: Option<&Replicate>,
+    desired: &Replicate,
+) {
+    if current != Some(desired) {
+        entity_commands.insert(desired.clone());
+    }
+}
+
+enum DesiredInterpolationTarget {
+    Owner(Entity),
+    Network(NetworkTarget),
+}
+
+fn maybe_set_prediction_target(
+    entity_commands: &mut EntityCommands<'_>,
+    current: Option<&PredictionTarget>,
+    desired_owner: Option<Entity>,
+) {
+    let current_debug = current.map(|target| format!("{target:?}"));
+    let desired_debug = desired_owner.map(|owner| format!("{:?}", owner_prediction_target(owner)));
+    match desired_owner {
+        Some(owner) if current_debug == desired_debug => {}
+        Some(owner) => {
+            entity_commands.insert(owner_prediction_target(owner));
+        }
+        None if current.is_some() => {
+            entity_commands.remove::<PredictionTarget>();
+        }
+        None => {}
+    }
+}
+
+fn maybe_set_interpolation_target(
+    entity_commands: &mut EntityCommands<'_>,
+    current: Option<&InterpolationTarget>,
+    desired: Option<DesiredInterpolationTarget>,
+) {
+    let current_debug = current.map(|target| format!("{target:?}"));
+    let desired_debug = desired.as_ref().map(|target| match target {
+        DesiredInterpolationTarget::Owner(owner) => {
+            format!("{:?}", owner_interpolation_target(*owner))
+        }
+        DesiredInterpolationTarget::Network(network) => {
+            format!("{:?}", InterpolationTarget::to_clients(network.clone()))
+        }
+    });
+    match desired {
+        Some(DesiredInterpolationTarget::Owner(owner)) if current_debug == desired_debug => {}
+        Some(DesiredInterpolationTarget::Owner(owner)) => {
+            entity_commands.insert(owner_interpolation_target(owner));
+        }
+        Some(DesiredInterpolationTarget::Network(network)) if current_debug == desired_debug => {}
+        Some(DesiredInterpolationTarget::Network(network)) => {
+            entity_commands.insert(InterpolationTarget::to_clients(network));
+        }
+        None if current.is_some() => {
+            entity_commands.remove::<InterpolationTarget>();
+        }
+        None => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn reconcile_control_replication_roles(
     mut commands: Commands<'_, '_>,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
+    controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
+    client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
+    entity_guids: Query<'_, '_, &'_ EntityGuid>,
     players: Query<
         '_,
         '_,
@@ -488,57 +502,361 @@ pub fn sync_player_anchor_replication_mode(
         ),
         With<PlayerTag>,
     >,
+    controlled_entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ SimulatedControlledEntity,
+            Option<&'_ ControlledBy>,
+            Option<&'_ Replicate>,
+            Option<&'_ PredictionTarget>,
+            Option<&'_ InterpolationTarget>,
+        ),
+        Without<PlayerTag>,
+    >,
 ) {
+    let mut bound_client_by_player_wire = HashMap::<String, Entity>::new();
+    let mut desired_controlled_by_client = HashMap::<Entity, Entity>::new();
+    let mut desired_control_guid_by_player = HashMap::<Entity, Option<String>>::new();
+    let mut desired_owner_by_entity = HashMap::<Entity, Entity>::new();
+
+    for (client_entity, player_wire) in &bindings.by_client_entity {
+        let Some(player_id) = PlayerEntityId::parse(player_wire.as_str()) else {
+            continue;
+        };
+        let Some(&player_entity) = player_entity_map.by_player_entity_id.get(player_wire) else {
+            continue;
+        };
+        let desired_controlled_entity = controlled_entity_map
+            .by_player_entity_id
+            .get(&player_id)
+            .copied()
+            .unwrap_or(player_entity);
+        let desired_control_guid = entity_guids
+            .get(desired_controlled_entity)
+            .ok()
+            .map(|guid| guid.0.to_string());
+
+        bound_client_by_player_wire.insert(player_wire.clone(), *client_entity);
+        desired_controlled_by_client.insert(*client_entity, desired_controlled_entity);
+        desired_control_guid_by_player.insert(player_entity, desired_control_guid);
+        desired_owner_by_entity.insert(desired_controlled_entity, *client_entity);
+    }
+
     for (
         entity,
         player_guid,
-        controlled_guid,
-        controlled_by,
+        current_control_guid,
+        current_controlled_by,
         current_replicate,
         current_prediction,
         current_interpolation,
     ) in &players
     {
-        let Some(controlled_by) = controlled_by else {
-            continue;
-        };
-
-        let controls_self = controlled_guid
-            .and_then(|guid| guid.0.as_deref())
+        let player_wire = player_guid.0.to_string();
+        let bound_client = bound_client_by_player_wire
+            .get(player_wire.as_str())
+            .copied();
+        let desired_control_guid = desired_control_guid_by_player
+            .get(&entity)
+            .cloned()
+            .flatten()
+            .or_else(|| Some(player_wire.clone()));
+        let controls_self = desired_control_guid
+            .as_deref()
             .and_then(guid_from_entity_id_like)
-            .is_none_or(|guid| guid == player_guid.0.to_string());
-        let desired_replicate = owner_only_replicate(controlled_by.owner);
-        let desired_prediction =
-            controls_self.then(|| owner_prediction_target(controlled_by.owner));
-        let desired_interpolation =
-            (!controls_self).then(|| owner_interpolation_target(controlled_by.owner));
-        let current_prediction_mode = current_prediction.map(|target| format!("{target:?}"));
-        let desired_prediction_mode = desired_prediction
-            .as_ref()
-            .map(|target| format!("{target:?}"));
-        let current_interpolation_mode = current_interpolation.map(|target| format!("{target:?}"));
-        let desired_interpolation_mode = desired_interpolation
-            .as_ref()
-            .map(|target| format!("{target:?}"));
-
-        // This system runs continuously to keep the persisted player anchor aligned with the active
-        // handoff state. Do not blindly reinsert Lightyear target components every tick: repeated
-        // replacement fights the hook-driven sender state that Lightyear expects.
-        let needs_update = current_replicate != Some(&desired_replicate)
-            || current_prediction_mode != desired_prediction_mode
-            || current_interpolation_mode != desired_interpolation_mode;
-        if !needs_update {
-            continue;
-        }
+            .is_none_or(|guid| guid == player_wire);
 
         let mut entity_commands = commands.entity(entity);
-        entity_commands.insert(desired_replicate);
-        if controls_self {
-            entity_commands.insert(owner_prediction_target(controlled_by.owner));
-            entity_commands.remove::<InterpolationTarget>();
-        } else {
-            entity_commands.remove::<PredictionTarget>();
-            entity_commands.insert(owner_interpolation_target(controlled_by.owner));
+        if current_control_guid.and_then(|value| value.0.as_ref()) != desired_control_guid.as_ref()
+        {
+            entity_commands.insert(ControlledEntityGuid(desired_control_guid));
         }
+
+        match bound_client {
+            Some(client_entity) => {
+                maybe_set_controlled_by(
+                    &mut entity_commands,
+                    current_controlled_by,
+                    Some(client_entity),
+                );
+                let desired_replicate = owner_only_replicate(client_entity);
+                maybe_set_replicate(&mut entity_commands, current_replicate, &desired_replicate);
+
+                maybe_set_prediction_target(
+                    &mut entity_commands,
+                    current_prediction,
+                    controls_self.then_some(client_entity),
+                );
+                maybe_set_interpolation_target(
+                    &mut entity_commands,
+                    current_interpolation,
+                    (!controls_self).then_some(DesiredInterpolationTarget::Owner(client_entity)),
+                );
+            }
+            None => {
+                maybe_set_controlled_by(&mut entity_commands, current_controlled_by, None);
+                maybe_set_replicate(
+                    &mut entity_commands,
+                    current_replicate,
+                    &Replicate::to_clients(NetworkTarget::None),
+                );
+                maybe_set_prediction_target(&mut entity_commands, current_prediction, None);
+                maybe_set_interpolation_target(&mut entity_commands, current_interpolation, None);
+            }
+        }
+    }
+
+    for (
+        entity,
+        simulated_controlled,
+        current_controlled_by,
+        current_replicate,
+        current_prediction,
+        current_interpolation,
+    ) in &controlled_entities
+    {
+        let desired_owner = desired_owner_by_entity
+            .get(&entity)
+            .copied()
+            .filter(|owner| {
+                bindings
+                    .by_client_entity
+                    .get(owner)
+                    .and_then(|player_wire| PlayerEntityId::parse(player_wire.as_str()))
+                    .is_some_and(|player_id| player_id == simulated_controlled.player_entity_id)
+            });
+
+        let mut entity_commands = commands.entity(entity);
+        maybe_set_controlled_by(&mut entity_commands, current_controlled_by, desired_owner);
+        maybe_set_replicate(
+            &mut entity_commands,
+            current_replicate,
+            &Replicate::to_clients(NetworkTarget::All),
+        );
+
+        let desired_interpolation = match desired_owner {
+            Some(owner) => client_remote_ids.get(owner).ok().map(|remote_id| {
+                DesiredInterpolationTarget::Network(NetworkTarget::AllExceptSingle(remote_id.0))
+            }),
+            None => Some(DesiredInterpolationTarget::Network(NetworkTarget::All)),
+        };
+
+        maybe_set_prediction_target(&mut entity_commands, current_prediction, desired_owner);
+        maybe_set_interpolation_target(
+            &mut entity_commands,
+            current_interpolation,
+            desired_interpolation,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        owner_interpolation_target, owner_only_replicate, owner_prediction_target,
+        reconcile_control_replication_roles,
+    };
+    use crate::replication::auth::AuthenticatedClientBindings;
+    use crate::replication::{
+        PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity,
+    };
+    use bevy::prelude::*;
+    use lightyear::prelude::server::ClientOf;
+    use lightyear::prelude::{
+        ControlledBy, InterpolationTarget, PeerId, PredictionTarget, RemoteId, Replicate,
+    };
+    use sidereal_game::{ControlledEntityGuid, EntityGuid, PlayerTag};
+    use sidereal_net::PlayerEntityId;
+    use uuid::Uuid;
+
+    #[test]
+    fn reconcile_assigns_owner_predicted_ship_roles_without_visibility_churn() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
+        app.init_resource::<AuthenticatedClientBindings>();
+        app.init_resource::<PlayerControlledEntityMap>();
+        app.init_resource::<PlayerRuntimeEntityMap>();
+        app.add_systems(Update, reconcile_control_replication_roles);
+
+        let player_id =
+            PlayerEntityId(Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").unwrap());
+        let ship_guid = Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").unwrap();
+        let client = app
+            .world_mut()
+            .spawn((ClientOf, RemoteId(PeerId::Netcode(42))))
+            .id();
+        let player_entity = app
+            .world_mut()
+            .spawn((PlayerTag, EntityGuid(player_id.0)))
+            .id();
+        let ship_entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(ship_guid),
+                SimulatedControlledEntity {
+                    player_entity_id: player_id,
+                },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<AuthenticatedClientBindings>()
+            .by_client_entity
+            .insert(client, player_id.canonical_wire_id());
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(player_id.canonical_wire_id(), player_entity);
+        app.world_mut()
+            .resource_mut::<PlayerControlledEntityMap>()
+            .by_player_entity_id
+            .insert(player_id, ship_entity);
+
+        app.update();
+
+        let player_control_guid = app
+            .world()
+            .get::<ControlledEntityGuid>(player_entity)
+            .expect("player control guid");
+        assert_eq!(
+            player_control_guid.0.as_deref(),
+            Some(ship_guid.to_string().as_str())
+        );
+        assert_eq!(
+            app.world().get::<ControlledBy>(player_entity),
+            Some(&ControlledBy {
+                owner: client,
+                lifetime: lightyear::prelude::Lifetime::Persistent,
+            })
+        );
+        assert_eq!(
+            app.world().get::<Replicate>(player_entity),
+            Some(&owner_only_replicate(client))
+        );
+        assert_eq!(
+            app.world()
+                .get::<InterpolationTarget>(player_entity)
+                .map(|target| format!("{target:?}")),
+            Some(format!("{:?}", owner_interpolation_target(client)))
+        );
+        assert!(app.world().get::<PredictionTarget>(player_entity).is_none());
+
+        assert_eq!(
+            app.world().get::<ControlledBy>(ship_entity),
+            Some(&ControlledBy {
+                owner: client,
+                lifetime: lightyear::prelude::Lifetime::Persistent,
+            })
+        );
+        assert_eq!(
+            app.world().get::<Replicate>(ship_entity),
+            Some(&Replicate::to_clients(
+                lightyear::prelude::NetworkTarget::All
+            ))
+        );
+        assert_eq!(
+            app.world()
+                .get::<PredictionTarget>(ship_entity)
+                .map(|target| format!("{target:?}")),
+            Some(format!("{:?}", owner_prediction_target(client)))
+        );
+        assert_eq!(
+            app.world()
+                .get::<InterpolationTarget>(ship_entity)
+                .map(|target| format!("{target:?}")),
+            Some(format!(
+                "{:?}",
+                InterpolationTarget::to_clients(
+                    lightyear::prelude::NetworkTarget::AllExceptSingle(PeerId::Netcode(42)),
+                )
+            ))
+        );
+    }
+
+    #[test]
+    fn reconcile_clears_stale_owner_roles_when_client_binding_is_gone() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
+        app.init_resource::<AuthenticatedClientBindings>();
+        app.init_resource::<PlayerControlledEntityMap>();
+        app.init_resource::<PlayerRuntimeEntityMap>();
+        app.add_systems(Update, reconcile_control_replication_roles);
+
+        let player_id =
+            PlayerEntityId(Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").unwrap());
+        let client = app.world_mut().spawn_empty().id();
+        let player_entity = app
+            .world_mut()
+            .spawn((
+                PlayerTag,
+                EntityGuid(player_id.0),
+                ControlledBy {
+                    owner: client,
+                    lifetime: lightyear::prelude::Lifetime::Persistent,
+                },
+                owner_only_replicate(client),
+                owner_prediction_target(client),
+            ))
+            .id();
+        let ship_entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").unwrap()),
+                SimulatedControlledEntity {
+                    player_entity_id: player_id,
+                },
+                ControlledBy {
+                    owner: client,
+                    lifetime: lightyear::prelude::Lifetime::Persistent,
+                },
+                owner_prediction_target(client),
+                Replicate::to_clients(lightyear::prelude::NetworkTarget::All),
+                InterpolationTarget::to_clients(
+                    lightyear::prelude::NetworkTarget::AllExceptSingle(PeerId::Netcode(42)),
+                ),
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(player_id.canonical_wire_id(), player_entity);
+        app.world_mut()
+            .resource_mut::<PlayerControlledEntityMap>()
+            .by_player_entity_id
+            .insert(player_id, ship_entity);
+        app.world_mut().entity_mut(client).despawn();
+
+        app.update();
+
+        assert!(app.world().get::<ControlledBy>(player_entity).is_none());
+        assert!(app.world().get::<PredictionTarget>(player_entity).is_none());
+        assert!(
+            app.world()
+                .get::<InterpolationTarget>(player_entity)
+                .is_none()
+        );
+        assert_eq!(
+            app.world().get::<Replicate>(player_entity),
+            Some(&Replicate::to_clients(
+                lightyear::prelude::NetworkTarget::None
+            ))
+        );
+
+        assert!(app.world().get::<ControlledBy>(ship_entity).is_none());
+        assert!(app.world().get::<PredictionTarget>(ship_entity).is_none());
+        assert_eq!(
+            app.world()
+                .get::<InterpolationTarget>(ship_entity)
+                .map(|target| format!("{target:?}")),
+            Some(format!(
+                "{:?}",
+                InterpolationTarget::to_clients(lightyear::prelude::NetworkTarget::All,)
+            ))
+        );
     }
 }

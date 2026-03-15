@@ -21,6 +21,7 @@ pub(super) struct WorldLoadingHintText;
 
 pub(super) fn setup_world_loading_screen(
     mut commands: Commands<'_, '_>,
+    mut images: ResMut<'_, Assets<Image>>,
     fonts: Res<'_, EmbeddedFonts>,
     active_theme: Res<'_, ActiveUiTheme>,
     visual_settings: Res<'_, UiVisualSettings>,
@@ -55,6 +56,7 @@ pub(super) fn setup_world_loading_screen(
             .with_children(|panel| {
                 spawn_hud_frame_chrome(
                     panel,
+                    &mut images,
                     theme,
                     Some("World Bootstrap"),
                     &fonts.mono,

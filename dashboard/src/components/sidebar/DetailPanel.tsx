@@ -76,6 +76,10 @@ export function DetailPanel({
   const detailScrollAreaRef = React.useRef<HTMLDivElement | null>(null)
   const detailScrollTopRef = React.useRef(0)
   const lastSelectedIdRef = React.useRef<string | null>(null)
+  const copyResetTimerRef = React.useRef<number | null>(null)
+  const [copyJsonState, setCopyJsonState] = React.useState<
+    'idle' | 'copied' | 'error'
+  >('idle')
   const generatedComponentRegistry = React.useMemo(
     () => findGeneratedComponentRegistryResource(resources),
     [resources],
@@ -135,6 +139,48 @@ export function DetailPanel({
       viewport.removeEventListener('scroll', handleScroll)
     }
   }, [selectedId])
+
+  React.useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current)
+      }
+    }
+  }, [])
+
+  const handleCopyEntityJson = React.useCallback(() => {
+    if (!selectedId) {
+      return
+    }
+
+    const exportPayload = buildEntityClipboardExport(
+      selectedId,
+      entities,
+      expandedNodes,
+      graphNodes,
+      graphEdges,
+    )
+    if (!exportPayload) {
+      setCopyJsonState('error')
+      return
+    }
+
+    void navigator.clipboard
+      .writeText(JSON.stringify(exportPayload, null, 2))
+      .then(() => {
+        setCopyJsonState('copied')
+        if (copyResetTimerRef.current !== null) {
+          window.clearTimeout(copyResetTimerRef.current)
+        }
+        copyResetTimerRef.current = window.setTimeout(() => {
+          setCopyJsonState('idle')
+          copyResetTimerRef.current = null
+        }, 1400)
+      })
+      .catch(() => {
+        setCopyJsonState('error')
+      })
+  }, [entities, expandedNodes, graphEdges, graphNodes, selectedId])
 
   if (selectedResourceTypePath) {
     const selectedResource =
@@ -237,17 +283,36 @@ export function DetailPanel({
               )}
             </div>
           </div>
-          {onClose && (
+          <div className="flex items-center gap-2 shrink-0">
             <Button
               variant="ghost"
-              size="icon"
-              onClick={onClose}
-              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-              aria-label="Close panel"
+              size="sm"
+              onClick={handleCopyEntityJson}
+              className="h-8 gap-2 px-2 text-muted-foreground hover:text-foreground"
+              aria-label="Copy entity subtree as structured JSON"
+              title="Copy entity subtree as structured JSON"
             >
-              <X className="h-4 w-4" />
+              <Copy className="h-3.5 w-3.5" />
+              <span className="text-[11px] uppercase tracking-[0.16em]">
+                {copyJsonState === 'copied'
+                  ? 'Copied'
+                  : copyJsonState === 'error'
+                    ? 'Retry'
+                    : 'Copy JSON'}
+              </span>
             </Button>
-          )}
+            {onClose && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                aria-label="Close panel"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -410,6 +475,126 @@ export function DetailPanel({
       </ScrollArea>
     </div>
   )
+}
+
+type EntityClipboardComponentExport = {
+  nodeId: string
+  label: string
+  kind: string
+  typePath: string | null
+  properties: Record<string, unknown>
+  value: unknown
+}
+
+type EntityClipboardNodeExport = {
+  entity: WorldEntity | null
+  graphNode: GraphNode | null
+  expandedNode: ExpandedNode | null
+  components: Array<EntityClipboardComponentExport>
+  children: Array<EntityClipboardNodeExport>
+}
+
+type EntityClipboardExport = {
+  rootEntityId: string
+  entityTree: EntityClipboardNodeExport
+}
+
+function buildEntityClipboardExport(
+  rootEntityId: string,
+  entities: Array<WorldEntity>,
+  expandedNodes: Map<string, ExpandedNode>,
+  graphNodes: Map<string, GraphNode>,
+  graphEdges: Array<GraphEdge>,
+): EntityClipboardExport | null {
+  const entitiesById = new Map(entities.map((entity) => [entity.id, entity]))
+  const childrenByParent = new Map<string, Array<string>>()
+  for (const entity of entities) {
+    if (!entity.parentEntityId) continue
+    const list = childrenByParent.get(entity.parentEntityId)
+    if (list) {
+      list.push(entity.id)
+    } else {
+      childrenByParent.set(entity.parentEntityId, [entity.id])
+    }
+  }
+
+  const componentIdsByEntityId = new Map<string, Array<string>>()
+  for (const edge of graphEdges) {
+    if (edge.label !== 'HAS_COMPONENT') continue
+    const list = componentIdsByEntityId.get(edge.from)
+    if (list) {
+      list.push(edge.to)
+    } else {
+      componentIdsByEntityId.set(edge.from, [edge.to])
+    }
+  }
+
+  const seen = new Set<string>()
+  const buildNode = (entityId: string): EntityClipboardNodeExport | null => {
+    if (seen.has(entityId)) {
+      return null
+    }
+    seen.add(entityId)
+
+    const entity = entitiesById.get(entityId) ?? null
+    const graphNode = graphNodes.get(entityId) ?? null
+    const expandedNode = expandedNodes.get(entityId) ?? null
+    const components = (componentIdsByEntityId.get(entityId) ?? [])
+      .map((componentId) => {
+        const componentNode = graphNodes.get(componentId)
+        if (!componentNode) {
+          return null
+        }
+        const typePath = componentNode.properties.typePath
+        const value = componentNode.properties.value
+        return {
+          nodeId: componentId,
+          label: componentNode.label,
+          kind: componentNode.kind,
+          typePath: typeof typePath === 'string' ? typePath : null,
+          properties: componentNode.properties,
+          value,
+        } satisfies EntityClipboardComponentExport
+      })
+      .filter(
+        (
+          component,
+        ): component is EntityClipboardComponentExport => component !== null,
+      )
+      .sort((a, b) => {
+        const left = a.typePath ?? a.label
+        const right = b.typePath ?? b.label
+        return left.localeCompare(right)
+      })
+
+    const children = (childrenByParent.get(entityId) ?? [])
+      .map((childId) => buildNode(childId))
+      .filter((child): child is EntityClipboardNodeExport => child !== null)
+      .sort((a, b) => {
+        const left = a.entity?.name ?? a.graphNode?.label ?? a.entity?.id ?? ''
+        const right =
+          b.entity?.name ?? b.graphNode?.label ?? b.entity?.id ?? ''
+        return left.localeCompare(right)
+      })
+
+    return {
+      entity,
+      graphNode,
+      expandedNode,
+      components,
+      children,
+    }
+  }
+
+  const entityTree = buildNode(rootEntityId)
+  if (!entityTree) {
+    return null
+  }
+
+  return {
+    rootEntityId,
+    entityTree,
+  }
 }
 
 type EntityRegistryResourceEntry = {

@@ -29,6 +29,10 @@ Primary architecture references:
 2. Clip defaults are merged into cue playback at registry load time before validation and catalog delivery.
 3. Cue-local playback fields remain authoritative when present; clip defaults only fill missing playback markers.
 
+2026-03-15 implementation update:
+1. Startup-required audio assets now flow through the dedicated startup manifest/public startup asset lane before `Auth`.
+2. Client applies a startup-safe audio catalog subset during `StartupLoading`, allowing authored menu/login audio profiles to resolve before authenticated world bootstrap.
+
 ## 1. Purpose
 
 Define how Sidereal should author, deliver, replicate, mix, spatialize, and play game audio under the existing server-authoritative and Lua-authored asset model.

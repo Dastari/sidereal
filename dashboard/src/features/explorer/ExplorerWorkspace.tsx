@@ -185,6 +185,57 @@ function extractOptimisticVec2(value: unknown): [number, number] | null {
   return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null
 }
 
+function extractOptimisticRotationRad(value: unknown): number | null {
+  const direct = Number(value)
+  if (Number.isFinite(direct)) {
+    return direct
+  }
+  if (Array.isArray(value)) {
+    if (value.length >= 4) {
+      const z = Number(value[2])
+      const w = Number(value[3])
+      if (Number.isFinite(z) && Number.isFinite(w)) {
+        return 2 * Math.atan2(z, w)
+      }
+    }
+    if (value.length >= 2) {
+      const sin = Number(value[0])
+      const cos = Number(value[1])
+      if (Number.isFinite(sin) && Number.isFinite(cos)) {
+        return Math.atan2(sin, cos)
+      }
+    }
+    return null
+  }
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const record = value as Record<string, unknown>
+  if ('value' in record) {
+    const nested = extractOptimisticRotationRad(record.value)
+    if (nested !== null) return nested
+  }
+  if ('rotation' in record) {
+    const nested = extractOptimisticRotationRad(record.rotation)
+    if (nested !== null) return nested
+  }
+
+  const sin = Number(record.sin)
+  const cos = Number(record.cos)
+  if (Number.isFinite(sin) && Number.isFinite(cos)) {
+    return Math.atan2(sin, cos)
+  }
+
+  const z = Number(record.z)
+  const w = Number(record.w)
+  if (Number.isFinite(z) && Number.isFinite(w)) {
+    return 2 * Math.atan2(z, w)
+  }
+
+  return null
+}
+
 function applyOptimisticEntityComponentValue(
   entities: Array<WorldEntity>,
   entityId: string,
@@ -192,18 +243,30 @@ function applyOptimisticEntityComponentValue(
   value: unknown,
 ): Array<WorldEntity> {
   const nextVec2 = extractOptimisticVec2(value)
+  const nextRotationRad = extractOptimisticRotationRad(value)
   if (!nextVec2) {
-    return entities
+    if (
+      nextRotationRad === null ||
+      (!typePath.endsWith('::WorldRotation') && !typePath.endsWith('::Rotation'))
+    ) {
+      return entities
+    }
   }
 
   return entities.map((entity) => {
     if (entity.id !== entityId) {
       return entity
     }
-    if (typePath.endsWith(POSITION_SUFFIX)) {
+    if (nextVec2 && typePath.endsWith(POSITION_SUFFIX)) {
       return { ...entity, x: nextVec2[0], y: nextVec2[1] }
     }
-    if (typePath.endsWith(AVIAN_LINEAR_VELOCITY_SUFFIX)) {
+    if (
+      nextRotationRad !== null &&
+      (typePath.endsWith('::WorldRotation') || typePath.endsWith('::Rotation'))
+    ) {
+      return { ...entity, rotationRad: nextRotationRad }
+    }
+    if (nextVec2 && typePath.endsWith(AVIAN_LINEAR_VELOCITY_SUFFIX)) {
       return { ...entity, vx: nextVec2[0], vy: nextVec2[1] }
     }
     return entity
@@ -1019,6 +1082,7 @@ export function ExplorerWorkspace({
             parentId: id,
             x: centerX + Math.cos(angle) * radius,
             y: centerY + Math.sin(angle) * radius,
+            rotationRad: child.rotationRad,
             label: child.name,
             kind: child.kind,
             isExpanded: false,
@@ -1030,6 +1094,7 @@ export function ExplorerWorkspace({
               sampledAtMs: child.sampledAtMs,
               componentCount: child.componentCount,
               parentEntityId: child.parentEntityId,
+              rotationRad: child.rotationRad,
               entity_labels: child.entity_labels,
             },
           })

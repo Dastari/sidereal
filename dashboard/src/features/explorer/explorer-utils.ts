@@ -237,6 +237,69 @@ function extractPositionFromComponentProps(
   return null
 }
 
+function extractRotationFromComponentProps(rawProps: unknown): number | null {
+  const readRotation = (candidate: unknown): number | null => {
+    const numeric = asFiniteNumber(candidate)
+    if (numeric !== null) return numeric
+
+    if (Array.isArray(candidate)) {
+      if (candidate.length >= 4) {
+        const z = asFiniteNumber(candidate[2])
+        const w = asFiniteNumber(candidate[3])
+        if (z !== null && w !== null) {
+          return 2 * Math.atan2(z, w)
+        }
+      }
+      if (candidate.length >= 2) {
+        const sin = asFiniteNumber(candidate[0])
+        const cos = asFiniteNumber(candidate[1])
+        if (sin !== null && cos !== null) {
+          return Math.atan2(sin, cos)
+        }
+      }
+    }
+
+    if (!candidate || typeof candidate !== 'object') {
+      return null
+    }
+
+    const record = candidate as Record<string, unknown>
+    const nested = readRotation(
+      record.value ?? record.rotation ?? record.Rotation ?? record['0'],
+    )
+    if (nested !== null) return nested
+
+    const sin = asFiniteNumber(record.sin)
+    const cos = asFiniteNumber(record.cos)
+    if (sin !== null && cos !== null) {
+      return Math.atan2(sin, cos)
+    }
+
+    const z = asFiniteNumber(record.z)
+    const w = asFiniteNumber(record.w)
+    if (z !== null && w !== null) {
+      return 2 * Math.atan2(z, w)
+    }
+
+    return null
+  }
+
+  if (rawProps === null || rawProps === undefined) return null
+  if (
+    typeof rawProps === 'object' &&
+    'properties' in rawProps &&
+    typeof (rawProps as Record<string, unknown>).properties === 'object'
+  ) {
+    return readRotation(
+      (rawProps as Record<string, unknown>).properties as Record<
+        string,
+        unknown
+      >,
+    )
+  }
+  return readRotation(rawProps)
+}
+
 function extractAvianPositionFromComponentProps(
   rawProps: unknown,
 ): [number, number] | null {
@@ -358,6 +421,11 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
     const velocityProps = componentProps.find(
       (props) => props.component_kind === 'avian_linear_velocity',
     )
+    const rotationProps = componentProps.find(
+      (props) =>
+        props.component_kind === 'avian_rotation' ||
+        props.component_kind === 'world_rotation',
+    )
     const mountedOnProps = componentProps.find(
       (props) => props.component_kind === 'mounted_on',
     )
@@ -368,6 +436,9 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
       : null
     const vel = velocityProps
       ? extractPositionFromComponentProps(velocityProps)
+      : null
+    const rotationRad = rotationProps
+      ? extractRotationFromComponentProps(rotationProps)
       : null
     const rawLabels = nodeProperties.entity_labels
     const entityLabels = Array.isArray(rawLabels)
@@ -402,6 +473,7 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
         shardId: asFiniteNumber(nodeProperties.shard_id) ?? 1,
         x: pos?.[0] ?? 0,
         y: pos?.[1] ?? 0,
+        ...(rotationRad !== null ? { rotationRad } : {}),
         vx: vel?.[0] ?? 0,
         vy: vel?.[1] ?? 0,
         sampledAtMs,

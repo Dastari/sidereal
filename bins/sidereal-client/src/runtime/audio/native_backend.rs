@@ -58,9 +58,9 @@ pub(super) struct LoopEmitterRequest<'a> {
 }
 
 pub(super) enum DebugProbeMode {
-    RootNonspatial,
-    RootSpatialAtListener,
-    RootSpatialOffsetRight,
+    Nonspatial,
+    SpatialAtListener,
+    SpatialOffsetRight,
 }
 
 struct CachedClip {
@@ -490,7 +490,7 @@ impl NativeAudioBackend {
         let sound_data = self.load_sound_data(cue, resolver)?;
 
         match mode {
-            DebugProbeMode::RootNonspatial => {
+            DebugProbeMode::Nonspatial => {
                 let _ = self
                     .manager
                     .play(sound_data)
@@ -500,13 +500,13 @@ impl NativeAudioBackend {
                     cue_id, asset_id, "audio debug probe played root nonspatial"
                 );
             }
-            DebugProbeMode::RootSpatialAtListener | DebugProbeMode::RootSpatialOffsetRight => {
+            DebugProbeMode::SpatialAtListener | DebugProbeMode::SpatialOffsetRight => {
                 let position = match mode {
-                    DebugProbeMode::RootSpatialAtListener => self.listener_position,
-                    DebugProbeMode::RootSpatialOffsetRight => {
+                    DebugProbeMode::SpatialAtListener => self.listener_position,
+                    DebugProbeMode::SpatialOffsetRight => {
                         self.listener_position + Vec3::new(25.0, 0.0, 0.0)
                     }
-                    DebugProbeMode::RootNonspatial => Vec3::ZERO,
+                    DebugProbeMode::Nonspatial => Vec3::ZERO,
                 };
                 let mut track = self
                     .manager

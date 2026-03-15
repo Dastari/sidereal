@@ -216,7 +216,6 @@ fn register_plugins(app: &mut App) {
     app.add_plugins(plugins::ReplicationRuntimeScriptingPlugin);
     app.add_plugins(plugins::ReplicationVisibilityPlugin);
     app.add_plugins(plugins::ReplicationPersistencePlugin);
-    app.add_plugins(plugins::ReplicationBootstrapBridgePlugin);
     app.add_systems(
         Update,
         (

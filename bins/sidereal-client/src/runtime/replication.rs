@@ -59,6 +59,12 @@ type ControlledTagGuidCandidate<'a> = (
     Has<lightyear::prelude::Interpolated>,
 );
 
+type LocalPlayerAuthorityCandidate<'a> = (
+    &'a EntityGuid,
+    Option<&'a ControlledEntityGuid>,
+    Has<lightyear::prelude::Predicted>,
+);
+
 #[derive(SystemParam)]
 pub(crate) struct ControlledEntityTagInputs<'w, 's> {
     session: Res<'w, ClientSession>,
@@ -305,6 +311,25 @@ pub(crate) fn should_defer_controlled_predicted_adoption(
     is_local_controlled && (!has_position || !has_rotation || !has_linear_velocity)
 }
 
+pub(crate) fn should_defer_spatial_root_adoption(
+    is_spatial_root: bool,
+    has_position: bool,
+    has_rotation: bool,
+    has_world_position: bool,
+    has_world_rotation: bool,
+) -> bool {
+    is_spatial_root
+        && ((!has_position && !has_world_position) || (!has_rotation && !has_world_rotation))
+}
+
+pub(crate) fn is_canonical_runtime_entity_lane(
+    is_replicated: bool,
+    is_predicted: bool,
+    is_interpolated: bool,
+) -> bool {
+    is_replicated && !is_predicted && !is_interpolated
+}
+
 pub(crate) fn runtime_entity_id_from_guid(
     entity_registry: &RuntimeEntityHierarchy,
     local_player_entity_id: &str,
@@ -331,6 +356,39 @@ fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
         .is_some_and(|(l, r)| l == r)
 }
 
+pub(crate) fn has_local_player_runtime_presence<'a, I>(
+    entity_registry: &RuntimeEntityHierarchy,
+    local_player_entity_id: &str,
+    guid_candidates: I,
+) -> bool
+where
+    I: IntoIterator<Item = &'a EntityGuid>,
+{
+    if entity_registry
+        .by_entity_id
+        .contains_key(local_player_entity_id)
+    {
+        return true;
+    }
+
+    let local_player_guid = parse_guid_from_entity_id(local_player_entity_id)
+        .or_else(|| uuid::Uuid::parse_str(local_player_entity_id).ok());
+    let Some(local_player_guid) = local_player_guid else {
+        return false;
+    };
+
+    if entity_registry
+        .by_entity_id
+        .contains_key(local_player_guid.to_string().as_str())
+    {
+        return true;
+    }
+
+    guid_candidates
+        .into_iter()
+        .any(|entity_guid| entity_guid.0 == local_player_guid)
+}
+
 pub(crate) fn resolve_authoritative_control_entity_id_from_registry(
     entity_registry: &RuntimeEntityHierarchy,
     local_player_entity_id: &str,
@@ -346,6 +404,58 @@ pub(crate) fn resolve_authoritative_control_entity_id_from_registry(
     }
 
     runtime_entity_id_from_guid(entity_registry, local_player_entity_id, control_guid)
+        .or_else(|| Some(control_guid.to_string()))
+}
+
+fn resolve_control_target_entity_id(
+    entity_registry: &RuntimeEntityHierarchy,
+    local_player_entity_id: &str,
+    controlled_entity_id: Option<&str>,
+) -> Option<String> {
+    match controlled_entity_id {
+        Some(id) if entity_registry.by_entity_id.contains_key(id) => Some(id.to_string()),
+        Some(id) => runtime_entity_id_from_guid(entity_registry, local_player_entity_id, id)
+            .or_else(|| Some(id.to_string())),
+        None => runtime_entity_id_from_guid(
+            entity_registry,
+            local_player_entity_id,
+            local_player_entity_id,
+        )
+        .or_else(|| Some(local_player_entity_id.to_string())),
+    }
+}
+
+fn resolve_local_player_authoritative_control_entity_id<'a, I>(
+    entity_registry: &RuntimeEntityHierarchy,
+    local_player_entity_id: &str,
+    candidates: I,
+) -> Option<String>
+where
+    I: IntoIterator<Item = (&'a EntityGuid, Option<&'a ControlledEntityGuid>, bool)>,
+{
+    let mut fallback = None;
+
+    for (entity_guid, controlled_entity_guid, is_predicted) in candidates {
+        if !ids_refer_to_same_guid(local_player_entity_id, entity_guid.0.to_string().as_str()) {
+            continue;
+        }
+
+        let resolved = resolve_authoritative_control_entity_id_from_registry(
+            entity_registry,
+            local_player_entity_id,
+            controlled_entity_guid,
+        );
+
+        if is_predicted {
+            if resolved.is_some() {
+                return resolved;
+            }
+        } else if fallback.is_none() {
+            fallback = resolved;
+        }
+    }
+
+    fallback
 }
 
 pub(crate) fn transition_world_loading_to_in_world(
@@ -353,6 +463,7 @@ pub(crate) fn transition_world_loading_to_in_world(
     session: Res<'_, ClientSession>,
     session_ready: Res<'_, SessionReadyState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
+    entity_guids: Query<'_, '_, &'_ EntityGuid>,
     mut next_state: ResMut<'_, NextState<ClientAppState>>,
 ) {
     if !app_state
@@ -367,14 +478,11 @@ pub(crate) fn transition_world_loading_to_in_world(
     if session_ready.ready_player_entity_id.as_deref() != Some(local_player_entity_id.as_str()) {
         return;
     }
-    let has_local_player_entity = entity_registry
-        .by_entity_id
-        .contains_key(local_player_entity_id)
-        || parse_guid_from_entity_id(local_player_entity_id).is_some_and(|guid| {
-            entity_registry
-                .by_entity_id
-                .contains_key(guid.to_string().as_str())
-        });
+    let has_local_player_entity = has_local_player_runtime_presence(
+        &entity_registry,
+        local_player_entity_id,
+        entity_guids.iter(),
+    );
     if !has_local_player_entity {
         return;
     }
@@ -541,21 +649,23 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
         watchdog.replication_state_seen = true;
         let runtime_entity_id = guid.0.to_string();
         let is_root_entity = mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none();
+        let is_canonical_runtime_entity =
+            is_canonical_runtime_entity_lane(is_replicated, _is_predicted, _is_interpolated);
         let is_local_player_entity =
             ids_refer_to_same_guid(runtime_entity_id.as_str(), local_player_entity_id);
         let is_local_controlled_entity = (is_root_entity || is_local_player_entity)
             && player_view_state.controlled_entity_id.as_deref()
                 == Some(runtime_entity_id.as_str());
         let is_spatial_root = is_root_entity && size_m.is_some();
-        let is_static_world_spatial =
-            (world_position.is_some() || world_rotation.is_some()) && linear_velocity.is_none();
-        if is_spatial_root
-            && ((position.is_none() && world_position.is_none())
-                || (rotation.is_none() && world_rotation.is_none())
-                || (!is_static_world_spatial && linear_velocity.is_none()))
-        {
-            // Avoid adopting partially replicated spatial roots at (0,0) until core
-            // motion components arrive; this prevents transient wrong-world placement.
+        if should_defer_spatial_root_adoption(
+            is_spatial_root,
+            position.is_some(),
+            rotation.is_some(),
+            world_position.is_some(),
+            world_rotation.is_some(),
+        ) {
+            // Avoid adopting spatial roots at (0,0) until we at least have a usable pose.
+            // Stationary remote observers may legitimately bootstrap without velocity.
             continue;
         }
         if should_defer_controlled_predicted_adoption(
@@ -600,25 +710,12 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
             continue;
         }
 
-        if is_replicated
+        if is_canonical_runtime_entity
             && let Some(&existing_entity) =
                 entity_registry.by_entity_id.get(runtime_entity_id.as_str())
             && existing_entity != entity
+            && live_entities.get(existing_entity).is_err()
         {
-            if live_entities.get(existing_entity).is_ok() {
-                commands
-                    .entity(entity)
-                    .insert((ReplicatedAdoptionHandled, Visibility::Hidden))
-                    .remove::<(
-                        ControlledEntity,
-                        StreamedVisualAssetId,
-                        StreamedVisualAttached,
-                        StreamedSpriteShaderAssetId,
-                    )>();
-                continue;
-            }
-
-            // Stale map entry (entity was despawned/recycled); allow re-adoption.
             entity_registry
                 .by_entity_id
                 .remove(runtime_entity_id.as_str());
@@ -648,7 +745,7 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
 
         // Keep canonical runtime ID mapping pinned to the Confirmed entity (`Replicated`).
         // Predicted/Interpolated clones share EntityGuid and are resolved by GUID queries.
-        if is_replicated {
+        if is_canonical_runtime_entity {
             register_runtime_entity(&mut entity_registry, runtime_entity_id.clone(), entity);
         }
         let mut entity_commands = commands.entity(entity);
@@ -705,9 +802,11 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
                     entity_id: runtime_entity_id.clone(),
                 },
             ));
-            remote_registry
-                .by_entity_id
-                .insert(runtime_entity_id, entity);
+            if is_canonical_runtime_entity {
+                remote_registry
+                    .by_entity_id
+                    .insert(runtime_entity_id, entity);
+            }
             entity_commands.remove::<ActionQueue>();
         } else if !is_local_player_entity {
             entity_commands.remove::<ActionQueue>();
@@ -744,39 +843,194 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::{
+        has_local_player_runtime_presence, is_canonical_runtime_entity_lane,
+        resolve_control_target_entity_id, resolve_local_player_authoritative_control_entity_id,
+        should_defer_controlled_predicted_adoption, should_defer_spatial_root_adoption,
+    };
+    use bevy::prelude::Entity;
+    use sidereal_game::{ControlledEntityGuid, EntityGuid};
+    use sidereal_runtime_sync::RuntimeEntityHierarchy;
+    use uuid::Uuid;
+
+    #[test]
+    fn spatial_root_adoption_allows_stationary_pose_complete_remote_entities() {
+        assert!(!should_defer_spatial_root_adoption(
+            true, true, true, false, false
+        ));
+    }
+
+    #[test]
+    fn spatial_root_adoption_still_defers_when_pose_is_missing() {
+        assert!(should_defer_spatial_root_adoption(
+            true, false, true, false, false
+        ));
+        assert!(should_defer_spatial_root_adoption(
+            true, true, false, false, false
+        ));
+    }
+
+    #[test]
+    fn controlled_predicted_adoption_still_requires_velocity() {
+        assert!(should_defer_controlled_predicted_adoption(
+            true, true, true, false
+        ));
+        assert!(!should_defer_controlled_predicted_adoption(
+            false, true, true, false
+        ));
+    }
+
+    #[test]
+    fn only_confirmed_lane_is_canonical_runtime_entity() {
+        assert!(is_canonical_runtime_entity_lane(true, false, false));
+        assert!(!is_canonical_runtime_entity_lane(true, false, true));
+        assert!(!is_canonical_runtime_entity_lane(true, true, false));
+    }
+
+    #[test]
+    fn local_player_control_resolution_prefers_predicted_player_anchor() {
+        let mut registry = RuntimeEntityHierarchy::default();
+        registry.by_entity_id.insert(
+            "ce9e421c-8b62-458a-803e-51e9ad272908".to_string(),
+            Entity::from_bits(1),
+        );
+
+        let player_guid = EntityGuid(
+            Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").expect("valid player guid"),
+        );
+        let control_guid =
+            ControlledEntityGuid(Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()));
+        let stale_confirmed_guid = ControlledEntityGuid(Some("stale-should-not-win".to_string()));
+
+        let resolved = resolve_local_player_authoritative_control_entity_id(
+            &registry,
+            "1521601b-7e69-4700-853f-eb1eb3a41199",
+            [
+                (&player_guid, Some(&stale_confirmed_guid), false),
+                (&player_guid, Some(&control_guid), true),
+            ],
+        );
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("ce9e421c-8b62-458a-803e-51e9ad272908")
+        );
+    }
+
+    #[test]
+    fn local_player_control_resolution_falls_back_to_non_predicted_anchor() {
+        let mut registry = RuntimeEntityHierarchy::default();
+        registry.by_entity_id.insert(
+            "ce9e421c-8b62-458a-803e-51e9ad272908".to_string(),
+            Entity::from_bits(1),
+        );
+
+        let player_guid = EntityGuid(
+            Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").expect("valid player guid"),
+        );
+        let control_guid =
+            ControlledEntityGuid(Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()));
+
+        let resolved = resolve_local_player_authoritative_control_entity_id(
+            &registry,
+            "1521601b-7e69-4700-853f-eb1eb3a41199",
+            [(&player_guid, Some(&control_guid), false)],
+        );
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("ce9e421c-8b62-458a-803e-51e9ad272908")
+        );
+    }
+
+    #[test]
+    fn local_player_control_resolution_uses_raw_guid_when_registry_is_not_ready() {
+        let registry = RuntimeEntityHierarchy::default();
+        let player_guid = EntityGuid(
+            Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").expect("valid player guid"),
+        );
+        let control_guid =
+            ControlledEntityGuid(Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()));
+
+        let resolved = resolve_local_player_authoritative_control_entity_id(
+            &registry,
+            "1521601b-7e69-4700-853f-eb1eb3a41199",
+            [(&player_guid, Some(&control_guid), true)],
+        );
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("ce9e421c-8b62-458a-803e-51e9ad272908")
+        );
+    }
+
+    #[test]
+    fn controlled_tag_target_falls_back_to_raw_guid_when_registry_is_not_ready() {
+        let registry = RuntimeEntityHierarchy::default();
+
+        let resolved = resolve_control_target_entity_id(
+            &registry,
+            "1521601b-7e69-4700-853f-eb1eb3a41199",
+            Some("ce9e421c-8b62-458a-803e-51e9ad272908"),
+        );
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("ce9e421c-8b62-458a-803e-51e9ad272908")
+        );
+    }
+
+    #[test]
+    fn world_loading_presence_accepts_guid_only_local_player_clone() {
+        let registry = RuntimeEntityHierarchy::default();
+        let player_guid =
+            Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").expect("valid player guid");
+        let player_entity_guid = EntityGuid(player_guid);
+
+        let present = has_local_player_runtime_presence(
+            &registry,
+            "1521601b-7e69-4700-853f-eb1eb3a41199",
+            [&player_entity_guid],
+        );
+
+        assert!(present);
+    }
+
+    #[test]
+    fn world_loading_presence_rejects_missing_local_player_guid() {
+        let registry = RuntimeEntityHierarchy::default();
+        let other_guid =
+            Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").expect("valid other guid");
+        let other_entity_guid = EntityGuid(other_guid);
+
+        let present = has_local_player_runtime_presence(
+            &registry,
+            "1521601b-7e69-4700-853f-eb1eb3a41199",
+            [&other_entity_guid],
+        );
+
+        assert!(!present);
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_local_player_view_state_system(
     session: Res<'_, ClientSession>,
     mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     request_state: Res<'_, super::resources::ClientControlRequestState>,
     entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    player_query: Query<'_, '_, Option<&'_ ControlledEntityGuid>, With<PlayerTag>>,
+    player_query: Query<'_, '_, LocalPlayerAuthorityCandidate<'_>, With<PlayerTag>>,
 ) {
     let Some(local_player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
-    let Some(local_player_runtime_id) = runtime_entity_id_from_guid(
+    if let Some(authoritative_controlled_id) = resolve_local_player_authoritative_control_entity_id(
         &entity_registry,
         local_player_entity_id,
-        local_player_entity_id,
-    ) else {
-        return;
-    };
-
-    let Some(&local_player_entity) = entity_registry
-        .by_entity_id
-        .get(local_player_runtime_id.as_str())
-    else {
-        return;
-    };
-    let Ok(controlled) = player_query.get(local_player_entity) else {
-        return;
-    };
-
-    if let Some(authoritative_controlled_id) = resolve_authoritative_control_entity_id_from_registry(
-        &entity_registry,
-        local_player_entity_id,
-        controlled,
+        player_query,
     ) {
         let authoritative_changed = player_view_state.controlled_entity_id.as_deref()
             != Some(authoritative_controlled_id.as_str());
@@ -873,27 +1127,11 @@ pub(crate) fn sync_controlled_entity_tags_system(
         return;
     };
     let local_player_wire_id = local_player_entity_id.clone();
-    let local_player_runtime_id = runtime_entity_id_from_guid(
+    let target_entity_id = resolve_control_target_entity_id(
         &inputs.entity_registry,
         local_player_entity_id,
-        local_player_entity_id,
-    )
-    .unwrap_or_else(|| local_player_entity_id.clone());
-
-    let target_entity_id = match inputs.player_view_state.controlled_entity_id.as_ref() {
-        Some(id)
-            if inputs
-                .entity_registry
-                .by_entity_id
-                .contains_key(id.as_str()) =>
-        {
-            Some(id.clone())
-        }
-        Some(id) => {
-            runtime_entity_id_from_guid(&inputs.entity_registry, local_player_entity_id, id)
-        }
-        None => Some(local_player_runtime_id.clone()),
-    };
+        inputs.player_view_state.controlled_entity_id.as_deref(),
+    );
     let target_guid = target_entity_id
         .as_ref()
         .and_then(|id| parse_guid_from_entity_id(id));

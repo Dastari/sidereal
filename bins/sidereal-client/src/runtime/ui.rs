@@ -21,8 +21,7 @@ use sidereal_ui::layout;
 use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
 use sidereal_ui::typography::text_font;
 use sidereal_ui::widgets::{
-    UiButtonVariant, UiInteractionState, button_surface, panel_surface, spawn_hud_corner_frame,
-    spawn_hud_frame_chrome, spawn_scanline_overlay,
+    UiButtonVariant, UiInteractionState, button_surface, panel_surface, spawn_hud_frame_chrome,
 };
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -33,26 +32,27 @@ use super::app_state::{
 use super::assets::{LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetNetIndicatorState};
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    ControlledEntity, DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText,
-    DebugOverlayPanelRoot, DebugOverlayPanelSecondaryLabelShadowText,
-    DebugOverlayPanelSecondaryLabelText, DebugOverlayPanelSecondaryValueShadowText,
-    DebugOverlayPanelSecondaryValueText, DebugOverlayPanelValueShadowText,
-    DebugOverlayPanelValueText, EntityNameplateHealthBar, EntityNameplateRoot, GameplayCamera,
-    GameplayHud, HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText,
-    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction,
-    OwnedEntitiesPanelButton, OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass,
-    RuntimeScreenOverlayPassKind, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
-    SuppressedPredictedDuplicateVisual, TacticalMapCursorText, TacticalMapMarkerDynamic,
-    TacticalMapOverlayRoot, TacticalMapTitle, UiOverlayCamera, UiOverlayLayer, WorldEntity,
+    ActiveNameplateEntry, CanonicalPresentationEntity, ControlledEntity,
+    DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
+    DebugOverlayPanelSecondaryLabelShadowText, DebugOverlayPanelSecondaryLabelText,
+    DebugOverlayPanelSecondaryValueShadowText, DebugOverlayPanelSecondaryValueText,
+    DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, EntityNameplateHealthFill,
+    EntityNameplateRoot, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
+    HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
+    LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
+    OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind,
+    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, TacticalMapCursorText,
+    TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle, UiOverlayCamera,
+    UiOverlayLayer, WorldEntity,
 };
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::ecs_util::queue_despawn_if_exists;
 use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
     CameraMotionState, ClientControlRequestState, ClientInputSendState, DebugOverlayDisplayMetrics,
-    DebugOverlaySnapshot, DebugOverlayState, DebugSeverity, DuplicateVisualResolutionState,
-    EmbeddedFonts, HudPerfCounters, NameplateUiState, OwnedAssetManifestCache,
-    TacticalContactsCache, TacticalFogCache, TacticalMapUiState,
+    DebugOverlaySnapshot, DebugOverlayState, EmbeddedFonts, HudPerfCounters, NameplateRegistry,
+    NameplateRegistryEntry, NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache,
+    TacticalFogCache, TacticalMapUiState,
 };
 
 #[allow(clippy::type_complexity)]
@@ -160,6 +160,9 @@ const TACTICAL_ICON_WORLD_HEIGHT_M: f32 = 24.0;
 const TACTICAL_CONTACT_SMOOTHING_RATE: f32 = 8.0;
 const TACTICAL_CONTACT_PREDICTION_HORIZON_S: f32 = 0.25;
 const DEBUG_OVERLAY_TEXT_COLUMN_COUNT: usize = 2;
+const NAMEPLATE_BAR_WIDTH_PX: f32 = 100.0;
+const NAMEPLATE_BAR_HEIGHT_PX: f32 = 8.0;
+const NAMEPLATE_VERTICAL_GAP_PX: f32 = 6.0;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct DebugOverlayTextColumn {
@@ -169,6 +172,103 @@ struct DebugOverlayTextColumn {
 
 fn elapsed_ms(started_at: Instant) -> f64 {
     started_at.elapsed().as_secs_f64() * 1000.0
+}
+
+#[derive(Default)]
+pub(super) struct TacticalFogMaskUpdateState {
+    initialized: bool,
+    fog_revision: u64,
+    viewport_width_px: u32,
+    viewport_height_px: u32,
+    world_center: Vec2,
+    map_zoom: f32,
+}
+
+fn nameplate_shell_color() -> Color {
+    Color::srgba(0.05, 0.08, 0.05, 0.75)
+}
+
+fn nameplate_border_color() -> Color {
+    Color::srgba(0.18, 0.35, 0.18, 0.8)
+}
+
+fn nameplate_fill_color() -> Color {
+    Color::srgb(0.22, 0.9, 0.34)
+}
+
+fn spawn_nameplate_entry(commands: &mut Commands<'_, '_>) -> NameplateRegistryEntry {
+    let root = commands
+        .spawn((
+            Name::new("Nameplate"),
+            Node {
+                position_type: PositionType::Absolute,
+                width: px(NAMEPLATE_BAR_WIDTH_PX),
+                height: px(NAMEPLATE_BAR_HEIGHT_PX),
+                left: px(0.0),
+                top: px(0.0),
+                ..default()
+            },
+            BackgroundColor(Color::NONE),
+            Visibility::Hidden,
+            UiOverlayLayer,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+            DespawnOnExit(ClientAppState::InWorld),
+        ))
+        .id();
+    let shell = commands
+        .spawn((
+            Name::new("NameplateShell"),
+            Node {
+                width: percent(100.0),
+                height: percent(100.0),
+                border: UiRect::all(px(1.0)),
+                padding: UiRect::all(px(1.0)),
+                align_items: AlignItems::Stretch,
+                ..default()
+            },
+            BackgroundColor(nameplate_shell_color()),
+            BorderColor::all(nameplate_border_color()),
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        ))
+        .id();
+    let health_fill = commands
+        .spawn((
+            Name::new("NameplateFill"),
+            Node {
+                width: percent(100.0),
+                height: percent(100.0),
+                ..default()
+            },
+            BackgroundColor(nameplate_fill_color()),
+            EntityNameplateHealthFill,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        ))
+        .id();
+    commands.entity(shell).add_child(health_fill);
+    commands.entity(root).add_child(shell);
+    commands.entity(root).insert(EntityNameplateRoot {
+        target: None,
+        health_fill,
+    });
+    NameplateRegistryEntry { root, health_fill }
+}
+
+fn release_nameplate_entry(
+    commands: &mut Commands<'_, '_>,
+    registry: &mut NameplateRegistry,
+    entry: NameplateRegistryEntry,
+) {
+    registry.free_entries.push(entry);
+    if let Ok(mut root_commands) = commands.get_entity(entry.root) {
+        root_commands.insert((
+            Visibility::Hidden,
+            EntityNameplateRoot {
+                target: None,
+                health_fill: entry.health_fill,
+            },
+        ));
+        root_commands.remove::<ActiveNameplateEntry>();
+    }
 }
 
 fn split_debug_overlay_text_columns(
@@ -325,7 +425,7 @@ pub(super) fn update_debug_overlay_text_ui_system(
         display_metrics.initialized = true;
     }
 
-    let mut header_row_pairs = Vec::with_capacity(3);
+    let mut header_row_pairs = Vec::with_capacity(2);
     header_row_pairs.push((
         "FPS".to_string(),
         display_metrics
@@ -340,14 +440,14 @@ pub(super) fn update_debug_overlay_text_ui_system(
             .map(|value| format!("{value:.2} ms"))
             .unwrap_or_else(|| "--.-- ms".to_string()),
     ));
-    header_row_pairs.push((
-        "Sent Input".to_string(),
-        format_sent_input_actions(&input_send_state.last_sent_actions),
-    ));
-    let mut row_pairs = Vec::with_capacity(snapshot.text_rows.len());
+    let mut row_pairs = Vec::with_capacity(snapshot.text_rows.len() + 1);
     for row in &snapshot.text_rows {
         row_pairs.push((row.label.clone(), row.value.clone()));
     }
+    row_pairs.push((
+        "Sent Input".to_string(),
+        format_sent_input_actions(&input_send_state.last_sent_actions),
+    ));
     let columns = split_debug_overlay_text_columns(&row_pairs);
     let header_labels_text = header_row_pairs
         .iter()
@@ -372,16 +472,7 @@ pub(super) fn update_debug_overlay_text_ui_system(
     let secondary_labels_text = columns[1].labels.join("\n");
     let secondary_values_text = columns[1].values.join("\n");
 
-    let highest_severity = snapshot
-        .text_rows
-        .iter()
-        .map(|row| row.severity)
-        .max_by_key(|severity| match severity {
-            DebugSeverity::Normal => 0,
-            DebugSeverity::Warn => 1,
-            DebugSeverity::Error => 2,
-        })
-        .unwrap_or(DebugSeverity::Normal);
+    let debug_value_color = Color::srgb(0.85, 0.92, 1.0);
 
     if let Ok(mut label_text) = ui_queries.text_queries.p0().single_mut() {
         label_text.0 = primary_labels_text.clone();
@@ -391,11 +482,7 @@ pub(super) fn update_debug_overlay_text_ui_system(
     }
     if let Ok((mut value_text, mut value_text_color)) = ui_queries.text_queries.p2().single_mut() {
         value_text.0 = primary_values_text.clone();
-        value_text_color.0 = match highest_severity {
-            DebugSeverity::Normal => Color::srgb(0.85, 0.92, 1.0),
-            DebugSeverity::Warn => Color::srgb(1.0, 0.85, 0.45),
-            DebugSeverity::Error => Color::srgb(1.0, 0.55, 0.5),
-        };
+        value_text_color.0 = debug_value_color;
     }
     if let Ok(mut value_shadow_text) = ui_queries.text_queries.p3().single_mut() {
         value_shadow_text.0 = primary_values_text;
@@ -410,11 +497,7 @@ pub(super) fn update_debug_overlay_text_ui_system(
         ui_queries.text_queries.p6().single_mut()
     {
         secondary_value_text.0 = secondary_values_text.clone();
-        secondary_value_text_color.0 = match highest_severity {
-            DebugSeverity::Normal => Color::srgb(0.85, 0.92, 1.0),
-            DebugSeverity::Warn => Color::srgb(1.0, 0.85, 0.45),
-            DebugSeverity::Error => Color::srgb(1.0, 0.55, 0.5),
-        };
+        secondary_value_text_color.0 = debug_value_color;
     }
     if let Ok(mut secondary_value_shadow_text) = ui_queries.text_queries.p7().single_mut() {
         secondary_value_shadow_text.0 = secondary_values_text;
@@ -427,7 +510,18 @@ fn format_sent_input_actions(actions: &[EntityAction]) -> String {
     }
 
     let names: Vec<&'static str> = actions.iter().map(describe_entity_action).collect();
-    format!("[{}]", names.join(", "))
+    let value = format!("[{}]", names.join(", "));
+    truncate_debug_overlay_value(&value, 52)
+}
+
+fn truncate_debug_overlay_value(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    let truncated = value.chars().take(keep).collect::<String>();
+    format!("{truncated}...")
 }
 
 fn describe_entity_action(action: &EntityAction) -> &'static str {
@@ -1002,6 +1096,7 @@ fn upsert_tactical_map_marker(
 #[derive(Default)]
 pub(super) struct TacticalContactSmoothingCache {
     tracks_by_entity_id: HashMap<String, TacticalContactSmoothingTrack>,
+    last_contacts_revision: u64,
 }
 
 struct TacticalContactSmoothingTrack {
@@ -1017,31 +1112,34 @@ fn update_tactical_contact_smoothing_cache(
     contacts_cache: &TacticalContactsCache,
     delta_secs: f32,
 ) {
-    let mut current_ids = HashSet::with_capacity(contacts_cache.contacts_by_entity_id.len());
-    for (entity_id, contact) in &contacts_cache.contacts_by_entity_id {
-        current_ids.insert(entity_id.clone());
-        let target_pos = Vec2::new(contact.position_xy[0], contact.position_xy[1]);
-        let velocity = contact.velocity_xy.map(|v| Vec2::new(v[0], v[1]));
-        if let Some(track) = cache.tracks_by_entity_id.get_mut(entity_id.as_str()) {
-            track.target_pos = target_pos;
-            track.velocity = velocity;
-            track.target_heading_rad = contact.heading_rad;
-        } else {
-            cache.tracks_by_entity_id.insert(
-                entity_id.clone(),
-                TacticalContactSmoothingTrack {
-                    render_pos: target_pos,
-                    target_pos,
-                    velocity,
-                    render_heading_rad: contact.heading_rad,
-                    target_heading_rad: contact.heading_rad,
-                },
-            );
+    if cache.last_contacts_revision != contacts_cache.revision {
+        let mut current_ids = HashSet::with_capacity(contacts_cache.contacts_by_entity_id.len());
+        for (entity_id, contact) in &contacts_cache.contacts_by_entity_id {
+            current_ids.insert(entity_id.clone());
+            let target_pos = Vec2::new(contact.position_xy[0], contact.position_xy[1]);
+            let velocity = contact.velocity_xy.map(|v| Vec2::new(v[0], v[1]));
+            if let Some(track) = cache.tracks_by_entity_id.get_mut(entity_id.as_str()) {
+                track.target_pos = target_pos;
+                track.velocity = velocity;
+                track.target_heading_rad = contact.heading_rad;
+            } else {
+                cache.tracks_by_entity_id.insert(
+                    entity_id.clone(),
+                    TacticalContactSmoothingTrack {
+                        render_pos: target_pos,
+                        target_pos,
+                        velocity,
+                        render_heading_rad: contact.heading_rad,
+                        target_heading_rad: contact.heading_rad,
+                    },
+                );
+            }
         }
+        cache
+            .tracks_by_entity_id
+            .retain(|entity_id, _| current_ids.contains(entity_id));
+        cache.last_contacts_revision = contacts_cache.revision;
     }
-    cache
-        .tracks_by_entity_id
-        .retain(|entity_id, _| current_ids.contains(entity_id));
 
     let dt = delta_secs.clamp(0.0, 0.25);
     if dt <= 0.0 {
@@ -1226,6 +1324,7 @@ pub(super) fn update_runtime_screen_overlay_passes_system(
     map_settings_query: Query<'_, '_, &'_ TacticalMapUiSettings>,
     mut fx_materials: ResMut<'_, Assets<TacticalMapOverlayMaterial>>,
     mut images: ResMut<'_, Assets<Image>>,
+    mut fog_mask_state: Local<'_, TacticalFogMaskUpdateState>,
 ) {
     let map_settings = map_settings_query
         .iter()
@@ -1257,6 +1356,9 @@ pub(super) fn update_runtime_screen_overlay_passes_system(
     } else {
         Visibility::Hidden
     };
+    if alpha <= 0.001 {
+        return;
+    }
     fx_transform.translation.x = 0.0;
     fx_transform.translation.y = 0.0;
     fx_transform.translation.z = -10.0;
@@ -1276,6 +1378,7 @@ pub(super) fn update_runtime_screen_overlay_passes_system(
                     alpha,
                     world_center,
                     map_zoom,
+                    &mut fog_mask_state,
                 );
             }
         }
@@ -1294,6 +1397,7 @@ fn update_tactical_runtime_screen_overlay_material(
     alpha: f32,
     world_center: Vec2,
     map_zoom: f32,
+    fog_mask_state: &mut TacticalFogMaskUpdateState,
 ) {
     material.viewport_time = Vec4::new(width, height, time_s, alpha);
     material.map_center_zoom_mode = Vec4::new(
@@ -1364,9 +1468,11 @@ fn update_tactical_runtime_screen_overlay_material(
         height,
         world_center,
         map_zoom,
+        fog_mask_state,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_tactical_fog_mask_texture(
     images: &mut Assets<Image>,
     material: &TacticalMapOverlayMaterial,
@@ -1375,6 +1481,7 @@ fn update_tactical_fog_mask_texture(
     viewport_height_px: f32,
     world_center: Vec2,
     map_zoom_px_per_world: f32,
+    build_state: &mut TacticalFogMaskUpdateState,
 ) {
     let Some(image) = images.get_mut(&material.fog_mask) else {
         return;
@@ -1384,6 +1491,17 @@ fn update_tactical_fog_mask_texture(
         || image.texture_descriptor.size.height != TACTICAL_FOG_MASK_RESOLUTION
         || image.texture_descriptor.format != TextureFormat::R8Unorm
         || image.data.as_ref().map_or(0, Vec::len) != expected_len;
+    let viewport_width_u32 = viewport_width_px.max(0.0).round() as u32;
+    let viewport_height_u32 = viewport_height_px.max(0.0).round() as u32;
+    let params_changed = !build_state.initialized
+        || build_state.fog_revision != fog_cache.revision
+        || build_state.viewport_width_px != viewport_width_u32
+        || build_state.viewport_height_px != viewport_height_u32
+        || build_state.world_center.distance_squared(world_center) > 0.0001
+        || (build_state.map_zoom - map_zoom_px_per_world).abs() > 0.0001;
+    if !needs_rebuild && !params_changed {
+        return;
+    }
     if needs_rebuild {
         *image = Image::new_fill(
             Extent3d {
@@ -1407,13 +1525,14 @@ fn update_tactical_fog_mask_texture(
         || viewport_height_px <= 0.0
     {
         mask.fill(255);
+        build_state.initialized = true;
+        build_state.fog_revision = fog_cache.revision;
+        build_state.viewport_width_px = viewport_width_u32;
+        build_state.viewport_height_px = viewport_height_u32;
+        build_state.world_center = world_center;
+        build_state.map_zoom = map_zoom_px_per_world;
         return;
     }
-
-    let mut explored_cells =
-        HashSet::with_capacity(fog_cache.explored_cells.len() + fog_cache.live_cells.len());
-    explored_cells.extend(fog_cache.explored_cells.iter().copied());
-    explored_cells.extend(fog_cache.live_cells.iter().copied());
 
     let width = TACTICAL_FOG_MASK_RESOLUTION as usize;
     let height = TACTICAL_FOG_MASK_RESOLUTION as usize;
@@ -1431,7 +1550,7 @@ fn update_tactical_fog_mask_texture(
                 + (sample_screen_x - viewport_width_px * 0.5) / map_zoom_px_per_world;
             let cell_x = (world_x / cell_size_m).floor() as i32;
             let index = y * width + x;
-            mask[index] = if explored_cells.contains(&sidereal_net::GridCell {
+            mask[index] = if fog_cache.revealed_cells.contains(&sidereal_net::GridCell {
                 x: cell_x,
                 y: cell_y,
             }) {
@@ -1441,6 +1560,12 @@ fn update_tactical_fog_mask_texture(
             };
         }
     }
+    build_state.initialized = true;
+    build_state.fog_revision = fog_cache.revision;
+    build_state.viewport_width_px = viewport_width_u32;
+    build_state.viewport_height_px = viewport_height_u32;
+    build_state.world_center = world_center;
+    build_state.map_zoom = map_zoom_px_per_world;
 }
 
 fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
@@ -1465,9 +1590,10 @@ fn format_sector_code(x: f32, y: f32) -> String {
     )
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn update_owned_entities_panel_system(
     mut commands: Commands<'_, '_>,
+    mut images: ResMut<'_, Assets<Image>>,
     fonts: Res<'_, EmbeddedFonts>,
     active_theme: Res<'_, ActiveUiTheme>,
     visual_settings: Res<'_, UiVisualSettings>,
@@ -1554,6 +1680,7 @@ pub(super) fn update_owned_entities_panel_system(
         .with_children(|panel| {
             spawn_hud_frame_chrome(
                 panel,
+                &mut images,
                 theme,
                 Some("Owned Fleet"),
                 &fonts.mono,
@@ -1873,17 +2000,18 @@ pub(super) fn update_segmented_bars_system(
 
 #[allow(clippy::type_complexity)]
 pub(super) fn sync_entity_nameplates_system(
+    nameplate_state: Res<'_, NameplateUiState>,
     mut commands: Commands<'_, '_>,
     mut hud_perf: ResMut<'_, HudPerfCounters>,
-    duplicate_visuals: Res<'_, DuplicateVisualResolutionState>,
+    mut registry: ResMut<'_, NameplateRegistry>,
     world_entities: Query<
         '_,
         '_,
-        (Entity, Option<&EntityGuid>, Option<&HealthPool>),
+        Entity,
         (
             With<WorldEntity>,
-            Without<EntityNameplateRoot>,
-            Without<SuppressedPredictedDuplicateVisual>,
+            With<CanonicalPresentationEntity>,
+            With<HealthPool>,
         ),
     >,
     existing: Query<'_, '_, (Entity, &EntityNameplateRoot)>,
@@ -1893,131 +2021,67 @@ pub(super) fn sync_entity_nameplates_system(
     hud_perf.nameplate_targets_last = 0;
     hud_perf.nameplate_spawned_last = 0;
     hud_perf.nameplate_despawned_last = 0;
-    let mut existing_targets = HashMap::<Entity, Vec<Entity>>::new();
-    for (entity, root) in &existing {
-        existing_targets.entry(root.target).or_default().push(entity);
-        // UI nameplate roots are HUD-only entities and must not be tagged as world entities.
-        // This keeps UI/world queries disjoint and avoids stale top-left plate positions.
-        commands.entity(entity).remove::<WorldEntity>();
-        commands.entity(entity).remove::<GameplayHud>();
-    }
+    registry
+        .active_by_target
+        .retain(|_, entry| existing.get(entry.root).is_ok());
+    registry
+        .free_entries
+        .retain(|entry| existing.get(entry.root).is_ok());
 
-    for entities in existing_targets.values_mut() {
-        if entities.len() <= 1 {
-            continue;
-        }
-        entities.sort_unstable_by_key(|entity| entity.to_bits());
-        for duplicate in entities.iter().skip(1) {
-            queue_despawn_if_exists(&mut commands, *duplicate);
+    if !nameplate_state.enabled {
+        let released = registry
+            .active_by_target
+            .drain()
+            .map(|(_, entry)| entry)
+            .collect::<Vec<_>>();
+        for entry in released {
+            release_nameplate_entry(&mut commands, &mut registry, entry);
             hud_perf.nameplate_despawned_last = hud_perf.nameplate_despawned_last.saturating_add(1);
         }
-        entities.truncate(1);
+        let elapsed_ms = elapsed_ms(started_at);
+        hud_perf.nameplate_sync_last_ms = elapsed_ms;
+        hud_perf.nameplate_sync_max_ms = hud_perf.nameplate_sync_max_ms.max(elapsed_ms);
+        return;
     }
 
-    let mut winner_entities = HashSet::<Entity>::new();
-    for (entity, guid, health_pool) in &world_entities {
-        if health_pool.is_none() {
-            continue;
-        }
-        if let Some(guid) = guid {
-            if duplicate_visuals.winner_by_guid.get(&guid.0) == Some(&entity) {
-                winner_entities.insert(entity);
-            }
-        } else {
-            winner_entities.insert(entity);
+    let mut desired_targets = world_entities.iter().collect::<Vec<_>>();
+    desired_targets.sort_unstable_by_key(|entity| entity.to_bits());
+    let desired_target_set = desired_targets.iter().copied().collect::<HashSet<_>>();
+    let stale_targets = registry
+        .active_by_target
+        .keys()
+        .copied()
+        .filter(|target| !desired_target_set.contains(target))
+        .collect::<Vec<_>>();
+    for target in stale_targets {
+        if let Some(entry) = registry.active_by_target.remove(&target) {
+            release_nameplate_entry(&mut commands, &mut registry, entry);
+            hud_perf.nameplate_despawned_last = hud_perf.nameplate_despawned_last.saturating_add(1);
         }
     }
 
-    for entity in &winner_entities {
-        if existing_targets.contains_key(entity) {
+    for target in desired_targets {
+        if registry.active_by_target.contains_key(&target) {
             continue;
         }
-        hud_perf.nameplate_spawned_last = hud_perf.nameplate_spawned_last.saturating_add(1);
-        commands
-            .spawn((
-                Name::new("Nameplate"),
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: px(100),
-                    left: px(0),
-                    top: px(0),
-                    flex_direction: FlexDirection::Row,
-                    ..default()
+        let entry = registry.free_entries.pop().unwrap_or_else(|| {
+            registry.allocated_entries = registry.allocated_entries.saturating_add(1);
+            spawn_nameplate_entry(&mut commands)
+        });
+        if let Ok(mut root_commands) = commands.get_entity(entry.root) {
+            root_commands.insert((
+                ActiveNameplateEntry,
+                EntityNameplateRoot {
+                    target: Some(target),
+                    health_fill: entry.health_fill,
                 },
-                Visibility::Hidden,
-                EntityNameplateRoot { target: *entity },
-                UiOverlayLayer,
-                RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-                DespawnOnExit(ClientAppState::InWorld),
-            ))
-            .with_children(|plate| {
-                let health_style = SegmentedBarStyle {
-                    segments: 16,
-                    active_color: Color::srgb(0.22, 0.9, 0.34),
-                    inactive_color: Color::srgba(0.08, 0.22, 0.10, 0.85),
-                    shell_color: Color::srgba(0.05, 0.08, 0.05, 0.75),
-                    border_color: Color::srgba(0.18, 0.35, 0.18, 0.8),
-                    corner_color: Color::srgba(0.32, 0.95, 0.46, 0.72),
-                    scanline_primary_color: Color::srgba(0.2, 0.8, 0.32, 0.06),
-                    scanline_secondary_color: Color::srgba(0.16, 0.55, 0.26, 0.03),
-                    segment_width_px: 5.0,
-                    segment_gap_px: 1.0,
-                };
-                plate
-                    .spawn((
-                        Name::new("NameplateHealthBar"),
-                        Node {
-                            // 16 segments @ 5px + 15 gaps @ 1px + 2px padding = 97px total.
-                            // Fixed-width segments avoid uneven fractional flex spacing.
-                            width: px(97.0),
-                            height: px(8.0),
-                            column_gap: px(health_style.segment_gap_px),
-                            align_items: AlignItems::Stretch,
-                            border: UiRect::all(px(1.0)),
-                            padding: UiRect::all(px(1.0)),
-                            ..default()
-                        },
-                        BackgroundColor(health_style.shell_color),
-                        BorderColor::all(health_style.border_color),
-                        health_style,
-                        SegmentedBarValue { ratio: 1.0 },
-                        EntityNameplateHealthBar { target: *entity },
-                    ))
-                    .with_children(|bar| {
-                        spawn_scanline_overlay(
-                            bar,
-                            health_style.scanline_primary_color,
-                            health_style.scanline_secondary_color,
-                            4,
-                            1.0,
-                        );
-                        for index in 0..health_style.segments {
-                            bar.spawn((
-                                Node {
-                                    width: px(health_style.segment_width_px),
-                                    height: percent(100.0),
-                                    ..default()
-                                },
-                                BackgroundColor(health_style.inactive_color),
-                                SegmentedBarSegment { index },
-                            ));
-                        }
-                        spawn_hud_corner_frame(bar, health_style.corner_color, 3.0, 1.0);
-                    });
-            });
+            ));
+        }
+        registry.active_by_target.insert(target, entry);
+        hud_perf.nameplate_spawned_last = hud_perf.nameplate_spawned_last.saturating_add(1);
     }
 
-    for (nameplate_entity, root) in &existing {
-        if !winner_entities.contains(&root.target)
-            || existing_targets
-                .get(&root.target)
-                .is_some_and(|entities| entities.first().copied() != Some(nameplate_entity))
-        {
-            queue_despawn_if_exists(&mut commands, nameplate_entity);
-            hud_perf.nameplate_despawned_last = hud_perf.nameplate_despawned_last.saturating_add(1);
-        }
-    }
-    hud_perf.nameplate_targets_last = winner_entities.len();
+    hud_perf.nameplate_targets_last = registry.active_by_target.len();
     let elapsed_ms = elapsed_ms(started_at);
     hud_perf.nameplate_sync_last_ms = elapsed_ms;
     hud_perf.nameplate_sync_max_ms = hud_perf.nameplate_sync_max_ms.max(elapsed_ms);
@@ -2027,27 +2091,29 @@ pub(super) fn sync_entity_nameplates_system(
 pub(super) fn update_entity_nameplate_positions_system(
     nameplate_state: Res<'_, NameplateUiState>,
     mut hud_perf: ResMut<'_, HudPerfCounters>,
-    mut roots: Query<
+    mut nameplate_nodes: ParamSet<
         '_,
         '_,
-        (&EntityNameplateRoot, &mut Node, &mut Visibility),
-        Without<WorldEntity>,
+        (
+            Query<
+                '_,
+                '_,
+                (&EntityNameplateRoot, &mut Node, &mut Visibility),
+                (With<ActiveNameplateEntry>, Without<WorldEntity>),
+            >,
+            Query<'_, '_, &'_ mut Node, With<EntityNameplateHealthFill>>,
+        ),
     >,
-    mut health_bars: Query<'_, '_, (&EntityNameplateHealthBar, &mut SegmentedBarValue)>,
     world_entities: Query<
         '_,
         '_,
         (
-            Entity,
             &GlobalTransform,
             Option<&Visibility>,
             Option<&SizeM>,
-            Option<&HealthPool>,
+            &HealthPool,
         ),
-        (
-            With<WorldEntity>,
-            Without<SuppressedPredictedDuplicateVisual>,
-        ),
+        (With<WorldEntity>, With<CanonicalPresentationEntity>),
     >,
     gameplay_camera: Query<'_, '_, (Entity, &Camera, &Transform), With<GameplayCamera>>,
     window_query: Query<'_, '_, &Window, With<bevy::window::PrimaryWindow>>,
@@ -2064,7 +2130,7 @@ pub(super) fn update_entity_nameplate_positions_system(
     hud_perf.nameplate_projection_failures_last = 0;
     hud_perf.nameplate_viewport_culled_last = 0;
     if !nameplate_state.enabled {
-        for (_, _, mut visibility) in &mut roots {
+        for (_, _, mut visibility) in &mut nameplate_nodes.p0() {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
         }
@@ -2110,37 +2176,17 @@ pub(super) fn update_entity_nameplate_positions_system(
         return;
     };
 
-    let mut entity_data_by_entity = HashMap::<Entity, (Vec3, f32, f32)>::new();
-    for (entity, global_transform, visibility, size_m, health_pool) in &world_entities {
-        let Some(health_pool) = health_pool else {
+    let mut pending_health_updates = Vec::new();
+    for (root, mut node, mut visibility) in &mut nameplate_nodes.p0() {
+        let Some(target) = root.target else {
+            *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
+            hud_perf.nameplate_missing_target_last =
+                hud_perf.nameplate_missing_target_last.saturating_add(1);
             continue;
         };
-        if visibility.is_some_and(|visibility| *visibility == Visibility::Hidden) {
-            continue;
-        }
-        // Root-level `ViewVisibility` is not reliable for nameplates because many runtime visuals
-        // are attached as renderable children while the authoritative world root only carries the
-        // gameplay transform/components. The viewport projection and explicit bounds checks below
-        // are the nameplate system's canonical visibility test.
-        let health_ratio = if health_pool.maximum > 0.0 {
-            (health_pool.current / health_pool.maximum).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let half_extent_world = size_m.map(|s| s.length * 0.5).unwrap_or(6.0);
-        entity_data_by_entity.insert(
-            entity,
-            (
-                global_transform.translation(),
-                half_extent_world,
-                health_ratio,
-            ),
-        );
-    }
-    hud_perf.nameplate_entity_data_last = entity_data_by_entity.len();
-
-    for (root, mut node, mut visibility) in &mut roots {
-        let Some((world_pos, half_extent_world, _)) = entity_data_by_entity.get(&root.target)
+        let Ok((global_transform, maybe_visibility, size_m, health_pool)) =
+            world_entities.get(target)
         else {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
@@ -2148,6 +2194,16 @@ pub(super) fn update_entity_nameplate_positions_system(
                 hud_perf.nameplate_missing_target_last.saturating_add(1);
             continue;
         };
+        if maybe_visibility
+            .is_some_and(|entity_visibility| *entity_visibility == Visibility::Hidden)
+        {
+            *visibility = Visibility::Hidden;
+            hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
+            continue;
+        }
+        hud_perf.nameplate_entity_data_last = hud_perf.nameplate_entity_data_last.saturating_add(1);
+        let world_pos = global_transform.translation();
+        let half_extent_world = size_m.map(|s| s.length * 0.5).unwrap_or(6.0);
         let center_world = Vec3::new(world_pos.x, world_pos.y, 0.0);
         let Ok(viewport_pos) = camera.world_to_viewport(&camera_global, center_world) else {
             *visibility = Visibility::Hidden;
@@ -2157,7 +2213,7 @@ pub(super) fn update_entity_nameplate_positions_system(
                 .saturating_add(1);
             continue;
         };
-        let top_world = Vec3::new(world_pos.x, world_pos.y + *half_extent_world, 0.0);
+        let top_world = Vec3::new(world_pos.x, world_pos.y + half_extent_world, 0.0);
         let Ok(top_viewport_pos) = camera.world_to_viewport(&camera_global, top_world) else {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
@@ -2168,7 +2224,7 @@ pub(super) fn update_entity_nameplate_positions_system(
         };
         // Hide plate once the entity itself is fully outside viewport bounds.
         // Center-only checks cause bars to linger at screen edges.
-        let right_world = Vec3::new(world_pos.x + *half_extent_world, world_pos.y, 0.0);
+        let right_world = Vec3::new(world_pos.x + half_extent_world, world_pos.y, 0.0);
         let Ok(right_viewport_pos) = camera.world_to_viewport(&camera_global, right_world) else {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
@@ -2190,23 +2246,25 @@ pub(super) fn update_entity_nameplate_positions_system(
                 hud_perf.nameplate_viewport_culled_last.saturating_add(1);
             continue;
         }
-        let plate_width = 100.0;
-        let plate_height = 8.0;
-        let vertical_gap = 6.0;
-        node.left = px(viewport_pos.x - plate_width * 0.5);
+        node.left = px(viewport_pos.x - NAMEPLATE_BAR_WIDTH_PX * 0.5);
         let entity_top_y_px = viewport_pos.y.min(top_viewport_pos.y);
-        node.top = px(entity_top_y_px - plate_height - vertical_gap);
+        node.top = px(entity_top_y_px - NAMEPLATE_BAR_HEIGHT_PX - NAMEPLATE_VERTICAL_GAP_PX);
         *visibility = Visibility::Visible;
         hud_perf.nameplate_visible_last = hud_perf.nameplate_visible_last.saturating_add(1);
 
-        if let Some((_, _, health_ratio)) = entity_data_by_entity.get(&root.target) {
-            for (bar_target, mut value) in &mut health_bars {
-                if bar_target.target == root.target {
-                    value.ratio = *health_ratio;
-                    hud_perf.nameplate_health_updates_last =
-                        hud_perf.nameplate_health_updates_last.saturating_add(1);
-                }
-            }
+        let health_ratio = if health_pool.maximum > 0.0 {
+            (health_pool.current / health_pool.maximum).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        pending_health_updates.push((root.health_fill, health_ratio));
+    }
+
+    for (health_fill, health_ratio) in pending_health_updates {
+        if let Ok(mut fill_node) = nameplate_nodes.p1().get_mut(health_fill) {
+            fill_node.width = percent(health_ratio * 100.0);
+            hud_perf.nameplate_health_updates_last =
+                hud_perf.nameplate_health_updates_last.saturating_add(1);
         }
     }
     let elapsed_ms = elapsed_ms(started_at);
@@ -2221,21 +2279,21 @@ mod tests {
         sync_entity_nameplates_system, update_debug_overlay_text_ui_system,
     };
     use crate::runtime::components::{
-        DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
-        DebugOverlayPanelSecondaryLabelShadowText, DebugOverlayPanelSecondaryLabelText,
-        DebugOverlayPanelSecondaryValueShadowText, DebugOverlayPanelSecondaryValueText,
-        DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, EntityNameplateRoot,
-        UiOverlayLayer, WorldEntity,
+        CanonicalPresentationEntity, DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText,
+        DebugOverlayPanelRoot, DebugOverlayPanelSecondaryLabelShadowText,
+        DebugOverlayPanelSecondaryLabelText, DebugOverlayPanelSecondaryValueShadowText,
+        DebugOverlayPanelSecondaryValueText, DebugOverlayPanelValueShadowText,
+        DebugOverlayPanelValueText, EntityNameplateRoot, UiOverlayLayer, WorldEntity,
     };
     use crate::runtime::platform::UI_OVERLAY_RENDER_LAYER;
     use crate::runtime::resources::{
-        ClientInputSendState, DebugOverlaySnapshot, DebugOverlayState,
-        DuplicateVisualResolutionState, HudPerfCounters, NameplateUiState,
+        ClientInputSendState, DebugOverlaySnapshot, DebugOverlayState, HudPerfCounters,
+        NameplateRegistry, NameplateUiState,
     };
     use bevy::camera::visibility::RenderLayers;
     use bevy::diagnostic::DiagnosticsStore;
     use bevy::prelude::*;
-    use sidereal_game::{EntityAction, EntityGuid, HealthPool};
+    use sidereal_game::{EntityAction, HealthPool};
 
     #[test]
     fn ui_overlay_layer_propagates_to_new_children_only_when_needed() {
@@ -2418,82 +2476,118 @@ mod tests {
     fn sync_entity_nameplates_system_names_spawned_roots() {
         let mut app = App::new();
         app.init_resource::<HudPerfCounters>();
-        app.init_resource::<DuplicateVisualResolutionState>();
+        app.init_resource::<NameplateRegistry>();
+        app.init_resource::<NameplateUiState>();
         app.add_systems(Update, sync_entity_nameplates_system);
 
-        let guid = uuid::Uuid::new_v4();
         let target = app
             .world_mut()
             .spawn((
                 WorldEntity,
-                EntityGuid(guid),
+                CanonicalPresentationEntity,
                 HealthPool {
                     current: 10.0,
                     maximum: 10.0,
                 },
             ))
             .id();
-        app.world_mut()
-            .resource_mut::<DuplicateVisualResolutionState>()
-            .winner_by_guid
-            .insert(guid, target);
 
         app.update();
 
         let mut query = app
             .world_mut()
             .query_filtered::<(&Name, &EntityNameplateRoot), Without<WorldEntity>>();
-        let (name, _) = query.single(app.world()).expect("spawned nameplate root");
+        let (name, root) = query.single(app.world()).expect("spawned nameplate root");
         assert_eq!(name.as_str(), "Nameplate");
+        assert_eq!(root.target, Some(target));
+        assert_eq!(
+            app.world()
+                .resource::<NameplateRegistry>()
+                .active_by_target
+                .len(),
+            1
+        );
     }
 
     #[test]
-    fn sync_entity_nameplates_system_despawns_duplicate_roots_for_same_target() {
+    fn sync_entity_nameplates_system_reuses_pooled_entries() {
         let mut app = App::new();
         app.init_resource::<HudPerfCounters>();
-        app.init_resource::<DuplicateVisualResolutionState>();
+        app.init_resource::<NameplateRegistry>();
+        app.init_resource::<NameplateUiState>();
         app.add_systems(Update, sync_entity_nameplates_system);
 
-        let guid = uuid::Uuid::new_v4();
-        let target = app
+        let first_target = app
             .world_mut()
             .spawn((
                 WorldEntity,
-                EntityGuid(guid),
+                CanonicalPresentationEntity,
                 HealthPool {
                     current: 10.0,
                     maximum: 10.0,
                 },
             ))
             .id();
-        app.world_mut()
-            .resource_mut::<DuplicateVisualResolutionState>()
-            .winner_by_guid
-            .insert(guid, target);
-
-        let first = app
+        let second_target = app
             .world_mut()
-            .spawn((Name::new("Nameplate"), EntityNameplateRoot { target }))
-            .id();
-        let second = app
-            .world_mut()
-            .spawn((Name::new("Nameplate"), EntityNameplateRoot { target }))
+            .spawn((
+                WorldEntity,
+                HealthPool {
+                    current: 10.0,
+                    maximum: 10.0,
+                },
+            ))
             .id();
 
         app.update();
-        app.update();
-
-        let mut query = app.world_mut().query::<(Entity, &EntityNameplateRoot)>();
-        let remaining = query
-            .iter(app.world())
-            .filter(|(_, root)| root.target == target)
-            .map(|(entity, _)| entity)
-            .collect::<Vec<_>>();
-
-        assert_eq!(remaining.len(), 1, "only one nameplate root should remain");
-        assert!(
-            remaining[0] == first || remaining[0] == second,
-            "one of the original duplicate roots should survive"
+        let first_root =
+            app.world().resource::<NameplateRegistry>().active_by_target[&first_target].root;
+        assert_eq!(
+            app.world()
+                .resource::<NameplateRegistry>()
+                .allocated_entries,
+            1
         );
+
+        app.world_mut()
+            .entity_mut(first_target)
+            .remove::<CanonicalPresentationEntity>();
+        app.world_mut()
+            .entity_mut(second_target)
+            .insert(CanonicalPresentationEntity);
+
+        app.update();
+
+        let registry = app.world().resource::<NameplateRegistry>();
+        assert_eq!(
+            registry.allocated_entries, 1,
+            "pooled entries should be reused"
+        );
+        assert_eq!(registry.active_by_target[&second_target].root, first_root);
+    }
+
+    #[test]
+    fn disabled_nameplates_do_not_allocate_entries() {
+        let mut app = App::new();
+        app.init_resource::<HudPerfCounters>();
+        app.init_resource::<NameplateRegistry>();
+        app.insert_resource(NameplateUiState { enabled: false });
+        app.add_systems(Update, sync_entity_nameplates_system);
+
+        app.world_mut().spawn((
+            WorldEntity,
+            CanonicalPresentationEntity,
+            HealthPool {
+                current: 10.0,
+                maximum: 10.0,
+            },
+        ));
+
+        app.update();
+
+        let registry = app.world().resource::<NameplateRegistry>();
+        assert!(registry.active_by_target.is_empty());
+        assert!(registry.free_entries.is_empty());
+        assert_eq!(registry.allocated_entries, 0);
     }
 }

@@ -239,6 +239,7 @@ export function GridCanvas({
         parentId: null,
         x: entity.x,
         y: entity.y,
+        rotationRad: entity.rotationRad,
         label: entity.name,
         kind: entity.kind,
         isExpanded: expandedNodes.has(entity.id),
@@ -249,6 +250,7 @@ export function GridCanvas({
           vy: entity.vy,
           sampledAtMs: entity.sampledAtMs,
           componentCount: entity.componentCount,
+          rotationRad: entity.rotationRad,
           entity_labels: entity.entity_labels,
         },
       })
@@ -456,10 +458,19 @@ export function GridCanvas({
       const [iconR, iconG, iconB] = resolveIconColor(entityLabels)
       const iconSize = Math.max(8, Math.min(96, cam.zoom * 18))
       const markerRadius = iconImage ? iconSize * 0.5 : radius
+      const rotationRad =
+        typeof node.rotationRad === 'number'
+          ? node.rotationRad
+          : typeof node.properties.rotationRad === 'number'
+            ? node.properties.rotationRad
+            : null
 
       if (iconImage) {
         ctx.save()
         ctx.translate(screenPos.x, screenPos.y)
+        if (rotationRad !== null && Number.isFinite(rotationRad)) {
+          ctx.rotate(-rotationRad)
+        }
         const iconX = -iconSize * 0.5
         const iconY = -iconSize * 0.5
         ctx.drawImage(iconImage, iconX, iconY, iconSize, iconSize)
