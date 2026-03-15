@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
     ControlledBy, InterpolationTarget, Lifetime, MessageReceiver, NetworkTarget, PredictionTarget,
-    RemoteId, Replicate, Server, ServerMultiMessageSender,
+    RemoteId, Replicate, ReplicationState, Server, ServerMultiMessageSender,
 };
 use sidereal_game::{
     ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag,
@@ -17,7 +17,8 @@ use sidereal_net::{
 
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::{
-    PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity, debug_env,
+    PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity,
+    visibility::VisibilityMembershipCache,
 };
 
 #[derive(Resource, Default)]
@@ -32,10 +33,6 @@ pub fn init_resources(app: &mut App) {
 #[doc(hidden)]
 pub fn guid_from_entity_id_like(raw: &str) -> Option<String> {
     uuid::Uuid::parse_str(raw).ok().map(|guid| guid.to_string())
-}
-
-fn control_debug_logging_enabled() -> bool {
-    debug_env("SIDEREAL_DEBUG_CONTROL_LOGS")
 }
 
 fn control_target_log_label(value: Option<&str>) -> &str {
@@ -194,27 +191,23 @@ pub fn receive_client_control_requests(
                 .get(bound_player.as_str())
                 && message.request_seq <= *last_seq
             {
-                if control_debug_logging_enabled() {
-                    info!(
-                        "server control handover stale player={} client={:?} remote={} seq={} previous_seq={} requested_raw={} requested_guid={} previous_controlled={} result=reject reason=stale_seq",
-                        bound_player,
-                        client_entity,
-                        remote_id.0,
-                        message.request_seq,
-                        last_seq,
-                        control_target_log_label(requested_raw.as_deref()),
-                        control_target_log_label(requested_control_guid.as_deref()),
-                        control_target_log_label(
-                            player_entities
-                                .by_player_entity_id
-                                .get(bound_player)
-                                .and_then(|player_entity| player_controlled
-                                    .get(*player_entity)
-                                    .ok())
-                                .and_then(|guid| guid.0.as_deref())
-                        ),
-                    );
-                }
+                info!(
+                    "server control handover stale player={} client={:?} remote={} seq={} previous_seq={} requested_raw={} requested_guid={} previous_controlled={} result=reject reason=stale_seq",
+                    bound_player,
+                    client_entity,
+                    remote_id.0,
+                    message.request_seq,
+                    last_seq,
+                    control_target_log_label(requested_raw.as_deref()),
+                    control_target_log_label(requested_control_guid.as_deref()),
+                    control_target_log_label(
+                        player_entities
+                            .by_player_entity_id
+                            .get(bound_player)
+                            .and_then(|player_entity| player_controlled.get(*player_entity).ok())
+                            .and_then(|guid| guid.0.as_deref())
+                    ),
+                );
                 let authoritative_controlled = player_entities
                     .by_player_entity_id
                     .get(bound_player)
@@ -285,18 +278,16 @@ pub fn receive_client_control_requests(
                 .ok()
                 .and_then(|guid| guid.0.clone())
                 .or_else(|| Some(player_runtime_id.clone()));
-            if control_debug_logging_enabled() {
-                info!(
-                    "server control handover request player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={}",
-                    bound_player,
-                    client_entity,
-                    remote_id.0,
-                    message.request_seq,
-                    control_target_log_label(previous_controlled_guid.as_deref()),
-                    control_target_log_label(requested_raw.as_deref()),
-                    control_target_log_label(requested_control_guid.as_deref()),
-                );
-            }
+            info!(
+                "server control handover request player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={}",
+                bound_player,
+                client_entity,
+                remote_id.0,
+                message.request_seq,
+                control_target_log_label(previous_controlled_guid.as_deref()),
+                control_target_log_label(requested_raw.as_deref()),
+                control_target_log_label(requested_control_guid.as_deref()),
+            );
             let (resolved_control_guid, resolved_target_entity, resolved_runtime_entity_id) =
                 if let Some(control_guid) = requested_control_guid.clone() {
                     if control_guid == player_guid {
@@ -323,19 +314,17 @@ pub fn receive_client_control_requests(
                                 "replication rejected control request for {} -> {} (target not found or not owned)",
                                 bound_player, control_guid
                             );
-                            if control_debug_logging_enabled() {
-                                warn!(
-                                    "server control handover reject player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={} result=reject reason=target_not_owned_or_missing authoritative_controlled={}",
-                                    bound_player,
-                                    client_entity,
-                                    remote_id.0,
-                                    message.request_seq,
-                                    control_target_log_label(previous_controlled_guid.as_deref()),
-                                    control_target_log_label(requested_raw.as_deref()),
-                                    control_target_log_label(requested_control_guid.as_deref()),
-                                    player_runtime_id,
-                                );
-                            }
+                            info!(
+                                "server control handover reject player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={} result=reject reason=target_not_owned_or_missing authoritative_controlled={}",
+                                bound_player,
+                                client_entity,
+                                remote_id.0,
+                                message.request_seq,
+                                control_target_log_label(previous_controlled_guid.as_deref()),
+                                control_target_log_label(requested_raw.as_deref()),
+                                control_target_log_label(requested_control_guid.as_deref()),
+                                player_runtime_id,
+                            );
                             let reject = ServerControlRejectMessage {
                                 player_entity_id: bound_player.clone(),
                                 request_seq: message.request_seq,
@@ -376,23 +365,21 @@ pub fn receive_client_control_requests(
                 neutralize_control_intent_on_handoff(&mut commands, currently_bound_entity);
             }
 
-            if control_debug_logging_enabled() {
-                info!(
-                    "server control handover resolved player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={} resolved_guid={} previous_entity={:?} target_entity={:?} rebind_required={} result=ack authoritative_controlled={}",
-                    bound_player,
-                    client_entity,
-                    remote_id.0,
-                    message.request_seq,
-                    control_target_log_label(previous_controlled_guid.as_deref()),
-                    control_target_log_label(requested_raw.as_deref()),
-                    control_target_log_label(requested_control_guid.as_deref()),
-                    control_target_log_label(resolved_control_guid.as_deref()),
-                    currently_bound_entity,
-                    resolved_target_entity,
-                    rebind_required,
-                    control_target_log_label(resolved_runtime_entity_id.as_deref())
-                );
-            }
+            info!(
+                "server control handover resolved player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={} resolved_guid={} previous_entity={:?} target_entity={:?} rebind_required={} result=ack authoritative_controlled={}",
+                bound_player,
+                client_entity,
+                remote_id.0,
+                message.request_seq,
+                control_target_log_label(previous_controlled_guid.as_deref()),
+                control_target_log_label(requested_raw.as_deref()),
+                control_target_log_label(requested_control_guid.as_deref()),
+                control_target_log_label(resolved_control_guid.as_deref()),
+                currently_bound_entity,
+                resolved_target_entity,
+                rebind_required,
+                control_target_log_label(resolved_runtime_entity_id.as_deref())
+            );
             order_state
                 .last_request_seq_by_player
                 .insert(bound_player.clone(), message.request_seq);
@@ -411,22 +398,27 @@ fn maybe_set_controlled_by(
     entity_commands: &mut EntityCommands<'_>,
     current: Option<&ControlledBy>,
     desired_owner: Option<Entity>,
-) {
+) -> bool {
     match desired_owner {
         Some(owner)
             if current.is_some_and(|controlled_by| {
                 controlled_by.owner == owner && controlled_by.lifetime == Lifetime::Persistent
-            }) => {}
+            }) =>
+        {
+            false
+        }
         Some(owner) => {
             entity_commands.insert(ControlledBy {
                 owner,
                 lifetime: Lifetime::Persistent,
             });
+            true
         }
         None if current.is_some() => {
             entity_commands.remove::<ControlledBy>();
+            true
         }
-        None => {}
+        None => false,
     }
 }
 
@@ -434,9 +426,12 @@ fn maybe_set_replicate(
     entity_commands: &mut EntityCommands<'_>,
     current: Option<&Replicate>,
     desired: &Replicate,
-) {
+) -> bool {
     if current != Some(desired) {
         entity_commands.insert(desired.clone());
+        true
+    } else {
+        false
     }
 }
 
@@ -450,18 +445,20 @@ fn maybe_set_prediction_target(
     entity_commands: &mut EntityCommands<'_>,
     current: Option<&PredictionTarget>,
     desired_owner: Option<Entity>,
-) {
+) -> bool {
     let current_debug = current.map(|target| format!("{target:?}"));
     let desired_debug = desired_owner.map(|owner| format!("{:?}", owner_prediction_target(owner)));
     match desired_owner {
-        Some(owner) if current_debug == desired_debug => {}
+        Some(owner) if current_debug == desired_debug => false,
         Some(owner) => {
             entity_commands.insert(owner_prediction_target(owner));
+            true
         }
         None if current.is_some() => {
             entity_commands.remove::<PredictionTarget>();
+            true
         }
-        None => {}
+        None => false,
     }
 }
 
@@ -469,7 +466,7 @@ fn maybe_set_interpolation_target(
     entity_commands: &mut EntityCommands<'_>,
     current: Option<&InterpolationTarget>,
     desired: Option<DesiredInterpolationTarget>,
-) {
+) -> bool {
     let current_debug = current.map(|target| format!("{target:?}"));
     let desired_debug = desired.as_ref().map(|target| match target {
         DesiredInterpolationTarget::Owner(owner) => {
@@ -481,33 +478,67 @@ fn maybe_set_interpolation_target(
         DesiredInterpolationTarget::Manual(target) => format!("{target:?}"),
     });
     match desired {
-        Some(DesiredInterpolationTarget::Owner(owner)) if current_debug == desired_debug => {}
+        Some(DesiredInterpolationTarget::Owner(owner)) if current_debug == desired_debug => false,
         Some(DesiredInterpolationTarget::Owner(owner)) => {
             entity_commands.insert(owner_interpolation_target(owner));
+            true
         }
-        Some(DesiredInterpolationTarget::Network(network)) if current_debug == desired_debug => {}
+        Some(DesiredInterpolationTarget::Network(network)) if current_debug == desired_debug => {
+            false
+        }
         Some(DesiredInterpolationTarget::Network(network)) => {
             entity_commands.insert(InterpolationTarget::to_clients(network));
+            true
         }
-        Some(DesiredInterpolationTarget::Manual(target)) if current_debug == desired_debug => {}
+        Some(DesiredInterpolationTarget::Manual(target)) if current_debug == desired_debug => false,
         Some(DesiredInterpolationTarget::Manual(target)) => {
             entity_commands.insert(target);
+            true
         }
         None if current.is_some() => {
             entity_commands.remove::<InterpolationTarget>();
+            true
         }
-        None => {}
+        None => false,
     }
+}
+
+fn collect_visible_clients_for_role_rearm(
+    membership_cache: &VisibilityMembershipCache,
+    replication_state: &ReplicationState,
+    entity: Entity,
+) -> Vec<Entity> {
+    membership_cache
+        .visible_clients(entity)
+        .into_iter()
+        .flat_map(|clients| clients.iter().copied())
+        .filter(|client_entity| replication_state.is_visible(*client_entity))
+        .collect()
+}
+
+fn rearm_visible_clients_for_role_change(
+    membership_cache: &VisibilityMembershipCache,
+    replication_state: &mut ReplicationState,
+    entity: Entity,
+) -> usize {
+    let visible_clients =
+        collect_visible_clients_for_role_rearm(membership_cache, replication_state, entity);
+    for client_entity in &visible_clients {
+        replication_state.lose_visibility(*client_entity);
+        replication_state.gain_visibility(*client_entity);
+    }
+    visible_clients.len()
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn reconcile_control_replication_roles(
     mut commands: Commands<'_, '_>,
     bindings: Res<'_, AuthenticatedClientBindings>,
+    membership_cache: Res<'_, VisibilityMembershipCache>,
     player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     entity_guids: Query<'_, '_, &'_ EntityGuid>,
-    players: Query<
+    mut players: Query<
         '_,
         '_,
         (
@@ -518,10 +549,11 @@ pub fn reconcile_control_replication_roles(
             Option<&'_ Replicate>,
             Option<&'_ PredictionTarget>,
             Option<&'_ InterpolationTarget>,
+            Option<Mut<'_, ReplicationState>>,
         ),
         With<PlayerTag>,
     >,
-    controlled_entities: Query<
+    mut controlled_entities: Query<
         '_,
         '_,
         (
@@ -531,6 +563,7 @@ pub fn reconcile_control_replication_roles(
             Option<&'_ Replicate>,
             Option<&'_ PredictionTarget>,
             Option<&'_ InterpolationTarget>,
+            Option<Mut<'_, ReplicationState>>,
         ),
         Without<PlayerTag>,
     >,
@@ -571,7 +604,8 @@ pub fn reconcile_control_replication_roles(
         current_replicate,
         current_prediction,
         current_interpolation,
-    ) in &players
+        mut replication_state,
+    ) in &mut players
     {
         let player_wire = player_guid.0.to_string();
         let bound_client = bound_client_by_player_wire
@@ -593,36 +627,59 @@ pub fn reconcile_control_replication_roles(
             entity_commands.insert(ControlledEntityGuid(desired_control_guid));
         }
 
+        let mut role_changed = false;
+
         match bound_client {
             Some(client_entity) => {
-                maybe_set_controlled_by(
+                role_changed |= maybe_set_controlled_by(
                     &mut entity_commands,
                     current_controlled_by,
                     Some(client_entity),
                 );
                 let desired_replicate = owner_only_replicate(client_entity);
-                maybe_set_replicate(&mut entity_commands, current_replicate, &desired_replicate);
+                role_changed |= maybe_set_replicate(
+                    &mut entity_commands,
+                    current_replicate,
+                    &desired_replicate,
+                );
 
-                maybe_set_prediction_target(
+                role_changed |= maybe_set_prediction_target(
                     &mut entity_commands,
                     current_prediction,
                     controls_self.then_some(client_entity),
                 );
-                maybe_set_interpolation_target(
+                role_changed |= maybe_set_interpolation_target(
                     &mut entity_commands,
                     current_interpolation,
                     (!controls_self).then_some(DesiredInterpolationTarget::Owner(client_entity)),
                 );
             }
             None => {
-                maybe_set_controlled_by(&mut entity_commands, current_controlled_by, None);
-                maybe_set_replicate(
+                role_changed |=
+                    maybe_set_controlled_by(&mut entity_commands, current_controlled_by, None);
+                role_changed |= maybe_set_replicate(
                     &mut entity_commands,
                     current_replicate,
                     &Replicate::to_clients(NetworkTarget::None),
                 );
-                maybe_set_prediction_target(&mut entity_commands, current_prediction, None);
-                maybe_set_interpolation_target(&mut entity_commands, current_interpolation, None);
+                role_changed |=
+                    maybe_set_prediction_target(&mut entity_commands, current_prediction, None);
+                role_changed |= maybe_set_interpolation_target(
+                    &mut entity_commands,
+                    current_interpolation,
+                    None,
+                );
+            }
+        }
+
+        if role_changed && let Some(replication_state) = replication_state.as_mut() {
+            let rearmed =
+                rearm_visible_clients_for_role_change(&membership_cache, replication_state, entity);
+            if rearmed > 0 {
+                info!(
+                    "server control role rearm entity={:?} guid={} visible_clients={}",
+                    entity, player_wire, rearmed
+                );
             }
         }
     }
@@ -634,7 +691,8 @@ pub fn reconcile_control_replication_roles(
         current_replicate,
         current_prediction,
         current_interpolation,
-    ) in &controlled_entities
+        mut replication_state,
+    ) in &mut controlled_entities
     {
         let desired_owner = desired_owner_by_entity
             .get(&entity)
@@ -648,8 +706,10 @@ pub fn reconcile_control_replication_roles(
             });
 
         let mut entity_commands = commands.entity(entity);
-        maybe_set_controlled_by(&mut entity_commands, current_controlled_by, desired_owner);
-        maybe_set_replicate(
+        let mut role_changed = false;
+        role_changed |=
+            maybe_set_controlled_by(&mut entity_commands, current_controlled_by, desired_owner);
+        role_changed |= maybe_set_replicate(
             &mut entity_commands,
             current_replicate,
             &Replicate::to_clients(NetworkTarget::All),
@@ -661,29 +721,48 @@ pub fn reconcile_control_replication_roles(
             None => Some(DesiredInterpolationTarget::Network(NetworkTarget::All)),
         };
 
-        maybe_set_prediction_target(&mut entity_commands, current_prediction, desired_owner);
-        maybe_set_interpolation_target(
+        role_changed |=
+            maybe_set_prediction_target(&mut entity_commands, current_prediction, desired_owner);
+        role_changed |= maybe_set_interpolation_target(
             &mut entity_commands,
             current_interpolation,
             desired_interpolation,
         );
+
+        if role_changed && let Some(replication_state) = replication_state.as_mut() {
+            let rearmed =
+                rearm_visible_clients_for_role_change(&membership_cache, replication_state, entity);
+            if rearmed > 0 {
+                let entity_guid = entity_guids
+                    .get(entity)
+                    .map(|guid| guid.0.to_string())
+                    .unwrap_or_else(|_| format!("{entity:?}"));
+                info!(
+                    "server control role rearm entity={:?} guid={} visible_clients={}",
+                    entity, entity_guid, rearmed
+                );
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        observer_interpolation_target, owner_interpolation_target, owner_only_replicate,
-        owner_prediction_target, reconcile_control_replication_roles,
+        collect_visible_clients_for_role_rearm, observer_interpolation_target,
+        owner_interpolation_target, owner_only_replicate, owner_prediction_target,
+        reconcile_control_replication_roles,
     };
     use crate::replication::auth::AuthenticatedClientBindings;
     use crate::replication::{
         PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity,
+        visibility::VisibilityMembershipCache,
     };
     use bevy::prelude::*;
     use lightyear::prelude::server::ClientOf;
     use lightyear::prelude::{
         ControlledBy, InterpolationTarget, PeerId, PredictionTarget, RemoteId, Replicate,
+        ReplicationState,
     };
     use sidereal_game::{ControlledEntityGuid, EntityGuid, PlayerTag};
     use sidereal_net::PlayerEntityId;
@@ -695,6 +774,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
         app.init_resource::<AuthenticatedClientBindings>();
+        app.init_resource::<VisibilityMembershipCache>();
         app.init_resource::<PlayerControlledEntityMap>();
         app.init_resource::<PlayerRuntimeEntityMap>();
         app.add_systems(Update, reconcile_control_replication_roles);
@@ -799,6 +879,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
         app.init_resource::<AuthenticatedClientBindings>();
+        app.init_resource::<VisibilityMembershipCache>();
         app.init_resource::<PlayerControlledEntityMap>();
         app.init_resource::<PlayerRuntimeEntityMap>();
         app.add_systems(Update, reconcile_control_replication_roles);
@@ -879,6 +960,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
         app.init_resource::<AuthenticatedClientBindings>();
+        app.init_resource::<VisibilityMembershipCache>();
         app.init_resource::<PlayerControlledEntityMap>();
         app.init_resource::<PlayerRuntimeEntityMap>();
         app.add_systems(Update, reconcile_control_replication_roles);
@@ -955,5 +1037,29 @@ mod tests {
                 InterpolationTarget::to_clients(lightyear::prelude::NetworkTarget::All,)
             ))
         );
+    }
+
+    #[test]
+    fn visible_role_rearm_targets_only_currently_visible_clients() {
+        let entity = Entity::from_bits(10);
+        let visible_client = Entity::from_bits(20);
+        let invisible_client = Entity::from_bits(30);
+        let uncached_client = Entity::from_bits(40);
+
+        let mut membership_cache = VisibilityMembershipCache::default();
+        let visible_set = [visible_client, invisible_client]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        membership_cache.replace_visible_clients(entity, visible_set);
+
+        let mut replication_state = ReplicationState::default();
+        replication_state.gain_visibility(visible_client);
+        replication_state.lose_visibility(invisible_client);
+        replication_state.gain_visibility(uncached_client);
+
+        let visible_clients =
+            collect_visible_clients_for_role_rearm(&membership_cache, &replication_state, entity);
+
+        assert_eq!(visible_clients, vec![visible_client]);
     }
 }

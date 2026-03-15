@@ -514,3 +514,28 @@ The client transform/bootstrap path now needs to use that canonical confirmed cl
 - `reveal_world_entities_when_initial_transform_ready` should allow initial reveal from that same canonical confirmed pose instead of waiting for history or showing origin.
 
 This keeps the fix narrow and avoids reintroducing a broad per-frame whole-world scan: the lookup stays GUID-scoped through `RuntimeEntityHierarchy`.
+
+### 2026-03-16 Lightyear Visibility Rearm Follow-Up
+
+The latest control-path logs narrowed one of the remaining failures further:
+
+- client control requests were leaving the client,
+- server control handoff was resolving and ACKing them,
+- client ACK handling was updating the authoritative controlled GUID,
+- but the owner `Predicted` clone still was not appearing after a ship handoff.
+
+At that point the request/ACK path was no longer the problem. The remaining gap was post-ACK lane transition.
+
+The relevant upstream constraint is in Lightyear's visibility state handling: per-sender visibility entries retain predicted/interpolated spawn flags and `gain_visibility()` is the path that reapplies them on re-entry. That means changing `PredictionTarget` / `InterpolationTarget` on an already-visible entity is not enough by itself for dynamic handoff; the entity must be re-armed for the affected visible clients so Lightyear emits a fresh spawn with the new lane flags.
+
+The server-side control reconciler now needs to treat role changes as a first-class visibility event:
+
+- when `ControlledBy`, `Replicate`, `PredictionTarget`, or `InterpolationTarget` changes on a player anchor or controlled ship,
+- gather the currently visible clients for that entity from `VisibilityMembershipCache`,
+- for those currently visible clients only, call `lose_visibility()` then `gain_visibility()` on the entity's `ReplicationState`.
+
+This keeps the rearm narrow and deterministic:
+
+- no broad world rescan,
+- no global visibility churn,
+- only entities whose owner/observer lane assignment actually changed are re-spawned to the already-visible clients that need the new flags.

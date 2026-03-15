@@ -1,6 +1,6 @@
 //! Control request/response: send control requests, receive acks/rejects, and update view state.
 
-use bevy::log::warn;
+use bevy::log::{info, warn};
 use bevy::prelude::*;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::{MessageReceiver, MessageSender};
@@ -81,6 +81,15 @@ pub fn send_lightyear_control_requests(
             request_state.pending_request_seq = Some(request_state.next_request_seq);
             request_state.last_sent_request_seq = None;
             request_state.last_sent_at_s = 0.0;
+            info!(
+                "client control request queued player={} seq={} desired_controlled_entity_id={}",
+                player_entity_id,
+                request_state.next_request_seq,
+                request_state
+                    .pending_controlled_entity_id
+                    .as_deref()
+                    .unwrap_or("<player-anchor>")
+            );
         }
     }
 
@@ -104,6 +113,16 @@ pub fn send_lightyear_control_requests(
     for mut sender in &mut senders {
         sender.send::<ControlChannel>(message.clone());
     }
+    info!(
+        "client control request sent player={} seq={} requested_controlled_entity_id={} resend={}",
+        player_entity_id,
+        request_seq,
+        message
+            .controlled_entity_id
+            .as_deref()
+            .unwrap_or("<player-anchor>"),
+        request_state.last_sent_request_seq == Some(request_seq)
+    );
     request_state.last_sent_at_s = now_s;
     request_state.last_sent_request_seq = Some(request_seq);
 }
@@ -239,6 +258,15 @@ pub fn receive_lightyear_control_results(
             }
             player_view_state.desired_controlled_entity_id =
                 player_view_state.controlled_entity_id.clone();
+            info!(
+                "client control request acknowledged player={} seq={} authoritative_controlled_entity_id={}",
+                message.player_entity_id,
+                message.request_seq,
+                player_view_state
+                    .controlled_entity_id
+                    .as_deref()
+                    .unwrap_or("<player-anchor>")
+            );
         }
     }
 
@@ -267,6 +295,16 @@ pub fn receive_lightyear_control_results(
             let duplicate_stale_seq =
                 message.reason == "stale_seq" && pending_request_seq != Some(message.request_seq);
             if !duplicate_stale_seq {
+                info!(
+                    "client control request rejected player={} seq={} reason={} authoritative_controlled_entity_id={}",
+                    message.player_entity_id,
+                    message.request_seq,
+                    message.reason,
+                    player_view_state
+                        .controlled_entity_id
+                        .as_deref()
+                        .unwrap_or("<player-anchor>")
+                );
                 warn!(
                     "client control request rejected player={} seq={} reason={}",
                     message.player_entity_id, message.request_seq, message.reason

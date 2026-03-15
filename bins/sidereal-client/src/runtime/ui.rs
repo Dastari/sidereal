@@ -6,6 +6,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+use bevy::log::info;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite_render::MeshMaterial2d;
@@ -1811,9 +1812,16 @@ pub(super) fn handle_owned_entities_panel_buttons(
                 match &button.action {
                     OwnedEntitiesPanelAction::FreeRoam => {
                         let target = session.player_entity_id.clone();
-                        player_view_state.desired_controlled_entity_id = target.clone();
-                        control_request_state.next_request_seq =
+                        let next_request_seq =
                             control_request_state.next_request_seq.saturating_add(1);
+                        info!(
+                            "client control selection requested via owned panel player={} target={} seq={}",
+                            session.player_entity_id.as_deref().unwrap_or("<none>"),
+                            target.as_deref().unwrap_or("<player-anchor>"),
+                            next_request_seq
+                        );
+                        player_view_state.desired_controlled_entity_id = target.clone();
+                        control_request_state.next_request_seq = next_request_seq;
                         control_request_state.pending_controlled_entity_id = target;
                         control_request_state.pending_request_seq =
                             Some(control_request_state.next_request_seq);
@@ -1825,9 +1833,16 @@ pub(super) fn handle_owned_entities_panel_buttons(
                         player_view_state.selected_entity_id = session.player_entity_id.clone();
                     }
                     OwnedEntitiesPanelAction::ControlEntity(entity_id) => {
-                        player_view_state.desired_controlled_entity_id = Some(entity_id.clone());
-                        control_request_state.next_request_seq =
+                        let next_request_seq =
                             control_request_state.next_request_seq.saturating_add(1);
+                        info!(
+                            "client control selection requested via owned panel player={} target={} seq={}",
+                            session.player_entity_id.as_deref().unwrap_or("<none>"),
+                            entity_id,
+                            next_request_seq
+                        );
+                        player_view_state.desired_controlled_entity_id = Some(entity_id.clone());
+                        control_request_state.next_request_seq = next_request_seq;
                         control_request_state.pending_controlled_entity_id =
                             Some(entity_id.clone());
                         control_request_state.pending_request_seq =

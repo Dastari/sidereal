@@ -231,6 +231,15 @@ impl VisibilityMembershipCache {
     pub fn clear(&mut self) {
         self.by_entity.clear();
     }
+
+    pub fn visible_clients(&self, entity: Entity) -> Option<&HashSet<Entity>> {
+        self.by_entity.get(&entity)
+    }
+
+    #[cfg(test)]
+    pub fn replace_visible_clients(&mut self, entity: Entity, clients: HashSet<Entity>) {
+        self.by_entity.insert(entity, clients);
+    }
 }
 
 #[derive(Resource, Default)]
