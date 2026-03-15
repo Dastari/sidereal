@@ -6,10 +6,11 @@ use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::Confirmed;
 use sidereal_game::{
-    FullscreenLayer, RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
+    EntityGuid, FullscreenLayer, RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
     RENDER_PHASE_FULLSCREEN_FOREGROUND, RuntimeRenderLayerDefinition, WorldPosition, WorldRotation,
     resolve_world_position, resolve_world_rotation_rad,
 };
+use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::components::{PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity};
 
@@ -47,6 +48,34 @@ fn resolve_confirmed_planar_pose(
         return None;
     }
     Some((planar_position, heading))
+}
+
+fn resolve_canonical_confirmed_planar_pose(
+    entity_guid: &EntityGuid,
+    current_entity: Entity,
+    entity_registry: &RuntimeEntityHierarchy,
+    confirmed_entities: &Query<
+        '_,
+        '_,
+        (
+            Option<&Position>,
+            Option<&Rotation>,
+            Option<&WorldPosition>,
+            Option<&WorldRotation>,
+        ),
+        (With<WorldEntity>, Without<lightyear::prelude::Interpolated>),
+    >,
+) -> Option<(Vec2, f32)> {
+    let canonical_entity = entity_registry
+        .by_entity_id
+        .get(entity_guid.0.to_string().as_str())
+        .copied()?;
+    if canonical_entity == current_entity {
+        return None;
+    }
+    let (position, rotation, world_position, world_rotation) =
+        confirmed_entities.get(canonical_entity).ok()?;
+    resolve_current_planar_pose(position, rotation, world_position, world_rotation)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -148,10 +177,13 @@ pub(crate) fn sync_confirmed_world_entity_transforms_from_world_space(
 /// Transform (0,0) until the next server delta arrives.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
     mut entities: Query<
         '_,
         '_,
         (
+            Entity,
+            &'_ EntityGuid,
             Option<&'_ Position>,
             Option<&'_ Rotation>,
             Option<&'_ WorldPosition>,
@@ -164,8 +196,21 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         ),
         (With<WorldEntity>, With<lightyear::prelude::Interpolated>),
     >,
+    confirmed_entities: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
+        ),
+        (With<WorldEntity>, Without<lightyear::prelude::Interpolated>),
+    >,
 ) {
     for (
+        entity,
+        entity_guid,
         position,
         rotation,
         world_position,
@@ -196,6 +241,14 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         }
         let (planar_position, heading) =
             resolve_confirmed_planar_pose(confirmed_position, confirmed_rotation)
+                .or_else(|| {
+                    resolve_canonical_confirmed_planar_pose(
+                        entity_guid,
+                        entity,
+                        &entity_registry,
+                        &confirmed_entities,
+                    )
+                })
                 .or_else(|| {
                     resolve_current_planar_pose(position, rotation, world_position, world_rotation)
                 })
@@ -313,11 +366,13 @@ pub(crate) fn recover_stalled_interpolated_world_entity_transforms(
 #[allow(clippy::type_complexity)]
 pub(crate) fn reveal_world_entities_when_initial_transform_ready(
     mut commands: Commands<'_, '_>,
+    entity_registry: Res<'_, RuntimeEntityHierarchy>,
     mut entities: Query<
         '_,
         '_,
         (
             Entity,
+            &'_ EntityGuid,
             Has<lightyear::prelude::Interpolated>,
             Option<&'_ Position>,
             Option<&'_ Rotation>,
@@ -334,9 +389,21 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
         ),
         (With<WorldEntity>, With<PendingInitialVisualReady>),
     >,
+    confirmed_entities: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
+        ),
+        (With<WorldEntity>, Without<lightyear::prelude::Interpolated>),
+    >,
 ) {
     for (
         entity,
+        entity_guid,
         is_interpolated,
         position,
         rotation,
@@ -409,6 +476,16 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
                 {
                     source_position = Some(planar_position);
                     source_heading = Some(heading);
+                } else if let Some((planar_position, heading)) =
+                    resolve_canonical_confirmed_planar_pose(
+                        entity_guid,
+                        entity,
+                        &entity_registry,
+                        &confirmed_entities,
+                    )
+                {
+                    source_position = Some(planar_position);
+                    source_heading = Some(heading);
                 } else if position.is_none()
                     && rotation.is_none()
                     && (world_position.is_some() || world_rotation.is_some())
@@ -427,6 +504,15 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
             {
                 source_position = Some(planar_position);
                 source_heading = Some(heading);
+            } else if let Some((planar_position, heading)) = resolve_canonical_confirmed_planar_pose(
+                entity_guid,
+                entity,
+                &entity_registry,
+                &confirmed_entities,
+            ) {
+                source_position = Some(planar_position);
+                source_heading = Some(heading);
+                ready = true;
             }
         } else if let (Some(planar_position), Some(heading)) = (
             resolve_world_position(position, world_position),
@@ -464,11 +550,15 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
 mod tests {
     use super::{
         interpolated_presentation_ready, reveal_world_entities_when_initial_transform_ready,
+        sync_interpolated_world_entity_transforms_without_history,
     };
     use crate::runtime::components::{PendingInitialVisualReady, WorldEntity};
     use avian2d::prelude::{Position, Rotation};
     use bevy::prelude::*;
     use lightyear::prelude::Interpolated;
+    use sidereal_game::EntityGuid;
+    use sidereal_runtime_sync::RuntimeEntityHierarchy;
+    use uuid::Uuid;
 
     #[test]
     fn interpolated_presentation_ready_rejects_dynamic_current_pose_without_confirmed_or_history() {
@@ -513,5 +603,104 @@ mod tests {
             entity_ref.contains::<PendingInitialVisualReady>(),
             "entity should remain pending until it has confirmed pose or interpolation history"
         );
+    }
+
+    #[test]
+    fn reveal_uses_canonical_confirmed_pose_when_interpolated_bootstrap_is_missing() {
+        let mut app = App::new();
+        app.init_resource::<RuntimeEntityHierarchy>();
+        app.add_systems(Update, reveal_world_entities_when_initial_transform_ready);
+
+        let guid = Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").expect("valid guid");
+        let confirmed = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                Position(Vec2::new(12.0, 34.0)),
+                Rotation::radians(0.75),
+                Transform::default(),
+                Visibility::Visible,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<RuntimeEntityHierarchy>()
+            .by_entity_id
+            .insert(guid.to_string(), confirmed);
+        let interpolated = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                PendingInitialVisualReady,
+                EntityGuid(guid),
+                Interpolated,
+                Position(Vec2::ZERO),
+                Rotation::IDENTITY,
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id();
+
+        app.update();
+
+        let entity_ref = app.world().entity(interpolated);
+        let transform = entity_ref.get::<Transform>().expect("transform");
+        assert_eq!(transform.translation.x, 12.0);
+        assert_eq!(transform.translation.y, 34.0);
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Visible
+        );
+        assert!(
+            !entity_ref.contains::<PendingInitialVisualReady>(),
+            "entity should become renderable once the canonical confirmed clone has a pose"
+        );
+    }
+
+    #[test]
+    fn interpolated_without_history_uses_canonical_confirmed_pose() {
+        let mut app = App::new();
+        app.init_resource::<RuntimeEntityHierarchy>();
+        app.add_systems(
+            Update,
+            sync_interpolated_world_entity_transforms_without_history,
+        );
+
+        let guid = Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").expect("valid guid");
+        let confirmed = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                Position(Vec2::new(-20.0, 48.0)),
+                Rotation::radians(-0.5),
+                Transform::default(),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<RuntimeEntityHierarchy>()
+            .by_entity_id
+            .insert(guid.to_string(), confirmed);
+        let interpolated = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(guid),
+                Interpolated,
+                Position(Vec2::ZERO),
+                Rotation::IDENTITY,
+                Transform::default(),
+            ))
+            .id();
+
+        app.update();
+
+        let transform = app
+            .world()
+            .entity(interpolated)
+            .get::<Transform>()
+            .expect("transform");
+        assert_eq!(transform.translation.x, -20.0);
+        assert_eq!(transform.translation.y, 48.0);
     }
 }

@@ -7,7 +7,7 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    admin, assets, combat, control, health, input, lifecycle, owner_manifest, persistence,
+    admin, assets, combat, health, input, lifecycle, owner_manifest, persistence,
     runtime_scripting, runtime_state, simulation_entities, tactical, visibility,
 };
 
@@ -97,11 +97,6 @@ impl Plugin for ReplicationControlPlugin {
             )
                 .chain()
                 .after(PhysicsSystems::Writeback),
-        );
-        app.add_systems(
-            PostUpdate,
-            control::reconcile_control_replication_roles
-                .before(lightyear::prelude::ReplicationBufferSystems::BeforeBuffer),
         );
     }
 }

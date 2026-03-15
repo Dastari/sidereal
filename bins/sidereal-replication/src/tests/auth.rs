@@ -1,9 +1,10 @@
 use bevy::prelude::*;
 use lightyear::prelude::PeerId;
 
+use crate::replication::PlayerRuntimeEntityMap;
 use crate::replication::auth::{
     AUTH_CONFIG_DENIED_REASON, AuthenticatedClientBindings, cleanup_client_auth_bindings,
-    configured_gateway_jwt_secret,
+    configured_gateway_jwt_secret, sync_visibility_registry_with_authenticated_clients,
 };
 use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
@@ -99,5 +100,49 @@ fn configured_gateway_jwt_secret_rejects_missing_or_short_values() {
     assert_eq!(
         configured_gateway_jwt_secret().as_deref(),
         Ok("0123456789abcdef0123456789abcdef")
+    );
+}
+
+#[test]
+fn visibility_registry_sync_waits_for_authenticated_hydrated_player() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<AuthenticatedClientBindings>();
+    app.init_resource::<PlayerRuntimeEntityMap>();
+    app.init_resource::<ClientVisibilityRegistry>();
+    app.add_systems(Update, sync_visibility_registry_with_authenticated_clients);
+
+    let client = app
+        .world_mut()
+        .spawn((ClientOf, RemoteId(PeerId::Netcode(42))))
+        .id();
+    let player_entity_id = "11111111-1111-1111-1111-111111111111".to_string();
+
+    app.world_mut()
+        .resource_mut::<AuthenticatedClientBindings>()
+        .by_client_entity
+        .insert(client, player_entity_id.clone());
+
+    app.update();
+    assert!(
+        !app.world()
+            .resource::<ClientVisibilityRegistry>()
+            .player_entity_id_by_client
+            .contains_key(&client)
+    );
+
+    let player_entity = app.world_mut().spawn_empty().id();
+    app.world_mut()
+        .resource_mut::<PlayerRuntimeEntityMap>()
+        .by_player_entity_id
+        .insert(player_entity_id.clone(), player_entity);
+
+    app.update();
+    assert_eq!(
+        app.world()
+            .resource::<ClientVisibilityRegistry>()
+            .player_entity_id_by_client
+            .get(&client),
+        Some(&player_entity_id)
     );
 }

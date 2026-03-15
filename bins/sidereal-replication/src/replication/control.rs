@@ -62,6 +62,20 @@ pub(crate) fn owner_interpolation_target(client_entity: Entity) -> Interpolation
     InterpolationTarget::manual(vec![client_entity])
 }
 
+fn observer_interpolation_target(
+    bindings: &AuthenticatedClientBindings,
+    owner_client_entity: Entity,
+) -> Option<InterpolationTarget> {
+    let mut observer_clients = bindings
+        .by_client_entity
+        .keys()
+        .copied()
+        .filter(|client_entity| *client_entity != owner_client_entity)
+        .collect::<Vec<_>>();
+    observer_clients.sort_by_key(|entity| entity.to_bits());
+    (!observer_clients.is_empty()).then_some(InterpolationTarget::manual(observer_clients))
+}
+
 fn neutralize_control_intent_on_handoff(
     commands: &mut Commands<'_, '_>,
     previous_controlled_entity: Entity,
@@ -429,6 +443,7 @@ fn maybe_set_replicate(
 enum DesiredInterpolationTarget {
     Owner(Entity),
     Network(NetworkTarget),
+    Manual(InterpolationTarget),
 }
 
 fn maybe_set_prediction_target(
@@ -463,6 +478,7 @@ fn maybe_set_interpolation_target(
         DesiredInterpolationTarget::Network(network) => {
             format!("{:?}", InterpolationTarget::to_clients(network.clone()))
         }
+        DesiredInterpolationTarget::Manual(target) => format!("{target:?}"),
     });
     match desired {
         Some(DesiredInterpolationTarget::Owner(owner)) if current_debug == desired_debug => {}
@@ -472,6 +488,10 @@ fn maybe_set_interpolation_target(
         Some(DesiredInterpolationTarget::Network(network)) if current_debug == desired_debug => {}
         Some(DesiredInterpolationTarget::Network(network)) => {
             entity_commands.insert(InterpolationTarget::to_clients(network));
+        }
+        Some(DesiredInterpolationTarget::Manual(target)) if current_debug == desired_debug => {}
+        Some(DesiredInterpolationTarget::Manual(target)) => {
+            entity_commands.insert(target);
         }
         None if current.is_some() => {
             entity_commands.remove::<InterpolationTarget>();
@@ -486,7 +506,6 @@ pub fn reconcile_control_replication_roles(
     bindings: Res<'_, AuthenticatedClientBindings>,
     player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
-    client_remote_ids: Query<'_, '_, &'_ RemoteId, With<ClientOf>>,
     entity_guids: Query<'_, '_, &'_ EntityGuid>,
     players: Query<
         '_,
@@ -637,9 +656,8 @@ pub fn reconcile_control_replication_roles(
         );
 
         let desired_interpolation = match desired_owner {
-            Some(owner) => client_remote_ids.get(owner).ok().map(|remote_id| {
-                DesiredInterpolationTarget::Network(NetworkTarget::AllExceptSingle(remote_id.0))
-            }),
+            Some(owner) => observer_interpolation_target(&bindings, owner)
+                .map(DesiredInterpolationTarget::Manual),
             None => Some(DesiredInterpolationTarget::Network(NetworkTarget::All)),
         };
 
@@ -655,8 +673,8 @@ pub fn reconcile_control_replication_roles(
 #[cfg(test)]
 mod tests {
     use super::{
-        owner_interpolation_target, owner_only_replicate, owner_prediction_target,
-        reconcile_control_replication_roles,
+        observer_interpolation_target, owner_interpolation_target, owner_only_replicate,
+        owner_prediction_target, reconcile_control_replication_roles,
     };
     use crate::replication::auth::AuthenticatedClientBindings;
     use crate::replication::{
@@ -767,12 +785,91 @@ mod tests {
             app.world()
                 .get::<InterpolationTarget>(ship_entity)
                 .map(|target| format!("{target:?}")),
-            Some(format!(
-                "{:?}",
-                InterpolationTarget::to_clients(
-                    lightyear::prelude::NetworkTarget::AllExceptSingle(PeerId::Netcode(42)),
-                )
+            observer_interpolation_target(
+                app.world().resource::<AuthenticatedClientBindings>(),
+                client
+            )
+            .map(|target| format!("{target:?}"))
+        );
+    }
+
+    #[test]
+    fn reconcile_assigns_manual_observer_interpolation_targets_for_controlled_ships() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
+        app.init_resource::<AuthenticatedClientBindings>();
+        app.init_resource::<PlayerControlledEntityMap>();
+        app.init_resource::<PlayerRuntimeEntityMap>();
+        app.add_systems(Update, reconcile_control_replication_roles);
+
+        let owner_player_id =
+            PlayerEntityId(Uuid::parse_str("1521601b-7e69-4700-853f-eb1eb3a41199").unwrap());
+        let observer_player_id =
+            PlayerEntityId(Uuid::parse_str("7bd0d9cc-42a5-45bb-aef0-8cbf88aa6a44").unwrap());
+        let ship_guid = Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").unwrap();
+        let owner_client = app
+            .world_mut()
+            .spawn((ClientOf, RemoteId(PeerId::Netcode(42))))
+            .id();
+        let observer_client = app
+            .world_mut()
+            .spawn((ClientOf, RemoteId(PeerId::Netcode(43))))
+            .id();
+        let owner_player_entity = app
+            .world_mut()
+            .spawn((PlayerTag, EntityGuid(owner_player_id.0)))
+            .id();
+        let observer_player_entity = app
+            .world_mut()
+            .spawn((PlayerTag, EntityGuid(observer_player_id.0)))
+            .id();
+        let ship_entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(ship_guid),
+                SimulatedControlledEntity {
+                    player_entity_id: owner_player_id,
+                },
             ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<AuthenticatedClientBindings>()
+            .by_client_entity
+            .insert(owner_client, owner_player_id.canonical_wire_id());
+        app.world_mut()
+            .resource_mut::<AuthenticatedClientBindings>()
+            .by_client_entity
+            .insert(observer_client, observer_player_id.canonical_wire_id());
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(owner_player_id.canonical_wire_id(), owner_player_entity);
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(
+                observer_player_id.canonical_wire_id(),
+                observer_player_entity,
+            );
+        app.world_mut()
+            .resource_mut::<PlayerControlledEntityMap>()
+            .by_player_entity_id
+            .insert(owner_player_id, ship_entity);
+
+        app.update();
+
+        let expected = observer_interpolation_target(
+            app.world().resource::<AuthenticatedClientBindings>(),
+            owner_client,
+        )
+        .expect("observer interpolation target");
+        assert_eq!(
+            app.world()
+                .get::<InterpolationTarget>(ship_entity)
+                .map(|target| format!("{target:?}")),
+            Some(format!("{expected:?}"))
         );
     }
 

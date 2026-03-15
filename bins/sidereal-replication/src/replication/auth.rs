@@ -354,7 +354,6 @@ pub fn receive_client_auth_messages(
                 // Idempotent auth refresh for an already-bound client:
                 // keep current visibility/bindings intact and only re-send readiness
                 // if enough time has elapsed to make it a meaningful retry.
-                visibility_registry.register_client(client_entity, message_player_wire.clone());
                 let last_ready_sent_at_s = ready_throttle
                     .last_sent_at_s_by_client_entity
                     .get(&client_entity)
@@ -425,8 +424,6 @@ pub fn receive_client_auth_messages(
                 .last_request_seq_by_player
                 .remove(&message_player_wire);
 
-            visibility_registry.register_client(client_entity, message_player_wire.clone());
-
             if !player_entity_map
                 .by_player_entity_id
                 .contains_key(&message_player_wire)
@@ -475,6 +472,26 @@ pub fn receive_client_auth_messages(
                     .insert(client_entity, now_s);
             }
         }
+    }
+}
+
+pub fn sync_visibility_registry_with_authenticated_clients(
+    clients: Query<'_, '_, Entity, With<ClientOf>>,
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
+    mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
+) {
+    for client_entity in &clients {
+        let Some(player_entity_id) = bindings.by_client_entity.get(&client_entity) else {
+            continue;
+        };
+        if !player_entity_map
+            .by_player_entity_id
+            .contains_key(player_entity_id)
+        {
+            continue;
+        }
+        visibility_registry.register_client(client_entity, player_entity_id.clone());
     }
 }
 

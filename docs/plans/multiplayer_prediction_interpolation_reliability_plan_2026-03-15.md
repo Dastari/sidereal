@@ -469,3 +469,48 @@ Live verification after the control/bootstrap redesign exposed a separate server
 - which can legitimately remain at `0,0` while the currently controlled ship has moved.
 
 The server observer-anchor path now needs to resolve through `PlayerControlledEntityMap` first and only fall back to the player anchor for free-roam or incomplete bootstrap. This matches the design-doc rule that the player/observer anchor follows the controlled entity during active ship control.
+
+### 2026-03-15 Visibility Registration Follow-Up
+
+Later live BRP dumps showed a second server bootstrap-ordering issue:
+
+- authenticated clients were entering `ClientVisibilityRegistry` during auth,
+- but controlled-ship `PredictionTarget` / `InterpolationTarget` reconciliation was still happening later in the frame,
+- so the first clone the owner saw for their ship could be the observer/interpolated lane instead of the owner-predicted lane.
+
+The registration path now needs to be delayed until after control-role reconciliation in the normal `Update` flow so the first visibility gain for a controlled ship uses the correct Lightyear role assignment.
+
+### 2026-03-15 Observer Interpolation Target Follow-Up
+
+The next late-join BRP comparison exposed a remaining asymmetry in server role delivery for controlled ships:
+
+- one client could see a remote controlled ship only as a confirmed-style clone,
+- another client could see a remote controlled ship only as an interpolated clone at `0,0`,
+- the server world state itself still had the correct non-zero authoritative positions for both ships.
+
+The control reconciler was still deriving controlled-ship observer interpolation from `RemoteId -> NetworkTarget::AllExceptSingle(...)`, while owner `Replicate` and owner `PredictionTarget` were already using sender-entity manual targets. That meant bootstrap timing could temporarily leave `InterpolationTarget` absent for a controlled ship even though the owner binding already existed, producing a one-sided lane split at visibility gain.
+
+The server now needs to derive controlled-ship observer interpolation from the authenticated sender entities directly:
+
+- owner lane stays on manual sender-entity targeting,
+- observer interpolation target is the current set of authenticated client entities except the owner,
+- interpolation no longer depends on `RemoteId` readiness at the exact handoff/bootstrap moment.
+
+This should remove the remaining confirmed-vs-interpolated asymmetry at spawn. It does not yet prove the interpolated `0,0` bootstrap itself is solved; that still needs live verification after rebuild/restart.
+
+### 2026-03-15 Canonical Pose Bootstrap Follow-Up
+
+After the observer interpolation target change, live repros still showed both clients receiving the remote ship as an interpolated clone pinned at `0,0`, while the replication server still held the correct authoritative non-zero pose for the same GUID.
+
+That points to a narrower client bootstrap problem:
+
+- the interpolated clone can appear before it has usable interpolation history,
+- current pose on that clone can still be the default origin,
+- but the canonical confirmed clone for the same `EntityGuid` may already exist locally with the correct authoritative pose.
+
+The client transform/bootstrap path now needs to use that canonical confirmed clone as the fallback authority for initial interpolated rendering:
+
+- `sync_interpolated_world_entity_transforms_without_history` should seed from the canonical confirmed clone before falling back to the interpolated clone's own current pose,
+- `reveal_world_entities_when_initial_transform_ready` should allow initial reveal from that same canonical confirmed pose instead of waiting for history or showing origin.
+
+This keeps the fix narrow and avoids reintroducing a broad per-frame whole-world scan: the lookup stays GUID-scoped through `RuntimeEntityHierarchy`.
