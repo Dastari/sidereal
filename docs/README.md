@@ -47,6 +47,7 @@ Update note (2026-03-09):
    - `docs/plans/replication_server_tui_backend_plan_2026-03-10.md`
 4. Background world simulation and economy direction:
    - `docs/features/background_world_simulation_contract.md`
+   - `docs/features/resources_and_crafting_contract.md`
    - `docs/decisions/dr-0033_background_world_simulation_tiering.md`
 5. Asset delivery and scripting:
    - `docs/features/asset_delivery_contract.md`
@@ -69,3 +70,6 @@ Update note (2026-03-09):
 
 Update note (2026-03-13):
 - Added `docs/core_systems_catalog_v1.md` as the reference index for stable "System V1" labels such as audio, rendering, tactical map, planets, fog/intel, and related core runtime systems.
+
+Update note (2026-03-16):
+- Added `docs/features/resources_and_crafting_contract.md` as the active feature specification for the shared material taxonomy, crafting model, and Bevy/content-authoring contract that will underpin future economy and manufacturing work.

@@ -13,6 +13,9 @@ Update note (2026-03-09):
 Update note (2026-03-13):
 - The core systems catalog now lives at `docs/core_systems_catalog_v1.md` as a cross-cutting docs-root reference rather than a feature-folder document.
 
+Update note (2026-03-16):
+- Added `resources_and_crafting_contract.md` as the active feature specification for server-authoritative resource extraction, refining, crafting, and downstream manufacturing content.
+
 ## What Belongs Here
 
 1. Active implementation contracts:
@@ -35,6 +38,7 @@ Update note (2026-03-13):
    - `shader_editor_dashboard_implementation_spec.md`
    - `lightyear_integration_analysis.md`
    - `scripting_support.md`
+   - `resources_and_crafting_contract.md`
 
 ## What Does Not Belong Here
 
