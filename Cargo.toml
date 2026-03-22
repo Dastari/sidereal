@@ -33,7 +33,7 @@ avian2d = { version = "0.5.0", default-features = false, features = ["2d", "f32"
 base64 = "0.22"
 bevy = { version = "0.18.0", default-features = false }
 bevy_remote = { version = "0.18.0", default-features = false }
-lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", features = ["udp", "raw_connection", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d", "webtransport", "webtransport_self_signed"] }
+lightyear = { git = "https://github.com/Dastari/lightyear", rev = "3d2d0b71fdcd13ff46b60b50ae995236da204c87", default-features = false, features = ["udp", "raw_connection", "input_native", "replication", "prediction", "interpolation", "frame_interpolation", "avian2d", "webtransport", "webtransport_self_signed"] }
 jsonwebtoken = "9.3"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }

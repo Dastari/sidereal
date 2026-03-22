@@ -5,11 +5,8 @@ use bevy::prelude::*;
 use lightyear::avian2d::plugin::AvianReplicationMode;
 use lightyear::avian2d::prelude::LightyearAvianPlugin;
 use lightyear::frame_interpolation::FrameInterpolationPlugin;
-use lightyear::input::native::prelude::NativeStateSequence;
-use lightyear::input::plugin::InputPlugin as LightyearInputProtocolPlugin;
+use lightyear::input::native::prelude::InputPlugin as NativeInputPlugin;
 use lightyear::prelude::client::{Client, ClientPlugins, Connected};
-#[cfg(not(target_arch = "wasm32"))]
-use lightyear::prelude::input::native::ClientInputPlugin as NativeClientInputPlugin;
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
     BallisticProjectileSpawnedEvent, CombatAuthorityEnabled, EntityDestroyedEvent, ShotFiredEvent,
@@ -70,8 +67,10 @@ fn init_control_and_prediction_resources(app: &mut App) {
     app.insert_resource(RuntimeEntityHierarchy::default());
     app.insert_resource(BootstrapWatchdogState::default());
     app.insert_resource(DeferredPredictedAdoptionState::default());
+    app.insert_resource(ControlBootstrapState::default());
     app.insert_resource(PredictionBootstrapTuning::from_env());
     app.insert_resource(PredictionCorrectionTuning::from_env());
+    app.insert_resource(ClientInputTimelineTuning::from_env());
     app.insert_resource(NearbyCollisionProxyTuning::from_env());
     app.insert_resource(RemoteEntityRegistry::default());
 }
@@ -133,11 +132,7 @@ pub(crate) fn configure_client_runtime(
         rollback_islands: false,
     });
     app.add_plugins(FrameInterpolationPlugin::<Transform>::default());
-    app.add_plugins(LightyearInputProtocolPlugin::<
-        NativeStateSequence<sidereal_net::PlayerInput>,
-    >::default());
-    #[cfg(not(target_arch = "wasm32"))]
-    app.add_plugins(NativeClientInputPlugin::<sidereal_net::PlayerInput>::default());
+    app.add_plugins(NativeInputPlugin::<sidereal_net::PlayerInput>::default());
     register_lightyear_client_protocol(app);
     app.add_message::<ShotFiredEvent>();
     app.add_message::<ShotImpactResolvedEvent>();

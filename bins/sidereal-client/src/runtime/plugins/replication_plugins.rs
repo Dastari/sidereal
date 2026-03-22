@@ -55,8 +55,11 @@ fn add_shared_replication_runtime_systems(app: &mut App) {
             ),
             replication::adopt_native_lightyear_replicated_entities
                 .after(replication::prune_runtime_entity_registry_system),
-            transforms::sync_frame_interpolation_markers_for_world_entities
+            replication::bootstrap_missing_confirmed_components_for_interpolated_entities
                 .after(replication::adopt_native_lightyear_replicated_entities),
+            transforms::sync_frame_interpolation_markers_for_world_entities.after(
+                replication::bootstrap_missing_confirmed_components_for_interpolated_entities,
+            ),
             transforms::sync_confirmed_world_entity_transforms_from_physics
                 .after(transforms::sync_frame_interpolation_markers_for_world_entities),
             transforms::sync_confirmed_world_entity_transforms_from_world_space
@@ -70,17 +73,20 @@ fn add_shared_replication_runtime_systems(app: &mut App) {
 }
 
 fn add_shared_replication_control_systems(app: &mut App) {
+    app.add_observer(
+        replication::sanitize_conflicting_prediction_interpolation_markers_on_predicted_added,
+    );
+    app.add_observer(
+        replication::sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
+    );
     app.add_systems(
         Update,
         (
             (
                 replication::sync_local_player_view_state_system
                     .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
-                replication::sanitize_conflicting_prediction_interpolation_markers_system
+                replication::sync_controlled_entity_tags_system
                     .after(replication::sync_local_player_view_state_system),
-                replication::sync_controlled_entity_tags_system.after(
-                    replication::sanitize_conflicting_prediction_interpolation_markers_system,
-                ),
             ),
             control::send_local_view_mode_updates
                 .after(replication::sync_local_player_view_state_system),

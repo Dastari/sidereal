@@ -19,6 +19,9 @@ pub(super) fn add_in_world_post_update_systems(app: &mut App) {
     app.add_systems(
         PostUpdate,
         (
+            transforms::recover_stalled_predicted_world_entity_transforms
+                .after(FrameInterpolationSystems::Interpolate)
+                .after(RollbackSystems::VisualCorrection),
             // Lightyear still owns observer interpolation by default. This fallback only
             // snaps a remote visual root back onto its interpolated spatial pose if the
             // visual Transform lane is obviously stale or never got seeded.
@@ -36,6 +39,7 @@ pub(super) fn add_in_world_post_update_systems(app: &mut App) {
             update_topdown_camera_system
                 .after(FrameInterpolationSystems::Interpolate)
                 .after(RollbackSystems::VisualCorrection)
+                .after(transforms::recover_stalled_predicted_world_entity_transforms)
                 .after(transforms::recover_stalled_interpolated_world_entity_transforms)
                 .after(transforms::sync_interpolated_world_entity_transforms_without_history),
             sync_planet_body_camera_to_gameplay_camera_system.after(update_topdown_camera_system),
@@ -62,6 +66,7 @@ pub(super) fn add_in_world_post_update_systems(app: &mut App) {
             collect_debug_overlay_snapshot_system
                 .after(FrameInterpolationSystems::Interpolate)
                 .after(RollbackSystems::VisualCorrection)
+                .after(transforms::recover_stalled_predicted_world_entity_transforms)
                 .after(transforms::recover_stalled_interpolated_world_entity_transforms)
                 .after(ui::update_segmented_bars_system)
                 .after(bevy::transform::TransformSystems::Propagate)

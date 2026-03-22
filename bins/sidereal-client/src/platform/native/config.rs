@@ -120,6 +120,16 @@ pub(crate) fn apply_process_cli() -> Result<CliAction, String> {
                     .to_string(),
                 );
             }
+            "--input-delay-ticks" => {
+                set_env(
+                    "SIDEREAL_CLIENT_INPUT_DELAY_TICKS",
+                    parse_u16(
+                        "--input-delay-ticks",
+                        &required_value(&mut args, "--input-delay-ticks")?,
+                    )?
+                    .to_string(),
+                );
+            }
             "--instant-correction" => {
                 set_env("SIDEREAL_CLIENT_INSTANT_CORRECTION", "true".to_string())
             }
@@ -376,6 +386,8 @@ fn help_text() -> String {
         "                                          env: SIDEREAL_CLIENT_ROLLBACK_STATE",
         "      --max-rollback-ticks TICKS          Maximum rollback window for the prediction manager",
         "                                          env: SIDEREAL_CLIENT_MAX_ROLLBACK_TICKS",
+        "      --input-delay-ticks TICKS           Fixed client input delay applied to Lightyear timeline sync",
+        "                                          env: SIDEREAL_CLIENT_INPUT_DELAY_TICKS",
         "      --instant-correction                Use instant correction instead of smooth correction",
         "                                          env: SIDEREAL_CLIENT_INSTANT_CORRECTION=1",
         "      --nearby-collision-proxy-radius-m M Radius around the controlled entity for local collision proxies",

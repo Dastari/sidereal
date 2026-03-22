@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::flight::angular_inertia_from_size;
 use crate::generated::components::{
     BaseMassKg, CargoMassKg, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid,
-    Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn, ShipTag, SizeM, TotalMassKg,
+    Inventory, MassDirty, MassKg, ModuleMassKg, MountedOn, SizeM, TotalMassKg,
 };
 
 fn inventory_mass_kg(inventory: Option<&Inventory>) -> f32 {
@@ -229,9 +229,9 @@ pub fn recompute_total_mass(
 /// `recompute_total_mass` requires. Handles entities hydrated from older
 /// graph records that predate these components.
 #[allow(clippy::type_complexity)]
-pub fn bootstrap_ship_mass_components(
+pub fn bootstrap_root_dynamic_mass_components(
     mut commands: Commands<'_, '_>,
-    ships: Query<
+    roots: Query<
         '_,
         '_,
         (
@@ -242,10 +242,10 @@ pub fn bootstrap_ship_mass_components(
             Has<ModuleMassKg>,
             Has<TotalMassKg>,
         ),
-        With<ShipTag>,
+        (With<RigidBody>, Without<MountedOn>),
     >,
 ) {
-    for (entity, mass_kg, has_base, has_cargo, has_module, has_total) in &ships {
+    for (entity, mass_kg, has_base, has_cargo, has_module, has_total) in &roots {
         if has_base && has_cargo && has_module && has_total {
             continue;
         }

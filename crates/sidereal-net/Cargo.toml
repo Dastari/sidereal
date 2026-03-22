@@ -23,7 +23,7 @@ lightyear_protocol = [
 avian2d = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true, default-features = false }
 inventory = { workspace = true, optional = true }
-lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", optional = true, default-features = false, features = ["std", "client", "server", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
+lightyear = { workspace = true, optional = true, default-features = false, features = ["std", "client", "server", "replication", "prediction", "interpolation", "frame_interpolation", "avian2d"] }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sidereal-game = { path = "../sidereal-game", optional = true }

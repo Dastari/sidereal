@@ -1,6 +1,6 @@
 //! Replication adoption, control sync, and prediction runtime state.
 
-use avian2d::prelude::{LinearVelocity, Position, Rotation};
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::ecs::query::Has;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -8,6 +8,7 @@ use bevy::state::state_scoped::DespawnOnExit;
 use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::prediction::correction::CorrectionPolicy;
 use lightyear::prediction::prelude::{PredictionManager, RollbackMode};
+use lightyear::prelude::Confirmed;
 use lightyear::prelude::LocalTimeline;
 use lightyear::prelude::PreSpawned;
 use lightyear::prelude::client::Client;
@@ -29,8 +30,9 @@ use super::components::{
     StreamedVisualAttached, StreamedVisualAttachmentKind, WorldEntity,
 };
 use super::resources::{
-    BootstrapWatchdogState, DeferredPredictedAdoptionState, PredictionBootstrapTuning,
-    PredictionCorrectionTuning, PredictionRollbackStateTuning, RemoteEntityRegistry,
+    BootstrapWatchdogState, ControlBootstrapPhase, ControlBootstrapState,
+    DeferredPredictedAdoptionState, PredictionBootstrapTuning, PredictionCorrectionTuning,
+    PredictionRollbackStateTuning, RemoteEntityRegistry,
 };
 
 type MissingReplicatedSpatialQueryItem<'a> = (
@@ -70,6 +72,7 @@ pub(crate) struct ControlledEntityTagInputs<'w, 's> {
     session: Res<'w, ClientSession>,
     player_view_state: Res<'w, LocalPlayerViewState>,
     adoption_state: ResMut<'w, DeferredPredictedAdoptionState>,
+    control_bootstrap_state: ResMut<'w, ControlBootstrapState>,
     entity_registry: Res<'w, RuntimeEntityHierarchy>,
     controlled_query: Query<'w, 's, (Entity, &'static ControlledEntity)>,
     writer_query: Query<'w, 's, Entity, With<SimulationMotionWriter>>,
@@ -87,6 +90,22 @@ fn bootstrap_planar_heading(
             resolve_world_rotation_rad(rotation, world_rotation).filter(|value| value.is_finite())
         })
         .or(Some(0.0))
+}
+
+fn current_control_target_guid(
+    session: &ClientSession,
+    player_view_state: &LocalPlayerViewState,
+) -> Option<uuid::Uuid> {
+    player_view_state
+        .controlled_entity_id
+        .as_deref()
+        .and_then(parse_guid_from_entity_id)
+        .or_else(|| {
+            session
+                .player_entity_id
+                .as_deref()
+                .and_then(parse_guid_from_entity_id)
+        })
 }
 
 #[allow(clippy::type_complexity)]
@@ -578,6 +597,70 @@ pub(crate) fn prune_runtime_entity_registry_system(
         .retain(|_, entity| live_entities.get(*entity).is_ok());
 }
 
+/// Lightyear still has an upstream TODO for the case where `Interpolated` is added to an
+/// already-existing replicated entity. Sidereal hits that path during dynamic control handoff and
+/// visibility-driven role churn, where an entity can already have raw Avian motion components
+/// before the interpolated lane is fully bootstrapped.
+///
+/// Seed the missing `Confirmed<T>` mirrors from the current raw values so the entity can enter the
+/// observer interpolation path immediately instead of waiting for a later delta to populate the
+/// confirmed lane.
+#[allow(clippy::type_complexity)]
+pub(crate) fn bootstrap_missing_confirmed_components_for_interpolated_entities(
+    mut commands: Commands<'_, '_>,
+    entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ LinearVelocity>,
+            Option<&'_ AngularVelocity>,
+            Option<&'_ Confirmed<Position>>,
+            Option<&'_ Confirmed<Rotation>>,
+            Option<&'_ Confirmed<LinearVelocity>>,
+            Option<&'_ Confirmed<AngularVelocity>>,
+        ),
+        With<lightyear::prelude::Interpolated>,
+    >,
+) {
+    for (
+        entity,
+        position,
+        rotation,
+        linear_velocity,
+        angular_velocity,
+        confirmed_position,
+        confirmed_rotation,
+        confirmed_linear_velocity,
+        confirmed_angular_velocity,
+    ) in &entities
+    {
+        let mut entity_commands = commands.entity(entity);
+        if confirmed_position.is_none()
+            && let Some(position) = position
+        {
+            entity_commands.insert(Confirmed(*position));
+        }
+        if confirmed_rotation.is_none()
+            && let Some(rotation) = rotation
+        {
+            entity_commands.insert(Confirmed(*rotation));
+        }
+        if confirmed_linear_velocity.is_none()
+            && let Some(linear_velocity) = linear_velocity
+        {
+            entity_commands.insert(Confirmed(*linear_velocity));
+        }
+        if confirmed_angular_velocity.is_none()
+            && let Some(angular_velocity) = angular_velocity
+        {
+            entity_commands.insert(Confirmed(*angular_velocity));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 pub(crate) fn adopt_native_lightyear_replicated_entities(
@@ -847,12 +930,24 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
+        bootstrap_missing_confirmed_components_for_interpolated_entities,
         has_local_player_runtime_presence, is_canonical_runtime_entity_lane,
         resolve_control_target_entity_id, resolve_local_player_authoritative_control_entity_id,
+        sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
+        sanitize_conflicting_prediction_interpolation_markers_on_predicted_added,
         should_defer_controlled_predicted_adoption, should_defer_spatial_root_adoption,
+        sync_controlled_entity_tags_system,
     };
-    use bevy::prelude::Entity;
-    use sidereal_game::{ControlledEntityGuid, EntityGuid};
+    use crate::runtime::app_state::{ClientSession, LocalPlayerViewState};
+    use crate::runtime::components::ControlledEntity;
+    use crate::runtime::resources::{
+        ControlBootstrapPhase, ControlBootstrapState, DeferredPredictedAdoptionState,
+    };
+    use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
+    use bevy::app::Update;
+    use bevy::prelude::{App, Entity, Time, Vec2};
+    use lightyear::prelude::Confirmed;
+    use sidereal_game::{ControlledEntityGuid, EntityGuid, SimulationMotionWriter};
     use sidereal_runtime_sync::RuntimeEntityHierarchy;
     use uuid::Uuid;
 
@@ -1014,6 +1109,234 @@ mod tests {
 
         assert!(!present);
     }
+
+    #[test]
+    fn interpolated_entities_seed_missing_confirmed_motion_components() {
+        let mut app = App::new();
+        app.add_systems(
+            Update,
+            bootstrap_missing_confirmed_components_for_interpolated_entities,
+        );
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                lightyear::prelude::Interpolated,
+                Position(Vec2::new(10.0, -4.0)),
+                Rotation::radians(0.25),
+                LinearVelocity(Vec2::new(1.5, -2.0)),
+                AngularVelocity(0.75),
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .get::<Confirmed<Position>>(entity)
+                .map(|value| value.0),
+            Some(Position(Vec2::new(10.0, -4.0)))
+        );
+        assert_eq!(
+            app.world()
+                .get::<Confirmed<Rotation>>(entity)
+                .map(|value| value.0),
+            Some(Rotation::radians(0.25))
+        );
+        assert_eq!(
+            app.world()
+                .get::<Confirmed<LinearVelocity>>(entity)
+                .map(|value| value.0),
+            Some(LinearVelocity(Vec2::new(1.5, -2.0)))
+        );
+        assert_eq!(
+            app.world()
+                .get::<Confirmed<AngularVelocity>>(entity)
+                .map(|value| value.0),
+            Some(AngularVelocity(0.75))
+        );
+    }
+
+    #[test]
+    fn interpolated_entities_do_not_overwrite_existing_confirmed_motion_components() {
+        let mut app = App::new();
+        app.add_systems(
+            Update,
+            bootstrap_missing_confirmed_components_for_interpolated_entities,
+        );
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                lightyear::prelude::Interpolated,
+                Position(Vec2::new(10.0, -4.0)),
+                Confirmed(Position(Vec2::new(99.0, 42.0))),
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .get::<Confirmed<Position>>(entity)
+                .map(|value| value.0),
+            Some(Position(Vec2::new(99.0, 42.0)))
+        );
+    }
+
+    #[test]
+    fn conflicting_marker_transition_keeps_predicted_for_local_control_target() {
+        let mut app = App::new();
+        app.insert_resource(ClientSession {
+            player_entity_id: Some("1521601b-7e69-4700-853f-eb1eb3a41199".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            ..Default::default()
+        });
+        app.add_observer(sanitize_conflicting_prediction_interpolation_markers_on_predicted_added);
+        app.add_observer(
+            sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
+        );
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").unwrap()),
+                lightyear::prelude::Interpolated,
+                lightyear::prelude::Predicted,
+            ))
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Predicted>(entity)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Interpolated>(entity)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn conflicting_marker_transition_keeps_interpolated_for_observer_entity() {
+        let mut app = App::new();
+        app.insert_resource(ClientSession {
+            player_entity_id: Some("1521601b-7e69-4700-853f-eb1eb3a41199".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            ..Default::default()
+        });
+        app.add_observer(sanitize_conflicting_prediction_interpolation_markers_on_predicted_added);
+        app.add_observer(
+            sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
+        );
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap()),
+                lightyear::prelude::Interpolated,
+                lightyear::prelude::Predicted,
+            ))
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Interpolated>(entity)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Predicted>(entity)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn controlled_ship_without_predicted_clone_stays_pending_bootstrap() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default());
+        app.insert_resource(ClientSession {
+            player_entity_id: Some("1521601b-7e69-4700-853f-eb1eb3a41199".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(DeferredPredictedAdoptionState::default());
+        app.insert_resource(ControlBootstrapState::default());
+        app.insert_resource(RuntimeEntityHierarchy::default());
+        app.add_systems(Update, sync_controlled_entity_tags_system);
+
+        let entity = app
+            .world_mut()
+            .spawn((EntityGuid(
+                Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").unwrap(),
+            ),))
+            .id();
+
+        app.update();
+
+        assert!(app.world().get::<ControlledEntity>(entity).is_none());
+        assert!(app.world().get::<SimulationMotionWriter>(entity).is_none());
+        assert_eq!(
+            app.world().resource::<ControlBootstrapState>().phase,
+            ControlBootstrapPhase::PendingPredicted {
+                target_entity_id: "ce9e421c-8b62-458a-803e-51e9ad272908".to_string(),
+                generation: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn controlled_ship_binds_only_when_predicted_clone_exists() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default());
+        app.insert_resource(ClientSession {
+            player_entity_id: Some("1521601b-7e69-4700-853f-eb1eb3a41199".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(DeferredPredictedAdoptionState::default());
+        app.insert_resource(ControlBootstrapState::default());
+        app.insert_resource(RuntimeEntityHierarchy::default());
+        app.add_systems(Update, sync_controlled_entity_tags_system);
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").unwrap()),
+                lightyear::prelude::Predicted,
+            ))
+            .id();
+
+        app.update();
+
+        assert!(app.world().get::<ControlledEntity>(entity).is_some());
+        assert!(app.world().get::<SimulationMotionWriter>(entity).is_some());
+        assert_eq!(
+            app.world().resource::<ControlBootstrapState>().phase,
+            ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: "ce9e421c-8b62-458a-803e-51e9ad272908".to_string(),
+                generation: 1,
+                entity,
+            }
+        );
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -1052,15 +1375,14 @@ pub(crate) fn sync_local_player_view_state_system(
 }
 
 #[allow(clippy::type_complexity)]
-pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_system(
-    mut commands: Commands<'_, '_>,
-    session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    conflicting_entities: Query<
+fn sanitize_conflicting_prediction_interpolation_markers_for_entity(
+    commands: &mut Commands<'_, '_>,
+    entity: Entity,
+    target_guid: Option<uuid::Uuid>,
+    conflicting_entities: &Query<
         '_,
         '_,
         (
-            Entity,
             Option<&'_ EntityGuid>,
             Has<ControlledEntity>,
             Has<SimulationMotionWriter>,
@@ -1071,51 +1393,98 @@ pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_system(
         ),
     >,
 ) {
-    let target_guid = player_view_state
-        .controlled_entity_id
-        .as_deref()
-        .and_then(parse_guid_from_entity_id)
-        .or_else(|| {
-            session
-                .player_entity_id
-                .as_deref()
-                .and_then(parse_guid_from_entity_id)
-        });
+    let Ok((entity_guid, is_controlled, is_motion_writer)) = conflicting_entities.get(entity)
+    else {
+        return;
+    };
+    let keep_predicted = is_controlled
+        || is_motion_writer
+        || target_guid
+            .zip(entity_guid)
+            .is_some_and(|(target_guid, entity_guid)| entity_guid.0 == target_guid);
 
-    for (entity, entity_guid, is_controlled, is_motion_writer) in &conflicting_entities {
-        let keep_predicted = is_controlled
-            || is_motion_writer
-            || target_guid
-                .zip(entity_guid)
-                .is_some_and(|(target_guid, entity_guid)| entity_guid.0 == target_guid);
-
-        if keep_predicted {
-            // Sidereal's dynamic handoff can legitimately promote an already-visible confirmed or
-            // interpolated replica into the owner-predicted lane. Lightyear inserts the new
-            // marker from the respawned spawn action, but it does not automatically clear the
-            // old observer marker from the reused local entity. That leaves a single runtime copy
-            // acting as both Predicted and Interpolated, which produces exactly the kind of
-            // mixed rotation/position correction the audit was trying to eliminate.
-            commands
-                .entity(entity)
-                .remove::<lightyear::prelude::Interpolated>();
-            bevy::log::warn!(
-                "sanitized conflicting prediction markers on local control entity {:?}: kept Predicted and removed Interpolated",
-                entity
-            );
-        } else {
-            // For non-controlled entities, observer interpolation is the authoritative visual lane.
-            // If a previous owner-predicted entity falls back to observer mode, keep Interpolated
-            // and remove the stale Predicted marker so local-only writers cannot linger.
-            commands
-                .entity(entity)
-                .remove::<lightyear::prelude::Predicted>();
-            bevy::log::warn!(
-                "sanitized conflicting prediction markers on observer entity {:?}: kept Interpolated and removed Predicted",
-                entity
-            );
-        }
+    if keep_predicted {
+        // Sidereal's dynamic handoff can legitimately promote an already-visible confirmed or
+        // interpolated replica into the owner-predicted lane. Lightyear inserts the new
+        // marker from the respawned spawn action, but it does not automatically clear the
+        // old observer marker from the reused local entity. That leaves a single runtime copy
+        // acting as both Predicted and Interpolated, which produces exactly the kind of
+        // mixed rotation/position correction the audit was trying to eliminate.
+        commands
+            .entity(entity)
+            .remove::<lightyear::prelude::Interpolated>();
+        bevy::log::warn!(
+            "sanitized conflicting prediction markers on local control entity {:?}: kept Predicted and removed Interpolated",
+            entity
+        );
+    } else {
+        // For non-controlled entities, observer interpolation is the authoritative visual lane.
+        // If a previous owner-predicted entity falls back to observer mode, keep Interpolated
+        // and remove the stale Predicted marker so local-only writers cannot linger.
+        commands
+            .entity(entity)
+            .remove::<lightyear::prelude::Predicted>();
+        bevy::log::warn!(
+            "sanitized conflicting prediction markers on observer entity {:?}: kept Interpolated and removed Predicted",
+            entity
+        );
     }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_predicted_added(
+    trigger: On<Add, lightyear::prelude::Predicted>,
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    conflicting_entities: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ EntityGuid>,
+            Has<ControlledEntity>,
+            Has<SimulationMotionWriter>,
+        ),
+        (
+            With<lightyear::prelude::Predicted>,
+            With<lightyear::prelude::Interpolated>,
+        ),
+    >,
+) {
+    sanitize_conflicting_prediction_interpolation_markers_for_entity(
+        &mut commands,
+        trigger.entity,
+        current_control_target_guid(&session, &player_view_state),
+        &conflicting_entities,
+    );
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added(
+    trigger: On<Add, lightyear::prelude::Interpolated>,
+    mut commands: Commands<'_, '_>,
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    conflicting_entities: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ EntityGuid>,
+            Has<ControlledEntity>,
+            Has<SimulationMotionWriter>,
+        ),
+        (
+            With<lightyear::prelude::Predicted>,
+            With<lightyear::prelude::Interpolated>,
+        ),
+    >,
+) {
+    sanitize_conflicting_prediction_interpolation_markers_for_entity(
+        &mut commands,
+        trigger.entity,
+        current_control_target_guid(&session, &player_view_state),
+        &conflicting_entities,
+    );
 }
 
 pub(crate) fn sync_controlled_entity_tags_system(
@@ -1135,49 +1504,83 @@ pub(crate) fn sync_controlled_entity_tags_system(
     let target_guid = target_entity_id
         .as_ref()
         .and_then(|id| parse_guid_from_entity_id(id));
+    if inputs
+        .control_bootstrap_state
+        .authoritative_target_entity_id
+        != target_entity_id
+    {
+        inputs.control_bootstrap_state.generation =
+            inputs.control_bootstrap_state.generation.saturating_add(1);
+        inputs
+            .control_bootstrap_state
+            .authoritative_target_entity_id = target_entity_id.clone();
+        inputs.control_bootstrap_state.last_transition_at_s = time.elapsed_secs_f64();
+        inputs.control_bootstrap_state.phase = match target_entity_id.as_ref() {
+            Some(target_entity_id) => ControlBootstrapPhase::PendingPredicted {
+                target_entity_id: target_entity_id.clone(),
+                generation: inputs.control_bootstrap_state.generation,
+            },
+            None => ControlBootstrapPhase::Idle,
+        };
+    }
     let local_player_guid = parse_guid_from_entity_id(local_player_entity_id);
     let is_player_anchor_target = target_guid
         .zip(local_player_guid)
         .is_some_and(|(target, player)| target == player);
     let target_entity = target_guid.and_then(|guid| {
-        let mut best_predicted: Option<Entity> = None;
-        let mut best_interpolated: Option<Entity> = None;
-        let mut best_confirmed: Option<Entity> = None;
-        let mut best_player_anchor: Option<Entity> = None;
+        let mut best_predicted: Option<(Entity, String)> = None;
+        let mut best_interpolated: Option<(Entity, String)> = None;
+        let mut best_confirmed: Option<(Entity, String)> = None;
+        let mut best_player_anchor: Option<(Entity, String)> = None;
         for (entity, entity_guid, is_player_anchor, is_predicted, is_interpolated) in
             &inputs.guid_candidates
         {
             if entity_guid.0 != guid {
                 continue;
             }
+            let runtime_entity_id = entity_guid.0.to_string();
             if is_player_anchor {
                 best_player_anchor = match best_player_anchor {
-                    Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
-                    _ => Some(entity),
+                    Some((current, _)) if current.to_bits() <= entity.to_bits() => {
+                        Some((current, runtime_entity_id.clone()))
+                    }
+                    _ => Some((entity, runtime_entity_id.clone())),
                 };
             }
             if is_predicted {
                 best_predicted = match best_predicted {
-                    Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
-                    _ => Some(entity),
+                    Some((current, _)) if current.to_bits() <= entity.to_bits() => {
+                        Some((current, runtime_entity_id.clone()))
+                    }
+                    _ => Some((entity, runtime_entity_id.clone())),
                 };
                 continue;
             }
             if is_interpolated {
                 best_interpolated = match best_interpolated {
-                    Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
-                    _ => Some(entity),
+                    Some((current, _)) if current.to_bits() <= entity.to_bits() => {
+                        Some((current, runtime_entity_id.clone()))
+                    }
+                    _ => Some((entity, runtime_entity_id.clone())),
                 };
                 continue;
             }
             best_confirmed = match best_confirmed {
-                Some(current) if current.to_bits() <= entity.to_bits() => Some(current),
-                _ => Some(entity),
+                Some((current, _)) if current.to_bits() <= entity.to_bits() => {
+                    Some((current, runtime_entity_id))
+                }
+                _ => Some((entity, runtime_entity_id)),
             };
         }
 
-        if let Some(predicted) = best_predicted {
+        if let Some((predicted, predicted_entity_id)) = best_predicted {
             inputs.adoption_state.missing_predicted_control_entity_id = None;
+            inputs.control_bootstrap_state.phase = ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: predicted_entity_id,
+                generation: inputs.control_bootstrap_state.generation,
+                entity: predicted,
+            };
+            inputs.control_bootstrap_state.last_transition_at_s = time.elapsed_secs_f64();
             return Some(predicted);
         }
 
@@ -1187,11 +1590,25 @@ pub(crate) fn sync_controlled_entity_tags_system(
             // the camera and UI stay usable. This is intentionally different from a stock
             // "always predict the controlled pawn" example.
             inputs.adoption_state.missing_predicted_control_entity_id = None;
-            return best_player_anchor.or(best_confirmed).or(best_interpolated);
+            if let Some((anchor, anchor_entity_id)) =
+                best_player_anchor.or(best_confirmed).or(best_interpolated)
+            {
+                inputs.control_bootstrap_state.phase = ControlBootstrapPhase::ActiveAnchor {
+                    target_entity_id: anchor_entity_id,
+                    generation: inputs.control_bootstrap_state.generation,
+                };
+                inputs.control_bootstrap_state.last_transition_at_s = time.elapsed_secs_f64();
+                return Some(anchor);
+            }
+            return None;
         }
 
         let missing_id = target_entity_id.clone().unwrap_or_else(|| guid.to_string());
         inputs.adoption_state.missing_predicted_control_entity_id = Some(missing_id.clone());
+        inputs.control_bootstrap_state.phase = ControlBootstrapPhase::PendingPredicted {
+            target_entity_id: missing_id.clone(),
+            generation: inputs.control_bootstrap_state.generation,
+        };
         let now_s = time.elapsed_secs_f64();
         if now_s - inputs.adoption_state.last_missing_predicted_warn_at_s >= 1.0 {
             bevy::log::warn!(
@@ -1202,6 +1619,9 @@ pub(crate) fn sync_controlled_entity_tags_system(
         }
         None
     });
+    if target_guid.is_none() {
+        inputs.control_bootstrap_state.phase = ControlBootstrapPhase::Idle;
+    }
 
     for (entity, controlled) in &inputs.controlled_query {
         if Some(entity) != target_entity {

@@ -69,6 +69,25 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - no target-specific branching introduced,
   - interpolation registration and scheduling behavior are shared between native and WASM builds.
 
+2026-03-22 update:
+
+- Dynamic predicted/interpolated handoff is still a live Lightyear edge in Sidereal's current fork/runtime shape.
+- Native client input timeline no longer defaults to zero input delay.
+  - Sidereal now defaults `SIDEREAL_CLIENT_INPUT_DELAY_TICKS` to `2` for native timeline setup, with `--input-delay-ticks` as the equivalent CLI override.
+  - Reason: the project is currently reproducing multi-second confirmed-vs-predicted drift and aborted rollbacks under `fixed_input_delay(0)`, and Lightyear upstream already treats zero-delay localhost timing as fragile.
+- Client runtime now seeds missing `Confirmed<T>` mirrors for Avian motion components (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`) when an already-existing replicated entity is in the `Interpolated` lane but still only has raw motion components.
+  - This is a bounded transition-bootstrap guard for control handoff / visibility role churn, not a new steady-state presentation contract.
+  - Reason: upstream Lightyear still carries an explicit interpolation TODO for "if `Interpolated` is added on an existing entity" and Sidereal exercises that path during control transfer.
+  - Goal: let the observer lane become immediately presentable and interpolation-ready without waiting for a later delta to populate `Confirmed<T>`.
+- Conflicting `Predicted` + `Interpolated` marker cleanup on the client is now transition-driven rather than an every-frame scan.
+  - Sidereal still sanitizes invalid mixed-lane entities locally because dynamic handoff can reuse a local entity and leave both markers present.
+  - The sanitizer now runs when either marker is added, and the winning lane depends on whether the entity is the active local control target or an observer-only entity.
+- Native impact:
+  - reduces the chance that the local prediction timeline outruns confirmed state badly enough to exceed the rollback budget after focus churn or localhost sync jitter.
+  - reduces long observer-transition stalls where the authoritative/server lane is advancing but the local observer presentation is still waiting for confirmed bootstrap.
+- WASM impact:
+  - shared runtime behavior only; no target-specific branching added.
+
 ## 2.4 Input Liveness Guard (2026-03-09)
 
 - Sidereal now treats realtime input snapshots as short-lived intent, not durable movement state.
@@ -143,3 +162,18 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - `docs/sidereal_design_document.md`
 - `bins/sidereal-client/src/native.rs`
 - `bins/sidereal-replication/src/replication/runtime_state.rs`
+
+2026-03-22 update:
+
+1. Shared authoritative flight now uses fixed-step time for thrust application.
+   - `crates/sidereal-game/src/flight.rs` now reads `Res<Time<Fixed>>` in `apply_engine_thrust`.
+   - This aligns the client prediction path and replication authoritative path with the repo rule that simulation math must be fixed-step only.
+2. Client control binding now uses an explicit bootstrap state rather than clone preference alone.
+   - `bins/sidereal-client/src/runtime/resources.rs` now defines `ControlBootstrapState` / `ControlBootstrapPhase`.
+   - `bins/sidereal-client/src/runtime/replication.rs` now keeps non-anchor ship control in `PendingPredicted` until a real `Predicted` root exists, instead of falling back to confirmed/interpolated ship control.
+3. Motion ownership now consumes that bootstrap state as an input contract.
+   - `bins/sidereal-client/src/runtime/motion.rs` prefers the explicit active predicted bootstrap state instead of rediscovering control solely from clone scoring.
+4. Debug overlay diagnostics now expose the control bootstrap phase directly.
+   - This makes the two-client repros easier to classify as `Pending`, `Anchor`, or `Predicted` control states instead of relying only on `Control Lane`.
+5. Replication role rearm was narrowed.
+   - `bins/sidereal-replication/src/replication/control.rs` now rearms visible clients only when the replication topology itself changes (`Replicate`, `PredictionTarget`, `InterpolationTarget`), not on every control-bookkeeping mutation.

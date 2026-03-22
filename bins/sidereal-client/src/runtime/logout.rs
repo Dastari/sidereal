@@ -161,12 +161,14 @@ pub fn reset_logout_ui_flags_system(
     cleanup_requested: Res<'_, LogoutCleanupRequested>,
     mut disconnect_request: ResMut<'_, DisconnectRequest>,
     mut pause_menu_state: ResMut<'_, PauseMenuState>,
+    mut control_bootstrap_state: ResMut<'_, super::resources::ControlBootstrapState>,
 ) {
     if !cleanup_requested.0 {
         return;
     }
     *disconnect_request = DisconnectRequest::default();
     *pause_menu_state = PauseMenuState::default();
+    *control_bootstrap_state = super::resources::ControlBootstrapState::default();
 }
 
 pub fn reset_asset_bootstrap_state_system(

@@ -1674,6 +1674,7 @@ impl_runtime_effect_material!(
 );
 
 /// Computes fullscreen world-space values used by fullscreen shaders. Runs in Last.
+#[allow(clippy::type_complexity)]
 fn preferred_controlled_velocity(
     controlled_vel_query: &Query<
         '_,
@@ -1713,6 +1714,7 @@ fn preferred_controlled_velocity(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 pub fn compute_fullscreen_external_world_system(
     time: Res<'_, Time>,
     player_view_state: Res<'_, super::app_state::LocalPlayerViewState>,

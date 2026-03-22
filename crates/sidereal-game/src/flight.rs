@@ -160,7 +160,7 @@ pub fn process_flight_actions(
 /// Uses Avian's Forces query helper for proper force integration
 #[allow(clippy::type_complexity)]
 pub fn apply_engine_thrust(
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     // Hull entities with flight computers (by GUID)
     computers: Query<
         (&EntityGuid, &FlightComputer, Option<&AfterburnerState>),

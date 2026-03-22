@@ -4,10 +4,9 @@ use avian2d::prelude::{
 use bevy::prelude::App;
 use core::time::Duration;
 use lightyear::prediction::prelude::{PredictionAppRegistrationExt, PredictionRegistrationExt};
-use lightyear::prelude::InterpolationRegistrationExt;
 use lightyear::prelude::{
-    AppChannelExt, AppComponentExt, AppMessageExt, ChannelMode, ChannelSettings, NetworkDirection,
-    ReliableSettings,
+    AppChannelExt, AppComponentExt, AppMessageExt, ChannelMode, ChannelSettings,
+    InterpolationRegistrationExt, NetworkDirection, ReliableSettings,
 };
 use sidereal_game::WeaponCooldownState;
 use sidereal_game::component_meta::SiderealComponentRegistration;

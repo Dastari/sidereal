@@ -50,6 +50,7 @@ fn resolve_confirmed_planar_pose(
     Some((planar_position, heading))
 }
 
+#[allow(clippy::type_complexity)]
 fn resolve_canonical_confirmed_planar_pose(
     entity_guid: &EntityGuid,
     current_entity: Entity,
@@ -356,6 +357,67 @@ pub(crate) fn recover_stalled_interpolated_world_entity_transforms(
         let seeded_transform = *transform;
         frame_interpolate.previous_value = Some(seeded_transform);
         frame_interpolate.current_value = Some(seeded_transform);
+    }
+}
+
+/// Keep predicted visual transforms aligned with the current predicted spatial pose.
+///
+/// Sidereal already carries a defensive fallback for interpolated entities because Lightyear/Avian
+/// can occasionally leave the visible `Transform` lane stale after relevance/bootstrap churn.
+/// The locally controlled predicted lane can hit a similar failure mode under focus churn or other
+/// timeline disturbances: `Position`/`Rotation` continue to reflect the latest predicted state
+/// while the rendered `Transform` stops advancing for multiple frames.
+///
+/// This system does not author gameplay state. It only snaps the visual `Transform` back onto the
+/// already-present predicted spatial pose when the render lane is clearly stale or unseeded.
+#[allow(clippy::type_complexity)]
+pub(crate) fn recover_stalled_predicted_world_entity_transforms(
+    mut entities: Query<
+        '_,
+        '_,
+        (
+            &'_ Position,
+            &'_ Rotation,
+            &'_ mut Transform,
+            Option<&'_ mut FrameInterpolate<Transform>>,
+        ),
+        (
+            With<WorldEntity>,
+            With<lightyear::prelude::Predicted>,
+            Without<lightyear::prelude::Interpolated>,
+        ),
+    >,
+) {
+    for (position, rotation, mut transform, frame_interpolate) in &mut entities {
+        let planar_position = position.0;
+        let heading = rotation.as_radians();
+        if !planar_position.is_finite() || !heading.is_finite() {
+            continue;
+        }
+
+        let current_translation = transform.translation.truncate();
+        let current_heading = transform.rotation.to_euler(EulerRot::XYZ).2;
+        let positional_drift_m = current_translation.distance(planar_position);
+        let rotational_drift_rad = {
+            let diff = heading - current_heading;
+            ((diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI)
+                .abs()
+        };
+        let frame_interpolation_uninitialized = frame_interpolate
+            .as_ref()
+            .is_some_and(|frame| frame.previous_value.is_none() || frame.current_value.is_none());
+        let transform_is_stalled = positional_drift_m > INTERPOLATED_TRANSFORM_STALL_THRESHOLD_M
+            || rotational_drift_rad > INTERPOLATED_TRANSFORM_STALL_ROTATION_THRESHOLD_RAD;
+        if !frame_interpolation_uninitialized && !transform_is_stalled {
+            continue;
+        }
+
+        apply_planar_transform(&mut transform, planar_position, heading);
+        if let Some(mut frame_interpolate) = frame_interpolate {
+            let seeded_transform = *transform;
+            frame_interpolate.previous_value = Some(seeded_transform);
+            frame_interpolate.current_value = Some(seeded_transform);
+        }
     }
 }
 

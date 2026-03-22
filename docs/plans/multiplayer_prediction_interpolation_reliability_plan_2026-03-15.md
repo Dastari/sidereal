@@ -25,6 +25,11 @@ Update note (2026-03-15, later):
 - The replication visibility path in `bins/sidereal-replication/src/replication/visibility.rs` now forces a targeted resend of current spatial motion components when a client newly gains visibility to a spatial entity. This is intended to close the observed “stationary entity stays at origin until later movement delta” gap without introducing a broad client-side repair scan.
 - These are not treated as final closeout. The next required validation step is the Phase 0 / Phase 1 late-join stationary repro: remote ship stationary, asteroids stationary, no movement until after observation.
 
+Update note (2026-03-22):
+- Recent audit/repro work indicates the next safe reliability step is not "remove all duplicate-lane repair immediately".
+- First repair the role-transition bootstrap gap for entities that enter the `Interpolated` lane while already carrying raw motion state, because that gap is directly exercised by Sidereal's dynamic handoff path and matches an upstream Lightyear interpolation TODO.
+- Keep duplicate suppression and transform-recovery systems as temporary safety rails until the predicted/interpolated transition bootstrap is demonstrably stable under native multiplayer repros.
+
 ## 1. Purpose
 
 Stabilize Sidereal's multiplayer runtime so that:

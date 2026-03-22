@@ -266,6 +266,10 @@ pub(crate) struct DebugOverlayStats {
     pub fixed_overstep_ms: f64,
     pub rollback_budget_ticks: u16,
     pub rollback_budget_ms: f64,
+    pub local_timeline_tick: Option<u32>,
+    pub controlled_confirmed_tick: Option<u32>,
+    pub controlled_tick_gap: Option<u32>,
+    pub control_bootstrap_phase: String,
     pub predicted_count: usize,
     pub confirmed_count: usize,
     pub interpolated_count: usize,
@@ -323,6 +327,23 @@ pub(crate) struct DebugOverlayStats {
     pub nameplate_missing_target_last: usize,
     pub nameplate_projection_failures_last: usize,
     pub nameplate_viewport_culled_last: usize,
+}
+
+#[derive(Debug, Resource, Clone, Copy)]
+pub(crate) struct ClientInputTimelineTuning {
+    pub fixed_input_delay_ticks: u16,
+}
+
+impl ClientInputTimelineTuning {
+    pub fn from_env() -> Self {
+        let fixed_input_delay_ticks = std::env::var("SIDEREAL_CLIENT_INPUT_DELAY_TICKS")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(2);
+        Self {
+            fixed_input_delay_ticks,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -649,6 +670,43 @@ pub(crate) struct DeferredPredictedAdoptionState {
     // single-writer motion invariant and feels "jerky" rather than truly predicted.
     pub missing_predicted_control_entity_id: Option<String>,
     pub last_missing_predicted_warn_at_s: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ControlBootstrapPhase {
+    Idle,
+    PendingPredicted {
+        target_entity_id: String,
+        generation: u64,
+    },
+    ActiveAnchor {
+        target_entity_id: String,
+        generation: u64,
+    },
+    ActivePredicted {
+        target_entity_id: String,
+        generation: u64,
+        entity: Entity,
+    },
+}
+
+#[derive(Debug, Resource)]
+pub(crate) struct ControlBootstrapState {
+    pub authoritative_target_entity_id: Option<String>,
+    pub generation: u64,
+    pub phase: ControlBootstrapPhase,
+    pub last_transition_at_s: f64,
+}
+
+impl Default for ControlBootstrapState {
+    fn default() -> Self {
+        Self {
+            authoritative_target_entity_id: None,
+            generation: 0,
+            phase: ControlBootstrapPhase::Idle,
+            last_transition_at_s: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Resource, Clone, Copy)]

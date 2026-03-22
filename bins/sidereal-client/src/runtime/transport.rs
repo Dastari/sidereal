@@ -28,7 +28,9 @@ use std::net::SocketAddr;
 use super::app_state::{ClientAppState, ClientSession};
 use super::dialog_ui::DialogQueue;
 use super::ecs_util::queue_despawn_if_exists;
-use super::resources::{LogoutCleanupRequested, PendingDisconnectNotify};
+use super::resources::{
+    ClientInputTimelineTuning, LogoutCleanupRequested, PendingDisconnectNotify,
+};
 
 /// Spawns the Lightyear client and triggers Connect if no client entity exists.
 /// Used on Enter Auth so we have a connection for sending auth after (re)login.
@@ -238,6 +240,7 @@ pub fn ensure_client_transport_channels(
 
 pub fn configure_client_input_timeline_on_add(
     trigger: On<Add, Client>,
+    tuning: Res<'_, ClientInputTimelineTuning>,
     query: Query<'_, '_, Option<&'_ InputTimelineConfig>, With<Client>>,
     mut commands: Commands<'_, '_>,
 ) {
@@ -251,7 +254,13 @@ pub fn configure_client_input_timeline_on_add(
     commands.entity(trigger.entity).insert(
         InputTimelineConfig::default()
             .with_sync_config(SyncConfig::default())
-            .with_input_delay(InputDelayConfig::fixed_input_delay(0)),
+            .with_input_delay(InputDelayConfig::fixed_input_delay(
+                tuning.fixed_input_delay_ticks,
+            )),
+    );
+    info!(
+        "configured client input timeline entity={} fixed_input_delay_ticks={}",
+        trigger.entity, tuning.fixed_input_delay_ticks
     );
 }
 

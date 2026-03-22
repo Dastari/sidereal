@@ -40,7 +40,7 @@ pub use generated::components::*;
 pub use hierarchy::sync_mounted_hierarchy;
 pub use mass::{
     bootstrap_collision_profiles_from_aabb, bootstrap_root_dynamic_entity_colliders,
-    bootstrap_ship_mass_components, collider_from_collision_shape, recompute_total_mass,
+    bootstrap_root_dynamic_mass_components, collider_from_collision_shape, recompute_total_mass,
 };
 pub use procedural_sprite_generation::{
     ProceduralSpriteImageSet, compute_collision_half_extents_from_procedural_sprite,
@@ -149,7 +149,7 @@ impl Plugin for SiderealGamePlugin {
         app.add_systems(
             PostUpdate,
             (
-                bootstrap_ship_mass_components,
+                bootstrap_root_dynamic_mass_components,
                 bootstrap_collision_profiles_from_aabb,
                 bootstrap_root_dynamic_entity_colliders,
             ),

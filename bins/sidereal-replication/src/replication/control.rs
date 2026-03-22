@@ -627,52 +627,58 @@ pub fn reconcile_control_replication_roles(
             entity_commands.insert(ControlledEntityGuid(desired_control_guid));
         }
 
-        let mut role_changed = false;
+        let mut replication_topology_changed = false;
 
         match bound_client {
             Some(client_entity) => {
-                role_changed |= maybe_set_controlled_by(
+                maybe_set_controlled_by(
                     &mut entity_commands,
                     current_controlled_by,
                     Some(client_entity),
                 );
                 let desired_replicate = owner_only_replicate(client_entity);
-                role_changed |= maybe_set_replicate(
+                let replicate_changed = maybe_set_replicate(
                     &mut entity_commands,
                     current_replicate,
                     &desired_replicate,
                 );
+                replication_topology_changed |= replicate_changed;
 
-                role_changed |= maybe_set_prediction_target(
+                let prediction_changed = maybe_set_prediction_target(
                     &mut entity_commands,
                     current_prediction,
                     controls_self.then_some(client_entity),
                 );
-                role_changed |= maybe_set_interpolation_target(
+                replication_topology_changed |= prediction_changed;
+                let interpolation_changed = maybe_set_interpolation_target(
                     &mut entity_commands,
                     current_interpolation,
                     (!controls_self).then_some(DesiredInterpolationTarget::Owner(client_entity)),
                 );
+                replication_topology_changed |= interpolation_changed;
             }
             None => {
-                role_changed |=
-                    maybe_set_controlled_by(&mut entity_commands, current_controlled_by, None);
-                role_changed |= maybe_set_replicate(
+                maybe_set_controlled_by(&mut entity_commands, current_controlled_by, None);
+                let replicate_changed = maybe_set_replicate(
                     &mut entity_commands,
                     current_replicate,
                     &Replicate::to_clients(NetworkTarget::None),
                 );
-                role_changed |=
+                replication_topology_changed |= replicate_changed;
+                let prediction_changed =
                     maybe_set_prediction_target(&mut entity_commands, current_prediction, None);
-                role_changed |= maybe_set_interpolation_target(
+                replication_topology_changed |= prediction_changed;
+                let interpolation_changed = maybe_set_interpolation_target(
                     &mut entity_commands,
                     current_interpolation,
                     None,
                 );
+                replication_topology_changed |= interpolation_changed;
             }
         }
 
-        if role_changed && let Some(replication_state) = replication_state.as_mut() {
+        if replication_topology_changed && let Some(replication_state) = replication_state.as_mut()
+        {
             let rearmed =
                 rearm_visible_clients_for_role_change(&membership_cache, replication_state, entity);
             if rearmed > 0 {
@@ -706,14 +712,14 @@ pub fn reconcile_control_replication_roles(
             });
 
         let mut entity_commands = commands.entity(entity);
-        let mut role_changed = false;
-        role_changed |=
-            maybe_set_controlled_by(&mut entity_commands, current_controlled_by, desired_owner);
-        role_changed |= maybe_set_replicate(
+        let mut replication_topology_changed = false;
+        maybe_set_controlled_by(&mut entity_commands, current_controlled_by, desired_owner);
+        let replicate_changed = maybe_set_replicate(
             &mut entity_commands,
             current_replicate,
             &Replicate::to_clients(NetworkTarget::All),
         );
+        replication_topology_changed |= replicate_changed;
 
         let desired_interpolation = match desired_owner {
             Some(owner) => observer_interpolation_target(&bindings, owner)
@@ -721,15 +727,18 @@ pub fn reconcile_control_replication_roles(
             None => Some(DesiredInterpolationTarget::Network(NetworkTarget::All)),
         };
 
-        role_changed |=
+        let prediction_changed =
             maybe_set_prediction_target(&mut entity_commands, current_prediction, desired_owner);
-        role_changed |= maybe_set_interpolation_target(
+        replication_topology_changed |= prediction_changed;
+        let interpolation_changed = maybe_set_interpolation_target(
             &mut entity_commands,
             current_interpolation,
             desired_interpolation,
         );
+        replication_topology_changed |= interpolation_changed;
 
-        if role_changed && let Some(replication_state) = replication_state.as_mut() {
+        if replication_topology_changed && let Some(replication_state) = replication_state.as_mut()
+        {
             let rearmed =
                 rearm_visible_clients_for_role_change(&membership_cache, replication_state, entity);
             if rearmed > 0 {

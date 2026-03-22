@@ -19,7 +19,10 @@ use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
     ControlledEntity, NearbyCollisionProxy, SuppressedPredictedDuplicateVisual, WorldEntity,
 };
-use super::resources::{MotionOwnershipReconcileState, NearbyCollisionProxyTuning};
+use super::resources::{
+    ControlBootstrapPhase, ControlBootstrapState, MotionOwnershipReconcileState,
+    NearbyCollisionProxyTuning,
+};
 
 pub(crate) fn mark_motion_ownership_dirty_signals(
     session: Res<'_, ClientSession>,
@@ -70,6 +73,7 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
     time: Res<'_, Time>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    control_bootstrap_state: Res<'_, ControlBootstrapState>,
     mut reconcile_state: ResMut<'_, MotionOwnershipReconcileState>,
     rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
     collision_aabbs: Query<'_, '_, &'_ CollisionAabbM>,
@@ -127,15 +131,28 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         // Control target not resolved yet (bootstrap/handoff). Avoid destructive stripping.
         return;
     };
-    let mut target_entity: Option<Entity> = None;
-    let mut target_entity_score: i32 = -1;
-    let is_player_anchor_target = session
+    let mut target_entity: Option<Entity> = match &control_bootstrap_state.phase {
+        ControlBootstrapPhase::ActivePredicted { entity, .. } => Some(*entity),
+        _ => None,
+    };
+    let mut target_entity_score: i32 = if target_entity.is_some() {
+        i32::MAX
+    } else {
+        -1
+    };
+    let is_player_anchor_target = matches!(
+        control_bootstrap_state.phase,
+        ControlBootstrapPhase::ActiveAnchor { .. }
+    ) || session
         .player_entity_id
         .as_deref()
         .and_then(parse_guid_from_entity_id)
         .zip(Some(target_guid))
         .is_some_and(|(player_guid, control_guid)| player_guid == control_guid);
-    let mut target_entity_is_predicted = false;
+    let mut target_entity_is_predicted = matches!(
+        control_bootstrap_state.phase,
+        ControlBootstrapPhase::ActivePredicted { .. }
+    );
     for (
         candidate_entity,
         _,

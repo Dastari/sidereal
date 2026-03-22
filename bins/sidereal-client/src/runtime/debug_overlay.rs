@@ -5,6 +5,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
+use lightyear::prelude::{ConfirmedTick, LocalTimeline};
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
     CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ParentGuid,
@@ -27,10 +28,11 @@ use super::components::{
 };
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::resources::{
-    DebugCollisionShape, DebugControlledLane, DebugEntityLane, DebugOverlayEntity,
-    DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DebugSeverity, DebugTextRow,
-    DuplicateVisualResolutionState, HudPerfCounters, PredictionCorrectionTuning,
-    RenderLayerPerfCounters, RuntimeAssetPerfCounters, RuntimeStallDiagnostics,
+    ControlBootstrapPhase, ControlBootstrapState, DebugCollisionShape, DebugControlledLane,
+    DebugEntityLane, DebugOverlayEntity, DebugOverlaySnapshot, DebugOverlayState,
+    DebugOverlayStats, DebugSeverity, DebugTextRow, DuplicateVisualResolutionState,
+    HudPerfCounters, PredictionCorrectionTuning, RenderLayerPerfCounters, RuntimeAssetPerfCounters,
+    RuntimeStallDiagnostics,
 };
 use super::transforms::interpolated_presentation_ready;
 
@@ -149,6 +151,8 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
     debug_overlay: Res<'_, DebugOverlayState>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    control_bootstrap_state: Res<'_, ControlBootstrapState>,
+    timeline: Res<'_, LocalTimeline>,
     real_time: Res<'_, Time<Real>>,
     prediction_tuning: Res<'_, PredictionCorrectionTuning>,
     runtime_stall_diagnostics: Res<'_, RuntimeStallDiagnostics>,
@@ -189,6 +193,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 Option<&'_ ConfirmedHistory<Rotation>>,
                 Option<&'_ lightyear::prelude::Confirmed<Position>>,
                 Option<&'_ lightyear::prelude::Confirmed<Rotation>>,
+                Option<&'_ ConfirmedTick>,
             ),
         ),
         With<WorldEntity>,
@@ -226,9 +231,26 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
     snapshot.stats.fixed_runs_last_frame = runtime_stall_diagnostics.fixed_runs_last_frame;
     snapshot.stats.fixed_runs_max_frame = runtime_stall_diagnostics.fixed_runs_max_frame;
     snapshot.stats.fixed_overstep_ms = runtime_stall_diagnostics.fixed_overstep_ms;
+    snapshot.stats.control_bootstrap_phase = match &control_bootstrap_state.phase {
+        ControlBootstrapPhase::Idle => "Idle".to_string(),
+        ControlBootstrapPhase::PendingPredicted {
+            target_entity_id,
+            generation,
+        } => format!("Pending {target_entity_id} g{generation}"),
+        ControlBootstrapPhase::ActiveAnchor {
+            target_entity_id,
+            generation,
+        } => format!("Anchor {target_entity_id} g{generation}"),
+        ControlBootstrapPhase::ActivePredicted {
+            target_entity_id,
+            generation,
+            ..
+        } => format!("Predicted {target_entity_id} g{generation}"),
+    };
     snapshot.stats.rollback_budget_ticks = prediction_tuning.max_rollback_ticks;
     snapshot.stats.rollback_budget_ms =
         f64::from(prediction_tuning.max_rollback_ticks) * 1000.0 / f64::from(SIM_TICK_HZ);
+    snapshot.stats.local_timeline_tick = Some(u32::from(timeline.tick().0));
 
     snapshot.stats.mesh_asset_count = stats_inputs.mesh_assets.iter().count();
     snapshot.stats.active_camera_count = stats_inputs.cameras.iter().count();
@@ -359,6 +381,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             rotation_history,
             confirmed_position,
             confirmed_rotation,
+            confirmed_tick,
         ),
     ) in &entities
     {
@@ -465,6 +488,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                         rotation_rad: rotation.0.as_radians(),
                     },
                 ),
+                confirmed_tick: confirmed_tick.map(|tick| tick.tick.0),
             });
     }
 
@@ -509,6 +533,14 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                     primary_lane: resolved.primary_lane,
                     has_confirmed_ghost,
                 });
+                if let Some(confirmed_tick) = primary.confirmed_tick {
+                    let confirmed_tick = u32::from(confirmed_tick);
+                    snapshot.stats.controlled_confirmed_tick = Some(confirmed_tick);
+                    snapshot.stats.controlled_tick_gap = snapshot
+                        .stats
+                        .local_timeline_tick
+                        .map(|local_tick| local_tick.saturating_sub(confirmed_tick));
+                }
             }
             push_snapshot_entity(
                 &mut snapshot,
@@ -735,6 +767,7 @@ struct RootDebugCandidate {
     interpolated_ready: bool,
     has_confirmed_wrappers: bool,
     confirmed_pose: Option<ConfirmedGhostPose>,
+    confirmed_tick: Option<u16>,
 }
 
 #[derive(Clone)]
@@ -914,6 +947,7 @@ fn build_confirmed_ghost_entity(primary: &RootDebugCandidate) -> Option<RootDebu
                 interpolated_ready: false,
                 has_confirmed_wrappers: true,
                 confirmed_pose: None,
+                confirmed_tick: primary.confirmed_tick,
             }
         });
     }
@@ -930,6 +964,7 @@ fn build_confirmed_ghost_entity(primary: &RootDebugCandidate) -> Option<RootDebu
             interpolated_ready: false,
             has_confirmed_wrappers: false,
             confirmed_pose: None,
+            confirmed_tick: primary.confirmed_tick,
         });
     }
 
@@ -1016,6 +1051,26 @@ fn build_debug_text_rows(
                 stats.rollback_budget_ticks, stats.rollback_budget_ms
             ),
             severity: DebugSeverity::Normal,
+        },
+        DebugTextRow {
+            label: "Ctrl TickGap".to_string(),
+            value: match (
+                stats.local_timeline_tick,
+                stats.controlled_confirmed_tick,
+                stats.controlled_tick_gap,
+            ) {
+                (Some(local_tick), Some(confirmed_tick), Some(gap)) => {
+                    format!("l{:>5} c{:>5} d{:>4}", local_tick, confirmed_tick, gap)
+                }
+                _ => "n/a".to_string(),
+            },
+            severity: match stats.controlled_tick_gap {
+                Some(gap) if gap > u32::from(stats.rollback_budget_ticks) => DebugSeverity::Error,
+                Some(gap) if gap > (u32::from(stats.rollback_budget_ticks) / 2).max(1) => {
+                    DebugSeverity::Warn
+                }
+                _ => DebugSeverity::Normal,
+            },
         },
         DebugTextRow {
             label: "Unfocus Obs".to_string(),
@@ -1284,6 +1339,17 @@ fn build_debug_text_rows(
             },
         });
         rows.push(DebugTextRow {
+            label: "Ctrl Bootstrap".to_string(),
+            value: stats.control_bootstrap_phase.clone(),
+            severity: if stats.control_bootstrap_phase.starts_with("Predicted")
+                || stats.control_bootstrap_phase.starts_with("Anchor")
+            {
+                DebugSeverity::Normal
+            } else {
+                DebugSeverity::Warn
+            },
+        });
+        rows.push(DebugTextRow {
             label: "Control GUID".to_string(),
             value: controlled_lane.guid.to_string(),
             severity: DebugSeverity::Normal,
@@ -1397,6 +1463,7 @@ mod tests {
             interpolated_ready,
             has_confirmed_wrappers: confirmed_pose.is_some(),
             confirmed_pose,
+            confirmed_tick: None,
         }
     }
 

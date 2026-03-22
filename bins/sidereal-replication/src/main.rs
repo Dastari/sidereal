@@ -16,8 +16,7 @@ use bevy::log::info;
 use bevy::log::{BoxedFmtLayer, LogPlugin};
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
-use lightyear::input::native::prelude::NativeStateSequence;
-use lightyear::input::plugin::InputPlugin as LightyearInputProtocolPlugin;
+use lightyear::input::native::prelude::InputPlugin as NativeInputPlugin;
 use lightyear::prelude::server::ServerPlugins;
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_core::logging::prepare_timestamped_log_file;
@@ -120,9 +119,7 @@ fn main() {
     app.add_plugins(ServerPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / f64::from(SIM_TICK_HZ)),
     });
-    app.add_plugins(LightyearInputProtocolPlugin::<
-        NativeStateSequence<sidereal_net::PlayerInput>,
-    >::default());
+    app.add_plugins(NativeInputPlugin::<sidereal_net::PlayerInput>::default());
     register_lightyear_server_protocol(&mut app);
     lifecycle::configure_remote(&mut app, &remote_cfg);
 

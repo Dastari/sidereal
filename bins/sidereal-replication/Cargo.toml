@@ -13,7 +13,7 @@ axum = { workspace = true, default-features = false, features = ["http1", "json"
 base64.workspace = true
 bevy_remote = { workspace = true, default-features = false, features = ["http"] }
 crossterm = { version = "0.29", default-features = false, features = ["bracketed-paste", "events"] }
-lightyear = { git = "https://github.com/Dastari/lightyear", rev = "29867036", default-features = false, features = ["std", "server", "raw_connection", "udp", "input_native", "prediction", "interpolation", "frame_interpolation", "avian2d", "webtransport", "webtransport_self_signed"] }
+lightyear = { workspace = true, default-features = false, features = ["std", "server", "raw_connection", "udp", "input_native", "replication", "prediction", "interpolation", "frame_interpolation", "avian2d", "webtransport", "webtransport_self_signed"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sidereal-core = { path = "../../crates/sidereal-core" }
