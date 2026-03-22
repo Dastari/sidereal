@@ -548,6 +548,25 @@ pub fn submit_asset_bootstrap_request(
     request_state.pending = Some(AssetBootstrapRequestTask { receiver });
 }
 
+fn session_matches_ready_player(
+    session: &ClientSession,
+    session_ready: &SessionReadyState,
+) -> bool {
+    match (
+        session
+            .player_entity_id
+            .as_deref()
+            .and_then(PlayerEntityId::parse),
+        session_ready
+            .ready_player_entity_id
+            .as_deref()
+            .and_then(PlayerEntityId::parse),
+    ) {
+        (Some(local), Some(ready)) => local == ready,
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn poll_gateway_request_results(
     mut request_state: ResMut<'_, GatewayRequestState>,
@@ -557,9 +576,6 @@ pub fn poll_gateway_request_results(
     mut session_ready: ResMut<'_, SessionReadyState>,
     mut auth_sync: ResMut<'_, super::resources::ClientAuthSyncState>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
-    asset_root: Res<'_, AssetRootPath>,
-    gateway_http: Res<'_, GatewayHttpAdapter>,
-    cache_adapter: Res<'_, AssetCacheAdapter>,
     mut asset_bootstrap_state: ResMut<'_, AssetBootstrapRequestState>,
 ) {
     let Some(task) = request_state.pending.as_ref() else {
@@ -628,14 +644,8 @@ pub fn poll_gateway_request_results(
             asset_bootstrap_state.submitted = false;
             asset_bootstrap_state.completed = false;
             asset_bootstrap_state.failed = false;
+            asset_bootstrap_state.pending = None;
             session.status = "World entry accepted. Waiting for replication bind...".to_string();
-            submit_asset_bootstrap_request(
-                session.as_mut(),
-                asset_bootstrap_state.as_mut(),
-                *gateway_http,
-                *cache_adapter,
-                &asset_root.0,
-            );
             next_state.set(ClientAppState::WorldLoading);
         }
         GatewayRequestResult::Auth(AuthRequestResult::Error(err))
@@ -769,6 +779,30 @@ pub fn poll_asset_bootstrap_request_results(
             dialog_queue.push_error("Asset Bootstrap Failed", err);
         }
     }
+}
+
+pub fn submit_asset_bootstrap_after_session_ready(
+    mut session: ResMut<'_, ClientSession>,
+    session_ready: Res<'_, SessionReadyState>,
+    mut request_state: ResMut<'_, AssetBootstrapRequestState>,
+    asset_root: Res<'_, AssetRootPath>,
+    gateway_http: Res<'_, GatewayHttpAdapter>,
+    cache_adapter: Res<'_, AssetCacheAdapter>,
+) {
+    if request_state.submitted || request_state.pending.is_some() {
+        return;
+    }
+    if !session_matches_ready_player(&session, &session_ready) {
+        return;
+    }
+
+    submit_asset_bootstrap_request(
+        session.as_mut(),
+        request_state.as_mut(),
+        *gateway_http,
+        *cache_adapter,
+        &asset_root.0,
+    );
 }
 
 pub fn trigger_asset_catalog_refresh_requests(
@@ -1009,18 +1043,7 @@ pub fn watch_session_ready_timeout_system(
         return;
     }
 
-    let session_ready_for_player = session
-        .player_entity_id
-        .as_deref()
-        .and_then(PlayerEntityId::parse)
-        .and_then(|local| {
-            session_ready
-                .ready_player_entity_id
-                .as_deref()
-                .and_then(PlayerEntityId::parse)
-                .map(|ready| ready == local)
-        })
-        .unwrap_or(false);
+    let session_ready_for_player = session_matches_ready_player(&session, &session_ready);
     if session_ready_for_player {
         watchdog.started_at_s = None;
         return;
@@ -1063,11 +1086,10 @@ pub fn receive_lightyear_session_denied_messages(
     };
     for mut receiver in &mut receivers {
         for message in receiver.receive() {
-            let Some(message_player_id) = PlayerEntityId::parse(message.player_entity_id.as_str())
-            else {
-                continue;
-            };
-            if message_player_id != local_player_id {
+            let player_matches = PlayerEntityId::parse(message.player_entity_id.as_str())
+                .map(|message_player_id| message_player_id == local_player_id)
+                .unwrap_or_else(|| message.player_entity_id == *local_player_entity_id);
+            if !player_matches {
                 continue;
             }
             warn!(
@@ -1089,14 +1111,90 @@ pub fn receive_lightyear_session_denied_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{AssetBootstrapRequestState, poll_asset_bootstrap_request_results};
-    use crate::runtime::app_state::ClientSession;
+    use super::{
+        AssetBootstrapRequestState, poll_asset_bootstrap_request_results,
+        submit_asset_bootstrap_after_session_ready,
+    };
+    use crate::runtime::app_state::{ClientSession, SessionReadyState};
     use crate::runtime::assets::{AssetCatalogHotReloadState, LocalAssetManager};
     use crate::runtime::audio::AudioCatalogState;
     use crate::runtime::dialog_ui::DialogQueue;
+    use crate::runtime::resources::{AssetCacheAdapter, AssetRootPath, GatewayHttpAdapter};
     use async_channel::bounded;
     use bevy::prelude::*;
     use bevy::tasks::{IoTaskPool, TaskPool};
+    use sidereal_asset_runtime::AssetCacheIndex;
+    use sidereal_core::gateway_dtos::AssetBootstrapManifestResponse;
+
+    fn ok_manifest(
+        _: String,
+        _: String,
+    ) -> crate::runtime::resources::GatewayFuture<AssetBootstrapManifestResponse> {
+        Box::pin(async {
+            Ok(AssetBootstrapManifestResponse {
+                catalog_version: "test-catalog".to_string(),
+                audio_catalog_version: "test-audio".to_string(),
+                required_assets: Vec::new(),
+                catalog: Vec::new(),
+                audio_catalog: Default::default(),
+            })
+        })
+    }
+
+    fn ok_prepare_root(_: String) -> crate::runtime::resources::CacheFuture<()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn ok_load_index(_: String) -> crate::runtime::resources::CacheFuture<AssetCacheIndex> {
+        Box::pin(async { Ok(AssetCacheIndex::default()) })
+    }
+
+    fn ok_save_index(_: String, _: AssetCacheIndex) -> crate::runtime::resources::CacheFuture<()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn ok_read_valid_asset(
+        _: String,
+        _: String,
+        _: String,
+    ) -> crate::runtime::resources::CacheFuture<Option<Vec<u8>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn ok_write_asset(
+        _: String,
+        _: String,
+        _: Vec<u8>,
+    ) -> crate::runtime::resources::CacheFuture<()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn gateway_http_adapter() -> GatewayHttpAdapter {
+        GatewayHttpAdapter {
+            login: |_, _| Box::pin(async { Err("unused".to_string()) }),
+            register: |_, _| Box::pin(async { Err("unused".to_string()) }),
+            request_password_reset: |_, _| Box::pin(async { Err("unused".to_string()) }),
+            confirm_password_reset: |_, _| Box::pin(async { Err("unused".to_string()) }),
+            fetch_me: |_, _| Box::pin(async { Err("unused".to_string()) }),
+            fetch_characters: |_, _| Box::pin(async { Err("unused".to_string()) }),
+            enter_world: |_, _, _| Box::pin(async { Err("unused".to_string()) }),
+            fetch_startup_manifest: |_| Box::pin(async { Err("unused".to_string()) }),
+            fetch_bootstrap_manifest: ok_manifest,
+            fetch_public_asset_bytes: |_| Box::pin(async { Err("unused".to_string()) }),
+            fetch_asset_bytes: |_, _| Box::pin(async { Err("unused".to_string()) }),
+        }
+    }
+
+    fn asset_cache_adapter() -> AssetCacheAdapter {
+        AssetCacheAdapter {
+            prepare_root: ok_prepare_root,
+            load_index: ok_load_index,
+            save_index: ok_save_index,
+            read_valid_asset: ok_read_valid_asset,
+            write_asset: ok_write_asset,
+            read_valid_asset_sync: |_, _, _| None,
+        }
+    }
 
     #[test]
     fn bootstrap_failure_marks_request_failed_and_preserves_fail_closed_state() {
@@ -1145,5 +1243,41 @@ mod tests {
             "Asset bootstrap failed: required asset download failed"
         );
         assert!(session.ui_dirty);
+    }
+
+    #[test]
+    fn asset_bootstrap_waits_for_session_ready() {
+        IoTaskPool::get_or_init(TaskPool::new);
+
+        let mut app = App::new();
+        app.insert_resource(ClientSession {
+            access_token: Some("test-token".to_string()),
+            player_entity_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(SessionReadyState::default());
+        app.insert_resource(AssetBootstrapRequestState::default());
+        app.insert_resource(AssetRootPath("test-assets".to_string()));
+        app.insert_resource(gateway_http_adapter());
+        app.insert_resource(asset_cache_adapter());
+        app.add_systems(Update, submit_asset_bootstrap_after_session_ready);
+
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<AssetBootstrapRequestState>()
+                .submitted,
+            "bootstrap should not start before session ready"
+        );
+
+        app.world_mut()
+            .resource_mut::<SessionReadyState>()
+            .ready_player_entity_id = Some("11111111-1111-1111-1111-111111111111".to_string());
+
+        app.update();
+
+        let request_state = app.world().resource::<AssetBootstrapRequestState>();
+        assert!(request_state.submitted);
+        assert!(request_state.pending.is_some());
     }
 }

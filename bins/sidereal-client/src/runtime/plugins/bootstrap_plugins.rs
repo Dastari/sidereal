@@ -87,6 +87,7 @@ fn add_headless_transport_systems(app: &mut App) {
             transport::handle_unexpected_server_disconnect_system,
             auth_net::send_lightyear_auth_messages,
             auth_net::receive_lightyear_session_ready_messages,
+            auth_net::submit_asset_bootstrap_after_session_ready,
         )
             .chain(),
     );
@@ -100,6 +101,7 @@ fn add_windowed_transport_systems(app: &mut App) {
             transport::handle_unexpected_server_disconnect_system,
             auth_net::send_lightyear_auth_messages,
             auth_net::receive_lightyear_session_ready_messages,
+            auth_net::submit_asset_bootstrap_after_session_ready,
             auth_net::receive_lightyear_session_denied_messages,
             auth_net::watch_session_ready_timeout_system,
         )
