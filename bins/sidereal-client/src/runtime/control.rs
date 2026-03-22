@@ -251,6 +251,7 @@ pub fn receive_lightyear_control_results(
                 request_state.pending_request_seq = None;
                 request_state.last_sent_request_seq = None;
             }
+            player_view_state.controlled_entity_generation = message.control_generation;
             if let Some(controlled_entity_id) = message.controlled_entity_id {
                 player_view_state.controlled_entity_id = Some(controlled_entity_id);
             } else {
@@ -285,6 +286,7 @@ pub fn receive_lightyear_control_results(
                 request_state.pending_request_seq = None;
                 request_state.last_sent_request_seq = None;
             }
+            player_view_state.controlled_entity_generation = message.control_generation;
             if let Some(authoritative) = message.authoritative_controlled_entity_id {
                 player_view_state.controlled_entity_id = Some(authoritative);
             } else if player_view_state.controlled_entity_id.is_none() {

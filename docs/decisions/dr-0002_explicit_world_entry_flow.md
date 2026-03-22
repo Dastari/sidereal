@@ -29,8 +29,8 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
    - replication validates identity/ownership and binds session to selected character.
 6. World loading gate:
    - client remains in `WorldLoading` after `/world/enter` acceptance,
-   - transition to `InWorld` only after replication emits session-ready bind acknowledgment for selected `player_entity_id`,
-   - and client has replicated the selected player entity.
+   - bootstrap-required asset fetch must not begin until replication emits session-ready bind acknowledgment for the selected `player_entity_id`,
+   - transition to `InWorld` only after session-ready, required asset bootstrap, and replicated selected-player presence all complete.
 
 ## Enforcement Rules
 
@@ -42,9 +42,10 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 - Enter/reconnect bootstrap may hydrate missing runtime entities from persisted graph records for the selected character, but must not synthesize a brand-new ship identity at runtime.
 - Minimum runtime control protocol is:
   - `ClientControlRequestMessage { player_entity_id, controlled_entity_id, request_seq }`
-  - `ServerControlAckMessage { player_entity_id, request_seq, controlled_entity_id }`
-  - `ServerControlRejectMessage { player_entity_id, request_seq, reason, authoritative_controlled_entity_id }`
+  - `ServerControlAckMessage { player_entity_id, request_seq, control_generation, controlled_entity_id }`
+  - `ServerControlRejectMessage { player_entity_id, request_seq, control_generation, reason, authoritative_controlled_entity_id }`
 - Control routing is server-authoritative and validated by ownership; client clears pending control only on explicit ack/reject for matching `request_seq`.
+- `control_generation` is the authoritative lease generation and is part of the bootstrap contract for predicted handoff/reconnect.
 
 ## Failure Behavior
 
@@ -56,6 +57,9 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
   - deny session explicitly,
   - keep client out of world,
   - do not silently leave client hanging in `WorldLoading`.
+- Any terminal replication auth rejection after the requesting peer is identified:
+  - must emit `ServerSessionDeniedMessage`,
+  - must not rely on the client-side session-ready watchdog to surface auth/account/player mismatch failures.
 - Missing controlled entity:
   - valid state (`controlled = None`),
   - client remains functional in free-camera mode.

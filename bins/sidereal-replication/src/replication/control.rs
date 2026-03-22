@@ -26,8 +26,27 @@ pub struct ClientControlRequestOrder {
     pub last_request_seq_by_player: HashMap<String, u64>,
 }
 
+#[derive(Resource, Default)]
+pub struct ClientControlLeaseGenerations {
+    pub generation_by_player: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingControlAck {
+    server_entity: Entity,
+    remote_peer_id: lightyear::prelude::PeerId,
+    message: ServerControlAckMessage,
+}
+
+#[derive(Resource, Default)]
+pub struct PendingControlAckQueue {
+    queued: Vec<PendingControlAck>,
+}
+
 pub fn init_resources(app: &mut App) {
     app.insert_resource(ClientControlRequestOrder::default());
+    app.insert_resource(ClientControlLeaseGenerations::default());
+    app.insert_resource(PendingControlAckQueue::default());
 }
 
 #[doc(hidden)]
@@ -37,6 +56,14 @@ pub fn guid_from_entity_id_like(raw: &str) -> Option<String> {
 
 fn control_target_log_label(value: Option<&str>) -> &str {
     value.unwrap_or("<none>")
+}
+
+fn next_control_generation(current_generation: u64, changed: bool) -> u64 {
+    match (current_generation, changed) {
+        (0, _) => 1,
+        (current, true) => current.saturating_add(1),
+        (current, false) => current,
+    }
 }
 
 pub(crate) fn owner_only_replicate(client_entity: Entity) -> Replicate {
@@ -124,6 +151,8 @@ pub fn receive_client_control_requests(
     player_controlled: Query<'_, '_, &'_ ControlledEntityGuid, With<PlayerTag>>,
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut order_state: ResMut<'_, ClientControlRequestOrder>,
+    mut lease_generations: ResMut<'_, ClientControlLeaseGenerations>,
+    mut pending_acks: ResMut<'_, PendingControlAckQueue>,
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
 ) {
@@ -171,6 +200,11 @@ pub fn receive_client_control_requests(
                 let reject = ServerControlRejectMessage {
                     player_entity_id: message_player_wire,
                     request_seq: message.request_seq,
+                    control_generation: lease_generations
+                        .generation_by_player
+                        .get(bound_player.as_str())
+                        .copied()
+                        .unwrap_or(0),
                     reason: "player_mismatch".to_string(),
                     authoritative_controlled_entity_id: None,
                 };
@@ -231,6 +265,11 @@ pub fn receive_client_control_requests(
                 let reject = ServerControlRejectMessage {
                     player_entity_id: bound_player.clone(),
                     request_seq: message.request_seq,
+                    control_generation: lease_generations
+                        .generation_by_player
+                        .get(bound_player.as_str())
+                        .copied()
+                        .unwrap_or(0),
                     reason: "stale_seq".to_string(),
                     authoritative_controlled_entity_id: authoritative_controlled,
                 };
@@ -247,6 +286,11 @@ pub fn receive_client_control_requests(
                 let reject = ServerControlRejectMessage {
                     player_entity_id: bound_player.clone(),
                     request_seq: message.request_seq,
+                    control_generation: lease_generations
+                        .generation_by_player
+                        .get(bound_player.as_str())
+                        .copied()
+                        .unwrap_or(0),
                     reason: "missing_player_entity".to_string(),
                     authoritative_controlled_entity_id: None,
                 };
@@ -265,6 +309,11 @@ pub fn receive_client_control_requests(
                 let reject = ServerControlRejectMessage {
                     player_entity_id: bound_player.clone(),
                     request_seq: message.request_seq,
+                    control_generation: lease_generations
+                        .generation_by_player
+                        .get(bound_player.as_str())
+                        .copied()
+                        .unwrap_or(0),
                     reason: "missing_player_guid".to_string(),
                     authoritative_controlled_entity_id: None,
                 };
@@ -278,6 +327,11 @@ pub fn receive_client_control_requests(
                 .ok()
                 .and_then(|guid| guid.0.clone())
                 .or_else(|| Some(player_runtime_id.clone()));
+            let current_generation = lease_generations
+                .generation_by_player
+                .get(bound_player.as_str())
+                .copied()
+                .unwrap_or(0);
             info!(
                 "server control handover request player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={}",
                 bound_player,
@@ -328,6 +382,7 @@ pub fn receive_client_control_requests(
                             let reject = ServerControlRejectMessage {
                                 player_entity_id: bound_player.clone(),
                                 request_seq: message.request_seq,
+                                control_generation: current_generation,
                                 reason: "target_not_owned_or_missing".to_string(),
                                 authoritative_controlled_entity_id: Some(player_runtime_id.clone()),
                             };
@@ -361,6 +416,10 @@ pub fn receive_client_control_requests(
                 .insert(bound_player_id, resolved_target_entity);
 
             let rebind_required = currently_bound_entity != resolved_target_entity;
+            let control_generation = next_control_generation(current_generation, rebind_required);
+            lease_generations
+                .generation_by_player
+                .insert(bound_player.clone(), control_generation);
             if rebind_required {
                 neutralize_control_intent_on_handoff(&mut commands, currently_bound_entity);
             }
@@ -387,10 +446,39 @@ pub fn receive_client_control_requests(
             let ack = ServerControlAckMessage {
                 player_entity_id: bound_player.clone(),
                 request_seq: message.request_seq,
+                control_generation,
                 controlled_entity_id: resolved_runtime_entity_id,
             };
-            let _ = sender.send::<ServerControlAckMessage, ControlChannel>(&ack, server, &target);
+            pending_acks.queued.push(PendingControlAck {
+                server_entity: link_of.server,
+                remote_peer_id: remote_id.0,
+                message: ack,
+            });
         }
+    }
+}
+
+pub fn flush_pending_control_acks(
+    server_query: Query<'_, '_, &'_ Server>,
+    mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
+    mut pending_acks: ResMut<'_, PendingControlAckQueue>,
+) {
+    for pending in pending_acks.queued.drain(..) {
+        let Ok(server) = server_query.get(pending.server_entity) else {
+            warn!(
+                "replication control: missing server entity {:?} while flushing queued ack for player {} seq {}",
+                pending.server_entity,
+                pending.message.player_entity_id,
+                pending.message.request_seq
+            );
+            continue;
+        };
+        let target = NetworkTarget::Single(pending.remote_peer_id);
+        let _ = sender.send::<ServerControlAckMessage, ControlChannel>(
+            &pending.message,
+            server,
+            &target,
+        );
     }
 }
 
@@ -758,9 +846,9 @@ pub fn reconcile_control_replication_roles(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_visible_clients_for_role_rearm, observer_interpolation_target,
-        owner_interpolation_target, owner_only_replicate, owner_prediction_target,
-        reconcile_control_replication_roles,
+        collect_visible_clients_for_role_rearm, next_control_generation,
+        observer_interpolation_target, owner_interpolation_target, owner_only_replicate,
+        owner_prediction_target, reconcile_control_replication_roles,
     };
     use crate::replication::auth::AuthenticatedClientBindings;
     use crate::replication::{
@@ -776,6 +864,13 @@ mod tests {
     use sidereal_game::{ControlledEntityGuid, EntityGuid, PlayerTag};
     use sidereal_net::PlayerEntityId;
     use uuid::Uuid;
+
+    #[test]
+    fn control_generation_advances_only_when_the_lease_target_changes() {
+        assert_eq!(next_control_generation(0, false), 1);
+        assert_eq!(next_control_generation(1, false), 1);
+        assert_eq!(next_control_generation(1, true), 2);
+    }
 
     #[test]
     fn reconcile_assigns_owner_predicted_ship_roles_without_visibility_churn() {

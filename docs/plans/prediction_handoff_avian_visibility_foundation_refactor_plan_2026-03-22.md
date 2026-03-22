@@ -608,3 +608,15 @@ Those changes were useful for diagnosis and short-term containment, but they do 
    - `bins/sidereal-replication/src/replication/control.rs` now narrows visibility rearm to actual replication-topology changes.
 4. Phase 5 has not started in earnest yet:
    - duplicate visual suppression and transform recovery are still present and should remain until the fork-level existing-entity lane transition work is complete.
+
+2026-03-22 implementation update (follow-up):
+
+1. Phase 1 continued in the Lightyear fork:
+   - `/home/toby/dev/lightyear/lightyear_avian/src/plugin.rs` now bootstraps `Transform` when `Predicted` or `Interpolated` is added to an existing Avian spatial entity that already has `Position`/`Rotation`.
+   - targeted fork tests now cover both late `Predicted` and late `Interpolated` transform bootstrap.
+2. Phase 2 and Phase 4 continued:
+   - `ServerControlAckMessage` / `ServerControlRejectMessage` now carry `control_generation`.
+   - `bins/sidereal-replication/src/replication/control.rs` now tracks per-player control lease generations and only advances them when the resolved target actually changes.
+   - `bins/sidereal-client/src/runtime/replication.rs` now prefers the authoritative server generation when transitioning `ControlBootstrapState`.
+3. Phase 5 narrowed one repair path:
+   - `bins/sidereal-client/src/runtime/transforms.rs` now seeds only uninitialized `FrameInterpolate<Transform>` state for predicted/interpolated lanes instead of using broad drift snapback as a normal path.

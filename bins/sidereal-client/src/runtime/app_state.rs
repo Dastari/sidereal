@@ -65,6 +65,7 @@ pub(crate) struct SessionReadyState {
 #[derive(Debug, Resource, Default)]
 pub(crate) struct LocalPlayerViewState {
     pub controlled_entity_id: Option<String>,
+    pub controlled_entity_generation: u64,
     pub desired_controlled_entity_id: Option<String>,
     pub selected_entity_id: Option<String>,
     pub detached_free_camera: bool,

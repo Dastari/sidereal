@@ -14,9 +14,6 @@ use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::components::{PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity};
 
-const INTERPOLATED_TRANSFORM_STALL_THRESHOLD_M: f32 = 12.0;
-const INTERPOLATED_TRANSFORM_STALL_ROTATION_THRESHOLD_RAD: f32 = 0.35;
-
 fn apply_planar_transform(transform: &mut Transform, planar_position: Vec2, heading: f32) {
     transform.translation.x = planar_position.x;
     transform.translation.y = planar_position.y;
@@ -299,13 +296,11 @@ pub(crate) fn sync_frame_interpolation_markers_for_world_entities(
     }
 }
 
-/// Safeguard against observer entities whose visual `Transform` stops advancing while their
-/// interpolated spatial components continue to update.
+/// Seed observer visual transforms only while frame interpolation is still uninitialized.
 ///
-/// Lightyear/Avian should normally own this lane. Sidereal keeps this as a narrow fallback only
-/// when the visible `Transform` is clearly stale or frame-interpolation state is still unseeded.
-/// That keeps us aligned with Lightyear by default while avoiding multi-second "freeze then catch
-/// up" stalls for remote observer ships under dynamic relevance/handoff churn.
+/// Late-lane bootstrap belongs in Lightyear/Avian. Sidereal keeps only this narrow seeding path so
+/// freshly adopted observer entities do not spend a frame at the default transform before
+/// interpolation state is ready.
 #[allow(clippy::type_complexity)]
 pub(crate) fn recover_stalled_interpolated_world_entity_transforms(
     mut entities: Query<
@@ -337,19 +332,9 @@ pub(crate) fn recover_stalled_interpolated_world_entity_transforms(
             continue;
         };
 
-        let current_translation = transform.translation.truncate();
-        let current_heading = transform.rotation.to_euler(EulerRot::XYZ).2;
-        let positional_drift_m = current_translation.distance(planar_position);
-        let rotational_drift_rad = {
-            let diff = heading - current_heading;
-            ((diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI)
-                .abs()
-        };
         let frame_interpolation_uninitialized =
             frame_interpolate.previous_value.is_none() || frame_interpolate.current_value.is_none();
-        let transform_is_stalled = positional_drift_m > INTERPOLATED_TRANSFORM_STALL_THRESHOLD_M
-            || rotational_drift_rad > INTERPOLATED_TRANSFORM_STALL_ROTATION_THRESHOLD_RAD;
-        if !frame_interpolation_uninitialized && !transform_is_stalled {
+        if !frame_interpolation_uninitialized {
             continue;
         }
 
@@ -360,16 +345,10 @@ pub(crate) fn recover_stalled_interpolated_world_entity_transforms(
     }
 }
 
-/// Keep predicted visual transforms aligned with the current predicted spatial pose.
+/// Seed predicted visual transforms only while frame interpolation is still uninitialized.
 ///
-/// Sidereal already carries a defensive fallback for interpolated entities because Lightyear/Avian
-/// can occasionally leave the visible `Transform` lane stale after relevance/bootstrap churn.
-/// The locally controlled predicted lane can hit a similar failure mode under focus churn or other
-/// timeline disturbances: `Position`/`Rotation` continue to reflect the latest predicted state
-/// while the rendered `Transform` stops advancing for multiple frames.
-///
-/// This system does not author gameplay state. It only snaps the visual `Transform` back onto the
-/// already-present predicted spatial pose when the render lane is clearly stale or unseeded.
+/// Once the predicted lane is live, transform ownership should stay with Lightyear/Avian and the
+/// frame interpolation pipeline rather than a client-side drift-repair shim.
 #[allow(clippy::type_complexity)]
 pub(crate) fn recover_stalled_predicted_world_entity_transforms(
     mut entities: Query<
@@ -395,20 +374,10 @@ pub(crate) fn recover_stalled_predicted_world_entity_transforms(
             continue;
         }
 
-        let current_translation = transform.translation.truncate();
-        let current_heading = transform.rotation.to_euler(EulerRot::XYZ).2;
-        let positional_drift_m = current_translation.distance(planar_position);
-        let rotational_drift_rad = {
-            let diff = heading - current_heading;
-            ((diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI)
-                .abs()
-        };
         let frame_interpolation_uninitialized = frame_interpolate
             .as_ref()
             .is_some_and(|frame| frame.previous_value.is_none() || frame.current_value.is_none());
-        let transform_is_stalled = positional_drift_m > INTERPOLATED_TRANSFORM_STALL_THRESHOLD_M
-            || rotational_drift_rad > INTERPOLATED_TRANSFORM_STALL_ROTATION_THRESHOLD_RAD;
-        if !frame_interpolation_uninitialized && !transform_is_stalled {
+        if !frame_interpolation_uninitialized {
             continue;
         }
 

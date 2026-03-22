@@ -433,9 +433,10 @@ Implementation note:
 
 - **Current:** Implemented via persisted `controlled_entity_guid` on the player entity. Client sends `ClientControlRequestMessage { player_entity_id, controlled_entity_id, request_seq }`; server validates ownership and updates `ControlledBy` plus `PlayerControlledEntityMap`.
 - **Rule:** Control handoff is explicit request/response:
-  - success: `ServerControlAckMessage { player_entity_id, request_seq, controlled_entity_id }`,
-  - failure: `ServerControlRejectMessage { player_entity_id, request_seq, reason, authoritative_controlled_entity_id }`.
+  - success: `ServerControlAckMessage { player_entity_id, request_seq, control_generation, controlled_entity_id }`,
+  - failure: `ServerControlRejectMessage { player_entity_id, request_seq, control_generation, reason, authoritative_controlled_entity_id }`.
   Client clears pending control only on matching ack/reject. Free-roam is self-control (`controlled_entity_guid = player guid`), not null control.
+  `control_generation` is the server-issued lease generation for the currently authoritative target; clients must key bootstrap/handoff state off that generation instead of inventing a local sequence from clone discovery alone.
 - **Camera/anchor contract:** camera always follows the player entity. When controlled target is not self, server continuously anchors player transform to the controlled entity.
 
 **Multiple ships per player**
@@ -458,7 +459,8 @@ Implementation note:
 - Player-specific runtime/persistent data is player-entity scoped. Authoritative control state persists via `controlled_entity_guid` on the player entity; score, quest progression, and other character-local settings persist on the player entity in graph persistence.
 - Account identity is an auth container and external reference. An account may own multiple player entities (characters); `player_entity_id` selects which character/session identity is bound for runtime control.
 - Replication binds session transport identity to authenticated `player_entity_id`.
-- Client world entry state transition is `Auth -> CharacterSelect -> WorldLoading -> AssetLoading -> InWorld`; transition to `InWorld` occurs only after replication session-ready bind acknowledgment for the selected `player_entity_id`, required asset validation/download, and replicated player-entity presence on client.
+- Replication auth denial must be explicit: invalid player ids, rejected tokens, ownership mismatches, and temporarily unavailable player runtime entities return `ServerSessionDeniedMessage` rather than only logging and dropping the request.
+- Client world entry state transition is `Auth -> CharacterSelect -> WorldLoading -> AssetLoading -> InWorld`; replication session-ready bind acknowledgment for the selected `player_entity_id` is the gate that starts bootstrap-required asset validation/download, and transition to `InWorld` occurs only after session-ready, required asset validation/download, and replicated player-entity presence on client.
 - Input packets with mismatched identity claims are rejected.
 - Gameplay control selection remains ownership-authorized.
 - Runtime systems must fail closed on ownership/identity mismatches (reject and log) rather than silently creating replacement state.

@@ -230,16 +230,19 @@ fn register_plugins(app: &mut App) {
             visibility::receive_client_local_view_mode_messages,
             input::report_input_drop_metrics,
             persistence::report_persistence_worker_metrics,
-            simulation_entities::process_bootstrap_entity_commands,
-            lifecycle::ensure_entity_scoped_replication_groups
-                .after(simulation_entities::process_bootstrap_entity_commands),
-            control::reconcile_control_replication_roles
-                .after(lifecycle::ensure_entity_scoped_replication_groups),
-            auth::sync_visibility_registry_with_authenticated_clients
-                .after(control::reconcile_control_replication_roles),
-            runtime_state::log_player_control_state_changes
-                .after(auth::sync_visibility_registry_with_authenticated_clients),
             lifecycle::disconnect_idle_clients,
+        )
+            .chain(),
+    );
+    app.add_systems(
+        Update,
+        (
+            simulation_entities::process_bootstrap_entity_commands,
+            lifecycle::ensure_entity_scoped_replication_groups,
+            control::reconcile_control_replication_roles,
+            auth::sync_visibility_registry_with_authenticated_clients,
+            control::flush_pending_control_acks,
+            runtime_state::log_player_control_state_changes,
         )
             .chain(),
     );

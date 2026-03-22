@@ -44,6 +44,7 @@ pub struct ClientControlRequestMessage {
 pub struct ServerControlAckMessage {
     pub player_entity_id: String,
     pub request_seq: u64,
+    pub control_generation: u64,
     pub controlled_entity_id: Option<String>,
 }
 
@@ -52,6 +53,7 @@ pub struct ServerControlAckMessage {
 pub struct ServerControlRejectMessage {
     pub player_entity_id: String,
     pub request_seq: u64,
+    pub control_generation: u64,
     pub reason: String,
     pub authoritative_controlled_entity_id: Option<String>,
 }

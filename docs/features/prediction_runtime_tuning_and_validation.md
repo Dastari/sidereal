@@ -78,6 +78,9 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - Client runtime now seeds missing `Confirmed<T>` mirrors for Avian motion components (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`) when an already-existing replicated entity is in the `Interpolated` lane but still only has raw motion components.
   - This is a bounded transition-bootstrap guard for control handoff / visibility role churn, not a new steady-state presentation contract.
   - Reason: upstream Lightyear still carries an explicit interpolation TODO for "if `Interpolated` is added on an existing entity" and Sidereal exercises that path during control transfer.
+- World-entry auth/bootstrap sequencing is tighter now.
+  - Replication now sends `ServerSessionDeniedMessage` for every terminal auth rejection after the peer is identified, including invalid token, token/player mismatch, account ownership mismatch, and missing runtime player cases.
+  - Native client bootstrap-required asset download now waits for `ServerSessionReady` for the selected player instead of starting immediately after `/world/enter` acceptance.
   - Goal: let the observer lane become immediately presentable and interpolation-ready without waiting for a later delta to populate `Confirmed<T>`.
 - Conflicting `Predicted` + `Interpolated` marker cleanup on the client is now transition-driven rather than an every-frame scan.
   - Sidereal still sanitizes invalid mixed-lane entities locally because dynamic handoff can reuse a local entity and leave both markers present.
@@ -177,3 +180,8 @@ Track remaining non-structural work after Lightyear-native migration completion:
    - This makes the two-client repros easier to classify as `Pending`, `Anchor`, or `Predicted` control states instead of relying only on `Control Lane`.
 5. Replication role rearm was narrowed.
    - `bins/sidereal-replication/src/replication/control.rs` now rearms visible clients only when the replication topology itself changes (`Replicate`, `PredictionTarget`, `InterpolationTarget`), not on every control-bookkeeping mutation.
+6. Control bootstrap now follows a server-issued lease generation.
+   - `ServerControlAckMessage` / `ServerControlRejectMessage` now carry `control_generation`.
+   - `bins/sidereal-client/src/runtime/replication.rs` now prefers that authoritative generation when transitioning `ControlBootstrapState`, instead of relying only on local target-string change detection.
+7. Transform repair was narrowed after the Lightyear fork gained late-lane Avian transform bootstrap.
+   - `bins/sidereal-client/src/runtime/transforms.rs` now seeds only uninitialized `FrameInterpolate<Transform>` state for predicted/interpolated lanes rather than using broad drift snapback as a normal runtime path.

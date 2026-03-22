@@ -58,6 +58,27 @@ pub(crate) fn configured_gateway_jwt_secret() -> Result<String, &'static str> {
     }
 }
 
+fn send_session_denied_message(
+    sender: &mut ServerMultiMessageSender<'_, '_, With<Connected>>,
+    server: &Server,
+    remote_id: lightyear::prelude::PeerId,
+    player_entity_id: &str,
+    reason: impl Into<String>,
+) {
+    let denied = ServerSessionDeniedMessage {
+        player_entity_id: player_entity_id.to_string(),
+        reason: reason.into(),
+    };
+    let target = NetworkTarget::Single(remote_id);
+    if let Err(err) = sender.send::<ServerSessionDeniedMessage, ControlChannel>(&denied, server, &target)
+    {
+        warn!(
+            "replication failed sending session-denied to remote={:?} player={} err={}",
+            remote_id, denied.player_entity_id, err
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cleanup_client_auth_bindings(
     clients: Query<'_, '_, (Entity, &'_ RemoteId), With<ClientOf>>,
@@ -240,29 +261,31 @@ pub fn receive_client_auth_messages(
         };
         for message in receiver.receive() {
             last_activity.0.insert(client_entity, now_s);
+            let requested_player_id = message.player_entity_id.clone();
             let Some(message_player_id) = PlayerEntityId::parse(message.player_entity_id.as_str())
             else {
                 warn!(
                     "replication rejected client auth: invalid player id encoding player={}",
                     message.player_entity_id
                 );
+                send_session_denied_message(
+                    &mut sender,
+                    server,
+                    remote_id.0,
+                    requested_player_id.as_str(),
+                    "Invalid player entity identifier in auth request.",
+                );
                 continue;
             };
             let message_player_wire = message_player_id.canonical_wire_id();
             let Some(jwt_secret) = jwt_secret.as_ref() else {
-                let target = NetworkTarget::Single(remote_id.0);
-                let denied = ServerSessionDeniedMessage {
-                    player_entity_id: message_player_wire.clone(),
-                    reason: AUTH_CONFIG_DENIED_REASON.to_string(),
-                };
-                if let Err(err) = sender
-                    .send::<ServerSessionDeniedMessage, ControlChannel>(&denied, server, &target)
-                {
-                    warn!(
-                        "replication failed sending auth-config session-denied to remote={:?} player={} err={}",
-                        remote_id.0, message_player_wire, err
-                    );
-                }
+                send_session_denied_message(
+                    &mut sender,
+                    server,
+                    remote_id.0,
+                    message_player_wire.as_str(),
+                    AUTH_CONFIG_DENIED_REASON,
+                );
                 continue;
             };
             let claims = match decode_access_token(&message.access_token, jwt_secret) {
@@ -271,6 +294,13 @@ pub fn receive_client_auth_messages(
                     warn!(
                         "replication rejected client auth: invalid token for client {:?}",
                         client_entity
+                    );
+                    send_session_denied_message(
+                        &mut sender,
+                        server,
+                        remote_id.0,
+                        message_player_wire.as_str(),
+                        "Authentication token rejected by replication.",
                     );
                     continue;
                 }
@@ -281,12 +311,26 @@ pub fn receive_client_auth_messages(
                     "replication rejected client auth: invalid token player id encoding token_player={}",
                     claims.player_entity_id
                 );
+                send_session_denied_message(
+                    &mut sender,
+                    server,
+                    remote_id.0,
+                    message_player_wire.as_str(),
+                    "Authentication token contained an invalid player identifier.",
+                );
                 continue;
             };
             if token_player_id != message_player_id {
                 warn!(
                     "replication rejected client auth: token player mismatch token_player={} message_player={}",
                     claims.player_entity_id, message.player_entity_id
+                );
+                send_session_denied_message(
+                    &mut sender,
+                    server,
+                    remote_id.0,
+                    message_player_wire.as_str(),
+                    "Authentication token does not match the requested player entity.",
                 );
                 continue;
             }
@@ -331,6 +375,13 @@ pub fn receive_client_auth_messages(
                     warn!(
                         "replication rejected client auth: account does not own player entity (account={} player={})",
                         claims.sub, message.player_entity_id
+                    );
+                    send_session_denied_message(
+                        &mut sender,
+                        server,
+                        remote_id.0,
+                        message_player_wire.as_str(),
+                        "Authenticated account does not own the requested player entity.",
                     );
                     continue;
                 }
@@ -432,20 +483,13 @@ pub fn receive_client_auth_messages(
                     "replication auth: player entity {} not found in world; denying session",
                     message_player_wire
                 );
-                let target = NetworkTarget::Single(remote_id.0);
-                let denied = ServerSessionDeniedMessage {
-                    player_entity_id: message_player_wire.clone(),
-                    reason: "Player entity not yet loaded into the world. Please try again."
-                        .to_string(),
-                };
-                if let Err(err) = sender
-                    .send::<ServerSessionDeniedMessage, ControlChannel>(&denied, server, &target)
-                {
-                    warn!(
-                        "replication failed sending session-denied to remote={:?} player={} err={}",
-                        remote_id.0, message_player_wire, err
-                    );
-                }
+                send_session_denied_message(
+                    &mut sender,
+                    server,
+                    remote_id.0,
+                    message_player_wire.as_str(),
+                    "Player entity not yet loaded into the world. Please try again.",
+                );
                 continue;
             }
 

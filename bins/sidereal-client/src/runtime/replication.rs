@@ -986,6 +986,19 @@ mod tests {
     }
 
     #[test]
+    fn control_bootstrap_generation_prefers_authoritative_server_generation() {
+        assert_eq!(super::control_bootstrap_generation(4, 9, false), 9);
+        assert_eq!(super::control_bootstrap_generation(0, 3, true), 3);
+    }
+
+    #[test]
+    fn control_bootstrap_generation_falls_back_to_local_increment_only_when_needed() {
+        assert_eq!(super::control_bootstrap_generation(0, 0, true), 1);
+        assert_eq!(super::control_bootstrap_generation(7, 0, true), 8);
+        assert_eq!(super::control_bootstrap_generation(7, 0, false), 7);
+    }
+
+    #[test]
     fn local_player_control_resolution_prefers_predicted_player_anchor() {
         let mut registry = RuntimeEntityHierarchy::default();
         registry.by_entity_id.insert(
@@ -1459,6 +1472,50 @@ pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_predicted
     );
 }
 
+fn control_bootstrap_generation(
+    current_generation: u64,
+    authoritative_generation: u64,
+    target_changed: bool,
+) -> u64 {
+    if authoritative_generation > 0 {
+        authoritative_generation
+    } else if target_changed {
+        current_generation.saturating_add(1)
+    } else {
+        current_generation
+    }
+}
+
+fn rewrite_control_bootstrap_phase_generation(
+    phase: &ControlBootstrapPhase,
+    generation: u64,
+) -> ControlBootstrapPhase {
+    match phase {
+        ControlBootstrapPhase::Idle => ControlBootstrapPhase::Idle,
+        ControlBootstrapPhase::PendingPredicted {
+            target_entity_id, ..
+        } => ControlBootstrapPhase::PendingPredicted {
+            target_entity_id: target_entity_id.clone(),
+            generation,
+        },
+        ControlBootstrapPhase::ActiveAnchor {
+            target_entity_id, ..
+        } => ControlBootstrapPhase::ActiveAnchor {
+            target_entity_id: target_entity_id.clone(),
+            generation,
+        },
+        ControlBootstrapPhase::ActivePredicted {
+            target_entity_id,
+            entity,
+            ..
+        } => ControlBootstrapPhase::ActivePredicted {
+            target_entity_id: target_entity_id.clone(),
+            generation,
+            entity: *entity,
+        },
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added(
     trigger: On<Add, lightyear::prelude::Interpolated>,
@@ -1501,16 +1558,20 @@ pub(crate) fn sync_controlled_entity_tags_system(
         local_player_entity_id,
         inputs.player_view_state.controlled_entity_id.as_deref(),
     );
+    let target_changed = inputs
+        .control_bootstrap_state
+        .authoritative_target_entity_id
+        != target_entity_id;
+    let desired_generation = control_bootstrap_generation(
+        inputs.control_bootstrap_state.generation,
+        inputs.player_view_state.controlled_entity_generation,
+        target_changed,
+    );
     let target_guid = target_entity_id
         .as_ref()
         .and_then(|id| parse_guid_from_entity_id(id));
-    if inputs
-        .control_bootstrap_state
-        .authoritative_target_entity_id
-        != target_entity_id
-    {
-        inputs.control_bootstrap_state.generation =
-            inputs.control_bootstrap_state.generation.saturating_add(1);
+    if target_changed {
+        inputs.control_bootstrap_state.generation = desired_generation;
         inputs
             .control_bootstrap_state
             .authoritative_target_entity_id = target_entity_id.clone();
@@ -1518,10 +1579,16 @@ pub(crate) fn sync_controlled_entity_tags_system(
         inputs.control_bootstrap_state.phase = match target_entity_id.as_ref() {
             Some(target_entity_id) => ControlBootstrapPhase::PendingPredicted {
                 target_entity_id: target_entity_id.clone(),
-                generation: inputs.control_bootstrap_state.generation,
+                generation: desired_generation,
             },
             None => ControlBootstrapPhase::Idle,
         };
+    } else if desired_generation != inputs.control_bootstrap_state.generation {
+        inputs.control_bootstrap_state.generation = desired_generation;
+        inputs.control_bootstrap_state.phase = rewrite_control_bootstrap_phase_generation(
+            &inputs.control_bootstrap_state.phase,
+            desired_generation,
+        );
     }
     let local_player_guid = parse_guid_from_entity_id(local_player_entity_id);
     let is_player_anchor_target = target_guid
