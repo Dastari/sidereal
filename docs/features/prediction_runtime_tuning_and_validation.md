@@ -185,3 +185,6 @@ Track remaining non-structural work after Lightyear-native migration completion:
    - `bins/sidereal-client/src/runtime/replication.rs` now prefers that authoritative generation when transitioning `ControlBootstrapState`, instead of relying only on local target-string change detection.
 7. Transform repair was narrowed after the Lightyear fork gained late-lane Avian transform bootstrap.
    - `bins/sidereal-client/src/runtime/transforms.rs` now seeds only uninitialized `FrameInterpolate<Transform>` state for predicted/interpolated lanes rather than using broad drift snapback as a normal runtime path.
+8. Client timeline tuning is now less aggressive under native focus churn.
+   - `bins/sidereal-client/src/runtime/transport.rs` now configures a bounded focused prediction window and an unfocused no-prediction window instead of leaving Lightyear's input timeline at a 100-tick prediction allowance.
+   - The same file now inserts a tuned `InterpolationConfig` so remote observer entities keep a slightly deeper interpolation buffer instead of riding the default low-delay path.

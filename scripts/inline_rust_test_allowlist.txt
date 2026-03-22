@@ -11,6 +11,7 @@ bins/sidereal-replication/src/replication/control.rs
 bins/sidereal-client/src/runtime/render_layers.rs
 bins/sidereal-client/src/runtime/shaders.rs
 bins/sidereal-client/src/runtime/tactical.rs
+bins/sidereal-client/src/runtime/transport.rs
 bins/sidereal-client/src/runtime/ui.rs
 bins/sidereal-client/src/runtime/visuals.rs
 bins/sidereal-gateway/src/api.rs

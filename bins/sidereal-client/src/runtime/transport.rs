@@ -4,6 +4,11 @@ use bevy::log::info;
 #[cfg(target_arch = "wasm32")]
 use bevy::log::warn;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
+use lightyear::interpolation::timeline::InterpolationConfig;
+#[cfg(not(target_arch = "wasm32"))]
+use lightyear::prelude::LocalAddr;
+use lightyear::prelude::SyncConfig;
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::UdpIo;
 #[cfg(target_arch = "wasm32")]
@@ -19,7 +24,6 @@ use lightyear::prelude::{
 use lightyear::prelude::{
     ChannelRegistry, MessageManager, PeerAddr, ReplicationReceiver, Transport,
 };
-use lightyear::prelude::{LocalAddr, SyncConfig};
 use sidereal_net::{
     ControlChannel, InputChannel, ManifestChannel, TacticalDeltaChannel, TacticalSnapshotChannel,
 };
@@ -29,8 +33,71 @@ use super::app_state::{ClientAppState, ClientSession};
 use super::dialog_ui::DialogQueue;
 use super::ecs_util::queue_despawn_if_exists;
 use super::resources::{
-    ClientInputTimelineTuning, LogoutCleanupRequested, PendingDisconnectNotify,
+    ClientInputTimelineTuning, ClientInterpolationTimelineTuning, ClientTimelineFocusState,
+    LogoutCleanupRequested, PendingDisconnectNotify,
 };
+use std::time::Duration;
+
+fn default_input_sync_config() -> SyncConfig {
+    SyncConfig {
+        jitter_multiple: 3,
+        jitter_margin: Duration::from_millis(3),
+        handshake_pings: 3,
+        error_margin: 0.5,
+        max_error_margin: 4.0,
+        consecutive_errors: 0,
+        previous_error_sign: true,
+        consecutive_errors_threshold: 2,
+        speedup_factor: 1.02,
+    }
+}
+
+fn input_delay_config_from_tuning(
+    tuning: ClientInputTimelineTuning,
+    max_predicted_ticks: u16,
+) -> InputDelayConfig {
+    InputDelayConfig {
+        minimum_input_delay_ticks: tuning.fixed_input_delay_ticks,
+        maximum_input_delay_before_prediction: tuning.fixed_input_delay_ticks,
+        maximum_predicted_ticks: max_predicted_ticks,
+    }
+}
+
+fn input_timeline_config_from_tuning(
+    tuning: ClientInputTimelineTuning,
+    window_focused: bool,
+) -> InputTimelineConfig {
+    let max_predicted_ticks = if window_focused {
+        tuning.max_predicted_ticks
+    } else {
+        tuning.unfocused_max_predicted_ticks
+    };
+    InputTimelineConfig::default()
+        .with_sync_config(default_input_sync_config())
+        .with_input_delay(input_delay_config_from_tuning(tuning, max_predicted_ticks))
+}
+
+fn interpolation_sync_config() -> SyncConfig {
+    SyncConfig {
+        jitter_multiple: 3,
+        jitter_margin: Duration::from_millis(3),
+        handshake_pings: 3,
+        error_margin: 0.75,
+        max_error_margin: 6.0,
+        consecutive_errors: 0,
+        previous_error_sign: true,
+        consecutive_errors_threshold: 2,
+        speedup_factor: 1.02,
+    }
+}
+
+fn interpolation_config_from_tuning(
+    tuning: ClientInterpolationTimelineTuning,
+) -> InterpolationConfig {
+    InterpolationConfig::default()
+        .with_min_delay(Duration::from_millis(tuning.min_delay_ms))
+        .with_send_interval_ratio(tuning.send_interval_ratio)
+}
 
 /// Spawns the Lightyear client and triggers Connect if no client entity exists.
 /// Used on Enter Auth so we have a connection for sending auth after (re)login.
@@ -251,17 +318,70 @@ pub fn configure_client_input_timeline_on_add(
         return;
     }
 
-    commands.entity(trigger.entity).insert(
-        InputTimelineConfig::default()
-            .with_sync_config(SyncConfig::default())
-            .with_input_delay(InputDelayConfig::fixed_input_delay(
-                tuning.fixed_input_delay_ticks,
-            )),
-    );
+    commands
+        .entity(trigger.entity)
+        .insert(input_timeline_config_from_tuning(*tuning, true));
     info!(
-        "configured client input timeline entity={} fixed_input_delay_ticks={}",
-        trigger.entity, tuning.fixed_input_delay_ticks
+        "configured client input timeline entity={} fixed_input_delay_ticks={} max_predicted_ticks={} unfocused_max_predicted_ticks={}",
+        trigger.entity,
+        tuning.fixed_input_delay_ticks,
+        tuning.max_predicted_ticks,
+        tuning.unfocused_max_predicted_ticks
     );
+}
+
+pub fn configure_client_interpolation_timeline_on_add(
+    trigger: On<Add, Client>,
+    tuning: Res<'_, ClientInterpolationTimelineTuning>,
+    query: Query<'_, '_, Option<&'_ InterpolationConfig>, With<Client>>,
+    mut commands: Commands<'_, '_>,
+) {
+    let Ok(existing_config) = query.get(trigger.entity) else {
+        return;
+    };
+    if existing_config.is_some() {
+        return;
+    }
+
+    let mut config = interpolation_config_from_tuning(*tuning);
+    config.sync = interpolation_sync_config();
+    commands.entity(trigger.entity).insert(config);
+    info!(
+        "configured client interpolation timeline entity={} min_delay_ms={} send_interval_ratio={}",
+        trigger.entity, tuning.min_delay_ms, tuning.send_interval_ratio
+    );
+}
+
+pub fn adapt_client_timeline_tuning_for_window_focus(
+    tuning: Res<'_, ClientInputTimelineTuning>,
+    mut focus_state: ResMut<'_, ClientTimelineFocusState>,
+    windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
+    clients: Query<'_, '_, Entity, With<Client>>,
+    mut commands: Commands<'_, '_>,
+) {
+    let window_focused = windows
+        .single()
+        .map(|window| window.focused)
+        .unwrap_or(true);
+    if focus_state.last_window_focused == Some(window_focused) {
+        return;
+    }
+    focus_state.last_window_focused = Some(window_focused);
+
+    let max_predicted_ticks = if window_focused {
+        tuning.max_predicted_ticks
+    } else {
+        tuning.unfocused_max_predicted_ticks
+    };
+    for entity in &clients {
+        commands
+            .entity(entity)
+            .insert(input_timeline_config_from_tuning(*tuning, window_focused));
+        info!(
+            "reconfigured client input timeline entity={} window_focused={} fixed_input_delay_ticks={} max_predicted_ticks={}",
+            entity, window_focused, tuning.fixed_input_delay_ticks, max_predicted_ticks
+        );
+    }
 }
 
 pub fn handle_unexpected_server_disconnect_system(
@@ -305,4 +425,57 @@ pub fn handle_unexpected_server_disconnect_system(
         "The replication server connection was lost.\n\nYou have been returned to the login screen.",
     );
     cleanup_requested.0 = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        default_input_sync_config, input_delay_config_from_tuning, interpolation_config_from_tuning,
+    };
+    use crate::runtime::resources::{ClientInputTimelineTuning, ClientInterpolationTimelineTuning};
+    use std::time::Duration;
+
+    #[test]
+    fn default_input_sync_config_has_tighter_resync_budget() {
+        let config = default_input_sync_config();
+        assert_eq!(config.error_margin, 0.5);
+        assert_eq!(config.max_error_margin, 4.0);
+        assert!(config.speedup_factor < 1.05);
+    }
+
+    #[test]
+    fn unfocused_input_delay_config_disables_prediction_lead() {
+        let tuning = ClientInputTimelineTuning {
+            fixed_input_delay_ticks: 3,
+            max_predicted_ticks: 24,
+            unfocused_max_predicted_ticks: 0,
+        };
+        let config = input_delay_config_from_tuning(tuning, tuning.unfocused_max_predicted_ticks);
+        assert_eq!(config.minimum_input_delay_ticks, 3);
+        assert_eq!(config.maximum_predicted_ticks, 0);
+    }
+
+    #[test]
+    fn interpolation_timeline_prefers_extra_delay_for_remote_smoothing() {
+        let tuning = ClientInterpolationTimelineTuning {
+            min_delay_ms: 50,
+            send_interval_ratio: 2.0,
+        };
+        let config = interpolation_config_from_tuning(tuning);
+        assert_eq!(config.min_delay, Duration::from_millis(50));
+        assert_eq!(config.send_interval_ratio, 2.0);
+    }
+
+    #[test]
+    fn input_delay_helper_keeps_fixed_floor() {
+        let tuning = ClientInputTimelineTuning {
+            fixed_input_delay_ticks: 4,
+            max_predicted_ticks: 20,
+            unfocused_max_predicted_ticks: 0,
+        };
+        let config = input_delay_config_from_tuning(tuning, 20);
+        assert_eq!(config.minimum_input_delay_ticks, 4);
+        assert_eq!(config.maximum_input_delay_before_prediction, 4);
+        assert_eq!(config.maximum_predicted_ticks, 20);
+    }
 }

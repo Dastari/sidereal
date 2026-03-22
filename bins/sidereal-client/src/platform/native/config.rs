@@ -130,6 +130,46 @@ pub(crate) fn apply_process_cli() -> Result<CliAction, String> {
                     .to_string(),
                 );
             }
+            "--input-max-predicted-ticks" => {
+                set_env(
+                    "SIDEREAL_CLIENT_MAX_PREDICTED_TICKS",
+                    parse_u16(
+                        "--input-max-predicted-ticks",
+                        &required_value(&mut args, "--input-max-predicted-ticks")?,
+                    )?
+                    .to_string(),
+                );
+            }
+            "--input-unfocused-max-predicted-ticks" => {
+                set_env(
+                    "SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS",
+                    parse_u16(
+                        "--input-unfocused-max-predicted-ticks",
+                        &required_value(&mut args, "--input-unfocused-max-predicted-ticks")?,
+                    )?
+                    .to_string(),
+                );
+            }
+            "--interpolation-min-delay-ms" => {
+                set_env(
+                    "SIDEREAL_CLIENT_INTERPOLATION_MIN_DELAY_MS",
+                    parse_u64(
+                        "--interpolation-min-delay-ms",
+                        &required_value(&mut args, "--interpolation-min-delay-ms")?,
+                    )?
+                    .to_string(),
+                );
+            }
+            "--interpolation-send-interval-ratio" => {
+                set_env(
+                    "SIDEREAL_CLIENT_INTERPOLATION_SEND_INTERVAL_RATIO",
+                    parse_f32(
+                        "--interpolation-send-interval-ratio",
+                        &required_value(&mut args, "--interpolation-send-interval-ratio")?,
+                    )?
+                    .to_string(),
+                );
+            }
             "--instant-correction" => {
                 set_env("SIDEREAL_CLIENT_INSTANT_CORRECTION", "true".to_string())
             }
@@ -271,6 +311,13 @@ fn parse_u16(flag: &str, value: &str) -> Result<u16, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|err| format!("invalid value for {flag}: {err}"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_usize(flag: &str, value: &str) -> Result<usize, String> {
     value
         .parse::<usize>()
@@ -388,6 +435,16 @@ fn help_text() -> String {
         "                                          env: SIDEREAL_CLIENT_MAX_ROLLBACK_TICKS",
         "      --input-delay-ticks TICKS           Fixed client input delay applied to Lightyear timeline sync",
         "                                          env: SIDEREAL_CLIENT_INPUT_DELAY_TICKS",
+        "      --input-max-predicted-ticks TICKS   Maximum client prediction lead allowed while focused",
+        "                                          env: SIDEREAL_CLIENT_MAX_PREDICTED_TICKS",
+        "      --input-unfocused-max-predicted-ticks TICKS",
+        "                                          Maximum client prediction lead allowed while unfocused",
+        "                                          env: SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS",
+        "      --interpolation-min-delay-ms MS     Minimum interpolation delay applied to remote entities",
+        "                                          env: SIDEREAL_CLIENT_INTERPOLATION_MIN_DELAY_MS",
+        "      --interpolation-send-interval-ratio RATIO",
+        "                                          Interpolation delay as a multiple of sender update interval",
+        "                                          env: SIDEREAL_CLIENT_INTERPOLATION_SEND_INTERVAL_RATIO",
         "      --instant-correction                Use instant correction instead of smooth correction",
         "                                          env: SIDEREAL_CLIENT_INSTANT_CORRECTION=1",
         "      --nearby-collision-proxy-radius-m M Radius around the controlled entity for local collision proxies",

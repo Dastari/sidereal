@@ -332,6 +332,8 @@ pub(crate) struct DebugOverlayStats {
 #[derive(Debug, Resource, Clone, Copy)]
 pub(crate) struct ClientInputTimelineTuning {
     pub fixed_input_delay_ticks: u16,
+    pub max_predicted_ticks: u16,
+    pub unfocused_max_predicted_ticks: u16,
 }
 
 impl ClientInputTimelineTuning {
@@ -339,11 +341,52 @@ impl ClientInputTimelineTuning {
         let fixed_input_delay_ticks = std::env::var("SIDEREAL_CLIENT_INPUT_DELAY_TICKS")
             .ok()
             .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(2);
+            .unwrap_or(3);
+        let max_predicted_ticks = std::env::var("SIDEREAL_CLIENT_MAX_PREDICTED_TICKS")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(24);
+        let unfocused_max_predicted_ticks =
+            std::env::var("SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(0);
         Self {
             fixed_input_delay_ticks,
+            max_predicted_ticks,
+            unfocused_max_predicted_ticks,
         }
     }
+}
+
+#[derive(Debug, Resource, Clone, Copy)]
+pub(crate) struct ClientInterpolationTimelineTuning {
+    pub min_delay_ms: u64,
+    pub send_interval_ratio: f32,
+}
+
+impl ClientInterpolationTimelineTuning {
+    pub fn from_env() -> Self {
+        let min_delay_ms = std::env::var("SIDEREAL_CLIENT_INTERPOLATION_MIN_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(50);
+        let send_interval_ratio =
+            std::env::var("SIDEREAL_CLIENT_INTERPOLATION_SEND_INTERVAL_RATIO")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .unwrap_or(2.0);
+        Self {
+            min_delay_ms,
+            send_interval_ratio,
+        }
+    }
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct ClientTimelineFocusState {
+    pub last_window_focused: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

@@ -620,3 +620,6 @@ Those changes were useful for diagnosis and short-term containment, but they do 
    - `bins/sidereal-client/src/runtime/replication.rs` now prefers the authoritative server generation when transitioning `ControlBootstrapState`.
 3. Phase 5 narrowed one repair path:
    - `bins/sidereal-client/src/runtime/transforms.rs` now seeds only uninitialized `FrameInterpolate<Transform>` state for predicted/interpolated lanes instead of using broad drift snapback as a normal path.
+4. Focus-loss rollback drift and observer jitter were reduced at the client timeline layer:
+   - `bins/sidereal-client/src/runtime/transport.rs` now bounds focused prediction lead and disables extra prediction lead while the native window is unfocused, so short background stalls cannot trivially outrun the rollback budget.
+   - The same runtime now inserts tuned `InterpolationConfig` defaults for smoother observer interpolation instead of using the most aggressive Lightyear defaults.

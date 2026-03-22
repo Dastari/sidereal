@@ -71,6 +71,8 @@ fn init_control_and_prediction_resources(app: &mut App) {
     app.insert_resource(PredictionBootstrapTuning::from_env());
     app.insert_resource(PredictionCorrectionTuning::from_env());
     app.insert_resource(ClientInputTimelineTuning::from_env());
+    app.insert_resource(ClientInterpolationTimelineTuning::from_env());
+    app.insert_resource(ClientTimelineFocusState::default());
     app.insert_resource(NearbyCollisionProxyTuning::from_env());
     app.insert_resource(RemoteEntityRegistry::default());
 }
@@ -219,6 +221,7 @@ pub(crate) fn configure_client_runtime(
     );
     app.add_observer(log_client_transport_connected);
     app.add_observer(transport::configure_client_input_timeline_on_add);
+    app.add_observer(transport::configure_client_interpolation_timeline_on_add);
     app.add_plugins(plugins::ClientBootstrapPlugin {
         headless: headless_transport,
     });
