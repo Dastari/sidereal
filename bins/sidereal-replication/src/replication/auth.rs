@@ -70,7 +70,8 @@ fn send_session_denied_message(
         reason: reason.into(),
     };
     let target = NetworkTarget::Single(remote_id);
-    if let Err(err) = sender.send::<ServerSessionDeniedMessage, ControlChannel>(&denied, server, &target)
+    if let Err(err) =
+        sender.send::<ServerSessionDeniedMessage, ControlChannel>(&denied, server, &target)
     {
         warn!(
             "replication failed sending session-denied to remote={:?} player={} err={}",
