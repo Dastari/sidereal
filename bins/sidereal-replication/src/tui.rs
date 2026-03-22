@@ -1160,6 +1160,22 @@ fn render_health(
         Line::from(format!("physics bodies: {}", health.physics_body_count)),
         Line::from(format!("input drops: {}", health.input_drop_total)),
         Line::from(format!(
+            "input dup/oOO: {}",
+            health.input_duplicate_or_out_of_order_drop_total
+        )),
+        Line::from(format!(
+            "input future/rate: {}/{}",
+            health.input_future_tick_drop_total, health.input_rate_limited_drop_total
+        )),
+        Line::from(format!(
+            "input auth/target: {}/{}",
+            health.input_spoofed_player_drop_total, health.input_controlled_target_mismatch_total
+        )),
+        Line::from(format!(
+            "input empty/unbound: {}/{}",
+            health.input_empty_after_filter_drop_total, health.input_unbound_client_drop_total
+        )),
+        Line::from(format!(
             "visibility query ms: {:.2}",
             health.visibility_query_ms
         )),

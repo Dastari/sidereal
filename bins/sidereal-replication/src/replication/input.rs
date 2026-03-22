@@ -219,8 +219,35 @@ fn input_debug_logging_enabled() -> bool {
     debug_env("SIDEREAL_DEBUG_INPUT_LOGS")
 }
 
+fn input_drop_debug_logging_enabled() -> bool {
+    debug_env("SIDEREAL_DEBUG_INPUT_DROP_LOGS")
+}
+
 fn summary_logging_enabled() -> bool {
     debug_env("SIDEREAL_REPLICATION_SUMMARY_LOGS")
+}
+
+fn log_input_drop(
+    remote_id: &RemoteId,
+    bound_player_wire: &str,
+    message: &ClientRealtimeInputMessage,
+    last_accepted_tick: Option<u64>,
+    failure: InputValidationFailure,
+) {
+    if !input_drop_debug_logging_enabled() {
+        return;
+    }
+    warn!(
+        remote = ?remote_id.0,
+        player = %bound_player_wire,
+        claimed_player = %message.player_entity_id,
+        controlled = %message.controlled_entity_id,
+        received_tick = message.tick,
+        last_accepted_tick = last_accepted_tick.unwrap_or(0),
+        reason = ?failure,
+        actions = ?message.actions,
+        "dropping realtime input"
+    );
 }
 
 /// Drains the receiver and applies only the latest input per player (by tick).
@@ -319,6 +346,13 @@ pub fn receive_latest_realtime_input_messages(
             Ok(()) => {}
             Err(InputValidationFailure::FutureTick) if !SKIP_AHEAD_ON_FUTURE_TICK => {
                 input_drop_metrics.future_tick = input_drop_metrics.future_tick.saturating_add(1);
+                log_input_drop(
+                    remote_id,
+                    bound_player_wire.as_str(),
+                    &best,
+                    last_accepted_tick,
+                    InputValidationFailure::FutureTick,
+                );
                 continue;
             }
             Err(InputValidationFailure::FutureTick) => {
@@ -328,15 +362,36 @@ pub fn receive_latest_realtime_input_messages(
                 input_drop_metrics.duplicate_or_out_of_order_tick = input_drop_metrics
                     .duplicate_or_out_of_order_tick
                     .saturating_add(1);
+                log_input_drop(
+                    remote_id,
+                    bound_player_wire.as_str(),
+                    &best,
+                    last_accepted_tick,
+                    InputValidationFailure::DuplicateOrOutOfOrder,
+                );
                 continue;
             }
             Err(InputValidationFailure::RateLimited) => {
                 input_drop_metrics.rate_limited = input_drop_metrics.rate_limited.saturating_add(1);
+                log_input_drop(
+                    remote_id,
+                    bound_player_wire.as_str(),
+                    &best,
+                    last_accepted_tick,
+                    InputValidationFailure::RateLimited,
+                );
                 continue;
             }
             Err(InputValidationFailure::OversizedPacket) => {
                 input_drop_metrics.oversized_packet =
                     input_drop_metrics.oversized_packet.saturating_add(1);
+                log_input_drop(
+                    remote_id,
+                    bound_player_wire.as_str(),
+                    &best,
+                    last_accepted_tick,
+                    InputValidationFailure::OversizedPacket,
+                );
                 continue;
             }
         }
