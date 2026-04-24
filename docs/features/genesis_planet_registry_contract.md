@@ -13,7 +13,8 @@ Primary references:
 
 ## 0. Implementation Status
 
-- 2026-04-24: Initial implementation has started. Lua planet definitions now live under `data/scripts/planets/` with one named file per planet/celestial body and a `planets/registry.lua` index. `crates/sidereal-scripting` validates the registry and `PlanetBodyShaderSettings` payloads, and replication/gateway script contexts expose the validated definitions to `world_init.lua`. Genesis dashboard authoring UI and gateway draft/publish integration are still in progress. Native impact: starter planet/star content is moving from inline `world_init.lua` tables to registry-authored definitions while preserving the existing `planet.body` bundle and render path. WASM impact: no client authority split; browser impact is limited to future dashboard tooling and shared shader preview paths.
+- 2026-04-24: Initial implementation has started. Lua planet definitions now live under `data/scripts/planets/` with one named file per planet/celestial body and a `planets/registry.lua` index. `crates/sidereal-scripting` validates the registry and `PlanetBodyShaderSettings` payloads, and replication/gateway script contexts expose the validated definitions to `world_init.lua`. Native impact: starter planet/star content is moving from inline `world_init.lua` tables to registry-authored definitions while preserving the existing `planet.body` bundle and render path. WASM impact: no client authority split; browser impact is limited to dashboard tooling and shared shader preview paths.
+- 2026-04-24: Stage 2 dashboard authoring has begun. `/genesis` now loads full editable planet definitions, exposes metadata/spawn/shader controls, supports deterministic randomization from the selected seed, and proxies save/publish/discard actions through script-catalog draft APIs for the planet file plus `planets/registry.lua`. Dashboard mutations are guarded by the existing dashboard admin session and Zod request validation. Remaining Stage 2 work: richer live shader preview integration, create/delete planet flows, and end-to-end gateway validation tests for saved Lua.
 
 ## 1. Purpose
 
@@ -138,8 +139,17 @@ Write path:
 
 1. Save draft through gateway `/admin/scripts/draft/{*script_path}`.
 2. Publish through gateway `/admin/scripts/publish/{*script_path}`.
-3. Update `planets/registry.lua` as a draft when creating/removing entries.
+3. Update `planets/registry.lua` as a draft when spawn-enabled status or tags change, and when creating/removing entries.
 4. Do not directly write dashboard edits to `data/scripts` in normal Genesis flows.
+
+Current dashboard API surface:
+
+```text
+GET /api/genesis/planets
+POST /api/genesis/planets/:planetId/draft
+POST /api/genesis/planets/:planetId/publish
+DELETE /api/genesis/planets/:planetId/draft
+```
 
 ## 6. Randomization Contract
 

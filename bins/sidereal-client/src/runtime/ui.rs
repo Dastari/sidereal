@@ -762,6 +762,14 @@ pub(super) fn update_tactical_map_overlay_system(
         let defaults_query = map_queries.p7();
         defaults_query.iter().next().cloned()
     };
+    prewarm_tactical_map_marker_svgs(
+        (&asset_manager, &asset_root.0, *cache_adapter),
+        (&mut svg_assets, &mut meshes),
+        &mut icon_cache,
+        tactical_defaults.as_ref(),
+        &contacts_cache,
+        &map_queries.p6(),
+    );
     let Ok(window) = windows.single() else {
         let elapsed_ms = elapsed_ms(started_at);
         hud_perf.tactical_overlay_last_ms = elapsed_ms;
@@ -1225,7 +1233,7 @@ pub(super) struct TacticalMapIconSvgCache {
     tinted_by_variant_key: HashMap<String, Handle<Svg>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum TacticalMarkerColorRole {
     FriendlySelf,
     HostileContact,
@@ -1292,6 +1300,92 @@ fn resolve_tactical_marker_svg(
         .tinted_by_variant_key
         .insert(variant_key, tinted_handle.clone());
     Some(tinted_handle)
+}
+
+#[allow(clippy::type_complexity)]
+fn prewarm_tactical_map_marker_svgs(
+    asset_io: (
+        &LocalAssetManager,
+        &str,
+        super::resources::AssetCacheAdapter,
+    ),
+    mut render_assets: (&mut Assets<Svg>, &mut Assets<Mesh>),
+    cache: &mut TacticalMapIconSvgCache,
+    tactical_defaults: Option<&TacticalPresentationDefaults>,
+    contacts_cache: &TacticalContactsCache,
+    controlled_entities: &Query<
+        '_,
+        '_,
+        (&'_ Transform, Option<&'_ MapIcon>, Option<&'_ EntityGuid>),
+        (
+            With<ControlledEntity>,
+            Without<RuntimeScreenOverlayPass>,
+            Without<TacticalMapMarkerDynamic>,
+        ),
+    >,
+) {
+    let mut prewarmed_roles = HashSet::<(String, TacticalMarkerColorRole)>::new();
+    if let Some(asset_id) = controlled_entities
+        .iter()
+        .next()
+        .and_then(|(_, map_icon, _)| {
+            map_icon.map(|icon| icon.asset_id.as_str()).or_else(|| {
+                tactical_defaults
+                    .and_then(|defaults| defaults.map_icon_asset_id_for_kind(Some("ship")))
+            })
+        })
+        .map(ToString::to_string)
+    {
+        prewarm_tactical_map_marker_svg(
+            asset_io,
+            (&mut render_assets.0, &mut render_assets.1),
+            cache,
+            &mut prewarmed_roles,
+            &asset_id,
+            TacticalMarkerColorRole::FriendlySelf,
+        );
+    }
+
+    for contact in contacts_cache.contacts_by_entity_id.values() {
+        let Some(asset_id) = contact
+            .map_icon_asset_id
+            .as_deref()
+            .or_else(|| {
+                tactical_defaults.and_then(|defaults| {
+                    defaults.map_icon_asset_id_for_kind(Some(contact.kind.as_str()))
+                })
+            })
+            .map(ToString::to_string)
+        else {
+            continue;
+        };
+        prewarm_tactical_map_marker_svg(
+            asset_io,
+            (&mut render_assets.0, &mut render_assets.1),
+            cache,
+            &mut prewarmed_roles,
+            &asset_id,
+            TacticalMarkerColorRole::HostileContact,
+        );
+    }
+}
+
+fn prewarm_tactical_map_marker_svg(
+    asset_io: (
+        &LocalAssetManager,
+        &str,
+        super::resources::AssetCacheAdapter,
+    ),
+    render_assets: (&mut Assets<Svg>, &mut Assets<Mesh>),
+    cache: &mut TacticalMapIconSvgCache,
+    prewarmed_roles: &mut HashSet<(String, TacticalMarkerColorRole)>,
+    asset_id: &str,
+    role: TacticalMarkerColorRole,
+) {
+    if !prewarmed_roles.insert((asset_id.to_string(), role)) {
+        return;
+    }
+    let _ = resolve_tactical_marker_svg(asset_io, render_assets, cache, asset_id, role);
 }
 
 #[allow(clippy::type_complexity)]
@@ -2019,6 +2113,7 @@ pub(super) fn update_segmented_bars_system(
 #[allow(clippy::type_complexity)]
 pub(super) fn sync_entity_nameplates_system(
     nameplate_state: Res<'_, NameplateUiState>,
+    tactical_map_state: Res<'_, TacticalMapUiState>,
     mut commands: Commands<'_, '_>,
     mut hud_perf: ResMut<'_, HudPerfCounters>,
     mut registry: ResMut<'_, NameplateRegistry>,
@@ -2046,7 +2141,7 @@ pub(super) fn sync_entity_nameplates_system(
         .free_entries
         .retain(|entry| existing.get(entry.root).is_ok());
 
-    if !nameplate_state.enabled {
+    if !nameplate_state.enabled || tactical_map_state.enabled {
         let released = registry
             .active_by_target
             .drain()
@@ -2108,6 +2203,7 @@ pub(super) fn sync_entity_nameplates_system(
 #[allow(clippy::type_complexity)]
 pub(super) fn update_entity_nameplate_positions_system(
     nameplate_state: Res<'_, NameplateUiState>,
+    tactical_map_state: Res<'_, TacticalMapUiState>,
     mut hud_perf: ResMut<'_, HudPerfCounters>,
     mut nameplate_nodes: ParamSet<
         '_,
@@ -2147,7 +2243,7 @@ pub(super) fn update_entity_nameplate_positions_system(
     hud_perf.nameplate_missing_target_last = 0;
     hud_perf.nameplate_projection_failures_last = 0;
     hud_perf.nameplate_viewport_culled_last = 0;
-    if !nameplate_state.enabled {
+    if !nameplate_state.enabled || tactical_map_state.enabled {
         for (_, _, mut visibility) in &mut nameplate_nodes.p0() {
             *visibility = Visibility::Hidden;
             hud_perf.nameplate_hidden_last = hud_perf.nameplate_hidden_last.saturating_add(1);
@@ -2306,7 +2402,7 @@ mod tests {
     use crate::runtime::platform::UI_OVERLAY_RENDER_LAYER;
     use crate::runtime::resources::{
         ClientInputSendState, DebugOverlaySnapshot, DebugOverlayState, HudPerfCounters,
-        NameplateRegistry, NameplateUiState,
+        NameplateRegistry, NameplateUiState, TacticalMapUiState,
     };
     use bevy::camera::visibility::RenderLayers;
     use bevy::diagnostic::DiagnosticsStore;
@@ -2496,6 +2592,7 @@ mod tests {
         app.init_resource::<HudPerfCounters>();
         app.init_resource::<NameplateRegistry>();
         app.init_resource::<NameplateUiState>();
+        app.init_resource::<TacticalMapUiState>();
         app.add_systems(Update, sync_entity_nameplates_system);
 
         let target = app
@@ -2533,6 +2630,7 @@ mod tests {
         app.init_resource::<HudPerfCounters>();
         app.init_resource::<NameplateRegistry>();
         app.init_resource::<NameplateUiState>();
+        app.init_resource::<TacticalMapUiState>();
         app.add_systems(Update, sync_entity_nameplates_system);
 
         let first_target = app
@@ -2590,6 +2688,7 @@ mod tests {
         app.init_resource::<HudPerfCounters>();
         app.init_resource::<NameplateRegistry>();
         app.insert_resource(NameplateUiState { enabled: false });
+        app.init_resource::<TacticalMapUiState>();
         app.add_systems(Update, sync_entity_nameplates_system);
 
         app.world_mut().spawn((
@@ -2603,6 +2702,36 @@ mod tests {
 
         app.update();
 
+        let registry = app.world().resource::<NameplateRegistry>();
+        assert!(registry.active_by_target.is_empty());
+        assert!(registry.free_entries.is_empty());
+        assert_eq!(registry.allocated_entries, 0);
+    }
+
+    #[test]
+    fn tactical_map_mode_suppresses_nameplate_allocation_without_disabling_preference() {
+        let mut app = App::new();
+        app.init_resource::<HudPerfCounters>();
+        app.init_resource::<NameplateRegistry>();
+        app.init_resource::<NameplateUiState>();
+        app.insert_resource(TacticalMapUiState {
+            enabled: true,
+            ..Default::default()
+        });
+        app.add_systems(Update, sync_entity_nameplates_system);
+
+        app.world_mut().spawn((
+            WorldEntity,
+            CanonicalPresentationEntity,
+            HealthPool {
+                current: 10.0,
+                maximum: 10.0,
+            },
+        ));
+
+        app.update();
+
+        assert!(app.world().resource::<NameplateUiState>().enabled);
         let registry = app.world().resource::<NameplateRegistry>();
         assert!(registry.active_by_target.is_empty());
         assert!(registry.free_entries.is_empty());

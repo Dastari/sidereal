@@ -38,6 +38,8 @@ import { Route as DashboardGameWorldEntityGuidRouteImport } from './routes/_dash
 import { Route as DashboardDatabaseTablesRouteImport } from './routes/_dashboard.database.tables'
 import { Route as DashboardDatabaseAccountsRouteImport } from './routes/_dashboard.database.accounts'
 import { Route as DashboardDatabaseEntityGuidRouteImport } from './routes/_dashboard.database.$entityGuid'
+import { Route as ApiGenesisPlanetsPlanetIdPublishRouteImport } from './routes/api.genesis.planets.$planetId.publish'
+import { Route as ApiGenesisPlanetsPlanetIdDraftRouteImport } from './routes/api.genesis.planets.$planetId.draft'
 import { Route as ApiDatabaseCharactersPlayerEntityIdDisplayNameRouteImport } from './routes/api.database.characters.$playerEntityId.display-name'
 import { Route as ApiDatabaseAccountsAccountIdPasswordResetRouteImport } from './routes/api.database.accounts.$accountId.password-reset'
 
@@ -190,6 +192,18 @@ const DashboardDatabaseEntityGuidRoute =
     path: '/$entityGuid',
     getParentRoute: () => DashboardDatabaseRoute,
   } as any)
+const ApiGenesisPlanetsPlanetIdPublishRoute =
+  ApiGenesisPlanetsPlanetIdPublishRouteImport.update({
+    id: '/$planetId/publish',
+    path: '/$planetId/publish',
+    getParentRoute: () => ApiGenesisPlanetsRoute,
+  } as any)
+const ApiGenesisPlanetsPlanetIdDraftRoute =
+  ApiGenesisPlanetsPlanetIdDraftRouteImport.update({
+    id: '/$planetId/draft',
+    path: '/$planetId/draft',
+    getParentRoute: () => ApiGenesisPlanetsRoute,
+  } as any)
 const ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute =
   ApiDatabaseCharactersPlayerEntityIdDisplayNameRouteImport.update({
     id: '/characters/$playerEntityId/display-name',
@@ -228,12 +242,14 @@ export interface FileRoutesByFullPath {
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
-  '/api/genesis/planets': typeof ApiGenesisPlanetsRoute
+  '/api/genesis/planets': typeof ApiGenesisPlanetsRouteWithChildren
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/database/': typeof DashboardDatabaseIndexRoute
   '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
+  '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
+  '/api/genesis/planets/$planetId/publish': typeof ApiGenesisPlanetsPlanetIdPublishRoute
 }
 export interface FileRoutesByTo {
   '/shader-workbench': typeof ShaderWorkbenchRoute
@@ -259,12 +275,14 @@ export interface FileRoutesByTo {
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
-  '/api/genesis/planets': typeof ApiGenesisPlanetsRoute
+  '/api/genesis/planets': typeof ApiGenesisPlanetsRouteWithChildren
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/database': typeof DashboardDatabaseIndexRoute
   '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
+  '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
+  '/api/genesis/planets/$planetId/publish': typeof ApiGenesisPlanetsPlanetIdPublishRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -293,12 +311,14 @@ export interface FileRoutesById {
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
-  '/api/genesis/planets': typeof ApiGenesisPlanetsRoute
+  '/api/genesis/planets': typeof ApiGenesisPlanetsRouteWithChildren
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/_dashboard/database/': typeof DashboardDatabaseIndexRoute
   '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
+  '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
+  '/api/genesis/planets/$planetId/publish': typeof ApiGenesisPlanetsPlanetIdPublishRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -333,6 +353,8 @@ export interface FileRouteTypes {
     | '/database/'
     | '/api/database/accounts/$accountId/password-reset'
     | '/api/database/characters/$playerEntityId/display-name'
+    | '/api/genesis/planets/$planetId/draft'
+    | '/api/genesis/planets/$planetId/publish'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/shader-workbench'
@@ -364,6 +386,8 @@ export interface FileRouteTypes {
     | '/database'
     | '/api/database/accounts/$accountId/password-reset'
     | '/api/database/characters/$playerEntityId/display-name'
+    | '/api/genesis/planets/$planetId/draft'
+    | '/api/genesis/planets/$planetId/publish'
   id:
     | '__root__'
     | '/_dashboard'
@@ -397,6 +421,8 @@ export interface FileRouteTypes {
     | '/_dashboard/database/'
     | '/api/database/accounts/$accountId/password-reset'
     | '/api/database/characters/$playerEntityId/display-name'
+    | '/api/genesis/planets/$planetId/draft'
+    | '/api/genesis/planets/$planetId/publish'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -410,7 +436,7 @@ export interface RootRouteChildren {
   ApiAdminSpawnEntityRoute: typeof ApiAdminSpawnEntityRoute
   ApiAudioCuesSoundIdRoute: typeof ApiAudioCuesSoundIdRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
-  ApiGenesisPlanetsRoute: typeof ApiGenesisPlanetsRoute
+  ApiGenesisPlanetsRoute: typeof ApiGenesisPlanetsRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -618,6 +644,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardDatabaseEntityGuidRouteImport
       parentRoute: typeof DashboardDatabaseRoute
     }
+    '/api/genesis/planets/$planetId/publish': {
+      id: '/api/genesis/planets/$planetId/publish'
+      path: '/$planetId/publish'
+      fullPath: '/api/genesis/planets/$planetId/publish'
+      preLoaderRoute: typeof ApiGenesisPlanetsPlanetIdPublishRouteImport
+      parentRoute: typeof ApiGenesisPlanetsRoute
+    }
+    '/api/genesis/planets/$planetId/draft': {
+      id: '/api/genesis/planets/$planetId/draft'
+      path: '/$planetId/draft'
+      fullPath: '/api/genesis/planets/$planetId/draft'
+      preLoaderRoute: typeof ApiGenesisPlanetsPlanetIdDraftRouteImport
+      parentRoute: typeof ApiGenesisPlanetsRoute
+    }
     '/api/database/characters/$playerEntityId/display-name': {
       id: '/api/database/characters/$playerEntityId/display-name'
       path: '/characters/$playerEntityId/display-name'
@@ -746,6 +786,19 @@ const ApiShadersRouteWithChildren = ApiShadersRoute._addFileChildren(
   ApiShadersRouteChildren,
 )
 
+interface ApiGenesisPlanetsRouteChildren {
+  ApiGenesisPlanetsPlanetIdDraftRoute: typeof ApiGenesisPlanetsPlanetIdDraftRoute
+  ApiGenesisPlanetsPlanetIdPublishRoute: typeof ApiGenesisPlanetsPlanetIdPublishRoute
+}
+
+const ApiGenesisPlanetsRouteChildren: ApiGenesisPlanetsRouteChildren = {
+  ApiGenesisPlanetsPlanetIdDraftRoute: ApiGenesisPlanetsPlanetIdDraftRoute,
+  ApiGenesisPlanetsPlanetIdPublishRoute: ApiGenesisPlanetsPlanetIdPublishRoute,
+}
+
+const ApiGenesisPlanetsRouteWithChildren =
+  ApiGenesisPlanetsRoute._addFileChildren(ApiGenesisPlanetsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRouteWithChildren,
   ShaderWorkbenchRoute: ShaderWorkbenchRoute,
@@ -757,7 +810,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminSpawnEntityRoute: ApiAdminSpawnEntityRoute,
   ApiAudioCuesSoundIdRoute: ApiAudioCuesSoundIdRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,
-  ApiGenesisPlanetsRoute: ApiGenesisPlanetsRoute,
+  ApiGenesisPlanetsRoute: ApiGenesisPlanetsRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

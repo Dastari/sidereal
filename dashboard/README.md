@@ -76,6 +76,9 @@ pnpm build
 - `GET /api/live-client-world` - Returns live entities from client BRP
 - `GET /api/dashboard-session` - Returns dashboard admin session/configuration status
 - `GET /api/genesis/planets` - Returns the Genesis planet registry catalog from gateway script catalog state
+- `POST /api/genesis/planets/:planetId/draft` - Saves a Genesis planet draft and matching registry draft through gateway script catalog APIs
+- `POST /api/genesis/planets/:planetId/publish` - Publishes the selected planet draft and registry draft when present
+- `DELETE /api/genesis/planets/:planetId/draft` - Discards the selected planet draft and registry draft when present
 - `POST /api/dashboard-session` - Exchanges the configured admin password for an HttpOnly admin session cookie
 - `DELETE /api/dashboard-session` - Clears the current dashboard admin session cookie
 - `POST /api/admin/spawn-entity` - Proxies admin spawn requests to gateway

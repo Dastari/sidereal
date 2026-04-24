@@ -804,6 +804,9 @@ pub fn infer_script_family(script_path: &str) -> String {
     if script_path == "audio/registry.lua" {
         return "audio_registry".to_string();
     }
+    if script_path == "planets/registry.lua" {
+        return "planet_registry".to_string();
+    }
     if script_path == "bundles/bundle_registry.lua" {
         return "bundle_registry".to_string();
     }
@@ -812,6 +815,9 @@ pub fn infer_script_family(script_path: &str) -> String {
     }
     if script_path.starts_with("bundles/") {
         return "bundle".to_string();
+    }
+    if script_path.starts_with("planets/") {
+        return "planet".to_string();
     }
     if script_path.starts_with("ai/") {
         return "ai".to_string();
@@ -1627,6 +1633,10 @@ mod tests {
         assert_eq!(infer_script_family("assets/registry.lua"), "asset_registry");
         assert_eq!(infer_script_family("audio/registry.lua"), "audio_registry");
         assert_eq!(
+            infer_script_family("planets/registry.lua"),
+            "planet_registry"
+        );
+        assert_eq!(
             infer_script_family("bundles/bundle_registry.lua"),
             "bundle_registry"
         );
@@ -1638,6 +1648,7 @@ mod tests {
             infer_script_family("bundles/starter/planet_body.lua"),
             "bundle"
         );
+        assert_eq!(infer_script_family("planets/aurelia.lua"), "planet");
         assert_eq!(infer_script_family("ai/pirate_patrol.lua"), "ai");
         assert_eq!(infer_script_family("world/something_else.lua"), "world");
         assert_eq!(infer_script_family("misc/foo.lua"), "misc");

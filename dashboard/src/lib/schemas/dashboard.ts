@@ -129,6 +129,131 @@ export const brpRequestSchema = z.object({
   host: brpHostSchema.optional(),
 })
 
+const genesisFiniteNumberSchema = z
+  .number()
+  .finite('numeric Genesis fields must be finite numbers')
+
+const genesisUnitNumberSchema = genesisFiniteNumberSchema.min(0).max(1)
+
+const genesisVec2Schema = z.tuple([
+  genesisFiniteNumberSchema,
+  genesisFiniteNumberSchema,
+])
+
+const genesisVec3Schema = z.tuple([
+  genesisFiniteNumberSchema,
+  genesisFiniteNumberSchema,
+  genesisFiniteNumberSchema,
+])
+
+export const genesisPlanetIdSchema = z
+  .string()
+  .trim()
+  .min(1, 'planetId is required')
+  .regex(/^planet\.[a-z0-9_.-]+$/, 'planetId must use the planet.<slug> form')
+
+export const genesisPlanetShaderSettingsSchema = z.object({
+  enabled: z.boolean(),
+  enable_surface_detail: z.boolean(),
+  enable_craters: z.boolean(),
+  enable_clouds: z.boolean(),
+  enable_atmosphere: z.boolean(),
+  enable_specular: z.boolean(),
+  enable_night_lights: z.boolean(),
+  enable_emissive: z.boolean(),
+  enable_ocean_specular: z.boolean(),
+  body_kind: z.number().int().min(0).max(2),
+  planet_type: z.number().int().min(0).max(5),
+  seed: z.number().int().min(0).max(999999999),
+  base_radius_scale: genesisFiniteNumberSchema.min(0.1).max(2),
+  normal_strength: genesisFiniteNumberSchema.min(0).max(4),
+  detail_level: genesisUnitNumberSchema,
+  rotation_speed: genesisFiniteNumberSchema.min(-4).max(4),
+  light_wrap: genesisUnitNumberSchema,
+  ambient_strength: genesisFiniteNumberSchema.min(0).max(4),
+  specular_strength: genesisFiniteNumberSchema.min(0).max(8),
+  specular_power: genesisFiniteNumberSchema.min(1).max(128),
+  rim_strength: genesisFiniteNumberSchema.min(0).max(8),
+  rim_power: genesisFiniteNumberSchema.min(0.1).max(16),
+  fresnel_strength: genesisFiniteNumberSchema.min(0).max(8),
+  cloud_shadow_strength: genesisUnitNumberSchema,
+  night_glow_strength: genesisFiniteNumberSchema.min(0).max(4),
+  continent_size: genesisUnitNumberSchema,
+  ocean_level: genesisUnitNumberSchema,
+  mountain_height: genesisUnitNumberSchema,
+  roughness: genesisUnitNumberSchema,
+  terrain_octaves: z.number().int().min(1).max(12),
+  terrain_lacunarity: genesisFiniteNumberSchema.min(1).max(5),
+  terrain_gain: genesisFiniteNumberSchema.min(0).max(1),
+  crater_density: genesisUnitNumberSchema,
+  crater_size: genesisUnitNumberSchema,
+  volcano_density: genesisUnitNumberSchema,
+  ice_cap_size: genesisUnitNumberSchema,
+  storm_intensity: genesisUnitNumberSchema,
+  bands_count: genesisFiniteNumberSchema.min(0).max(32),
+  spot_density: genesisUnitNumberSchema,
+  surface_activity: genesisUnitNumberSchema,
+  corona_intensity: genesisFiniteNumberSchema.min(0).max(4),
+  cloud_coverage: genesisUnitNumberSchema,
+  cloud_scale: genesisFiniteNumberSchema.min(0.1).max(10),
+  cloud_speed: genesisFiniteNumberSchema.min(-4).max(4),
+  cloud_alpha: genesisUnitNumberSchema,
+  atmosphere_thickness: genesisFiniteNumberSchema.min(0).max(2),
+  atmosphere_falloff: genesisFiniteNumberSchema.min(0.1).max(16),
+  atmosphere_alpha: genesisUnitNumberSchema,
+  city_lights: genesisUnitNumberSchema,
+  emissive_strength: genesisFiniteNumberSchema.min(0).max(8),
+  sun_intensity: genesisFiniteNumberSchema.min(0).max(8),
+  surface_saturation: genesisFiniteNumberSchema.min(0).max(4),
+  surface_contrast: genesisFiniteNumberSchema.min(0).max(4),
+  light_color_mix: genesisUnitNumberSchema,
+  sun_direction_xy: genesisVec2Schema,
+  color_primary_rgb: genesisVec3Schema,
+  color_secondary_rgb: genesisVec3Schema,
+  color_tertiary_rgb: genesisVec3Schema,
+  color_atmosphere_rgb: genesisVec3Schema,
+  color_clouds_rgb: genesisVec3Schema,
+  color_night_lights_rgb: genesisVec3Schema,
+  color_emissive_rgb: genesisVec3Schema,
+})
+
+export const genesisPlanetDefinitionSchema = z.object({
+  planet_id: genesisPlanetIdSchema,
+  script_path: z
+    .string()
+    .trim()
+    .regex(
+      /^planets\/[A-Za-z0-9_.-]+\.lua$/,
+      'scriptPath must stay under planets/ and end in .lua',
+    ),
+  display_name: z
+    .string()
+    .trim()
+    .min(1, 'displayName is required')
+    .max(96, 'displayName is too long'),
+  entity_labels: z.array(z.string().trim().min(1)).max(16),
+  tags: z.array(z.string().trim().min(1).max(32)).max(16),
+  spawn: z.object({
+    entity_id: uuidSchema,
+    owner_id: z.string().trim().min(1, 'ownerId is required').max(96),
+    size_m: genesisFiniteNumberSchema.min(1).max(1_000_000),
+    spawn_position: genesisVec2Schema,
+    spawn_rotation_rad: genesisFiniteNumberSchema,
+    map_icon_asset_id: z.string().trim().min(1).max(128),
+    planet_visual_shader_asset_id: z.string().trim().min(1).max(128),
+  }),
+  shader_settings: genesisPlanetShaderSettingsSchema,
+})
+
+export const genesisPlanetDraftBodySchema = z.object({
+  definition: genesisPlanetDefinitionSchema,
+  spawnEnabled: z.boolean(),
+})
+
+export const genesisPlanetParamsSchema = z.object({
+  planetId: genesisPlanetIdSchema,
+})
+
 export type DatabaseAccountsSearch = z.infer<
   typeof databaseAccountsSearchSchema
 >
