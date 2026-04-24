@@ -1,8 +1,19 @@
 # Lightyear Integration Analysis
 
-Status: Investigation / evaluation  
+Status: Active feature reference
+Last updated: 2026-04-24
+Owners: replication + client runtime
 Scope: Audit of current Lightyear usage vs available features; evaluation of full Lightyear interpolation adoption  
 Lightyear version: 0.26.4
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. This remains an investigation/reference document, not an accepted migration plan.
+2. Current runtime still uses Sidereal-owned prediction/reconciliation, motion ownership enforcement, control-swap handling, and visual smoothing around selected Lightyear primitives.
+3. Recent native stabilization work continues to prefer targeted fixes around focus loss, prediction adoption, and motion ownership before any full Lightyear interpolation/rollback migration.
+4. Future Lightyear behavior questions should be cross-checked against `docs/features/lightyear_upstream_issue_snapshot.md` before introducing local workarounds.
 
 ## 1. Executive Summary
 

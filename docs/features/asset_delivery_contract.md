@@ -1,11 +1,23 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract
-Last updated: March 15, 2026
+Last updated: 2026-04-24
+Owners: gateway + client runtime + asset pipeline
+Scope: Lua-authored asset catalogs, gateway delivery, client cache/bootstrap, runtime dependency fetches
 Primary architecture reference: `docs/sidereal_design_document.md`
 Related contract: `docs/features/scripting_support.md`
 Decision Register linkage: `DR-0004`, `DR-0005`, `DR-0006`, `DR-0019`
 Related render-layer contract: `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: gateway asset routes expose startup manifests, authenticated bootstrap manifests, and `/assets/<asset_guid>` payload fetches from the runtime catalog.
+2. Implemented: native and WASM client cache adapters load/save checksum-indexed assets and share the same startup/bootstrap state machine at the runtime boundary.
+3. Implemented: runtime optional asset dependencies can be requested after world entry, persisted into the cache, and surfaced through debug/perf counters.
+4. Implemented: audio and shader catalogs are now integrated with the same Lua-authored asset delivery model.
+5. Open work: production packaging still needs the single `assets.pak` distribution shape and broader live WASM validation for all asset classes.
 
 ## 1. Purpose
 

@@ -36,6 +36,16 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr.and(log_file))
         .try_init();
     info!("sidereal-gateway tracing log file: {}", log_path.display());
+    info!(
+        "sidereal-gateway replication endpoints: control_udp={} native_udp_public={} webtransport_public={} webtransport_cert_configured={}",
+        cli_config.replication_control_udp_addr,
+        cli_config.replication_udp_public_addr,
+        cli_config.replication_webtransport_public_addr,
+        cli_config
+            .replication_webtransport_cert_sha256
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+    );
     let auth_config = AuthConfig::from_env().context("invalid auth configuration")?;
     let database_url = std::env::var("GATEWAY_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());

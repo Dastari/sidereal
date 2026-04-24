@@ -1,7 +1,19 @@
 # Scripting Support
 
-**Status:** Active contract and implementation plan
-**Last updated:** 2026-03-13
+Status: Active implementation contract
+Last updated: 2026-04-24
+Owners: scripting + replication + gameplay
+Scope: authoritative Lua scripting, script catalogs, validated mutation APIs, and content authoring boundaries
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: `crates/sidereal-scripting` owns Lua loading/validation helpers and generated registry integration.
+2. Implemented: replication runtime loads script/entity/asset registries, hot-reloads catalogs, exposes BRP-inspectable resources, and uses script-authored world/bootstrap bundles.
+3. Implemented: Lua-authored asset/audio/shader metadata now feeds gateway delivery, dashboard tooling, and runtime presentation paths.
+4. Partial/open: long-term quest/dialogue/economy APIs, broader validated script mutation actions, and full mod security policy remain future work.
+5. Native/WASM impact: authoritative script execution remains server-side; clients consume replicated state/catalog outputs through shared schemas.
 
 Update note (2026-03-12):
 - Added the long-term ownership contract for destruction/lifecycle-driven VFX. Default explosion/fracture/loot behavior should live in Rust-defined authored profiles/components, while Lua remains responsible for high-level preset selection and exceptional event-driven overrides. Native impact: no immediate runtime change; this is a documentation/contract clarification. WASM impact: no direct impact because the authority split remains in shared gameplay/runtime code.

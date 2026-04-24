@@ -58,46 +58,6 @@ fn tone_map(color: vec3<f32>) -> vec3<f32> {
     return clamp((color * (a * color + vec3<f32>(b))) / (color * (c * color + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-fn rand4(p: vec4<f32>) -> f32 {
-    return fract(sin(p.x * 1234.0 + p.y * 2345.0 + p.z * 3456.0 + p.w * 4567.0) * 5678.0);
-}
-
-fn smoothnoise4(p: vec4<f32>) -> f32 {
-    let e = vec2<f32>(0.0, 1.0);
-    let i = floor(p);
-    var f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(
-        mix(
-            mix(
-                mix(rand4(i + vec4<f32>(e.x, e.x, e.x, e.x)), rand4(i + vec4<f32>(e.y, e.x, e.x, e.x)), f.x),
-                mix(rand4(i + vec4<f32>(e.x, e.y, e.x, e.x)), rand4(i + vec4<f32>(e.y, e.y, e.x, e.x)), f.x),
-                f.y
-            ),
-            mix(
-                mix(rand4(i + vec4<f32>(e.x, e.x, e.y, e.x)), rand4(i + vec4<f32>(e.y, e.x, e.y, e.x)), f.x),
-                mix(rand4(i + vec4<f32>(e.x, e.y, e.y, e.x)), rand4(i + vec4<f32>(e.y, e.y, e.y, e.x)), f.x),
-                f.y
-            ),
-            f.z
-        ),
-        mix(
-            mix(
-                mix(rand4(i + vec4<f32>(e.x, e.x, e.x, e.y)), rand4(i + vec4<f32>(e.y, e.x, e.x, e.y)), f.x),
-                mix(rand4(i + vec4<f32>(e.x, e.y, e.x, e.y)), rand4(i + vec4<f32>(e.y, e.y, e.x, e.y)), f.x),
-                f.y
-            ),
-            mix(
-                mix(rand4(i + vec4<f32>(e.x, e.x, e.y, e.y)), rand4(i + vec4<f32>(e.y, e.x, e.y, e.y)), f.x),
-                mix(rand4(i + vec4<f32>(e.x, e.y, e.y, e.y)), rand4(i + vec4<f32>(e.y, e.y, e.y, e.y)), f.x),
-                f.y
-            ),
-            f.z
-        ),
-        f.w
-    );
-}
-
 fn rotate_x(v: vec3<f32>, angle: f32) -> vec3<f32> {
     let c = cos(angle);
     let s = sin(angle);
@@ -153,21 +113,22 @@ fn fbm3(p: vec3<f32>, octaves: i32, lacunarity: f32, gain: f32) -> f32 {
 }
 
 fn fbm4_time(p: vec3<f32>, time_phase: f32, octaves: i32) -> f32 {
-    var value = 0.0;
-    var amplitude = 0.5;
-    var frequency = 1.0;
-    var i = 0;
-    loop {
-        if i >= octaves {
-            break;
-        }
-        let t = cos(time_phase * (0.35 + f32(i) * 0.17)) * (18.0 + f32(i) * 11.0);
-        value += amplitude * smoothnoise4(vec4<f32>(p * frequency, t));
-        frequency *= 2.0;
-        amplitude *= 0.5;
-        i = i + 1;
-    }
-    return value;
+    // Time-evolving domain-warped 3D fBm. The previous 4D value-noise path
+    // interpolated 16 random corners per octave; this keeps animation
+    // non-looping enough for clouds/stars while halving the hash pressure.
+    let drift = vec3<f32>(
+        cos(time_phase * 0.37),
+        sin(time_phase * 0.29 + 1.7),
+        cos(time_phase * 0.23 + 3.1)
+    );
+    let shear = vec3<f32>(
+        p.y * 0.13 + p.z * 0.07,
+        p.z * 0.11 - p.x * 0.05,
+        p.x * 0.09 + p.y * 0.06
+    );
+    let coarse = fbm3(p + drift * 0.72 + shear, 2, 2.0, 0.55);
+    let warped = p + drift * 0.38 + shear * 0.42 + vec3<f32>(coarse - 0.5) * 0.55;
+    return fbm3(warped, octaves, 2.03, 0.52);
 }
 
 fn sphere_uv(normal: vec3<f32>) -> vec2<f32> {
@@ -234,10 +195,32 @@ fn crater_mask(sphere_p: vec3<f32>) -> f32 {
     if params.feature_flags_a.y < 0.5 {
         return 0.0;
     }
-    let crater_field = fbm3(sphere_p * (6.0 + params.surface_d.x * 12.0), 4, 2.35, 0.5);
-    let micro = fbm3(sphere_p * 18.0, 2, 2.1, 0.55);
-    let threshold = 1.0 - params.surface_c.w * 0.9;
-    return smoothstep(threshold - 0.08, threshold + 0.04, crater_field + micro * 0.15);
+    let uv = sphere_uv(sphere_p);
+    let density = saturate(params.surface_c.w);
+    let cell_count = floor(mix(9.0, 38.0, density));
+    let scaled_uv = uv * cell_count;
+    let cell = floor(scaled_uv);
+    let local = fract(scaled_uv);
+    var crater = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let offset = vec2<f32>(f32(x), f32(y));
+            let raw_id = cell + offset;
+            let id = vec2<f32>(raw_id.x - floor(raw_id.x / cell_count) * cell_count, raw_id.y);
+            let h = hash12(id + params.identity_a.z * 19.37);
+            let h2 = hash12(id.yx + params.identity_a.z * 31.11);
+            let center = offset + vec2<f32>(h, h2);
+            let delta = local - center;
+            let d = length(delta);
+            let radius = mix(0.11, 0.28, params.surface_d.x) * mix(0.55, 1.35, h2);
+            let bowl = 1.0 - smoothstep(radius * 0.15, radius * 0.74, d);
+            let rim = smoothstep(radius * 0.62, radius * 0.82, d)
+                * (1.0 - smoothstep(radius * 0.82, radius, d));
+            crater = max(crater, bowl * 0.72 + rim * 0.92);
+        }
+    }
+    let erosion = fbm3(sphere_p * 18.0, 2, 2.1, 0.55) * 0.18;
+    return saturate(crater + erosion * density);
 }
 
 fn lava_river_mask(sphere_p: vec3<f32>) -> f32 {
@@ -723,21 +706,19 @@ fn render_ring_pass(mesh: VertexOutput, body_kind: f32, pass_mode: f32) -> vec4<
     return vec4<f32>(0.0);
 }
 
-fn perturbed_normal(sphere_p: vec3<f32>, body_kind: f32, planet_type: f32) -> vec3<f32> {
+fn perturbed_normal(sphere_p: vec3<f32>, body_kind: f32, planet_type: f32, height: f32) -> vec3<f32> {
     if body_kind > 0.5 || params.feature_flags_a.x < 0.5 {
         return sphere_p;
     }
-    let eps = mix(0.002, 0.014, saturate(params.lighting_a.z));
-    let tangent = normalize(vec3<f32>(sphere_p.z, 0.0, -sphere_p.x));
-    let bitangent = normalize(cross(sphere_p, tangent));
-    let h = planet_height(sphere_p, planet_type);
-    let ht = planet_height(normalize(sphere_p + tangent * eps), planet_type);
-    let hb = planet_height(normalize(sphere_p + bitangent * eps), planet_type);
-    let dh_t = (ht - h) / eps;
-    let dh_b = (hb - h) / eps;
-    let base_normal = normalize(sphere_p - tangent * dh_t * params.lighting_a.y - bitangent * dh_b * params.lighting_a.y);
+    let screen_dx = dpdx(sphere_p);
+    let screen_dy = dpdy(sphere_p);
+    let height_dx = dpdx(height);
+    let height_dy = dpdy(height);
+    let derivative_normal = normalize(sphere_p - (screen_dx * height_dx + screen_dy * height_dy) * params.lighting_a.y * 24.0);
+    let ridge_normal = normalize(mix(sphere_p, derivative_normal, saturate(params.lighting_a.z * 1.2)));
+    let base_normal = ridge_normal;
     if planet_type < 0.5 {
-        let land_factor = terran_land_factor(sphere_p, h);
+        let land_factor = terran_land_factor(sphere_p, height);
         let water_normal_factor = mix(0.08, 1.0, land_factor);
         return normalize(mix(sphere_p, base_normal, water_normal_factor));
     }
@@ -776,8 +757,8 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let visible_disc = select(disc_uv, disc_uv / disc_len, disc_len > 1.0);
     let sphere_p = surface_point_from_billboard(visible_disc);
     let view_n = make_view_sphere_normal(visible_disc);
-    let normal = perturbed_normal(sphere_p, body_kind, planet_type);
     let height = planet_height(sphere_p, planet_type);
+    let normal = perturbed_normal(sphere_p, body_kind, planet_type, height);
 
     let sun_dir = normalize(params.world_light_primary_dir_intensity.xyz);
     let sun_color = params.world_light_primary_color_elevation.rgb;
@@ -791,7 +772,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let local_intensity = params.world_light_local_dir_intensity.w;
     let local_color = params.world_light_local_color_radius.rgb;
     let view_dir = vec3<f32>(0.0, 0.0, 1.0);
-    let wrapped_light = saturate((dot(normal, sun_dir) + params.lighting_a.w) / (1.0 + params.lighting_a.w));
+    let raw_light = dot(normal, sun_dir);
+    let wrapped_light = saturate((raw_light + params.lighting_a.w) / (1.0 + params.lighting_a.w));
+    let terminator = smoothstep(-0.16, 0.24, raw_light);
     let sun_intensity = max(params.world_light_primary_dir_intensity.w * params.sun_dir_a.w, 0.0);
     let local_wrapped_light = saturate((dot(normal, local_dir) + params.lighting_a.w) / (1.0 + params.lighting_a.w));
     let half_vec = normalize(sun_dir + view_dir);
@@ -808,7 +791,8 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         let direct_mix = wrapped_light * sun_intensity;
         let local_mix = local_wrapped_light * local_intensity;
         let diffuse_tint = mix(vec3<f32>(1.0, 1.0, 1.0), sun_color, params.identity_b.w);
-        color = color * (ambient_color * ambient_mix + diffuse_tint * direct_mix + local_color * local_mix);
+        let horizon_cool = mix(vec3<f32>(0.72, 0.82, 1.0), vec3<f32>(1.0), terminator);
+        color = color * (ambient_color * ambient_mix + diffuse_tint * direct_mix * horizon_cool + local_color * local_mix);
         color *= 1.0 - cloud_shadow_mask * (0.32 + (1.0 - wrapped_light) * 0.28);
         if params.feature_flags_b.x > 0.5 {
             color += mix(vec3<f32>(1.0, 1.0, 1.0), sun_color, 0.28) * specular;
@@ -824,8 +808,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
             }
         }
         if params.feature_flags_a.w > 0.5 {
-            color += params.color_atmosphere.rgb * fresnel * params.emissive_a.x * 0.32;
-            color += (params.color_atmosphere.rgb * 0.7 + backlight_color * backlight_strength) * rim * params.emissive_a.z * 0.34;
+            let twilight = (1.0 - terminator) * smoothstep(-0.5, 0.18, raw_light);
+            color += params.color_atmosphere.rgb * fresnel * params.emissive_a.x * (0.22 + twilight * 0.22);
+            color += (params.color_atmosphere.rgb * 0.7 + backlight_color * backlight_strength) * rim * params.emissive_a.z * (0.26 + twilight * 0.18);
         }
         if params.feature_flags_b.y > 0.5 {
             color += params.color_night_lights.rgb * params.emissive_a.w * (1.0 - wrapped_light) * params.surface_a.w;

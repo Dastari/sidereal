@@ -255,6 +255,11 @@ pub(crate) struct DebugOverlayStats {
     pub last_focus_change_age_s: f64,
     pub observed_unfocused_duration_s: f64,
     pub observed_unfocused_frames: u64,
+    pub prediction_recovery_phase: String,
+    pub prediction_recovery_suppressing_input: bool,
+    pub prediction_recovery_last_unfocused_s: f64,
+    pub prediction_recovery_transitions: u64,
+    pub prediction_recovery_neutral_sends: u64,
     pub last_update_delta_ms: f64,
     pub max_update_delta_ms: f64,
     pub last_stall_gap_ms: f64,
@@ -387,6 +392,125 @@ impl ClientInterpolationTimelineTuning {
 #[derive(Debug, Resource, Default)]
 pub(crate) struct ClientTimelineFocusState {
     pub last_window_focused: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum PredictionRecoveryReason {
+    FocusStall,
+    RollbackGapExceeded,
+    ConfirmedTickGapExceeded,
+    ConfirmedStateMissing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum NativePredictionRecoveryPhase {
+    Focused,
+    Unfocused {
+        started_at_s: f64,
+    },
+    Recovering {
+        regain_at_s: f64,
+        suppress_input_until_s: f64,
+        reason: PredictionRecoveryReason,
+    },
+}
+
+impl NativePredictionRecoveryPhase {
+    pub(crate) fn label(self, now_s: f64) -> String {
+        match self {
+            Self::Focused => "Focused".to_string(),
+            Self::Unfocused { started_at_s } => {
+                format!("Unfocused {:>4.1}s", (now_s - started_at_s).max(0.0))
+            }
+            Self::Recovering {
+                suppress_input_until_s,
+                reason,
+                ..
+            } => format!(
+                "Recovering {:?} {:>4.2}s",
+                reason,
+                (suppress_input_until_s - now_s).max(0.0)
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Resource, Clone, Copy)]
+pub(crate) struct NativePredictionRecoveryTuning {
+    pub min_unfocused_s: f64,
+    pub suppress_input_s: f64,
+    pub resync_after_s: f64,
+    pub max_tick_gap: u32,
+}
+
+impl NativePredictionRecoveryTuning {
+    pub fn from_env() -> Self {
+        let parse_f64 = |key: &str, default: f64| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .unwrap_or(default)
+        };
+        let max_tick_gap = std::env::var("SIDEREAL_CLIENT_FOCUS_RECOVERY_MAX_TICK_GAP")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(60);
+        Self {
+            min_unfocused_s: parse_f64("SIDEREAL_CLIENT_FOCUS_RECOVERY_MIN_UNFOCUSED_S", 0.5),
+            suppress_input_s: parse_f64("SIDEREAL_CLIENT_FOCUS_RECOVERY_SUPPRESS_INPUT_S", 0.15),
+            resync_after_s: parse_f64("SIDEREAL_CLIENT_FOCUS_RECOVERY_RESYNC_AFTER_S", 1.0),
+            max_tick_gap,
+        }
+    }
+}
+
+#[derive(Debug, Resource)]
+pub(crate) struct NativePredictionRecoveryState {
+    pub phase: NativePredictionRecoveryPhase,
+    pub last_window_focused: Option<bool>,
+    pub last_unfocused_duration_s: f64,
+    pub pending_neutral_send: bool,
+    pub transition_count: u64,
+    pub neutral_send_count: u64,
+}
+
+impl Default for NativePredictionRecoveryState {
+    fn default() -> Self {
+        Self {
+            phase: NativePredictionRecoveryPhase::Focused,
+            last_window_focused: None,
+            last_unfocused_duration_s: 0.0,
+            pending_neutral_send: false,
+            transition_count: 0,
+            neutral_send_count: 0,
+        }
+    }
+}
+
+impl NativePredictionRecoveryState {
+    pub(crate) fn is_suppressing_input(&self, now_s: f64) -> bool {
+        match self.phase {
+            NativePredictionRecoveryPhase::Focused => false,
+            NativePredictionRecoveryPhase::Unfocused { .. } => true,
+            NativePredictionRecoveryPhase::Recovering {
+                suppress_input_until_s,
+                ..
+            } => now_s < suppress_input_until_s,
+        }
+    }
+
+    pub(crate) fn complete_recovery_if_elapsed(&mut self, now_s: f64) {
+        if let NativePredictionRecoveryPhase::Recovering {
+            suppress_input_until_s,
+            ..
+        } = self.phase
+            && now_s >= suppress_input_until_s
+        {
+            self.phase = NativePredictionRecoveryPhase::Focused;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

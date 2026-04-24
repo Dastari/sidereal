@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sidereal_game::EntityAction;
 
-pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 1;
+pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 2;
 
 /// Client authenticates replication session and binds transport identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,6 +63,7 @@ pub struct ServerControlRejectMessage {
 pub struct ClientRealtimeInputMessage {
     pub player_entity_id: String,
     pub controlled_entity_id: String,
+    pub control_generation: u64,
     pub actions: Vec<EntityAction>,
     pub tick: u64,
 }

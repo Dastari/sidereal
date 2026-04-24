@@ -9,6 +9,7 @@ use sidereal_net::{PlayerEntityId, RuntimeEntityId};
 use std::collections::HashMap;
 
 use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::control::ClientControlLeaseGenerations;
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::{PlayerControlledEntityMap, SimulatedControlledEntity, debug_env};
 
@@ -27,6 +28,7 @@ pub struct ClientInputDropMetrics {
     pub empty_after_filter: u64,
     pub unbound_client: u64,
     pub spoofed_player_id: u64,
+    pub stale_control_generation: u64,
     pub controlled_target_mismatch: u64,
 }
 
@@ -46,6 +48,7 @@ pub struct InputActivityLogState {
 pub struct LatestRealtimeInput {
     pub tick: u64,
     pub controlled_entity_id: RuntimeEntityId,
+    pub control_generation: u64,
     pub actions: Vec<EntityAction>,
 }
 
@@ -74,7 +77,8 @@ type PlayerActionQueueQueryItem<'a> = (
 #[derive(SystemParam)]
 pub struct NativeInputDrainState<'w> {
     pub controlled_entity_map: Res<'w, PlayerControlledEntityMap>,
-    pub latest_realtime_inputs: Res<'w, LatestRealtimeInputsByPlayer>,
+    pub control_lease_generations: Res<'w, ClientControlLeaseGenerations>,
+    pub latest_realtime_inputs: ResMut<'w, LatestRealtimeInputsByPlayer>,
     pub realtime_input_activity: Res<'w, RealtimeInputActivityByPlayer>,
     pub realtime_input_timeout: Res<'w, RealtimeInputTimeoutSeconds>,
     pub input_drop_metrics: ResMut<'w, ClientInputDropMetrics>,
@@ -172,7 +176,19 @@ impl ClientInputDropMetrics {
             .saturating_add(self.empty_after_filter)
             .saturating_add(self.unbound_client)
             .saturating_add(self.spoofed_player_id)
+            .saturating_add(self.stale_control_generation)
     }
+}
+
+fn current_control_generation(
+    lease_generations: &ClientControlLeaseGenerations,
+    player_wire_id: &str,
+) -> u64 {
+    lease_generations
+        .generation_by_player
+        .get(player_wire_id)
+        .copied()
+        .unwrap_or(0)
 }
 
 pub(crate) fn validate_input_message(
@@ -262,6 +278,7 @@ pub fn receive_latest_realtime_input_messages(
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_drop_metrics: ResMut<'_, ClientInputDropMetrics>,
     mut rate_limit_state: ResMut<'_, InputRateLimitState>,
+    lease_generations: Res<'_, ClientControlLeaseGenerations>,
     mut latest: ResMut<'_, LatestRealtimeInputsByPlayer>,
     mut realtime_input_activity: ResMut<'_, RealtimeInputActivityByPlayer>,
     mut receivers: Query<
@@ -395,6 +412,23 @@ pub fn receive_latest_realtime_input_messages(
                 continue;
             }
         }
+        let current_generation =
+            current_control_generation(&lease_generations, bound_player_wire.as_str());
+        if best.control_generation != current_generation {
+            input_drop_metrics.stale_control_generation = input_drop_metrics
+                .stale_control_generation
+                .saturating_add(1);
+            warn!(
+                remote = ?remote_id.0,
+                player = %bound_player_wire,
+                controlled = %best.controlled_entity_id,
+                received_generation = best.control_generation,
+                current_generation = current_generation,
+                received_tick = best.tick,
+                "dropping realtime input with stale control generation"
+            );
+            continue;
+        }
 
         let entry =
             latest
@@ -403,6 +437,7 @@ pub fn receive_latest_realtime_input_messages(
                 .or_insert(LatestRealtimeInput {
                     tick: 0,
                     controlled_entity_id: RuntimeEntityId(bound_player_id.0),
+                    control_generation: current_generation,
                     actions: Vec::new(),
                 });
         if best.tick >= entry.tick {
@@ -430,6 +465,7 @@ pub fn receive_latest_realtime_input_messages(
             }
             entry.tick = best.tick;
             entry.controlled_entity_id = controlled_id;
+            entry.control_generation = best.control_generation;
             entry.actions = best.actions;
             realtime_input_activity
                 .last_received_at_s_by_player_entity_id
@@ -499,6 +535,30 @@ pub fn drain_native_player_inputs_to_action_queue(
             .is_some_and(|last_received_at_s| {
                 now_s - *last_received_at_s <= drain_state.realtime_input_timeout.0
             });
+        let current_generation = current_control_generation(
+            &drain_state.control_lease_generations,
+            player_entity_id.as_str(),
+        );
+        let latest_generation_stale =
+            latest_for_player.is_some_and(|latest| latest.control_generation != current_generation);
+        if latest_generation_stale {
+            drain_state.input_drop_metrics.stale_control_generation = drain_state
+                .input_drop_metrics
+                .stale_control_generation
+                .saturating_add(1);
+            drain_state
+                .latest_realtime_inputs
+                .by_player_entity_id
+                .remove(&player_id);
+            if !queue.pending.is_empty() {
+                queue.clear();
+            }
+            continue;
+        }
+        let latest_for_player = drain_state
+            .latest_realtime_inputs
+            .by_player_entity_id
+            .get(&player_id);
         let (actions, action_source) = match latest_for_player {
             Some(_) if !latest_is_fresh => (&[][..], "stale_realtime"),
             Some(latest) if latest.controlled_entity_id == controlled_entity_id => {
@@ -623,7 +683,7 @@ pub fn report_input_drop_metrics(
     state.last_logged_at_s = now;
     state.last_accepted_inputs = metrics.accepted_inputs;
     info!(
-        "replication input summary accepted={} accepted_per_s={:.1} drops_total={} future={} duplicate_or_out_of_order={} rate_limited={} oversized={} empty_after_filter={} unbound={} spoofed={} controlled_target_mismatch={}",
+        "replication input summary accepted={} accepted_per_s={:.1} drops_total={} future={} duplicate_or_out_of_order={} rate_limited={} oversized={} empty_after_filter={} unbound={} spoofed={} stale_control_generation={} controlled_target_mismatch={}",
         accepted_delta,
         accepted_per_s,
         metrics.total_drops(),
@@ -634,6 +694,7 @@ pub fn report_input_drop_metrics(
         metrics.empty_after_filter,
         metrics.unbound_client,
         metrics.spoofed_player_id,
+        metrics.stale_control_generation,
         metrics.controlled_target_mismatch
     );
 }

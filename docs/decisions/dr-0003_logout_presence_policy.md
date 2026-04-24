@@ -59,4 +59,3 @@ Conditional persist is the leading candidate for v1 planning because it balances
 ## References
 
 - `docs/decision_register.md` (`DR-0003`)
-- `docs/plans/test_topology_and_resilience_plan.md`

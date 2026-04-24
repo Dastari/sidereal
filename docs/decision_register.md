@@ -147,7 +147,6 @@ For each decision:
   - `docs/decisions/dr-0032_discovered_static_landmark_visibility.md`
 - References:
   - `docs/features/visibility_replication_contract.md`
-  - `docs/plans/discovered_static_landmark_visibility_plan_2026-03-09.md`
 
 ## DR-0031: Lightyear Native Input Runtime Split Follow-Up
 - Status: Accepted
@@ -253,7 +252,6 @@ For each decision:
   - `docs/decisions/dr-0001_account_character_session_model.md`
 - References:
   - `docs/sidereal_design_document.md`
-  - `docs/plans/test_topology_and_resilience_plan.md`
 
 ## DR-0002: Explicit World Entry Lifecycle
 - Status: Accepted
@@ -309,7 +307,6 @@ For each decision:
 - Decision doc:
   - `docs/decisions/dr-0003_logout_presence_policy.md`
 - References:
-  - `docs/plans/test_topology_and_resilience_plan.md`
   - `docs/sidereal_design_document.md`
 
 ## DR-0004: Asset Catalog as Authoritative Source of Truth
@@ -636,9 +633,8 @@ For each decision:
   - Update headless bootstrap/plugin wiring to satisfy transform resource requirements.
   - Update transport e2e token/fixture generation to satisfy current claims + ownership validation.
 - Decision doc:
-  - `docs/plans/test_topology_and_resilience_plan.md`
+  - `docs/decision_register.md` (this entry)
 - References:
-  - `docs/plans/test_topology_and_resilience_plan.md`
   - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
   - `bins/sidereal-client/src/native.rs`
   - `bins/sidereal-replication/tests/transport_lightyear_e2e.rs`
@@ -1108,7 +1104,6 @@ For each decision:
   - `docs/decisions/dr-0028_generic_visibility_range_components.md`
 - References:
   - `docs/decisions/dr-0028_generic_visibility_range_components.md`
-  - `docs/plans/generic_visibility_range_migration_plan.md`
   - `docs/features/visibility_replication_contract.md`
   - `AGENTS.md`
 

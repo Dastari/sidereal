@@ -1,7 +1,18 @@
 # Fly-By-Wire Thrust Allocation Contract
 
-**Status:** Proposed feature contract  
-**Last updated:** 2026-03-13
+Status: Proposed feature contract
+Last updated: 2026-04-24
+Owners: gameplay simulation + client runtime + scripting
+Scope: future replacement flight-control stack for actuator/thrust allocation
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Not implemented yet as a fly-by-wire actuator allocation runtime.
+2. Current flight still uses the existing fixed-step force/torque path around `ActionQueue`, `FlightComputer`, mounted engine budget aggregation, and Avian force application.
+3. Existing `ThrusterPlumeShaderSettings`/shader work is presentation plumbing, not the authoritative allocation system described here.
+4. Native/WASM impact: future allocation math must stay in shared gameplay/runtime code; platform differences belong only at input, visual, and audio boundaries.
 
 Update note (2026-03-13):
 - This contract defines the target replacement for the current `ActionQueue -> FlightComputer(throttle/yaw) -> aggregated engine budget -> hull net force/torque` flight path in `crates/sidereal-game/src/flight.rs`.

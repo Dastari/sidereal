@@ -1,8 +1,9 @@
 # Audio Runtime Contract
 
-Status: Proposed feature contract
-Date: 2026-03-13
+Status: Active partial implementation spec
+Last updated: 2026-04-24
 Owners: client runtime + gameplay + asset delivery
+Scope: audio catalog authoring, gateway delivery, native runtime playback, and client presentation hooks
 Primary architecture references:
 - `docs/sidereal_design_document.md`
 - `docs/features/asset_delivery_contract.md`
@@ -11,6 +12,16 @@ Primary architecture references:
 - `docs/plans/audio_runtime_implementation_plan_2026-03-13.md`
 - `docs/decisions/dr-0007_entity_variant_framework.md`
 - `docs/decisions/dr-0019_lua_asset_registry_and_gateway_http_delivery.md`
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: `crates/sidereal-audio` owns the audio registry/version model and is used by gateway/client/scripting code.
+2. Implemented: gateway bootstrap/startup manifests include audio catalog payloads and catalog versions.
+3. Implemented: native client runtime has a Kira-backed backend, authored bus graph sync, listener sync, menu/world music, weapon-fire audio hooks, asteroid destruction one-shots, and audio asset demand tracking.
+4. Implemented: dashboard sound-studio tooling can inspect and edit authored cue marker data.
+5. Partial/open: WASM playback backend parity and the full long-term spatial/mix/tooling contract remain incomplete.
 
 2026-03-13 status note:
 1. This document defines the target audio authoring and runtime contract to drive later implementation planning.

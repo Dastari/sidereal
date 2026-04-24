@@ -4,10 +4,10 @@
 
 The live client path is a layered **2D planet billboard** pipeline built on Bevy `Material2d`, not the older 3D/PBR sketch path.
 
-Active runtime shaders:
-- `planet_body.wgsl`
-- `planet_clouds.wgsl`
-- `planet_ring.wgsl`
+2026-04-24 update: the active runtime shader is now the unified `planet_visual.wgsl` family. Lua still authors a layered visual stack, but all planet, cloud, ring, star, and black-hole passes select behavior through the stable planet material uniform/pass contract instead of separate body/cloud/ring shader files.
+
+Active runtime shader:
+- `planet_visual.wgsl`
 
 Reference-only legacy sketches still in the repo:
 - `planet_core.wgsl`
@@ -62,13 +62,13 @@ Additional runtime tuning controls now exist for live debugging/art direction:
 
 ## Active Pass Responsibilities
 
-### `planet_body.wgsl`
+### Body pass
 Responsible for:
 - side-view globe reconstruction from a quad
 - sideways planetary spin
 - procedural terrain/surface coloring
 - terran water-mask specular response
-- bump-style lighting from the height field
+- derivative-based bump-style lighting from the height field
 - atmosphere/rim/emissive response
 - star body rendering
 - black-hole event-horizon body rendering
@@ -77,23 +77,25 @@ Not responsible for:
 - cloud overlays
 - ring/accretion disks
 
-### `planet_clouds.wgsl`
+### Cloud back/front passes
 Responsible for:
 - separate back/front cloud-shell passes for planet bodies
 - terran/oceanic cloud masses
 - gas giant cloud/band behavior
 - thresholded cloud density shaping
 - soft cloud coverage without the old line/scratch artifacts
-- evolving weather-cell motion over time
+- evolving weather-cell motion from domain-warped 3D fBm
 
-### `planet_ring.wgsl`
+### Ring back/front passes
 Responsible for:
 - black-hole accretion disks split into back/front arcs
 - optional gas-giant hero rings split into back/front arcs
 
 ## Important Result
 
-The visible line artifacts on terran planets came from overloading the old body shader with cloud/ring-like procedural overlays. The current runtime split removes those responsibilities from the body pass, which is the correct long-term direction.
+The visible line artifacts on terran planets came from overloading the old body shader with cloud/ring-like procedural overlays. The current runtime keeps those responsibilities as separate Lua-authored visual passes while using one shader family and one Rust material ABI, which is the current long-term direction.
+
+2026-04-24 rendering update: `planet_visual.wgsl` now avoids the older animated 4D value-noise path for clouds/stars and uses time-evolving domain-warped 3D fBm instead. The active body pass also uses a simple cellular crater field for rocky bodies, derives normal perturbation from screen-space height derivatives instead of extra height resamples, and applies a smoother terminator response for twilight atmosphere and direct-light falloff.
 
 ## Tuning Notes
 
@@ -108,6 +110,15 @@ What we are taking from those references is structural:
 - separate cloud treatment
 
 We are **not** trying to reproduce a pixel-art pipeline.
+
+## Lua / Schema Interface
+
+Lua exposes the planet shader through the asset registry as `planet_visual_wgsl` with shader/editor metadata. Starter planet bundles attach that asset ID through `sprite_shader_asset_id`, replicate persisted tuning through `PlanetBodyShaderSettings`, and compose the pass stack through `RuntimeWorldVisualStack`.
+
+The dashboard-facing schema remains data-driven from the Lua asset registry and generated metadata. Shader implementation changes must preserve:
+- `data/shaders/planet_visual.wgsl` and `data/cache_stream/shaders/planet_visual.wgsl` parity
+- the existing `PlanetBodyShaderSettings` field names unless Rust/Lua/dashboard schemas are updated together
+- the existing planet material uniform/pass ABI unless the client runtime and editor metadata are updated in the same change
 
 ## Next Rendering Work
 

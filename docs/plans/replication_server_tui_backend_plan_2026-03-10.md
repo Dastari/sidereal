@@ -8,7 +8,7 @@ Primary references:
 - `AGENTS.md`
 - `docs/sidereal_design_document.md`
 - `docs/features/brp_debugging_workflow.md`
-- `docs/plans/replication_visibility_cadence_optimization_plan_2026-03-10.md`
+- `docs/features/visibility_replication_contract.md`
 - `bins/sidereal-replication/src/main.rs`
 - `bins/sidereal-replication/src/plugins.rs`
 - Informational style reference: `https://github.com/Dastari/librarian/tree/main/backend/src/tui`

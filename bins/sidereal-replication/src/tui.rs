@@ -360,16 +360,14 @@ fn handle_mouse(
                 app.world_drag_anchor = Some((mouse.column, mouse.row));
             }
         }
-        MouseEventKind::Drag(MouseButton::Left) => {
-            if app.focus == PaneFocus::World {
-                if let Some((last_x, last_y)) = app.world_drag_anchor {
-                    let dx = mouse.column as i32 - last_x as i32;
-                    let dy = mouse.row as i32 - last_y as i32;
-                    app.world_center_x -= dx as f32 * app.world_zoom;
-                    app.world_center_y += dy as f32 * app.world_zoom * WORLD_CELL_ASPECT_Y;
-                }
-                app.world_drag_anchor = Some((mouse.column, mouse.row));
+        MouseEventKind::Drag(MouseButton::Left) if app.focus == PaneFocus::World => {
+            if let Some((last_x, last_y)) = app.world_drag_anchor {
+                let dx = mouse.column as i32 - last_x as i32;
+                let dy = mouse.row as i32 - last_y as i32;
+                app.world_center_x -= dx as f32 * app.world_zoom;
+                app.world_center_y += dy as f32 * app.world_zoom * WORLD_CELL_ASPECT_Y;
             }
+            app.world_drag_anchor = Some((mouse.column, mouse.row));
         }
         MouseEventKind::Up(MouseButton::Left) => {
             app.world_drag_anchor = None;

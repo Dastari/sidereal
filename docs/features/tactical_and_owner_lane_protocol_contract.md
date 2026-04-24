@@ -1,12 +1,23 @@
 # Tactical and Owner Lane Protocol Contract
 
-Status: Active implementation contract  
-Date: 2026-03-05
+Status: Active implementation contract
+Last updated: 2026-04-24
+Owners: replication + client runtime + UI
+Scope: tactical fog/contact lanes and owner asset manifest lane schemas/runtime behavior
 
 Primary references:
 - `docs/features/visibility_replication_contract.md`
 - `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
 - `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: tactical snapshot/delta and owner manifest snapshot/delta messages are registered in `sidereal-net` and streamed by the replication runtime.
+2. Implemented: client caches apply snapshots/deltas, request tactical resnapshots on sequence mismatch, and drive tactical UI/owner manifest presentation.
+3. Implemented: `PlayerExploredCells`, `VisibilitySpatialGrid`, `VisibilityDisclosure`, tactical contacts, and manifest entries are integrated with current visibility/runtime data.
+4. Open work: stress/load testing, richer contact redaction, and production tuning for large player/entity counts remain incomplete.
 
 ## 1. Objective
 

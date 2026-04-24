@@ -1,13 +1,24 @@
 # Visibility and Replication Contract
 
-Status: Active source-of-truth (current runtime-aligned)  
-Date: 2026-03-05
+Status: Active implementation contract
+Last updated: 2026-04-24
+Owners: replication + gameplay + client runtime
+Scope: server-authoritative visibility, delivery narrowing, payload disclosure, and tactical/owner lane interaction
 
 Primary references:
 - `docs/sidereal_design_document.md`
 - `AGENTS.md`
 - `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
 - `docs/plans/scan_intel_minimap_spatial_plan.md`
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: server-driven per-client visibility updates, spatial-grid candidate preselection, fail-closed policy checks, generic `VisibilityRangeM`/`VisibilityRangeBuffM`, and player-scoped debug/inspection components.
+2. Implemented: discoverable static landmarks, parallax-aware delivery behavior, extent-aware large-body culling, and lower-cadence landmark discovery maintenance are current runtime behavior.
+3. Implemented: tactical fog/contact and owner manifest lanes are separate read models that do not widen local-bubble authorization.
+4. Partial/open: richer faction/public redaction details, large-scale tuning, and future background-simulation promotion interactions still need follow-up as those systems mature.
 
 ## 1. Goal
 
@@ -111,7 +122,7 @@ Still required and explicitly preserved:
 2. Component/field-level visibility/redaction policy (for example inventory detail requiring scan-intel grant).
 3. Snapshot-vs-stream grant semantics for scan intel.
 
-Status:
+Current status:
 
 1. These are active contract requirements.
 2. Some parts remain implementation-in-progress and must not be removed from docs.
@@ -130,7 +141,7 @@ For any PR touching visibility, tactical delivery, fog/intel memory, or redactio
 6. Add/update tests for changed behavior.
 7. Update:
    1. this contract,
-   2. any related DR under `docs/features/`,
+   2. any related decision detail under `docs/decisions/`,
    3. `docs/decision_register.md` links when decisions change.
 
 ## 8. Visibility Range Naming Direction (Accepted)
@@ -157,4 +168,3 @@ Implementation note:
 3. Genre-specific `scanner_*` wording may still exist in content/action names, but not as the engine-owned runtime component names.
 4. See:
    - `docs/decisions/dr-0028_generic_visibility_range_components.md`
-   - `docs/plans/generic_visibility_range_migration_plan.md`

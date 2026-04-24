@@ -1,4 +1,6 @@
 use crate::replication::PlayerControlledEntityMap;
+use crate::replication::SimulatedControlledEntity;
+use crate::replication::control::ClientControlLeaseGenerations;
 use crate::replication::input::{
     ClientInputDropMetrics, InputActivityLogState, InputRateLimitState, InputValidationFailure,
     LatestRealtimeInput, LatestRealtimeInputsByPlayer, MAX_ACTIONS_PER_PACKET,
@@ -14,6 +16,7 @@ fn message_with(tick: u64, actions: usize) -> ClientRealtimeInputMessage {
     ClientRealtimeInputMessage {
         player_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
         controlled_entity_id: "22222222-2222-2222-2222-222222222222".to_string(),
+        control_generation: 1,
         actions: vec![EntityAction::LongitudinalNeutral; actions],
         tick,
     }
@@ -77,6 +80,7 @@ fn drain_keeps_fresh_realtime_input_before_timeout() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(ClientControlLeaseGenerations::default());
     app.insert_resource(LatestRealtimeInputsByPlayer::default());
     app.insert_resource(RealtimeInputActivityByPlayer::default());
     app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
@@ -102,6 +106,7 @@ fn drain_keeps_fresh_realtime_input_before_timeout() {
             LatestRealtimeInput {
                 tick: 7,
                 controlled_entity_id: RuntimeEntityId(player_guid),
+                control_generation: 0,
                 actions: vec![EntityAction::Forward],
             },
         );
@@ -121,6 +126,7 @@ fn drain_clears_stale_realtime_input_after_timeout() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(ClientControlLeaseGenerations::default());
     app.insert_resource(LatestRealtimeInputsByPlayer::default());
     app.insert_resource(RealtimeInputActivityByPlayer::default());
     app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
@@ -152,6 +158,7 @@ fn drain_clears_stale_realtime_input_after_timeout() {
             LatestRealtimeInput {
                 tick: 7,
                 controlled_entity_id: RuntimeEntityId(player_guid),
+                control_generation: 0,
                 actions: vec![EntityAction::Forward],
             },
         );
@@ -164,4 +171,130 @@ fn drain_clears_stale_realtime_input_after_timeout() {
 
     let queue = app.world().get::<ActionQueue>(player_entity).unwrap();
     assert!(queue.pending.is_empty());
+}
+
+#[test]
+fn drain_rejects_stale_generation_input_during_control_handoff() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(ClientControlLeaseGenerations::default());
+    app.insert_resource(LatestRealtimeInputsByPlayer::default());
+    app.insert_resource(RealtimeInputActivityByPlayer::default());
+    app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
+    app.insert_resource(ClientInputDropMetrics::default());
+    app.insert_resource(InputActivityLogState::default());
+    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+
+    let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+    let ship_a_id = RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    let ship_b_id = RuntimeEntityId::parse("33333333-3333-3333-3333-333333333333").unwrap();
+    let ship_b_entity = app
+        .world_mut()
+        .spawn((
+            EntityGuid(ship_b_id.0),
+            SimulatedControlledEntity {
+                player_entity_id: player_id,
+            },
+            ActionQueue::default(),
+        ))
+        .id();
+    app.world_mut()
+        .resource_mut::<PlayerControlledEntityMap>()
+        .by_player_entity_id
+        .insert(player_id, ship_b_entity);
+    app.world_mut()
+        .resource_mut::<ClientControlLeaseGenerations>()
+        .generation_by_player
+        .insert(player_id.canonical_wire_id(), 2);
+    app.world_mut()
+        .resource_mut::<LatestRealtimeInputsByPlayer>()
+        .by_player_entity_id
+        .insert(
+            player_id,
+            LatestRealtimeInput {
+                tick: 11,
+                controlled_entity_id: ship_a_id,
+                control_generation: 1,
+                actions: vec![EntityAction::Forward],
+            },
+        );
+    app.world_mut()
+        .resource_mut::<RealtimeInputActivityByPlayer>()
+        .last_received_at_s_by_player_entity_id
+        .insert(player_id, 0.0);
+
+    app.update();
+
+    let queue = app.world().get::<ActionQueue>(ship_b_entity).unwrap();
+    assert!(queue.pending.is_empty());
+    assert_eq!(
+        app.world()
+            .resource::<ClientInputDropMetrics>()
+            .stale_control_generation,
+        1
+    );
+}
+
+#[test]
+fn drain_keeps_mismatch_tolerance_with_matching_control_generation() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(PlayerControlledEntityMap::default());
+    app.insert_resource(ClientControlLeaseGenerations::default());
+    app.insert_resource(LatestRealtimeInputsByPlayer::default());
+    app.insert_resource(RealtimeInputActivityByPlayer::default());
+    app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
+    app.insert_resource(ClientInputDropMetrics::default());
+    app.insert_resource(InputActivityLogState::default());
+    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+
+    let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+    let ship_a_id = RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    let ship_b_id = RuntimeEntityId::parse("33333333-3333-3333-3333-333333333333").unwrap();
+    let ship_b_entity = app
+        .world_mut()
+        .spawn((
+            EntityGuid(ship_b_id.0),
+            SimulatedControlledEntity {
+                player_entity_id: player_id,
+            },
+            ActionQueue::default(),
+        ))
+        .id();
+    app.world_mut()
+        .resource_mut::<PlayerControlledEntityMap>()
+        .by_player_entity_id
+        .insert(player_id, ship_b_entity);
+    app.world_mut()
+        .resource_mut::<ClientControlLeaseGenerations>()
+        .generation_by_player
+        .insert(player_id.canonical_wire_id(), 2);
+    app.world_mut()
+        .resource_mut::<LatestRealtimeInputsByPlayer>()
+        .by_player_entity_id
+        .insert(
+            player_id,
+            LatestRealtimeInput {
+                tick: 11,
+                controlled_entity_id: ship_a_id,
+                control_generation: 2,
+                actions: vec![EntityAction::Forward],
+            },
+        );
+    app.world_mut()
+        .resource_mut::<RealtimeInputActivityByPlayer>()
+        .last_received_at_s_by_player_entity_id
+        .insert(player_id, 0.0);
+
+    app.update();
+
+    let queue = app.world().get::<ActionQueue>(ship_b_entity).unwrap();
+    assert_eq!(queue.pending, vec![EntityAction::Forward]);
+    assert_eq!(
+        app.world()
+            .resource::<ClientInputDropMetrics>()
+            .controlled_target_mismatch,
+        1
+    );
 }

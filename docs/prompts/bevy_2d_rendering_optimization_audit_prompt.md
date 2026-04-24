@@ -1,5 +1,7 @@
 # Bevy 2D Rendering Optimization Audit Prompt
 
+Status: Updated 2026-04-23 to require use of relevant installed Bevy and Rust skill guidance during audit runs.
+
 Perform a complete rendering-performance audit for this repository as a senior Bevy 2D rendering/performance engineer with strong experience in Lightyear, Avian2D, asset streaming, server-authoritative multiplayer architecture, and frame-time analysis.
 
 Your job is not to give generic Bevy advice. Your job is to inspect this codebase and produce a detailed optimization report focused on why the game feels slow, what is actually making it slow, what only appears slow, and what should be changed first.
@@ -25,6 +27,16 @@ Your job is not to give generic Bevy advice. Your job is to inspect this codebas
   - streamed assets/shaders,
   - server-authoritative replication with prediction/reconciliation,
   - native client priority, with WASM still needing architectural compatibility.
+
+## Required Skill Context
+
+Before auditing code, load and apply the installed `bevy-game-engine` skill (`/root/sidereal/.agents/skills/bevy-game-engine/SKILL.md`) as an audit lens for Bevy app structure, plugins, ECS schedules, systems/resources/events, 2D rendering, cameras, sprites, UI, shaders, asset loading, and runtime frame-loop behavior.
+
+Also load and apply the installed `rust-skills` skill (`/rust-skills`, backed by `/root/sidereal/.agents/skills/rust-skills/SKILL.md`) for Rust-specific performance and maintainability review, especially ownership/borrowing, allocation pressure, memory layout, async/blocking behavior, API shape, testing, linting, and anti-patterns. When a finding comes primarily from this guidance, name the relevant category or rule prefix where useful, such as `mem-*`, `perf-*`, `async-*`, `api-*`, `test-*`, or `anti-*`.
+
+If an additional installed skill exists for Bevy ECS performance, Bevy scheduling, Bevy rendering, Avian2D, Lightyear, or game-performance profiling, load it as supporting context. Treat those skills as lenses for finding concrete issues in this repository, not as permission to give generic advice.
+
+Do not let generic Bevy or Rust guidance override Sidereal-specific architecture, server-authoritative authority flow, Lightyear prediction/replication contracts, Avian2D motion ownership requirements, asset delivery contracts, WASM compatibility rules, or contributor rules in `AGENTS.md`.
 
 ## Primary Goal
 

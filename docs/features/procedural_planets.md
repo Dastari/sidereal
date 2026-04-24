@@ -1,10 +1,14 @@
 # Procedural Planets
 
-**Status:** Active implementation (phase 1 live)
-**Last updated:** 2026-03-09
+Status: Active feature reference
+Last updated: 2026-04-24
+Owners: gameplay content + scripting + client rendering
+Scope: current Lua-authored static planet/celestial entities and layered procedural planet rendering
 
 ## 0. Status Notes
 
+- 2026-04-24: Current implementation is live for static non-physics planet/celestial entities using `WorldPosition`/`WorldRotation`, Lua bundle authoring, persisted shader settings, runtime world layers, and client layered planet rendering. Not implemented: full galaxy/solar-system membership, orbital simulation, or physics participation for planets. Native impact: active visual path. WASM impact: shared render/schema path should remain target-compatible; live browser validation remains deferred behind native stabilization.
+- 2026-04-24: `planet_visual.wgsl` now keeps the existing Rust/Lua/dashboard ABI but replaces the older animated 4D value-noise helper with cheaper time-evolving domain-warped 3D fBm for animated cloud/star flows, adds cellular crater shaping for rocky bodies, derives body normal perturbation from screen-space height derivatives instead of extra height resamples, and smooths terminator lighting for more believable twilight atmosphere. Native impact: active visual path. WASM impact: shared shader asset path with no platform-specific branch.
 - 2026-03-09: Native client planet visuals no longer apply camera-driven x/y parallax offsets on top of the authoritative planet root transform. Planets still render on a lower z/depth layer, but the visible disc center now remains aligned with the replicated world position so AABB/debug overlays and selection stay correct away from camera center. WASM impact: shared client visual behavior change; no platform-specific divergence intended.
 - 2026-03-09: Native client planet visuals now use a client-only projected render-center offset derived from the authoritative planet world position plus camera position. The authoritative planet root remains fixed at the real world center for visibility/exploration/culling decisions, while the visual child offset restores layer parallax for drawing only. WASM impact: shared client visual behavior change; no platform-specific divergence intended.
 - 2026-03-09: Runtime world layers now also support an optional `screen_scale_factor` used by the native planet visual path. This changes apparent planet size for the layer without changing authoritative world position or adding extra parallax. It does not by itself fix projected render-frustum culling; projected visual bounds still need a dedicated follow-up.
@@ -108,14 +112,15 @@ Current body shader behavior:
 - reconstructs the visible hemisphere from the quad silhouette
 - rotates the sphere around a planetary axis for sideways globe spin
 - samples deterministic procedural terrain and color from spherical coordinates
-- derives a perturbed normal from the height field for bump-style lighting
+- derives a perturbed normal from screen-space height derivatives for bump-style lighting
 - applies water/specular response from terran surface masks instead of a generic whole-body gloss
 - handles only the body, atmosphere, and emissive response
-- now uses a smoother noise path than the earlier grid-prone value-noise variant that was contributing visible lattice/banding artifacts
+- uses domain-warped 3D fBm and cellular crater shaping instead of the earlier grid-prone animated 4D value-noise variant that was contributing visible lattice/banding artifacts and higher per-pixel hash pressure
+- smooths the day/night terminator so atmosphere and direct light fall off more naturally near the limb
 
 Current cloud shader behavior:
 - renders clouds as dedicated back/front shell passes
-- uses evolving weather-cell advection and domain warping instead of one static noise field
+- uses evolving weather-cell advection and domain-warped 3D fBm instead of one static noise field
 - uses softer layered billow noise instead of the previous scratchy line artifacts
 - gates cloud coverage through density thresholds so cloud masses feel coherent instead of evenly noisy
 - supports terran/oceanic and gas-giant cloud behavior separately

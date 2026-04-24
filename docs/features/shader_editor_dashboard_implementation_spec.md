@@ -1,8 +1,9 @@
 # Shader Editor/Preview Dashboard Implementation Spec
 
-Status: Active partial implementation spec  
-Date: 2026-03-05  
+Status: Active partial implementation spec
+Last updated: 2026-04-24
 Owners: dashboard + rendering + runtime toolchain
+Scope: dashboard shader workshop, WGSL source/cache parity, preview tooling, and runtime shader metadata
 
 Primary references:
 - `docs/sidereal_design_document.md`
@@ -11,6 +12,15 @@ Primary references:
 - `docs/features/visibility_replication_contract.md`
 - `docs/ui_design_guide.md`
 - `AGENTS.md`
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: `/shader-workshop` route, shader library tree, editor/preview panes, metadata inspector, server load/upload APIs, and browser WebGPU preview path.
+2. Implemented: shader metadata and editor schemas flow from Lua asset registry/generated component registry into dashboard controls.
+3. Implemented: runtime client shader assignment and streamed shader/cache parity paths exist for world visual layers, sprite shaders, planet settings, and tactical overlay settings.
+4. Partial/open: production-quality WGSL syntax highlighting, draft/version history, full Bevy scene preview, and live apply to connected game clients remain incomplete.
 
 ## 1. Objective
 

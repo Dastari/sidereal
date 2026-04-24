@@ -73,6 +73,8 @@ fn init_control_and_prediction_resources(app: &mut App) {
     app.insert_resource(ClientInputTimelineTuning::from_env());
     app.insert_resource(ClientInterpolationTimelineTuning::from_env());
     app.insert_resource(ClientTimelineFocusState::default());
+    app.insert_resource(NativePredictionRecoveryTuning::from_env());
+    app.insert_resource(NativePredictionRecoveryState::default());
     app.insert_resource(NearbyCollisionProxyTuning::from_env());
     app.insert_resource(RemoteEntityRegistry::default());
 }

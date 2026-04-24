@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "bevy-game-engine": {
+      "source": "smithery.ai",
+      "sourceType": "well-known",
+      "computedHash": "cd9a00b2b12fc540149fe915cfe3746d76399b7097914bf271abbf69326709d9"
+    },
+    "rust-skills": {
+      "source": "leonardomso/rust-skills",
+      "sourceType": "github",
+      "computedHash": "46bd078eef99d07cf5544129e24f917646a39cda58672233c559d3fa6af68369"
+    }
+  }
+}

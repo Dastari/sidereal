@@ -1,8 +1,19 @@
-# Projectile Firing and Damage Loop Plan
+# Projectile Firing and Damage Loop Contract
 
-Status: Updated after ballistic projectile refactor  
-Date: 2026-03-08  
+Status: Active implementation contract
+Last updated: 2026-04-24
 Owners: gameplay runtime + replication + client
+Scope: server-authoritative weapon firing, hitscan/tracer path, projectile entities, and client presentation
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: starter gatling weapons use the authoritative hitscan-plus-tracer path with `projectile_speed_mps = 0.0`.
+2. Implemented: true ballistic projectile entities remain supported for weapon families with positive projectile speed, including local prespawn matching and server-spawned replicated projectile entities.
+3. Implemented: combat messages carry enough weapon identity for client presentation/audio resolution.
+4. Open work: shields/armor, richer weapon families, hit UI, advanced lag compensation, and broader VFX/SFX polish remain future work.
+5. WASM impact: gameplay/protocol path is shared; live browser validation is deferred behind native stabilization.
 
 Implementation status note (2026-03-12):
 

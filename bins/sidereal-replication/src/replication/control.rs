@@ -537,7 +537,7 @@ fn maybe_set_prediction_target(
     let current_debug = current.map(|target| format!("{target:?}"));
     let desired_debug = desired_owner.map(|owner| format!("{:?}", owner_prediction_target(owner)));
     match desired_owner {
-        Some(owner) if current_debug == desired_debug => false,
+        Some(_owner) if current_debug == desired_debug => false,
         Some(owner) => {
             entity_commands.insert(owner_prediction_target(owner));
             true
@@ -566,19 +566,21 @@ fn maybe_set_interpolation_target(
         DesiredInterpolationTarget::Manual(target) => format!("{target:?}"),
     });
     match desired {
-        Some(DesiredInterpolationTarget::Owner(owner)) if current_debug == desired_debug => false,
+        Some(DesiredInterpolationTarget::Owner(_owner)) if current_debug == desired_debug => false,
         Some(DesiredInterpolationTarget::Owner(owner)) => {
             entity_commands.insert(owner_interpolation_target(owner));
             true
         }
-        Some(DesiredInterpolationTarget::Network(network)) if current_debug == desired_debug => {
+        Some(DesiredInterpolationTarget::Network(_network)) if current_debug == desired_debug => {
             false
         }
         Some(DesiredInterpolationTarget::Network(network)) => {
             entity_commands.insert(InterpolationTarget::to_clients(network));
             true
         }
-        Some(DesiredInterpolationTarget::Manual(target)) if current_debug == desired_debug => false,
+        Some(DesiredInterpolationTarget::Manual(_target)) if current_debug == desired_debug => {
+            false
+        }
         Some(DesiredInterpolationTarget::Manual(target)) => {
             entity_commands.insert(target);
             true

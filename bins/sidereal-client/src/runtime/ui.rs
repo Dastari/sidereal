@@ -442,13 +442,13 @@ pub(super) fn update_debug_overlay_text_ui_system(
             .unwrap_or_else(|| "--.-- ms".to_string()),
     ));
     let mut row_pairs = Vec::with_capacity(snapshot.text_rows.len() + 1);
-    for row in &snapshot.text_rows {
-        row_pairs.push((row.label.clone(), row.value.clone()));
-    }
     row_pairs.push((
         "Sent Input".to_string(),
         format_sent_input_actions(&input_send_state.last_sent_actions),
     ));
+    for row in &snapshot.text_rows {
+        row_pairs.push((row.label.clone(), row.value.clone()));
+    }
     let columns = split_debug_overlay_text_columns(&row_pairs);
     let header_labels_text = header_row_pairs
         .iter()

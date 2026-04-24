@@ -16,7 +16,7 @@ use super::components::ControlledEntity;
 use super::dev_console::DevConsoleState;
 use super::resources::{
     ClientControlRequestState, ClientInputAckTracker, ClientInputSendState, ClientNetworkTick,
-    HeadlessTransportMode,
+    HeadlessTransportMode, NativePredictionRecoveryState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -171,11 +171,16 @@ pub fn send_lightyear_input_messages(
     mut tick: ResMut<'_, ClientNetworkTick>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
     mut input_send_state: ResMut<'_, ClientInputSendState>,
+    mut recovery_state: ResMut<'_, NativePredictionRecoveryState>,
     _request_state: Res<'_, ClientControlRequestState>,
 ) {
     let suppress_for_console = super::dev_console::is_console_open(dev_console_state.as_deref());
     let in_world_state = is_active_world_state(&app_state, &headless_mode);
     let window_focused = windows.single().map(|w| w.focused).unwrap_or(true);
+    let now_s = time.elapsed_secs_f64();
+    recovery_state.complete_recovery_if_elapsed(now_s);
+    let suppress_for_recovery = recovery_state.is_suppressing_input(now_s);
+    let force_neutral_send = recovery_state.pending_neutral_send;
 
     let (player_entity_id, target_entity_id, player_input) = if in_world_state {
         let Some(player_entity_id) = session.player_entity_id.clone() else {
@@ -190,18 +195,21 @@ pub fn send_lightyear_input_messages(
             ids_refer_to_same_guid(target_entity_id.as_str(), player_entity_id.as_str());
         let suppress_input_for_camera_only =
             player_view_state.detached_free_camera && !controlling_player_anchor;
-        let (player_input, _axes) =
-            if suppress_input_for_camera_only || !window_focused || suppress_for_console {
-                neutral_player_input()
-            } else {
-                player_input_from_keyboard(input.as_deref())
-            };
+        let suppress_active_input = suppress_input_for_camera_only
+            || !window_focused
+            || suppress_for_console
+            || suppress_for_recovery
+            || force_neutral_send;
+        let (player_input, _axes) = if suppress_active_input {
+            neutral_player_input()
+        } else {
+            player_input_from_keyboard(input.as_deref())
+        };
         (player_entity_id, target_entity_id, player_input)
     } else {
         return;
     };
 
-    let now_s = time.elapsed_secs_f64();
     let has_active_input = player_input.actions.iter().any(|a| {
         !matches!(
             a,
@@ -227,7 +235,7 @@ pub fn send_lightyear_input_messages(
     let should_send_network = should_send_realtime_input_message(
         now_s,
         input_send_state.last_sent_at_s,
-        input_changed,
+        input_changed || force_neutral_send,
         target_changed,
     );
     // While movement/fire input is active, send every fixed tick so authoritative
@@ -245,6 +253,10 @@ pub fn send_lightyear_input_messages(
     if !should_send_network {
         return;
     }
+    if force_neutral_send {
+        recovery_state.pending_neutral_send = false;
+        recovery_state.neutral_send_count = recovery_state.neutral_send_count.saturating_add(1);
+    }
     tick.0 = tick.0.saturating_add(1);
     ack_tracker.pending_ticks.push_back(tick.0);
     while ack_tracker.pending_ticks.len() > 512 {
@@ -254,6 +266,7 @@ pub fn send_lightyear_input_messages(
     let realtime_message = ClientRealtimeInputMessage {
         player_entity_id: message_player_id,
         controlled_entity_id: message_controlled_id,
+        control_generation: player_view_state.controlled_entity_generation,
         actions: player_input.actions,
         tick: tick.0,
     };

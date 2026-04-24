@@ -1,12 +1,15 @@
 # Resources and Crafting Contract
 
-**Status:** Proposed feature specification
-**Last updated:** 2026-03-16
-**Primary architecture reference:** `docs/sidereal_design_document.md`
-**Related contracts:** `docs/features/background_world_simulation_contract.md`, `docs/features/scripting_support.md`, `docs/features/asteroid_field_system.md`, `docs/component_authoring_guide.md`
+Status: Proposed feature contract
+Last updated: 2026-04-24
+Owners: gameplay simulation + persistence + scripting
+Scope: future resource extraction, refining, crafting, inventories, recipes, and manufacturing
+Primary architecture reference: `docs/sidereal_design_document.md`
+Related contracts: `docs/features/background_world_simulation_contract.md`, `docs/features/scripting_support.md`, `docs/features/asteroid_field_system.md`, `docs/component_authoring_guide.md`
 
 ## 0. Status Notes
 
+- 2026-04-24: Not implemented yet as a full resource/crafting runtime. Existing implemented foundations include `Inventory`, dynamic mass components (`CargoMassKg`, `ModuleMassKg`, `TotalMassKg`), mounted-module mass derivation, graph persistence, and Lua bundle/catalog infrastructure. Missing: item/resource/recipe/facility catalogs, extraction/salvage systems, queue progression, crafting transactions, manufacturing jobs, and UI flows. Native/WASM impact: future authoritative systems must remain server/shared-code driven with platform differences limited to UI and input.
 - 2026-03-16: Initial contract for Sidereal's material, refining, and crafting foundation. Native impact: future shared gameplay/runtime work is required for extraction nodes, facility queues, inventory transactions, and module/ship manufacturing flows. WASM impact: no browser-only authority split is introduced; recipe validation, queue progression, and item/facility definitions should remain in shared gameplay/runtime code, with browser differences limited to UI/input and asset-loading boundaries.
 
 ## 1. Purpose

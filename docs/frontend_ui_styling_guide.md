@@ -458,7 +458,6 @@ Any substantive dashboard UI change should be checked against this list:
 ## 11. References
 
 - [docs/ui_design_guide.md](/home/toby/dev/sidereal_v3/docs/ui_design_guide.md)
-- [docs/reports/frontend_tanstack_router_audit_report_2026-03-12.md](/home/toby/dev/sidereal_v3/docs/reports/frontend_tanstack_router_audit_report_2026-03-12.md)
 - [AGENTS.md](/home/toby/dev/sidereal_v3/AGENTS.md)
 
 ## 12. Change Log

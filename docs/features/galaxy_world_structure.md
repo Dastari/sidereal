@@ -1,7 +1,18 @@
 # Galaxy World Structure
 
-**Status:** Proposed  
-**Date:** 2026-03-04
+Status: Proposed feature contract
+Last updated: 2026-04-24
+Owners: gameplay simulation + persistence + replication
+Scope: large-world/galaxy coordinate model and solar-system/world-structure direction
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Partial foundation implemented: static celestial/world entities, procedural planet visuals, fullscreen world layers, graph persistence, and visibility delivery operate in the current single-world coordinate model.
+2. Not implemented: full f64 Avian coordinate migration, solar-system entity/component model, inter-system membership/reference components, galaxy-scale spatial partitioning, and system transition logic.
+3. Current runtime still relies on f32 Bevy/Avian lanes for active motion; treat this document as proposed direction, not current behavior.
+4. Native/WASM impact: future large-world rendering must use shared authoritative coordinates with platform-specific camera/render precision handling only at the client render boundary.
 
 ## 1. Overview
 

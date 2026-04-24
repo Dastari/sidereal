@@ -1,7 +1,17 @@
 # BRP Debugging Workflow
 
 Status: Active feature reference
-Date: 2026-03-09
+Last updated: 2026-04-24
+Owners: runtime debugging + dashboard tooling
+Scope: local BRP snapshot workflow for targeted replication, prediction, visibility, and runtime inspection
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: BRP inspection endpoints are used by the dashboard/game-world tooling and local `curl`/`jq` workflow for targeted runtime inspection.
+2. Implemented: project rules require BRP endpoints to stay loopback-only until real authenticated HTTP gating exists.
+3. Open work: broader dashboard BRP workflows should continue to prefer filtered requests and route-owned state rather than full unbounded snapshot dumps.
 
 Update note (2026-03-09):
 - This documents the current Sidereal BRP snapshot workflow used for Lightyear prediction, replication, and handover debugging.

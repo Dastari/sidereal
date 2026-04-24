@@ -30,9 +30,9 @@ use super::components::{
     StreamedVisualAttached, StreamedVisualAttachmentKind, WorldEntity,
 };
 use super::resources::{
-    BootstrapWatchdogState, ControlBootstrapPhase, ControlBootstrapState,
-    DeferredPredictedAdoptionState, PredictionBootstrapTuning, PredictionCorrectionTuning,
-    PredictionRollbackStateTuning, RemoteEntityRegistry,
+    BootstrapWatchdogState, ClientControlRequestState, ControlBootstrapPhase,
+    ControlBootstrapState, DeferredPredictedAdoptionState, PredictionBootstrapTuning,
+    PredictionCorrectionTuning, PredictionRollbackStateTuning, RemoteEntityRegistry,
 };
 
 type MissingReplicatedSpatialQueryItem<'a> = (
@@ -92,20 +92,17 @@ fn bootstrap_planar_heading(
         .or(Some(0.0))
 }
 
-fn current_control_target_guid(
+fn intended_control_target_guid(
     session: &ClientSession,
     player_view_state: &LocalPlayerViewState,
+    request_state: Option<&ClientControlRequestState>,
 ) -> Option<uuid::Uuid> {
-    player_view_state
-        .controlled_entity_id
-        .as_deref()
+    request_state
+        .and_then(|state| state.pending_controlled_entity_id.as_deref())
+        .or(player_view_state.desired_controlled_entity_id.as_deref())
+        .or(player_view_state.controlled_entity_id.as_deref())
+        .or(session.player_entity_id.as_deref())
         .and_then(parse_guid_from_entity_id)
-        .or_else(|| {
-            session
-                .player_entity_id
-                .as_deref()
-                .and_then(parse_guid_from_entity_id)
-        })
 }
 
 #[allow(clippy::type_complexity)]
@@ -941,7 +938,8 @@ mod tests {
     use crate::runtime::app_state::{ClientSession, LocalPlayerViewState};
     use crate::runtime::components::ControlledEntity;
     use crate::runtime::resources::{
-        ControlBootstrapPhase, ControlBootstrapState, DeferredPredictedAdoptionState,
+        ClientControlRequestState, ControlBootstrapPhase, ControlBootstrapState,
+        DeferredPredictedAdoptionState,
     };
     use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
     use bevy::app::Update;
@@ -1237,6 +1235,96 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_marker_transition_keeps_predicted_for_pending_control_target() {
+        let mut app = App::new();
+        app.insert_resource(ClientSession {
+            player_entity_id: Some("1521601b-7e69-4700-853f-eb1eb3a41199".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string()),
+            desired_controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(ClientControlRequestState {
+            pending_controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            pending_request_seq: Some(1),
+            ..Default::default()
+        });
+        app.add_observer(sanitize_conflicting_prediction_interpolation_markers_on_predicted_added);
+        app.add_observer(
+            sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
+        );
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").unwrap()),
+                lightyear::prelude::Interpolated,
+                lightyear::prelude::Predicted,
+            ))
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Predicted>(entity)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Interpolated>(entity)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn conflicting_marker_transition_drops_predicted_from_previous_target_during_pending_handoff() {
+        let mut app = App::new();
+        app.insert_resource(ClientSession {
+            player_entity_id: Some("1521601b-7e69-4700-853f-eb1eb3a41199".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string()),
+            desired_controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            ..Default::default()
+        });
+        app.insert_resource(ClientControlRequestState {
+            pending_controlled_entity_id: Some("ce9e421c-8b62-458a-803e-51e9ad272908".to_string()),
+            pending_request_seq: Some(1),
+            ..Default::default()
+        });
+        app.add_observer(sanitize_conflicting_prediction_interpolation_markers_on_predicted_added);
+        app.add_observer(
+            sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
+        );
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap()),
+                lightyear::prelude::Interpolated,
+                lightyear::prelude::Predicted,
+            ))
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Interpolated>(entity)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<lightyear::prelude::Predicted>(entity)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn conflicting_marker_transition_keeps_interpolated_for_observer_entity() {
         let mut app = App::new();
         app.insert_resource(ClientSession {
@@ -1450,6 +1538,7 @@ pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_predicted
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    request_state: Option<Res<'_, ClientControlRequestState>>,
     conflicting_entities: Query<
         '_,
         '_,
@@ -1467,7 +1556,7 @@ pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_predicted
     sanitize_conflicting_prediction_interpolation_markers_for_entity(
         &mut commands,
         trigger.entity,
-        current_control_target_guid(&session, &player_view_state),
+        intended_control_target_guid(&session, &player_view_state, request_state.as_deref()),
         &conflicting_entities,
     );
 }
@@ -1522,6 +1611,7 @@ pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_interpola
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
+    request_state: Option<Res<'_, ClientControlRequestState>>,
     conflicting_entities: Query<
         '_,
         '_,
@@ -1539,7 +1629,7 @@ pub(crate) fn sanitize_conflicting_prediction_interpolation_markers_on_interpola
     sanitize_conflicting_prediction_interpolation_markers_for_entity(
         &mut commands,
         trigger.entity,
-        current_control_target_guid(&session, &player_view_state),
+        intended_control_target_guid(&session, &player_view_state, request_state.as_deref()),
         &conflicting_entities,
     );
 }

@@ -1,9 +1,15 @@
 # Feature Docs
 
 Status: Active index
-Date: 2026-03-09
+Last updated: 2026-04-24
+Owners: documentation + feature owners
+Scope: active feature contracts, feature references, and feature-scoped notes/specs
 
 This folder is for active feature-scoped documentation, not for decision records, audit reports, or general implementation plans.
+
+Update note (2026-04-24):
+- Standardized the expected feature-document layout so each feature doc clearly states status, implementation coverage, open work, and validation scope.
+- Feature docs are now grouped by current purpose rather than by the date they were originally written.
 
 Update note (2026-03-09):
 - Decision detail docs were moved to `docs/decisions/`.
@@ -16,28 +22,59 @@ Update note (2026-03-13):
 Update note (2026-03-16):
 - Added `resources_and_crafting_contract.md` as the active feature specification for server-authoritative resource extraction, refining, crafting, and downstream manufacturing content.
 
+## Document Standard
+
+Feature docs should use this shape:
+
+1. `# Title`
+2. Metadata fields:
+   - `Status: ...`
+   - `Last updated: YYYY-MM-DD`
+   - `Owners: ...`
+   - `Scope: ...`
+   - `Primary references:` when applicable
+3. `## 0. Implementation Status`
+   - dated status notes,
+   - what is implemented,
+   - what remains open,
+   - native/WASM impact for client/runtime features.
+4. Contract/current behavior sections before proposed future work.
+5. Validation/testing references near the end when the feature has enforceable behavior.
+
+Preferred status labels:
+
+1. `Active implementation contract`
+2. `Active feature reference`
+3. `Active partial implementation spec`
+4. `Proposed feature contract`
+5. `Deferred`
+6. `Superseded`
+
 ## What Belongs Here
 
 1. Active implementation contracts:
    - `asset_delivery_contract.md`
-   - `background_world_simulation_contract.md`
    - `visibility_replication_contract.md`
    - `tactical_and_owner_lane_protocol_contract.md`
+   - `audio_runtime_contract.md`
+   - `scripting_support.md`
+   - `projectile_firing_game_loop.md`
 2. Active feature references:
    - `asset-packs.md`
-   - `asteroid_field_system.md`
    - `brp_debugging_workflow.md`
    - `galaxy_world_structure.md`
    - `procedural_asteroids.md`
    - `procedural_planets.md`
-   - `projectile_firing_game_loop.md`
    - `prediction_runtime_tuning_and_validation.md`
    - `lightyear_upstream_issue_snapshot.md`
 3. Active feature-scoped notes/specs:
    - `dashboard_route_shell_refactor_note.md`
    - `shader_editor_dashboard_implementation_spec.md`
    - `lightyear_integration_analysis.md`
-   - `scripting_support.md`
+4. Proposed feature contracts:
+   - `asteroid_field_system.md`
+   - `background_world_simulation_contract.md`
+   - `fly_by_wire_thrust_allocation_contract.md`
    - `resources_and_crafting_contract.md`
 
 ## What Does Not Belong Here

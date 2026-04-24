@@ -38,7 +38,6 @@ Update note (2026-03-09):
    - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
    - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
    - `docs/plans/dynamic_runtime_shader_material_plan.md`
-   - `docs/plans/rendering_optimization_pass_plan.md`
 3. Visibility and replication:
    - `docs/features/visibility_replication_contract.md`
    - `docs/features/tactical_and_owner_lane_protocol_contract.md`
@@ -57,8 +56,6 @@ Update note (2026-03-09):
    - `docs/decisions/dr-0026_sql_script_catalog_persistence.md`
 6. Historical audits and reports:
    - `docs/reports/`
-   - `docs/reports/client_environment_variable_audit_2026-03-11.md`
-   - `docs/reports/server_gateway_environment_variable_audit_2026-03-11.md`
 
 ## Maintenance Rules
 
@@ -73,3 +70,11 @@ Update note (2026-03-13):
 
 Update note (2026-03-16):
 - Added `docs/features/resources_and_crafting_contract.md` as the active feature specification for the shared material taxonomy, crafting model, and Bevy/content-authoring contract that will underpin future economy and manufacturing work.
+
+Update note (2026-04-24):
+- Removed older superseded March 2026 audit reports now replaced by the 2026-04-23 reports under `docs/reports/`.
+- Removed implemented one-off plans whose current behavior is already captured by active feature contracts or accepted decision records:
+  - generic visibility range migration is now covered by `docs/decisions/dr-0028_generic_visibility_range_components.md` and `docs/features/visibility_replication_contract.md`;
+  - discovered static landmark visibility is now covered by `docs/decisions/dr-0032_discovered_static_landmark_visibility.md` and `docs/features/visibility_replication_contract.md`.
+- Removed the stale March 10 Rust audit remediation plan, which depended on a missing March 10 audit report and has been superseded by current audit prompts/reports.
+- Retained older plans that are still active, parked, partially implemented, or future-direction documents rather than deleting them based on age alone.

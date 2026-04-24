@@ -2,6 +2,7 @@
 
 **Status:** Active Prompt  
 **Date:** 2026-03-15  
+**Update 2026-04-23:** Require installed Bevy/Rust skill context, deeper selected-vs-controlled entity auditing, and explicit Lightyear upstream/upgrade-readiness verification for dynamic prediction/interpolation handoff.  
 **Scope Note:** Audit the actual current client/server network architecture in this repository, not an idealized design.
 
 Perform a full end-to-end network architecture audit for this repository as a senior Bevy 0.18 / Avian2D / Lightyear / server-authoritative MMO networking engineer.
@@ -44,6 +45,7 @@ All other plans, prompts, investigation docs, and implementation trackers are re
   - intentional local workaround,
   - upstream Lightyear limitation/bug,
   - local misuse or architectural drift.
+- The current biggest failure area is dynamic selected/controlled entity transitions, especially where Lightyear prediction/interpolation lifecycle limits interact with Sidereal's server-authoritative control model. Treat this as a primary audit thread, not a secondary implementation detail.
 
 ## Read First
 
@@ -69,6 +71,27 @@ Then inspect the actual code paths under at least:
 - `crates/sidereal-net/`
 - `crates/sidereal-game/`
 - `crates/sidereal-asset-runtime/`
+
+## Required Skill Context
+
+Before auditing code, load and apply the installed `bevy-game-engine` skill (`/root/sidereal/.agents/skills/bevy-game-engine/SKILL.md`) as an audit lens for Bevy ECS app structure, plugin boundaries, schedules, system ordering, resources/events, runtime frame-loop behavior, and client/server Bevy integration.
+
+Also load and apply the installed `rust-skills` skill (`/rust-skills`, backed by `/root/sidereal/.agents/skills/rust-skills/SKILL.md`) for Rust-specific review of ownership/borrowing, async/blocking behavior, memory/allocation pressure, API design, error handling, testing, linting, and anti-patterns. When a finding comes primarily from this guidance, name the relevant category or rule prefix where useful, such as `async-*`, `err-*`, `mem-*`, `perf-*`, `api-*`, `test-*`, or `anti-*`.
+
+If an additional installed skill exists for Lightyear, Bevy networking/ECS scheduling, Avian2D networking, multiplayer prediction, or game networking, load it as supporting context. Treat skills as audit lenses for concrete repository findings, not as permission to give generic advice.
+
+Do not let generic Bevy, Rust, or networking guidance override Sidereal-specific authority flow, Lightyear integration constraints, Avian2D motion ownership requirements, visibility/redaction contracts, asset delivery contracts, WASM compatibility rules, or contributor rules in `AGENTS.md`.
+
+## Required Upstream Verification
+
+Before forming conclusions about Lightyear limitations or planned fixes, verify upstream state at audit time using primary sources:
+
+- official Lightyear docs/book/API docs,
+- the upstream `cBournhonesque/lightyear` release list and tags,
+- directly relevant upstream issues, PRs, commits on `main`, and CI/check status for those commits,
+- Sidereal's currently pinned fork/revision in `Cargo.toml`/`Cargo.lock`.
+
+Distinguish "PR open", "PR merged to upstream `main`", "merged commit has clean CI", "merged commit has failing or inconclusive CI", "commit included in a tagged release", and "Sidereal is actually pinned to that release/commit". Do not assume a future Lightyear release has landed until the release/tag/docs prove it. If a relevant PR has landed on `main` but is not yet released, document it as upstream-main-only and explain what local behavior still must be validated after the release or pin change. If public CI metadata shows failures but logs are unavailable, record the failing job/step names and avoid inferring the root cause.
 
 ## Primary Audit Goals
 
@@ -165,7 +188,7 @@ Be explicit about how Lightyear native input is used versus Sidereal’s authent
 
 This is a mandatory deep-focus section.
 
-Audit the complete control-handoff flow when switching between:
+Audit the complete selected/control/prediction handoff flow when switching between:
 
 - player-anchor self-control,
 - owned ship A,
@@ -174,19 +197,46 @@ Audit the complete control-handoff flow when switching between:
 
 Determine whether the current architecture correctly handles:
 
+- distinction between "selected entity" and "controlled entity",
+- persisted player ECS state for selected/control/focus/camera targets,
+- client-owned pending local input intent for the currently controlled predicted entity,
+- server-owned authoritative control assignment,
 - ownership validation,
 - authoritative ack/reject flow,
+- stale request rejection and out-of-order ack/reject behavior,
 - previous controlled-entity neutralization,
+- new controlled-entity activation,
 - player-anchor following behavior,
+- player-anchor free-roam behavior,
 - predicted marker transfer,
 - interpolated marker transfer,
+- confirmed marker and confirmed-state continuity,
 - confirmed-history availability,
 - interpolation-history bootstrap,
+- prediction-history initialization or invalidation,
 - frame interpolation continuity,
 - rollback/prediction-history continuity,
 - local-view/UI/control-state continuity.
 
 Specifically check whether the current Lightyear forked behavior and local code are sufficient for the project’s dynamic predicted/interpolated switching requirements, or whether the architecture still has correctness, visual, or maintainability gaps.
+
+Produce a control-transition matrix covering at least:
+
+- self-control -> ship A,
+- ship A -> ship B,
+- ship A -> self-control,
+- ship A -> disconnected/lost-visibility/nonexistent entity,
+- selected-only target change with no control change,
+- rejected control request,
+- repeated rapid control swaps across multiple ticks.
+
+For each transition, identify the expected server state, client local intent state, replicated control state, predicted/interpolated/confirmed entity roles, input routing behavior, camera/HUD binding, visibility source, and rollback/interpolation-history state.
+
+Explicitly audit whether Sidereal has a single authoritative place deriving Lightyear-facing role state (`ControlledBy`, `Replicate`, `PredictionTarget`, `InterpolationTarget`, visibility rearm/spawn flags, and related per-sender state) from the authenticated player->controlled-entity mapping, or whether multiple systems can race or partially repair each other.
+
+Audit whether changing `PredictionTarget` / `InterpolationTarget` on an already-visible entity is enough in the current Lightyear version/fork, or whether Sidereal still needs an explicit visibility rearm/despawn-respawn/full-spawn path for affected clients. If a rearm path exists, verify it is minimal, deterministic, ordered correctly, and cannot leak unauthorized state.
+
+Audit whether control handoff preserves logical-entity identity across Lightyear clone roles without relying on raw Bevy `Entity` IDs across service/client boundaries. Verify all UI/control/HUD/debug code resolves through stable UUID/entity identity and the correct local clone role.
 
 ### 6. Prediction, rollback, reconciliation, interpolation, and frame interpolation
 
@@ -326,6 +376,25 @@ You must distinguish:
 - local intentional deviation,
 - local accidental divergence.
 
+Because Lightyear is moving quickly and Sidereal currently carries a fork, this section must also include a Lightyear upgrade-readiness subsection:
+
+- record the exact current workspace Lightyear source/rev and feature set,
+- check the current upstream Lightyear release, docs, open issues, and relevant PRs at audit time,
+- verify whether Sidereal's forked commits or local PRs have landed upstream, are still open, are merged to upstream `main` but unreleased, or have been superseded,
+- verify upstream CI/check status for any Lightyear commit being considered for adoption, including whether failures are formatting-only, test failures, unrelated/flaky, or unknown due to inaccessible logs,
+- identify which local workarounds can be deleted after upgrade and which are still required by Sidereal-specific architecture,
+- identify expected migration risks for control swap, prediction, interpolation, frame interpolation, Avian2D integration, visibility, transport, and required-component hydration,
+- propose a minimal upgrade validation matrix before replacing the fork.
+
+At minimum, re-check the status and implications of:
+
+- upstream `PredictionSwitching` or equivalent support,
+- confirmed-history initialization when `Interpolated` is added to an entity that already has confirmed state,
+- required-component insertion for interpolated entities,
+- per-client prediction/interpolation target changes on already-visible entities,
+- input ownership/controlled-entity assignment security,
+- Avian2D interpolation/collider/hierarchy integration.
+
 ### 12. Scale, performance, and maintainability
 
 Audit whether the current architecture is likely to hold up for:
@@ -362,7 +431,26 @@ You must explicitly answer all of these:
 7. Is the project making strong enough use of current Lightyear interpolation/prediction/frame-interpolation capabilities, or is it carrying avoidable custom networking complexity?
 8. Are predicted/interpolated Avian2D entities receiving the right physics state and history bootstrap for stable runtime behavior?
 9. Does the current visibility implementation actually match the documented multi-tier authorization/delivery/redaction model?
-10. If you were hardening this into a modern production-quality top-down space MMO/ARPG networking architecture, what must change first?
+10. Is selected-target state cleanly separated from controlled-target state across persistence, replication, client UI, input routing, and camera behavior?
+11. Does rapid A->B->A control switching produce exactly one local input owner and one presentation winner per logical entity, without duplicate-lane repair becoming part of the intended contract?
+12. Does the current Lightyear fork/PR path have a clear removal or upgrade plan once upstream includes the needed behavior?
+13. If you were hardening this into a modern production-quality top-down space MMO/ARPG networking architecture, what must change first?
+
+## Required Validation Matrix
+
+The report must propose concrete regression coverage for the current failure area, even if the auditor does not implement the tests during the audit. Include recommended unit/integration/live validation for:
+
+- first world entry with persisted self-control,
+- first world entry with persisted ship control,
+- selected-only target changes,
+- self -> ship -> self control cycling,
+- ship A -> ship B -> ship A rapid cycling,
+- control request rejection and stale ack handling,
+- controlled entity losing visibility or despawning,
+- late-joining second client observing another client's controlled ship,
+- native dedicated client/server validation,
+- WASM impact or explicit no-WASM-impact reasoning,
+- Lightyear fork vs upstream release comparison after upgrade.
 
 ## Output Requirements
 

@@ -4,6 +4,10 @@ Status: Active redesign / implementation plan
 Date: 2026-03-22  
 Owners: client runtime + replication server + Lightyear fork + Avian2D integration
 
+Update note (2026-04-24):
+- The March 22 audit reports that originally informed this plan were removed during documentation cleanup because fresh 2026-04-23 reports supersede them.
+- This plan remains active for control/prediction/visibility refactor direction; use the 2026-04-23 reports for current audit findings.
+
 ## 1. Purpose
 
 Rebuild Sidereal's prediction/control/observer lifecycle onto a reliable multiplayer foundation that:
@@ -35,10 +39,10 @@ Local project inputs:
 3. `docs/features/prediction_runtime_tuning_and_validation.md`
 4. `docs/features/lightyear_upstream_issue_snapshot.md`
 5. `docs/features/lightyear_integration_analysis.md`
-6. `docs/reports/bevy_2d_rendering_optimization_audit_report_2026-03-22.md`
-7. `docs/reports/rust_codebase_audit_report_2026-03-22.md`
+6. `docs/reports/bevy_2d_rendering_optimization_audit_report_2026-04-23.md`
+7. `docs/reports/rust_codebase_audit_report_2026-04-23.md`
 8. `docs/plans/multiplayer_prediction_interpolation_reliability_plan_2026-03-15.md`
-9. `docs/reports/client_server_network_audit_report_2026-03-22.md`
+9. `docs/reports/client_server_network_audit_report_2026-04-23.md`
 
 External references used for this plan:
 
@@ -115,16 +119,16 @@ Evidence:
 
 ### 3.4 Additional problems that must be fixed during this refactor
 
-Pulled from the March 22 audits:
+Pulled from the March 22 audit findings and retained as refactor concerns; use the 2026-04-23 audit reports for current evidence:
 
 1. Fixed-step gameplay still reads generic `Time` in authoritative flight paths and must be migrated to `Time<Fixed>`.
-   Source: `docs/reports/rust_codebase_audit_report_2026-03-22.md`, Finding A1.
+   Source: superseded March 22 Rust audit, Finding A1; current follow-up is tracked through `docs/reports/rust_codebase_audit_report_2026-04-23.md`.
 2. Client presentation currently depends on duplicate-lane repair and broad scans.
-   Source: `docs/reports/bevy_2d_rendering_optimization_audit_report_2026-03-22.md`, Findings 1 and 2.
+   Source: superseded March 22 rendering audit, Findings 1 and 2; current follow-up is tracked through `docs/reports/bevy_2d_rendering_optimization_audit_report_2026-04-23.md`.
 3. Visibility churn and spatial resend/rearm behavior are directly destabilizing presentation.
-   Source: `docs/reports/bevy_2d_rendering_optimization_audit_report_2026-03-22.md`, Findings 1 and 12.
+   Source: superseded March 22 rendering audit, Findings 1 and 12; current follow-up is tracked through `docs/reports/bevy_2d_rendering_optimization_audit_report_2026-04-23.md`.
 4. Static landmark discovery currently duplicates spatial indexing work and should converge on one maintained visibility index.
-   Source: `docs/reports/rust_codebase_audit_report_2026-03-22.md`, Finding D1.
+   Source: superseded March 22 Rust audit, Finding D1; current follow-up is tracked through `docs/reports/rust_codebase_audit_report_2026-04-23.md`.
 
 ## 4. Sidereal Requirements That Must Be Retained
 

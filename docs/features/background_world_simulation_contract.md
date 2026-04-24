@@ -1,7 +1,9 @@
 # Background World Simulation Contract
 
-Status: Proposed source-of-truth for background/offscreen world simulation direction  
-Date: 2026-03-11
+Status: Proposed feature contract
+Last updated: 2026-04-24
+Owners: gameplay simulation + persistence + scripting
+Scope: future offscreen/background actor simulation and promotion into authoritative ECS runtime
 
 Primary references:
 - `docs/sidereal_design_document.md`
@@ -9,6 +11,14 @@ Primary references:
 - `docs/features/galaxy_world_structure.md`
 - `docs/features/scripting_support.md`
 - `AGENTS.md`
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Not implemented as a runtime system yet: there are no authoritative `AbstractActor`, `EconomicNode`, `TrafficLane`, or probability-volume simulation systems in the current codebase.
+2. Existing implemented foundations this contract must reuse: graph persistence, Lua-authored world bootstrap, visibility/tactical lanes, scripting catalog resources, and server-authoritative ECS runtime promotion paths.
+3. Native/WASM impact: future work must keep simulation authority server-side and share any client presentation/inspection data through existing replicated/read-model lanes.
 
 Update note (2026-03-11):
 - Initial contract for economy-driven offscreen simulation, abstract actors, dynamic traffic lanes, and promotion from abstract simulation into full runtime ECS when player relevance requires it.

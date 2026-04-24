@@ -74,6 +74,5 @@ Native/WASM impact:
 ## References
 
 1. `docs/features/visibility_replication_contract.md`
-2. `docs/plans/discovered_static_landmark_visibility_plan_2026-03-09.md`
-3. `docs/decisions/dr-0030_non_physics_world_spatial_components.md`
-4. `docs/features/scripting_support.md`
+2. `docs/decisions/dr-0030_non_physics_world_spatial_components.md`
+3. `docs/features/scripting_support.md`

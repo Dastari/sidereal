@@ -47,6 +47,8 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 - Control routing is server-authoritative and validated by ownership; client clears pending control only on explicit ack/reject for matching `request_seq`.
 - `control_generation` is the authoritative lease generation and is part of the bootstrap contract for predicted handoff/reconnect.
 
+2026-04-24 update: `ClientRealtimeInputMessage` must carry the observed `control_generation`, and the replication server must reject stale-generation realtime input. This binds input intent to the same authoritative control lease as handoff/bootstrap and prevents delayed pre-handoff packets from applying to a new target.
+
 ## Failure Behavior
 
 - Missing/invalid selected character:
@@ -74,5 +76,4 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 ## References
 
 - `docs/decision_register.md` (`DR-0002`)
-- `docs/plans/test_topology_and_resilience_plan.md`
 - `docs/sidereal_design_document.md`

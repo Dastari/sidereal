@@ -80,6 +80,10 @@ pub(crate) struct ClientTransportPlugin {
 
 fn add_headless_transport_systems(app: &mut App) {
     app.add_systems(
+        PreUpdate,
+        transport::update_native_prediction_recovery_for_window_focus,
+    );
+    app.add_systems(
         Update,
         (
             auth_net::apply_headless_account_switch_system,
@@ -95,6 +99,11 @@ fn add_headless_transport_systems(app: &mut App) {
 }
 
 fn add_windowed_transport_systems(app: &mut App) {
+    app.add_systems(
+        PreUpdate,
+        transport::update_native_prediction_recovery_for_window_focus
+            .run_if(in_state(ClientAppState::InWorld)),
+    );
     app.add_systems(
         Update,
         (

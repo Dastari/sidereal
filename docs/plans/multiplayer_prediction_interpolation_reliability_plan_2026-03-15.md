@@ -4,11 +4,10 @@ Status: Active implementation plan
 Date: 2026-03-15  
 Owners: client runtime + replication + prediction/interpolation + diagnostics  
 Primary inputs:
-- `docs/reports/lightyear_multiplayer_prediction_interpolation_audit_report_2026-03-15.md`
-- `docs/plans/lightyear_runtime_alignment_implementation_plan.md`
-- `docs/plans/bevy_2d_rendering_optimization_completion_plan_2026-03-12.md`
 - `docs/features/prediction_runtime_tuning_and_validation.md`
 - `docs/features/lightyear_upstream_issue_snapshot.md`
+- `docs/features/visibility_replication_contract.md`
+- `docs/reports/client_server_network_audit_report_2026-04-23.md`
 
 Update note (2026-03-15):
 - This plan exists because the current branch has two overlapping problems:
@@ -47,13 +46,11 @@ This is not a pure Lightyear migration plan and not a pure rendering plan. It is
 Read these in this order before making code changes:
 
 1. `AGENTS.md`
-2. `docs/reports/lightyear_multiplayer_prediction_interpolation_audit_report_2026-03-15.md`
-3. `docs/plans/lightyear_runtime_alignment_implementation_plan.md`
-4. `docs/features/prediction_runtime_tuning_and_validation.md`
-5. `docs/features/lightyear_upstream_issue_snapshot.md`
-6. `docs/reports/native_runtime_system_ownership_audit_2026-03-09.md`
-7. `docs/features/visibility_replication_contract.md`
-8. `README.md`
+2. `docs/features/prediction_runtime_tuning_and_validation.md`
+3. `docs/features/lightyear_upstream_issue_snapshot.md`
+4. `docs/features/visibility_replication_contract.md`
+5. `docs/reports/client_server_network_audit_report_2026-04-23.md`
+6. `README.md`
 
 If the intended code change alters runtime behavior or ownership rules, update the relevant docs in the same change. Do not leave the contract implicit in code only.
 
@@ -159,7 +156,7 @@ Primary files:
 3. `bins/sidereal-client/src/runtime/transforms.rs`
 4. `bins/sidereal-client/src/runtime/visuals.rs`
 5. `bins/sidereal-client/src/runtime/ui.rs`
-6. `docs/reports/lightyear_multiplayer_prediction_interpolation_audit_report_2026-03-15.md`
+6. `docs/features/prediction_runtime_tuning_and_validation.md`
 
 Tasks:
 

@@ -1,5 +1,7 @@
 # Rust Codebase Audit Prompt
 
+Status: Updated 2026-04-23 to require use of the installed `rust-skills` guidance during audit runs.
+
 Perform a complete Rust codebase audit for this repository as a senior Bevy/Avian2D/Lightyear/server-authoritative multiplayer engineer.
 
 ## Context
@@ -18,6 +20,12 @@ Perform a complete Rust codebase audit for this repository as a senior Bevy/Avia
 - Physics uses Avian2D.
 - Networking/prediction uses Lightyear.
 - Gateway, replication server, persistence, scripting, asset delivery, and client are all in the same workspace.
+
+## Required Skill Context
+
+Before auditing code, load and apply the installed `rust-skills` skill (`/rust-skills`, backed by `/root/sidereal/.agents/skills/rust-skills/SKILL.md`) as an audit lens for idiomatic Rust, ownership/borrowing, error handling, async, API design, memory/performance, testing, documentation, linting, and anti-pattern review.
+
+Use those rules to deepen findings, but do not let generic Rust advice override Sidereal-specific architecture, Bevy ECS scheduling constraints, Avian2D runtime ownership requirements, Lightyear authority/prediction contracts, or the repository rules in `AGENTS.md`. When a finding comes primarily from the Rust skill guidance, name the relevant category or rule prefix where useful, such as `err-*`, `async-*`, `mem-*`, `api-*`, or `test-*`.
 
 ## Audit Goals
 

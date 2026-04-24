@@ -1,9 +1,21 @@
 # Lightyear Upstream Issue Snapshot
 
-Last updated: 2026-03-08  
+Status: Active feature reference
+Last updated: 2026-04-24
+Owners: replication + client runtime
 Scope: Open GitHub issues for `cBournhonesque/lightyear`  
 Source: <https://github.com/cBournhonesque/lightyear/issues> and the GitHub API endpoint `https://api.github.com/repos/cBournhonesque/lightyear/issues?state=open&per_page=100&page=1`  
 Filter: Open issues only, excluding open pull requests
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. This document is an upstream triage reference, not an implementation contract.
+2. The full open-issue inventory remains the 2026-03-08 snapshot; the 2026-04-23 note below is a targeted PR verification update only.
+3. Current Sidereal guidance remains conservative: check this snapshot before assuming an unexplained Lightyear behavior is local-only, and update it when a new upstream search changes the local risk assessment.
+
+Update 2026-04-23: PR [#1421](https://github.com/cBournhonesque/lightyear/pull/1421) was verified as merged into `cBournhonesque:main` via commit [`af25682`](https://github.com/cBournhonesque/lightyear/commit/af25682) on 2026-04-22. The associated GitHub Actions run [`24797547143`](https://github.com/cBournhonesque/lightyear/actions/runs/24797547143) was not clean: `Lint` failed in `Format`, and `Test` failed in `lightyear_tests` with exit code 1. Public unauthenticated metadata did not expose detailed `lightyear_tests` logs. Local reproduction against `af25682` and its parent `eedb9ed` found the visible formatting failure and the targeted `lightyear_interpolation` unit failure were already present before #1421; the new #1421 confirmed-history tests passed locally. This update does not refresh the full open-issue inventory below.
 
 ## Purpose
 
@@ -59,13 +71,16 @@ These are the upstream issues that currently matter most to Sidereal's architect
 | [#1303](https://github.com/cBournhonesque/lightyear/issues/1303), [#1278](https://github.com/cBournhonesque/lightyear/issues/1278), [#1174](https://github.com/cBournhonesque/lightyear/issues/1174), [#949](https://github.com/cBournhonesque/lightyear/issues/949), [#905](https://github.com/cBournhonesque/lightyear/issues/905) | Transport lifecycle and connection UX still have unresolved edges. | Keep disconnect handling, fallback behaviour, and server startup/shutdown semantics explicit in Sidereal. |
 | [#643](https://github.com/cBournhonesque/lightyear/issues/643) and [#1363](https://github.com/cBournhonesque/lightyear/issues/1363) | Compile-time and dependency-health issues affect upgrade cost. | Keep Lightyear upgrade work scoped and verify build/perf impact before committing to new protocol surface area. |
 
-## Related Open Pull Request
+## Related Merged Pull Request
 
 Not part of the issue count above, but directly relevant:
 
 - [#1421](https://github.com/cBournhonesque/lightyear/pull/1421) `interpolation: initialize confirmed history when Interpolated is added`
+  - Merged into upstream `main` via commit [`af25682`](https://github.com/cBournhonesque/lightyear/commit/af25682) on 2026-04-22.
+  - The merge commit's public Actions run [`24797547143`](https://github.com/cBournhonesque/lightyear/actions/runs/24797547143) showed failures in `Format` and `lightyear_tests`; unauthenticated public metadata did not expose full test logs.
+  - Local checks against `af25682` and parent `eedb9ed` indicate the visible failures were pre-existing: `cargo fmt --all -- --check` failed on unrelated `lightyear_avian` / `lightyear_replication` files in both commits, and `cargo test -p lightyear_interpolation --lib` failed in both commits on `plugin::tests::test_interpolation_delay` due to exact float comparison (`0.6000061` vs `0.6`). The new #1421 confirmed-history tests passed locally.
   - This appears to address one specific interpolation-history gap that also shows up in Sidereal's control-transfer analysis.
-  - Treat it as promising, but not as a resolved dependency until it lands upstream and is validated against our predicted/interpolated handoff flow.
+  - Treat it as landed on upstream `main` with no reproduced evidence that it caused the visible CI failures, but still not as a released dependency until a tagged Lightyear release includes it and Sidereal validates it against the predicted/interpolated handoff flow.
 
 ## Full Inventory
 

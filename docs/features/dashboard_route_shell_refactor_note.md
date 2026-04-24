@@ -1,8 +1,17 @@
 # Dashboard Route Shell Refactor Note
 
-Status: implemented  
-Date: 2026-03-07  
+Status: Active feature reference
+Last updated: 2026-04-24
 Owners: dashboard + tooling
+Scope: dashboard route/shell layout direction after the route-shell refactor
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Implemented: dashboard major tools are TanStack Router routes under a shared dashboard shell rather than one monolithic conditional page.
+2. Implemented: shader workshop and sound studio use lazily split route-owned feature modules; explorer/database/game-world routes share shell patterns.
+3. Open work: more panel/tree primitives can still be extracted, but the route-shell direction is current behavior rather than a pending plan.
 
 ## Objective
 

@@ -71,6 +71,12 @@ Update note (2026-03-11):
   - gateway allowed origins: `http://localhost:3000,http://127.0.0.1:3000`
 - BRP remains opt-in and loopback-only. Those defaults were not changed to always-on runtime behavior.
 
+Update note (2026-04-24):
+- Gateway world-entry responses should advertise a client-reachable native replication endpoint through `REPLICATION_UDP_PUBLIC_ADDR` / `--replication-udp-public-addr`; do not advertise `127.0.0.1:7001` to clients on another host.
+- Native clients now guard the common remote-host misconfiguration case: when a remote `GATEWAY_URL` is used but the advertised/fallback UDP endpoint resolves to loopback, the client derives the replication host from the gateway URL and keeps the advertised UDP port, logging the rewrite. This is a compatibility fallback, not a substitute for correct public server configuration.
+- Native clients also choose a wildcard local UDP bind (`0.0.0.0:0`) by default when the resolved replication target is remote, while preserving loopback bind defaults for local replication and respecting explicit `CLIENT_UDP_BIND` configuration.
+- Native impact: remote Windows/native clients can connect when the gateway and replication server share a host but the gateway still advertises the local-dev loopback default. WASM impact: no change; browser clients still require explicit WebTransport address and certificate digest.
+
 ### 3.2.1 Server-Only Admin Spawn Control Path (Current)
 
 Server-authoritative entity spawning for dashboard/dev tooling uses a dedicated gateway-admin path:
@@ -231,6 +237,8 @@ pub struct PlayerInput {
 Server input routing is bound to authenticated session identity and controlled entity mapping.
 Authoritative replication input is carried by Sidereal's authenticated realtime input lane; Lightyear native input remains client-local prediction support and native-client protocol compatibility, not the server's authoritative input source.
 Authoritative realtime input snapshots are short-lived: the replication server expires them after `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`) so stale held input cannot persist across focus loss or background throttling.
+
+2026-04-24 update: `ClientRealtimeInputMessage` carries the server-issued `control_generation` lease observed by the client. The replication server rejects realtime input whose generation does not match the currently authoritative player lease so delayed packets from a previous controlled entity cannot apply intent to a newly controlled target.
 
 ### 5.2.1 Control and Camera Chain (Normative)
 
@@ -437,6 +445,7 @@ Implementation note:
   - failure: `ServerControlRejectMessage { player_entity_id, request_seq, control_generation, reason, authoritative_controlled_entity_id }`.
   Client clears pending control only on matching ack/reject. Free-roam is self-control (`controlled_entity_guid = player guid`), not null control.
   `control_generation` is the server-issued lease generation for the currently authoritative target; clients must key bootstrap/handoff state off that generation instead of inventing a local sequence from clone discovery alone.
+  Realtime input must include the same `control_generation`; stale-generation input is rejected before it can update or drain from the latest-input snapshot.
 - **Camera/anchor contract:** camera always follows the player entity. When controlled target is not self, server continuously anchors player transform to the controlled entity.
 
 **Multiple ships per player**

@@ -31,8 +31,8 @@ use super::resources::{
     ControlBootstrapPhase, ControlBootstrapState, DebugCollisionShape, DebugControlledLane,
     DebugEntityLane, DebugOverlayEntity, DebugOverlaySnapshot, DebugOverlayState,
     DebugOverlayStats, DebugSeverity, DebugTextRow, DuplicateVisualResolutionState,
-    HudPerfCounters, PredictionCorrectionTuning, RenderLayerPerfCounters, RuntimeAssetPerfCounters,
-    RuntimeStallDiagnostics,
+    HudPerfCounters, NativePredictionRecoveryState, PredictionCorrectionTuning,
+    RenderLayerPerfCounters, RuntimeAssetPerfCounters, RuntimeStallDiagnostics,
 };
 use super::transforms::interpolated_presentation_ready;
 
@@ -156,6 +156,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
     real_time: Res<'_, Time<Real>>,
     prediction_tuning: Res<'_, PredictionCorrectionTuning>,
     runtime_stall_diagnostics: Res<'_, RuntimeStallDiagnostics>,
+    prediction_recovery_state: Res<'_, NativePredictionRecoveryState>,
     mut snapshot: ResMut<'_, DebugOverlaySnapshot>,
     entities: Query<
         '_,
@@ -220,6 +221,16 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
     snapshot.stats.observed_unfocused_duration_s =
         runtime_stall_diagnostics.observed_unfocused_duration_s;
     snapshot.stats.observed_unfocused_frames = runtime_stall_diagnostics.observed_unfocused_frames;
+    snapshot.stats.prediction_recovery_phase = prediction_recovery_state
+        .phase
+        .label(real_time.elapsed_secs_f64());
+    snapshot.stats.prediction_recovery_suppressing_input = prediction_recovery_state
+        .is_suppressing_input(real_time.elapsed_secs_f64())
+        || prediction_recovery_state.pending_neutral_send;
+    snapshot.stats.prediction_recovery_last_unfocused_s =
+        prediction_recovery_state.last_unfocused_duration_s;
+    snapshot.stats.prediction_recovery_transitions = prediction_recovery_state.transition_count;
+    snapshot.stats.prediction_recovery_neutral_sends = prediction_recovery_state.neutral_send_count;
     snapshot.stats.last_update_delta_ms = runtime_stall_diagnostics.last_update_delta_ms;
     snapshot.stats.max_update_delta_ms = runtime_stall_diagnostics.max_update_delta_ms;
     snapshot.stats.last_stall_gap_ms = runtime_stall_diagnostics.last_stall_gap_ms;
@@ -1083,6 +1094,34 @@ fn build_debug_text_rows(
             severity: DebugSeverity::Normal,
         },
         DebugTextRow {
+            label: "Pred Recover".to_string(),
+            value: stats.prediction_recovery_phase.clone(),
+            severity: if stats.prediction_recovery_suppressing_input {
+                DebugSeverity::Warn
+            } else {
+                DebugSeverity::Normal
+            },
+        },
+        DebugTextRow {
+            label: "Recover Input".to_string(),
+            value: format!(
+                "sup={} last={:>4.1}s n={} t={}",
+                if stats.prediction_recovery_suppressing_input {
+                    "yes"
+                } else {
+                    " no"
+                },
+                stats.prediction_recovery_last_unfocused_s,
+                stats.prediction_recovery_neutral_sends,
+                stats.prediction_recovery_transitions
+            ),
+            severity: if stats.prediction_recovery_suppressing_input {
+                DebugSeverity::Warn
+            } else {
+                DebugSeverity::Normal
+            },
+        },
+        DebugTextRow {
             label: "Predicted".to_string(),
             value: format!("{:>4}", stats.predicted_count),
             severity: DebugSeverity::Normal,
@@ -1424,14 +1463,15 @@ mod tests {
     };
     use crate::runtime::components::{WeaponImpactSparkPool, WeaponTracerPool, WorldEntity};
     use crate::runtime::resources::{
-        DebugCollisionShape, DebugEntityLane, DebugOverlayEntity, DebugOverlayMode,
-        DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats, DuplicateVisualResolutionState,
-        HudPerfCounters, PredictionCorrectionTuning, RenderLayerPerfCounters,
-        RuntimeAssetPerfCounters, RuntimeStallDiagnostics,
+        ControlBootstrapState, DebugCollisionShape, DebugEntityLane, DebugOverlayEntity,
+        DebugOverlayMode, DebugOverlaySnapshot, DebugOverlayState, DebugOverlayStats,
+        DuplicateVisualResolutionState, HudPerfCounters, NativePredictionRecoveryState,
+        PredictionCorrectionTuning, RenderLayerPerfCounters, RuntimeAssetPerfCounters,
+        RuntimeStallDiagnostics,
     };
     use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
-    use lightyear::prelude::{Interpolated, Replicated};
+    use lightyear::prelude::{Interpolated, LocalTimeline, Replicated};
     use sidereal_game::EntityGuid;
     use std::collections::HashMap;
 
@@ -1703,6 +1743,9 @@ mod tests {
         app.insert_resource(RuntimeAssetPerfCounters::default());
         app.insert_resource(HudPerfCounters::default());
         app.insert_resource(PredictionCorrectionTuning::from_env());
+        app.insert_resource(ControlBootstrapState::default());
+        app.insert_resource(NativePredictionRecoveryState::default());
+        app.insert_resource(LocalTimeline::default());
         app.insert_resource(RenderLayerPerfCounters::default());
         app.insert_resource(RuntimeStallDiagnostics::default());
         app.insert_resource(DuplicateVisualResolutionState::default());

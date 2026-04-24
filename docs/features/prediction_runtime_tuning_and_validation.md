@@ -1,7 +1,18 @@
 # Prediction Runtime Tuning and Validation
 
-Status: Active post-migration tuning tracker  
+Status: Active feature reference
+Last updated: 2026-04-24
+Owners: client runtime + replication
 Scope: Lightyear-native prediction/interpolation behavior verification and production default tuning
+
+## 0. Implementation Status
+
+2026-04-24 status note:
+
+1. Active native-stabilization work is in progress after the Lightyear-native migration.
+2. Implemented: client runtime now tracks native focus transitions, sends forced-neutral input on focus loss/regain, suppresses immediate active-input sends for a short recovery window, and exposes recovery state in the debug overlay.
+3. Known risk: native full-client tests still include pre-existing visual/transform failures unrelated to the first focus-loss recovery slice; keep this tracker current as those are resolved.
+4. WASM impact: no browser-specific runtime behavior changed in the native focus-loss slice; shared prediction code must remain target-compatible.
 
 ## 1. Purpose
 
@@ -40,6 +51,7 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - asset stream/request/ack uses `AssetChannel` (reliable, isolated from input path).
 - Server ingress keeps latest-intent semantics:
   - validates tick ordering and rate limits per authenticated player,
+  - validates `control_generation` against the server-issued control lease before accepting a realtime input snapshot,
   - stores latest input snapshot by player/tick,
   - expires realtime input snapshots after `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`) so authoritative motion cannot stay latched if the client loses focus, background-throttles, or misses the neutral heartbeat,
   - drains into `ActionQueue` by replace/overwrite (`queue.clear()` then push latest actions), never backlog append.
@@ -100,6 +112,40 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - losing window focus should no longer leave the server simulating old movement/fire intent indefinitely if the client stops running its fixed input send path in the background.
 - WASM impact:
   - no WASM-specific branching; the same authoritative stale-input expiry applies to browser clients.
+
+2026-04-24 update:
+
+- Native focus-loss recovery now has an explicit client-side recovery resource and diagnostics.
+  - On focus loss/regain, the native client marks a forced neutral realtime input send so the transition is an intentional input boundary rather than waiting for the ordinary heartbeat.
+  - After a meaningful unfocused interval (`SIDEREAL_CLIENT_FOCUS_RECOVERY_MIN_UNFOCUSED_S`, default `0.5`), focus regain enters a short active-input suppression window (`SIDEREAL_CLIENT_FOCUS_RECOVERY_SUPPRESS_INPUT_S`, default `0.15`) while replication continues.
+  - The debug overlay exposes the prediction recovery phase, suppression state, last unfocused duration, transition count, and forced-neutral send count.
+- Direct predicted Avian state realignment from confirmed authoritative state is not enabled in this slice.
+  - The planned threshold controls are parsed and logged (`SIDEREAL_CLIENT_FOCUS_RECOVERY_RESYNC_AFTER_S`, default `1.0`; `SIDEREAL_CLIENT_FOCUS_RECOVERY_MAX_TICK_GAP`, default `60`) for the next measured implementation phase.
+  - Any future realignment must remain scoped to the active local predicted root and must not mutate observer/interpolated clones.
+- Native impact:
+  - refocus no longer immediately sends/apply held active keyboard state as the first post-focus input packet;
+  - long focus stalls have observable recovery state before adding direct prediction resync.
+- WASM impact:
+  - no target-specific WASM behavior changes in this slice;
+  - the resource/system lives in shared client runtime, but browser visibility/focus semantics are not mapped into this recovery policy yet.
+
+2026-04-24 update:
+
+- Realtime input packets now carry the authoritative `control_generation` associated with the client's current controlled target.
+- The replication server rejects stale-generation realtime input before it updates latest-intent state or drains into an authoritative `ActionQueue`.
+- Native impact:
+  - delayed pre-handoff packets can no longer apply held movement/fire intent to the newly controlled entity after a control lease advances.
+- WASM impact:
+  - no platform branch; browser clients use the same input payload and lease validation.
+
+2026-04-24 update:
+
+- Client conflicting `Predicted` + `Interpolated` marker cleanup now resolves the intended local control lane from any pending control request first, then desired control state, then the last acknowledged authoritative target.
+- This prevents a dynamic handoff race where Lightyear can deliver the target entity's `Predicted` marker before the reliable control ack updates `LocalPlayerViewState`; the sanitizer must keep `Predicted` for that pending target instead of stripping it as an observer marker.
+- Native impact:
+  - owner-controlled ship handoff should no longer get stuck in `PendingPredicted` after a successful server ack when the prediction marker arrives slightly before the ack.
+- WASM impact:
+  - shared client runtime behavior only; no target-specific branch.
 
 ## 2.3 Dynamic Handoff Lightyear Exception (2026-03-09)
 

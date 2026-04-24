@@ -35,6 +35,14 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - When updating or adding substantive documentation, include a dated status/update note using `YYYY-MM-DD` so later readers can determine which conflicting text is more recent.
 - When updating an existing doc that already contains status/update notes, append a new dated note instead of replacing older dated context silently unless the old text is clearly incorrect and being directly superseded.
 
+## 2.2 Feature Documentation Standard
+
+- Feature documents under `docs/features/` must start with a title, followed by metadata fields for `Status`, `Last updated`, `Owners`, `Scope`, and `Primary references` where applicable.
+- Use these status values unless a more specific label is justified: `Active implementation contract`, `Active feature reference`, `Active partial implementation spec`, `Proposed feature contract`, `Deferred`, or `Superseded`.
+- Every feature document must include an early `## 0. Implementation Status` section, or an equivalent `## 0. Status Notes` section, with dated `YYYY-MM-DD` notes that separate what is implemented, what remains open, and any native/WASM impact for client/runtime features.
+- Feature docs should describe enforceable current behavior first, then proposed direction and open work. Do not leave implemented plans described as future-only work.
+- When a feature doc becomes mainly a historical implementation plan, move it to `docs/plans/` or remove it after transferring a concise dated summary into the relevant active feature doc or update log.
+
 ## 3. Non-Negotiable Technical Rules
 
 - Authority flow is one-way: `client input -> shard sim -> replication/distribution -> persistence`.
