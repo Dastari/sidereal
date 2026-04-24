@@ -4786,7 +4786,6 @@ dependencies = [
 [[package]]
 name = "lightyear_avian2d"
 version = "0.26.4"
-source = "git+https://github.com/Dastari/lightyear?rev=87b7dfd95e415d2b7646effeb09a3af09272f86e#87b7dfd95e415d2b7646effeb09a3af09272f86e"
 dependencies = [
  "avian2d",
  "bevy_app",
@@ -7866,6 +7865,7 @@ dependencies = [
  "sidereal-persistence",
  "thiserror 2.0.18",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

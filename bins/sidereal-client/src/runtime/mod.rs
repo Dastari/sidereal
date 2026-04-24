@@ -21,6 +21,7 @@ mod input;
 mod lighting;
 mod logout;
 mod motion;
+mod notification_ui;
 mod owner_manifest;
 mod pause_menu;
 mod platform;

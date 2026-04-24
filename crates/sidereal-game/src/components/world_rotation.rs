@@ -8,4 +8,4 @@ use crate::EntityGuid;
 #[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
 #[reflect(Component, Serialize, Deserialize)]
 #[require(EntityGuid)]
-pub struct WorldRotation(pub f32);
+pub struct WorldRotation(pub f64);

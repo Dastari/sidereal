@@ -8,6 +8,9 @@ Scope: active feature contracts, feature references, and feature-scoped notes/sp
 This folder is for active feature-scoped documentation, not for decision records, audit reports, or general implementation plans.
 
 Update note (2026-04-24):
+- Added `genesis_planet_registry_contract.md` for the dedicated Genesis planet/celestial authoring workflow and Lua planet registry contract.
+
+Update note (2026-04-24):
 - Standardized the expected feature-document layout so each feature doc clearly states status, implementation coverage, open work, and validation scope.
 - Feature docs are now grouped by current purpose rather than by the date they were originally written.
 
@@ -69,6 +72,7 @@ Preferred status labels:
    - `lightyear_upstream_issue_snapshot.md`
 3. Active feature-scoped notes/specs:
    - `dashboard_route_shell_refactor_note.md`
+   - `genesis_planet_registry_contract.md`
    - `shader_editor_dashboard_implementation_spec.md`
    - `lightyear_integration_analysis.md`
 4. Proposed feature contracts:

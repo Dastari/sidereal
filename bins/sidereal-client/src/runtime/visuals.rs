@@ -4,9 +4,9 @@ use avian2d::prelude::{Position, Rotation, SpatialQuery, SpatialQueryFilter};
 use bevy::asset::{AssetId, RenderAssetUsages};
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::ecs::system::SystemParam;
-use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::state::state_scoped::DespawnOnExit;
+use bevy::{math::DVec2, prelude::*};
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::Confirmed;
 use lightyear::prelude::input::native::ActionState;
@@ -16,7 +16,7 @@ use sidereal_game::{
     MountedOn, ParentGuid, PlanetBodyShaderSettings, PlayerTag, ProceduralSprite,
     RuntimeRenderLayerDefinition, RuntimeWorldVisualPassDefinition, RuntimeWorldVisualStack, SizeM,
     ThrusterPlumeShaderSettings, WorldPosition, WorldRotation,
-    generate_procedural_sprite_image_set, resolve_world_position,
+    generate_procedural_sprite_image_set, resolve_world_position, resolve_world_rotation_rad,
 };
 use sidereal_net::PlayerInput;
 use std::collections::HashMap;
@@ -149,10 +149,10 @@ fn shared_unit_quad_handle(
     handle
 }
 
-fn sync_planar_projectile_transform(transform: &mut Transform, position: Vec2, heading_rad: f32) {
-    transform.translation.x = position.x;
-    transform.translation.y = position.y;
-    transform.rotation = Quat::from_rotation_z(heading_rad);
+fn sync_planar_projectile_transform(transform: &mut Transform, position: DVec2, heading_rad: f64) {
+    transform.translation.x = position.x as f32;
+    transform.translation.y = position.y as f32;
+    transform.rotation = Quat::from_rotation_z(heading_rad as f32);
 }
 
 fn shared_streamed_sprite_material_handle(
@@ -1113,7 +1113,9 @@ pub(super) fn attach_streamed_visual_assets_system(
                     image: image_handle.clone(),
                     lighting: SharedWorldLightingUniforms::from_state_for_world_position(
                         &world_lighting,
-                        position.map(|value| value.0).unwrap_or(Vec2::ZERO),
+                        position
+                            .map(|value| value.0.as_vec2())
+                            .unwrap_or(Vec2::ZERO),
                         &camera_local_lights,
                     ),
                 });
@@ -1195,8 +1197,9 @@ mod tests {
         activate_destruction_effect, attach_ballistic_projectile_visuals_system,
         bootstrap_local_ballistic_projectile_visual_roots_system,
         ensure_planet_body_root_visibility_system, ensure_visual_parent_spatial_components,
-        planet_camera_relative_translation, runtime_layer_screen_scale_factor,
-        streamed_visual_needs_rebuild, suppress_duplicate_predicted_interpolated_visuals_system,
+        planet_camera_relative_translation, planet_visual_child_translation,
+        runtime_layer_screen_scale_factor, streamed_visual_needs_rebuild,
+        suppress_duplicate_predicted_interpolated_visuals_system,
         sync_unadopted_ballistic_projectile_visual_roots_system,
         update_weapon_impact_sparks_system,
     };
@@ -1218,6 +1221,7 @@ mod tests {
     use bevy::sprite_render::MeshMaterial2d;
     use lightyear::prelude::{Confirmed, Interpolated};
     use sidereal_game::{BallisticProjectile, DamageType, EntityGuid, PlanetBodyShaderSettings};
+    use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
     #[test]
     fn streamed_visual_rebuilds_when_material_kind_changes() {
@@ -1306,6 +1310,20 @@ mod tests {
             Vec2::new(300.0, 90.0),
         );
         assert_eq!(offset, Vec2::new(-50.0, -10.0));
+    }
+
+    #[test]
+    fn planet_visual_child_translation_compensates_for_off_origin_parent() {
+        let parent_world_position = Vec2::new(8000.0, 0.0);
+        let projected_center_world = Vec2::ZERO;
+        let child_translation =
+            planet_visual_child_translation(projected_center_world, parent_world_position, 0.0);
+
+        assert_eq!(child_translation, Vec2::new(-8000.0, 0.0));
+        assert_eq!(
+            parent_world_position + child_translation,
+            projected_center_world
+        );
     }
 
     #[test]
@@ -1448,7 +1466,7 @@ mod tests {
         let entity = app
             .world_mut()
             .spawn((
-                Position(Vec2::new(18.0, -7.5)),
+                Position(Vec2::new(18.0, -7.5).into()),
                 Rotation::from(Quat::from_rotation_z(0.35)),
                 BallisticProjectile::new(
                     uuid::Uuid::new_v4(),
@@ -1490,7 +1508,7 @@ mod tests {
         let entity = app
             .world_mut()
             .spawn((
-                Position(Vec2::new(4.0, 9.0)),
+                Position(Vec2::new(4.0, 9.0).into()),
                 Rotation::from(Quat::from_rotation_z(-0.6)),
                 BallisticProjectile::new(
                     uuid::Uuid::new_v4(),
@@ -1524,6 +1542,8 @@ mod tests {
     #[test]
     fn observer_ballistic_projectile_uses_authoritative_spawn_pose_before_first_history_sample() {
         let mut app = App::new();
+        app.init_resource::<RuntimeEntityHierarchy>();
+        let projectile_guid = uuid::Uuid::new_v4();
 
         let entity = app
             .world_mut()
@@ -1531,10 +1551,13 @@ mod tests {
                 Interpolated,
                 WorldEntity,
                 PendingInitialVisualReady,
+                EntityGuid(projectile_guid),
                 Visibility::Hidden,
                 Transform::default(),
-                Position(Vec2::new(64.0, -22.0)),
+                Position(Vec2::new(64.0, -22.0).into()),
                 Rotation::from(Quat::from_rotation_z(1.1)),
+                Confirmed(Position(Vec2::new(64.0, -22.0).into())),
+                Confirmed(Rotation::from(Quat::from_rotation_z(1.1))),
                 BallisticProjectile::new(
                     uuid::Uuid::new_v4(),
                     uuid::Uuid::new_v4(),
@@ -1689,9 +1712,9 @@ mod tests {
                 WorldEntity,
                 EntityGuid(guid),
                 Interpolated,
-                Position(Vec2::new(25.0, -12.0)),
+                Position(Vec2::new(25.0, -12.0).into()),
                 Rotation::from(Quat::from_rotation_z(0.6)),
-                Confirmed(Position(Vec2::new(25.0, -12.0))),
+                Confirmed(Position(Vec2::new(25.0, -12.0).into())),
                 Confirmed(Rotation::from(Quat::from_rotation_z(0.6))),
                 Visibility::Visible,
             ))
@@ -1743,7 +1766,7 @@ mod tests {
                 WorldEntity,
                 EntityGuid(guid),
                 Interpolated,
-                Position(Vec2::splat(f32::NAN)),
+                Position(Vec2::splat(f32::NAN).into()),
                 Rotation::from(Quat::from_rotation_z(0.0)),
                 Visibility::Visible,
             ))
@@ -1758,9 +1781,11 @@ mod tests {
             Some(&confirmed)
         );
 
-        app.world_mut()
-            .entity_mut(interpolated)
-            .insert(Position(Vec2::new(48.0, -12.0)));
+        app.world_mut().entity_mut(interpolated).insert((
+            Position(Vec2::new(48.0, -12.0).into()),
+            Confirmed(Position(Vec2::new(48.0, -12.0).into())),
+            Confirmed(Rotation::from(Quat::from_rotation_z(0.0))),
+        ));
 
         app.update();
 
@@ -1871,7 +1896,9 @@ pub(super) fn attach_planet_visual_stack_system(
             Option<&'_ RuntimeWorldVisualStack>,
             Option<&'_ SizeM>,
             Option<&'_ Position>,
+            Option<&'_ Rotation>,
             Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
             Option<&'_ ResolvedRuntimeRenderLayer>,
             &'_ mut Visibility,
             Option<&'_ RuntimeWorldVisualPassSet>,
@@ -1894,7 +1921,9 @@ pub(super) fn attach_planet_visual_stack_system(
         visual_stack,
         size_m,
         position,
+        rotation,
         world_position,
+        world_rotation,
         resolved_render_layer,
         mut visibility,
         pass_set,
@@ -1908,7 +1937,11 @@ pub(super) fn attach_planet_visual_stack_system(
         };
         ensure_visual_parent_spatial_components(&mut entity_commands);
         let time_s = time.elapsed_secs();
-        let world_position = resolve_world_position(position, world_position).unwrap_or(Vec2::ZERO);
+        let world_position = resolve_world_position(position, world_position)
+            .unwrap_or(DVec2::ZERO)
+            .as_vec2();
+        let root_rotation_rad =
+            resolve_world_rotation_rad(rotation, world_rotation).unwrap_or(0.0) as f32;
         let diameter_m = size_m
             .map(|v| v.length.max(v.width).max(1.0))
             .unwrap_or(256.0);
@@ -1918,6 +1951,12 @@ pub(super) fn attach_planet_visual_stack_system(
             world_position,
             camera_world_position_xy,
         );
+        let child_translation_xy = planet_visual_child_translation(
+            projected_center_world,
+            world_position,
+            root_rotation_rad,
+        );
+        let child_rotation = planet_visual_child_rotation(root_rotation_rad);
         let layer_screen_scale = resolved_render_layer
             .map(|layer| runtime_layer_screen_scale_factor(&layer.definition))
             .unwrap_or(1.0);
@@ -1954,10 +1993,11 @@ pub(super) fn attach_planet_visual_stack_system(
                     MeshMaterial2d(material),
                     RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                     Transform::from_xyz(
-                        projected_center_world.x,
-                        projected_center_world.y,
+                        child_translation_xy.x,
+                        child_translation_xy.y,
                         layer_base_z + PLANET_BODY_LAYER_Z_OFFSET + depth_bias_z,
                     )
+                    .with_rotation(child_rotation)
                     .with_scale(Vec3::new(
                         diameter_m * scale_multiplier * layer_screen_scale,
                         diameter_m * scale_multiplier * layer_screen_scale,
@@ -2013,10 +2053,11 @@ pub(super) fn attach_planet_visual_stack_system(
                         MeshMaterial2d(back_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            projected_center_world.x,
-                            projected_center_world.y,
+                            child_translation_xy.x,
+                            child_translation_xy.y,
                             layer_base_z + PLANET_CLOUD_BACK_LAYER_Z_OFFSET + back_depth,
                         )
+                        .with_rotation(child_rotation)
                         .with_scale(Vec3::new(
                             diameter_m * back_scale * layer_screen_scale,
                             diameter_m * back_scale * layer_screen_scale,
@@ -2035,10 +2076,11 @@ pub(super) fn attach_planet_visual_stack_system(
                         MeshMaterial2d(front_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            projected_center_world.x,
-                            projected_center_world.y,
+                            child_translation_xy.x,
+                            child_translation_xy.y,
                             layer_base_z + PLANET_CLOUD_FRONT_LAYER_Z_OFFSET + front_depth,
                         )
+                        .with_rotation(child_rotation)
                         .with_scale(Vec3::new(
                             diameter_m * front_scale * layer_screen_scale,
                             diameter_m * front_scale * layer_screen_scale,
@@ -2096,10 +2138,11 @@ pub(super) fn attach_planet_visual_stack_system(
                         MeshMaterial2d(back_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            projected_center_world.x,
-                            projected_center_world.y,
+                            child_translation_xy.x,
+                            child_translation_xy.y,
                             layer_base_z + PLANET_RING_BACK_LAYER_Z_OFFSET + back_depth,
                         )
+                        .with_rotation(child_rotation)
                         .with_scale(Vec3::new(
                             diameter_m * back_scale * layer_screen_scale,
                             diameter_m * back_scale * layer_screen_scale,
@@ -2118,10 +2161,11 @@ pub(super) fn attach_planet_visual_stack_system(
                         MeshMaterial2d(front_material),
                         RenderLayers::layer(PLANET_BODY_RENDER_LAYER),
                         Transform::from_xyz(
-                            projected_center_world.x,
-                            projected_center_world.y,
+                            child_translation_xy.x,
+                            child_translation_xy.y,
                             layer_base_z + PLANET_RING_FRONT_LAYER_Z_OFFSET + front_depth,
                         )
+                        .with_rotation(child_rotation)
                         .with_scale(Vec3::new(
                             diameter_m * front_scale * layer_screen_scale,
                             diameter_m * front_scale * layer_screen_scale,
@@ -2192,7 +2236,9 @@ pub(super) fn update_planet_body_visuals_system(
             Option<&'_ RuntimeWorldVisualStack>,
             Option<&'_ SizeM>,
             Option<&'_ Position>,
+            Option<&'_ Rotation>,
             Option<&'_ WorldPosition>,
+            Option<&'_ WorldRotation>,
             Option<&'_ ResolvedRuntimeRenderLayer>,
         ),
     >,
@@ -2217,14 +2263,20 @@ pub(super) fn update_planet_body_visuals_system(
         visual_stack,
         size_m,
         position,
+        rotation,
         world_position,
+        world_rotation,
         resolved_render_layer,
     ) in &planets
     {
         if !settings.enabled {
             continue;
         }
-        let world_position = resolve_world_position(position, world_position).unwrap_or(Vec2::ZERO);
+        let world_position = resolve_world_position(position, world_position)
+            .unwrap_or(DVec2::ZERO)
+            .as_vec2();
+        let root_rotation_rad =
+            resolve_world_rotation_rad(rotation, world_rotation).unwrap_or(0.0) as f32;
         let diameter_m = size_m
             .map(|v| v.length.max(v.width).max(1.0))
             .unwrap_or(256.0);
@@ -2234,6 +2286,12 @@ pub(super) fn update_planet_body_visuals_system(
             world_position,
             camera_world_position_xy,
         );
+        let child_translation_xy = planet_visual_child_translation(
+            projected_center_world,
+            world_position,
+            root_rotation_rad,
+        );
+        let child_rotation = planet_visual_child_rotation(root_rotation_rad);
         let layer_screen_scale = resolved_render_layer
             .map(|layer| runtime_layer_screen_scale_factor(&layer.definition))
             .unwrap_or(1.0);
@@ -2291,8 +2349,9 @@ pub(super) fn update_planet_body_visuals_system(
                     transform.scale = Vec3::new(projected_diameter_m, projected_diameter_m, 1.0);
                     projected_radius_m = projected_diameter_m * 0.5;
                 }
-                transform.translation.x = projected_center_world.x;
-                transform.translation.y = projected_center_world.y;
+                transform.translation.x = child_translation_xy.x;
+                transform.translation.y = child_translation_xy.y;
+                transform.rotation = child_rotation;
                 let in_projected_view =
                     camera_view.is_none_or(|(camera, projection, camera_transform)| {
                         projected_planet_intersects_camera_view(
@@ -2333,6 +2392,18 @@ fn planet_layer_base_z(resolved_render_layer: Option<&ResolvedRuntimeRenderLayer
     resolved_render_layer
         .map(|layer| runtime_layer_z_bias(&layer.definition))
         .unwrap_or(-60.0)
+}
+
+fn planet_visual_child_translation(
+    projected_center_world: Vec2,
+    parent_world_position: Vec2,
+    parent_rotation_rad: f32,
+) -> Vec2 {
+    Mat2::from_angle(-parent_rotation_rad) * (projected_center_world - parent_world_position)
+}
+
+fn planet_visual_child_rotation(parent_rotation_rad: f32) -> Quat {
+    Quat::from_rotation_z(-parent_rotation_rad)
 }
 
 fn planet_camera_relative_translation(
@@ -2631,7 +2702,9 @@ pub(super) fn update_asteroid_shader_lighting_system(
         }
         let lighting = SharedWorldLightingUniforms::from_state_for_world_position(
             &world_lighting,
-            resolve_world_position(position, world_position).unwrap_or(Vec2::ZERO),
+            resolve_world_position(position, world_position)
+                .unwrap_or(DVec2::ZERO)
+                .as_vec2(),
             &camera_local_lights,
         );
         for child in entity_children.iter() {
@@ -2958,7 +3031,7 @@ pub(super) fn emit_weapon_tracer_visuals_system(
         if !firing {
             continue;
         }
-        let ship_quat: Quat = (*ship_rotation).into();
+        let ship_quat = Quat::from_rotation_z(ship_rotation.as_radians() as f32);
 
         for (weapon_entity, mounted_on, weapon, ammo) in &weapons {
             if mounted_on.parent_entity_id != ship_guid.0 {
@@ -2990,8 +3063,9 @@ pub(super) fn emit_weapon_tracer_visuals_system(
             }
             let direction = direction.normalize();
             let muzzle_offset_world = rotate_vec2(ship_quat, *hardpoint_offset);
-            let origin = ship_position.0 + muzzle_offset_world;
-            let omega = angular_velocity.map(|v| v.0).unwrap_or(0.0);
+            let origin_world = ship_position.0 + muzzle_offset_world.as_dvec2();
+            let origin = origin_world.as_vec2();
+            let omega = angular_velocity.map(|v| v.0 as f32).unwrap_or(0.0);
             let lateral_normal = Vec2::new(-direction.y, direction.x);
             let spin_wiggle_amp_mps =
                 (omega.abs() * 18.0).clamp(0.0, WEAPON_TRACER_WIGGLE_MAX_AMP_MPS);
@@ -3000,13 +3074,13 @@ pub(super) fn emit_weapon_tracer_visuals_system(
                 let filter = SpatialQueryFilter::from_excluded_entities([ship_entity]);
                 spatial_query
                     .cast_ray(
-                        origin,
+                        origin_world,
                         ray_direction,
-                        weapon.max_range_m.max(1.0),
+                        f64::from(weapon.max_range_m.max(1.0)),
                         true,
                         &filter,
                     )
-                    .map(|hit| origin + ray_direction.as_vec2() * hit.distance)
+                    .map(|hit| origin + ray_direction.as_vec2() * hit.distance as f32)
             });
 
             let bolt_entity = pool.bolts[pool.next_index % pool.bolts.len()];
@@ -3077,8 +3151,8 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
         if let Ok((mut transform, _material_handle, mut visibility, mut bolt)) =
             bolts.get_mut(bolt_entity)
         {
-            let origin = Vec2::new(message.origin_xy[0], message.origin_xy[1]);
-            let velocity = Vec2::new(message.velocity_xy[0], message.velocity_xy[1]);
+            let origin = Vec2::new(message.origin_xy[0] as f32, message.origin_xy[1] as f32);
+            let velocity = Vec2::new(message.velocity_xy[0] as f32, message.velocity_xy[1] as f32);
             transform.translation = Vec3::new(origin.x, origin.y, 0.35);
             if velocity.length_squared() > f32::EPSILON {
                 transform.rotation =
@@ -3090,7 +3164,7 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
             bolt.velocity = velocity;
             bolt.impact_xy = message
                 .impact_xy
-                .map(|impact_xy| Vec2::new(impact_xy[0], impact_xy[1]));
+                .map(|impact_xy| Vec2::new(impact_xy[0] as f32, impact_xy[1] as f32));
             bolt.ttl_s = message.ttl_s.max(0.01);
             let speed = velocity.length();
             let normal = if speed > f32::EPSILON {
@@ -3131,7 +3205,7 @@ pub(super) fn receive_remote_destruction_effect_messages_system(
         let message = &event.message;
         activate_destruction_effect(
             message.destruction_profile_id.as_str(),
-            Vec2::new(message.origin_xy[0], message.origin_xy[1]),
+            Vec2::new(message.origin_xy[0] as f32, message.origin_xy[1] as f32),
             &mut pool,
             &mut explosions,
             &mut effect_materials,
@@ -3224,10 +3298,14 @@ pub(super) fn update_weapon_tracer_visuals_system(
             } else {
                 SpatialQueryFilter::default()
             };
-            if let Some(hit) =
-                spatial_query.cast_ray(current_pos, ray_direction, frame_distance, true, &filter)
-            {
-                let impact_pos = current_pos + ray_direction.as_vec2() * hit.distance;
+            if let Some(hit) = spatial_query.cast_ray(
+                current_pos.as_dvec2(),
+                ray_direction,
+                f64::from(frame_distance),
+                true,
+                &filter,
+            ) {
+                let impact_pos = current_pos + ray_direction.as_vec2() * hit.distance as f32;
                 transform.translation.x = impact_pos.x;
                 transform.translation.y = impact_pos.y;
                 transform.translation.z = 0.35;

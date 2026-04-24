@@ -23,7 +23,8 @@ use lightyear::prelude::{
     ChannelRegistry, MessageManager, PeerAddr, ReplicationReceiver, Transport,
 };
 use sidereal_net::{
-    ControlChannel, InputChannel, ManifestChannel, TacticalDeltaChannel, TacticalSnapshotChannel,
+    ControlChannel, InputChannel, ManifestChannel, NotificationChannel, TacticalDeltaChannel,
+    TacticalSnapshotChannel,
 };
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
@@ -390,6 +391,12 @@ pub fn ensure_client_transport_channels(
         }
         if !transport.has_receiver::<ManifestChannel>() {
             transport.add_receiver_from_registry::<ManifestChannel>(&registry);
+        }
+        if !transport.has_sender::<NotificationChannel>() {
+            transport.add_sender_from_registry::<NotificationChannel>(&registry);
+        }
+        if !transport.has_receiver::<NotificationChannel>() {
+            transport.add_receiver_from_registry::<NotificationChannel>(&registry);
         }
     }
 }

@@ -7,12 +7,25 @@ Scope: large-world/galaxy coordinate model and solar-system/world-structure dire
 
 ## 0. Implementation Status
 
-2026-04-24 status note:
+2026-04-24 initial status note, superseded for coordinate precision by the later 2026-04-24 implementation update below:
 
 1. Partial foundation implemented: static celestial/world entities, procedural planet visuals, fullscreen world layers, graph persistence, and visibility delivery operate in the current single-world coordinate model.
 2. Not implemented: full f64 Avian coordinate migration, solar-system entity/component model, inter-system membership/reference components, galaxy-scale spatial partitioning, and system transition logic.
 3. Current runtime still relies on f32 Bevy/Avian lanes for active motion; treat this document as proposed direction, not current behavior.
 4. Native/WASM impact: future large-world rendering must use shared authoritative coordinates with platform-specific camera/render precision handling only at the client render boundary.
+
+2026-04-24 update:
+
+1. DR-0035 accepts f64 authoritative world coordinates and the active implementation plan is `docs/plans/f64_world_precision_migration_plan_2026-04-24.md`.
+2. The migration is intentionally breaking for local/dev graph data. Reset local/dev databases after the migration rather than adding f32 compatibility shims.
+3. Dashboard coordinate editing/display uses TypeScript `number` / JSON numbers for f64 world-coordinate values.
+
+2026-04-24 implementation update:
+
+1. The core f64 coordinate contract is active: Avian `Position` and `LinearVelocity` use f64-backed vectors, `WorldPosition` uses f64-backed coordinates, `WorldRotation` is f64 radians, tactical/owner/notification protocol world positions use f64 arrays, and dashboard coordinate loaders preserve JSON numbers as TypeScript `number`.
+2. Bevy `Transform`/`GlobalTransform` remain f32 presentation and hierarchy-propagation projections. They are not authoritative world state when Avian `Position` or `WorldPosition` exists.
+3. Remaining open coordinate work is tracked in Phase 8 of `docs/plans/f64_world_precision_migration_plan_2026-04-24.md`: complete persistence/read-model hardening for leftover f32 JSON helper APIs, classify every remaining world-position-adjacent f32 use as presentation-only/local-magnitude or migrate it, add explicit large-coordinate dashboard/persistence/runtime tests, and run a reset-database large-coordinate runtime smoke.
+4. Native impact: shared runtime now compiles with the f64 authoritative coordinate lane. WASM impact: shared client/runtime code compiles with the same f64 model; browser-specific live validation remains separate from native stabilization.
 
 ## 1. Overview
 
@@ -29,9 +42,9 @@ This document covers:
 
 ## 2. Coordinate Precision
 
-### 2.1 Current State: f32
+### 2.1 Current State: f64 Authoritative Coordinates
 
-All coordinates are currently f32. Avian2d `Position` wraps `Vec2` (f32). Gameplay components (`VisibilityRangeM`, `SizeM`, etc.) are f32. Persistence parses positions as f64 then truncates to f32 during hydration.
+2026-04-24 update: authoritative runtime world coordinates use f64 under DR-0035. Avian2d `Position` and `LinearVelocity` wrap f64-backed vectors, `WorldPosition` wraps f64-backed coordinates, and `WorldRotation` is f64 radians. Gameplay components (`VisibilityRangeM`, `SizeM`, etc.) remain f32 where they represent local magnitudes rather than world-space coordinates. Bevy render `Transform` values remain f32 and are treated as presentation projections.
 
 ### 2.2 Why f32 Is Insufficient
 
@@ -49,10 +62,10 @@ At 60 Hz with 100 m/s velocity, each tick moves 1.67 m. At large coordinates, po
 
 ### 2.3 Decision: Enable f64 for World Coordinates
 
-Enable Avian2d's `f64` feature flag workspace-wide:
+Enable Avian2d's `f64` and `parry-f64` feature flags workspace-wide:
 
 ```toml
-avian2d = { version = "0.5.0", features = ["serialize", "f64"] }
+avian2d = { version = "0.5.0", default-features = false, features = ["2d", "f64", "parry-f64", "parallel", "serialize", "xpbd_joints"] }
 ```
 
 This changes `Position` to wrap `DVec2`, `LinearVelocity` to `DVec2`, etc. At 5,000 km from origin, f64 precision is better than a nanometer -- effectively unlimited for any game-scale galaxy.
@@ -74,17 +87,7 @@ The server does not render and does not need camera-relative transforms. Server-
 
 ### 2.5 Persistence
 
-Graph persistence currently stores positions as JSON arrays (`"position_m": [10.0, 0.0, 0.0]`). JSON numbers are f64-capable. The hydration path already parses via `as_f64()` then truncates to f32:
-
-```rust
-Some(Vec3::new(
-    arr[0].as_f64()? as f32,
-    arr[1].as_f64()? as f32,
-    arr[2].as_f64()? as f32,
-))
-```
-
-After the f64 migration, this truncation is removed and the f64 values are used directly for Avian `Position`. Persistence round-trips f64 precision without loss through JSON.
+Graph persistence stores positions as JSON arrays (`"position_m": [10.0, 0.0, 0.0]`). JSON numbers are f64-capable. Hydration and persistence code that writes authoritative Avian `Position`, `LinearVelocity`, `WorldPosition`, or protocol/read-model world positions must keep the parsed f64 values through the authoritative lane. Any remaining helper APIs that return `Vec3`/`[f32; 3]` are presentation-only or legacy utility surfaces and must not be used for authoritative world-state hydration.
 
 ### 2.6 Replication
 
@@ -629,14 +632,14 @@ Entity shard handoff at system boundaries is a future concern and is orthogonal 
 
 ### Phase 1: f64 Coordinate Migration
 
-- [ ] Enable `f64` feature on `avian2d` dependency workspace-wide.
-- [ ] Propagate type changes through gameplay components that interact with `Position`/`LinearVelocity` (flight system, physics sync, spawn helpers).
-- [ ] Update persistence hydration to stop truncating f64 to f32 for position/velocity.
-- [ ] Update visibility grid to use `f64` positions and `i64` cell keys.
-- [ ] Add camera-relative f32 transform sync on client (subtract camera f64 position, cast to f32).
-- [ ] Verify server-side transform sync handles f64-to-f32 cast for Bevy hierarchy propagation.
-- [ ] Update entity template graph record generation with f64 position values.
-- [ ] Run quality gates: `cargo check --workspace`, clippy, WASM target check.
+- [x] Enable `f64` feature on `avian2d` dependency workspace-wide.
+- [x] Propagate type changes through gameplay components that interact with `Position`/`LinearVelocity` (flight system, physics sync, spawn helpers).
+- [ ] Complete Phase 8 f64 compliance hardening from `docs/plans/f64_world_precision_migration_plan_2026-04-24.md` before claiming full end-to-end feature completion.
+- [x] Update visibility grid to use f64 positions and `i64` cell keys.
+- [x] Add camera-relative f32 transform sync on client (subtract camera f64 position, cast to f32).
+- [x] Verify server-side transform sync handles f64-to-f32 cast for Bevy hierarchy propagation.
+- [ ] Add explicit large-coordinate entity template/graph/dashboard regression tests.
+- [x] Run quality gates: `cargo check --workspace`, clippy, WASM target check.
 
 ### Phase 2: Solar System Components
 

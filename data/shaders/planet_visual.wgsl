@@ -377,17 +377,24 @@ fn evolving_weather_field(sphere_p: vec3<f32>, time_s: f32) -> vec3<f32> {
 
 fn terran_cloud_density(sphere_p: vec3<f32>) -> f32 {
     let time_s = params.identity_a.w * params.atmosphere_a.z;
-    let weather_p = evolving_weather_field(sphere_p, time_s);
-    let macro_shape = fbm3(weather_p * 1.35, 4, 2.0, 0.56);
-    let billow = fbm3(weather_p * (2.2 + params.atmosphere_a.y * 1.8), 5, 2.0, 0.54);
-    let detail = fbm3(weather_p * 8.5 + vec3<f32>(macro_shape * 1.3), 3, 2.3, 0.5);
-    let anvils = fbm3(weather_p.zxy * 5.8 - vec3<f32>(time_s * 0.08, 0.0, 0.0), 3, 2.1, 0.52);
-    var density = saturate(macro_shape * 0.42 + billow * 0.58 + detail * 0.2 + anvils * 0.14);
-    let threshold = 1.0 - params.atmosphere_a.x * 0.58;
-    density *= smoothstep(threshold - 0.08, threshold + 0.04, density);
-    let soft = smoothstep(0.24, 0.84, density);
-    let puffs = smoothstep(0.54, 0.92, density + detail * 0.2);
-    return soft * mix(0.78, 1.0, puffs) * params.color_clouds.a;
+    let latitude_shear = vec3<f32>(
+        time_s * (0.035 + params.clouds_a.z * 0.08),
+        sin(sphere_p.y * PI) * 0.18,
+        -time_s * 0.018,
+    );
+    let wind_p = sphere_p
+        + vec3<f32>(sphere_p.y * 0.22, sphere_p.z * 0.13, sphere_p.x * 0.18)
+        + latitude_shear;
+    let broad = fbm3(wind_p * (0.9 + params.clouds_a.x * 0.42), 3, 2.0, 0.56);
+    let cell = fbm3(wind_p * (2.35 + params.atmosphere_a.y * 0.72) + vec3<f32>(broad * 0.7), 3, 2.08, 0.54);
+    let wisps = simplex_noise3(wind_p.zxy * (7.0 + params.clouds_a.x * 0.55) - vec3<f32>(time_s * 0.06, 0.0, 0.0));
+    let storm_lanes = 1.0 - abs(cell * 2.0 - 1.0);
+    var density = saturate(broad * 0.54 + cell * 0.36 + storm_lanes * 0.12 + wisps * 0.08);
+    let threshold = 1.0 - params.atmosphere_a.x * 0.54;
+    let cover = smoothstep(threshold - 0.07, threshold + 0.045, density);
+    let soft = smoothstep(0.18, 0.72, density);
+    let feather = smoothstep(0.36, 0.88, cell + wisps * 0.16);
+    return cover * soft * mix(0.66, 1.0, feather) * params.color_clouds.a;
 }
 
 fn gas_cloud_density(sphere_p: vec3<f32>) -> f32 {
@@ -400,6 +407,13 @@ fn gas_cloud_density(sphere_p: vec3<f32>) -> f32 {
     let threshold = 1.0 - params.atmosphere_a.x * 0.52;
     density *= smoothstep(threshold - 0.1, threshold + 0.05, density);
     return smoothstep(0.3, 0.9, density) * params.color_clouds.a;
+}
+
+fn cloud_density(sphere_p: vec3<f32>, planet_type: f32) -> f32 {
+    if planet_type < 4.0 {
+        return terran_cloud_density(sphere_p);
+    }
+    return gas_cloud_density(sphere_p);
 }
 
 fn cloud_shell_point_from_billboard(disc_uv: vec2<f32>, shell_radius_norm: f32) -> vec3<f32> {
@@ -441,7 +455,7 @@ fn planet_cloud_shadow(sphere_p: vec3<f32>, sun_dir: vec3<f32>, planet_type: f32
         return 0.0;
     }
     let offset_point = normalize(sphere_p + sun_dir * 0.08);
-    let density = select(gas_cloud_density(offset_point), terran_cloud_density(offset_point), planet_type < 4.0);
+    let density = cloud_density(offset_point, planet_type);
     let terminator_bias = 1.0 - saturate(dot(sphere_p, sun_dir) * 0.5 + 0.5);
     return density * params.surface_a.z * (0.45 + terminator_bias * 0.55);
 }
@@ -600,7 +614,7 @@ fn render_cloud_pass(
     if body_kind > 0.5 || params.feature_flags_a.z < 0.5 || pass_mode < 0.5 {
         discard;
     }
-    let cloud_shell_radius = body_radius * (1.03 + params.emissive_a.x * 0.25);
+    let cloud_shell_radius = body_radius * (1.008 + params.emissive_a.x * 0.08);
     let quad_uv = mesh.uv * 2.0 - vec2<f32>(1.0, 1.0);
     let dist = length(quad_uv);
     if dist > cloud_shell_radius {
@@ -619,13 +633,9 @@ fn render_cloud_pass(
         visible_disc.y,
         sqrt(max(0.0, 1.0 - dot(visible_disc, visible_disc)))
     ));
-    let mask = select(
-        gas_cloud_density(sphere_p),
-        terran_cloud_density(sphere_p),
-        planet_type < 4.0
-    );
-    let edge = 1.0 - smoothstep(cloud_shell_radius - 0.08, cloud_shell_radius, dist);
-    let body_occlusion = smoothstep(body_radius - 0.012, body_radius + 0.015, dist);
+    let mask = cloud_density(sphere_p, planet_type);
+    let edge = 1.0 - smoothstep(cloud_shell_radius - 0.035, cloud_shell_radius, dist);
+    let body_occlusion = smoothstep(body_radius - 0.008, body_radius + 0.01, dist);
     let sun_dir = normalize(params.world_light_primary_dir_intensity.xyz);
     let lit = saturate(dot(view_shell_n, sun_dir) * 0.5 + 0.5)
         * max(params.world_light_primary_dir_intensity.w * params.sun_dir_a.w, 0.0);
@@ -634,13 +644,17 @@ fn render_cloud_pass(
         * params.world_light_local_dir_intensity.w;
     let shadowed = smoothstep(0.1, 0.85, lit);
     let hemisphere_alpha = select(body_occlusion, 1.0 - body_occlusion, pass_mode > 1.5);
-    let alpha = mask * edge * hemisphere_alpha * (0.08 + shadowed * 0.54);
+    let limb = pow(1.0 - saturate(view_shell_n.z), 1.6);
+    let alpha = mask * edge * hemisphere_alpha * (0.12 + shadowed * 0.52) * (0.88 + limb * 0.16);
+    let cloud_self_shadow = mix(0.82, 1.06, smoothstep(0.18, 0.82, mask));
     let color = mix(
-        params.color_clouds.rgb * (0.24 + params.world_light_ambient.w * 0.45),
-        params.color_clouds.rgb * mix(vec3<f32>(1.0), params.world_light_primary_color_elevation.rgb, 0.28),
-        lit * 0.72 + 0.08
-    ) + params.world_light_local_color_radius.rgb * local_lit * 0.28
-      + params.world_light_flash.rgb * params.world_light_flash.w * 0.22;
+        params.color_clouds.rgb * (0.2 + params.world_light_ambient.w * 0.4),
+        params.color_clouds.rgb * mix(vec3<f32>(1.0), params.world_light_primary_color_elevation.rgb, 0.24),
+        lit * 0.74 + 0.06
+    ) * cloud_self_shadow
+      + params.color_atmosphere.rgb * limb * 0.055
+      + params.world_light_local_color_radius.rgb * local_lit * 0.24
+      + params.world_light_flash.rgb * params.world_light_flash.w * 0.2;
     return vec4<f32>(color, alpha);
 }
 

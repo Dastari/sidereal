@@ -14,7 +14,11 @@ import type {
   GraphNode,
   WorldEntity,
 } from '@/components/grid/types'
-import type { BrpTab, DataSourceMode } from '@/components/sidebar/Toolbar'
+import type {
+  BrpTab,
+  DataSourceMode,
+  NewBrpTabInput,
+} from '@/components/sidebar/Toolbar'
 import type { EntityTreeUiState } from '@/components/sidebar/EntityTree'
 import { useSessionStorageNumber } from '@/hooks/use-session-storage-number'
 import {
@@ -99,6 +103,13 @@ const DEFAULT_CAMERA_STATE: CameraSnapshot = {
 
 const COMPONENT_EDITOR_METADATA_KEYS = new Set(['component_kind', 'typePath'])
 const AVIAN_LINEAR_VELOCITY_SUFFIX = '::LinearVelocity'
+const GAME_WORLD_BRP_TABS_STORAGE_KEY = 'dashboard:game-world:brp-tabs'
+const SERVER_BRP_TAB: BrpTab = {
+  id: 'server',
+  label: 'Server BRP',
+  port: 15713,
+  kind: 'server',
+}
 
 function isPlainObjectRecord(value: unknown): value is Record<string, unknown> {
   return (
@@ -106,6 +117,71 @@ function isPlainObjectRecord(value: unknown): value is Record<string, unknown> {
     value !== null &&
     !Array.isArray(value) &&
     Object.getPrototypeOf(value) === Object.prototype
+  )
+}
+
+function buildBrpApiUrl(tab: BrpTab, params?: Record<string, string>): string {
+  const query = new URLSearchParams({
+    port: String(tab.port),
+    target: tab.kind,
+    ...params,
+  })
+  if (tab.host) {
+    query.set('host', tab.host)
+  }
+  return `/api/brp?${query.toString()}`
+}
+
+function readStoredBrpTabs(): Array<BrpTab> {
+  try {
+    const raw = window.localStorage.getItem(GAME_WORLD_BRP_TABS_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((entry): Array<BrpTab> => {
+      if (!isPlainObjectRecord(entry)) return []
+      const id = typeof entry.id === 'string' ? entry.id : ''
+      const label = typeof entry.label === 'string' ? entry.label : ''
+      const host = typeof entry.host === 'string' ? entry.host : ''
+      const port = typeof entry.port === 'number' ? entry.port : Number.NaN
+      if (
+        !id ||
+        !label.trim() ||
+        !/^[A-Za-z0-9.-]+$/.test(host) ||
+        !Number.isInteger(port) ||
+        port < 1 ||
+        port > 65535
+      ) {
+        return []
+      }
+      return [
+        {
+          id,
+          label,
+          host,
+          port,
+          kind: 'client',
+        },
+      ]
+    })
+  } catch {
+    return []
+  }
+}
+
+function writeStoredBrpTabs(tabs: Array<BrpTab>) {
+  const clientTabs = tabs
+    .filter((tab) => tab.kind === 'client')
+    .map(({ id, label, host, port, kind }) => ({
+      id,
+      label,
+      host: host ?? '',
+      port,
+      kind,
+    }))
+  window.localStorage.setItem(
+    GAME_WORLD_BRP_TABS_STORAGE_KEY,
+    JSON.stringify(clientTabs),
   )
 }
 
@@ -307,10 +383,9 @@ export function ExplorerWorkspace({
   const initialDatabaseSnapshot = scopeIsDatabase
     ? databaseWorkspaceSnapshot
     : null
-  const [brpTabs, setBrpTabs] = useState<Array<BrpTab>>([
-    { id: 'server', label: 'Server BRP', port: 15713, kind: 'server' },
-    { id: 'client-1', label: 'Client 1 BRP', port: 15714, kind: 'client' },
-  ])
+  const [brpTabs, setBrpTabs] = useState<Array<BrpTab>>([SERVER_BRP_TAB])
+  const [storedBrpTabsLoaded, setStoredBrpTabsLoaded] =
+    useState(scopeIsDatabase)
   const activeBrpTabId = hasHydrated ? routeState.activeBrpTabId : 'server'
 
   // Data state
@@ -402,22 +477,12 @@ export function ExplorerWorkspace({
     const found = brpTabs.find((tab) => tab.id === activeBrpTabId)
     if (found) return found
     if (brpTabs.length > 0) return brpTabs[0]
-    return {
-      id: 'server',
-      label: 'Server BRP',
-      port: 15713,
-      kind: 'server' as const,
-    }
+    return SERVER_BRP_TAB
   }, [brpTabs, activeBrpTabId])
   const serverBrpTab = useMemo(() => {
     const found = brpTabs.find((tab) => tab.kind === 'server')
     if (found) return found
-    return {
-      id: 'server',
-      label: 'Server BRP',
-      port: 15713,
-      kind: 'server' as const,
-    }
+    return SERVER_BRP_TAB
   }, [brpTabs])
   const setSourceMode = useCallback(
     (nextMode: DataSourceMode) => {
@@ -512,6 +577,21 @@ export function ExplorerWorkspace({
   useEffect(() => {
     setHasHydrated(true)
   }, [])
+
+  useEffect(() => {
+    if (scopeIsDatabase) {
+      return
+    }
+    setBrpTabs([SERVER_BRP_TAB, ...readStoredBrpTabs()])
+    setStoredBrpTabsLoaded(true)
+  }, [scopeIsDatabase])
+
+  useEffect(() => {
+    if (scopeIsDatabase || !storedBrpTabsLoaded) {
+      return
+    }
+    writeStoredBrpTabs(brpTabs)
+  }, [brpTabs, scopeIsDatabase, storedBrpTabsLoaded])
 
   useEffect(() => {
     entitiesRef.current = entities
@@ -766,6 +846,7 @@ export function ExplorerWorkspace({
           activeBrpTab.port,
           'server',
           GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+          activeBrpTab.host,
         )
         setBrpResources(
           registryResource.error
@@ -782,14 +863,9 @@ export function ExplorerWorkspace({
           entityCount: nextEntities.length,
         })
       } else {
-        const query = new URLSearchParams({
-          snapshot: '1',
-          port: String(activeBrpTab.port),
-          target: activeBrpTab.kind,
-        })
-        const liveRes = await fetch(`/api/brp?${query.toString()}`).then(
-          (r) => r.json() as Promise<ApiLiveWorld>,
-        )
+        const liveRes = await fetch(
+          buildBrpApiUrl(activeBrpTab, { snapshot: '1' }),
+        ).then((r) => r.json() as Promise<ApiLiveWorld>)
 
         const hasData =
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- API response validation
@@ -849,6 +925,7 @@ export function ExplorerWorkspace({
         const listedResources = await fetchBrpResources(
           activeBrpTab.port,
           activeBrpTab.kind,
+          activeBrpTab.host,
         )
         const hydratedResources = await Promise.all(
           listedResources.map(async (resource) => {
@@ -863,6 +940,7 @@ export function ExplorerWorkspace({
               activeBrpTab.port,
               activeBrpTab.kind,
               resource.typePath,
+              activeBrpTab.host,
             )
             return {
               ...resource,
@@ -874,6 +952,7 @@ export function ExplorerWorkspace({
           serverBrpTab.port,
           'server',
           GENERATED_COMPONENT_REGISTRY_TYPE_PATH,
+          serverBrpTab.host,
         )
         const mergedResources = hydratedResources.filter(
           (resource) =>
@@ -913,7 +992,7 @@ export function ExplorerWorkspace({
     } finally {
       setIsRefreshing(false)
     }
-  }, [sourceMode, activeBrpTab, serverBrpTab.port])
+  }, [sourceMode, activeBrpTab, serverBrpTab])
 
   useEffect(() => {
     const previousSourceMode = previousSourceModeRef.current
@@ -1016,6 +1095,7 @@ export function ExplorerWorkspace({
       activeBrpTab.port,
       activeBrpTab.kind,
       typePath,
+      activeBrpTab.host,
     ).then((loaded) => {
       if (cancelled) return
       setBrpResources((prev) =>
@@ -1034,6 +1114,7 @@ export function ExplorerWorkspace({
     }
   }, [
     activeBrpTab.kind,
+    activeBrpTab.host,
     activeBrpTab.port,
     brpResources,
     selectedId,
@@ -1181,7 +1262,7 @@ export function ExplorerWorkspace({
             )
             return
           }
-          const url = `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`
+          const url = buildBrpApiUrl(activeBrpTab)
           res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1358,19 +1439,16 @@ export function ExplorerWorkspace({
         if (!Number.isFinite(numericEntityId)) {
           throw new Error('Entity ID must be numeric for BRP delete')
         }
-        const response = await fetch(
-          `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              method: 'world.despawn_entity',
-              params: {
-                entity: numericEntityId,
-              },
-            }),
-          },
-        )
+        const response = await fetch(buildBrpApiUrl(activeBrpTab), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            method: 'world.despawn_entity',
+            params: {
+              entity: numericEntityId,
+            },
+          }),
+        })
         const result = (await response.json()) as {
           error?: string
           success?: boolean
@@ -1391,22 +1469,41 @@ export function ExplorerWorkspace({
     [sourceMode, selectedId, loadData, activeBrpTab, updateSelection],
   )
 
-  const handleAddClientTab = useCallback(() => {
-    setBrpTabs((prev) => {
-      const clientCount = prev.filter((tab) => tab.kind === 'client').length
-      const maxPort = prev.reduce((max, tab) => Math.max(max, tab.port), 0)
-      const nextClientIndex = clientCount + 1
-      const newTab: BrpTab = {
-        id: `client-${nextClientIndex}`,
-        label: `Client ${nextClientIndex} BRP`,
-        port: maxPort + 1,
-        kind: 'client',
+  const handleAddClientTab = useCallback(
+    (input: NewBrpTabInput) => {
+      setBrpTabs((prev) => {
+        const nextClientIndex =
+          prev.reduce((max, tab) => {
+            const match = /^client-(\d+)$/.exec(tab.id)
+            return match ? Math.max(max, Number.parseInt(match[1], 10)) : max
+          }, 0) + 1
+        const newTab: BrpTab = {
+          id: `client-${nextClientIndex}`,
+          label: input.label,
+          host: input.host,
+          port: input.port,
+          kind: 'client',
+        }
+        setActiveBrpTabId(newTab.id)
+        setSourceMode('liveClient')
+        return [...prev, newTab]
+      })
+    },
+    [setActiveBrpTabId, setSourceMode],
+  )
+
+  const handleCloseBrpTab = useCallback(
+    (tabId: string) => {
+      setBrpTabs((prev) =>
+        prev.filter((tab) => tab.id !== tabId || tab.kind === 'server'),
+      )
+      if (activeBrpTab.id === tabId) {
+        setActiveBrpTabId('server')
+        setSourceMode('liveServer')
       }
-      setActiveBrpTabId(newTab.id)
-      setSourceMode('liveClient')
-      return [...prev, newTab]
-    })
-  }, [])
+    },
+    [activeBrpTab.id, setActiveBrpTabId, setSourceMode],
+  )
 
   const handleOpenContextMenu = useCallback(
     (
@@ -1471,26 +1568,23 @@ export function ExplorerWorkspace({
       if (!Number.isFinite(numericEntityId)) {
         throw new Error('Entity ID must be numeric for BRP writes')
       }
-      const response = await fetch(
-        `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            method: 'world.insert_components',
-            params: {
-              entity: numericEntityId,
-              components,
-            },
-          }),
-        },
-      )
+      const response = await fetch(buildBrpApiUrl(activeBrpTab), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          method: 'world.insert_components',
+          params: {
+            entity: numericEntityId,
+            components,
+          },
+        }),
+      })
       const payload = (await response.json()) as { error?: string }
       if (!response.ok || payload.error) {
         throw new Error(payload.error ?? 'component update failed')
       }
     },
-    [activeBrpTab.kind, activeBrpTab.port],
+    [activeBrpTab],
   )
 
   const handleAssignOwner = useCallback(
@@ -1504,22 +1598,19 @@ export function ExplorerWorkspace({
         graphNodes,
         graphEdges,
       )
-      const response = await fetch(
-        `/api/brp?port=${activeBrpTab.port}&target=${activeBrpTab.kind}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            method: 'world.insert_components',
-            params: {
-              entity: numericEntityId,
-              components: {
-                [ownerTypePath]: ownerPlayerEntityId,
-              },
+      const response = await fetch(buildBrpApiUrl(activeBrpTab), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          method: 'world.insert_components',
+          params: {
+            entity: numericEntityId,
+            components: {
+              [ownerTypePath]: ownerPlayerEntityId,
             },
-          }),
-        },
-      )
+          },
+        }),
+      })
       const payload = (await response.json()) as { error?: string }
       if (!response.ok || payload.error) {
         throw new Error(payload.error ?? 'owner assignment failed')
@@ -1529,7 +1620,7 @@ export function ExplorerWorkspace({
       )
       await loadData()
     },
-    [activeBrpTab.kind, activeBrpTab.port, graphEdges, graphNodes, loadData],
+    [activeBrpTab, graphEdges, graphNodes, loadData],
   )
 
   const handleMoveShipTo = useCallback(
@@ -1632,6 +1723,7 @@ export function ExplorerWorkspace({
           activeBrpTabId={activeBrpTab.id}
           onActiveBrpTabIdChange={setActiveBrpTabId}
           onAddClientTab={handleAddClientTab}
+          onCloseBrpTab={handleCloseBrpTab}
           showDataSourceTabs={!scopeIsDatabase}
           showDatabaseTab={false}
         >

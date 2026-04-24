@@ -15,9 +15,9 @@ use sidereal_core::SIM_TICK_HZ;
 use sidereal_core::remote_inspect::RemoteInspectConfig;
 use sidereal_net::{
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
-    ClientLocalViewModeMessage, ClientRealtimeInputMessage, ClientTacticalResnapshotRequestMessage,
-    ServerControlAckMessage, ServerControlRejectMessage, ServerSessionDeniedMessage,
-    ServerSessionReadyMessage,
+    ClientLocalViewModeMessage, ClientNotificationDismissedMessage, ClientRealtimeInputMessage,
+    ClientTacticalResnapshotRequestMessage, ServerControlAckMessage, ServerControlRejectMessage,
+    ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -262,6 +262,12 @@ pub fn prime_client_link_transport_on_insert(
     if !transport.has_sender::<sidereal_net::ManifestChannel>() {
         transport.add_sender_from_registry::<sidereal_net::ManifestChannel>(&registry);
     }
+    if !transport.has_receiver::<sidereal_net::NotificationChannel>() {
+        transport.add_receiver_from_registry::<sidereal_net::NotificationChannel>(&registry);
+    }
+    if !transport.has_sender::<sidereal_net::NotificationChannel>() {
+        transport.add_sender_from_registry::<sidereal_net::NotificationChannel>(&registry);
+    }
 
     commands.entity(trigger.entity).insert((
         MessageReceiver::<ClientAuthMessage>::default(),
@@ -270,6 +276,7 @@ pub fn prime_client_link_transport_on_insert(
         MessageReceiver::<ClientRealtimeInputMessage>::default(),
         MessageReceiver::<ClientLocalViewModeMessage>::default(),
         MessageReceiver::<ClientTacticalResnapshotRequestMessage>::default(),
+        MessageReceiver::<ClientNotificationDismissedMessage>::default(),
         MessageSender::<ServerSessionReadyMessage>::default(),
         MessageSender::<ServerSessionDeniedMessage>::default(),
         MessageSender::<ServerControlAckMessage>::default(),
@@ -318,6 +325,12 @@ pub fn ensure_server_transport_channels(
         if !transport.has_sender::<sidereal_net::ManifestChannel>() {
             transport.add_sender_from_registry::<sidereal_net::ManifestChannel>(&registry);
         }
+        if !transport.has_receiver::<sidereal_net::NotificationChannel>() {
+            transport.add_receiver_from_registry::<sidereal_net::NotificationChannel>(&registry);
+        }
+        if !transport.has_sender::<sidereal_net::NotificationChannel>() {
+            transport.add_sender_from_registry::<sidereal_net::NotificationChannel>(&registry);
+        }
     }
 }
 
@@ -335,6 +348,7 @@ pub fn ensure_server_message_components(
             Has<MessageReceiver<ClientRealtimeInputMessage>>,
             Has<MessageReceiver<ClientLocalViewModeMessage>>,
             Has<MessageReceiver<ClientTacticalResnapshotRequestMessage>>,
+            Has<MessageReceiver<ClientNotificationDismissedMessage>>,
             Has<MessageSender<ServerSessionReadyMessage>>,
             Has<MessageSender<ServerSessionDeniedMessage>>,
             Has<MessageSender<ServerControlAckMessage>>,
@@ -351,6 +365,7 @@ pub fn ensure_server_message_components(
         has_input_recv,
         has_view_mode_recv,
         has_tactical_resnapshot_recv,
+        has_notification_dismissed_recv,
         has_session_ready_send,
         has_session_denied_send,
         has_control_ack_send,
@@ -384,6 +399,11 @@ pub fn ensure_server_message_components(
             entity_commands
                 .insert(MessageReceiver::<ClientTacticalResnapshotRequestMessage>::default());
             patched.push("recv:ClientTacticalResnapshotRequestMessage");
+        }
+        if !has_notification_dismissed_recv {
+            entity_commands
+                .insert(MessageReceiver::<ClientNotificationDismissedMessage>::default());
+            patched.push("recv:ClientNotificationDismissedMessage");
         }
         if !has_session_ready_send {
             entity_commands.insert(MessageSender::<ServerSessionReadyMessage>::default());

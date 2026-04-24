@@ -6,6 +6,7 @@ pub mod control;
 pub mod health;
 pub mod input;
 pub mod lifecycle;
+pub mod notifications;
 pub mod owner_manifest;
 pub mod persistence;
 pub mod runtime_scripting;

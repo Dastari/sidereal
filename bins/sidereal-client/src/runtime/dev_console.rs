@@ -27,8 +27,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(target_arch = "wasm32"))]
 use sidereal_core::logging::prepare_timestamped_log_file_in_dir;
+use sidereal_net::{
+    NotificationImageRef, NotificationPayload, NotificationPlacement, NotificationSeverity,
+    ServerNotificationMessage,
+};
+use uuid::Uuid;
 
+use super::app_state::ClientSession;
 use super::ecs_util::queue_despawn_if_exists;
+use super::notification_ui::NotificationQueue;
 
 const DEV_CONSOLE_MAX_BUFFER_LINES: usize = 10_000;
 const DEV_CONSOLE_VISIBLE_LINES_MAX: usize = 200;
@@ -586,6 +593,9 @@ fn handle_dev_console_input_system(
     mut mouse_wheel_events: MessageReader<'_, '_, MouseWheel>,
     keys: Res<'_, ButtonInput<KeyCode>>,
     mut state: ResMut<'_, DevConsoleState>,
+    mut notifications: ResMut<'_, NotificationQueue>,
+    session: Res<'_, ClientSession>,
+    time: Res<'_, Time>,
 ) {
     let toggled_this_frame = keys.just_pressed(KeyCode::Backquote);
     if toggled_this_frame {
@@ -715,17 +725,191 @@ fn handle_dev_console_input_system(
             "sidereal_client::dev_console",
             format!("> {command}"),
         );
-        push_local_console_line(
+        execute_dev_console_command(
+            &command,
             &mut state,
-            Level::INFO,
-            "sidereal_client::dev_console",
-            "not implemented yet".to_string(),
+            &mut notifications,
+            &session,
+            time.elapsed_secs_f64(),
         );
         state.input_line.clear();
         state.scrollback_lines = 0;
         clamp_scrollback(&mut state);
         state.logs_dirty = true;
     }
+}
+
+fn execute_dev_console_command(
+    command: &str,
+    state: &mut DevConsoleState,
+    notifications: &mut NotificationQueue,
+    session: &ClientSession,
+    now_s: f64,
+) {
+    let mut parts = command.splitn(2, char::is_whitespace);
+    let name = parts.next().unwrap_or_default();
+    let args = parts.next().unwrap_or_default().trim();
+
+    match name {
+        "notify" => match build_dev_notification(args, session) {
+            Ok(message) => {
+                let severity = message.severity.as_str();
+                let placement = message.placement.as_str();
+                let notification_id = message.notification_id.clone();
+                let queued = notifications.push_local_notification(message, now_s);
+                let response = if queued {
+                    format!(
+                        "queued notification id={notification_id} severity={severity} placement={placement}"
+                    )
+                } else {
+                    format!("notification already queued id={notification_id}")
+                };
+                push_local_console_line(
+                    state,
+                    Level::INFO,
+                    "sidereal_client::dev_console",
+                    response,
+                );
+            }
+            Err(err) => {
+                push_local_console_line(state, Level::WARN, "sidereal_client::dev_console", err);
+            }
+        },
+        "help" => {
+            push_local_console_line(
+                state,
+                Level::INFO,
+                "sidereal_client::dev_console",
+                "commands: notify [info|success|warning|error] [top_left|top_center|top_right|bottom_left|bottom_center|bottom_right] [duration=seconds|duration=none] [title=Text] [image=asset_id] message".to_string(),
+            );
+        }
+        _ => {
+            push_local_console_line(
+                state,
+                Level::WARN,
+                "sidereal_client::dev_console",
+                format!("unknown command `{name}`; try `help`"),
+            );
+        }
+    }
+}
+
+fn build_dev_notification(
+    args: &str,
+    session: &ClientSession,
+) -> Result<ServerNotificationMessage, String> {
+    let mut severity = NotificationSeverity::Info;
+    let mut placement = NotificationPlacement::BottomRight;
+    let mut title = "Dev Notification".to_string();
+    let mut image_asset_id = None::<String>;
+    let mut auto_dismiss_after_s = default_dev_notification_duration_s(severity);
+    let mut body_tokens = Vec::<&str>::new();
+
+    for token in args.split_whitespace() {
+        if let Some(raw) = token.strip_prefix("severity=") {
+            severity = parse_dev_notification_severity(raw)?;
+            auto_dismiss_after_s = default_dev_notification_duration_s(severity);
+        } else if let Some(raw) = token.strip_prefix("placement=") {
+            placement = parse_dev_notification_placement(raw)?;
+        } else if let Some(raw) = token.strip_prefix("duration=") {
+            auto_dismiss_after_s = parse_dev_notification_duration(raw)?;
+        } else if let Some(raw) = token.strip_prefix("title=") {
+            title = raw.replace('_', " ");
+        } else if let Some(raw) = token.strip_prefix("image=") {
+            if !raw.trim().is_empty() {
+                image_asset_id = Some(raw.to_string());
+            }
+        } else if let Ok(parsed_severity) = parse_dev_notification_severity(token) {
+            severity = parsed_severity;
+            auto_dismiss_after_s = default_dev_notification_duration_s(severity);
+        } else if let Ok(parsed_placement) = parse_dev_notification_placement(token) {
+            placement = parsed_placement;
+        } else {
+            body_tokens.push(token);
+        }
+    }
+
+    if title.trim().is_empty() {
+        return Err("notify title must not be empty".to_string());
+    }
+
+    let body = if body_tokens.is_empty() {
+        "Client-side dev notification test.".to_string()
+    } else {
+        body_tokens.join(" ")
+    };
+    if body.chars().count() > 512 {
+        return Err("notify body is too long; max 512 characters".to_string());
+    }
+
+    let image = image_asset_id.map(|asset_id| NotificationImageRef {
+        asset_id,
+        alt_text: Some("Dev notification image".to_string()),
+    });
+    let player_entity_id = session
+        .player_entity_id
+        .clone()
+        .unwrap_or_else(|| "00000000-0000-0000-0000-000000000000".to_string());
+
+    Ok(ServerNotificationMessage {
+        notification_id: Uuid::new_v4().to_string(),
+        player_entity_id,
+        title,
+        body,
+        severity,
+        placement,
+        image,
+        payload: NotificationPayload::Generic {
+            event_type: "dev_console_notify".to_string(),
+            data: serde_json::json!({ "source": "client_dev_console" }),
+        },
+        created_at_epoch_s: (console_timestamp_epoch_ms() / 1000) as i64,
+        auto_dismiss_after_s,
+    })
+}
+
+fn parse_dev_notification_severity(raw: &str) -> Result<NotificationSeverity, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "info" => Ok(NotificationSeverity::Info),
+        "success" | "ok" => Ok(NotificationSeverity::Success),
+        "warning" | "warn" => Ok(NotificationSeverity::Warning),
+        "error" | "err" => Ok(NotificationSeverity::Error),
+        _ => Err(format!("unknown notification severity `{raw}`")),
+    }
+}
+
+fn parse_dev_notification_placement(raw: &str) -> Result<NotificationPlacement, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "top_left" | "tl" => Ok(NotificationPlacement::TopLeft),
+        "top_center" | "tc" => Ok(NotificationPlacement::TopCenter),
+        "top_right" | "tr" => Ok(NotificationPlacement::TopRight),
+        "bottom_left" | "bl" => Ok(NotificationPlacement::BottomLeft),
+        "bottom_center" | "bc" => Ok(NotificationPlacement::BottomCenter),
+        "bottom_right" | "br" => Ok(NotificationPlacement::BottomRight),
+        _ => Err(format!("unknown notification placement `{raw}`")),
+    }
+}
+
+fn parse_dev_notification_duration(raw: &str) -> Result<Option<f32>, String> {
+    let trimmed = raw.trim();
+    if matches!(trimmed, "none" | "persistent" | "off") {
+        return Ok(None);
+    }
+    let seconds = trimmed
+        .parse::<f32>()
+        .map_err(|_| format!("invalid notification duration `{raw}`"))?;
+    if !seconds.is_finite() || seconds <= 0.0 || seconds > 120.0 {
+        return Err("notify duration must be finite and in 0..=120 seconds".to_string());
+    }
+    Ok(Some(seconds))
+}
+
+fn default_dev_notification_duration_s(severity: NotificationSeverity) -> Option<f32> {
+    Some(match severity {
+        NotificationSeverity::Info | NotificationSeverity::Success => 5.0,
+        NotificationSeverity::Warning => 7.0,
+        NotificationSeverity::Error => 9.0,
+    })
 }
 
 fn push_local_console_line(

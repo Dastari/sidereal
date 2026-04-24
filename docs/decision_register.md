@@ -65,6 +65,39 @@ For each decision:
 
 ## Decisions
 
+## DR-0035: f64 Authoritative World Coordinates
+- Status: Accepted
+- Date: 2026-04-24
+- Owners: gameplay simulation + replication + client runtime + dashboard
+- Context:
+  - Sidereal's planned continuous galaxy-scale world cannot rely on f32 absolute world coordinates for active physics, visibility, persistence, and dashboard editing.
+  - Bevy `Transform` remains f32, so authoritative precision and render projection must be separated.
+- Decision:
+  - Adopt f64 as the canonical authoritative world-coordinate precision.
+  - Use `avian2d` with `f64` / `parry-f64`.
+  - Keep Bevy `Transform` as f32 render/hierarchy/debug projection only.
+  - Use camera-relative f32 client transforms derived from f64 world coordinates.
+  - Use TypeScript `number` / JSON numbers for dashboard coordinate editing.
+  - Treat the migration as breaking for local/dev graph data; reset databases instead of adding legacy f32 shims.
+- Consequences:
+  - Positive:
+    - Stable authoritative physics and persistence at galaxy scale.
+    - Render precision remains stable through camera-relative projection.
+    - One coordinate contract across runtime, scripting, replication, and dashboard tooling.
+  - Negative:
+    - Larger network position payloads.
+    - Broad audit required for f32 world-space assumptions.
+- Follow-up:
+  - Implement the active migration plan and update feature contracts as code lands.
+- Decision doc:
+  - `docs/decisions/dr-0035_f64_world_coordinates.md`
+- References:
+  - `docs/plans/f64_world_precision_migration_plan_2026-04-24.md`
+  - `docs/features/galaxy_world_structure.md`
+  - `docs/features/visibility_replication_contract.md`
+  - `docs/features/tactical_and_owner_lane_protocol_contract.md`
+  - `docs/features/scripting_support.md`
+
 ## DR-0034: Fly-By-Wire Thrust Allocation and GNC Stack
 - Status: Proposed
 - Date: 2026-03-13

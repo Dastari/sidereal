@@ -124,7 +124,7 @@ pub(crate) fn configure_client_runtime(
             .disable::<PhysicsTransformPlugin>()
             .disable::<PhysicsInterpolationPlugin>(),
     );
-    app.insert_resource(Gravity(Vec2::ZERO));
+    app.insert_resource(Gravity(Vec2::ZERO.into()));
     crate::client_core::configure_shared_client_core(app);
     app.add_plugins(ClientPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / f64::from(SIM_TICK_HZ)),

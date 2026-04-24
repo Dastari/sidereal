@@ -1,7 +1,7 @@
 use avian2d::prelude::{LinearVelocity, Position, Rotation};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
-use bevy::prelude::*;
+use bevy::{math::DVec3, prelude::*};
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
@@ -643,9 +643,9 @@ pub fn stream_tactical_snapshot_messages(
                 continue;
             };
             let world = global_transform
-                .map(GlobalTransform::translation)
+                .map(|value| value.translation().as_dvec3())
                 .or_else(|| position.map(|p| p.0.extend(0.0)))
-                .unwrap_or(Vec3::ZERO);
+                .unwrap_or(DVec3::ZERO);
             let entity_id = guid.0.to_string();
             contacts_by_entity_id.insert(
                 entity_id.clone(),
@@ -772,7 +772,7 @@ mod tests {
     use sidereal_net::{GridCell, TacticalContact};
     use std::collections::{HashMap, HashSet};
 
-    fn contact(entity_id: &str, position_xy: [f32; 2], last_seen_tick: u64) -> TacticalContact {
+    fn contact(entity_id: &str, position_xy: [f64; 2], last_seen_tick: u64) -> TacticalContact {
         TacticalContact {
             entity_id: entity_id.to_string(),
             kind: "ship".to_string(),

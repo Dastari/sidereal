@@ -29,8 +29,8 @@ fn movement_actions_move_when_not_controlled() {
                 damping_per_s: 8.0,
             },
             Transform::default(),
-            Position(Vec2::ZERO),
-            LinearVelocity(Vec2::ZERO),
+            Position(Vec2::ZERO.into()),
+            LinearVelocity(Vec2::ZERO.into()),
             ControlledEntityGuid(Some(own_guid.to_string())),
         ))
         .id();
@@ -66,8 +66,8 @@ fn movement_actions_do_not_move_when_controlled() {
                 damping_per_s: 8.0,
             },
             Transform::default(),
-            Position(Vec2::ZERO),
-            LinearVelocity(Vec2::ZERO),
+            Position(Vec2::ZERO.into()),
+            LinearVelocity(Vec2::ZERO.into()),
             ControlledEntityGuid(Some(controlled_guid)),
         ))
         .id();
@@ -80,7 +80,7 @@ fn movement_actions_do_not_move_when_controlled() {
         .run_system_once(process_character_movement_actions);
 
     let velocity = app.world().entity(entity).get::<LinearVelocity>().unwrap();
-    assert_eq!(velocity.0, Vec2::ZERO);
+    assert_eq!(velocity.0, Vec2::ZERO.into());
     let queue = app.world().entity(entity).get::<ActionQueue>().unwrap();
     assert!(queue.pending.is_empty());
 }
@@ -95,7 +95,7 @@ fn player_anchor_follows_controlled_entity_when_controlling_other() {
     app.world_mut().spawn((
         EntityGuid(controlled_guid),
         Transform::from_xyz(target_pos.x, target_pos.y, 0.0),
-        Position(target_pos),
+        Position(target_pos.into()),
     ));
 
     let player = app
@@ -104,7 +104,7 @@ fn player_anchor_follows_controlled_entity_when_controlling_other() {
             PlayerTag,
             EntityGuid(player_guid),
             Transform::from_xyz(0.0, 0.0, 0.0),
-            Position(Vec2::ZERO),
+            Position(Vec2::ZERO.into()),
             ControlledEntityGuid(Some(controlled_guid.to_string())),
         ))
         .id();
@@ -118,7 +118,7 @@ fn player_anchor_follows_controlled_entity_when_controlling_other() {
     assert_eq!(player_transform.translation.x, target_pos.x);
     assert_eq!(player_transform.translation.y, target_pos.y);
     assert_eq!(player_transform.translation.z, 0.0);
-    assert_eq!(player_position.0, target_pos);
+    assert_eq!(player_position.0, target_pos.into());
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn player_anchor_does_not_move_when_controlled_entity_is_self() {
             PlayerTag,
             EntityGuid(player_guid),
             Transform::from_xyz(original.x, original.y, 0.0),
-            Position(original),
+            Position(original.into()),
             ControlledEntityGuid(Some(player_guid.to_string())),
         ))
         .id();
@@ -145,5 +145,5 @@ fn player_anchor_does_not_move_when_controlled_entity_is_self() {
     let player_position = app.world().entity(player).get::<Position>().unwrap();
     assert_eq!(player_transform.translation.x, original.x);
     assert_eq!(player_transform.translation.y, original.y);
-    assert_eq!(player_position.0, original);
+    assert_eq!(player_position.0, original.into());
 }

@@ -7,8 +7,12 @@ Scope: current Lua-authored static planet/celestial entities and layered procedu
 
 ## 0. Status Notes
 
+- 2026-04-24: Genesis planet registry implementation has started. Starter planet/celestial definitions are moving into `data/scripts/planets/registry.lua` plus one Lua file per named body, with `world_init.lua` consuming validated registry entries through the existing `planet.body` bundle. Native impact: no render ABI change; authored starter content still spawns as static `WorldPosition`/`WorldRotation` planet entities. WASM impact: no platform split; future browser exposure is dashboard tooling and shared shader preview only.
 - 2026-04-24: Current implementation is live for static non-physics planet/celestial entities using `WorldPosition`/`WorldRotation`, Lua bundle authoring, persisted shader settings, runtime world layers, and client layered planet rendering. Not implemented: full galaxy/solar-system membership, orbital simulation, or physics participation for planets. Native impact: active visual path. WASM impact: shared render/schema path should remain target-compatible; live browser validation remains deferred behind native stabilization.
+- 2026-04-24: Server visibility/discovery now indexes static planet/celestial landmarks from `WorldPosition` directly instead of relying first on Bevy `GlobalTransform`. This fixes off-origin discoverable planets being treated as if they were still at a stale/default transform position during discovery/delivery. Native impact: remote/off-origin planets can appear when discovered near their authoritative world location. WASM impact: server-side fix applies equally to later browser clients.
+- 2026-04-24: Client planet visual children now compensate for their authoritative off-origin parent transform before applying camera-relative parallax placement. This keeps planets such as Aurelia renderable through the planet-body camera even though the replicated root remains at the real world position. Native impact: fixes off-origin planet visuals that had spawned passes/materials but rendered outside the planet camera view. WASM impact: shared client visual path; no platform split.
 - 2026-04-24: `planet_visual.wgsl` now keeps the existing Rust/Lua/dashboard ABI but replaces the older animated 4D value-noise helper with cheaper time-evolving domain-warped 3D fBm for animated cloud/star flows, adds cellular crater shaping for rocky bodies, derives body normal perturbation from screen-space height derivatives instead of extra height resamples, and smooths terminator lighting for more believable twilight atmosphere. Native impact: active visual path. WASM impact: shared shader asset path with no platform-specific branch.
+- 2026-04-24: Planet cloud rendering now uses an explicit planet-type branch so terran and gas cloud density paths are not both evaluated, simplifies the terran weather field, tightens the cloud shell radius, and lowers the Lua-authored cloud pass scale for starter planet content. Native impact: active planet visual path. WASM impact: shared shader/Lua data path with no platform-specific branch.
 - 2026-03-09: Native client planet visuals no longer apply camera-driven x/y parallax offsets on top of the authoritative planet root transform. Planets still render on a lower z/depth layer, but the visible disc center now remains aligned with the replicated world position so AABB/debug overlays and selection stay correct away from camera center. WASM impact: shared client visual behavior change; no platform-specific divergence intended.
 - 2026-03-09: Native client planet visuals now use a client-only projected render-center offset derived from the authoritative planet world position plus camera position. The authoritative planet root remains fixed at the real world center for visibility/exploration/culling decisions, while the visual child offset restores layer parallax for drawing only. WASM impact: shared client visual behavior change; no platform-specific divergence intended.
 - 2026-03-09: Runtime world layers now also support an optional `screen_scale_factor` used by the native planet visual path. This changes apparent planet size for the layer without changing authoritative world position or adding extra parallax. It does not by itself fix projected render-frustum culling; projected visual bounds still need a dedicated follow-up.
@@ -20,6 +24,8 @@ Scope: current Lua-authored static planet/celestial entities and layered procedu
 Planets are authoritative world entities generated from Lua bundle data, but rendered on the client through a layered 2D shader path.
 
 - Authoritative content authoring lives in Lua:
+  - `data/scripts/planets/registry.lua`
+  - `data/scripts/planets/*.lua`
   - `data/scripts/bundles/starter/planet_body.lua`
   - `data/scripts/world/world_init.lua`
   - `data/scripts/assets/registry.lua`
@@ -32,13 +38,17 @@ This keeps art direction and per-body tuning in Lua while Rust owns replication 
 
 ## 2. Authoring Contract
 
-Planets are authored through the `planet.body` Lua bundle.
+Planets are authored as named Lua definitions under `data/scripts/planets/`, indexed by
+`data/scripts/planets/registry.lua`, and spawned through the `planet.body` Lua bundle.
+The registry path is the Genesis authoring surface; the bundle remains the graph-record
+factory that emits validated ECS component payloads.
 
 The bundle emits:
 - `display_name`
 - `entity_labels`
 - `owner_id`
 - `size_m`
+- `static_landmark`
 - `map_icon`
 - `sprite_shader_asset_id`
 - `world_position`
@@ -47,6 +57,13 @@ The bundle emits:
 
 Planets intentionally do **not** emit collision components and do not use Avian transform
 components unless they become real physics entities.
+
+Static planet/celestial bodies that should participate in discovery must emit `static_landmark`.
+The current `planet.body` bundle defaults the landmark kind from `body_kind` (`Planet`, `Star`,
+or `BlackHole`), defaults `discoverable=true`, defaults `always_known=false`, and includes body
+extent in discovery overlap unless `use_extent_for_discovery=false` is authored. Discovery
+behavior and future notification/map plans are owned by
+`docs/features/visibility_replication_contract.md`.
 
 The active settings contract now separates:
 - `body_kind`
@@ -120,10 +137,11 @@ Current body shader behavior:
 
 Current cloud shader behavior:
 - renders clouds as dedicated back/front shell passes
-- uses evolving weather-cell advection and domain-warped 3D fBm instead of one static noise field
-- uses softer layered billow noise instead of the previous scratchy line artifacts
+- uses evolving weather-cell advection with a cheaper branched density path instead of evaluating every planet-family cloud model per fragment
+- uses softer broad-cell and feathered wisp shaping instead of the previous scratchy line artifacts
 - gates cloud coverage through density thresholds so cloud masses feel coherent instead of evenly noisy
 - supports terran/oceanic and gas-giant cloud behavior separately
+- keeps the cloud shell close to the body surface so authored cloud passes read as atmosphere-hugging weather rather than a detached outer sphere
 
 Current ring shader behavior:
 - renders black-hole accretion disks as dedicated back/front passes

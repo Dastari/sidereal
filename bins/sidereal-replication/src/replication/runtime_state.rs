@@ -178,7 +178,7 @@ pub fn update_client_observer_anchor_positions(
             let world = global
                 .map(GlobalTransform::translation)
                 .or_else(|| transform.map(|t| t.translation))
-                .or_else(|| position.map(|p| p.0.extend(0.0)))
+                .or_else(|| position.map(|p| p.0.extend(0.0).as_vec3()))
                 .unwrap_or(Vec3::ZERO);
             position_map.update_position(player_entity_id, world);
             if canonical_player_entity_id != *player_entity_id {
@@ -266,7 +266,7 @@ mod tests {
         let ship_entity = app
             .world_mut()
             .spawn((
-                Position(Vec2::new(250.0, -125.0)),
+                Position(Vec2::new(250.0, -125.0).into()),
                 Transform::from_xyz(250.0, -125.0, 0.0),
                 GlobalTransform::from(Transform::from_xyz(250.0, -125.0, 0.0)),
             ))
@@ -304,7 +304,7 @@ mod tests {
         let player_entity = app
             .world_mut()
             .spawn((
-                Position(Vec2::new(42.0, 84.0)),
+                Position(Vec2::new(42.0, 84.0).into()),
                 Transform::from_xyz(42.0, 84.0, 0.0),
                 GlobalTransform::from(Transform::from_xyz(42.0, 84.0, 0.0)),
             ))

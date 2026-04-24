@@ -6,14 +6,18 @@ use lightyear::prelude::{
     ControlledBy, MessageReceiver, NetworkVisibility, Replicate, ReplicationState,
 };
 use sidereal_game::{
-    DiscoveredStaticLandmarks, EntityGuid, FactionId, FactionVisibility, FullscreenLayer,
-    MountedOn, OwnerId, ParentGuid, PlayerTag, PublicVisibility, RENDER_DOMAIN_FULLSCREEN,
-    RENDER_PHASE_FULLSCREEN_BACKGROUND, RENDER_PHASE_FULLSCREEN_FOREGROUND,
-    RuntimeRenderLayerDefinition, RuntimeRenderLayerOverride, RuntimeWorldVisualStack, SizeM,
-    StaticLandmark, VisibilityDisclosure, VisibilityGridCell, VisibilityRangeM,
-    VisibilityRangeSource, VisibilitySpatialGrid, default_main_world_render_layer,
+    DiscoveredStaticLandmarks, DisplayName, EntityGuid, FactionId, FactionVisibility,
+    FullscreenLayer, MapIcon, MountedOn, OwnerId, ParentGuid, PlayerTag, PublicVisibility,
+    RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
+    RENDER_PHASE_FULLSCREEN_FOREGROUND, RuntimeRenderLayerDefinition, RuntimeRenderLayerOverride,
+    RuntimeWorldVisualStack, SizeM, StaticLandmark, VisibilityDisclosure, VisibilityGridCell,
+    VisibilityRangeM, VisibilityRangeSource, VisibilitySpatialGrid, WorldPosition,
+    default_main_world_render_layer,
 };
-use sidereal_net::{ClientLocalViewMode, ClientLocalViewModeMessage, PlayerEntityId};
+use sidereal_net::{
+    ClientLocalViewMode, ClientLocalViewModeMessage, NotificationPayload, NotificationPlacement,
+    NotificationSeverity, PlayerEntityId,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -22,6 +26,9 @@ use crate::replication::PlayerRuntimeEntityMap;
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::debug_env;
 use crate::replication::lifecycle::ClientLastActivity;
+use crate::replication::notifications::{
+    NotificationCommand, NotificationCommandQueue, enqueue_player_notification,
+};
 
 pub const DEFAULT_VIEW_RANGE_M: f32 = 300.0;
 const DEFAULT_VISIBILITY_CELL_SIZE_M: f32 = 2000.0;
@@ -441,7 +448,12 @@ pub struct VisibilityUpdateParams<'w, 's> {
     all_replicated: Query<
         'w,
         's,
-        (Entity, Option<&'static Position>, &'static GlobalTransform),
+        (
+            Entity,
+            Option<&'static Position>,
+            Option<&'static WorldPosition>,
+            &'static GlobalTransform,
+        ),
         With<Replicate>,
     >,
     replicated_entities: Query<
@@ -462,12 +474,27 @@ pub struct VisibilityUpdateParams<'w, 's> {
 pub struct VisibilityLandmarkDiscoveryParams<'w, 's> {
     cache: Res<'w, VisibilityEntityCache>,
     client_context_cache: ResMut<'w, VisibilityClientContextCache>,
+    notification_queue: ResMut<'w, NotificationCommandQueue>,
     player_landmark_state:
         Query<'w, 's, Option<&'static mut DiscoveredStaticLandmarks>, With<PlayerTag>>,
+    landmark_notification_meta: Query<
+        'w,
+        's,
+        (
+            Option<&'static DisplayName>,
+            Option<&'static MapIcon>,
+            Option<&'static WorldPosition>,
+        ),
+    >,
     all_replicated: Query<
         'w,
         's,
-        (Entity, Option<&'static Position>, &'static GlobalTransform),
+        (
+            Entity,
+            Option<&'static Position>,
+            Option<&'static WorldPosition>,
+            &'static GlobalTransform,
+        ),
         With<Replicate>,
     >,
 }
@@ -479,19 +506,30 @@ pub struct VisibilitySpatialIndexRefreshParams<'w, 's> {
     all_replicated: Query<
         'w,
         's,
-        (Entity, Option<&'static Position>, &'static GlobalTransform),
+        (
+            Entity,
+            Option<&'static Position>,
+            Option<&'static WorldPosition>,
+            &'static GlobalTransform,
+        ),
         With<Replicate>,
     >,
     changed_replicated: Query<
         'w,
         's,
-        (Entity, Option<&'static Position>, &'static GlobalTransform),
+        (
+            Entity,
+            Option<&'static Position>,
+            Option<&'static WorldPosition>,
+            &'static GlobalTransform,
+        ),
         (
             With<Replicate>,
             Or<(
                 Added<Replicate>,
                 Changed<GlobalTransform>,
                 Changed<Position>,
+                Changed<WorldPosition>,
                 Changed<MountedOn>,
                 Changed<ParentGuid>,
                 Changed<SizeM>,
@@ -920,6 +958,29 @@ fn landmark_discovery_due(now_s: f64, last_run_at_s: Option<f64>, interval_s: f6
     last_run_at_s.is_none_or(|last_run_at_s| now_s - last_run_at_s >= interval_s)
 }
 
+fn replicated_visibility_world_position(
+    position: Option<&Position>,
+    world_position: Option<&WorldPosition>,
+    global_transform: &GlobalTransform,
+) -> Vec3 {
+    if let Some(position) = position
+        && position.0.is_finite()
+    {
+        return position.0.extend(0.0).as_vec3();
+    }
+    if let Some(world_position) = world_position
+        && world_position.0.is_finite()
+    {
+        return world_position.0.extend(0.0).as_vec3();
+    }
+    let world_pos = global_transform.translation();
+    if world_pos.is_finite() {
+        world_pos
+    } else {
+        Vec3::ZERO
+    }
+}
+
 pub fn refresh_static_landmark_discoveries(
     mut commands: Commands<'_, '_>,
     time: Res<'_, Time>,
@@ -949,7 +1010,7 @@ pub fn refresh_static_landmark_discoveries(
     let mut entities_by_cell = HashMap::<(i64, i64), Vec<Entity>>::new();
     let mut max_static_landmark_discovery_padding_m = 0.0f32;
 
-    for (entity, position, global_transform) in &params.all_replicated {
+    for (entity, position, world_position, global_transform) in &params.all_replicated {
         let Some(cached) = params.cache.by_entity.get(&entity) else {
             continue;
         };
@@ -960,12 +1021,8 @@ pub fn refresh_static_landmark_discoveries(
         else {
             continue;
         };
-        let world_pos = global_transform.translation();
-        let effective_world_pos = if world_pos.is_finite() {
-            world_pos
-        } else {
-            position.map(|p| p.0.extend(0.0)).unwrap_or(Vec3::ZERO)
-        };
+        let effective_world_pos =
+            replicated_visibility_world_position(position, world_position, global_transform);
         visibility_position_by_entity.insert(entity, effective_world_pos);
         visibility_extent_m_by_entity.insert(entity, cached.entity_extent_m);
         static_landmarks_by_entity.insert(entity, (guid, static_landmark.clone()));
@@ -995,7 +1052,7 @@ pub fn refresh_static_landmark_discoveries(
             .as_deref()
             .map(|component| component.landmark_entity_ids.iter().copied().collect())
             .unwrap_or_default();
-        let mut newly_discovered = Vec::<uuid::Uuid>::new();
+        let mut newly_discovered = Vec::<(uuid::Uuid, Entity)>::new();
         let mut discovery_candidates = HashSet::<Entity>::new();
         for (visibility_pos, visibility_range_m) in &client_context.visibility_sources {
             add_entities_in_radius(
@@ -1029,7 +1086,7 @@ pub fn refresh_static_landmark_discoveries(
                 static_landmark,
                 &discovery_context,
             ) {
-                newly_discovered.push(*target_guid);
+                newly_discovered.push((*target_guid, target_entity));
             }
         }
         metrics.discovered_new_total = metrics
@@ -1037,16 +1094,32 @@ pub fn refresh_static_landmark_discoveries(
             .saturating_add(newly_discovered.len());
         if !newly_discovered.is_empty() {
             if let Some(component) = discovered_component.as_deref_mut() {
-                for landmark_id in newly_discovered {
+                for (landmark_id, landmark_entity) in newly_discovered {
                     if component.insert(landmark_id) {
                         discovered_static_landmarks.insert(landmark_id);
+                        enqueue_static_landmark_discovery_notification(
+                            &mut params.notification_queue,
+                            client_context.player_entity_id.as_str(),
+                            landmark_id,
+                            landmark_entity,
+                            &static_landmarks_by_entity,
+                            &params.landmark_notification_meta,
+                        );
                     }
                 }
             } else {
                 let mut component = DiscoveredStaticLandmarks::default();
-                for landmark_id in newly_discovered {
+                for (landmark_id, landmark_entity) in newly_discovered {
                     if component.insert(landmark_id) {
                         discovered_static_landmarks.insert(landmark_id);
+                        enqueue_static_landmark_discovery_notification(
+                            &mut params.notification_queue,
+                            client_context.player_entity_id.as_str(),
+                            landmark_id,
+                            landmark_entity,
+                            &static_landmarks_by_entity,
+                            &params.landmark_notification_meta,
+                        );
                     }
                 }
                 commands.entity(player_entity).insert(component);
@@ -1056,6 +1129,88 @@ pub fn refresh_static_landmark_discoveries(
     }
 
     metrics.landmark_discovery_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+}
+
+fn enqueue_static_landmark_discovery_notification(
+    queue: &mut NotificationCommandQueue,
+    player_entity_id: &str,
+    landmark_id: uuid::Uuid,
+    landmark_entity: Entity,
+    static_landmarks_by_entity: &HashMap<Entity, (uuid::Uuid, StaticLandmark)>,
+    landmark_notification_meta: &Query<
+        '_,
+        '_,
+        (
+            Option<&DisplayName>,
+            Option<&MapIcon>,
+            Option<&WorldPosition>,
+        ),
+    >,
+) {
+    let Some((_, static_landmark)) = static_landmarks_by_entity.get(&landmark_entity) else {
+        return;
+    };
+    let (display_name, map_icon_asset_id, world_position_xy) = landmark_notification_meta
+        .get(landmark_entity)
+        .map(|(display_name, map_icon, world_position)| {
+            (
+                display_name.map(|value| value.0.clone()),
+                map_icon.map(|value| value.asset_id.clone()),
+                world_position.map(|value| [value.0.x, value.0.y]),
+            )
+        })
+        .unwrap_or((None, None, None));
+    let landmark_kind = if static_landmark.kind.trim().is_empty() {
+        "Landmark".to_string()
+    } else {
+        static_landmark.kind.clone()
+    };
+    let display_name = display_name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            if landmark_kind.trim().is_empty() {
+                landmark_id.to_string()
+            } else {
+                landmark_kind.clone()
+            }
+        });
+    enqueue_player_notification(
+        queue,
+        landmark_discovery_notification_command(
+            player_entity_id,
+            landmark_id,
+            display_name,
+            landmark_kind,
+            map_icon_asset_id,
+            world_position_xy,
+        ),
+    );
+}
+
+fn landmark_discovery_notification_command(
+    player_entity_id: &str,
+    landmark_id: uuid::Uuid,
+    display_name: String,
+    landmark_kind: String,
+    map_icon_asset_id: Option<String>,
+    world_position_xy: Option<[f64; 2]>,
+) -> NotificationCommand {
+    NotificationCommand {
+        player_entity_id: player_entity_id.to_string(),
+        title: "Landmark Discovered".to_string(),
+        body: display_name.clone(),
+        severity: NotificationSeverity::Info,
+        placement: NotificationPlacement::BottomRight,
+        image: None,
+        payload: NotificationPayload::LandmarkDiscovery {
+            entity_guid: landmark_id.to_string(),
+            display_name,
+            landmark_kind,
+            map_icon_asset_id,
+            world_position_xy,
+        },
+        auto_dismiss_after_s: None,
+    }
 }
 
 impl VisibilityScratch {
@@ -1451,17 +1606,28 @@ fn spatial_index_requires_full_rebuild(
         != expected_parent_entity_for_spatial_index(index, cache, entity)
 }
 
+#[allow(clippy::type_complexity)]
 fn rebuild_visibility_spatial_index(
     index: &mut VisibilitySpatialIndex,
     cache: &VisibilityEntityCache,
-    all_replicated: &Query<'_, '_, (Entity, Option<&Position>, &GlobalTransform), With<Replicate>>,
+    all_replicated: &Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&Position>,
+            Option<&WorldPosition>,
+            &GlobalTransform,
+        ),
+        With<Replicate>,
+    >,
     cell_size_m: f32,
 ) {
     index.clear();
     index.cell_size_m = cell_size_m;
 
     let mut all_entities = Vec::<Entity>::new();
-    for (entity, position, global_transform) in all_replicated {
+    for (entity, position, world_position, global_transform) in all_replicated {
         all_entities.push(entity);
         let Some(cached) = cache.by_entity.get(&entity) else {
             continue;
@@ -1469,12 +1635,8 @@ fn rebuild_visibility_spatial_index(
         if let Some(guid) = cached.guid {
             index.entity_by_guid.insert(guid, entity);
         }
-        let world_pos = global_transform.translation();
-        let effective_world_pos = if world_pos.is_finite() {
-            world_pos
-        } else {
-            position.map(|p| p.0.extend(0.0)).unwrap_or(Vec3::ZERO)
-        };
+        let effective_world_pos =
+            replicated_visibility_world_position(position, world_position, global_transform);
         index
             .world_position_by_entity
             .insert(entity, effective_world_pos);
@@ -1562,7 +1724,7 @@ pub fn refresh_visibility_spatial_index(
     for _ in params.removed_entity_guid.read() {
         full_rebuild_required = true;
     }
-    for (entity, _, _) in &params.changed_replicated {
+    for (entity, _, _, _) in &params.changed_replicated {
         if spatial_index_requires_full_rebuild(&index, &params.cache, entity) {
             full_rebuild_required = true;
             break;
@@ -1580,13 +1742,9 @@ pub fn refresh_visibility_spatial_index(
     }
 
     let mut affected_roots = HashSet::<Entity>::new();
-    for (entity, position, global_transform) in &params.changed_replicated {
-        let world_pos = global_transform.translation();
-        let effective_world_pos = if world_pos.is_finite() {
-            world_pos
-        } else {
-            position.map(|p| p.0.extend(0.0)).unwrap_or(Vec3::ZERO)
-        };
+    for (entity, position, world_position, global_transform) in &params.changed_replicated {
+        let effective_world_pos =
+            replicated_visibility_world_position(position, world_position, global_transform);
         index
             .world_position_by_entity
             .insert(entity, effective_world_pos);
@@ -1703,7 +1861,7 @@ pub fn update_network_visibility(
 
     // 1) Build policy/runtime lookup state for all replicated entities while reading
     // stable spatial state from the persistent visibility index.
-    for (entity, _position, _global_transform) in &all_replicated {
+    for (entity, _position, _world_position, _global_transform) in &all_replicated {
         let Some(cached) = cache.by_entity.get(&entity) else {
             continue;
         };
@@ -3630,5 +3788,46 @@ mod tests {
         };
         assert!(is_global_render_config_entity(false, Some(&definition)));
         assert!(is_global_render_config_entity(true, None));
+    }
+
+    #[test]
+    fn visibility_world_position_prefers_static_world_position_over_stale_global_transform() {
+        let world_position = WorldPosition(Vec2::new(8000.0, 0.0).into());
+        let stale_global = GlobalTransform::from_translation(Vec3::ZERO);
+
+        let resolved =
+            replicated_visibility_world_position(None, Some(&world_position), &stale_global);
+
+        assert_eq!(resolved, Vec3::new(8000.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn landmark_discovery_notification_uses_landmark_payload() {
+        let landmark_id = uuid::Uuid::new_v4();
+        let command = landmark_discovery_notification_command(
+            "11111111-1111-1111-1111-111111111111",
+            landmark_id,
+            "Aurelia".to_string(),
+            "Planet".to_string(),
+            Some("map_icon_planet_svg".to_string()),
+            Some([8000.0, 0.0]),
+        );
+
+        assert_eq!(command.title, "Landmark Discovered");
+        assert_eq!(command.body, "Aurelia");
+        assert_eq!(command.severity, NotificationSeverity::Info);
+        assert_eq!(command.placement, NotificationPlacement::BottomRight);
+        assert!(matches!(
+            command.payload,
+            NotificationPayload::LandmarkDiscovery {
+                entity_guid,
+                display_name,
+                landmark_kind,
+                map_icon_asset_id: Some(_),
+                world_position_xy: Some(_),
+            } if entity_guid == landmark_id.to_string()
+                && display_name == "Aurelia"
+                && landmark_kind == "Planet"
+        ));
     }
 }

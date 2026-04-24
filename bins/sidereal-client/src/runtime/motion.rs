@@ -2,7 +2,7 @@
 
 use avian2d::prelude::*;
 use bevy::ecs::query::Has;
-use bevy::prelude::*;
+use bevy::{math::DVec2, prelude::*};
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::input::native::{ActionState, InputMarker};
 use lightyear::prelude::is_in_rollback;
@@ -225,9 +225,9 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
             position.map(|p| p.0)
         },
     );
-    let mut nearby_remote_candidates = Vec::<(Entity, f32)>::new();
+    let mut nearby_remote_candidates = Vec::<(Entity, f64)>::new();
     if let Some(target_position) = target_position {
-        let max_dist_sq = proxy_tuning.radius_m * proxy_tuning.radius_m;
+        let max_dist_sq = f64::from(proxy_tuning.radius_m * proxy_tuning.radius_m);
         for (
             entity,
             controlled,
@@ -486,12 +486,12 @@ pub(crate) fn enforce_controlled_planar_motion(
         if let Some(mut pos) = position
             && !pos.0.is_finite()
         {
-            pos.0 = Vec2::ZERO;
+            pos.0 = DVec2::ZERO;
         }
         if let Some(mut vel) = velocity
             && !vel.0.is_finite()
         {
-            vel.0 = Vec2::ZERO;
+            vel.0 = DVec2::ZERO;
         }
         if let Some(mut ang_vel) = angular_velocity
             && !ang_vel.0.is_finite()

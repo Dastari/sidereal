@@ -21,12 +21,14 @@ import { Route as DashboardSoundStudioRouteImport } from './routes/_dashboard.so
 import { Route as DashboardShaderWorkshopRouteImport } from './routes/_dashboard.shader-workshop'
 import { Route as DashboardSettingsRouteImport } from './routes/_dashboard.settings'
 import { Route as DashboardScriptEditorRouteImport } from './routes/_dashboard.script-editor'
+import { Route as DashboardGenesisRouteImport } from './routes/_dashboard.genesis'
 import { Route as DashboardGameWorldRouteImport } from './routes/_dashboard.game-world'
 import { Route as DashboardGameClientRouteImport } from './routes/_dashboard.game-client'
 import { Route as DashboardDatabaseRouteImport } from './routes/_dashboard.database'
 import { Route as DashboardDatabaseIndexRouteImport } from './routes/_dashboard.database.index'
 import { Route as ApiShadersUploadRouteImport } from './routes/api.shaders.upload'
 import { Route as ApiShadersShaderIdRouteImport } from './routes/api.shaders.$shaderId'
+import { Route as ApiGenesisPlanetsRouteImport } from './routes/api.genesis.planets'
 import { Route as ApiDeleteEntityEntityIdRouteImport } from './routes/api.delete-entity.$entityId'
 import { Route as ApiAudioCuesSoundIdRouteImport } from './routes/api.audio-cues.$soundId'
 import { Route as ApiAdminSpawnEntityRouteImport } from './routes/api.admin.spawn-entity'
@@ -98,6 +100,11 @@ const DashboardScriptEditorRoute = DashboardScriptEditorRouteImport.update({
   path: '/script-editor',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardGenesisRoute = DashboardGenesisRouteImport.update({
+  id: '/genesis',
+  path: '/genesis',
+  getParentRoute: () => DashboardRoute,
+} as any)
 const DashboardGameWorldRoute = DashboardGameWorldRouteImport.update({
   id: '/game-world',
   path: '/game-world',
@@ -127,6 +134,11 @@ const ApiShadersShaderIdRoute = ApiShadersShaderIdRouteImport.update({
   id: '/$shaderId',
   path: '/$shaderId',
   getParentRoute: () => ApiShadersRoute,
+} as any)
+const ApiGenesisPlanetsRoute = ApiGenesisPlanetsRouteImport.update({
+  id: '/api/genesis/planets',
+  path: '/api/genesis/planets',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiDeleteEntityEntityIdRoute = ApiDeleteEntityEntityIdRouteImport.update({
   id: '/api/delete-entity/$entityId',
@@ -197,6 +209,7 @@ export interface FileRoutesByFullPath {
   '/database': typeof DashboardDatabaseRouteWithChildren
   '/game-client': typeof DashboardGameClientRoute
   '/game-world': typeof DashboardGameWorldRouteWithChildren
+  '/genesis': typeof DashboardGenesisRoute
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
@@ -215,6 +228,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
+  '/api/genesis/planets': typeof ApiGenesisPlanetsRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/database/': typeof DashboardDatabaseIndexRoute
@@ -225,6 +239,7 @@ export interface FileRoutesByTo {
   '/shader-workbench': typeof ShaderWorkbenchRoute
   '/game-client': typeof DashboardGameClientRoute
   '/game-world': typeof DashboardGameWorldRouteWithChildren
+  '/genesis': typeof DashboardGenesisRoute
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
@@ -244,6 +259,7 @@ export interface FileRoutesByTo {
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
+  '/api/genesis/planets': typeof ApiGenesisPlanetsRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/database': typeof DashboardDatabaseIndexRoute
@@ -257,6 +273,7 @@ export interface FileRoutesById {
   '/_dashboard/database': typeof DashboardDatabaseRouteWithChildren
   '/_dashboard/game-client': typeof DashboardGameClientRoute
   '/_dashboard/game-world': typeof DashboardGameWorldRouteWithChildren
+  '/_dashboard/genesis': typeof DashboardGenesisRoute
   '/_dashboard/script-editor': typeof DashboardScriptEditorRoute
   '/_dashboard/settings': typeof DashboardSettingsRoute
   '/_dashboard/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
@@ -276,6 +293,7 @@ export interface FileRoutesById {
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
+  '/api/genesis/planets': typeof ApiGenesisPlanetsRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/_dashboard/database/': typeof DashboardDatabaseIndexRoute
@@ -290,6 +308,7 @@ export interface FileRouteTypes {
     | '/database'
     | '/game-client'
     | '/game-world'
+    | '/genesis'
     | '/script-editor'
     | '/settings'
     | '/shader-workshop'
@@ -308,6 +327,7 @@ export interface FileRouteTypes {
     | '/api/admin/spawn-entity'
     | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
+    | '/api/genesis/planets'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
     | '/database/'
@@ -318,6 +338,7 @@ export interface FileRouteTypes {
     | '/shader-workbench'
     | '/game-client'
     | '/game-world'
+    | '/genesis'
     | '/script-editor'
     | '/settings'
     | '/shader-workshop'
@@ -337,6 +358,7 @@ export interface FileRouteTypes {
     | '/api/admin/spawn-entity'
     | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
+    | '/api/genesis/planets'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
     | '/database'
@@ -349,6 +371,7 @@ export interface FileRouteTypes {
     | '/_dashboard/database'
     | '/_dashboard/game-client'
     | '/_dashboard/game-world'
+    | '/_dashboard/genesis'
     | '/_dashboard/script-editor'
     | '/_dashboard/settings'
     | '/_dashboard/shader-workshop'
@@ -368,6 +391,7 @@ export interface FileRouteTypes {
     | '/api/admin/spawn-entity'
     | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
+    | '/api/genesis/planets'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
     | '/_dashboard/database/'
@@ -386,6 +410,7 @@ export interface RootRouteChildren {
   ApiAdminSpawnEntityRoute: typeof ApiAdminSpawnEntityRoute
   ApiAudioCuesSoundIdRoute: typeof ApiAudioCuesSoundIdRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
+  ApiGenesisPlanetsRoute: typeof ApiGenesisPlanetsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -474,6 +499,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardScriptEditorRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/_dashboard/genesis': {
+      id: '/_dashboard/genesis'
+      path: '/genesis'
+      fullPath: '/genesis'
+      preLoaderRoute: typeof DashboardGenesisRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/_dashboard/game-world': {
       id: '/_dashboard/game-world'
       path: '/game-world'
@@ -515,6 +547,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/shaders/$shaderId'
       preLoaderRoute: typeof ApiShadersShaderIdRouteImport
       parentRoute: typeof ApiShadersRoute
+    }
+    '/api/genesis/planets': {
+      id: '/api/genesis/planets'
+      path: '/api/genesis/planets'
+      fullPath: '/api/genesis/planets'
+      preLoaderRoute: typeof ApiGenesisPlanetsRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/delete-entity/$entityId': {
       id: '/api/delete-entity/$entityId'
@@ -653,6 +692,7 @@ interface DashboardRouteChildren {
   DashboardDatabaseRoute: typeof DashboardDatabaseRouteWithChildren
   DashboardGameClientRoute: typeof DashboardGameClientRoute
   DashboardGameWorldRoute: typeof DashboardGameWorldRouteWithChildren
+  DashboardGenesisRoute: typeof DashboardGenesisRoute
   DashboardScriptEditorRoute: typeof DashboardScriptEditorRoute
   DashboardSettingsRoute: typeof DashboardSettingsRoute
   DashboardShaderWorkshopRoute: typeof DashboardShaderWorkshopRouteWithChildren
@@ -664,6 +704,7 @@ const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardDatabaseRoute: DashboardDatabaseRouteWithChildren,
   DashboardGameClientRoute: DashboardGameClientRoute,
   DashboardGameWorldRoute: DashboardGameWorldRouteWithChildren,
+  DashboardGenesisRoute: DashboardGenesisRoute,
   DashboardScriptEditorRoute: DashboardScriptEditorRoute,
   DashboardSettingsRoute: DashboardSettingsRoute,
   DashboardShaderWorkshopRoute: DashboardShaderWorkshopRouteWithChildren,
@@ -716,6 +757,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminSpawnEntityRoute: ApiAdminSpawnEntityRoute,
   ApiAudioCuesSoundIdRoute: ApiAudioCuesSoundIdRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,
+  ApiGenesisPlanetsRoute: ApiGenesisPlanetsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

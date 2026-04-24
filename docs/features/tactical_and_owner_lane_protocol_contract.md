@@ -17,7 +17,18 @@ Primary references:
 1. Implemented: tactical snapshot/delta and owner manifest snapshot/delta messages are registered in `sidereal-net` and streamed by the replication runtime.
 2. Implemented: client caches apply snapshots/deltas, request tactical resnapshots on sequence mismatch, and drive tactical UI/owner manifest presentation.
 3. Implemented: `PlayerExploredCells`, `VisibilitySpatialGrid`, `VisibilityDisclosure`, tactical contacts, and manifest entries are integrated with current visibility/runtime data.
-4. Open work: stress/load testing, richer contact redaction, and production tuning for large player/entity counts remain incomplete.
+4. Current limitation: static landmark discovery does not yet have a dedicated notification/delta message; clients see discovered landmarks through normal world replication/map-icon visibility once delivery scope allows it.
+5. Open work: stress/load testing, richer contact redaction, landmark discovery notifications/map reveal deltas, and production tuning for large player/entity counts remain incomplete.
+
+2026-04-24 update:
+
+1. Owner manifest clients now silently ignore stale deltas whose `sequence <= cache.sequence` before treating base-sequence differences as gaps. This prevents reliable but already-superseded deltas from producing repeated warning logs after a newer snapshot has advanced the local cache.
+
+2026-04-24 update:
+
+1. DR-0035 makes f64 authoritative world coordinates the target for tactical contacts, owner manifest position summaries, discovery metadata, and world-space notification payloads.
+2. Tactical/contact/manifest protocol fields that carry absolute world position or velocity should use f64 arrays. UI/render consumers cast to f32 only after subtracting the active camera/map origin or otherwise projecting to local display coordinates.
+3. Dashboard consumers use TypeScript `number` / JSON numbers for these f64 payloads.
 
 ## 1. Objective
 
@@ -123,9 +134,9 @@ pub struct TacticalContact {
     pub kind: String,
     pub map_icon_asset_id: Option<String>,
     pub faction_id: Option<String>,
-    pub position_xy: [f32; 2],
-    pub heading_rad: f32,
-    pub velocity_xy: Option<[f32; 2]>,
+    pub position_xy: [f64; 2],
+    pub heading_rad: f64,
+    pub velocity_xy: Option<[f64; 2]>,
     pub is_live_now: bool,
     pub last_seen_tick: u64,
     pub classification: Option<String>,
@@ -139,6 +150,18 @@ Notes:
 2. `is_live_now=false` means stale memory projection.
 3. `map_icon_asset_id` is sourced from entity `map_icon` (`MapIcon { asset_id }`) when present.
 4. Fields remain redaction-scoped by policy/grants.
+
+## 4.4 Landmark Discovery Notification Direction
+
+Planned landmark discovery notifications should be server-authored from the same authenticated player binding and discovery state described in `docs/features/visibility_replication_contract.md`.
+
+Requirements for the first implementation:
+
+1. Emit only after the backend inserts a new landmark UUID into `DiscoveredStaticLandmarks`.
+2. Include stable UUID identity, display name when disclosed, landmark kind, map icon asset ID when disclosed, position, and discovery tick/time.
+3. Preserve idempotence: reconnects or resnapshots may restate discovered state, but the client notification queue must not toast the same initial discovery repeatedly.
+4. Keep notification payload redacted by the same visibility/disclosure policy used for world and tactical lanes.
+5. Treat the client sonar/toast as presentation only; it must not authoritatively mutate discovery state.
 
 ## 5. Owner Asset Manifest Schemas
 
@@ -175,7 +198,7 @@ pub struct OwnedAssetEntry {
     pub kind: String,
     pub status: String, // active/docked/destroyed/unknown/in_transit
     pub controlled_by_owner: bool,
-    pub last_known_position_xy: Option<[f32; 2]>,
+    pub last_known_position_xy: Option<[f64; 2]>,
     pub health_ratio: Option<f32>,
     pub fuel_ratio: Option<f32>,
     pub updated_at_tick: u64,
@@ -195,8 +218,9 @@ Client keeps independent caches:
 Rules:
 
 1. Apply snapshot atomically.
-2. Apply delta only when `base_sequence == cache.sequence`.
-3. On mismatch, request/await resnapshot and skip subsequent deltas.
+2. Ignore stale deltas when `sequence <= cache.sequence`.
+3. Apply delta only when `base_sequence == cache.sequence`.
+4. On a forward sequence gap, request/await resnapshot and skip subsequent deltas.
 
 ## 7. Security and Redaction
 

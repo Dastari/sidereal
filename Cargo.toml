@@ -29,7 +29,7 @@ anyhow = "1.0"
 argon2 = "0.5"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
-avian2d = { version = "0.5.0", default-features = false, features = ["2d", "f32", "parry-f32", "parallel", "serialize", "xpbd_joints"] }
+avian2d = { version = "0.5.0", default-features = false, features = ["2d", "f64", "parry-f64", "parallel", "serialize", "xpbd_joints"] }
 base64 = "0.22"
 bevy = { version = "0.18.0", default-features = false }
 bevy_remote = { version = "0.18.0", default-features = false }
@@ -51,6 +51,9 @@ mlua = { version = "0.11", features = ["lua54", "vendored"] }
 [patch.crates-io]
 parry2d = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", package = "parry2d" }
 parry2d-f64 = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", package = "parry2d-f64" }
+
+[patch."https://github.com/Dastari/lightyear"]
+lightyear_avian2d = { path = "third_party/lightyear_avian2d_f64" }
 
 #[profile.release]
 #opt-level = 'z'

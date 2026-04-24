@@ -149,7 +149,7 @@ function PlanetBody.build_graph_records(ctx)
       material_domain = "world_polygon",
       shader_asset_id = planet_visual_shader_asset_id,
       order = -1,
-      scale_multiplier = 1.035,
+      scale_multiplier = 1.012,
       depth_bias_z = -0.2,
     }
     visual_stack.passes[#visual_stack.passes + 1] = {
@@ -159,7 +159,7 @@ function PlanetBody.build_graph_records(ctx)
       material_domain = "world_polygon",
       shader_asset_id = planet_visual_shader_asset_id,
       order = 1,
-      scale_multiplier = 1.035,
+      scale_multiplier = 1.012,
       depth_bias_z = 0.5,
     }
   end

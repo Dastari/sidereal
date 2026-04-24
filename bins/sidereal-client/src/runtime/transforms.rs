@@ -1,7 +1,7 @@
 //! World entity transform sync, interpolation, and player/camera lock.
 
 use avian2d::prelude::{Position, Rotation};
-use bevy::prelude::*;
+use bevy::{math::DVec2, prelude::*};
 use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::Confirmed;
@@ -14,11 +14,11 @@ use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
 use super::components::{PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity};
 
-fn apply_planar_transform(transform: &mut Transform, planar_position: Vec2, heading: f32) {
-    transform.translation.x = planar_position.x;
-    transform.translation.y = planar_position.y;
+fn apply_planar_transform(transform: &mut Transform, planar_position: DVec2, heading: f64) {
+    transform.translation.x = planar_position.x as f32;
+    transform.translation.y = planar_position.y as f32;
     transform.translation.z = 0.0;
-    transform.rotation = Quat::from_rotation_z(heading);
+    transform.rotation = Quat::from_rotation_z(heading as f32);
 }
 
 fn resolve_current_planar_pose(
@@ -26,7 +26,7 @@ fn resolve_current_planar_pose(
     rotation: Option<&Rotation>,
     world_position: Option<&WorldPosition>,
     world_rotation: Option<&WorldRotation>,
-) -> Option<(Vec2, f32)> {
+) -> Option<(DVec2, f64)> {
     let planar_position = resolve_world_position(position, world_position)?;
     let heading = resolve_world_rotation_rad(rotation, world_rotation)?;
     if !planar_position.is_finite() || !heading.is_finite() {
@@ -38,7 +38,7 @@ fn resolve_current_planar_pose(
 fn resolve_confirmed_planar_pose(
     confirmed_position: Option<&Confirmed<Position>>,
     confirmed_rotation: Option<&Confirmed<Rotation>>,
-) -> Option<(Vec2, f32)> {
+) -> Option<(DVec2, f64)> {
     let planar_position = confirmed_position.map(|value| value.0.0)?;
     let heading = confirmed_rotation.map(|value| value.0.as_radians())?;
     if !planar_position.is_finite() || !heading.is_finite() {
@@ -63,7 +63,7 @@ fn resolve_canonical_confirmed_planar_pose(
         ),
         (With<WorldEntity>, Without<lightyear::prelude::Interpolated>),
     >,
-) -> Option<(Vec2, f32)> {
+) -> Option<(DVec2, f64)> {
     let canonical_entity = entity_registry
         .by_entity_id
         .get(entity_guid.0.to_string().as_str())
@@ -120,17 +120,17 @@ pub(crate) fn sync_confirmed_world_entity_transforms_from_physics(
         let planar_position = if position.0.is_finite() {
             position.0
         } else {
-            Vec2::ZERO
+            DVec2::ZERO
         };
         let heading = if rotation.is_finite() {
             rotation.as_radians()
         } else {
             0.0
         };
-        transform.translation.x = planar_position.x;
-        transform.translation.y = planar_position.y;
+        transform.translation.x = planar_position.x as f32;
+        transform.translation.y = planar_position.y as f32;
         transform.translation.z = 0.0;
-        transform.rotation = Quat::from_rotation_z(heading);
+        transform.rotation = Quat::from_rotation_z(heading as f32);
     }
 }
 
@@ -157,16 +157,16 @@ pub(crate) fn sync_confirmed_world_entity_transforms_from_world_space(
         let planar_position = if position.0.is_finite() {
             position.0
         } else {
-            Vec2::ZERO
+            DVec2::ZERO
         };
         let heading = rotation
             .map(|value| value.0)
             .filter(|value| value.is_finite())
             .unwrap_or(0.0);
-        transform.translation.x = planar_position.x;
-        transform.translation.y = planar_position.y;
+        transform.translation.x = planar_position.x as f32;
+        transform.translation.y = planar_position.y as f32;
         transform.translation.z = 0.0;
-        transform.rotation = Quat::from_rotation_z(heading);
+        transform.rotation = Quat::from_rotation_z(heading as f32);
     }
 }
 
@@ -226,7 +226,7 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
         if is_static_world_spatial {
             let (planar_position, heading) =
                 resolve_current_planar_pose(position, rotation, world_position, world_rotation)
-                    .unwrap_or((Vec2::ZERO, 0.0));
+                    .unwrap_or((DVec2::ZERO, 0.0));
             apply_planar_transform(&mut transform, planar_position, heading);
             continue;
         }
@@ -250,7 +250,7 @@ pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
                 .or_else(|| {
                     resolve_current_planar_pose(position, rotation, world_position, world_rotation)
                 })
-                .unwrap_or((Vec2::ZERO, 0.0));
+                .unwrap_or((DVec2::ZERO, 0.0));
         apply_planar_transform(&mut transform, planar_position, heading);
     }
 }
@@ -451,8 +451,8 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
     ) in &mut entities
     {
         let mut ready = false;
-        let mut source_position: Option<Vec2> = None;
-        let mut source_heading: Option<f32> = None;
+        let mut source_position: Option<DVec2> = None;
+        let mut source_heading: Option<f64> = None;
 
         let is_runtime_fullscreen_layer = runtime_layer.is_some_and(|layer| {
             layer.enabled
@@ -594,7 +594,7 @@ mod tests {
     #[test]
     fn interpolated_presentation_ready_rejects_dynamic_current_pose_without_confirmed_or_history() {
         assert!(!interpolated_presentation_ready(
-            Some(&Position(Vec2::ZERO)),
+            Some(&Position(Vec2::ZERO.into())),
             Some(&Rotation::IDENTITY),
             None,
             None,
@@ -608,6 +608,7 @@ mod tests {
     #[test]
     fn reveal_keeps_dynamic_interpolated_entity_hidden_without_authoritative_pose() {
         let mut app = App::new();
+        app.init_resource::<RuntimeEntityHierarchy>();
         app.add_systems(Update, reveal_world_entities_when_initial_transform_ready);
 
         let entity = app
@@ -615,8 +616,9 @@ mod tests {
             .spawn((
                 WorldEntity,
                 PendingInitialVisualReady,
+                EntityGuid(Uuid::new_v4()),
                 Interpolated,
-                Position(Vec2::ZERO),
+                Position(Vec2::ZERO.into()),
                 Rotation::IDENTITY,
                 Transform::default(),
                 Visibility::Visible,
@@ -648,7 +650,7 @@ mod tests {
             .spawn((
                 WorldEntity,
                 EntityGuid(guid),
-                Position(Vec2::new(12.0, 34.0)),
+                Position(Vec2::new(12.0, 34.0).into()),
                 Rotation::radians(0.75),
                 Transform::default(),
                 Visibility::Visible,
@@ -665,7 +667,7 @@ mod tests {
                 PendingInitialVisualReady,
                 EntityGuid(guid),
                 Interpolated,
-                Position(Vec2::ZERO),
+                Position(Vec2::ZERO.into()),
                 Rotation::IDENTITY,
                 Transform::default(),
                 Visibility::Hidden,
@@ -703,7 +705,7 @@ mod tests {
             .spawn((
                 WorldEntity,
                 EntityGuid(guid),
-                Position(Vec2::new(-20.0, 48.0)),
+                Position(Vec2::new(-20.0, 48.0).into()),
                 Rotation::radians(-0.5),
                 Transform::default(),
             ))
@@ -718,7 +720,7 @@ mod tests {
                 WorldEntity,
                 EntityGuid(guid),
                 Interpolated,
-                Position(Vec2::ZERO),
+                Position(Vec2::ZERO.into()),
                 Rotation::IDENTITY,
                 Transform::default(),
             ))

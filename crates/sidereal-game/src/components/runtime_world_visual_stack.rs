@@ -10,7 +10,7 @@ fn default_enabled() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Reflect, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Reflect, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeWorldVisualPassDefinition {
     pub pass_id: String,
     pub visual_family: String,
@@ -29,6 +29,24 @@ pub struct RuntimeWorldVisualPassDefinition {
     pub depth_bias_z: Option<f32>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+impl Default for RuntimeWorldVisualPassDefinition {
+    fn default() -> Self {
+        Self {
+            pass_id: String::new(),
+            visual_family: String::new(),
+            visual_kind: String::new(),
+            material_domain: String::new(),
+            shader_asset_id: String::new(),
+            params_asset_id: None,
+            texture_bindings: Vec::new(),
+            order: 0,
+            scale_multiplier: None,
+            depth_bias_z: None,
+            enabled: default_enabled(),
+        }
+    }
 }
 
 #[sidereal_component_macros::sidereal_component(

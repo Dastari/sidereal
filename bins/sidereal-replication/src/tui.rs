@@ -696,10 +696,10 @@ fn initialize_world_view(app: &mut TuiApp, world: &WorldMapSnapshot) {
         .find(|entity| entity.glyph == '☻')
         .or_else(|| world.entities.first())
     {
-        app.world_center_x = entity.x;
-        app.world_center_y = entity.y;
-        app.world_cursor_x = entity.x;
-        app.world_cursor_y = entity.y;
+        app.world_center_x = entity.x as f32;
+        app.world_center_y = entity.y as f32;
+        app.world_cursor_x = entity.x as f32;
+        app.world_cursor_y = entity.y as f32;
         app.world_initialized = true;
     }
 }
@@ -815,7 +815,7 @@ struct WorldTreeRow {
     kind_label: Option<String>,
     entity_guid: Option<String>,
     entity_display_name: Option<String>,
-    entity_position_xy: Option<(f32, f32)>,
+    entity_position_xy: Option<(f64, f64)>,
     latency_ms: Option<u64>,
     expandable: bool,
     expanded: bool,
@@ -1472,10 +1472,12 @@ fn build_world_lines(
 
     for entity in &world.entities {
         let screen_x = viewport_center_x as isize
-            + ((entity.x - app.world_center_x) / app.world_zoom).round() as isize;
-        let screen_y = viewport_center_y as isize
-            - ((entity.y - app.world_center_y) / (app.world_zoom * WORLD_CELL_ASPECT_Y)).round()
+            + ((entity.x - f64::from(app.world_center_x)) / f64::from(app.world_zoom)).round()
                 as isize;
+        let screen_y = viewport_center_y as isize
+            - ((entity.y - f64::from(app.world_center_y))
+                / f64::from(app.world_zoom * WORLD_CELL_ASPECT_Y))
+            .round() as isize;
         if screen_x < 0 || screen_y < 0 || screen_x >= width as isize || screen_y >= height as isize
         {
             continue;
@@ -1542,12 +1544,12 @@ fn select_world_entity_at(app: &mut TuiApp, world: &WorldMapSnapshot, column: u1
     app.world_selected_guid = None;
     app.world_selected_name = None;
 
-    let mut best: Option<(&crate::replication::health::WorldMapEntitySnapshot, f32)> = None;
+    let mut best: Option<(&crate::replication::health::WorldMapEntitySnapshot, f64)> = None;
     for entity in &world.entities {
-        let dx = entity.x - world_x;
-        let dy = entity.y - world_y;
+        let dx = entity.x - f64::from(world_x);
+        let dy = entity.y - f64::from(world_y);
         let distance_sq = dx * dx + dy * dy;
-        let threshold = (app.world_zoom.max(entity.extent_m) * 1.5).powi(2);
+        let threshold = f64::from(app.world_zoom.max(entity.extent_m) * 1.5).powi(2);
         if distance_sq > threshold {
             continue;
         }
@@ -1559,8 +1561,8 @@ fn select_world_entity_at(app: &mut TuiApp, world: &WorldMapSnapshot, column: u1
     if let Some((entity, _)) = best {
         app.world_selected_guid = Some(entity.guid.clone());
         app.world_selected_name = entity.display_name.clone();
-        app.world_cursor_x = entity.x;
-        app.world_cursor_y = entity.y;
+        app.world_cursor_x = entity.x as f32;
+        app.world_cursor_y = entity.y as f32;
         app.world_tree_selected_key = Some(format!("entity:{}", entity.guid));
         app.world_tree_keep_selected_visible = true;
     }
@@ -1695,8 +1697,8 @@ fn sync_map_selection_from_tree_row(app: &mut TuiApp, row: &WorldTreeRow) {
         app.world_selected_guid = Some(guid.clone());
         app.world_selected_name = row.entity_display_name.clone();
         if let Some((x, y)) = row.entity_position_xy {
-            app.world_cursor_x = x;
-            app.world_cursor_y = y;
+            app.world_cursor_x = x as f32;
+            app.world_cursor_y = y as f32;
         }
     }
 }
@@ -1720,10 +1722,10 @@ fn goto_selected_world_entity(app: &mut TuiApp) {
         sync_map_selection_from_tree_row(app, &row);
     }
     if let Some((x, y)) = row.entity_position_xy {
-        app.world_center_x = x;
-        app.world_center_y = y;
-        app.world_cursor_x = x;
-        app.world_cursor_y = y;
+        app.world_center_x = x as f32;
+        app.world_center_y = y as f32;
+        app.world_cursor_x = x as f32;
+        app.world_cursor_y = y as f32;
     }
     app.focus = PaneFocus::World;
     app.world_zoom = app.world_zoom.min(250.0);

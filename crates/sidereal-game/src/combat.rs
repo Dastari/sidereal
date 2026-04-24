@@ -1,5 +1,5 @@
 use avian2d::prelude::{LinearVelocity, Position, Rotation, SpatialQuery, SpatialQueryFilter};
-use bevy::prelude::*;
+use bevy::{math::DVec2, prelude::*};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -17,9 +17,9 @@ pub struct ShotFiredEvent {
     pub shooter_guid: Uuid,
     pub weapon_entity: Entity,
     pub weapon_guid: Uuid,
-    pub origin: Vec2,
+    pub origin: DVec2,
     pub direction: Vec2,
-    pub max_range_m: f32,
+    pub max_range_m: f64,
     pub damage_per_shot: f32,
     pub damage_type: DamageType,
 }
@@ -29,9 +29,9 @@ pub struct ShotImpactResolvedEvent {
     pub shooter_guid: Uuid,
     pub weapon_entity: Entity,
     pub weapon_guid: Uuid,
-    pub origin: Vec2,
-    pub impact_pos: Vec2,
-    pub max_range_m: f32,
+    pub origin: DVec2,
+    pub impact_pos: DVec2,
+    pub max_range_m: f64,
     pub damage_per_shot: f32,
     pub damage_type: DamageType,
     pub target_entity: Option<Entity>,
@@ -61,7 +61,7 @@ pub struct EntityDestructionStartedEvent {
     pub entity: Entity,
     pub entity_guid: Uuid,
     pub destruction_profile_id: String,
-    pub effect_origin: Vec2,
+    pub effect_origin: DVec2,
     pub destroy_delay_s: f32,
 }
 
@@ -70,7 +70,7 @@ pub struct EntityDestroyedEvent {
     pub entity: Entity,
     pub entity_guid: Uuid,
     pub destruction_profile_id: String,
-    pub effect_origin: Vec2,
+    pub effect_origin: DVec2,
 }
 
 pub fn bootstrap_weapon_cooldown_state(
@@ -155,7 +155,7 @@ pub fn process_weapon_fire_actions(
             continue;
         }
 
-        let shooter_quat: Quat = (*shooter_rotation).into();
+        let shooter_quat = Quat::from_rotation_z(shooter_rotation.as_radians() as f32);
         for (weapon_entity, weapon_guid, mounted_on, weapon, mut cooldown, ammo_opt) in &mut weapons
         {
             if mounted_on.parent_entity_id != shooter_guid.0 {
@@ -184,7 +184,8 @@ pub fn process_weapon_fire_actions(
                 continue;
             }
             let direction = local_forward.normalize();
-            let origin = shooter_position.0 + rotate_vec2(shooter_quat, *hardpoint_offset);
+            let origin =
+                shooter_position.0 + rotate_vec2(shooter_quat, *hardpoint_offset).as_dvec2();
 
             if let Some(ammo) = ammo_opt.as_deref_mut() {
                 let _ = ammo.consume(1);
@@ -193,15 +194,16 @@ pub fn process_weapon_fire_actions(
             if weapon.uses_projectile_entities() {
                 let shooter_velocity = shooter_linear_velocity
                     .map(|value| value.0)
-                    .unwrap_or(Vec2::ZERO);
+                    .unwrap_or(DVec2::ZERO);
                 let projectile_velocity =
-                    shooter_velocity + direction * weapon.projectile_speed_mps;
+                    shooter_velocity + (direction * weapon.projectile_speed_mps).as_dvec2();
+                let (_, _, muzzle_heading_rad) = muzzle_quat.to_euler(EulerRot::XYZ);
                 let projectile_entity = commands
                     .spawn((
                         Name::new("BallisticProjectile"),
                         EntityGuid(Uuid::new_v4()),
                         Position(origin),
-                        Rotation::from(muzzle_quat),
+                        Rotation::radians(f64::from(muzzle_heading_rad)),
                         LinearVelocity(projectile_velocity),
                         BallisticProjectile::new(
                             shooter_guid.0,
@@ -233,7 +235,7 @@ pub fn process_weapon_fire_actions(
                     weapon_guid: weapon_guid.0,
                     origin,
                     direction,
-                    max_range_m: weapon.max_range_m.max(1.0),
+                    max_range_m: f64::from(weapon.max_range_m.max(1.0)),
                     damage_per_shot: weapon.damage_per_shot,
                     damage_type: weapon.damage_type,
                 });
@@ -273,7 +275,8 @@ pub fn update_ballistic_projectiles(
     mut shot_hit_events: MessageWriter<'_, ShotHitEvent>,
 ) {
     let dt_s = time.delta_secs();
-    if dt_s <= 0.0 {
+    let dt_s_f64 = time.delta_secs_f64();
+    if dt_s <= 0.0 || dt_s_f64 <= 0.0 {
         return;
     }
     let authority_enabled = authority_enabled.map(|value| value.0).unwrap_or(true);
@@ -293,18 +296,18 @@ pub fn update_ballistic_projectiles(
 
     for (entity, start, velocity, projectile_snapshot) in projectile_snapshots {
         let remaining_lifetime_s = projectile_snapshot.remaining_lifetime_s - dt_s;
-        if remaining_lifetime_s <= 0.0 || velocity.length_squared() <= f32::EPSILON {
+        if remaining_lifetime_s <= 0.0 || velocity.length_squared() <= f64::EPSILON {
             commands.entity(entity).despawn();
             continue;
         }
 
-        let step = velocity * dt_s;
+        let step = velocity * dt_s_f64;
         let travel_distance = step.length();
-        if travel_distance <= f32::EPSILON {
+        if travel_distance <= f64::EPSILON {
             continue;
         }
         let direction = step / travel_distance;
-        let Ok(ray_direction) = Dir2::new(direction) else {
+        let Ok(ray_direction) = Dir2::new(direction.as_vec2()) else {
             continue;
         };
 
@@ -318,12 +321,12 @@ pub fn update_ballistic_projectiles(
         let hit = projectile_params.p0().cast_ray(
             start,
             ray_direction,
-            travel_distance + projectile_snapshot.collision_radius_m.max(0.0),
+            travel_distance + f64::from(projectile_snapshot.collision_radius_m.max(0.0)),
             true,
             &filter,
         );
         if let Some(hit) = hit {
-            let impact_pos = start + ray_direction.as_vec2() * hit.distance;
+            let impact_pos = start + ray_direction.as_vec2().as_dvec2() * hit.distance;
             let target_guid = guid_entities.get(hit.entity).ok().map(|(_, guid)| guid.0);
             impact_events.write(ShotImpactResolvedEvent {
                 shooter_guid: projectile_snapshot.shooter_guid,
@@ -395,8 +398,10 @@ pub fn resolve_shot_impacts(
             &filter,
         );
         let impact_pos = hit
-            .map(|hit| fired.origin + ray_direction.as_vec2() * hit.distance)
-            .unwrap_or_else(|| fired.origin + ray_direction.as_vec2() * fired.max_range_m.max(1.0));
+            .map(|hit| fired.origin + ray_direction.as_vec2().as_dvec2() * hit.distance)
+            .unwrap_or_else(|| {
+                fired.origin + ray_direction.as_vec2().as_dvec2() * fired.max_range_m.max(1.0)
+            });
         let target_entity = hit.map(|hit| hit.entity);
         let target_guid =
             target_entity.and_then(|entity| guid_entities.get(entity).ok().map(|g| g.1.0));
@@ -475,7 +480,7 @@ pub fn begin_pending_destructions(
             entity,
             entity_guid: entity_guid.0,
             destruction_profile_id,
-            effect_origin: resolve_world_position(position, world_position).unwrap_or(Vec2::ZERO),
+            effect_origin: resolve_world_position(position, world_position).unwrap_or(DVec2::ZERO),
             destroy_delay_s,
         });
     }
@@ -512,7 +517,7 @@ pub fn advance_pending_destructions(
                     entity_guid: entity_guid.0,
                     destruction_profile_id: pending.destruction_profile_id.clone(),
                     effect_origin: resolve_world_position(position, world_position)
-                        .unwrap_or(Vec2::ZERO),
+                        .unwrap_or(DVec2::ZERO),
                 });
             }
             PendingDestructionPhase::AwaitDestroyedEventDispatch => {

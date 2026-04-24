@@ -142,11 +142,11 @@ WorldInit.world_defaults = {
     spot_density = 0.08,
     surface_activity = 0.1,
     corona_intensity = 0.0,
-    cloud_coverage = 0.58,
-    cloud_scale = 1.9,
+    cloud_coverage = 0.54,
+    cloud_scale = 1.72,
     cloud_speed = 0.08,
-    cloud_alpha = 0.76,
-    atmosphere_thickness = 0.18,
+    cloud_alpha = 0.7,
+    atmosphere_thickness = 0.13,
     atmosphere_falloff = 2.4,
     atmosphere_alpha = 0.52,
     city_lights = 0.08,
@@ -270,14 +270,39 @@ local function build_planet_records(ctx)
   end
   local defaults = WorldInit.world_defaults
   local planet_bundle_id = defaults.planet_bundle_id or "planet.body"
-  local starter_planet = defaults.starter_planet
-  local starter_star = defaults.starter_star
   local records = {}
-  if starter_star ~= nil then
-    append_records(records, ctx.spawn_bundle_graph_records(planet_bundle_id, starter_star))
+  if ctx.load_planet_definitions ~= nil then
+    local planet_definitions = ctx.load_planet_definitions() or {}
+    for _, definition in ipairs(planet_definitions) do
+      if definition.spawn_enabled == true and definition.spawn ~= nil then
+        local spawn = definition.spawn
+        local shader_settings = definition.shader_settings or {}
+        local bundle_ctx = {
+          entity_id = spawn.entity_id,
+          display_name = definition.display_name,
+          owner_id = spawn.owner_id,
+          entity_labels = definition.entity_labels,
+          size_m = spawn.size_m,
+          spawn_position = spawn.spawn_position,
+          spawn_rotation_rad = spawn.spawn_rotation_rad,
+          map_icon_asset_id = spawn.map_icon_asset_id,
+          planet_visual_shader_asset_id = spawn.planet_visual_shader_asset_id,
+        }
+        for key, value in pairs(shader_settings) do
+          bundle_ctx[key] = value
+        end
+        append_records(records, ctx.spawn_bundle_graph_records(planet_bundle_id, bundle_ctx))
+      end
+    end
+    if #records > 0 then
+      return records
+    end
   end
-  if starter_planet ~= nil then
-    append_records(records, ctx.spawn_bundle_graph_records(planet_bundle_id, starter_planet))
+  if defaults.starter_star ~= nil then
+    append_records(records, ctx.spawn_bundle_graph_records(planet_bundle_id, defaults.starter_star))
+  end
+  if defaults.starter_planet ~= nil then
+    append_records(records, ctx.spawn_bundle_graph_records(planet_bundle_id, defaults.starter_planet))
   end
   return records
 end

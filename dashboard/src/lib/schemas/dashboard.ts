@@ -107,6 +107,16 @@ export const brpPortSchema = z
     'port must be an integer between 1 and 65535',
   )
 
+export const brpHostSchema = z
+  .string()
+  .trim()
+  .min(1, 'host is required')
+  .max(253, 'host must be 253 characters or fewer')
+  .regex(
+    /^[A-Za-z0-9.-]+$/,
+    'host must be an IP address or hostname without a protocol',
+  )
+
 export const brpRequestSchema = z.object({
   id: z.unknown().optional(),
   method: z
@@ -116,6 +126,7 @@ export const brpRequestSchema = z.object({
   params: z.unknown().optional(),
   target: brpTargetSchema.optional(),
   port: brpPortSchema.optional(),
+  host: brpHostSchema.optional(),
 })
 
 export type DatabaseAccountsSearch = z.infer<

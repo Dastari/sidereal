@@ -23,9 +23,29 @@ pub fn spawn_hud_frame_chrome(
     title_font: &Handle<Font>,
     glow_intensity: f32,
 ) {
-    let corner_color = color(with_alpha(theme.colors.primary, 0.72));
+    spawn_hud_frame_chrome_with_accent(
+        parent,
+        images,
+        theme,
+        title,
+        title_font,
+        glow_intensity,
+        color(with_alpha(theme.colors.primary, 0.72)),
+    );
+}
+
+pub fn spawn_hud_frame_chrome_with_accent(
+    parent: &mut ChildSpawnerCommands,
+    images: &mut Assets<Image>,
+    theme: UiTheme,
+    title: Option<&str>,
+    title_font: &Handle<Font>,
+    glow_intensity: f32,
+    accent_color: Color,
+) {
+    let corner_color = accent_color.with_alpha(0.72);
     let title_bg = color(with_alpha(theme.colors.background, 0.98));
-    let title_text = color(with_alpha(theme.colors.primary, 0.86));
+    let title_text = accent_color.with_alpha(0.86);
 
     spawn_hud_corner_frame(
         parent,
@@ -36,8 +56,8 @@ pub fn spawn_hud_frame_chrome(
     spawn_scanline_overlay(
         parent,
         images,
-        color(with_alpha(theme.colors.primary, 0.003)),
-        color(with_alpha(theme.colors.primary, 0.003)),
+        accent_color.with_alpha(0.003),
+        accent_color.with_alpha(0.003),
         HUD_FRAME_SCANLINE_INSET_PX,
         HUD_FRAME_SCANLINE_STRIDE_PX,
         HUD_FRAME_SCANLINE_THICKNESS_PX,
@@ -52,10 +72,7 @@ pub fn spawn_hud_frame_chrome(
             height: Val::Px(1.0),
             ..default()
         },
-        BackgroundColor(color(with_alpha(
-            theme.colors.glow,
-            glow_alpha(0.18, glow_intensity),
-        ))),
+        BackgroundColor(accent_color.with_alpha(glow_alpha(0.18, glow_intensity))),
         FocusPolicy::Pass,
     ));
 
@@ -68,10 +85,7 @@ pub fn spawn_hud_frame_chrome(
             height: Val::Px(1.0),
             ..default()
         },
-        BackgroundColor(color(with_alpha(
-            theme.colors.glow_muted,
-            glow_alpha(0.12, glow_intensity),
-        ))),
+        BackgroundColor(accent_color.with_alpha(glow_alpha(0.12, glow_intensity))),
         FocusPolicy::Pass,
     ));
 

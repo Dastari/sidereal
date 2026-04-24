@@ -97,6 +97,8 @@ The visible line artifacts on terran planets came from overloading the old body 
 
 2026-04-24 rendering update: `planet_visual.wgsl` now avoids the older animated 4D value-noise path for clouds/stars and uses time-evolving domain-warped 3D fBm instead. The active body pass also uses a simple cellular crater field for rocky bodies, derives normal perturbation from screen-space height derivatives instead of extra height resamples, and applies a smoother terminator response for twilight atmosphere and direct-light falloff.
 
+2026-04-24 cloud update: cloud density now branches by planet type instead of evaluating terran and gas-family cloud functions for every cloud/shadow sample. Terran clouds use a cheaper broad-cell plus feathered-wisp field, and Lua-authored cloud passes use a lower shell scale so Aurelia-style planets keep weather visually close to the surface.
+
 ## Tuning Notes
 
 Useful references for the current look direction:

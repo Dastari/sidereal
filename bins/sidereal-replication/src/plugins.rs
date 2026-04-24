@@ -7,7 +7,7 @@ use crate::replication::persistence::{
     mark_dirty_persistable_entities, mark_dirty_persistable_entities_spatial,
 };
 use crate::replication::{
-    admin, assets, combat, health, input, lifecycle, owner_manifest, persistence,
+    admin, assets, combat, health, input, lifecycle, notifications, owner_manifest, persistence,
     runtime_scripting, runtime_state, simulation_entities, tactical, visibility,
 };
 
@@ -19,6 +19,7 @@ impl Plugin for ReplicationLifecyclePlugin {
             Startup,
             (
                 simulation_entities::hydrate_simulation_entities,
+                notifications::start_notification_persistence_worker,
                 lifecycle::start_lightyear_server,
                 health::start_health_server,
             )

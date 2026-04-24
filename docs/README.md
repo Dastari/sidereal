@@ -38,6 +38,7 @@ Update note (2026-03-09):
    - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
    - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
    - `docs/plans/dynamic_runtime_shader_material_plan.md`
+   - `docs/features/genesis_planet_registry_contract.md`
 3. Visibility and replication:
    - `docs/features/visibility_replication_contract.md`
    - `docs/features/tactical_and_owner_lane_protocol_contract.md`
@@ -70,6 +71,9 @@ Update note (2026-03-13):
 
 Update note (2026-03-16):
 - Added `docs/features/resources_and_crafting_contract.md` as the active feature specification for the shared material taxonomy, crafting model, and Bevy/content-authoring contract that will underpin future economy and manufacturing work.
+
+Update note (2026-04-24):
+- Added `docs/features/genesis_planet_registry_contract.md` as the active feature spec for Genesis planet/celestial authoring and the Lua planet registry.
 
 Update note (2026-04-24):
 - Removed older superseded March 2026 audit reports now replaced by the 2026-04-23 reports under `docs/reports/`.

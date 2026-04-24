@@ -17,9 +17,9 @@ fn spawn_weapon_fixture(app: &mut App, projectile_speed_mps: f32) -> (Entity, En
         .world_mut()
         .spawn((
             EntityGuid(shooter_guid),
-            Position(Vec2::new(10.0, -20.0)),
+            Position(Vec2::new(10.0, -20.0).into()),
             Rotation::from(Quat::IDENTITY),
-            LinearVelocity(Vec2::new(35.0, -5.0)),
+            LinearVelocity(Vec2::new(35.0, -5.0).into()),
             OwnerId("player-1".to_string()),
             SimulationMotionWriter,
             ActionQueue {

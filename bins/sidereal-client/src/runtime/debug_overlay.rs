@@ -433,8 +433,12 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             lane: DebugEntityLane::Auxiliary,
             position_xy: world.translation.truncate(),
             rotation_rad: world.rotation.to_euler(EulerRot::XYZ).2,
-            velocity_xy: linear_velocity.map(|value| value.0).unwrap_or(Vec2::ZERO),
-            angular_velocity_rps: angular_velocity.map(|value| value.0).unwrap_or_default(),
+            velocity_xy: linear_velocity
+                .map(|value| value.0.as_vec2())
+                .unwrap_or(Vec2::ZERO),
+            angular_velocity_rps: angular_velocity
+                .map(|value| value.0 as f32)
+                .unwrap_or_default(),
             collision,
             is_controlled: is_local_controlled,
         };
@@ -495,8 +499,8 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                     && confirmed_rotation.is_some(),
                 confirmed_pose: confirmed_position.zip(confirmed_rotation).map(
                     |(position, rotation)| ConfirmedGhostPose {
-                        position_xy: position.0.0,
-                        rotation_rad: rotation.0.as_radians(),
+                        position_xy: position.0.0.as_vec2(),
+                        rotation_rad: rotation.0.as_radians() as f32,
                     },
                 ),
                 confirmed_tick: confirmed_tick.map(|tick| tick.tick.0),

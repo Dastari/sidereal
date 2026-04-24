@@ -661,10 +661,18 @@ async function callBrpJsonRpc<T = unknown>(
   target: 'server' | 'client',
   method: string,
   params?: unknown,
+  host?: string,
 ): Promise<{ result?: T; error?: string }> {
-  const readUrl = buildBrpReadUrl({ method, params, port, target })
+  const readUrl = buildBrpReadUrl({ host, method, params, port, target })
+  const fallbackQuery = new URLSearchParams({
+    port: String(port),
+    target,
+  })
+  if (host) {
+    fallbackQuery.set('host', host)
+  }
   const response = await fetch(
-    readUrl ?? `/api/brp?port=${port}&target=${target}`,
+    readUrl ?? `/api/brp?${fallbackQuery.toString()}`,
     readUrl
       ? { method: 'GET' }
       : {
@@ -699,8 +707,15 @@ async function callBrpJsonRpc<T = unknown>(
 async function fetchBrpResources(
   port: number,
   target: 'server' | 'client',
+  host?: string,
 ): Promise<Array<BrpResourceRecord>> {
-  const listed = await callBrpJsonRpc<unknown>(port, target, 'world.list_resources')
+  const listed = await callBrpJsonRpc<unknown>(
+    port,
+    target,
+    'world.list_resources',
+    undefined,
+    host,
+  )
   if (listed.error) {
     return [{ typePath: '__error__', error: listed.error }]
   }
@@ -714,12 +729,14 @@ async function fetchBrpResourceValue(
   port: number,
   target: 'server' | 'client',
   typePath: string,
+  host?: string,
 ): Promise<{ value?: unknown; error?: string }> {
   const preferred = await callBrpJsonRpc<{ value?: unknown }>(
     port,
     target,
     'world.get_resources',
     { resource: typePath },
+    host,
   )
   if (!preferred.error) {
     if (
@@ -736,6 +753,7 @@ async function fetchBrpResourceValue(
     target,
     'world.get_resource',
     { resource: typePath },
+    host,
   )
   if (fallback.error) {
     return { error: `${preferred.error}; fallback failed: ${fallback.error}` }
@@ -785,7 +803,9 @@ function parseSelectedPlayerVisibilityOverlay(
 ): PlayerVisibilityOverlay | null {
   if (!selectedId) return null
   const componentNodeIds = graphEdges
-    .filter((edge) => edge.from === selectedId && edge.label === 'HAS_COMPONENT')
+    .filter(
+      (edge) => edge.from === selectedId && edge.label === 'HAS_COMPONENT',
+    )
     .map((edge) => edge.to)
 
   let spatialGridValue: Record<string, unknown> | null = null
@@ -797,7 +817,8 @@ function parseSelectedPlayerVisibilityOverlay(
     if (!node || !isObjectRecord(node.properties)) continue
     const typePathRaw = node.properties.typePath
     const componentValue = node.properties.value
-    if (typeof typePathRaw !== 'string' || !isObjectRecord(componentValue)) continue
+    if (typeof typePathRaw !== 'string' || !isObjectRecord(componentValue))
+      continue
     if (typePathRaw.endsWith('::VisibilitySpatialGrid')) {
       spatialGridValue = componentValue
     } else if (typePathRaw.endsWith('::VisibilityDisclosure')) {
@@ -811,25 +832,25 @@ function parseSelectedPlayerVisibilityOverlay(
 
   const parseCellList = (cellsRaw: unknown): Array<{ x: number; y: number }> =>
     (Array.isArray(cellsRaw) ? cellsRaw : [])
-    .map((entry) => {
-      if (!isObjectRecord(entry)) return null
-      const x = asFiniteNumber(entry.x)
-      const y = asFiniteNumber(entry.y)
-      if (x === null || y === null) return null
-      return { x, y }
-    })
-    .filter((entry): entry is { x: number; y: number } => entry !== null)
+      .map((entry) => {
+        if (!isObjectRecord(entry)) return null
+        const x = asFiniteNumber(entry.x)
+        const y = asFiniteNumber(entry.y)
+        if (x === null || y === null) return null
+        return { x, y }
+      })
+      .filter((entry): entry is { x: number; y: number } => entry !== null)
 
   const cellSizeM = spatialGridValue
-    ? asFiniteNumber(spatialGridValue.cell_size_m) ??
+    ? (asFiniteNumber(spatialGridValue.cell_size_m) ??
       asFiniteNumber(spatialGridValue.cellSizeM) ??
-      asFiniteNumber(spatialGridValue.cellSize)
+      asFiniteNumber(spatialGridValue.cellSize))
     : null
   const deliveryRangeM = spatialGridValue
-    ? asFiniteNumber(spatialGridValue.delivery_range_m) ??
+    ? (asFiniteNumber(spatialGridValue.delivery_range_m) ??
       asFiniteNumber(spatialGridValue.deliveryRangeM) ??
       asFiniteNumber(spatialGridValue.deliveryRange) ??
-      0
+      0)
     : 0
 
   const queriedCells = spatialGridValue
@@ -884,9 +905,7 @@ function parseSelectedPlayerVisibilityOverlay(
       }
     })
     .filter(
-      (
-        entry,
-      ): entry is { x: number; y: number; z?: number; range_m: number } =>
+      (entry): entry is { x: number; y: number; z?: number; range_m: number } =>
         entry !== null,
     )
 
@@ -905,7 +924,10 @@ function parseSelectedPlayerVisibilityOverlay(
 
 function isPlayerEntity(entity: WorldEntity): boolean {
   if (entity.kind.toLowerCase().includes('player')) return true
-  return entity.entity_labels?.some((label) => label.toLowerCase() === 'player') ?? false
+  return (
+    entity.entity_labels?.some((label) => label.toLowerCase() === 'player') ??
+    false
+  )
 }
 
 function playerLabel(entity: WorldEntity): string {
@@ -961,13 +983,17 @@ function findComponentBySuffix(
   suffix: string,
 ): EntityComponentDescriptor | null {
   return (
-    getEntityComponentDescriptors(entityId, graphNodes, graphEdges).find((component) =>
-      component.typePath.endsWith(suffix),
+    getEntityComponentDescriptors(entityId, graphNodes, graphEdges).find(
+      (component) => component.typePath.endsWith(suffix),
     ) ?? null
   )
 }
 
-function normalizeVec2Value(existingValue: unknown, x: number, y: number): unknown {
+function normalizeVec2Value(
+  existingValue: unknown,
+  x: number,
+  y: number,
+): unknown {
   if (Array.isArray(existingValue)) {
     return [x, y]
   }
@@ -1068,7 +1094,10 @@ function collectEntityAndDescendants(
 
 function isShipEntity(entity: WorldEntity): boolean {
   if (entity.kind.toLowerCase() === 'ship') return true
-  return entity.entity_labels?.some((label) => label.toLowerCase() === 'ship') ?? false
+  return (
+    entity.entity_labels?.some((label) => label.toLowerCase() === 'ship') ??
+    false
+  )
 }
 
 export {

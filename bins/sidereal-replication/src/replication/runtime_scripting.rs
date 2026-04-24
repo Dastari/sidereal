@@ -1,9 +1,12 @@
 use avian2d::prelude::Position;
-use bevy::prelude::*;
+use bevy::{math::DVec2, prelude::*};
 use mlua::{Function, Lua, RegistryKey, Table, UserData, UserDataMethods, Value};
 use serde_json::Value as JsonValue;
 use sidereal_game::{EntityGuid, FlightComputer, OwnerId, ScriptState, ScriptValue};
-use sidereal_net::PlayerEntityId;
+use sidereal_net::{
+    NotificationImageRef, NotificationPayload, NotificationPlacement, NotificationSeverity,
+    PlayerEntityId,
+};
 use sidereal_scripting::{
     LuaSandboxPolicy, ScriptError, create_sandboxed_lua_vm, inject_script_logger,
     load_lua_module_into_lua_from_source, lua_value_to_json, reset_lua_instruction_budget,
@@ -15,12 +18,16 @@ use std::rc::Rc;
 use std::time::Instant;
 use uuid::Uuid;
 
+use crate::replication::notifications::{NotificationCommand, NotificationCommandQueue};
 use crate::replication::scripting::{ScriptCatalogResource, lookup_script_catalog_entry};
+
+const SCRIPT_NOTIFICATION_TITLE_MAX_CHARS: usize = 96;
+const SCRIPT_NOTIFICATION_BODY_MAX_CHARS: usize = 512;
 
 #[derive(Clone)]
 struct ScriptEntitySnapshot {
     guid: String,
-    position: Vec2,
+    position: DVec2,
     script_state: Option<JsonValue>,
 }
 
@@ -113,6 +120,9 @@ enum ScriptIntent {
         entity_id: Uuid,
         key: String,
         value: JsonValue,
+    },
+    NotifyPlayer {
+        command: NotificationCommand,
     },
 }
 
@@ -242,8 +252,8 @@ pub fn refresh_script_world_snapshot(
     for (guid, position, transform, script_state) in &query {
         let pos = position
             .map(|v| v.0)
-            .or_else(|| transform.map(|t| t.translation.truncate()))
-            .unwrap_or(Vec2::ZERO);
+            .or_else(|| transform.map(|t| t.translation.truncate().as_dvec2()))
+            .unwrap_or(DVec2::ZERO);
         snapshot.entities_by_guid.insert(
             guid.0.to_string(),
             ScriptEntitySnapshot {
@@ -515,6 +525,7 @@ pub fn run_script_events(
 #[allow(clippy::type_complexity)]
 pub fn apply_script_intents(
     runtime: Option<NonSendMut<'_, ScriptRuntime>>,
+    mut notification_queue: ResMut<'_, NotificationCommandQueue>,
     mut query: Query<
         '_,
         '_,
@@ -600,6 +611,9 @@ pub fn apply_script_intents(
                     break;
                 }
             }
+            ScriptIntent::NotifyPlayer { command } => {
+                notification_queue.push(command);
+            }
         }
     }
 }
@@ -653,6 +667,22 @@ fn build_script_context(
         .map_err(|err| ScriptError::Runtime(format!("create emit_intent failed: {err}")))?;
     ctx.set("emit_intent", emit_intent)
         .map_err(|err| ScriptError::Runtime(format!("set emit_intent failed: {err}")))?;
+    let notify_intents = Rc::clone(&pending_intents);
+    let notify_player = lua
+        .create_function(move |_lua, (_ctx, payload): (Table, Value)| {
+            let payload_json = lua_value_to_json(payload).map_err(|err| {
+                mlua::Error::runtime(format!("notification payload decode failed: {err}"))
+            })?;
+            let command =
+                parse_notification_command(&payload_json).map_err(mlua::Error::runtime)?;
+            notify_intents
+                .borrow_mut()
+                .push(ScriptIntent::NotifyPlayer { command });
+            Ok(())
+        })
+        .map_err(|err| ScriptError::Runtime(format!("create notify_player failed: {err}")))?;
+    ctx.set("notify_player", notify_player)
+        .map_err(|err| ScriptError::Runtime(format!("set notify_player failed: {err}")))?;
     Ok(ctx)
 }
 
@@ -713,6 +743,116 @@ fn parse_intent(action: &str, payload: &JsonValue) -> Result<ScriptIntent, Strin
             })
         }
         other => Err(format!("unsupported intent action={other}")),
+    }
+}
+
+fn parse_notification_command(payload: &JsonValue) -> Result<NotificationCommand, String> {
+    let player_entity_id = required_string(payload, "player_entity_id")?;
+    if PlayerEntityId::parse(&player_entity_id).is_none() {
+        return Err("notification player_entity_id must be a valid player UUID".to_string());
+    }
+    let title = bounded_required_string(payload, "title", SCRIPT_NOTIFICATION_TITLE_MAX_CHARS)?;
+    let body = bounded_required_string(payload, "body", SCRIPT_NOTIFICATION_BODY_MAX_CHARS)?;
+    let severity = payload
+        .get("severity")
+        .and_then(JsonValue::as_str)
+        .map(parse_notification_severity)
+        .transpose()?
+        .unwrap_or(NotificationSeverity::Info);
+    let placement = payload
+        .get("placement")
+        .and_then(JsonValue::as_str)
+        .map(parse_notification_placement)
+        .transpose()?
+        .unwrap_or_default();
+    let image_asset_id = payload
+        .get("image_asset_id")
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    let image_alt_text = payload
+        .get("image_alt_text")
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    let auto_dismiss_after_s = payload
+        .get("auto_dismiss_after_s")
+        .and_then(JsonValue::as_f64)
+        .map(|value| {
+            if value.is_finite() && value > 0.0 && value <= 120.0 {
+                Ok(value as f32)
+            } else {
+                Err("auto_dismiss_after_s must be finite and between 0 and 120".to_string())
+            }
+        })
+        .transpose()?;
+    let event_type = payload
+        .get("event_type")
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("script_notification")
+        .to_string();
+    let data = payload
+        .get("data")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(NotificationCommand {
+        player_entity_id,
+        title,
+        body,
+        severity,
+        placement,
+        image: image_asset_id.map(|asset_id| NotificationImageRef {
+            asset_id,
+            alt_text: image_alt_text,
+        }),
+        payload: NotificationPayload::Generic { event_type, data },
+        auto_dismiss_after_s,
+    })
+}
+
+fn required_string(payload: &JsonValue, key: &str) -> Result<String, String> {
+    payload
+        .get(key)
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("notification requires payload.{key}"))
+}
+
+fn bounded_required_string(
+    payload: &JsonValue,
+    key: &str,
+    max_chars: usize,
+) -> Result<String, String> {
+    let value = required_string(payload, key)?;
+    if value.chars().count() > max_chars {
+        return Err(format!(
+            "notification payload.{key} must be at most {max_chars} characters"
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_notification_severity(raw: &str) -> Result<NotificationSeverity, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "info" => Ok(NotificationSeverity::Info),
+        "success" => Ok(NotificationSeverity::Success),
+        "warning" => Ok(NotificationSeverity::Warning),
+        "error" => Ok(NotificationSeverity::Error),
+        other => Err(format!("unsupported notification severity={other}")),
+    }
+}
+
+fn parse_notification_placement(raw: &str) -> Result<NotificationPlacement, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "top_left" | "top-left" => Ok(NotificationPlacement::TopLeft),
+        "top_center" | "top-center" => Ok(NotificationPlacement::TopCenter),
+        "top_right" | "top-right" => Ok(NotificationPlacement::TopRight),
+        "bottom_left" | "bottom-left" => Ok(NotificationPlacement::BottomLeft),
+        "bottom_center" | "bottom-center" => Ok(NotificationPlacement::BottomCenter),
+        "bottom_right" | "bottom-right" => Ok(NotificationPlacement::BottomRight),
+        other => Err(format!("unsupported notification placement={other}")),
     }
 }
 

@@ -12,3 +12,6 @@ pub struct TacticalDeltaChannel;
 
 #[derive(Debug)]
 pub struct ManifestChannel;
+
+#[derive(Debug)]
+pub struct NotificationChannel;

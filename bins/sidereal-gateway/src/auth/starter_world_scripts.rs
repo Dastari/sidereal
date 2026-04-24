@@ -16,12 +16,13 @@ use sidereal_persistence::{
     upsert_script_catalog_draft,
 };
 use sidereal_scripting::{
-    LuaSandboxPolicy, ScriptAssetRegistry, ScriptError, WORLD_INIT_SCRIPT_REL_PATH,
-    WorldInitScriptConfig, decode_graph_entity_records, inject_script_logger,
-    load_asset_registry_from_source, load_lua_module_from_source,
-    load_lua_module_into_lua_from_source, load_world_init_config_from_source, lua_value_to_json,
-    resolve_scripts_root, table_get_required_string, table_get_required_string_list,
-    validate_component_kinds, validate_runtime_render_graph_records,
+    LuaSandboxPolicy, PLANET_REGISTRY_SCRIPT_REL_PATH, ScriptAssetRegistry, ScriptError,
+    WORLD_INIT_SCRIPT_REL_PATH, WorldInitScriptConfig, decode_graph_entity_records,
+    inject_script_logger, load_asset_registry_from_source, load_lua_module_from_source,
+    load_lua_module_into_lua_from_source, load_planet_registry_from_sources,
+    load_world_init_config_from_source, lua_value_to_json, resolve_scripts_root,
+    table_get_required_string, table_get_required_string_list, validate_component_kinds,
+    validate_runtime_render_graph_records,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -703,6 +704,8 @@ fn inject_script_context(
     .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     inject_generate_collision_outline_fn(ctx.clone(), module.lua(), scripts_root)
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
+    inject_load_planet_definitions_fn(ctx.clone(), module.lua(), scripts_root)
+        .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     inject_render_authoring_api(module.lua(), ctx)
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     Ok(())
@@ -715,6 +718,66 @@ fn inject_bundle_registry_spawn_fn(
 ) -> Result<(), AuthError> {
     inject_bundle_registry_spawn_fn_inner(ctx, module.lua(), scripts_root)
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))
+}
+
+fn load_planet_registry_from_catalog(
+    catalog: &ScriptCatalogResource,
+) -> Result<sidereal_game::PlanetRegistry, AuthError> {
+    let registry_entry = lookup_script_catalog_entry(catalog, PLANET_REGISTRY_SCRIPT_REL_PATH)?;
+    let sources_by_script_path = catalog
+        .entries
+        .iter()
+        .map(|entry| (entry.script_path.clone(), entry.source.clone()))
+        .collect::<HashMap<_, _>>();
+    load_planet_registry_from_sources(
+        &registry_entry.source,
+        Path::new(PLANET_REGISTRY_SCRIPT_REL_PATH),
+        &sources_by_script_path,
+    )
+    .map_err(map_script_error)
+}
+
+fn inject_load_planet_definitions_fn(
+    ctx: Table,
+    lua: &mlua::Lua,
+    scripts_root: &Path,
+) -> mlua::Result<()> {
+    let scripts_root = scripts_root.to_path_buf();
+    let load_planet_definitions = lua.create_function(move |lua, ()| {
+        let catalog = current_script_catalog(&scripts_root)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let registry = load_planet_registry_from_catalog(&catalog)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let spawn_enabled_by_planet_id = registry
+            .entries
+            .iter()
+            .map(|entry| (entry.planet_id.as_str(), entry.spawn_enabled))
+            .collect::<HashMap<_, _>>();
+        let definitions_json = registry
+            .definitions
+            .iter()
+            .map(|definition| {
+                let mut value = serde_json::to_value(definition).map_err(|err| err.to_string())?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "spawn_enabled".to_string(),
+                        serde_json::Value::Bool(
+                            spawn_enabled_by_planet_id
+                                .get(definition.planet_id.as_str())
+                                .copied()
+                                .unwrap_or(false),
+                        ),
+                    );
+                }
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(mlua::Error::runtime)?;
+        json_value_to_lua(lua, &serde_json::Value::Array(definitions_json))
+            .map_err(mlua::Error::runtime)
+    })?;
+    ctx.set("load_planet_definitions", load_planet_definitions)?;
+    Ok(())
 }
 
 fn inject_bundle_registry_spawn_fn_inner(

@@ -1,0 +1,42 @@
+[package]
+name = "lightyear_avian2d"
+version = "0.26.4"
+edition = "2024"
+description = "Local Sidereal f64 patch for Lightyear Avian2D integration"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "lightyear_avian2d"
+path = "src/lib.rs"
+required-features = ["2d"]
+bench = false
+
+[features]
+default = ["std", "2d", "avian2d/parry-f64"]
+f32 = ["avian2d/f32"]
+2d = ["avian2d/2d"]
+std = ["lightyear_prediction/std"]
+deterministic = ["dep:seahash"]
+lag_compensation = []
+
+[dependencies]
+lightyear_core = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", default-features = false }
+lightyear_link = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", default-features = false }
+lightyear_prediction = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", default-features = false }
+lightyear_interpolation = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", default-features = false }
+lightyear_frame_interpolation = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", default-features = false }
+lightyear_replication = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", default-features = false, features = ["avian2d"] }
+
+avian2d = { workspace = true }
+
+tracing = { workspace = true }
+
+bevy_app = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_math = { version = "0.18", default-features = false }
+bevy_time = { version = "0.18", default-features = false }
+bevy_transform = { version = "0.18", default-features = false, features = ["bevy-support", "libm"] }
+bevy_utils = { version = "0.18", default-features = false, features = ["debug"] }
+
+seahash = { version = "4.1.0", optional = true }

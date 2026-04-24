@@ -49,17 +49,17 @@ fn apply_owner_manifest_delta(
     if message.player_entity_id != local_player_id {
         return;
     }
+    if message.sequence <= cache.sequence {
+        return;
+    }
     if message.base_sequence != cache.sequence {
         if now_s - cache.last_sequence_mismatch_log_at_s >= MISMATCH_LOG_INTERVAL_S {
             warn!(
-                "owner manifest delta sequence mismatch: local={} base={} incoming={}; waiting for snapshot",
+                "owner manifest delta sequence gap: local={} base={} incoming={}; waiting for snapshot",
                 cache.sequence, message.base_sequence, message.sequence
             );
             cache.last_sequence_mismatch_log_at_s = now_s;
         }
-        return;
-    }
-    if message.sequence <= cache.sequence {
         return;
     }
     for entity_id in &message.removals {
@@ -179,5 +179,65 @@ mod tests {
                 .assets_by_entity_id
                 .contains_key(spawned_entity_id.as_str())
         );
+    }
+
+    #[test]
+    fn stale_manifest_delta_after_newer_snapshot_is_ignored_without_mismatch() {
+        let player_id = "11111111-1111-1111-1111-111111111111".to_string();
+        let mut cache = OwnedAssetManifestCache {
+            player_entity_id: Some(player_id.clone()),
+            sequence: 5,
+            last_sequence_mismatch_log_at_s: 0.0,
+            ..OwnedAssetManifestCache::default()
+        };
+
+        apply_owner_manifest_delta(
+            &mut cache,
+            &player_id,
+            &ServerOwnerAssetManifestDeltaMessage {
+                player_entity_id: player_id.clone(),
+                sequence: 4,
+                base_sequence: 3,
+                upserts: vec![entry("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "Stale Ship")],
+                removals: Vec::new(),
+                generated_at_tick: 9,
+            },
+            10.0,
+        );
+
+        assert_eq!(cache.sequence, 5);
+        assert_eq!(cache.generated_at_tick, 0);
+        assert_eq!(cache.last_sequence_mismatch_log_at_s, 0.0);
+        assert!(cache.assets_by_entity_id.is_empty());
+    }
+
+    #[test]
+    fn future_manifest_delta_gap_records_mismatch_for_snapshot_wait() {
+        let player_id = "11111111-1111-1111-1111-111111111111".to_string();
+        let mut cache = OwnedAssetManifestCache {
+            player_entity_id: Some(player_id.clone()),
+            sequence: 5,
+            last_sequence_mismatch_log_at_s: 0.0,
+            ..OwnedAssetManifestCache::default()
+        };
+
+        apply_owner_manifest_delta(
+            &mut cache,
+            &player_id,
+            &ServerOwnerAssetManifestDeltaMessage {
+                player_entity_id: player_id.clone(),
+                sequence: 7,
+                base_sequence: 6,
+                upserts: vec![entry("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "Future Ship")],
+                removals: Vec::new(),
+                generated_at_tick: 11,
+            },
+            10.0,
+        );
+
+        assert_eq!(cache.sequence, 5);
+        assert_eq!(cache.generated_at_tick, 0);
+        assert_eq!(cache.last_sequence_mismatch_log_at_s, 10.0);
+        assert!(cache.assets_by_entity_id.is_empty());
     }
 }

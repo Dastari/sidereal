@@ -11,6 +11,7 @@ pub mod flight;
 pub mod generated;
 pub mod hierarchy;
 pub mod mass;
+pub mod planet_registry;
 pub mod procedural_sprite_generation;
 pub mod render_layers;
 pub mod visibility_range;
@@ -42,6 +43,7 @@ pub use mass::{
     bootstrap_collision_profiles_from_aabb, bootstrap_root_dynamic_entity_colliders,
     bootstrap_root_dynamic_mass_components, collider_from_collision_shape, recompute_total_mass,
 };
+pub use planet_registry::*;
 pub use procedural_sprite_generation::{
     ProceduralSpriteImageSet, compute_collision_half_extents_from_procedural_sprite,
     generate_procedural_sprite_image_set, generate_rdp_collision_outline_from_procedural_sprite,
@@ -101,7 +103,11 @@ impl Plugin for SiderealGameCorePlugin {
             .register_type::<ActionQueue>()
             .register_type::<ActionCapabilities>()
             .register_type::<FlightControlAuthority>()
-            .register_type::<SimulationMotionWriter>();
+            .register_type::<SimulationMotionWriter>()
+            .register_type::<PlanetRegistryEntry>()
+            .register_type::<PlanetSpawnDefinition>()
+            .register_type::<PlanetDefinition>()
+            .register_type::<PlanetRegistry>();
     }
 }
 

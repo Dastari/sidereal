@@ -63,8 +63,8 @@ pnpm build
 | `CLIENT_BRP_URL`                        | `http://127.0.0.1:15714/` | Client BRP endpoint                                                 |
 | `SIDEREAL_REPLICATION_BRP_AUTH_TOKEN`   | unset                     | Optional auth token for server BRP                                  |
 | `SIDEREAL_CLIENT_BRP_AUTH_TOKEN`        | unset                     | Optional auth token for client BRP                                  |
-| `GATEWAY_API_URL`                       | `http://127.0.0.1:8080`   | Gateway base URL for admin spawn proxy                              |
-| `SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN` | unset                     | Bearer token used by dashboard admin spawn API                      |
+| `GATEWAY_API_URL`                       | `http://127.0.0.1:8080`   | Gateway base URL for admin spawn and script-catalog proxies         |
+| `SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN` | unset                     | Bearer token used by dashboard gateway admin proxy APIs             |
 | `SIDEREAL_DASHBOARD_ADMIN_PASSWORD`     | unset                     | Required password for dashboard mutation/admin session bootstrap    |
 | `SIDEREAL_DASHBOARD_SESSION_SECRET`     | unset                     | Optional explicit signing secret for dashboard admin session cookie |
 
@@ -75,6 +75,7 @@ pnpm build
 - `GET /api/live-world` - Returns live entities from server BRP
 - `GET /api/live-client-world` - Returns live entities from client BRP
 - `GET /api/dashboard-session` - Returns dashboard admin session/configuration status
+- `GET /api/genesis/planets` - Returns the Genesis planet registry catalog from gateway script catalog state
 - `POST /api/dashboard-session` - Exchanges the configured admin password for an HttpOnly admin session cookie
 - `DELETE /api/dashboard-session` - Clears the current dashboard admin session cookie
 - `POST /api/admin/spawn-entity` - Proxies admin spawn requests to gateway

@@ -19,7 +19,7 @@ fn depleted_destructible_enters_pending_then_despawns() {
         .world_mut()
         .spawn((
             EntityGuid(Uuid::new_v4()),
-            Position(Vec2::new(14.0, -8.0)),
+            Position(Vec2::new(14.0, -8.0).into()),
             HealthPool {
                 current: 0.0,
                 maximum: 100.0,

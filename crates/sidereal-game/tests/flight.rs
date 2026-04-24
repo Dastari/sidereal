@@ -151,7 +151,7 @@ fn stabilize_idle_motion_zeros_small_residual_velocity_and_spin() {
             },
             FlightControlAuthority,
             SimulationMotionWriter,
-            LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03)),
+            LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03).into()),
             AngularVelocity(0.01),
         ))
         .id();
@@ -180,7 +180,7 @@ fn stabilize_idle_motion_preserves_active_control_state() {
             },
             FlightControlAuthority,
             SimulationMotionWriter,
-            LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03)),
+            LinearVelocity(bevy::prelude::Vec2::new(0.02, -0.03).into()),
             AngularVelocity(0.01),
         ))
         .id();
@@ -209,7 +209,7 @@ fn stabilize_idle_motion_honors_brake_stop_window() {
             },
             FlightControlAuthority,
             SimulationMotionWriter,
-            LinearVelocity(bevy::prelude::Vec2::new(3.0, -1.0)),
+            LinearVelocity(bevy::prelude::Vec2::new(3.0, -1.0).into()),
             AngularVelocity(0.01),
         ))
         .id();

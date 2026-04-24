@@ -25,6 +25,12 @@ Update note (2026-03-14):
 - Buttons and inputs should use `Rajdhani` by default; `Geist Mono` remains for telemetry/frame labels where appropriate.
 - Glow should be driven by one shared runtime scalar, `UiVisualSettings.glow_intensity`, where `0.0` disables glow and higher values increase emitted UI bloom.
 
+Update note (2026-04-24):
+
+- Native Bevy notification toasts are now an active UI component under `bins/sidereal-client/src/runtime/notification_ui.rs`.
+- Toasts use the same `sidereal-ui` panel surface, HUD frame chrome, semantic theme colors, and button surface primitives as dialogs and other framed UI.
+- Critical failures still use persistent dialogs. Toasts are reserved for non-blocking status, discovery, objective, cache, and similar events.
+
 ## 1. Design Philosophy
 
 Sidereal uses a **dark space-themed aesthetic** that emphasizes:
@@ -446,7 +452,6 @@ These components don't exist yet but should follow this guide when implemented:
 - **Progress Indicators** (loading bars, spinners)
 - **Tooltips** (hover hints for buttons/controls)
 - **Context Menus** (right-click actions)
-- **Notification Toasts** (non-blocking, auto-dismiss after 3-5s)
 - **Settings Panels** (sliders, toggles, dropdowns)
 - **HUD Overlays** (ship status, minimap, target info)
 - **Chat/Log Window** (scrollable text feed)
@@ -466,12 +471,22 @@ dialog_queue.push_confirmation(
 );
 ```
 
-**Toast Notification** (non-blocking, auto-dismiss):
-```rust
-toast_queue.push_success("Operation completed successfully");
-toast_queue.push_warning("Low fuel warning");
-// Auto-dismiss after 3s, stack vertically in bottom-right
-```
+### 10.1 Active Notification Toasts
+
+**Location:** `bins/sidereal-client/src/runtime/notification_ui.rs`
+
+**Use for:** non-blocking discoveries, status events, objective updates, asset/cache status, crafting completion, and similar events.
+
+**Do not use for:** critical failures requiring acknowledgment; use `dialog_ui::DialogQueue::push_error()` instead.
+
+Design/behavior:
+
+- Toast panels use `panel_surface`, `spawn_hud_frame_chrome`, and semantic theme severity colors.
+- Every toast includes a compact close button using the standard button surface.
+- Default placement is bottom right.
+- Supported placements are top/bottom left, center, and right.
+- Stacks show up to five visible toasts per placement.
+- Default auto-dismiss durations are info/success 5s, warning 7s, and error 9s.
 
 ## 11. File Locations
 

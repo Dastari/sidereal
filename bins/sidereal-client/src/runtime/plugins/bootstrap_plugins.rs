@@ -13,7 +13,6 @@ pub(crate) struct ClientBootstrapPlugin {
 
 fn configure_non_headless_bootstrap(app: &mut App) {
     scene::insert_embedded_fonts(app);
-    auth_net::init_gateway_request_state(app);
     startup_assets::init_startup_asset_request_state(app);
     app.init_state::<ClientAppState>();
     app.add_systems(
@@ -62,6 +61,7 @@ fn configure_non_headless_bootstrap(app: &mut App) {
 impl Plugin for ClientBootstrapPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(replication::ensure_parent_spatial_components_on_children_added);
+        auth_net::init_gateway_request_state(app);
         if self.headless {
             app.add_systems(Startup, auth_net::configure_headless_session_from_env);
             app.add_systems(Startup, transport::start_lightyear_client_transport);

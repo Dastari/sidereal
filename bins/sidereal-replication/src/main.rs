@@ -6,7 +6,7 @@ mod replication;
 mod tui;
 use crate::config::CliAction;
 use crate::replication::{
-    assets, auth, control, health, input, lifecycle, owner_manifest, persistence,
+    assets, auth, control, health, input, lifecycle, notifications, owner_manifest, persistence,
     runtime_scripting, runtime_state, scripting, simulation_entities, tactical, visibility,
 };
 use avian2d::prelude::{Gravity, PhysicsInterpolationPlugin, PhysicsPlugins, PhysicsSystems};
@@ -115,7 +115,7 @@ fn main() {
     );
     app.add_message::<bevy::asset::AssetEvent<Mesh>>();
     app.init_asset::<Mesh>();
-    app.insert_resource(Gravity(Vec2::ZERO));
+    app.insert_resource(Gravity(Vec2::ZERO.into()));
     app.add_plugins(ServerPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / f64::from(SIM_TICK_HZ)),
     });
@@ -200,6 +200,7 @@ fn init_resources(app: &mut App) {
     runtime_scripting::init_resources(app);
     owner_manifest::init_resources(app);
     tactical::init_resources(app);
+    notifications::init_resources(app);
     lifecycle::init_resources(app);
     health::init_resources(app);
 }
@@ -228,6 +229,9 @@ fn register_plugins(app: &mut App) {
             input::receive_latest_realtime_input_messages,
             control::receive_client_control_requests,
             visibility::receive_client_local_view_mode_messages,
+            notifications::receive_notification_dismissals,
+            notifications::process_notification_commands,
+            notifications::stream_notification_messages,
             input::report_input_drop_metrics,
             persistence::report_persistence_worker_metrics,
             lifecycle::disconnect_idle_clients,

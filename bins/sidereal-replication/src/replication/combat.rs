@@ -18,8 +18,8 @@ use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::control::owner_prediction_target;
 use crate::replication::runtime_scripting::{ScriptEvent, ScriptEventQueue};
 
-const TRACER_VISUAL_SPEED_MPS: f32 = 1800.0;
-const TRACER_VISUAL_MIN_TTL_S: f32 = 0.01;
+const TRACER_VISUAL_SPEED_MPS: f64 = 1800.0;
+const TRACER_VISUAL_MIN_TTL_S: f64 = 0.01;
 
 pub fn init_resources(_app: &mut App) {}
 
@@ -125,7 +125,7 @@ pub fn broadcast_weapon_fired_messages(
 
     for resolved in resolved_events.read() {
         let travel = resolved.impact_pos - resolved.origin;
-        if travel.length_squared() <= f32::EPSILON {
+        if travel.length_squared() <= f64::EPSILON {
             continue;
         }
         let direction = travel.normalize();
@@ -146,7 +146,7 @@ pub fn broadcast_weapon_fired_messages(
             origin_xy: [resolved.origin.x, resolved.origin.y],
             velocity_xy: [initial_velocity.x, initial_velocity.y],
             impact_xy: Some([resolved.impact_pos.x, resolved.impact_pos.y]),
-            ttl_s: visual_ttl_s,
+            ttl_s: visual_ttl_s as f32,
         };
         let Some((shooter_entity, shooter_owner_player_id)) =
             shooter_entity_by_guid.get(&resolved.shooter_guid)

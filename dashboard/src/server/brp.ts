@@ -31,9 +31,15 @@ type BrpQueryRow = {
   has?: Record<string, unknown>
 }
 
+// BRP/world-coordinate payloads are f64 on the Rust side and JSON numbers at
+// the dashboard boundary. Keep them as TypeScript number; never coerce through
+// integer or f32-specific formatting while parsing.
+export type WorldCoordinate = number
+
 export type BrpTarget = 'server' | 'client' | 'hostClient'
 export type BrpCallOptions = {
   target?: BrpTarget
+  host?: string
   port?: number
 }
 
@@ -46,11 +52,11 @@ export type LiveWorldEntity = {
   mapVisible?: boolean
   hasPosition?: boolean
   shardId: number
-  x: number
-  y: number
+  x: WorldCoordinate
+  y: WorldCoordinate
   rotationRad?: number
-  vx: number
-  vy: number
+  vx: WorldCoordinate
+  vy: WorldCoordinate
   sampledAtMs: number
   componentCount: number
   entityGuid?: string
@@ -110,6 +116,13 @@ function normalizePort(port: number | undefined): number | null {
   if (port === undefined) return null
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null
   return port
+}
+
+function normalizeHost(host: string | undefined): string | null {
+  const trimmed = host?.trim()
+  if (!trimmed) return null
+  if (!/^[A-Za-z0-9.-]+$/.test(trimmed)) return null
+  return trimmed
 }
 
 function defaultPortForTarget(target: BrpTarget): number {
@@ -175,6 +188,10 @@ export function getBrpUrl(options: BrpCallOptions | BrpTarget = {}): string {
     typeof options === 'string' ? { target: options } : options
   const target = resolvedOptions.target ?? 'server'
   const resolvedPort = normalizePort(resolvedOptions.port)
+  const resolvedHost = normalizeHost(resolvedOptions.host)
+  if (resolvedHost && resolvedPort) {
+    return `http://${resolvedHost}:${resolvedPort}/`
+  }
   return (
     getBrpUrlFromEnv(target) ??
     getLegacyBrpUrlFromEnv() ??
@@ -225,6 +242,16 @@ function getBrpCandidates(target: BrpTarget, port?: number): Array<string> {
   return Array.from(new Set(candidates.map(normalizeUrl)))
 }
 
+function getBrpCandidatesForOptions(options: BrpCallOptions): Array<string> {
+  const target = options.target ?? 'server'
+  const resolvedPort = normalizePort(options.port) ?? undefined
+  const resolvedHost = normalizeHost(options.host)
+  if (resolvedHost && resolvedPort) {
+    return [`http://${resolvedHost}:${resolvedPort}/`]
+  }
+  return getBrpCandidates(target, resolvedPort)
+}
+
 function getBrpGraphName(target: BrpTarget): string {
   return target === 'client' || target === 'hostClient'
     ? 'bevy_remote_live_client_world'
@@ -262,7 +289,7 @@ export async function callBrpWithMeta(
   })
   const errors: Array<string> = []
 
-  for (const url of getBrpCandidates(target, resolvedOptions.port)) {
+  for (const url of getBrpCandidatesForOptions(resolvedOptions)) {
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -761,9 +788,10 @@ function getRotationFromComponents(
       continue
     }
 
-    const rotation = isTransform && value && typeof value === 'object'
-      ? readRotation((value as Record<string, unknown>).rotation)
-      : readRotation(value)
+    const rotation =
+      isTransform && value && typeof value === 'object'
+        ? readRotation((value as Record<string, unknown>).rotation)
+        : readRotation(value)
     if (rotation !== null && Number.isFinite(rotation)) {
       return rotation
     }

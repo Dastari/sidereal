@@ -3,6 +3,7 @@ import { json } from '@tanstack/react-start'
 import type { BrpTarget } from '@/server/brp'
 import { isReadOnlyBrpMethod } from '@/lib/brp-read'
 import {
+  brpHostSchema,
   brpPortSchema,
   brpRequestSchema,
   brpTargetSchema,
@@ -15,6 +16,7 @@ type BrpRequestBody = {
   method?: unknown
   params?: unknown
   target?: unknown
+  host?: unknown
   port?: unknown
 }
 
@@ -25,6 +27,11 @@ function parseTarget(value: unknown): BrpTarget {
 
 function parsePort(value: unknown): number | null {
   const parsed = brpPortSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+function parseHost(value: unknown): string | null {
+  const parsed = brpHostSchema.safeParse(value)
   return parsed.success ? parsed.data : null
 }
 
@@ -46,8 +53,13 @@ export const Route = createFileRoute('/api/brp')({
         const url = new URL(request.url)
         const snapshot = url.searchParams.get('snapshot')
         const target = parseTarget(url.searchParams.get('target'))
+        const host = parseHost(url.searchParams.get('host'))
         const port = parsePort(url.searchParams.get('port'))
-        const options = { target, ...(port ? { port } : {}) }
+        const options = {
+          target,
+          ...(host ? { host } : {}),
+          ...(port ? { port } : {}),
+        }
         const method = url.searchParams.get('method')
 
         if (snapshot === '1' || snapshot === 'true') {
@@ -64,7 +76,10 @@ export const Route = createFileRoute('/api/brp')({
         if (method && isReadOnlyBrpMethod(method)) {
           const params = buildReadOnlyParams(method, url)
           if (method !== 'world.list_resources' && params === null) {
-            return json({ error: 'resource query param is required' }, { status: 400 })
+            return json(
+              { error: 'resource query param is required' },
+              { status: 400 },
+            )
           }
 
           try {
@@ -153,10 +168,17 @@ export const Route = createFileRoute('/api/brp')({
         const target = parseTarget(
           parsedBody.data.target ?? url.searchParams.get('target'),
         )
+        const host = parseHost(
+          parsedBody.data.host ?? url.searchParams.get('host'),
+        )
         const port = parsePort(
           parsedBody.data.port ?? url.searchParams.get('port'),
         )
-        const options = { target, ...(port ? { port } : {}) }
+        const options = {
+          target,
+          ...(host ? { host } : {}),
+          ...(port ? { port } : {}),
+        }
 
         try {
           const response = await callBrp(

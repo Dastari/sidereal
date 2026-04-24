@@ -8,6 +8,7 @@ const DEFAULT_GRAPH_NAME: &str = "sidereal";
 const SCRIPT_CATALOG_DOCUMENTS_TABLE: &str = "script_catalog_documents";
 const SCRIPT_CATALOG_VERSIONS_TABLE: &str = "script_catalog_versions";
 const SCRIPT_CATALOG_DRAFTS_TABLE: &str = "script_catalog_drafts";
+const PLAYER_NOTIFICATIONS_TABLE: &str = "player_notifications";
 
 #[derive(Debug, Error)]
 pub enum PersistenceError {
@@ -41,6 +42,33 @@ pub fn decode_reflect_component<'a>(
     payload.as_object()?.get(&key)
 }
 
+pub fn ensure_player_notifications_schema(client: &mut Client) -> Result<()> {
+    client
+        .batch_execute(&format!(
+            "
+                CREATE TABLE IF NOT EXISTS {PLAYER_NOTIFICATIONS_TABLE} (
+                    notification_id UUID PRIMARY KEY,
+                    player_entity_id TEXT NOT NULL,
+                    notification_kind TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    image_asset_id TEXT NULL,
+                    image_alt_text TEXT NULL,
+                    placement TEXT NOT NULL,
+                    payload JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    created_at_epoch_s BIGINT NOT NULL,
+                    delivered_at_epoch_s BIGINT NULL,
+                    dismissed_at_epoch_s BIGINT NULL
+                );
+                CREATE INDEX IF NOT EXISTS player_notifications_player_created_idx
+                    ON {PLAYER_NOTIFICATIONS_TABLE} (player_entity_id, created_at_epoch_s DESC);
+                "
+        ))
+        .map_err(db_err("create player notifications table"))?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GraphComponentRecord {
     pub component_id: String,
@@ -59,6 +87,23 @@ pub struct GraphEntityRecord {
 pub struct GraphPersistence {
     client: Client,
     graph_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlayerNotificationRecord {
+    pub notification_id: String,
+    pub player_entity_id: String,
+    pub notification_kind: String,
+    pub severity: String,
+    pub title: String,
+    pub body: String,
+    pub image_asset_id: Option<String>,
+    pub image_alt_text: Option<String>,
+    pub placement: String,
+    pub payload: JsonValue,
+    pub created_at_epoch_s: i64,
+    pub delivered_at_epoch_s: Option<i64>,
+    pub dismissed_at_epoch_s: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -200,8 +245,116 @@ impl GraphPersistence {
             )
             .map_err(db_err("create script world init state table"))?;
         ensure_script_catalog_schema(&mut self.client)?;
+        ensure_player_notifications_schema(&mut self.client)?;
 
         Ok(())
+    }
+
+    pub fn ensure_player_notifications_schema(&mut self) -> Result<()> {
+        ensure_player_notifications_schema(&mut self.client)
+    }
+
+    pub fn insert_player_notification(&mut self, record: &PlayerNotificationRecord) -> Result<()> {
+        let notification_id = record.notification_id.to_string();
+        let payload = serde_json::to_string(&record.payload)
+            .map_err(|err| PersistenceError::Serialization(err.to_string()))?;
+        self.client
+            .execute(
+                &format!(
+                    "
+                    INSERT INTO {PLAYER_NOTIFICATIONS_TABLE} (
+                        notification_id,
+                        player_entity_id,
+                        notification_kind,
+                        severity,
+                        title,
+                        body,
+                        image_asset_id,
+                        image_alt_text,
+                        placement,
+                        payload,
+                        created_at_epoch_s,
+                        delivered_at_epoch_s,
+                        dismissed_at_epoch_s
+                    )
+                    VALUES (
+                        $1::text::uuid,
+                        $2,
+                        $3,
+                        $4,
+                        $5,
+                        $6,
+                        $7,
+                        $8,
+                        $9,
+                        $10::text::jsonb,
+                        $11,
+                        $12,
+                        $13
+                    )
+                    ON CONFLICT (notification_id) DO NOTHING
+                    "
+                ),
+                &[
+                    &notification_id,
+                    &record.player_entity_id,
+                    &record.notification_kind,
+                    &record.severity,
+                    &record.title,
+                    &record.body,
+                    &record.image_asset_id,
+                    &record.image_alt_text,
+                    &record.placement,
+                    &payload,
+                    &record.created_at_epoch_s,
+                    &record.delivered_at_epoch_s,
+                    &record.dismissed_at_epoch_s,
+                ],
+            )
+            .map_err(db_err("insert player notification"))?;
+        Ok(())
+    }
+
+    pub fn mark_player_notification_delivered(
+        &mut self,
+        player_entity_id: &str,
+        notification_id: &str,
+        delivered_at_epoch_s: i64,
+    ) -> Result<bool> {
+        self.client
+            .execute(
+                &format!(
+                    "
+                    UPDATE {PLAYER_NOTIFICATIONS_TABLE}
+                    SET delivered_at_epoch_s = COALESCE(delivered_at_epoch_s, $3)
+                    WHERE player_entity_id = $1 AND notification_id = $2::text::uuid
+                    "
+                ),
+                &[&player_entity_id, &notification_id, &delivered_at_epoch_s],
+            )
+            .map(|count| count > 0)
+            .map_err(db_err("mark player notification delivered"))
+    }
+
+    pub fn mark_player_notification_dismissed(
+        &mut self,
+        player_entity_id: &str,
+        notification_id: &str,
+        dismissed_at_epoch_s: i64,
+    ) -> Result<bool> {
+        self.client
+            .execute(
+                &format!(
+                    "
+                    UPDATE {PLAYER_NOTIFICATIONS_TABLE}
+                    SET dismissed_at_epoch_s = COALESCE(dismissed_at_epoch_s, $3)
+                    WHERE player_entity_id = $1 AND notification_id = $2::text::uuid
+                    "
+                ),
+                &[&player_entity_id, &notification_id, &dismissed_at_epoch_s],
+            )
+            .map(|count| count > 0)
+            .map_err(db_err("mark player notification dismissed"))
     }
 
     pub fn script_world_init_state_exists(&mut self, init_key: &str) -> Result<bool> {

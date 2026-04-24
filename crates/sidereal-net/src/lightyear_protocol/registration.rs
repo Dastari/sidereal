@@ -13,9 +13,10 @@ use sidereal_game::component_meta::SiderealComponentRegistration;
 
 use super::{
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
-    ClientLocalViewModeMessage, ClientRealtimeInputMessage, ClientTacticalResnapshotRequestMessage,
-    ControlChannel, InputChannel, ManifestChannel, ServerAssetCatalogVersionMessage,
-    ServerControlAckMessage, ServerControlRejectMessage, ServerEntityDestructionMessage,
+    ClientLocalViewModeMessage, ClientNotificationDismissedMessage, ClientRealtimeInputMessage,
+    ClientTacticalResnapshotRequestMessage, ControlChannel, InputChannel, ManifestChannel,
+    NotificationChannel, ServerAssetCatalogVersionMessage, ServerControlAckMessage,
+    ServerControlRejectMessage, ServerEntityDestructionMessage, ServerNotificationMessage,
     ServerOwnerAssetManifestDeltaMessage, ServerOwnerAssetManifestSnapshotMessage,
     ServerSessionDeniedMessage, ServerSessionReadyMessage, ServerTacticalContactsDeltaMessage,
     ServerTacticalContactsSnapshotMessage, ServerTacticalFogDeltaMessage,
@@ -108,6 +109,10 @@ fn register_lightyear_common_protocol(app: &mut App) {
         .add_direction(NetworkDirection::Bidirectional);
     app.register_message::<ServerControlRejectMessage>()
         .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ServerNotificationMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
+    app.register_message::<ClientNotificationDismissedMessage>()
+        .add_direction(NetworkDirection::Bidirectional);
 
     app.add_channel::<ControlChannel>(ChannelSettings {
         mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
@@ -138,6 +143,13 @@ fn register_lightyear_common_protocol(app: &mut App) {
     .add_direction(NetworkDirection::Bidirectional);
 
     app.add_channel::<ManifestChannel>(ChannelSettings {
+        mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
+        send_frequency: Duration::default(),
+        priority: 6.0,
+    })
+    .add_direction(NetworkDirection::Bidirectional);
+
+    app.add_channel::<NotificationChannel>(ChannelSettings {
         mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
         send_frequency: Duration::default(),
         priority: 6.0,

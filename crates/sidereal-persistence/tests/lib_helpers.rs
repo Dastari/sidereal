@@ -7,9 +7,9 @@ use sidereal_persistence::{
 fn cypher_literal_renders_nested_maps_and_arrays() {
     let value = serde_json::json!({"a": 1, "b": [true, "x"], "c": {"k": "v"}});
     let out = cypher_literal(&value);
-    assert!(out.contains("a:1"));
-    assert!(out.contains("b:[true,'x']"));
-    assert!(out.contains("c:{k:'v'}"));
+    assert!(out.contains("`a`:1"));
+    assert!(out.contains("`b`:[true,'x']"));
+    assert!(out.contains("`c`:{`k`:'v'}"));
 }
 
 #[test]

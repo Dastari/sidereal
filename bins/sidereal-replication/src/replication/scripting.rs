@@ -14,11 +14,11 @@ use sidereal_persistence::{
     load_active_script_catalog, replace_active_script_catalog,
 };
 use sidereal_scripting::{
-    LuaSandboxPolicy, ScriptAssetRegistryEntry, ScriptError, WORLD_INIT_SCRIPT_REL_PATH,
-    WorldInitScriptConfig, decode_graph_entity_records, inject_script_logger,
-    load_asset_registry_from_source, load_lua_module_from_source,
-    load_world_init_config_from_source, lua_value_to_json, resolve_scripts_root,
-    table_get_required_string, table_get_required_string_list,
+    LuaSandboxPolicy, PLANET_REGISTRY_SCRIPT_REL_PATH, ScriptAssetRegistryEntry, ScriptError,
+    WORLD_INIT_SCRIPT_REL_PATH, WorldInitScriptConfig, decode_graph_entity_records,
+    inject_script_logger, load_asset_registry_from_source, load_lua_module_from_source,
+    load_planet_registry_from_sources, load_world_init_config_from_source, lua_value_to_json,
+    resolve_scripts_root, table_get_required_string, table_get_required_string_list,
     validate_runtime_render_graph_records,
 };
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
@@ -130,6 +130,12 @@ struct AssetRegistrySyncState {
     last_catalog_revision: u64,
 }
 
+#[derive(Resource, Debug, Clone)]
+struct PlanetRegistrySyncState {
+    registry_script_path: PathBuf,
+    last_catalog_revision: u64,
+}
+
 #[derive(Resource, Debug, Clone, Default)]
 struct ScriptCatalogPersistenceState {
     last_persisted_catalog_revision: u64,
@@ -149,6 +155,7 @@ const ASSET_REGISTRY_SCRIPT_REL_PATH: &str = "assets/registry.lua";
 pub fn init_resources(app: &mut App) {
     let scripts_root = scripts_root_dir();
     let asset_registry_script_path = scripts_root.join(ASSET_REGISTRY_SCRIPT_REL_PATH);
+    let planet_registry_script_path = scripts_root.join(PLANET_REGISTRY_SCRIPT_REL_PATH);
     let load_outcome = match load_script_catalog_from_database_or_disk(&scripts_root) {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -212,6 +219,13 @@ pub fn init_resources(app: &mut App) {
             (Vec::new(), Vec::new())
         }
     };
+    let planet_registry = match load_planet_registry_from_catalog(&catalog) {
+        Ok(registry) => registry,
+        Err(err) => {
+            bevy::log::warn!("replication planet registry initial derive failed: {}", err);
+            sidereal_game::PlanetRegistry::default()
+        }
+    };
     app.register_type::<ScriptCatalogEntry>();
     app.register_type::<ScriptCatalogResource>();
     app.register_type::<ScriptCatalogControlResource>();
@@ -219,6 +233,10 @@ pub fn init_resources(app: &mut App) {
     app.register_type::<EntityRegistryResource>();
     app.register_type::<AssetRegistryEntry>();
     app.register_type::<AssetRegistryResource>();
+    app.register_type::<sidereal_game::PlanetRegistryEntry>();
+    app.register_type::<sidereal_game::PlanetSpawnDefinition>();
+    app.register_type::<sidereal_game::PlanetDefinition>();
+    app.register_type::<sidereal_game::PlanetRegistry>();
     app.insert_resource(catalog);
     app.insert_resource(ScriptCatalogControlResource {
         startup_loaded_from_disk_fallback: load_outcome.startup_loaded_from_disk_fallback,
@@ -242,6 +260,7 @@ pub fn init_resources(app: &mut App) {
         revision: 1,
         script_path: ASSET_REGISTRY_SCRIPT_REL_PATH.to_string(),
     });
+    app.insert_resource(planet_registry);
     if let Some(mut generated_registry) = app
         .world_mut()
         .get_resource_mut::<GeneratedComponentRegistry>()
@@ -260,6 +279,10 @@ pub fn init_resources(app: &mut App) {
         registry_script_path: asset_registry_script_path,
         last_catalog_revision: 0,
     });
+    app.insert_resource(PlanetRegistrySyncState {
+        registry_script_path: planet_registry_script_path,
+        last_catalog_revision: 0,
+    });
     app.add_systems(
         Update,
         (
@@ -268,6 +291,7 @@ pub fn init_resources(app: &mut App) {
             persist_script_catalog_resource_system,
             sync_entity_registry_resource_system,
             sync_asset_registry_resource_system,
+            sync_planet_registry_resource_system,
         )
             .chain(),
     );
@@ -513,6 +537,23 @@ pub fn load_asset_registry_entries_from_catalog(
     catalog: &ScriptCatalogResource,
 ) -> Result<Vec<AssetRegistryEntry>, String> {
     load_asset_registry_data_from_catalog(catalog).map(|(entries, _)| entries)
+}
+
+pub fn load_planet_registry_from_catalog(
+    catalog: &ScriptCatalogResource,
+) -> Result<sidereal_game::PlanetRegistry, String> {
+    let registry_entry = lookup_script_catalog_entry(catalog, PLANET_REGISTRY_SCRIPT_REL_PATH)?;
+    let sources_by_script_path = catalog
+        .entries
+        .iter()
+        .map(|entry| (entry.script_path.clone(), entry.source.clone()))
+        .collect::<HashMap<_, _>>();
+    load_planet_registry_from_sources(
+        &registry_entry.source,
+        Path::new(PLANET_REGISTRY_SCRIPT_REL_PATH),
+        &sources_by_script_path,
+    )
+    .map_err(map_script_err)
 }
 
 fn load_asset_registry_data_from_catalog(
@@ -857,6 +898,35 @@ fn sync_asset_registry_resource_system(
         Err(err) => {
             bevy::log::warn!(
                 "replication asset registry reload failed script={}: {}",
+                sync_state.registry_script_path.display(),
+                err
+            );
+        }
+    }
+}
+
+fn sync_planet_registry_resource_system(
+    catalog: Res<'_, ScriptCatalogResource>,
+    mut sync_state: ResMut<'_, PlanetRegistrySyncState>,
+    mut registry: ResMut<'_, sidereal_game::PlanetRegistry>,
+) {
+    if sync_state.last_catalog_revision == catalog.revision {
+        return;
+    }
+    sync_state.last_catalog_revision = catalog.revision;
+    match load_planet_registry_from_catalog(&catalog) {
+        Ok(next_registry) => {
+            *registry = next_registry;
+            bevy::log::info!(
+                "replication planet registry reloaded from script catalog script={} catalog_revision={} entries={}",
+                sync_state.registry_script_path.display(),
+                catalog.revision,
+                registry.entries.len()
+            );
+        }
+        Err(err) => {
+            bevy::log::warn!(
+                "replication planet registry reload failed script={}: {}",
                 sync_state.registry_script_path.display(),
                 err
             );
@@ -1223,9 +1293,11 @@ fn inject_world_init_context_cached(
         scripts_root,
         entity_entries,
         asset_entries,
-        script_catalog,
+        script_catalog.clone(),
     )
     .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
+    inject_load_planet_definitions_fn(ctx.clone(), module.lua(), script_catalog)
+        .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
     inject_render_authoring_api(module.lua(), ctx)
         .map_err(|err| format!("{}: {err}", module.script_path().display()))?;
     Ok(())
@@ -1268,6 +1340,46 @@ fn inject_spawn_bundle_graph_records_fn(
         asset_entries,
         script_catalog,
     )
+}
+
+fn inject_load_planet_definitions_fn(
+    ctx: Table,
+    lua: &Lua,
+    script_catalog: Arc<ScriptCatalogResource>,
+) -> mlua::Result<()> {
+    let load_planet_definitions = lua.create_function(move |lua, ()| {
+        let registry = load_planet_registry_from_catalog(script_catalog.as_ref())
+            .map_err(mlua::Error::runtime)?;
+        let spawn_enabled_by_planet_id = registry
+            .entries
+            .iter()
+            .map(|entry| (entry.planet_id.as_str(), entry.spawn_enabled))
+            .collect::<HashMap<_, _>>();
+        let definitions_json = registry
+            .definitions
+            .iter()
+            .map(|definition| {
+                let mut value = serde_json::to_value(definition).map_err(|err| err.to_string())?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "spawn_enabled".to_string(),
+                        serde_json::Value::Bool(
+                            spawn_enabled_by_planet_id
+                                .get(definition.planet_id.as_str())
+                                .copied()
+                                .unwrap_or(false),
+                        ),
+                    );
+                }
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(mlua::Error::runtime)?;
+        json_value_to_lua(lua, &serde_json::Value::Array(definitions_json))
+            .map_err(mlua::Error::runtime)
+    })?;
+    ctx.set("load_planet_definitions", load_planet_definitions)?;
+    Ok(())
 }
 
 fn inject_spawn_bundle_graph_records_fn_cached(

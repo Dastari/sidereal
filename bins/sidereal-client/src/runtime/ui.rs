@@ -995,8 +995,8 @@ pub(super) fn update_tactical_map_overlay_system(
             .get(contact.entity_id.as_str())
             .map(|track| (track.render_pos, track.render_heading_rad))
             .unwrap_or((
-                Vec2::new(contact.position_xy[0], contact.position_xy[1]),
-                contact.heading_rad,
+                Vec2::new(contact.position_xy[0] as f32, contact.position_xy[1] as f32),
+                contact.heading_rad as f32,
             ));
         let Some(screen_xy) = world_to_screen(world) else {
             continue;
@@ -1117,12 +1117,15 @@ fn update_tactical_contact_smoothing_cache(
         let mut current_ids = HashSet::with_capacity(contacts_cache.contacts_by_entity_id.len());
         for (entity_id, contact) in &contacts_cache.contacts_by_entity_id {
             current_ids.insert(entity_id.clone());
-            let target_pos = Vec2::new(contact.position_xy[0], contact.position_xy[1]);
-            let velocity = contact.velocity_xy.map(|v| Vec2::new(v[0], v[1]));
+            let target_pos =
+                Vec2::new(contact.position_xy[0] as f32, contact.position_xy[1] as f32);
+            let velocity = contact
+                .velocity_xy
+                .map(|v| Vec2::new(v[0] as f32, v[1] as f32));
             if let Some(track) = cache.tracks_by_entity_id.get_mut(entity_id.as_str()) {
                 track.target_pos = target_pos;
                 track.velocity = velocity;
-                track.target_heading_rad = contact.heading_rad;
+                track.target_heading_rad = contact.heading_rad as f32;
             } else {
                 cache.tracks_by_entity_id.insert(
                     entity_id.clone(),
@@ -1130,8 +1133,8 @@ fn update_tactical_contact_smoothing_cache(
                         render_pos: target_pos,
                         target_pos,
                         velocity,
-                        render_heading_rad: contact.heading_rad,
-                        target_heading_rad: contact.heading_rad,
+                        render_heading_rad: contact.heading_rad as f32,
+                        target_heading_rad: contact.heading_rad as f32,
                     },
                 );
             }
@@ -1930,9 +1933,9 @@ pub(super) fn update_hud_system(
         if let Ok((guid, transform, maybe_rotation, maybe_velocity, maybe_health)) =
             controlled_query.single()
         {
-            let vel = maybe_velocity.map_or(Vec2::ZERO, |velocity| velocity.0);
+            let vel = maybe_velocity.map_or(Vec2::ZERO, |velocity| velocity.0.as_vec2());
             let heading_rad = maybe_rotation
-                .map(|rotation| rotation.as_radians())
+                .map(|rotation| rotation.as_radians() as f32)
                 .unwrap_or_else(|| vel.to_angle());
             let health_ratio = if let Some(health) = maybe_health {
                 if health.maximum > 0.0 {

@@ -36,6 +36,33 @@ import {
   resolveComponentRegistryEntry,
 } from '@/features/component-schema/registry'
 
+function copyTextToClipboard(text: string): Promise<void> {
+  const clipboard = (navigator as Partial<Navigator>).clipboard
+  if (clipboard?.writeText) {
+    return clipboard.writeText(text)
+  }
+
+  const textArea = document.createElement('textarea')
+  textArea.value = text
+  textArea.setAttribute('readonly', '')
+  textArea.style.position = 'fixed'
+  textArea.style.left = '-9999px'
+  textArea.style.top = '0'
+  document.body.appendChild(textArea)
+  textArea.select()
+
+  try {
+    if (!document.execCommand('copy')) {
+      throw new Error('clipboard copy command failed')
+    }
+    return Promise.resolve()
+  } catch (error) {
+    return Promise.reject(error)
+  } finally {
+    document.body.removeChild(textArea)
+  }
+}
+
 interface DetailPanelProps {
   selectedId: string | null
   entities: Array<WorldEntity>
@@ -165,8 +192,7 @@ export function DetailPanel({
       return
     }
 
-    void navigator.clipboard
-      .writeText(JSON.stringify(exportPayload, null, 2))
+    void copyTextToClipboard(JSON.stringify(exportPayload, null, 2))
       .then(() => {
         setCopyJsonState('copied')
         if (copyResetTimerRef.current !== null) {
@@ -378,7 +404,7 @@ export function DetailPanel({
                     aria-label="Copy Entity Guid"
                     onClick={() => {
                       if (!worldEntity.entityGuid) return
-                      void navigator.clipboard.writeText(worldEntity.entityGuid)
+                      void copyTextToClipboard(worldEntity.entityGuid)
                     }}
                   >
                     <Copy className="h-3.5 w-3.5" />

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::runtime::dev_console;
+use crate::runtime::{dev_console, notification_ui};
 
 use super::{in_world, logout, menu_loading, post_update};
 
@@ -9,6 +9,7 @@ pub(crate) struct ClientUiPlugin;
 impl Plugin for ClientUiPlugin {
     fn build(&self, app: &mut App) {
         dev_console::register_console(app);
+        notification_ui::register_notification_ui(app);
         menu_loading::add_audio_state_systems(app);
         menu_loading::add_menu_and_loading_ui_systems(app);
         in_world::add_in_world_ui_update_systems(app);

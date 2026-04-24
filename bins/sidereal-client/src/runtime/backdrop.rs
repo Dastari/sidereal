@@ -1704,7 +1704,7 @@ fn preferred_controlled_velocity(
                 if winner.is_none_or(|(_, best_score, best_entity_bits)| {
                     score > best_score || (score == best_score && entity_bits > best_entity_bits)
                 }) {
-                    Some((velocity.0, score, entity_bits))
+                    Some((velocity.0.as_vec2(), score, entity_bits))
                 } else {
                     winner
                 }
@@ -1747,7 +1747,10 @@ pub fn compute_fullscreen_external_world_system(
         .or_else(|| {
             let controlled_id = player_view_state.controlled_entity_id.as_ref()?;
             let entity = entity_registry.by_entity_id.get(controlled_id.as_str())?;
-            velocity_query.get(*entity).ok().map(|velocity| velocity.0)
+            velocity_query
+                .get(*entity)
+                .ok()
+                .map(|velocity| velocity.0.as_vec2())
         })
         .unwrap_or(Vec2::ZERO);
 
@@ -2131,7 +2134,10 @@ mod tests {
             Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
-        let confirmed_entity = app.world_mut().spawn(LinearVelocity(Vec2::ZERO)).id();
+        let confirmed_entity = app
+            .world_mut()
+            .spawn(LinearVelocity(Vec2::ZERO.into()))
+            .id();
         let predicted_entity = app
             .world_mut()
             .spawn((
@@ -2139,7 +2145,7 @@ mod tests {
                     entity_id: "controlled".to_string(),
                     player_entity_id: "player".to_string(),
                 },
-                LinearVelocity(Vec2::new(24.0, 0.0)),
+                LinearVelocity(Vec2::new(24.0, 0.0).into()),
                 Predicted,
             ))
             .id();

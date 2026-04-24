@@ -166,7 +166,7 @@ pub(super) fn sync_world_lighting_state_system(
             .map(|size| size.length.max(size.width).max(size.height) * 0.5)
             .unwrap_or(0.0);
         if selected_star.is_none_or(|(current, _, _)| entity.index() < current.index()) {
-            selected_star = Some((entity, source_position, radius_m));
+            selected_star = Some((entity, source_position.as_vec2(), radius_m));
         }
     }
     world_lighting.primary_source_position = selected_star.map(|(_, position, _)| position);

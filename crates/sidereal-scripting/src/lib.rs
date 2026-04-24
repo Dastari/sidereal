@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::{debug, error, info};
+use uuid::Uuid;
 
 pub use audio_registry::{load_audio_registry_from_root, load_audio_registry_from_source};
 
@@ -79,6 +80,7 @@ pub struct LoadedLuaModule {
 }
 
 pub const WORLD_INIT_SCRIPT_REL_PATH: &str = "world/world_init.lua";
+pub const PLANET_REGISTRY_SCRIPT_REL_PATH: &str = "planets/registry.lua";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldInitScriptConfig {
@@ -128,6 +130,284 @@ impl ScriptAssetRegistry {
             .map(|asset| asset.asset_id.clone())
             .collect()
     }
+}
+
+pub fn load_planet_registry_from_root(
+    scripts_root: &Path,
+) -> Result<sidereal_game::PlanetRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let registry_path =
+        resolve_script_path_from_root(scripts_root, PLANET_REGISTRY_SCRIPT_REL_PATH)?;
+    let registry_source = std::fs::read_to_string(&registry_path).map_err(|err| {
+        ScriptError::Io(format!("read {} failed: {err}", registry_path.display()))
+    })?;
+    let registry_module = load_lua_module_from_source(
+        &registry_source,
+        Path::new(PLANET_REGISTRY_SCRIPT_REL_PATH),
+        &policy,
+    )?;
+    let mut sources_by_script_path = HashMap::<String, String>::new();
+    let index = decode_planet_registry_index_module(&registry_module)?;
+    for entry in &index.entries {
+        let script_path = resolve_script_path_from_root(scripts_root, &entry.script)?;
+        let source = std::fs::read_to_string(&script_path).map_err(|err| {
+            ScriptError::Io(format!("read {} failed: {err}", script_path.display()))
+        })?;
+        sources_by_script_path.insert(entry.script.clone(), source);
+    }
+    load_planet_registry_from_sources(
+        &registry_source,
+        Path::new(PLANET_REGISTRY_SCRIPT_REL_PATH),
+        &sources_by_script_path,
+    )
+}
+
+pub fn load_planet_registry_from_sources(
+    registry_source: &str,
+    registry_path: &Path,
+    sources_by_script_path: &HashMap<String, String>,
+) -> Result<sidereal_game::PlanetRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let registry_module = load_lua_module_from_source(registry_source, registry_path, &policy)?;
+    let index = decode_planet_registry_index_module(&registry_module)?;
+    let mut definitions = Vec::with_capacity(index.entries.len());
+    for entry in &index.entries {
+        let Some(source) = sources_by_script_path.get(&entry.script) else {
+            return Err(ScriptError::Contract(format!(
+                "{}: planet_id={} references missing script={}",
+                registry_path.display(),
+                entry.planet_id,
+                entry.script
+            )));
+        };
+        let definition_module =
+            load_lua_module_from_source(source, Path::new(&entry.script), &policy)?;
+        let definition_value = Value::Table(definition_module.root().clone());
+        let definition_json = lua_value_to_json(definition_value)?;
+        let mut definition = serde_json::from_value::<sidereal_game::PlanetDefinition>(
+            definition_json,
+        )
+        .map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: planet definition decode failed: {err}",
+                entry.script
+            ))
+        })?;
+        if definition.planet_id != entry.planet_id {
+            return Err(ScriptError::Contract(format!(
+                "{}: planet_id={} does not match registry planet_id={}",
+                entry.script, definition.planet_id, entry.planet_id
+            )));
+        }
+        if definition.entity_labels.is_empty() {
+            definition.entity_labels = default_planet_entity_labels(&definition);
+        }
+        validate_planet_definition(entry, &definition, registry_path)?;
+        definitions.push(definition);
+    }
+    Ok(sidereal_game::PlanetRegistry {
+        schema_version: index.schema_version,
+        entries: index.entries,
+        definitions,
+    })
+}
+
+fn default_planet_entity_labels(definition: &sidereal_game::PlanetDefinition) -> Vec<String> {
+    match definition.shader_settings.body_kind {
+        1 => vec!["Star".to_string(), "CelestialBody".to_string()],
+        2 => vec!["BlackHole".to_string(), "CelestialBody".to_string()],
+        _ => vec!["Planet".to_string(), "CelestialBody".to_string()],
+    }
+}
+
+fn decode_planet_registry_index_module(
+    module: &LoadedLuaModule,
+) -> Result<sidereal_game::PlanetRegistry, ScriptError> {
+    let root = module.root();
+    let schema_version_i64 = root.get::<i64>("schema_version").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{}: schema_version read failed: {err}",
+            module.script_path().display()
+        ))
+    })?;
+    if schema_version_i64 < 1 {
+        return Err(ScriptError::Contract(format!(
+            "{}: schema_version must be >= 1",
+            module.script_path().display()
+        )));
+    }
+    let schema_version = u32::try_from(schema_version_i64).map_err(|_| {
+        ScriptError::Contract(format!(
+            "{}: schema_version must fit u32",
+            module.script_path().display()
+        ))
+    })?;
+    let planets_table = root.get::<Table>("planets").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{}: planets table read failed: {err}",
+            module.script_path().display()
+        ))
+    })?;
+    let mut entries = Vec::<sidereal_game::PlanetRegistryEntry>::new();
+    for (idx, value) in planets_table.sequence_values::<Table>().enumerate() {
+        let table = value.map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: planets[{}] decode failed: {err}",
+                module.script_path().display(),
+                idx + 1
+            ))
+        })?;
+        let context = format!("planets[{}]", idx + 1);
+        let planet_id = table_get_required_string(&table, "planet_id", &context)?;
+        let script = table_get_required_string(&table, "script", &context)?;
+        let spawn_enabled = table
+            .get::<Option<bool>>("spawn_enabled")
+            .map_err(|err| {
+                ScriptError::Contract(format!("{context}.spawn_enabled read failed: {err}"))
+            })?
+            .unwrap_or(false);
+        let tags = match table
+            .get::<Value>("tags")
+            .map_err(|err| ScriptError::Contract(format!("{context}.tags read failed: {err}")))?
+        {
+            Value::Nil => Vec::new(),
+            Value::Table(values_table) => {
+                let mut out = Vec::new();
+                for value in values_table.sequence_values::<String>() {
+                    out.push(value.map_err(|err| {
+                        ScriptError::Contract(format!("{context}.tags entry decode failed: {err}"))
+                    })?);
+                }
+                out
+            }
+            _ => {
+                return Err(ScriptError::Contract(format!(
+                    "{context}.tags must be an array of strings when present"
+                )));
+            }
+        };
+        entries.push(sidereal_game::PlanetRegistryEntry {
+            planet_id,
+            script,
+            spawn_enabled,
+            tags,
+        });
+    }
+    validate_planet_registry_entries(module.script_path(), &entries)?;
+    Ok(sidereal_game::PlanetRegistry {
+        schema_version,
+        entries,
+        definitions: Vec::new(),
+    })
+}
+
+fn validate_planet_registry_entries(
+    script_path: &Path,
+    entries: &[sidereal_game::PlanetRegistryEntry],
+) -> Result<(), ScriptError> {
+    if entries.is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: planets table must not be empty",
+            script_path.display()
+        )));
+    }
+    let mut seen_planets = HashSet::<String>::new();
+    let mut seen_scripts = HashSet::<String>::new();
+    for entry in entries {
+        if entry.planet_id.trim().is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "{}: planet_id must not be empty",
+                script_path.display()
+            )));
+        }
+        if entry.script.trim().is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "{}: planet_id={} script must not be empty",
+                script_path.display(),
+                entry.planet_id
+            )));
+        }
+        if !entry.script.ends_with(".lua")
+            || entry.script.starts_with('/')
+            || entry.script.contains("../")
+            || entry.script.contains("..\\")
+            || entry.script.contains('\0')
+        {
+            return Err(ScriptError::Security(format!(
+                "{}: planet_id={} script path is not allowed: {}",
+                script_path.display(),
+                entry.planet_id,
+                entry.script
+            )));
+        }
+        if !seen_planets.insert(entry.planet_id.clone()) {
+            return Err(ScriptError::Contract(format!(
+                "{}: duplicate planet_id={}",
+                script_path.display(),
+                entry.planet_id
+            )));
+        }
+        if !seen_scripts.insert(entry.script.clone()) {
+            return Err(ScriptError::Contract(format!(
+                "{}: duplicate planet script={}",
+                script_path.display(),
+                entry.script
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_planet_definition(
+    entry: &sidereal_game::PlanetRegistryEntry,
+    definition: &sidereal_game::PlanetDefinition,
+    registry_path: &Path,
+) -> Result<(), ScriptError> {
+    if definition.display_name.trim().is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: planet_id={} display_name must not be empty",
+            registry_path.display(),
+            entry.planet_id
+        )));
+    }
+    if definition.shader_settings.body_kind > 2 {
+        return Err(ScriptError::Contract(format!(
+            "{}: planet_id={} body_kind must be 0, 1, or 2",
+            registry_path.display(),
+            entry.planet_id
+        )));
+    }
+    if definition.shader_settings.planet_type > 5 {
+        return Err(ScriptError::Contract(format!(
+            "{}: planet_id={} planet_type must be between 0 and 5",
+            registry_path.display(),
+            entry.planet_id
+        )));
+    }
+    if entry.spawn_enabled {
+        let Some(spawn) = &definition.spawn else {
+            return Err(ScriptError::Contract(format!(
+                "{}: planet_id={} spawn_enabled requires a spawn table",
+                registry_path.display(),
+                entry.planet_id
+            )));
+        };
+        Uuid::parse_str(&spawn.entity_id).map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: planet_id={} spawn.entity_id must be a UUID: {err}",
+                registry_path.display(),
+                entry.planet_id
+            ))
+        })?;
+        if spawn.size_m <= 0.0 {
+            return Err(ScriptError::Contract(format!(
+                "{}: planet_id={} spawn.size_m must be greater than 0",
+                registry_path.display(),
+                entry.planet_id
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

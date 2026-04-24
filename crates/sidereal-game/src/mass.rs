@@ -300,7 +300,12 @@ pub fn collider_from_collision_shape(
         let indices = (0..len)
             .map(|idx| [idx as u32, ((idx + 1) % len) as u32])
             .collect::<Vec<_>>();
-        return Collider::convex_decomposition(outline.points.clone(), indices);
+        let points = outline
+            .points
+            .iter()
+            .map(|point| point.as_dvec2())
+            .collect::<Vec<_>>();
+        return Collider::convex_decomposition(points, indices);
     }
 
     let (width, length) = if let Some(aabb) = collision_aabb {
@@ -311,7 +316,7 @@ pub fn collider_from_collision_shape(
     } else {
         (size.width.max(0.1), size.length.max(0.1))
     };
-    Collider::rectangle(width, length)
+    Collider::rectangle(f64::from(width), f64::from(length))
 }
 
 /// Ensures root collidable entities with `SizeM` have an Avian collider.

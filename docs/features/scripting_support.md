@@ -10,10 +10,19 @@ Scope: authoritative Lua scripting, script catalogs, validated mutation APIs, an
 2026-04-24 status note:
 
 1. Implemented: `crates/sidereal-scripting` owns Lua loading/validation helpers and generated registry integration.
-2. Implemented: replication runtime loads script/entity/asset registries, hot-reloads catalogs, exposes BRP-inspectable resources, and uses script-authored world/bootstrap bundles.
+2. Implemented: replication runtime loads script/entity/asset/planet registries, hot-reloads catalogs, exposes BRP-inspectable resources, and uses script-authored world/bootstrap bundles.
 3. Implemented: Lua-authored asset/audio/shader metadata now feeds gateway delivery, dashboard tooling, and runtime presentation paths.
 4. Partial/open: long-term quest/dialogue/economy APIs, broader validated script mutation actions, and full mod security policy remain future work.
 5. Native/WASM impact: authoritative script execution remains server-side; clients consume replicated state/catalog outputs through shared schemas.
+
+Update note (2026-04-24):
+- Genesis planet registry authoring has started. Planet/celestial definitions now use `data/scripts/planets/registry.lua` plus one Lua file per named body, decoded through `crates/sidereal-scripting` into a typed `PlanetRegistry` resource and consumed by `world_init.lua` through validated bundle spawn context. Genesis dashboard writes are expected to use script draft/publish APIs, not direct disk mutation. Native impact: server-side content registry and unchanged planet bundle/render path. WASM impact: no authoritative script execution moves client-side.
+
+Update note (2026-04-24):
+- Runtime Lua contexts now expose `ctx:notify_player({...})` for validated server-authored non-blocking player notifications. The script API emits a Rust-owned notification intent; Lua does not receive UI, network, or database handles. Native impact: clients can render the resulting toast through the shared notification lane. WASM impact: protocol and payload model remain shared-client compatible.
+
+Update note (2026-04-24):
+- DR-0035 makes f64 authoritative world coordinates the target for script-authored and script-visible world positions. Lua numeric position arrays remain valid input, but Rust must parse validated world-space coordinates as f64 and write Avian `Position` / `WorldPosition` without f32 truncation. Native impact: scripted spawns, teleports, spatial queries, and snapshots work at galaxy-scale coordinates. WASM impact: no client-side authority split; browser/native clients consume shared f64 replicated outputs.
 
 Update note (2026-03-12):
 - Added the long-term ownership contract for destruction/lifecycle-driven VFX. Default explosion/fracture/loot behavior should live in Rust-defined authored profiles/components, while Lua remains responsible for high-level preset selection and exceptional event-driven overrides. Native impact: no immediate runtime change; this is a documentation/contract clarification. WASM impact: no direct impact because the authority split remains in shared gameplay/runtime code.
@@ -135,12 +144,41 @@ function WorldInit.build_graph_records(ctx)
 end
 ```
 
+### 2.2.2 Script Notification API
+
+Runtime scripts may request non-blocking player notifications through:
+
+```lua
+ctx:notify_player({
+  player_entity_id = "11111111-1111-1111-1111-111111111111",
+  title = "Objective Updated",
+  body = "Return to station.",
+  severity = "info",
+  placement = "bottom_right",
+  image_asset_id = nil,
+  image_alt_text = nil,
+  auto_dismiss_after_s = 5.0,
+  event_type = "objective_update",
+  data = { objective_id = "starter_return" },
+})
+```
+
+Rules:
+
+1. `player_entity_id`, `title`, and `body` are required.
+2. `severity` accepts `info`, `success`, `warning`, or `error`.
+3. `placement` accepts `top_left`, `top_center`, `top_right`, `bottom_left`, `bottom_center`, or `bottom_right`.
+4. `auto_dismiss_after_s`, when present, must be finite and bounded.
+5. The host validates and converts the request into a notification command; scripts cannot directly mutate UI state or notification history.
+6. Critical errors still use Rust-owned dialog/error flows, not script-triggered toasts.
+
 Integration points:
 
 - `bins/sidereal-gateway`: account-registration-time script hooks (starter bundle selection, world init config).
 - `bins/sidereal-replication`: authoritative host boot world orchestration, and (future) runtime event-driven script execution.
 - Script-driven runtime shader binding and render-layer composition for 2D visuals now runs through Lua-authored `RuntimeRenderLayerDefinition`, `RuntimeRenderLayerRule`, `RuntimeRenderLayerOverride`, `RuntimePostProcessStack`, and `RuntimeWorldVisualStack` component data. Replication and gateway validate those authored records server-side, the client builds a runtime layer registry from replicated state, world entities resolve layer assignment as `override -> highest-priority rule -> default main_world`, fullscreen background/foreground plus camera-scoped post-process overlay passes execute from those authored definitions, and layered world visuals such as the current planet body/cloud/ring stack now consume an authored `RuntimeWorldVisualStack` instead of inferring pass composition client-side. The remaining migration gap is removal of the last content-specific shader adapters and continued reduction of the dedicated Rust `Material2d` families that still exist because Bevy material schemas are type-static (see `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`, `docs/plans/dynamic_runtime_shader_material_plan.md`, and `docs/features/asset_delivery_contract.md`).
 - Procedural visual tuning payloads for authored world content are Lua-owned. Current examples include asteroid procedural sprite profiles and planet body shader settings emitted from Lua bundles, while Rust owns the validated component schema and render/runtime implementation.
+- Genesis planet registry definitions are Lua-owned catalog data under `data/scripts/planets/`. Rust validates the registry and exposes typed `PlanetRegistry` data; Lua world bootstrap consumes those definitions through `ctx.load_planet_definitions()` and still spawns authoritative entities through the existing bundle path.
 - Shared environment-lighting defaults are also Lua-authored now via the `environment.lighting` bundle and replicated `EnvironmentLightingState` component, while the client derives its render-time lighting resource from that ECS state.
 
 ### 2.3 Content Model

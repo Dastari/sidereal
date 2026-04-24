@@ -345,7 +345,10 @@ pub fn apply_engine_thrust(
 
     let mut kinematics_by_guid = HashMap::<Uuid, (Vec2, f32)>::new();
     for (guid, linear_velocity, angular_velocity) in &body_queries.p1() {
-        kinematics_by_guid.insert(guid.0, (linear_velocity.0, angular_velocity.0));
+        kinematics_by_guid.insert(
+            guid.0,
+            (linear_velocity.0.as_vec2(), angular_velocity.0 as f32),
+        );
     }
 
     // Apply aggregated forces to parent bodies using Avian's Forces helper
@@ -396,8 +399,8 @@ pub fn apply_engine_thrust(
                 dt,
             );
 
-            forces.apply_force(force);
-            forces.apply_torque(torque);
+            forces.apply_force(force.as_dvec2());
+            forces.apply_torque(f64::from(torque));
         }
 
         // Log if throttle was applied but no thrust budget was available (fuel exhausted path).
@@ -589,12 +592,14 @@ pub fn clamp_angular_velocity(
         if mounted_on.is_some() {
             continue;
         }
-        angular_velocity.0 =
-            sanitize_planar_angular_velocity(angular_velocity.0, MAX_ANGULAR_VELOCITY_RAD_S);
+        angular_velocity.0 = sanitize_planar_angular_velocity(
+            angular_velocity.0,
+            f64::from(MAX_ANGULAR_VELOCITY_RAD_S),
+        );
     }
 }
 
-pub fn sanitize_planar_angular_velocity(angular_velocity: f32, max_abs_z_rad_s: f32) -> f32 {
+pub fn sanitize_planar_angular_velocity(angular_velocity: f64, max_abs_z_rad_s: f64) -> f64 {
     angular_velocity.clamp(-max_abs_z_rad_s.abs(), max_abs_z_rad_s.abs())
 }
 
@@ -618,14 +623,14 @@ pub fn stabilize_idle_motion(
         let brake_active = computer.brake_active;
         let neutral_throttle = computer.throttle.abs() <= f32::EPSILON;
         let neutral_yaw = computer.yaw_input.abs() <= f32::EPSILON;
-        let planar_speed = Vec2::new(linear_velocity.0.x, linear_velocity.0.y).length();
+        let planar_speed = linear_velocity.0.length();
 
         if brake_active {
-            if planar_speed <= ACTIVE_BRAKE_STOP_EPSILON_MPS {
+            if planar_speed <= f64::from(ACTIVE_BRAKE_STOP_EPSILON_MPS) {
                 linear_velocity.0.x = 0.0;
                 linear_velocity.0.y = 0.0;
             }
-            if angular_velocity.0.abs() <= IDLE_ANGULAR_SPEED_EPSILON_RAD_S {
+            if angular_velocity.0.abs() <= f64::from(IDLE_ANGULAR_SPEED_EPSILON_RAD_S) {
                 angular_velocity.0 = 0.0;
             }
             continue;
@@ -634,12 +639,12 @@ pub fn stabilize_idle_motion(
             continue;
         }
 
-        if planar_speed <= IDLE_LINEAR_SPEED_EPSILON_MPS {
+        if planar_speed <= f64::from(IDLE_LINEAR_SPEED_EPSILON_MPS) {
             linear_velocity.0.x = 0.0;
             linear_velocity.0.y = 0.0;
         }
 
-        if angular_velocity.0.abs() <= IDLE_ANGULAR_SPEED_EPSILON_RAD_S {
+        if angular_velocity.0.abs() <= f64::from(IDLE_ANGULAR_SPEED_EPSILON_RAD_S) {
             angular_velocity.0 = 0.0;
         }
     }

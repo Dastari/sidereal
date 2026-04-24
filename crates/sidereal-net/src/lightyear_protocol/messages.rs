@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sidereal_game::EntityAction;
 
-pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 2;
+pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 3;
 
 /// Client authenticates replication session and binds transport identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -101,9 +101,9 @@ pub struct ServerWeaponFiredMessage {
     pub weapon_guid: String,
     pub audio_profile_id: Option<String>,
     pub cooldown_s: Option<f32>,
-    pub origin_xy: [f32; 2],
-    pub velocity_xy: [f32; 2],
-    pub impact_xy: Option<[f32; 2]>,
+    pub origin_xy: [f64; 2],
+    pub velocity_xy: [f64; 2],
+    pub impact_xy: Option<[f64; 2]>,
     pub ttl_s: f32,
 }
 
@@ -111,7 +111,7 @@ pub struct ServerWeaponFiredMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerEntityDestructionMessage {
     pub entity_id: String,
-    pub origin_xy: [f32; 2],
+    pub origin_xy: [f64; 2],
     pub destruction_profile_id: String,
 }
 
@@ -127,9 +127,9 @@ pub struct TacticalContact {
     pub kind: String,
     pub map_icon_asset_id: Option<String>,
     pub faction_id: Option<String>,
-    pub position_xy: [f32; 2],
-    pub heading_rad: f32,
-    pub velocity_xy: Option<[f32; 2]>,
+    pub position_xy: [f64; 2],
+    pub heading_rad: f64,
+    pub velocity_xy: Option<[f64; 2]>,
     pub is_live_now: bool,
     pub last_seen_tick: u64,
     pub classification: Option<String>,
@@ -143,7 +143,7 @@ pub struct OwnedAssetEntry {
     pub kind: String,
     pub status: String,
     pub controlled_by_owner: bool,
-    pub last_known_position_xy: Option<[f32; 2]>,
+    pub last_known_position_xy: Option<[f64; 2]>,
     pub health_ratio: Option<f32>,
     pub fuel_ratio: Option<f32>,
     pub updated_at_tick: u64,
@@ -210,4 +210,98 @@ pub struct ServerOwnerAssetManifestDeltaMessage {
 pub struct ServerAssetCatalogVersionMessage {
     pub catalog_version: String,
     pub generated_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum NotificationSeverity {
+    #[default]
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+impl NotificationSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Success => "success",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub enum NotificationPlacement {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    BottomCenter,
+    #[default]
+    BottomRight,
+}
+
+impl NotificationPlacement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top_left",
+            Self::TopCenter => "top_center",
+            Self::TopRight => "top_right",
+            Self::BottomLeft => "bottom_left",
+            Self::BottomCenter => "bottom_center",
+            Self::BottomRight => "bottom_right",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationImageRef {
+    pub asset_id: String,
+    pub alt_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum NotificationPayload {
+    Generic {
+        event_type: String,
+        data: serde_json::Value,
+    },
+    LandmarkDiscovery {
+        entity_guid: String,
+        display_name: String,
+        landmark_kind: String,
+        map_icon_asset_id: Option<String>,
+        world_position_xy: Option<[f64; 2]>,
+    },
+}
+
+impl NotificationPayload {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Generic { .. } => "generic",
+            Self::LandmarkDiscovery { .. } => "landmark_discovery",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerNotificationMessage {
+    pub notification_id: String,
+    pub player_entity_id: String,
+    pub title: String,
+    pub body: String,
+    pub severity: NotificationSeverity,
+    pub placement: NotificationPlacement,
+    pub image: Option<NotificationImageRef>,
+    pub payload: NotificationPayload,
+    pub created_at_epoch_s: i64,
+    pub auto_dismiss_after_s: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientNotificationDismissedMessage {
+    pub player_entity_id: String,
+    pub notification_id: String,
 }

@@ -9,7 +9,7 @@
 use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, RigidBody, Rotation};
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::log::error;
-use bevy::prelude::*;
+use bevy::{math::DVec2, prelude::*};
 use lightyear::prelude::{InterpolationTarget, NetworkTarget, Replicate};
 use sidereal_game::{
     ControlledEntityGuid, DisplayName, EntityGuid, GeneratedComponentRegistry, OwnerId,
@@ -1148,7 +1148,7 @@ pub fn sync_controlled_entity_transforms(
     for (position, rotation, mut transform) in &mut entities {
         let mut planar_position = position.0;
         if !planar_position.is_finite() {
-            planar_position = Vec2::ZERO;
+            planar_position = DVec2::ZERO;
         }
         let safe_rotation = if rotation.is_finite() {
             *rotation
@@ -1159,10 +1159,10 @@ pub fn sync_controlled_entity_transforms(
         if !heading.is_finite() {
             heading = 0.0;
         }
-        transform.translation.x = planar_position.x;
-        transform.translation.y = planar_position.y;
+        transform.translation.x = planar_position.x as f32;
+        transform.translation.y = planar_position.y as f32;
         transform.translation.z = 0.0;
-        transform.rotation = Quat::from_rotation_z(heading);
+        transform.rotation = Quat::from_rotation_z(heading as f32);
     }
 }
 
@@ -1183,16 +1183,16 @@ pub fn sync_world_entity_transforms_from_world_space(
         let planar_position = if position.0.is_finite() {
             position.0
         } else {
-            Vec2::ZERO
+            DVec2::ZERO
         };
         let heading = rotation
             .map(|value| value.0)
             .filter(|value| value.is_finite())
             .unwrap_or(0.0);
-        transform.translation.x = planar_position.x;
-        transform.translation.y = planar_position.y;
+        transform.translation.x = planar_position.x as f32;
+        transform.translation.y = planar_position.y as f32;
         transform.translation.z = 0.0;
-        transform.rotation = Quat::from_rotation_z(heading);
+        transform.rotation = Quat::from_rotation_z(heading as f32);
     }
 }
 
@@ -1214,10 +1214,10 @@ pub fn enforce_planar_motion(
 ) {
     for (mut position, mut velocity, mut rotation, mut angular_velocity) in &mut entities {
         if !position.0.is_finite() {
-            position.0 = Vec2::ZERO;
+            position.0 = DVec2::ZERO;
         }
         if !velocity.0.is_finite() {
-            velocity.0 = Vec2::ZERO;
+            velocity.0 = DVec2::ZERO;
         }
         if !angular_velocity.0.is_finite() {
             angular_velocity.0 = 0.0;

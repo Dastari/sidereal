@@ -1,5 +1,5 @@
-use bevy::prelude::*;
 use bevy::reflect::Reflect;
+use bevy::{math::DVec2, prelude::*};
 use serde::{Deserialize, Serialize};
 
 use crate::EntityGuid;
@@ -8,4 +8,4 @@ use crate::EntityGuid;
 #[derive(Debug, Clone, Copy, Component, Reflect, Serialize, Deserialize, PartialEq)]
 #[reflect(Component, Serialize, Deserialize)]
 #[require(EntityGuid)]
-pub struct WorldPosition(pub Vec2);
+pub struct WorldPosition(pub DVec2);

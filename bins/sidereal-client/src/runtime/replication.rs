@@ -89,6 +89,7 @@ fn bootstrap_planar_heading(
         .or_else(|| {
             resolve_world_rotation_rad(rotation, world_rotation).filter(|value| value.is_finite())
         })
+        .map(|value| value as f32)
         .or(Some(0.0))
 }
 
@@ -150,8 +151,8 @@ pub(crate) fn ensure_replicated_entity_spatial_components(
         ) && planar_position.is_finite()
             && heading.is_finite()
         {
-            transform.translation.x = planar_position.x;
-            transform.translation.y = planar_position.y;
+            transform.translation.x = planar_position.x as f32;
+            transform.translation.y = planar_position.y as f32;
             transform.translation.z = 0.0;
             transform.rotation = Quat::from_rotation_z(heading);
         }
@@ -199,8 +200,8 @@ pub(crate) fn ensure_hierarchy_parent_spatial_components(
         ) && planar_position.is_finite()
             && heading.is_finite()
         {
-            transform.translation.x = planar_position.x;
-            transform.translation.y = planar_position.y;
+            transform.translation.x = planar_position.x as f32;
+            transform.translation.y = planar_position.y as f32;
             transform.translation.z = 0.0;
             transform.rotation = Quat::from_rotation_z(heading);
         }
@@ -245,8 +246,8 @@ pub(crate) fn ensure_parent_spatial_components_on_children_added(
     ) && planar_position.is_finite()
         && heading.is_finite()
     {
-        transform.translation.x = planar_position.x;
-        transform.translation.y = planar_position.y;
+        transform.translation.x = planar_position.x as f32;
+        transform.translation.y = planar_position.y as f32;
         transform.translation.z = 0.0;
         transform.rotation = Quat::from_rotation_z(heading);
     }
@@ -1133,9 +1134,9 @@ mod tests {
             .world_mut()
             .spawn((
                 lightyear::prelude::Interpolated,
-                Position(Vec2::new(10.0, -4.0)),
+                Position(Vec2::new(10.0, -4.0).into()),
                 Rotation::radians(0.25),
-                LinearVelocity(Vec2::new(1.5, -2.0)),
+                LinearVelocity(Vec2::new(1.5, -2.0).into()),
                 AngularVelocity(0.75),
             ))
             .id();
@@ -1146,7 +1147,7 @@ mod tests {
             app.world()
                 .get::<Confirmed<Position>>(entity)
                 .map(|value| value.0),
-            Some(Position(Vec2::new(10.0, -4.0)))
+            Some(Position(Vec2::new(10.0, -4.0).into()))
         );
         assert_eq!(
             app.world()
@@ -1158,7 +1159,7 @@ mod tests {
             app.world()
                 .get::<Confirmed<LinearVelocity>>(entity)
                 .map(|value| value.0),
-            Some(LinearVelocity(Vec2::new(1.5, -2.0)))
+            Some(LinearVelocity(Vec2::new(1.5, -2.0).into()))
         );
         assert_eq!(
             app.world()
@@ -1180,8 +1181,8 @@ mod tests {
             .world_mut()
             .spawn((
                 lightyear::prelude::Interpolated,
-                Position(Vec2::new(10.0, -4.0)),
-                Confirmed(Position(Vec2::new(99.0, 42.0))),
+                Position(Vec2::new(10.0, -4.0).into()),
+                Confirmed(Position(Vec2::new(99.0, 42.0).into())),
             ))
             .id();
 
@@ -1191,7 +1192,7 @@ mod tests {
             app.world()
                 .get::<Confirmed<Position>>(entity)
                 .map(|value| value.0),
-            Some(Position(Vec2::new(99.0, 42.0)))
+            Some(Position(Vec2::new(99.0, 42.0).into()))
         );
     }
 

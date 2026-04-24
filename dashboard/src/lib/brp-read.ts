@@ -36,6 +36,7 @@ export function getBrpReadResourceParam(params: unknown): string | null {
 }
 
 export function buildBrpReadUrl(options: {
+  host?: string
   method: string
   params?: unknown
   port: number
@@ -50,6 +51,9 @@ export function buildBrpReadUrl(options: {
     target: options.target,
     method: options.method,
   })
+  if (options.host) {
+    query.set('host', options.host)
+  }
 
   if (options.method !== 'world.list_resources') {
     const resource = getBrpReadResourceParam(options.params)

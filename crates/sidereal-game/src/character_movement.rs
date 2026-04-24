@@ -1,5 +1,5 @@
 use avian2d::prelude::{LinearVelocity, Position};
-use bevy::prelude::*;
+use bevy::{math::DVec2, prelude::*};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -131,12 +131,12 @@ pub fn process_character_movement_actions(
             desired_dir = desired_dir.normalize();
         }
 
-        let desired_velocity = desired_dir * speed_mps;
-        let damping = (-damping_per_s * dt_s).exp();
+        let desired_velocity = (desired_dir * speed_mps).as_dvec2();
+        let damping = f64::from((-damping_per_s * dt_s).exp());
 
         if let Some(mut linear_velocity) = maybe_linear_velocity {
             let current_velocity = linear_velocity.0;
-            let max_delta_speed = max_accel_mps2 * dt_s;
+            let max_delta_speed = f64::from(max_accel_mps2 * dt_s);
             let velocity_delta = desired_velocity - current_velocity;
             let next_velocity = if velocity_delta.length_squared() > 0.0
                 && velocity_delta.length() > max_delta_speed
@@ -150,8 +150,8 @@ pub fn process_character_movement_actions(
             } else {
                 next_velocity
             };
-            if damped_velocity.length() <= STOP_EPSILON_MPS {
-                damped_velocity = Vec2::ZERO;
+            if damped_velocity.length() <= f64::from(STOP_EPSILON_MPS) {
+                damped_velocity = DVec2::ZERO;
             }
             linear_velocity.0 = damped_velocity;
             continue;
@@ -159,9 +159,9 @@ pub fn process_character_movement_actions(
 
         // Fallback path for non-physics entities.
         if let Some(mut transform) = maybe_transform {
-            let mut fallback_velocity = desired_velocity;
+            let mut fallback_velocity = desired_velocity.as_vec2();
             if desired_dir == Vec2::ZERO {
-                fallback_velocity *= damping;
+                fallback_velocity *= damping as f32;
             }
             if fallback_velocity.length() <= STOP_EPSILON_MPS {
                 fallback_velocity = Vec2::ZERO;
@@ -170,7 +170,7 @@ pub fn process_character_movement_actions(
             transform.translation.y += fallback_velocity.y * dt_s;
             transform.translation.z = 0.0;
             if let Some(mut position) = maybe_position {
-                position.0 = transform.translation.truncate();
+                position.0 = transform.translation.truncate().as_dvec2();
             }
         }
     }
@@ -180,7 +180,7 @@ pub fn process_character_movement_actions(
 /// This enforces the runtime chain: camera <- player <- controlled entity.
 #[allow(clippy::type_complexity)]
 pub fn sync_player_to_controlled_entity(
-    mut target_position_by_guid: Local<'_, HashMap<Uuid, Vec2>>,
+    mut target_position_by_guid: Local<'_, HashMap<Uuid, DVec2>>,
     mut params: ParamSet<
         '_,
         '_,
@@ -208,7 +208,7 @@ pub fn sync_player_to_controlled_entity(
     for (guid, transform, maybe_position) in &params.p0() {
         let world_position = maybe_position
             .map(|position| position.0)
-            .unwrap_or(transform.translation.truncate());
+            .unwrap_or(transform.translation.truncate().as_dvec2());
         target_position_by_guid.insert(guid.0, world_position);
     }
 
@@ -223,8 +223,8 @@ pub fn sync_player_to_controlled_entity(
             continue;
         };
 
-        player_transform.translation.x = target_position.x;
-        player_transform.translation.y = target_position.y;
+        player_transform.translation.x = target_position.x as f32;
+        player_transform.translation.y = target_position.y as f32;
         player_transform.translation.z = 0.0;
         if let Some(mut player_position) = maybe_player_position {
             player_position.0 = *target_position;

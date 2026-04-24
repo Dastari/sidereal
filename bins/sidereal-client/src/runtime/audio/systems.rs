@@ -176,7 +176,7 @@ pub(crate) fn receive_local_destruction_audio_system(
             OneShotRequest {
                 profile_id: event.destruction_profile_id.as_str(),
                 cue_id: "explode",
-                position: Some(event.effect_origin),
+                position: Some(event.effect_origin.as_vec2()),
             },
             &resolver,
             &catalog,
@@ -210,7 +210,10 @@ pub(crate) fn receive_remote_destruction_audio_system(
             OneShotRequest {
                 profile_id: message.destruction_profile_id.as_str(),
                 cue_id: "explode",
-                position: Some(Vec2::new(message.origin_xy[0], message.origin_xy[1])),
+                position: Some(Vec2::new(
+                    message.origin_xy[0] as f32,
+                    message.origin_xy[1] as f32,
+                )),
             },
             &resolver,
             &catalog,
@@ -253,7 +256,7 @@ pub(crate) fn receive_local_weapon_fire_audio_system(
                 key: weapon_guid.0.to_string(),
                 profile_id,
                 cue_id: "fire",
-                position: event.origin,
+                position: event.origin.as_vec2(),
                 release_timeout_s,
                 now_s: time.elapsed_secs_f64(),
             },
@@ -295,7 +298,7 @@ pub(crate) fn receive_remote_weapon_fire_audio_system(
                 key: message.weapon_guid.clone(),
                 profile_id,
                 cue_id: "fire",
-                position: Vec2::new(message.origin_xy[0], message.origin_xy[1]),
+                position: Vec2::new(message.origin_xy[0] as f32, message.origin_xy[1] as f32),
                 release_timeout_s: (f64::from(cooldown_s) * 1.75).max(0.14),
                 now_s: time.elapsed_secs_f64(),
             },

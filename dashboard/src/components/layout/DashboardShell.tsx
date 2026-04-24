@@ -4,6 +4,7 @@ import {
   FileCode2,
   Gamepad2,
   Gauge,
+  Globe2,
   Orbit,
   Settings,
   Sparkles,
@@ -58,6 +59,12 @@ export const toolNavItems: Array<ToolNavItem> = [
     label: 'Shader Workshop',
     description: 'WGSL authoring, preview, diagnostics, and asset metadata.',
     icon: Sparkles,
+  },
+  {
+    to: '/genesis',
+    label: 'Genesis',
+    description: 'Planet registry authoring, deterministic randomization, and Lua publishing.',
+    icon: Globe2,
   },
   {
     to: '/sound-studio',

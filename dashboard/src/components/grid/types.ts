@@ -6,6 +6,11 @@ export type EntityKind =
   | 'component'
   | 'default'
 
+// Dashboard world coordinates intentionally use JavaScript number values.
+// JSON numbers preserve the authoritative f64 payload shape from the server
+// while the WebGL canvas projects them to f32 only at render time.
+export type WorldCoordinate = number
+
 export interface WorldEntity {
   id: string
   name: string
@@ -17,11 +22,11 @@ export interface WorldEntity {
   /** True when source data provided an explicit world position. */
   hasPosition?: boolean
   shardId: number
-  x: number
-  y: number
+  x: WorldCoordinate
+  y: WorldCoordinate
   rotationRad?: number
-  vx: number
-  vy: number
+  vx: WorldCoordinate
+  vy: WorldCoordinate
   sampledAtMs: number
   componentCount: number
   /** When present, from EntityGuid component; shown in tree instead of component count when available. */
@@ -46,8 +51,8 @@ export interface GraphEdge {
 export interface ExpandedNode {
   id: string
   parentId: string | null
-  x: number
-  y: number
+  x: WorldCoordinate
+  y: WorldCoordinate
   rotationRad?: number
   label: string
   kind: string
@@ -57,8 +62,8 @@ export interface ExpandedNode {
 }
 
 export interface Camera {
-  x: number
-  y: number
+  x: WorldCoordinate
+  y: WorldCoordinate
   zoom: number
 }
 
@@ -72,14 +77,14 @@ export interface GridState {
 }
 
 export interface VisibilityGridCellOverlay {
-  x: number
-  y: number
+  x: WorldCoordinate
+  y: WorldCoordinate
 }
 
 export interface VisibilityScannerSourceOverlay {
-  x: number
-  y: number
-  z?: number
+  x: WorldCoordinate
+  y: WorldCoordinate
+  z?: WorldCoordinate
   range_m: number
 }
 

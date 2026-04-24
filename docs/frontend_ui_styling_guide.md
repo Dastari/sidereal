@@ -29,6 +29,10 @@ Update note (2026-03-14):
 - Single-value editor sliders should prefer the local GridCN-style slider component; keep the shared Radix slider wrapper for true range sliders and other multi-thumb cases that the GridCN custom slider does not cover cleanly.
 - Numeric inputs in the component-editing surfaces should prefer the local GridCN number-input wrapper instead of plain text/number fields when the control is editing numeric gameplay/component values directly.
 
+Update note (2026-04-24):
+
+- Dashboard world-coordinate API and BRP parsing surfaces consume authoritative Rust f64 coordinate payloads as JSON numbers and TypeScript `number` values. Do not downcast, round, stringify, or integer-coerce world positions/velocities in loaders, schemas, or explorer state; only rendering layers may project to f32/canvas space.
+
 ## 1. Scope
 
 This guide defines the enforceable UI, theming, routing, validation, and frontend architecture standards for the web frontend under `dashboard/`.

@@ -301,7 +301,7 @@ mod tests {
         ServerTacticalFogDeltaMessage, ServerTacticalFogSnapshotMessage, TacticalContact,
     };
 
-    fn contact(entity_id: &str, pos: [f32; 2]) -> TacticalContact {
+    fn contact(entity_id: &str, pos: [f64; 2]) -> TacticalContact {
         TacticalContact {
             entity_id: entity_id.to_string(),
             kind: "ship".to_string(),
