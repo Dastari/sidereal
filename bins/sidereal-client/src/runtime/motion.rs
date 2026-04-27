@@ -1292,19 +1292,19 @@ mod tests {
             entity.get::<Position>().map(|value| value.0),
             Some(Vec2::new(14.0, 0.0).into())
         );
-        assert_eq!(
+        assert!(
             entity
                 .get::<Rotation>()
-                .map(|rotation| rotation.as_radians()),
-            Some(0.7)
+                .is_some_and(|rotation| (rotation.as_radians() - 0.7).abs() <= 1e-9)
         );
         assert_eq!(
             entity.get::<LinearVelocity>().map(|value| value.0),
             Some(Vec2::new(4.0, 0.0).into())
         );
-        assert_eq!(
-            entity.get::<AngularVelocity>().map(|value| value.0),
-            Some(0.55)
+        assert!(
+            entity
+                .get::<AngularVelocity>()
+                .is_some_and(|value| (value.0 - 0.55).abs() <= 1e-9)
         );
         assert_eq!(
             entity.get::<ControlledPredictionReconciliationState>(),

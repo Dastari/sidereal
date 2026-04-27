@@ -221,7 +221,6 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             Has<lightyear::prelude::Interpolated>,
             Has<lightyear::prelude::Predicted>,
         ),
-        Without<WorldEntity>,
     >,
     stats_inputs: DebugOverlayStatsInputs<'_, '_>,
 ) {
@@ -438,6 +437,9 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             continue;
         }
         if !debug_overlay_candidate_visible(visibility) {
+            continue;
+        }
+        if hardpoint.is_some() {
             continue;
         }
 

@@ -2512,6 +2512,7 @@ pub(super) fn update_entity_nameplate_positions_system(
     hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn sync_debug_entity_callouts_system(
     debug_overlay: Res<'_, DebugOverlayState>,
     tactical_map_state: Res<'_, TacticalMapUiState>,
@@ -2632,13 +2633,9 @@ pub(super) fn sync_debug_entity_callouts_system(
         } else {
             ui_queries.registry.allocated_entries =
                 ui_queries.registry.allocated_entries.saturating_add(1);
-            let entry = ui_queries
-                .registry
-                .free_entries
-                .pop()
-                .unwrap_or_else(|| {
-                    spawn_annotation_callout_entry(&mut commands, &fonts, theme, glow_intensity)
-                });
+            let entry = ui_queries.registry.free_entries.pop().unwrap_or_else(|| {
+                spawn_annotation_callout_entry(&mut commands, &fonts, theme, glow_intensity)
+            });
             ui_queries
                 .registry
                 .active_by_target
@@ -2712,6 +2709,15 @@ fn annotation_callout_target(
     camera_global: &GlobalTransform,
     parallax_position_xy: Vec2,
 ) -> Option<AnnotationCalloutTarget> {
+    if entity.is_component {
+        let (center_world, anchor_world) = annotation_callout_snapshot_world_positions(entity);
+        return project_annotation_callout_target(
+            camera,
+            camera_global,
+            center_world,
+            anchor_world,
+        );
+    }
     let (center_world, anchor_world) = if let Ok((
         global_transform,
         maybe_visibility,
@@ -2720,55 +2726,55 @@ fn annotation_callout_target(
         resolved_render_layer,
     )) = target_query.get(entity.entity)
     {
-            if maybe_visibility
-                .is_some_and(|entity_visibility| *entity_visibility == Visibility::Hidden)
-            {
-                return None;
-            }
-            if let Some(global_transform) = global_transform {
-                let world_pos = global_transform.translation();
-                if planet_settings.is_some_and(|settings| settings.enabled) {
-                    let projected_center_world = super::visuals::planet_camera_relative_translation(
-                        resolved_render_layer,
-                        world_pos.truncate(),
-                        parallax_position_xy,
-                    );
-                    let radius_m = size_m
-                        .map(|size| size.width.max(size.length) * 0.5)
-                        .unwrap_or(128.0);
-                    let layer_screen_scale = resolved_render_layer
-                        .map(|layer| {
-                            super::visuals::runtime_layer_screen_scale_factor(&layer.definition)
-                        })
-                        .unwrap_or(1.0);
-                    let projected_radius_m = radius_m * layer_screen_scale;
-                    return Some(project_annotation_callout_target(
-                        camera,
-                        camera_global,
-                        projected_center_world.extend(0.0),
-                        Vec3::new(
-                            projected_center_world.x - projected_radius_m,
-                            projected_center_world.y + projected_radius_m,
-                            0.0,
-                        ),
-                    )?);
-                }
-                let anchor_world = size_m
-                    .map(|size| {
-                        Vec3::new(
-                            world_pos.x - size.width * 0.5,
-                            world_pos.y + size.length * 0.5,
-                            0.0,
-                        )
+        if maybe_visibility
+            .is_some_and(|entity_visibility| *entity_visibility == Visibility::Hidden)
+        {
+            return None;
+        }
+        if let Some(global_transform) = global_transform {
+            let world_pos = global_transform.translation();
+            if planet_settings.is_some_and(|settings| settings.enabled) {
+                let projected_center_world = super::visuals::planet_camera_relative_translation(
+                    resolved_render_layer,
+                    world_pos.truncate(),
+                    parallax_position_xy,
+                );
+                let radius_m = size_m
+                    .map(|size| size.width.max(size.length) * 0.5)
+                    .unwrap_or(128.0);
+                let layer_screen_scale = resolved_render_layer
+                    .map(|layer| {
+                        super::visuals::runtime_layer_screen_scale_factor(&layer.definition)
                     })
-                    .unwrap_or(Vec3::new(world_pos.x, world_pos.y, 0.0));
-                (Vec3::new(world_pos.x, world_pos.y, 0.0), anchor_world)
-            } else {
-                annotation_callout_snapshot_world_positions(entity)
+                    .unwrap_or(1.0);
+                let projected_radius_m = radius_m * layer_screen_scale;
+                return project_annotation_callout_target(
+                    camera,
+                    camera_global,
+                    projected_center_world.extend(0.0),
+                    Vec3::new(
+                        projected_center_world.x - projected_radius_m,
+                        projected_center_world.y + projected_radius_m,
+                        0.0,
+                    ),
+                );
             }
+            let anchor_world = size_m
+                .map(|size| {
+                    Vec3::new(
+                        world_pos.x - size.width * 0.5,
+                        world_pos.y + size.length * 0.5,
+                        0.0,
+                    )
+                })
+                .unwrap_or(Vec3::new(world_pos.x, world_pos.y, 0.0));
+            (Vec3::new(world_pos.x, world_pos.y, 0.0), anchor_world)
         } else {
             annotation_callout_snapshot_world_positions(entity)
-        };
+        }
+    } else {
+        annotation_callout_snapshot_world_positions(entity)
+    };
     project_annotation_callout_target(camera, camera_global, center_world, anchor_world)
 }
 
@@ -2916,26 +2922,37 @@ fn select_annotation_callout_camera(
 fn spawn_annotation_callout_entry(
     commands: &mut Commands<'_, '_>,
     fonts: &EmbeddedFonts,
+    theme: sidereal_ui::theme::UiTheme,
+    glow_intensity: f32,
 ) -> AnnotationCalloutEntry {
+    let (panel_bg, panel_border, panel_shadow) = panel_surface(theme, glow_intensity);
     let root = commands
         .spawn((
-            Name::new("DebugEntityCallout"),
+            Name::new("AnnotationCallout"),
             Node {
                 position_type: PositionType::Absolute,
                 width: px(DEBUG_CALLOUT_WIDTH_PX),
                 height: px(48.0),
                 left: px(0.0),
                 top: px(0.0),
-                border: UiRect::all(px(1.0)),
-                padding: UiRect::all(px(DEBUG_CALLOUT_PADDING_PX)),
-                ..default()
+                ..layout::panel(
+                    px(DEBUG_CALLOUT_WIDTH_PX),
+                    DEBUG_CALLOUT_PADDING_PX,
+                    0.0,
+                    theme.metrics.panel_radius_px,
+                    theme.metrics.panel_border_px,
+                )
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.68)),
-            BorderColor::all(Color::srgba(0.22, 1.0, 0.4, 0.76)),
+            panel_bg,
+            panel_border,
+            panel_shadow,
             Visibility::Hidden,
             UiOverlayLayer,
             RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-            AnnotationCalloutRoot { target: None },
+            AnnotationCalloutRoot {
+                target: None,
+                placement: AnnotationCalloutPlacement::TopLeft,
+            },
             DespawnOnExit(ClientAppState::InWorld),
         ))
         .id();
@@ -2979,7 +2996,13 @@ fn release_annotation_callout_entry(
 ) {
     registry.free_entries.push(entry);
     if let Ok(mut root_commands) = commands.get_entity(entry.root) {
-        root_commands.insert((Visibility::Hidden, AnnotationCalloutRoot { target: None }));
+        root_commands.insert((
+            Visibility::Hidden,
+            AnnotationCalloutRoot {
+                target: None,
+                placement: AnnotationCalloutPlacement::TopLeft,
+            },
+        ));
     }
     if let Ok(mut line_commands) = commands.get_entity(entry.line) {
         line_commands.insert(Visibility::Hidden);
@@ -2989,9 +3012,8 @@ fn release_annotation_callout_entry(
 fn annotation_callout_text(
     entity: &super::resources::DebugOverlayEntity,
     controlled_position: Option<Vec2>,
-    hovered: bool,
 ) -> String {
-    let mut lines = Vec::with_capacity(if hovered { 8 } else { 5 });
+    let mut lines = Vec::with_capacity(10);
     lines.push(entity.label.clone());
     lines.push(format!("ID {}", short_uuid(entity.guid)));
     lines.push(format!(
@@ -2999,18 +3021,21 @@ fn annotation_callout_text(
         entity.position_xy.x, entity.position_xy.y
     ));
     lines.push(format!("ROT {:>6.1} DEG", entity.rotation_rad.to_degrees()));
-    if hovered {
-        if let Some(controlled_position) = controlled_position {
-            let relative = entity.position_xy - controlled_position;
-            lines.push(format!("REL {:>7.1} {:>7.1}", relative.x, relative.y));
-        }
-        lines.push(format!("LANE {:?}", entity.lane).to_ascii_uppercase());
-        lines.push(format!("ECS {}", entity.entity.to_bits()));
-        lines.push(format!(
-            "VEL {:>6.1} {:>6.1}",
-            entity.velocity_xy.x, entity.velocity_xy.y
-        ));
+    if let Some(controlled_position) = controlled_position {
+        let relative = entity.position_xy - controlled_position;
+        lines.push(format!("REL {:>7.1} {:>7.1}", relative.x, relative.y));
     }
+    lines.push(format!("LANE {:?}", entity.lane).to_ascii_uppercase());
+    lines.push(format!("ECS {}", entity.entity.to_bits()));
+    lines.push(format!(
+        "VEL {:>6.1} {:>6.1}",
+        entity.velocity_xy.x, entity.velocity_xy.y
+    ));
+    lines.push(format!("ANG {:>6.2}", entity.angular_velocity_rps));
+    lines.push(format!(
+        "COMP {}",
+        if entity.is_component { "YES" } else { "NO" }
+    ));
     lines.join("\n")
 }
 
