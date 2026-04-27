@@ -34,11 +34,17 @@ describe('getLiveWorldSnapshot', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const snapshot = await getLiveWorldSnapshot({ target: 'server', port: 15713 })
+    const snapshot = await getLiveWorldSnapshot({
+      target: 'server',
+      port: 15713,
+    })
 
     expect(snapshot.entities).toHaveLength(1)
     expect(snapshot.entities[0]?.entityGuid).toBe(
       '2782e15e-52d9-47fc-995a-1f4e612c7cfe',
+    )
+    expect(snapshot.entities[0]?.controlledEntityGuid).toBe(
+      '17673582-a203-4609-9f96-5a35633d89a5',
     )
   })
 })

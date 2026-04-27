@@ -129,7 +129,10 @@ function hasUiTransformComponent(
     const componentNode = graphNodes.get(edge.to)
     if (!componentNode) return false
     const typePath = componentNode.properties.typePath
-    if (typeof typePath === 'string' && typePath.endsWith(`::${UI_TRANSFORM_TYPE_NAME}`)) {
+    if (
+      typeof typePath === 'string' &&
+      typePath.endsWith(`::${UI_TRANSFORM_TYPE_NAME}`)
+    ) {
       return true
     }
     return componentNode.label === UI_TRANSFORM_TYPE_NAME
@@ -372,6 +375,12 @@ function extractEntityGuidFromComponentProps(rawProps: unknown): string | null {
   return looksLikeUuid(suffix) ? suffix : null
 }
 
+function extractControlledEntityGuidFromComponentProps(
+  rawProps: unknown,
+): string | null {
+  return extractEntityGuidFromComponentProps(rawProps)
+}
+
 function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
   const sampledAtMs = Date.now()
   const nodesById = new Map(graph.nodes.map((node) => [node.id, node]))
@@ -399,18 +408,34 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
     const componentProps = componentsByEntityId.get(node.id) ?? []
     const displayName = componentProps.reduce<string | null>((found, props) => {
       if (found) return found
-      return props.component_kind === 'display_name' ? findStringDeep(props) : null
-    }, null)
-    const parentGuidFromComponent = componentProps.reduce<string | null>((found, props) => {
-      if (found) return found
-      return props.component_kind === 'parent_guid'
-        ? extractParentGuidFromComponentProps(props)
+      return props.component_kind === 'display_name'
+        ? findStringDeep(props)
         : null
     }, null)
-    const entityGuidFromComponent = componentProps.reduce<string | null>((found, props) => {
+    const parentGuidFromComponent = componentProps.reduce<string | null>(
+      (found, props) => {
+        if (found) return found
+        return props.component_kind === 'parent_guid'
+          ? extractParentGuidFromComponentProps(props)
+          : null
+      },
+      null,
+    )
+    const entityGuidFromComponent = componentProps.reduce<string | null>(
+      (found, props) => {
+        if (found) return found
+        return props.component_kind === 'entity_guid'
+          ? extractEntityGuidFromComponentProps(props)
+          : null
+      },
+      null,
+    )
+    const controlledEntityGuidFromComponent = componentProps.reduce<
+      string | null
+    >((found, props) => {
       if (found) return found
-      return props.component_kind === 'entity_guid'
-        ? extractEntityGuidFromComponentProps(props)
+      return props.component_kind === 'controlled_entity_guid'
+        ? extractControlledEntityGuidFromComponentProps(props)
         : null
     }, null)
     const positionProps = componentProps.find(
@@ -442,14 +467,16 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
       : null
     const rawLabels = nodeProperties.entity_labels
     const entityLabels = Array.isArray(rawLabels)
-      ? rawLabels.map((value) => (typeof value === 'string' ? value : String(value)))
+      ? rawLabels.map((value) =>
+          typeof value === 'string' ? value : String(value),
+        )
       : undefined
     const parentEntityId =
       parentGuidFromComponent ??
       (typeof nodeProperties.parent_entity_id === 'string'
         ? nodeProperties.parent_entity_id
         : mountedOnProps
-          ? extractParentGuidFromComponentProps(mountedOnProps) ?? undefined
+          ? (extractParentGuidFromComponentProps(mountedOnProps) ?? undefined)
           : undefined)
     const entityGuid =
       entityGuidFromComponent ??
@@ -465,7 +492,8 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
     return [
       {
         id: node.id,
-        name: displayName ?? String(nodeProperties.name ?? node.label ?? node.id),
+        name:
+          displayName ?? String(nodeProperties.name ?? node.label ?? node.id),
         kind,
         ...(parentEntityId ? { parentEntityId } : {}),
         entity_labels: entityLabels?.length ? entityLabels : undefined,
@@ -479,6 +507,9 @@ function buildEntitiesFromGraph(graph: ApiGraph): Array<WorldEntity> {
         sampledAtMs,
         componentCount: componentProps.length,
         ...(entityGuid ? { entityGuid } : {}),
+        ...(controlledEntityGuidFromComponent
+          ? { controlledEntityGuid: controlledEntityGuidFromComponent }
+          : {}),
       } satisfies WorldEntity,
     ]
   })
@@ -509,7 +540,9 @@ function decodeBase64NoPad(input: string): Uint8Array | null {
   }
 }
 
-function parseChunkEncoding(value: unknown): 'Bitset' | 'SparseDeltaVarint' | null {
+function parseChunkEncoding(
+  value: unknown,
+): 'Bitset' | 'SparseDeltaVarint' | null {
   if (typeof value === 'string') {
     if (value === 'Bitset' || value === 'SparseDeltaVarint') return value
     const normalized = value.toLowerCase()
@@ -537,7 +570,7 @@ function decodeSparseDeltaVarintIndices(
     while (cursor < bytes.length) {
       const byte = bytes[cursor]
       cursor += 1
-      delta += (byte & 0x7f) * (2 ** shift)
+      delta += (byte & 0x7f) * 2 ** shift
       if ((byte & 0x80) === 0) {
         hasTerminator = true
         break
@@ -581,8 +614,10 @@ function decodeExploredCellsFromChunks(
 
   for (const chunkRaw of chunks) {
     if (!isObjectRecord(chunkRaw)) continue
-    const chunkX = asFiniteNumber(chunkRaw.chunk_x) ?? asFiniteNumber(chunkRaw.chunkX)
-    const chunkY = asFiniteNumber(chunkRaw.chunk_y) ?? asFiniteNumber(chunkRaw.chunkY)
+    const chunkX =
+      asFiniteNumber(chunkRaw.chunk_x) ?? asFiniteNumber(chunkRaw.chunkX)
+    const chunkY =
+      asFiniteNumber(chunkRaw.chunk_y) ?? asFiniteNumber(chunkRaw.chunkY)
     const payloadB64 =
       typeof chunkRaw.payload_b64 === 'string'
         ? chunkRaw.payload_b64
@@ -649,7 +684,9 @@ function extractResourceTypePaths(value: unknown): Array<string> {
     objectValue.typePaths ??
     objectValue.value
   if (Array.isArray(directList)) {
-    return directList.filter((entry): entry is string => typeof entry === 'string')
+    return directList.filter(
+      (entry): entry is string => typeof entry === 'string',
+    )
   }
   const keys = Object.keys(objectValue).filter((key) => key.includes('::'))
   if (keys.length > 0) return keys
@@ -690,7 +727,7 @@ async function callBrpJsonRpc<T = unknown>(
       error:
         typeof payload.error === 'string'
           ? payload.error
-          : payload.error?.message ?? `BRP ${method} failed`,
+          : (payload.error?.message ?? `BRP ${method} failed`),
     }
   }
   if (payload.error) {
@@ -698,7 +735,7 @@ async function callBrpJsonRpc<T = unknown>(
       error:
         typeof payload.error === 'string'
           ? payload.error
-          : payload.error.message ?? `BRP ${method} failed`,
+          : (payload.error.message ?? `BRP ${method} failed`),
     }
   }
   return { result: payload.result }
@@ -786,7 +823,8 @@ function extractEntityRegistryTemplateIds(
     const templateIdRaw = entryObj.entity_id ?? entryObj.entityId
     const entityClassRaw = entryObj.entity_class ?? entryObj.entityClass
     if (typeof templateIdRaw !== 'string') continue
-    if (typeof entityClassRaw === 'string' && entityClassRaw !== 'ship') continue
+    if (typeof entityClassRaw === 'string' && entityClassRaw !== 'ship')
+      continue
     const label = templateIdRaw
       .split('.')
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -928,6 +966,19 @@ function isPlayerEntity(entity: WorldEntity): boolean {
     entity.entity_labels?.some((label) => label.toLowerCase() === 'player') ??
     false
   )
+}
+
+function shouldHideControlledPlayerMapIcon(entity: WorldEntity): boolean {
+  const controlledGuid = entity.controlledEntityGuid?.trim().toLowerCase()
+  if (!controlledGuid) return false
+
+  const ownGuidCandidate = entity.entityGuid ?? entity.id
+  const ownGuid = looksLikeUuid(ownGuidCandidate)
+    ? ownGuidCandidate.trim().toLowerCase()
+    : null
+  if (ownGuid && controlledGuid === ownGuid) return false
+
+  return isPlayerEntity(entity) || Boolean(entity.controlledEntityGuid)
 }
 
 function playerLabel(entity: WorldEntity): string {
@@ -1136,6 +1187,7 @@ export {
   parseSelectedPlayerVisibilityOverlay,
   playerLabel,
   resolveOwnerTypePath,
+  shouldHideControlledPlayerMapIcon,
 }
 
 export type {

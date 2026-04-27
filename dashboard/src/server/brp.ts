@@ -60,6 +60,7 @@ export type LiveWorldEntity = {
   sampledAtMs: number
   componentCount: number
   entityGuid?: string
+  controlledEntityGuid?: string
 }
 
 export type LiveGraphNode = {
@@ -409,6 +410,7 @@ function getNameFromComponents(
 
 function getKindFromComponents(components: Record<string, unknown>): string {
   const componentNames = Object.keys(components).map(shortTypeName)
+  if (componentNames.some((name) => /PlayerTag/i.test(name))) return 'player'
   if (componentNames.some((name) => /ship/i.test(name))) return 'ship'
   if (componentNames.some((name) => /asteroid/i.test(name))) return 'asteroid'
   if (componentNames.some((name) => /planet/i.test(name))) return 'planet'
@@ -553,6 +555,21 @@ function getEntityGuidFromComponents(
 ): string | null {
   for (const [componentPath, value] of Object.entries(components)) {
     if (!componentPath.endsWith('::EntityGuid')) {
+      continue
+    }
+    const found = findStringDeep(value)
+    if (!found) continue
+    const normalized = normalizeGuidLike(found)
+    if (normalized) return normalized
+  }
+  return null
+}
+
+function getControlledEntityGuidFromComponents(
+  components: Record<string, unknown>,
+): string | null {
+  for (const [componentPath, value] of Object.entries(components)) {
+    if (!componentPath.endsWith('::ControlledEntityGuid')) {
       continue
     }
     const found = findStringDeep(value)
@@ -866,6 +883,8 @@ export async function getLiveWorldSnapshot(
       getParentEntityIdFromComponents(components) ?? undefined
     const entityLabels = getEntityLabelsFromComponents(components) ?? undefined
     const entityGuid = getEntityGuidFromComponents(components)
+    const controlledEntityGuid =
+      getControlledEntityGuidFromComponents(components)
 
     entities.push({
       id: entityId,
@@ -884,6 +903,7 @@ export async function getLiveWorldSnapshot(
       mapVisible,
       componentCount: componentEntries.length,
       ...(entityGuid ? { entityGuid } : {}),
+      ...(controlledEntityGuid ? { controlledEntityGuid } : {}),
     })
 
     nodes.push({

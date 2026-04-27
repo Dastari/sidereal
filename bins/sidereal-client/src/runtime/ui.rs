@@ -67,7 +67,10 @@ type DebugCalloutLineQuery<'w, 's> = Query<
         &'static mut UiTransform,
         &'static mut Visibility,
     ),
-    With<DebugOverlayCalloutLine>,
+    (
+        With<DebugOverlayCalloutLine>,
+        Without<DebugOverlayCalloutRoot>,
+    ),
 >;
 
 type DebugCalloutTargetQuery<'w, 's> = Query<
@@ -78,7 +81,10 @@ type DebugCalloutTargetQuery<'w, 's> = Query<
         Option<&'static Visibility>,
         Option<&'static SizeM>,
     ),
-    Without<DebugOverlayCalloutRoot>,
+    (
+        Without<DebugOverlayCalloutRoot>,
+        Without<DebugOverlayCalloutLine>,
+    ),
 >;
 
 #[allow(clippy::type_complexity)]
@@ -120,6 +126,7 @@ pub(super) struct DebugOverlayCalloutUiQueries<'w, 's> {
             &'static mut Node,
             &'static mut Visibility,
         ),
+        Without<DebugOverlayCalloutLine>,
     >,
     text_query: Query<'w, 's, &'static mut Text, With<DebugOverlayCalloutText>>,
     line_query: DebugCalloutLineQuery<'w, 's>,

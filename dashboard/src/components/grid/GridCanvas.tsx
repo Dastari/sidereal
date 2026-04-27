@@ -252,6 +252,8 @@ export function GridCanvas({
           componentCount: entity.componentCount,
           rotationRad: entity.rotationRad,
           entity_labels: entity.entity_labels,
+          controlledEntityGuid: entity.controlledEntityGuid,
+          hideMapIcon: entity.hideMapIcon,
         },
       })
     }
@@ -359,6 +361,9 @@ export function GridCanvas({
       let closestDist = 25 * dpr // Hit radius
 
       for (const [id, node] of renderNodesRef.current) {
+        if (node.properties.hideMapIcon === true) {
+          continue
+        }
         const screenPos = worldToScreen(node.x, node.y)
         const dist = Math.hypot(screenPos.x - sx, screenPos.y - sy)
         if (dist < closestDist) {
@@ -439,6 +444,9 @@ export function GridCanvas({
       return [1.0, 0.9, 0.34] as const
     }
     const drawNodeMarker = (id: string, node: ExpandedNode) => {
+      if (node.properties.hideMapIcon === true) {
+        return
+      }
       const screenPos = worldToScreen(node.x, node.y)
       const entityLabels = node.properties.entity_labels as
         | Array<string>
@@ -652,6 +660,9 @@ export function GridCanvas({
     }
 
     for (const [id, node] of renderNodesRef.current) {
+      if (node.properties.hideMapIcon === true) {
+        continue
+      }
       const screenPos = worldToScreen(node.x, node.y)
 
       // Skip if off-screen

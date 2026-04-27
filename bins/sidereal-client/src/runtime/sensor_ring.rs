@@ -52,7 +52,7 @@ struct ControlledSensorEntity<'a> {
     global_transform: &'a GlobalTransform,
 }
 
-type ControlledScannerProfileQuery<'w, 's> = Query<
+pub(super) type ControlledScannerProfileQuery<'w, 's> = Query<
     'w,
     's,
     (
@@ -64,7 +64,7 @@ type ControlledScannerProfileQuery<'w, 's> = Query<
     With<WorldEntity>,
 >;
 
-type MountedScannerProfileQuery<'w, 's> = Query<
+pub(super) type MountedScannerProfileQuery<'w, 's> = Query<
     'w,
     's,
     (
@@ -74,6 +74,19 @@ type MountedScannerProfileQuery<'w, 's> = Query<
         Option<&'static MountedOn>,
     ),
     With<WorldEntity>,
+>;
+
+pub(super) type SensorRingElementQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static TacticalSensorRingElement,
+        &'static MeshMaterial2d<ColorMaterial>,
+        &'static mut Transform,
+        &'static mut Visibility,
+    ),
+    With<TacticalSensorRingElement>,
 >;
 
 pub(super) fn update_active_scanner_profile_cache_system(
@@ -178,18 +191,7 @@ pub(super) fn update_tactical_sensor_ring_overlay_system(
     mut meshes: ResMut<'_, Assets<Mesh>>,
     mut color_materials: ResMut<'_, Assets<ColorMaterial>>,
     mut render_cache: Local<'_, SensorRingRenderCache>,
-    mut elements: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ TacticalSensorRingElement,
-            &'_ MeshMaterial2d<ColorMaterial>,
-            &'_ mut Transform,
-            &'_ mut Visibility,
-        ),
-        With<TacticalSensorRingElement>,
-    >,
+    mut elements: SensorRingElementQuery<'_, '_>,
 ) {
     let fade_t = 1.0 - (-SENSOR_RING_FADE_RATE * time.delta_secs()).exp();
     ring_state.alpha = if ring_state.enabled {
@@ -655,18 +657,7 @@ fn upsert_sensor_ring_rect(
 
 fn despawn_sensor_ring_elements(
     commands: &mut Commands<'_, '_>,
-    elements: &mut Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ TacticalSensorRingElement,
-            &'_ MeshMaterial2d<ColorMaterial>,
-            &'_ mut Transform,
-            &'_ mut Visibility,
-        ),
-        With<TacticalSensorRingElement>,
-    >,
+    elements: &mut SensorRingElementQuery<'_, '_>,
 ) {
     for (entity, _, _, _, _) in elements {
         queue_despawn_if_exists(commands, entity);

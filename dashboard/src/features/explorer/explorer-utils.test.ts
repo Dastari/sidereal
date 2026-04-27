@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildEntitiesFromGraph,
   parseSelectedPlayerVisibilityOverlay,
+  shouldHideControlledPlayerMapIcon,
 } from './explorer-utils'
 
 describe('parseSelectedPlayerVisibilityOverlay', () => {
@@ -177,5 +178,83 @@ describe('buildEntitiesFromGraph', () => {
     const entities = buildEntitiesFromGraph(graph)
     expect(entities).toHaveLength(1)
     expect(entities[0]?.entityGuid).toBe(guid)
+  })
+
+  it('reads controlled entity guid values from player graph components', () => {
+    const playerGuid = '0012ebad-0000-0000-0000-000000000012'
+    const shipGuid = '0012ebad-0000-0000-0000-000000000099'
+    const graph = {
+      graph: 'sidereal',
+      nodes: [
+        {
+          id: 'player-entity',
+          label: 'Pilot',
+          kind: 'Entity',
+          properties: {
+            entity_labels: ['Entity', 'player'],
+          },
+        },
+        {
+          id: 'component-entity-guid',
+          label: 'EntityGuid',
+          kind: 'Component',
+          properties: {
+            component_kind: 'entity_guid',
+            typePath: 'sidereal_game::components::entity_guid::EntityGuid',
+            value: playerGuid,
+          },
+        },
+        {
+          id: 'component-controlled-entity-guid',
+          label: 'ControlledEntityGuid',
+          kind: 'Component',
+          properties: {
+            component_kind: 'controlled_entity_guid',
+            typePath:
+              'sidereal_game::components::controlled_entity_guid::ControlledEntityGuid',
+            value: shipGuid,
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge-entity-guid',
+          from: 'player-entity',
+          to: 'component-entity-guid',
+          label: 'HAS_COMPONENT',
+          properties: {},
+        },
+        {
+          id: 'edge-controlled-entity-guid',
+          from: 'player-entity',
+          to: 'component-controlled-entity-guid',
+          label: 'HAS_COMPONENT',
+          properties: {},
+        },
+      ],
+    }
+
+    const entities = buildEntitiesFromGraph(graph)
+    expect(entities[0]?.controlledEntityGuid).toBe(shipGuid)
+    expect(shouldHideControlledPlayerMapIcon(entities[0])).toBe(true)
+  })
+
+  it('keeps self-controlled player anchors visible on the map', () => {
+    expect(
+      shouldHideControlledPlayerMapIcon({
+        id: 'player-entity',
+        name: 'Pilot',
+        kind: 'player',
+        entityGuid: '0012ebad-0000-0000-0000-000000000012',
+        controlledEntityGuid: '0012ebad-0000-0000-0000-000000000012',
+        shardId: 1,
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        sampledAtMs: 0,
+        componentCount: 0,
+      }),
+    ).toBe(false)
   })
 })

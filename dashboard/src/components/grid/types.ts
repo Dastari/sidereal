@@ -31,6 +31,10 @@ export interface WorldEntity {
   componentCount: number
   /** When present, from EntityGuid component; shown in tree instead of component count when available. */
   entityGuid?: string
+  /** Player control target from ControlledEntityGuid when present. */
+  controlledEntityGuid?: string
+  /** Hide this entity's map marker while preserving it for tree/detail state. */
+  hideMapIcon?: boolean
 }
 
 export interface GraphNode {

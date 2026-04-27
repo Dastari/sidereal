@@ -62,6 +62,7 @@ import {
   parseSelectedPlayerVisibilityOverlay,
   playerLabel,
   resolveOwnerTypePath,
+  shouldHideControlledPlayerMapIcon,
 } from '@/features/explorer/explorer-utils'
 import { HUDFrame, Switch } from '@/components/ui'
 
@@ -323,7 +324,8 @@ function applyOptimisticEntityComponentValue(
   if (!nextVec2) {
     if (
       nextRotationRad === null ||
-      (!typePath.endsWith('::WorldRotation') && !typePath.endsWith('::Rotation'))
+      (!typePath.endsWith('::WorldRotation') &&
+        !typePath.endsWith('::Rotation'))
     ) {
       return entities
     }
@@ -548,14 +550,20 @@ export function ExplorerWorkspace({
   // Map-only: exclude camera entities (id/name contains bevy_camera::camera::Camera, or has Camera component). Tree still shows all.
   const { entitiesForMap, cameraEntityIds } = useMemo(() => {
     const cameraIds = new Set<string>()
-    const forMap = filteredEntities.filter((entity) => {
+    const forMap = filteredEntities.flatMap((entity): Array<WorldEntity> => {
       // Never render entities without source position on the map.
       if (entity.hasPosition === false) {
-        return false
+        return []
       }
       const hide = isCameraEntity(entity, graphNodes, graphEdges)
       if (hide) cameraIds.add(entity.id)
-      return !hide
+      if (hide) {
+        return []
+      }
+      if (shouldHideControlledPlayerMapIcon(entity)) {
+        return [{ ...entity, hideMapIcon: true }]
+      }
+      return [entity]
     })
     return { entitiesForMap: forMap, cameraEntityIds: cameraIds }
   }, [filteredEntities, graphNodes, graphEdges])
@@ -1177,6 +1185,8 @@ export function ExplorerWorkspace({
               parentEntityId: child.parentEntityId,
               rotationRad: child.rotationRad,
               entity_labels: child.entity_labels,
+              controlledEntityGuid: child.controlledEntityGuid,
+              hideMapIcon: child.hideMapIcon,
             },
           })
         })
