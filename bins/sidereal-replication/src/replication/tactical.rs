@@ -8,25 +8,43 @@ use lightyear::prelude::{
     NetworkTarget, RemoteId, ReplicationState, Server, ServerMultiMessageSender,
 };
 use sidereal_game::{
-    EntityGuid, EntityLabels, FactionId, MapIcon, PlayerExploredCells, PlayerExploredCellsChunk,
-    PlayerExploredCellsChunkEncoding, PlayerTag, VisibilityDisclosure, VisibilityGridCell,
-    VisibilityRangeSource, VisibilitySpatialGrid,
+    ContactResolutionM, EntityGuid, EntityLabels, FactionId, MapIcon, PlayerExploredCells,
+    PlayerExploredCellsChunk, PlayerExploredCellsChunkEncoding, PlayerTag, SignalSignature, SizeM,
+    StaticLandmark, TotalMassKg, VisibilityDisclosure, VisibilityGridCell, VisibilityRangeSource,
+    VisibilitySpatialGrid, WorldPosition,
 };
 use sidereal_net::{
-    ClientTacticalResnapshotRequestMessage, GridCell, PlayerEntityId,
-    ServerTacticalContactsDeltaMessage, ServerTacticalContactsSnapshotMessage,
-    ServerTacticalFogDeltaMessage, ServerTacticalFogSnapshotMessage, TacticalContact,
-    TacticalDeltaChannel, TacticalSnapshotChannel,
+    ClientTacticalResnapshotRequestMessage, GridCell, NotificationPayload, NotificationPlacement,
+    NotificationSeverity, PlayerEntityId, ServerTacticalContactsDeltaMessage,
+    ServerTacticalContactsSnapshotMessage, ServerTacticalFogDeltaMessage,
+    ServerTacticalFogSnapshotMessage, TacticalContact, TacticalDeltaChannel,
+    TacticalSnapshotChannel,
 };
 use std::collections::{HashMap, HashSet};
 
 use crate::replication::PlayerRuntimeEntityMap;
 use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::notifications::{
+    NotificationCommand, NotificationCommandQueue, enqueue_player_notification,
+};
 use lightyear::prelude::MessageReceiver;
 
 const UPDATE_INTERVAL_S: f64 = 0.5;
 const SNAPSHOT_RESYNC_INTERVAL_S: f64 = 2.0;
 const FOG_CELL_SIZE_M: f32 = 100.0;
+const DEFAULT_CONTACT_RESOLUTION_M: f32 = 100.0;
+const UNKNOWN_CONTACT_ICON_ASSET_ID: &str = "map_icon_unknown_contact_svg";
+const GRAVITY_WELL_SIGNAL_EVENT_TYPE: &str = "long_range_gravity_well_detected";
+const SIGNAL_CONTACT_MIN_STRENGTH: f32 = 0.15;
+
+#[derive(Debug, Clone, PartialEq)]
+struct SignalContactMemory {
+    contact_id: String,
+    approximate_position_xy: [f64; 2],
+    position_accuracy_m: f32,
+    strongest_signal_strength: f32,
+    last_detected_tick: u64,
+}
 
 #[derive(Debug, Default)]
 struct PlayerTacticalStreamState {
@@ -37,6 +55,8 @@ struct PlayerTacticalStreamState {
     initialized: bool,
     live_cells: HashSet<GridCell>,
     contacts_by_entity_id: HashMap<String, TacticalContact>,
+    signal_contacts_by_target: HashMap<String, SignalContactMemory>,
+    notified_long_range_signal_targets: HashSet<String>,
 }
 
 #[derive(Debug, Resource, Default)]
@@ -111,11 +131,174 @@ fn contact_changed_for_delta(previous: &TacticalContact, current: &TacticalConta
         || previous.map_icon_asset_id != current.map_icon_asset_id
         || previous.faction_id != current.faction_id
         || previous.position_xy != current.position_xy
+        || previous.size_m != current.size_m
+        || previous.mass_kg != current.mass_kg
         || previous.heading_rad != current.heading_rad
         || previous.velocity_xy != current.velocity_xy
         || previous.is_live_now != current.is_live_now
         || previous.classification != current.classification
         || previous.contact_quality != current.contact_quality
+        || previous.signal_strength != current.signal_strength
+        || previous.position_accuracy_m != current.position_accuracy_m
+}
+
+fn stable_signal_contact_id(player_entity_id: &str, target_entity_id: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in player_entity_id
+        .bytes()
+        .chain([b':'])
+        .chain(target_entity_id.bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("signal-{hash:016x}")
+}
+
+fn entity_extent_m(size: Option<&SizeM>) -> f32 {
+    let Some(size) = size else {
+        return 0.0;
+    };
+    let max_dimension = size.length.max(size.width).max(size.height);
+    if max_dimension.is_finite() && max_dimension > 0.0 {
+        max_dimension * 0.5
+    } else {
+        0.0
+    }
+}
+
+fn tactical_world_position(
+    position: Option<&Position>,
+    world_position: Option<&WorldPosition>,
+    global_transform: Option<&GlobalTransform>,
+) -> DVec3 {
+    if let Some(position) = position
+        && position.0.is_finite()
+    {
+        return position.0.extend(0.0);
+    }
+    if let Some(world_position) = world_position
+        && world_position.0.is_finite()
+    {
+        return world_position.0.extend(0.0);
+    }
+    global_transform
+        .map(|value| value.translation().as_dvec3())
+        .unwrap_or(DVec3::ZERO)
+}
+
+fn signal_contact_quality(relative_strength: f32) -> Option<&'static str> {
+    if !relative_strength.is_finite() || relative_strength < SIGNAL_CONTACT_MIN_STRENGTH {
+        return None;
+    }
+    if relative_strength < 0.35 {
+        Some("weak")
+    } else if relative_strength < 0.65 {
+        Some("moderate")
+    } else if relative_strength < 1.0 {
+        Some("strong")
+    } else {
+        Some("overwhelming")
+    }
+}
+
+fn strongest_signal_detection(
+    visibility_sources: &[VisibilityRangeSource],
+    signal: &SignalSignature,
+    target_world: DVec3,
+    entity_extent_m: f32,
+) -> Option<(f32, &'static str)> {
+    if signal.strength <= 0.0 || signal.detection_radius_m <= 0.0 {
+        return None;
+    }
+    let mut best_strength = None::<f32>;
+    for source in visibility_sources {
+        if !source.x.is_finite()
+            || !source.y.is_finite()
+            || !source.z.is_finite()
+            || !source.range_m.is_finite()
+            || source.range_m <= 0.0
+        {
+            continue;
+        }
+        let source_position = DVec3::new(source.x as f64, source.y as f64, source.z as f64);
+        let effective_range_m = source.range_m
+            + signal.detection_radius_m
+            + if signal.use_extent_for_detection {
+                entity_extent_m
+            } else {
+                0.0
+            };
+        if !effective_range_m.is_finite() || effective_range_m <= 0.0 {
+            continue;
+        }
+        let distance_m = target_world.distance(source_position) as f32;
+        if distance_m > effective_range_m {
+            continue;
+        }
+        let normalized = 1.0 - distance_m / effective_range_m;
+        let relative_strength = signal.strength * normalized.clamp(0.0, 1.0);
+        best_strength = Some(
+            best_strength
+                .map(|current| current.max(relative_strength))
+                .unwrap_or(relative_strength),
+        );
+    }
+    let relative_strength = best_strength?;
+    signal_contact_quality(relative_strength).map(|quality| (relative_strength, quality))
+}
+
+fn approximate_signal_contact_position(target_world: DVec3, resolution_m: f32) -> [f64; 2] {
+    let resolution = resolution_m.max(1.0) as f64;
+    [
+        (target_world.x / resolution).floor() * resolution + resolution * 0.5,
+        (target_world.y / resolution).floor() * resolution + resolution * 0.5,
+    ]
+}
+
+fn should_update_signal_memory(memory: &SignalContactMemory, next_resolution_m: f32) -> bool {
+    next_resolution_m.is_finite()
+        && next_resolution_m > 0.0
+        && next_resolution_m < memory.position_accuracy_m * 0.75
+}
+
+fn is_gravity_well_landmark(static_landmark: Option<&StaticLandmark>) -> bool {
+    let Some(static_landmark) = static_landmark else {
+        return false;
+    };
+    matches!(
+        static_landmark.kind.trim().to_ascii_lowercase().as_str(),
+        "planet" | "star" | "blackhole" | "black_hole"
+    )
+}
+
+fn enqueue_gravity_well_signal_notification(
+    queue: &mut NotificationCommandQueue,
+    player_entity_id: &str,
+    contact: &TacticalContact,
+) {
+    enqueue_player_notification(
+        queue,
+        NotificationCommand {
+            player_entity_id: player_entity_id.to_string(),
+            title: "Long-Range Sensor Contact".to_string(),
+            body: "A gravity well has been detected nearby.".to_string(),
+            severity: NotificationSeverity::Info,
+            placement: NotificationPlacement::BottomRight,
+            image: None,
+            payload: NotificationPayload::Generic {
+                event_type: GRAVITY_WELL_SIGNAL_EVENT_TYPE.to_string(),
+                data: serde_json::json!({
+                    "contact_id": contact.entity_id,
+                    "signal_strength": contact.signal_strength,
+                    "contact_quality": contact.contact_quality,
+                    "position_accuracy_m": contact.position_accuracy_m,
+                    "approximate_position_xy": contact.position_xy,
+                }),
+            },
+            auto_dismiss_after_s: None,
+        },
+    );
 }
 
 fn compute_live_cells_delta(
@@ -491,6 +674,7 @@ pub fn stream_tactical_snapshot_messages(
     mut sender: ServerMultiMessageSender<'_, '_, With<Connected>>,
     time: Res<'_, Time<Real>>,
     mut stream_state: ResMut<'_, TacticalStreamState>,
+    mut notification_queue: ResMut<'_, NotificationCommandQueue>,
     bindings: Res<'_, AuthenticatedClientBindings>,
     client_remotes: Query<'_, '_, (&'_ LinkOf, &'_ RemoteId), With<ClientOf>>,
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
@@ -500,6 +684,7 @@ pub fn stream_tactical_snapshot_messages(
         (
             &'_ VisibilitySpatialGrid,
             Option<&'_ VisibilityDisclosure>,
+            Option<&'_ ContactResolutionM>,
             Option<&'_ mut PlayerExploredCells>,
         ),
         With<PlayerTag>,
@@ -513,9 +698,14 @@ pub fn stream_tactical_snapshot_messages(
             Option<&'_ FactionId>,
             Option<&'_ MapIcon>,
             Option<&'_ Position>,
+            Option<&'_ WorldPosition>,
             Option<&'_ GlobalTransform>,
             Option<&'_ Rotation>,
             Option<&'_ LinearVelocity>,
+            Option<&'_ SizeM>,
+            Option<&'_ TotalMassKg>,
+            Option<&'_ StaticLandmark>,
+            Option<&'_ SignalSignature>,
             Option<&'_ PlayerTag>,
             &'_ ReplicationState,
         ),
@@ -543,11 +733,15 @@ pub fn stream_tactical_snapshot_messages(
         else {
             continue;
         };
-        let Ok((player_grid, visibility_disclosure, explored_component)) =
+        let Ok((player_grid, visibility_disclosure, contact_resolution, explored_component)) =
             player_visibility.get_mut(player_entity)
         else {
             continue;
         };
+        let contact_resolution_m = contact_resolution
+            .map(|value| value.0)
+            .unwrap_or(DEFAULT_CONTACT_RESOLUTION_M)
+            .max(1.0);
 
         let force_snapshot = stream_state
             .forced_snapshot_by_player
@@ -626,43 +820,117 @@ pub fn stream_tactical_snapshot_messages(
             faction_id,
             map_icon,
             position,
+            world_position,
             global_transform,
             rotation,
             linear_velocity,
+            size,
+            total_mass,
+            static_landmark,
+            signal_signature,
             player_tag,
             replication_state,
         ) in &replicated_entities
         {
-            if !replication_state.is_visible(*client_entity) {
-                continue;
-            }
             if player_tag.is_some() {
                 continue;
             }
             let Some(guid) = guid else {
                 continue;
             };
-            let world = global_transform
-                .map(|value| value.translation().as_dvec3())
-                .or_else(|| position.map(|p| p.0.extend(0.0)))
-                .unwrap_or(DVec3::ZERO);
+            let world = tactical_world_position(position, world_position, global_transform);
             let entity_id = guid.0.to_string();
-            contacts_by_entity_id.insert(
-                entity_id.clone(),
-                TacticalContact {
-                    entity_id: guid.0.to_string(),
-                    kind: contact_kind_from_labels(labels),
-                    map_icon_asset_id: map_icon.map(|icon| icon.asset_id.clone()),
-                    faction_id: faction_id.map(|id| id.0.clone()),
-                    position_xy: [world.x, world.y],
-                    heading_rad: rotation.map_or(0.0, |value| value.as_radians()),
-                    velocity_xy: linear_velocity.map(|v| [v.0.x, v.0.y]),
-                    is_live_now: true,
-                    last_seen_tick: generated_at_tick,
-                    classification: None,
-                    contact_quality: None,
-                },
-            );
+            if replication_state.is_visible(*client_entity) {
+                contacts_by_entity_id.insert(
+                    entity_id.clone(),
+                    TacticalContact {
+                        entity_id: guid.0.to_string(),
+                        kind: contact_kind_from_labels(labels),
+                        map_icon_asset_id: map_icon.map(|icon| icon.asset_id.clone()),
+                        faction_id: faction_id.map(|id| id.0.clone()),
+                        position_xy: [world.x, world.y],
+                        size_m: size.map(|value| [value.length, value.width, value.height]),
+                        mass_kg: total_mass.map(|value| value.0),
+                        heading_rad: rotation.map_or(0.0, |value| value.as_radians()),
+                        velocity_xy: linear_velocity.map(|v| [v.0.x, v.0.y]),
+                        is_live_now: true,
+                        last_seen_tick: generated_at_tick,
+                        classification: None,
+                        contact_quality: None,
+                        signal_strength: None,
+                        position_accuracy_m: None,
+                    },
+                );
+                continue;
+            }
+
+            let Some(signal_signature) = signal_signature else {
+                continue;
+            };
+            let visibility_sources = visibility_disclosure
+                .map(|disclosure| disclosure.visibility_sources.as_slice())
+                .unwrap_or(&[]);
+            let Some((signal_strength, contact_quality)) = strongest_signal_detection(
+                visibility_sources,
+                signal_signature,
+                world,
+                entity_extent_m(size),
+            ) else {
+                continue;
+            };
+            let target_key = guid.0.to_string();
+            let contact_memory = state
+                .signal_contacts_by_target
+                .entry(target_key.clone())
+                .or_insert_with(|| SignalContactMemory {
+                    contact_id: stable_signal_contact_id(player_entity_id.as_str(), &target_key),
+                    approximate_position_xy: approximate_signal_contact_position(
+                        world,
+                        contact_resolution_m,
+                    ),
+                    position_accuracy_m: contact_resolution_m,
+                    strongest_signal_strength: signal_strength,
+                    last_detected_tick: generated_at_tick,
+                });
+            if should_update_signal_memory(contact_memory, contact_resolution_m) {
+                contact_memory.approximate_position_xy =
+                    approximate_signal_contact_position(world, contact_resolution_m);
+                contact_memory.position_accuracy_m = contact_resolution_m;
+            }
+            contact_memory.strongest_signal_strength = contact_memory
+                .strongest_signal_strength
+                .max(signal_strength);
+            contact_memory.last_detected_tick = generated_at_tick;
+
+            let contact = TacticalContact {
+                entity_id: contact_memory.contact_id.clone(),
+                kind: "unknown".to_string(),
+                map_icon_asset_id: Some(UNKNOWN_CONTACT_ICON_ASSET_ID.to_string()),
+                faction_id: None,
+                position_xy: contact_memory.approximate_position_xy,
+                size_m: None,
+                mass_kg: None,
+                heading_rad: 0.0,
+                velocity_xy: None,
+                is_live_now: true,
+                last_seen_tick: generated_at_tick,
+                classification: Some("unknown".to_string()),
+                contact_quality: Some(contact_quality.to_string()),
+                signal_strength: Some(signal_strength),
+                position_accuracy_m: Some(contact_memory.position_accuracy_m),
+            };
+            if is_gravity_well_landmark(static_landmark)
+                && state
+                    .notified_long_range_signal_targets
+                    .insert(target_key.clone())
+            {
+                enqueue_gravity_well_signal_notification(
+                    &mut notification_queue,
+                    player_entity_id.as_str(),
+                    &contact,
+                );
+            }
+            contacts_by_entity_id.insert(contact.entity_id.clone(), contact);
         }
 
         let target = NetworkTarget::Single(remote_id.0);
@@ -764,11 +1032,14 @@ pub fn stream_tactical_snapshot_messages(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_live_cells_to_explored_memory, build_live_cells_from_visibility_sources,
+        SignalContactMemory, apply_live_cells_to_explored_memory,
+        approximate_signal_contact_position, build_live_cells_from_visibility_sources,
         circle_intersects_grid_cell, compute_contacts_delta, compute_live_cells_delta,
-        ensure_explored_memory_shape, materialize_explored_cells,
+        ensure_explored_memory_shape, materialize_explored_cells, should_update_signal_memory,
+        strongest_signal_detection,
     };
-    use sidereal_game::{PlayerExploredCells, VisibilityRangeSource};
+    use bevy::math::DVec3;
+    use sidereal_game::{PlayerExploredCells, SignalSignature, VisibilityRangeSource};
     use sidereal_net::{GridCell, TacticalContact};
     use std::collections::{HashMap, HashSet};
 
@@ -779,12 +1050,16 @@ mod tests {
             map_icon_asset_id: Some("map_icon_ship_svg".to_string()),
             faction_id: None,
             position_xy,
+            size_m: None,
+            mass_kg: None,
             heading_rad: 0.0,
             velocity_xy: None,
             is_live_now: true,
             last_seen_tick,
             classification: None,
             contact_quality: None,
+            signal_strength: None,
+            position_accuracy_m: None,
         }
     }
 
@@ -828,6 +1103,43 @@ mod tests {
         assert_eq!(upserts[0].entity_id, "a");
         assert_eq!(upserts[1].entity_id, "c");
         assert_eq!(removals, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn signal_detection_reports_quality_inside_extended_range() {
+        let source = VisibilityRangeSource {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            range_m: 300.0,
+        };
+        let signal = SignalSignature {
+            strength: 1.0,
+            detection_radius_m: 900.0,
+            use_extent_for_detection: true,
+        };
+
+        let detection =
+            strongest_signal_detection(&[source], &signal, DVec3::new(700.0, 0.0, 0.0), 100.0);
+
+        assert!(matches!(detection, Some((strength, "moderate")) if strength > 0.4));
+    }
+
+    #[test]
+    fn signal_contact_position_memory_only_improves_with_better_resolution() {
+        let position = approximate_signal_contact_position(DVec3::new(124.0, 276.0, 0.0), 100.0);
+        assert_eq!(position, [150.0, 250.0]);
+
+        let memory = SignalContactMemory {
+            contact_id: "signal-test".to_string(),
+            approximate_position_xy: position,
+            position_accuracy_m: 100.0,
+            strongest_signal_strength: 0.5,
+            last_detected_tick: 1,
+        };
+
+        assert!(!should_update_signal_memory(&memory, 80.0));
+        assert!(should_update_signal_memory(&memory, 70.0));
     }
 
     #[test]

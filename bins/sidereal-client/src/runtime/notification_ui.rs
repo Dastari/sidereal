@@ -7,11 +7,11 @@ use sidereal_net::{
     ClientNotificationDismissedMessage, NotificationChannel, NotificationPlacement,
     NotificationSeverity, PlayerEntityId, ServerNotificationMessage,
 };
-use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::theme::{ActiveUiTheme, UiSemanticTone, UiVisualSettings, theme_definition};
 use sidereal_ui::typography::text_font;
 use sidereal_ui::widgets::{
-    UiButtonVariant, UiInteractionState, button_surface, panel_surface_with_accent,
-    spawn_hud_frame_chrome_with_accent,
+    UiButtonVariant, UiInteractionState, button_surface, panel_surface_with_tone,
+    spawn_hud_frame_chrome_with_tone,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -297,9 +297,11 @@ fn sync_notification_ui(
                 }
                 let node = toast_node(toast.message.placement, *index);
                 *index += 1;
-                let accent_color = severity_color(theme, toast.message.severity);
-                let (panel_bg, _, panel_shadow) =
-                    panel_surface_with_accent(theme, glow_intensity, accent_color);
+                let tone = severity_tone(toast.message.severity);
+                let accent_color = tone.accent_color(theme);
+                let foreground_color = tone.foreground_color(theme);
+                let (panel_bg, panel_border, panel_shadow) =
+                    panel_surface_with_tone(theme, glow_intensity, tone);
                 let (button_bg, button_border, button_shadow) = button_surface(
                     theme,
                     UiButtonVariant::Ghost,
@@ -310,20 +312,20 @@ fn sync_notification_ui(
                     Name::new("NotificationToastCard"),
                     node,
                     panel_bg,
+                    panel_border,
                     panel_shadow.clone(),
-                    BorderColor::all(accent_color),
                     NotificationToastCard,
                     FocusPolicy::Pass,
                 ))
                 .with_children(|card| {
-                    spawn_hud_frame_chrome_with_accent(
+                    spawn_hud_frame_chrome_with_tone(
                         card,
                         &mut ui_assets.images,
                         theme,
                         Some(severity_label(toast.message.severity)),
                         &ui_assets.fonts.mono,
                         glow_intensity,
-                        accent_color,
+                        tone,
                     );
                     card.spawn((
                         Node {
@@ -372,13 +374,13 @@ fn sync_notification_ui(
                             text_column.spawn((
                                 Text::new(toast.message.title.clone()),
                                 text_font(ui_assets.fonts.display.clone(), 16.0),
-                                TextColor(accent_color),
+                                TextColor(foreground_color),
                                 FocusPolicy::Pass,
                             ));
                             text_column.spawn((
                                 Text::new(toast.message.body.clone()),
                                 text_font(ui_assets.fonts.regular.clone(), 15.0),
-                                TextColor(theme.colors.foreground_color()),
+                                TextColor(foreground_color),
                                 FocusPolicy::Pass,
                             ));
                         });
@@ -404,7 +406,7 @@ fn sync_notification_ui(
                             button.spawn((
                                 Text::new("X"),
                                 text_font(ui_assets.fonts.mono_bold.clone(), 14.0),
-                                TextColor(theme.colors.panel_foreground_color()),
+                                TextColor(foreground_color),
                             ));
                         });
                     });
@@ -527,12 +529,12 @@ fn canonical_player_entity_id(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
-fn severity_color(theme: sidereal_ui::UiTheme, severity: NotificationSeverity) -> Color {
+fn severity_tone(severity: NotificationSeverity) -> UiSemanticTone {
     match severity {
-        NotificationSeverity::Info => theme.colors.info_color(),
-        NotificationSeverity::Success => theme.colors.success_color(),
-        NotificationSeverity::Warning => theme.colors.warning_color(),
-        NotificationSeverity::Error => theme.colors.destructive_color(),
+        NotificationSeverity::Info => UiSemanticTone::Info,
+        NotificationSeverity::Success => UiSemanticTone::Success,
+        NotificationSeverity::Warning => UiSemanticTone::Warning,
+        NotificationSeverity::Error => UiSemanticTone::Danger,
     }
 }
 

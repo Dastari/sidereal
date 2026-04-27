@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::log::{info, warn};
 use bevy::prelude::*;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
@@ -7,7 +8,7 @@ use lightyear::prelude::{
     MessageReceiver, NetworkTarget, RemoteId, Server, ServerMultiMessageSender, Unlink,
 };
 use serde::Deserialize;
-use sidereal_game::{AccountId, PlayerTag};
+use sidereal_game::{AccountId, ControlledEntityGuid, DisplayName, EntityGuid, PlayerTag};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,12 +18,14 @@ use sidereal_net::{
     PlayerEntityId, ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 
-use crate::replication::control::ClientControlRequestOrder;
+use crate::replication::control::queue_neutralize_control_intent;
+use crate::replication::control::{ClientControlLeaseGenerations, ClientControlRequestOrder};
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
     RealtimeInputActivityByPlayer, canonical_player_entity_id,
 };
 use crate::replication::lifecycle::ClientLastActivity;
+use crate::replication::notifications::{self, NotificationCommandQueue};
 use crate::replication::visibility::{ClientVisibilityRegistry, VisibilityClientContextCache};
 use crate::replication::{PlayerControlledEntityMap, PlayerRuntimeEntityMap};
 
@@ -56,6 +59,50 @@ pub fn init_resources(app: &mut App) {
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
 pub(crate) const AUTH_CONFIG_DENIED_REASON: &str = "Replication auth is not configured correctly. Check GATEWAY_JWT_SECRET on the replication server and restart it.";
+
+fn current_controlled_entity_id_for_ready(
+    player_entity: Option<Entity>,
+    player_controlled: &Query<
+        '_,
+        '_,
+        (&'_ EntityGuid, Option<&'_ ControlledEntityGuid>),
+        With<PlayerTag>,
+    >,
+) -> Option<String> {
+    let player_entity = player_entity?;
+    let Ok((player_guid, controlled)) = player_controlled.get(player_entity) else {
+        return None;
+    };
+    controlled
+        .and_then(|value| value.0.clone())
+        .or_else(|| Some(player_guid.0.to_string()))
+}
+
+#[derive(SystemParam)]
+pub(crate) struct SessionReadyLeaseState<'w> {
+    lease_generations: ResMut<'w, ClientControlLeaseGenerations>,
+    ready_throttle: ResMut<'w, SessionReadyThrottleState>,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct RealtimeInputCleanupState<'w> {
+    input_session_state: ResMut<'w, AuthenticatedInputSessionState>,
+    input_tick_tracker: ResMut<'w, ClientInputTickTracker>,
+    input_rate_limit_state: ResMut<'w, InputRateLimitState>,
+    latest_realtime_inputs: ResMut<'w, LatestRealtimeInputsByPlayer>,
+    realtime_input_activity: ResMut<'w, RealtimeInputActivityByPlayer>,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct ClientDisconnectCleanupState<'w> {
+    bindings: ResMut<'w, AuthenticatedClientBindings>,
+    input_cleanup: RealtimeInputCleanupState<'w>,
+    controlled_entity_map: Res<'w, PlayerControlledEntityMap>,
+    visibility_registry: ResMut<'w, ClientVisibilityRegistry>,
+    client_context_cache: ResMut<'w, VisibilityClientContextCache>,
+    control_order: ResMut<'w, ClientControlRequestOrder>,
+    last_activity: ResMut<'w, ClientLastActivity>,
+}
 
 pub(crate) fn configured_gateway_jwt_secret() -> Result<String, &'static str> {
     match std::env::var("GATEWAY_JWT_SECRET") {
@@ -156,9 +203,11 @@ pub fn reset_realtime_input_on_fresh_auth_bind(
 
 #[allow(clippy::too_many_arguments)]
 pub fn cleanup_client_auth_bindings(
+    mut commands: Commands<'_, '_>,
     clients: Query<'_, '_, (Entity, &'_ RemoteId), With<ClientOf>>,
     mut removed_clients: RemovedComponents<'_, '_, ClientOf>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
+    controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
     mut input_rate_limit_state: ResMut<'_, InputRateLimitState>,
     mut latest_realtime_inputs: ResMut<'_, LatestRealtimeInputsByPlayer>,
@@ -175,6 +224,12 @@ pub fn cleanup_client_auth_bindings(
     let live_remote_ids = clients
         .iter()
         .map(|(_, remote_id)| remote_id.0)
+        .collect::<HashSet<_>>();
+    let previously_bound_players = bindings
+        .by_client_entity
+        .iter()
+        .filter(|(client_entity, _)| !live_clients.contains(client_entity))
+        .filter_map(|(_, player_entity_id)| PlayerEntityId::parse(player_entity_id.as_str()))
         .collect::<HashSet<_>>();
     // Drain RemovedComponents<ClientOf> so we don't accumulate stale removals.
     let _: HashSet<_> = removed_clients.read().collect();
@@ -194,6 +249,18 @@ pub fn cleanup_client_auth_bindings(
         .iter()
         .map(|id| canonical_player_entity_id(id))
         .collect();
+    for player_id in previously_bound_players {
+        if live_canonical.contains(&player_id.canonical_wire_id()) {
+            continue;
+        }
+        if let Some(controlled_entity) = controlled_entity_map
+            .by_player_entity_id
+            .get(&player_id)
+            .copied()
+        {
+            queue_neutralize_control_intent(&mut commands, controlled_entity);
+        }
+    }
     input_tick_tracker.retain_live_clients(&live_clients);
     input_rate_limit_state
         .current_window_index_by_player_entity_id
@@ -245,11 +312,7 @@ pub fn cleanup_client_auth_bindings(
 /// so the server stops sending to that peer without waiting for idle timeout.
 pub fn receive_client_disconnect_notify(
     mut commands: Commands<'_, '_>,
-    mut bindings: ResMut<'_, AuthenticatedClientBindings>,
-    mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
-    mut client_context_cache: ResMut<'_, VisibilityClientContextCache>,
-    mut control_order: ResMut<'_, ClientControlRequestOrder>,
-    mut last_activity: ResMut<'_, ClientLastActivity>,
+    mut cleanup: ClientDisconnectCleanupState<'_>,
     mut receivers: Query<
         '_,
         '_,
@@ -267,14 +330,43 @@ pub fn receive_client_disconnect_notify(
                 "replication received client disconnect notify from client_entity={:?} player={}",
                 client_entity, msg.player_entity_id
             );
-            bindings.by_client_entity.remove(&client_entity);
-            bindings.by_remote_id.remove(&remote_id.0);
-            visibility_registry.unregister_client(client_entity);
-            client_context_cache.remove_client(client_entity);
-            control_order
+            cleanup.bindings.by_client_entity.remove(&client_entity);
+            cleanup.bindings.by_remote_id.remove(&remote_id.0);
+            cleanup
+                .input_cleanup
+                .input_session_state
+                .player_entity_id_by_client
+                .remove(&client_entity);
+            if let Some(player_entity_id) =
+                PlayerEntityId::parse(canonical_player_entity_id(&msg.player_entity_id).as_str())
+            {
+                reset_realtime_input_session_for_player(
+                    player_entity_id,
+                    &mut cleanup.input_cleanup.input_tick_tracker,
+                    &mut cleanup.input_cleanup.input_rate_limit_state,
+                    &mut cleanup.input_cleanup.latest_realtime_inputs,
+                    &mut cleanup.input_cleanup.realtime_input_activity,
+                );
+                if let Some(controlled_entity) = cleanup
+                    .controlled_entity_map
+                    .by_player_entity_id
+                    .get(&player_entity_id)
+                    .copied()
+                {
+                    queue_neutralize_control_intent(&mut commands, controlled_entity);
+                }
+            }
+            cleanup.visibility_registry.unregister_client(client_entity);
+            cleanup.client_context_cache.remove_client(client_entity);
+            cleanup
+                .control_order
                 .last_request_seq_by_player
                 .remove(&msg.player_entity_id);
-            last_activity.0.remove(&client_entity);
+            cleanup
+                .control_order
+                .last_request_seq_by_player
+                .remove(canonical_player_entity_id(&msg.player_entity_id).as_str());
+            cleanup.last_activity.0.remove(&client_entity);
             commands.trigger(Unlink {
                 entity: client_entity,
                 reason: "client_notify".to_string(),
@@ -301,14 +393,21 @@ pub fn receive_client_auth_messages(
         ),
         With<ClientOf>,
     >,
-    _controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
     player_entities: Query<'_, '_, (Entity, &'_ sidereal_game::EntityGuid), With<PlayerTag>>,
+    player_controlled: Query<
+        '_,
+        '_,
+        (&'_ EntityGuid, Option<&'_ ControlledEntityGuid>),
+        With<PlayerTag>,
+    >,
     player_accounts: Query<'_, '_, &'_ AccountId, With<PlayerTag>>,
+    player_display_names: Query<'_, '_, &'_ DisplayName, With<PlayerTag>>,
     mut visibility_registry: ResMut<'_, ClientVisibilityRegistry>,
     mut bindings: ResMut<'_, AuthenticatedClientBindings>,
     mut control_order: ResMut<'_, ClientControlRequestOrder>,
-    mut ready_throttle: ResMut<'_, SessionReadyThrottleState>,
+    mut session_ready_lease: SessionReadyLeaseState<'_>,
+    mut notification_queue: ResMut<'_, NotificationCommandQueue>,
 ) {
     let now_s = time.elapsed_secs_f64();
     let jwt_secret = configured_gateway_jwt_secret().ok();
@@ -476,7 +575,8 @@ pub fn receive_client_auth_messages(
                 // Idempotent auth refresh for an already-bound client:
                 // keep current visibility/bindings intact and only re-send readiness
                 // if enough time has elapsed to make it a meaningful retry.
-                let last_ready_sent_at_s = ready_throttle
+                let last_ready_sent_at_s = session_ready_lease
+                    .ready_throttle
                     .last_sent_at_s_by_client_entity
                     .get(&client_entity)
                     .copied()
@@ -485,9 +585,16 @@ pub fn receive_client_auth_messages(
                     continue;
                 }
                 let target = NetworkTarget::Single(remote_id.0);
+                let control_generation = session_ready_lease
+                    .lease_generations
+                    .ensure_initialized_for_player(message_player_wire.as_str());
+                let controlled_entity_id =
+                    current_controlled_entity_id_for_ready(player_entity, &player_controlled);
                 let ready = ServerSessionReadyMessage {
                     player_entity_id: message_player_wire.clone(),
                     protocol_version: LIGHTYEAR_PROTOCOL_VERSION,
+                    control_generation,
+                    controlled_entity_id,
                 };
                 if let Err(err) = sender
                     .send::<ServerSessionReadyMessage, ControlChannel>(&ready, server, &target)
@@ -497,7 +604,8 @@ pub fn receive_client_auth_messages(
                         remote_id.0, message_player_wire, err
                     );
                 } else {
-                    ready_throttle
+                    session_ready_lease
+                        .ready_throttle
                         .last_sent_at_s_by_client_entity
                         .insert(client_entity, now_s);
                 }
@@ -572,9 +680,16 @@ pub fn receive_client_auth_messages(
             );
 
             let target = NetworkTarget::Single(remote_id.0);
+            let control_generation = session_ready_lease
+                .lease_generations
+                .ensure_initialized_for_player(message_player_wire.as_str());
+            let controlled_entity_id =
+                current_controlled_entity_id_for_ready(player_entity, &player_controlled);
             let ready = ServerSessionReadyMessage {
                 player_entity_id: message_player_wire.clone(),
                 protocol_version: LIGHTYEAR_PROTOCOL_VERSION,
+                control_generation,
+                controlled_entity_id,
             };
             if let Err(err) =
                 sender.send::<ServerSessionReadyMessage, ControlChannel>(&ready, server, &target)
@@ -584,9 +699,25 @@ pub fn receive_client_auth_messages(
                     remote_id.0, message_player_wire, err
                 );
             } else {
-                ready_throttle
+                session_ready_lease
+                    .ready_throttle
                     .last_sent_at_s_by_client_entity
                     .insert(client_entity, now_s);
+                let entering_display_name = player_entity
+                    .and_then(|entity| player_display_names.get(entity).ok())
+                    .map(|display_name| display_name.0.as_str());
+                let notification_count = notifications::enqueue_player_entered_world_notifications(
+                    &mut notification_queue,
+                    &bindings,
+                    message_player_wire.as_str(),
+                    entering_display_name,
+                );
+                if notification_count > 0 {
+                    info!(
+                        "replication queued player-entered-world notifications entering_player={} recipients={}",
+                        message_player_wire, notification_count
+                    );
+                }
             }
         }
     }

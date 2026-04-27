@@ -19,6 +19,7 @@ avian2d.workspace = true
 bevy = { workspace = true, default-features = false, features = ["2d", "webgpu", "mp3"] }
 bevy_svg = "0.18.0"
 mint = "0.5"
+resvg = "0.46.0"
 sidereal-audio = { path = "../../crates/sidereal-audio" }
 sidereal-core = { path = "../../crates/sidereal-core" }
 sidereal-asset-runtime = { path = "../../crates/sidereal-asset-runtime", default-features = false }
@@ -33,6 +34,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = "3.6"
 bevy_remote = { workspace = true, default-features = false, features = ["http"] }
 kira = { version = "0.12.0", default-features = false, features = ["cpal", "ogg", "vorbis"] }
 lightyear = { workspace = true, default-features = false, features = ["std", "client", "raw_connection", "udp", "input_native", "replication", "prediction", "interpolation", "frame_interpolation", "avian2d"] }

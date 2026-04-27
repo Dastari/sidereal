@@ -3,6 +3,8 @@ import {
   KeyRound,
   MoreHorizontal,
   PencilLine,
+  ShieldCheck,
+  ShieldOff,
   Trash2,
   Users,
   X,
@@ -37,7 +39,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
-type AccountSortKey = 'email' | 'characters' | 'created'
+type AccountSortKey = 'email' | 'characters' | 'mfa' | 'created'
 
 interface AccountsPanelProps {
   accounts: Array<DatabaseAccountRecord>
@@ -53,6 +55,93 @@ interface AccountsPanelProps {
     playerEntityId: string,
     displayName: string,
   ) => Promise<void>
+}
+
+function accountSearchText(account: DatabaseAccountRecord) {
+  return [
+    account.email,
+    account.accountId,
+    account.primaryPlayerEntityId,
+    account.mfaTotpEnabled ? 'mfa enabled totp authenticator' : 'mfa disabled',
+    ...account.characters.flatMap((character) => [
+      character.playerEntityId,
+      character.displayName ?? '',
+      character.status,
+    ]),
+  ].join(' ')
+}
+
+function formatEpoch(epochS: number | null) {
+  if (!epochS) return 'n/a'
+  return new Date(epochS * 1000).toLocaleString()
+}
+
+function CharacterList({
+  account,
+  pendingRenameByCharacterId,
+  onRename,
+}: {
+  account: DatabaseAccountRecord
+  pendingRenameByCharacterId: Record<string, boolean>
+  onRename: (character: DatabaseCharacterRecord) => void
+}) {
+  if (account.characters.length === 0) {
+    return <span className="text-sm text-muted-foreground">No characters</span>
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs text-muted-foreground">
+        {account.characterCount} character
+        {account.characterCount === 1 ? '' : 's'}
+      </div>
+      <div className="grid gap-2">
+        {account.characters.map((character) => {
+          const pending =
+            pendingRenameByCharacterId[character.playerEntityId] === true
+          return (
+            <div
+              key={character.playerEntityId}
+              className="grid gap-1 rounded-md border border-border/70 bg-background/45 px-2.5 py-2"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-medium">
+                  {character.displayName ?? '(unnamed)'}
+                </span>
+                <Badge
+                  variant={
+                    character.status === 'active' ? 'secondary' : 'outline'
+                  }
+                  className="shrink-0 text-[10px]"
+                >
+                  {character.status}
+                </Badge>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="ml-auto h-6 w-6 rounded p-0 text-muted-foreground hover:bg-accent"
+                  disabled={pending}
+                  onClick={() => onRename(character)}
+                  title="Rename character"
+                >
+                  <PencilLine className="h-3 w-3" />
+                </Button>
+              </div>
+              <div className="grid gap-1 text-[11px] text-muted-foreground md:grid-cols-[minmax(0,1fr)_auto]">
+                <span className="truncate font-mono">
+                  {character.playerEntityId}
+                </span>
+                <span className="tabular-nums">
+                  Created {formatEpoch(character.createdAtEpochS)}
+                </span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 export function AccountsPanel({
@@ -91,14 +180,7 @@ export function AccountsPanel({
     return !needle
       ? accounts
       : accounts.filter((account) =>
-          `${account.email} ${account.accountId} ${account.primaryPlayerEntityId} ${account.characters
-            .map(
-              (character) =>
-                `${character.playerEntityId} ${character.displayName ?? ''}`,
-            )
-            .join(' ')}`
-            .toLowerCase()
-            .includes(needle),
+          accountSearchText(account).toLowerCase().includes(needle),
         )
   }, [accounts, deferredSearch])
 
@@ -110,7 +192,14 @@ export function AccountsPanel({
         sortable: true,
         sortAccessor: (account) => account.email,
         minWidth: 220,
-        cell: (account) => <span className="font-medium">{account.email}</span>,
+        cell: (account) => (
+          <div className="min-w-0">
+            <div className="truncate font-medium">{account.email}</div>
+            <div className="truncate font-mono text-xs text-muted-foreground">
+              {account.accountId}
+            </div>
+          </div>
+        ),
       },
       {
         id: 'accountId',
@@ -118,64 +207,64 @@ export function AccountsPanel({
         sortable: true,
         sortAccessor: (account) => account.accountId,
         minWidth: 280,
+        defaultVisible: false,
         cell: (account) => account.accountId,
         cellClassName: 'font-mono text-xs',
       },
       {
         id: 'primaryPlayerEntityId',
-        header: 'Primary Player',
+        header: 'Legacy Player',
         sortable: true,
         sortAccessor: (account) => account.primaryPlayerEntityId,
         minWidth: 280,
-        cell: (account) => account.primaryPlayerEntityId,
+        defaultVisible: false,
+        cell: (account) => account.primaryPlayerEntityId || 'none',
         cellClassName: 'font-mono text-xs',
+      },
+      {
+        id: 'mfa',
+        header: 'MFA',
+        sortable: true,
+        sortAccessor: (account) => (account.mfaTotpEnabled ? 1 : 0),
+        minWidth: 170,
+        cell: (account) => (
+          <div className="flex flex-col items-start gap-1">
+            <Badge
+              variant={account.mfaTotpEnabled ? 'success' : 'outline'}
+              className="gap-1"
+            >
+              {account.mfaTotpEnabled ? (
+                <ShieldCheck className="h-3.5 w-3.5" />
+              ) : (
+                <ShieldOff className="h-3.5 w-3.5" />
+              )}
+              {account.mfaTotpEnabled ? 'TOTP enabled' : 'Not enrolled'}
+            </Badge>
+            {account.mfaTotpEnabled ? (
+              <span className="text-[11px] text-muted-foreground">
+                Verified {formatEpoch(account.mfaVerifiedAtEpochS)}
+              </span>
+            ) : null}
+          </div>
+        ),
       },
       {
         id: 'characterCount',
         header: 'Characters',
         sortable: true,
         sortAccessor: (account) => account.characterCount,
-        minWidth: 320,
+        minWidth: 460,
         cell: (account) => (
-          <div className="flex flex-col items-start gap-1">
-            <span className="tabular-nums text-sm">
-              {account.characterCount}
-            </span>
-            <div className="flex flex-wrap gap-1">
-              {account.characters.map((character) => {
-                const pending =
-                  pendingRenameByCharacterId[character.playerEntityId] === true
-                return (
-                  <Badge
-                    key={character.playerEntityId}
-                    variant="outline"
-                    className="gap-1 font-mono text-[11px]"
-                  >
-                    <span className="max-w-[18rem] truncate font-sans">
-                      {character.displayName ?? '(unnamed)'}
-                    </span>
-                    <span>{character.playerEntityId.slice(0, 8)}</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-5 w-5 rounded p-0 text-muted-foreground hover:bg-accent"
-                      disabled={pending}
-                      onClick={() => {
-                        setError(null)
-                        setMessage(null)
-                        setRenameCharacter(character)
-                        setRenameDialogOpen(true)
-                      }}
-                      title="Rename character"
-                    >
-                      <PencilLine className="h-3 w-3" />
-                    </Button>
-                  </Badge>
-                )
-              })}
-            </div>
-          </div>
+          <CharacterList
+            account={account}
+            pendingRenameByCharacterId={pendingRenameByCharacterId}
+            onRename={(character) => {
+              setError(null)
+              setMessage(null)
+              setRenameCharacter(character)
+              setRenameDialogOpen(true)
+            }}
+          />
         ),
       },
       {
@@ -265,6 +354,9 @@ export function AccountsPanel({
     if (sortKey === 'characters') {
       return { columnId: 'characterCount', direction: 'desc' }
     }
+    if (sortKey === 'mfa') {
+      return { columnId: 'mfa', direction: 'desc' }
+    }
     if (sortKey === 'created') {
       return { columnId: 'createdAtEpochS', direction: 'desc' }
     }
@@ -347,6 +439,7 @@ export function AccountsPanel({
               columns={columns}
               rows={filteredAccounts}
               getRowId={(account) => account.accountId}
+              getSearchText={(account) => accountSearchText(account)}
               loading={loading}
               loadingLabel="Loading account records..."
               emptyLabel="No accounts matched the current filter."
@@ -358,6 +451,7 @@ export function AccountsPanel({
                 if (!value) return
                 if (value.columnId === 'characterCount')
                   onSortKeyChange('characters')
+                else if (value.columnId === 'mfa') onSortKeyChange('mfa')
                 else if (value.columnId === 'createdAtEpochS')
                   onSortKeyChange('created')
                 else onSortKeyChange('email')

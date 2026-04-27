@@ -3,7 +3,7 @@ import * as React from 'react'
 import { buildGenesisPlanetPreviewUniforms } from './planet-preview'
 import type { GenesisPlanetDefinition } from './types'
 import type { ShaderPreviewDiagnostic } from '@/lib/shader-preview'
-import { renderPreviewShader } from '@/lib/shader-preview'
+import { renderPreviewShaderSequence } from '@/lib/shader-preview'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -126,13 +126,31 @@ export function GenesisPlanetPreview({
       const renderId = ++renderIdRef.current
       setStatus((current) => (current === 'loading' ? current : 'rendering'))
       try {
-        const result = await renderPreviewShader(
+        const passSequence =
+          definition.shader_settings.body_kind === 0
+            ? [
+                [0, 1, 0, 0],
+                [1, 0, 0, 0],
+                [0, 0, 0, 0],
+                [2, 0, 0, 0],
+                [0, 2, 0, 0],
+              ]
+            : [
+                [0, 1, 0, 0],
+                [0, 0, 0, 0],
+                [0, 2, 0, 0],
+              ]
+        const result = await renderPreviewShaderSequence(
           canvas,
           shaderSource,
-          buildGenesisPlanetPreviewUniforms(
-            definition.shader_settings,
-            paused ? 0 : timeSeconds,
-          ),
+          passSequence.map((passFlags, index) => ({
+            values: buildGenesisPlanetPreviewUniforms(
+              definition.shader_settings,
+              paused ? 0 : timeSeconds,
+              passFlags,
+            ),
+            clear: index === 0,
+          })),
         )
         if (renderId !== renderIdRef.current) return
         setDiagnostics(result.diagnostics)

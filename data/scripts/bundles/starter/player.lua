@@ -65,6 +65,7 @@ function PlayerBundle.build_graph_records(ctx)
       component(player_id, "action_queue", {
         pending = { "LongitudinalNeutral", "LateralNeutral" },
       }),
+      component(player_id, "contact_resolution_m", ctx.contact_resolution_m or 100.0),
       component(player_id, "tactical_map_ui_settings", {
         shader_asset_id = "tactical_map_overlay_wgsl",
         map_distance_m = 90.0,

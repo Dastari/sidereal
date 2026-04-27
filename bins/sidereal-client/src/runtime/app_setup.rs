@@ -83,6 +83,7 @@ fn init_control_and_prediction_resources(app: &mut App) {
 fn init_debug_and_diagnostics_resources(app: &mut App, headless_transport: bool) {
     app.insert_resource(DebugOverlayState::default());
     app.insert_resource(DebugOverlaySnapshot::default());
+    app.insert_resource(DebugOverlayCalloutRegistry::default());
     app.insert_resource(RuntimeStallDiagnostics::default());
     app.insert_resource(shaders::RuntimeShaderAssignments::default());
     app.insert_resource(shaders::RuntimeShaderAssignmentSyncState::default());
@@ -102,6 +103,8 @@ fn init_tactical_resources(app: &mut App) {
     app.insert_resource(TacticalContactsCache::default());
     app.insert_resource(TacticalResnapshotRequestState::default());
     app.insert_resource(TacticalMapUiState::default());
+    app.insert_resource(TacticalSensorRingUiState::default());
+    app.insert_resource(ActiveScannerProfileCache::default());
     app.insert_resource(SessionReadyState::default());
 }
 

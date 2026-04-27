@@ -90,10 +90,10 @@ pub(super) struct ThrusterPlumeAttachAssets<'w> {
     world_lighting: Res<'w, WorldLightingState>,
     camera_local_lights: Res<'w, CameraLocalLightSet>,
 }
-const WEAPON_TRACER_SPEED_MPS: f32 = 1800.0;
-const WEAPON_TRACER_LIFETIME_S: f32 = 0.2;
-const WEAPON_TRACER_WIDTH_M: f32 = 0.35;
-const WEAPON_TRACER_LENGTH_M: f32 = 9.0;
+const WEAPON_TRACER_SPEED_MPS: f32 = 650.0;
+const WEAPON_TRACER_LIFETIME_S: f32 = 0.32;
+const WEAPON_TRACER_WIDTH_M: f32 = 0.62;
+const WEAPON_TRACER_LENGTH_M: f32 = 52.0;
 const WEAPON_TRACER_ROTATION_OFFSET_RAD: f32 = -FRAC_PI_2;
 const WEAPON_TRACER_WIGGLE_BASE_FREQ_HZ: f32 = 18.0;
 const WEAPON_TRACER_WIGGLE_MAX_AMP_MPS: f32 = 120.0;
@@ -133,6 +133,7 @@ pub(crate) struct StreamedSpriteMaterialCache {
 pub(super) struct StreamedVisualAssetCaches {
     last_reload_generation: u64,
     asteroid_sprite_cache: HashMap<(uuid::Uuid, u64), (Handle<Image>, Handle<Image>)>,
+    flat_normal_image: Option<Handle<Image>>,
     streamed_image_cache: HashMap<String, Handle<Image>>,
     generic_material_cache: StreamedSpriteMaterialCache,
 }
@@ -463,6 +464,19 @@ fn procedural_sprite_fingerprint(sprite: &ProceduralSprite) -> u64 {
 }
 
 fn image_from_rgba(width: u32, height: u32, data: Vec<u8>) -> Image {
+    image_from_rgba_with_format(width, height, data, TextureFormat::Rgba8UnormSrgb)
+}
+
+fn normal_image_from_rgba(width: u32, height: u32, data: Vec<u8>) -> Image {
+    image_from_rgba_with_format(width, height, data, TextureFormat::Rgba8Unorm)
+}
+
+fn image_from_rgba_with_format(
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+    format: TextureFormat,
+) -> Image {
     Image::new(
         Extent3d {
             width,
@@ -471,9 +485,19 @@ fn image_from_rgba(width: u32, height: u32, data: Vec<u8>) -> Image {
         },
         TextureDimension::D2,
         data,
-        TextureFormat::Rgba8UnormSrgb,
+        format,
         RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
     )
+}
+
+fn flat_normal_image_handle(
+    cache: &mut StreamedVisualAssetCaches,
+    images: &mut Assets<Image>,
+) -> Handle<Image> {
+    cache
+        .flat_normal_image
+        .get_or_insert_with(|| images.add(normal_image_from_rgba(1, 1, vec![128, 128, 255, 255])))
+        .clone()
 }
 
 fn ensure_visual_parent_spatial_components(entity_commands: &mut EntityCommands<'_>) {
@@ -1069,7 +1093,7 @@ pub(super) fn attach_streamed_visual_assets_system(
             .or_else(|| {
                 is_procedural_asteroid.then_some(shaders::RuntimeWorldSpriteShaderKind::Asteroid)
             });
-        let generated_asteroid_image =
+        let generated_asteroid_images =
             if is_procedural_asteroid && let Some(procedural_sprite) = procedural_sprite {
                 let guid = entity_guid
                     .map(|guid| guid.0)
@@ -1090,43 +1114,47 @@ pub(super) fn attach_streamed_visual_assets_system(
                                 generated.height,
                                 generated.albedo_rgba,
                             ));
-                            let normal = images.add(image_from_rgba(
+                            let normal = images.add(normal_image_from_rgba(
                                 generated.width,
                                 generated.height,
                                 generated.normal_rgba,
                             ));
                             (albedo, normal)
                         })
-                        .0
                         .clone(),
                 )
             } else {
                 None
             };
 
-        let image_handle = if let Some(handle) = generated_asteroid_image.clone() {
-            handle
-        } else if let Some(handle) = cached_assets.streamed_image_cache.get(&asset_id.0) {
-            handle.clone()
-        } else {
-            let Some(handle) = assets::cached_image_handle(
-                &asset_id.0,
-                &asset_manager,
-                &asset_root.0,
-                *cache_adapter,
-                &mut images,
-            ) else {
-                continue;
+        let image_handle =
+            if let Some((albedo_handle, _normal_handle)) = generated_asteroid_images.clone() {
+                albedo_handle
+            } else if let Some(handle) = cached_assets.streamed_image_cache.get(&asset_id.0) {
+                handle.clone()
+            } else {
+                let Some(handle) = assets::cached_image_handle(
+                    &asset_id.0,
+                    &asset_manager,
+                    &asset_root.0,
+                    *cache_adapter,
+                    &mut images,
+                ) else {
+                    continue;
+                };
+                cached_assets
+                    .streamed_image_cache
+                    .insert(asset_id.0.clone(), handle.clone());
+                handle
             };
-            cached_assets
-                .streamed_image_cache
-                .insert(asset_id.0.clone(), handle.clone());
-            handle
-        };
-
-        let texture_size_px = generated_asteroid_image
+        let normal_image_handle = generated_asteroid_images
             .as_ref()
-            .and_then(|handle| images.get(handle))
+            .map(|(_albedo_handle, normal_handle)| normal_handle.clone())
+            .unwrap_or_else(|| flat_normal_image_handle(&mut cached_assets, &mut images));
+
+        let texture_size_px = generated_asteroid_images
+            .as_ref()
+            .and_then(|(albedo_handle, _normal_handle)| images.get(albedo_handle))
             .map(|image| image.size())
             .or_else(|| images.get(&image_handle).map(|image| image.size()));
         let custom_size = assets::resolved_world_sprite_size(texture_size_px, size_m);
@@ -1149,6 +1177,7 @@ pub(super) fn attach_streamed_visual_assets_system(
                 let shared_quad = shared_unit_quad_handle(&mut quad_mesh, &mut meshes);
                 let material = asteroid_shader_materials.add(AsteroidSpriteShaderMaterial {
                     image: image_handle.clone(),
+                    normal_image: normal_image_handle,
                     lighting: SharedWorldLightingUniforms::from_state_for_world_position(
                         &world_lighting,
                         position
@@ -1241,22 +1270,26 @@ mod tests {
     use super::{
         PROJECTILE_VISUAL_Z, StreamedVisualMaterialKind, WEAPON_IMPACT_SPARK_TTL_S,
         activate_destruction_effect, attach_ballistic_projectile_visuals_system,
+        attach_thruster_plume_visuals_system,
         bootstrap_local_ballistic_projectile_visual_roots_system,
         ensure_planet_body_root_visibility_system, ensure_visual_parent_spatial_components,
         planet_camera_relative_translation, planet_visual_child_translation,
-        runtime_layer_screen_scale_factor, streamed_visual_needs_rebuild,
-        suppress_duplicate_predicted_interpolated_visuals_system,
+        receive_remote_weapon_tracer_messages_system, runtime_layer_screen_scale_factor,
+        streamed_visual_needs_rebuild, suppress_duplicate_predicted_interpolated_visuals_system,
         sync_unadopted_ballistic_projectile_visual_roots_system,
         update_weapon_impact_sparks_system,
     };
     use crate::runtime::backdrop::RuntimeEffectMaterial;
+    use crate::runtime::combat_messages::RemoteWeaponFiredRuntimeMessage;
     use crate::runtime::components::{
         BallisticProjectileVisualAttached, CanonicalPresentationEntity, ControlledEntity,
-        PendingInitialVisualReady, StreamedVisualAttachmentKind,
-        SuppressedPredictedDuplicateVisual, WeaponImpactExplosion, WeaponImpactExplosionPool,
-        WeaponImpactSpark, WorldEntity,
+        PendingInitialVisualReady, RuntimeWorldVisualPass, RuntimeWorldVisualPassKind,
+        StreamedVisualAttachmentKind, SuppressedPredictedDuplicateVisual, WeaponImpactExplosion,
+        WeaponImpactExplosionPool, WeaponImpactSpark, WeaponTracerBolt, WeaponTracerPool,
+        WorldEntity,
     };
-    use crate::runtime::resources::DuplicateVisualResolutionState;
+    use crate::runtime::lighting::{CameraLocalLightSet, WorldLightingState};
+    use crate::runtime::resources::{DuplicateVisualResolutionState, RuntimeSharedQuadMesh};
     use crate::runtime::transforms::{
         reveal_world_entities_when_initial_transform_ready,
         sync_interpolated_world_entity_transforms_without_history,
@@ -1266,7 +1299,11 @@ mod tests {
     use bevy::prelude::*;
     use bevy::sprite_render::MeshMaterial2d;
     use lightyear::prelude::{Confirmed, Interpolated};
-    use sidereal_game::{BallisticProjectile, DamageType, EntityGuid, PlanetBodyShaderSettings};
+    use sidereal_game::{
+        BallisticProjectile, DamageType, EntityGuid, EntityLabels, Hardpoint, MountedOn,
+        ParentGuid, PlanetBodyShaderSettings,
+    };
+    use sidereal_net::ServerWeaponFiredMessage;
     use sidereal_runtime_sync::RuntimeEntityHierarchy;
 
     #[test]
@@ -1283,6 +1320,46 @@ mod tests {
             Some(StreamedVisualAttachmentKind::AsteroidShader),
             StreamedVisualMaterialKind::AsteroidShader,
         ));
+    }
+
+    #[test]
+    fn thruster_plume_attaches_to_childless_engine_entity() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<RuntimeEffectMaterial>>();
+        app.init_resource::<RuntimeSharedQuadMesh>();
+        app.insert_resource(WorldLightingState::default());
+        app.insert_resource(CameraLocalLightSet::default());
+        app.add_systems(Update, attach_thruster_plume_visuals_system);
+
+        let engine = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityLabels(vec!["Module".to_string(), "Engine".to_string()]),
+            ))
+            .id();
+
+        assert!(
+            app.world().entity(engine).get::<Children>().is_none(),
+            "fixture should exercise first-child plume attachment"
+        );
+
+        app.update();
+
+        let children = app
+            .world()
+            .entity(engine)
+            .get::<Children>()
+            .expect("plume attachment should create the first child");
+        assert_eq!(children.len(), 1);
+        let child = children[0];
+        let pass = app
+            .world()
+            .entity(child)
+            .get::<RuntimeWorldVisualPass>()
+            .expect("plume child should carry a runtime visual pass tag");
+        assert_eq!(pass.kind, RuntimeWorldVisualPassKind::ThrusterPlume);
     }
 
     #[test]
@@ -1645,6 +1722,109 @@ mod tests {
         assert!(
             !entity_ref.contains::<PendingInitialVisualReady>(),
             "observer projectile should leave the pending-visual gate once the authoritative pose is available"
+        );
+    }
+
+    #[test]
+    fn local_weapon_tracer_message_uses_predicted_muzzle_origin() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.init_asset::<RuntimeEffectMaterial>();
+        app.add_message::<RemoteWeaponFiredRuntimeMessage>();
+
+        let shooter_guid = uuid::Uuid::new_v4();
+        let weapon_guid = uuid::Uuid::new_v4();
+        let controlled = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(shooter_guid),
+                ControlledEntity {
+                    entity_id: shooter_guid.to_string(),
+                    player_entity_id: uuid::Uuid::new_v4().to_string(),
+                },
+                Position(Vec2::new(100.0, 50.0).into()),
+                Rotation::from(Quat::IDENTITY),
+            ))
+            .id();
+
+        app.world_mut().spawn((
+            ParentGuid(shooter_guid),
+            Hardpoint {
+                hardpoint_id: "weapon_fore_center".to_string(),
+                offset_m: Vec3::new(0.0, 4.0, 0.0),
+                local_rotation: Quat::IDENTITY,
+            },
+        ));
+        app.world_mut().spawn((
+            WorldEntity,
+            EntityGuid(weapon_guid),
+            MountedOn {
+                parent_entity_id: shooter_guid,
+                hardpoint_id: "weapon_fore_center".to_string(),
+            },
+        ));
+
+        let material = {
+            let mut materials = app
+                .world_mut()
+                .resource_mut::<Assets<RuntimeEffectMaterial>>();
+            materials.add(RuntimeEffectMaterial::default())
+        };
+        let bolt = app
+            .world_mut()
+            .spawn((
+                WeaponTracerBolt {
+                    excluded_entity: None,
+                    velocity: Vec2::ZERO,
+                    impact_xy: None,
+                    ttl_s: 0.0,
+                    lateral_normal: Vec2::ZERO,
+                    wiggle_phase_rad: 0.0,
+                    wiggle_freq_hz: 0.0,
+                    wiggle_amp_mps: 0.0,
+                },
+                Transform::default(),
+                MeshMaterial2d(material),
+                Visibility::Hidden,
+            ))
+            .id();
+        app.insert_resource(WeaponTracerPool {
+            bolts: vec![bolt],
+            next_index: 0,
+        });
+        app.world_mut()
+            .write_message(RemoteWeaponFiredRuntimeMessage {
+                message: ServerWeaponFiredMessage {
+                    shooter_entity_id: shooter_guid.to_string(),
+                    weapon_guid: weapon_guid.to_string(),
+                    audio_profile_id: None,
+                    cooldown_s: None,
+                    origin_xy: [0.0, 0.0],
+                    velocity_xy: [0.0, 650.0],
+                    impact_xy: Some([100.0, 140.0]),
+                    ttl_s: 0.05,
+                },
+            });
+
+        let _ = app
+            .world_mut()
+            .run_system_once(receive_remote_weapon_tracer_messages_system);
+
+        let entity_ref = app.world().entity(bolt);
+        let transform = entity_ref.get::<Transform>().expect("transform");
+        let tracer = entity_ref.get::<WeaponTracerBolt>().expect("tracer");
+        assert_eq!(transform.translation.truncate(), Vec2::new(100.0, 54.0));
+        assert_eq!(tracer.excluded_entity, Some(controlled));
+        assert_eq!(tracer.velocity, Vec2::new(0.0, 650.0));
+        assert_eq!(tracer.impact_xy, Some(Vec2::new(100.0, 140.0)));
+        assert!(
+            tracer.ttl_s > 0.05,
+            "local predicted muzzle should recompute visual travel time to the authoritative impact"
+        );
+        assert_eq!(
+            *entity_ref.get::<Visibility>().expect("visibility"),
+            Visibility::Visible
         );
     }
 
@@ -2513,7 +2693,7 @@ pub(super) fn attach_thruster_plume_visuals_system(
         (
             Entity,
             &'_ EntityLabels,
-            &'_ Children,
+            Option<&'_ Children>,
             Option<&'_ RuntimeWorldVisualPassSet>,
         ),
         (
@@ -2529,10 +2709,12 @@ pub(super) fn attach_thruster_plume_visuals_system(
         if !has_engine_label(labels) {
             continue;
         }
-        let has_existing_plume_child = children.iter().any(|child| {
-            visual_children.get(child).is_ok_and(|pass| {
-                pass.family == RuntimeWorldVisualFamily::Thruster
-                    && pass.kind == RuntimeWorldVisualPassKind::ThrusterPlume
+        let has_existing_plume_child = children.is_some_and(|children| {
+            children.iter().any(|child| {
+                visual_children.get(child).is_ok_and(|pass| {
+                    pass.family == RuntimeWorldVisualFamily::Thruster
+                        && pass.kind == RuntimeWorldVisualPassKind::ThrusterPlume
+                })
             })
         });
         if has_existing_plume_child {
@@ -2591,7 +2773,7 @@ pub(super) fn update_thruster_plume_visuals_system(
         '_,
         (
             &'_ EntityLabels,
-            &'_ Children,
+            Option<&'_ Children>,
             &'_ MountedOn,
             Option<&'_ AfterburnerCapability>,
             Option<&'_ ThrusterPlumeShaderSettings>,
@@ -2629,9 +2811,11 @@ pub(super) fn update_thruster_plume_visuals_system(
         };
         let settings = plume_settings.cloned().unwrap_or_default();
         if !settings.enabled {
-            for child in children.iter() {
-                if let Ok((_, _, _, _, mut visibility)) = plume_children.get_mut(child) {
-                    *visibility = Visibility::Hidden;
+            if let Some(children) = children {
+                for child in children.iter() {
+                    if let Ok((_, _, _, _, mut visibility)) = plume_children.get_mut(child) {
+                        *visibility = Visibility::Hidden;
+                    }
                 }
             }
             continue;
@@ -2670,6 +2854,9 @@ pub(super) fn update_thruster_plume_visuals_system(
         plume_alpha = plume_alpha.clamp(0.0, 1.0);
         let afterburner_alpha = if can_afterburn { 1.0 } else { 0.0 };
 
+        let Some(children) = children else {
+            continue;
+        };
         for child in children.iter() {
             let Ok((pass, material_handle, mut transform, global_transform, mut visibility)) =
                 plume_children.get_mut(child)
@@ -3159,7 +3346,19 @@ pub(super) fn emit_weapon_tracer_visuals_system(
 pub(super) fn receive_remote_weapon_tracer_messages_system(
     mut pool: ResMut<'_, WeaponTracerPool>,
     mut events: MessageReader<'_, '_, RemoteWeaponFiredRuntimeMessage>,
-    controlled_roots: Query<'_, '_, &'_ EntityGuid, (With<ControlledEntity>, With<WorldEntity>)>,
+    controlled_roots: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            &'_ avian2d::prelude::Position,
+            &'_ avian2d::prelude::Rotation,
+        ),
+        (With<ControlledEntity>, With<WorldEntity>),
+    >,
+    hardpoints: Query<'_, '_, (&'_ ParentGuid, &'_ Hardpoint)>,
+    weapons: Query<'_, '_, (&'_ EntityGuid, &'_ MountedOn), With<WorldEntity>>,
     world_entity_guids: Query<'_, '_, (Entity, &'_ EntityGuid), With<WorldEntity>>,
     mut bolts: Query<
         '_,
@@ -3175,8 +3374,30 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
     if pool.bolts.is_empty() {
         return;
     }
-    let _local_controlled_guids: std::collections::HashSet<uuid::Uuid> =
-        controlled_roots.iter().map(|guid| guid.0).collect();
+    let local_controlled_by_guid: HashMap<uuid::Uuid, (Entity, DVec2, f64)> = controlled_roots
+        .iter()
+        .map(|(entity, guid, position, rotation)| {
+            (guid.0, (entity, position.0, rotation.as_radians()))
+        })
+        .collect();
+    let hardpoint_by_mount: HashMap<(uuid::Uuid, String), (Vec2, Quat)> = hardpoints
+        .iter()
+        .map(|(parent_guid, hardpoint)| {
+            (
+                (parent_guid.0, hardpoint.hardpoint_id.clone()),
+                (hardpoint.offset_m.truncate(), hardpoint.local_rotation),
+            )
+        })
+        .collect();
+    let weapon_mount_by_guid: HashMap<uuid::Uuid, (uuid::Uuid, String)> = weapons
+        .iter()
+        .map(|(guid, mounted_on)| {
+            (
+                guid.0,
+                (mounted_on.parent_entity_id, mounted_on.hardpoint_id.clone()),
+            )
+        })
+        .collect();
     let shooter_entity_by_guid: HashMap<uuid::Uuid, Entity> = world_entity_guids
         .iter()
         .map(|(entity, guid)| (guid.0, entity))
@@ -3189,29 +3410,62 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
         else {
             continue;
         };
-        // Accept authoritative tracer messages even for locally controlled shooters.
-        // This guarantees impact stop/impact VFX parity with server-side hitscan.
+        let predicted_muzzle = uuid::Uuid::parse_str(message.weapon_guid.as_str())
+            .ok()
+            .and_then(|weapon_guid| {
+                local_predicted_muzzle_pose(
+                    shooter_runtime_id.as_uuid(),
+                    weapon_guid,
+                    &local_controlled_by_guid,
+                    &weapon_mount_by_guid,
+                    &hardpoint_by_mount,
+                )
+            });
 
         let bolt_entity = pool.bolts[pool.next_index % pool.bolts.len()];
         pool.next_index = (pool.next_index + 1) % pool.bolts.len();
         if let Ok((mut transform, _material_handle, mut visibility, mut bolt)) =
             bolts.get_mut(bolt_entity)
         {
-            let origin = Vec2::new(message.origin_xy[0] as f32, message.origin_xy[1] as f32);
-            let velocity = Vec2::new(message.velocity_xy[0] as f32, message.velocity_xy[1] as f32);
+            let server_origin = Vec2::new(message.origin_xy[0] as f32, message.origin_xy[1] as f32);
+            let server_velocity =
+                Vec2::new(message.velocity_xy[0] as f32, message.velocity_xy[1] as f32);
+            let (origin, velocity, excluded_entity, ttl_s) =
+                if let Some((shooter_entity, predicted_origin, predicted_direction)) =
+                    predicted_muzzle
+                {
+                    let speed = server_velocity.length().max(WEAPON_TRACER_SPEED_MPS);
+                    let velocity = predicted_direction * speed;
+                    let ttl_s = message
+                        .impact_xy
+                        .map(|impact_xy| {
+                            let impact = Vec2::new(impact_xy[0] as f32, impact_xy[1] as f32);
+                            ((impact - predicted_origin).length() / speed)
+                                .clamp(WEAPON_TRACER_MIN_TTL_S, WEAPON_TRACER_LIFETIME_S)
+                        })
+                        .unwrap_or(message.ttl_s.max(WEAPON_TRACER_MIN_TTL_S));
+                    (predicted_origin, velocity, Some(shooter_entity), ttl_s)
+                } else {
+                    (
+                        server_origin,
+                        server_velocity,
+                        shooter_entity_by_guid
+                            .get(&shooter_runtime_id.as_uuid())
+                            .copied(),
+                        message.ttl_s.max(WEAPON_TRACER_MIN_TTL_S),
+                    )
+                };
             transform.translation = Vec3::new(origin.x, origin.y, 0.35);
             if velocity.length_squared() > f32::EPSILON {
                 transform.rotation =
                     Quat::from_rotation_z(velocity.to_angle() + WEAPON_TRACER_ROTATION_OFFSET_RAD);
             }
-            bolt.excluded_entity = shooter_entity_by_guid
-                .get(&shooter_runtime_id.as_uuid())
-                .copied();
+            bolt.excluded_entity = excluded_entity;
             bolt.velocity = velocity;
             bolt.impact_xy = message
                 .impact_xy
                 .map(|impact_xy| Vec2::new(impact_xy[0] as f32, impact_xy[1] as f32));
-            bolt.ttl_s = message.ttl_s.max(0.01);
+            bolt.ttl_s = ttl_s;
             let speed = velocity.length();
             let normal = if speed > f32::EPSILON {
                 let direction = velocity / speed;
@@ -3226,6 +3480,31 @@ pub(super) fn receive_remote_weapon_tracer_messages_system(
             *visibility = Visibility::Visible;
         }
     }
+}
+
+fn local_predicted_muzzle_pose(
+    shooter_guid: uuid::Uuid,
+    weapon_guid: uuid::Uuid,
+    controlled_by_guid: &HashMap<uuid::Uuid, (Entity, DVec2, f64)>,
+    weapon_mount_by_guid: &HashMap<uuid::Uuid, (uuid::Uuid, String)>,
+    hardpoint_by_mount: &HashMap<(uuid::Uuid, String), (Vec2, Quat)>,
+) -> Option<(Entity, Vec2, Vec2)> {
+    let (shooter_entity, shooter_position, shooter_rotation_rad) =
+        controlled_by_guid.get(&shooter_guid).copied()?;
+    let (mounted_parent_guid, hardpoint_id) = weapon_mount_by_guid.get(&weapon_guid)?;
+    if *mounted_parent_guid != shooter_guid {
+        return None;
+    }
+    let (hardpoint_offset, hardpoint_rotation) =
+        hardpoint_by_mount.get(&(shooter_guid, hardpoint_id.clone()))?;
+    let shooter_quat = Quat::from_rotation_z(shooter_rotation_rad as f32);
+    let muzzle_quat = shooter_quat * *hardpoint_rotation;
+    let direction = (muzzle_quat * Vec3::Y).truncate();
+    if direction.length_squared() <= f32::EPSILON {
+        return None;
+    }
+    let origin = shooter_position.as_vec2() + rotate_vec2(shooter_quat, *hardpoint_offset);
+    Some((shooter_entity, origin, direction.normalize()))
 }
 
 pub(super) fn receive_remote_destruction_effect_messages_system(

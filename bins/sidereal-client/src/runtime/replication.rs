@@ -539,16 +539,24 @@ pub(crate) fn configure_prediction_manager_tuning(
             PredictionRollbackStateTuning::Check => RollbackMode::Check,
             PredictionRollbackStateTuning::Disabled => RollbackMode::Disabled,
         };
+        // Sidereal keeps Lightyear client-side input history for prediction replay, but the
+        // authoritative server input path is ClientRealtimeInputMessage, not Lightyear's native
+        // server input receiver. Leaving Lightyear input rollback enabled lets native-input tracker
+        // state trigger Rollback::FromInputs against local prediction history that the server did
+        // not authoritatively confirm, which can snap controlled ships back to stale poses. Server
+        // state rollback remains enabled above and is the authoritative reconciliation lane.
+        manager.rollback_policy.input = RollbackMode::Disabled;
         manager.correction_policy = if tuning.instant_correction {
             CorrectionPolicy::instant_correction()
         } else {
             CorrectionPolicy::default()
         };
         bevy::log::info!(
-            "configured prediction manager entity={} has_client_marker={} (rollback_state={:?}, max_rollback_ticks={}, correction_mode={})",
+            "configured prediction manager entity={} has_client_marker={} (rollback_state={:?}, input_rollback_state={:?}, max_rollback_ticks={}, correction_mode={})",
             entity,
             has_client_marker,
             manager.rollback_policy.state,
+            manager.rollback_policy.input,
             tuning.max_rollback_ticks,
             if tuning.instant_correction {
                 "instant"
@@ -929,8 +937,9 @@ pub(crate) fn adopt_native_lightyear_replicated_entities(
 mod tests {
     use super::{
         bootstrap_missing_confirmed_components_for_interpolated_entities,
-        has_local_player_runtime_presence, is_canonical_runtime_entity_lane,
-        resolve_control_target_entity_id, resolve_local_player_authoritative_control_entity_id,
+        configure_prediction_manager_tuning, has_local_player_runtime_presence,
+        is_canonical_runtime_entity_lane, resolve_control_target_entity_id,
+        resolve_local_player_authoritative_control_entity_id,
         sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
         sanitize_conflicting_prediction_interpolation_markers_on_predicted_added,
         should_defer_controlled_predicted_adoption, should_defer_spatial_root_adoption,
@@ -940,11 +949,12 @@ mod tests {
     use crate::runtime::components::ControlledEntity;
     use crate::runtime::resources::{
         ClientControlRequestState, ControlBootstrapPhase, ControlBootstrapState,
-        DeferredPredictedAdoptionState,
+        DeferredPredictedAdoptionState, PredictionCorrectionTuning, PredictionRollbackStateTuning,
     };
     use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
     use bevy::app::Update;
     use bevy::prelude::{App, Entity, Time, Vec2};
+    use lightyear::prediction::prelude::{PredictionManager, RollbackMode};
     use lightyear::prelude::Confirmed;
     use sidereal_game::{ControlledEntityGuid, EntityGuid, SimulationMotionWriter};
     use sidereal_runtime_sync::RuntimeEntityHierarchy;
@@ -975,6 +985,31 @@ mod tests {
         assert!(!should_defer_controlled_predicted_adoption(
             false, true, true, false
         ));
+    }
+
+    #[test]
+    fn prediction_manager_disables_lightyear_input_rollback() {
+        let mut app = App::new();
+        app.insert_resource(PredictionCorrectionTuning {
+            max_rollback_ticks: 160,
+            instant_correction: false,
+            rollback_state: PredictionRollbackStateTuning::Check,
+        });
+        app.add_systems(Update, configure_prediction_manager_tuning);
+        let entity = app.world_mut().spawn(PredictionManager::default()).id();
+
+        app.update();
+
+        let manager = app
+            .world()
+            .get::<PredictionManager>(entity)
+            .expect("prediction manager");
+        assert!(matches!(manager.rollback_policy.state, RollbackMode::Check));
+        assert!(matches!(
+            manager.rollback_policy.input,
+            RollbackMode::Disabled
+        ));
+        assert_eq!(manager.rollback_policy.max_rollback_ticks, 160);
     }
 
     #[test]

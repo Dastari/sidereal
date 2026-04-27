@@ -140,6 +140,16 @@ fn generate_asteroid_rocky_v1(
             let grain = hash01(seed, qx as u64 * 131 + qy as u64 * 977);
             let mut shade = 0.38 + lighting * 0.42 + (grain - 0.5) * 0.12;
             let mut height_value = 0.55 + lighting * 0.18 + (grain - 0.5) * 0.06;
+            let ridge_a = (angle * 6.0 + dist * 10.5 + hash01(seed, 71) * TAU)
+                .sin()
+                .abs();
+            let ridge_b = (nx * 12.0 - ny * 9.0 + hash01(seed, 73) * TAU).sin().abs();
+            let facet_ridge = (1.0 - ridge_a).powf(5.0) * 0.55 + (1.0 - ridge_b).powf(7.0) * 0.35;
+            let facet_shadow = ridge_a.min(ridge_b).powf(3.0) * 0.10;
+            shade += facet_ridge * 0.18;
+            shade -= facet_shadow;
+            height_value += facet_ridge * 0.24;
+            height_value -= facet_shadow * 0.26;
 
             for crater in crater_centers.iter().take(crater_count) {
                 let dx = nx - crater.0;

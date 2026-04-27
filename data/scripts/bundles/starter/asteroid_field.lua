@@ -300,7 +300,8 @@ function AsteroidFieldBundle.build_graph_records(ctx)
     local x = center_x + math.cos(angle) * radius
     local y = center_y + math.sin(angle) * radius
 
-    local diameter_m = lerp(size_min, size_max, hash01(i, 3.0))
+    local size_roll = math.pow(hash01(i, 3.0), 0.48)
+    local diameter_m = lerp(size_min, size_max, size_roll)
     local mass_kg = math.max(diameter_m * diameter_m * diameter_m * lerp(130.0, 260.0, hash01(i, 4.0)), 100.0)
     local health_points = math.max(diameter_m * lerp(12.0, 20.0, hash01(i, 5.0)), 30.0)
     local spin_rad_s = lerp(spin_min, spin_max, hash01(i, 6.0))

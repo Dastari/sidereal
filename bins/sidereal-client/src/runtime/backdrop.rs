@@ -1150,6 +1150,9 @@ pub struct AsteroidSpriteShaderMaterial {
     pub image: Handle<Image>,
     #[uniform(2)]
     pub lighting: SharedWorldLightingUniforms,
+    #[texture(3)]
+    #[sampler(4)]
+    pub normal_image: Handle<Image>,
 }
 
 impl Material2d for AsteroidSpriteShaderMaterial {
@@ -1601,6 +1604,16 @@ pub(crate) struct TacticalMapOverlayMaterial {
     #[texture(11)]
     #[sampler(12)]
     pub fog_mask: Handle<Image>,
+    #[uniform(13)]
+    pub gravity_well_params: Vec4, // x=count, y=warp_strength, z=density_strength, w=unused
+    #[uniform(14)]
+    pub gravity_well_0: Vec4, // xy=center, z=radius_m, w=mass_scale
+    #[uniform(15)]
+    pub gravity_well_1: Vec4, // xy=center, z=radius_m, w=mass_scale
+    #[uniform(16)]
+    pub gravity_well_2: Vec4, // xy=center, z=radius_m, w=mass_scale
+    #[uniform(17)]
+    pub gravity_well_3: Vec4, // xy=center, z=radius_m, w=mass_scale
 }
 
 impl Default for TacticalMapOverlayMaterial {
@@ -1618,6 +1631,11 @@ impl Default for TacticalMapOverlayMaterial {
             line_widths_px: Vec4::new(1.4, 0.95, 0.75, 0.0),
             glow_widths_px: Vec4::new(2.0, 1.5, 1.2, 0.0),
             fog_mask: Handle::default(),
+            gravity_well_params: Vec4::new(0.0, 0.18, 0.45, 0.0),
+            gravity_well_0: Vec4::ZERO,
+            gravity_well_1: Vec4::ZERO,
+            gravity_well_2: Vec4::ZERO,
+            gravity_well_3: Vec4::ZERO,
         }
     }
 }

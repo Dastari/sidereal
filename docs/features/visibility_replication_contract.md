@@ -1,7 +1,7 @@
 # Visibility and Replication Contract
 
 Status: Active implementation contract
-Last updated: 2026-04-24
+Last updated: 2026-04-27
 Owners: replication + gameplay + client runtime
 Scope: server-authoritative visibility, delivery narrowing, payload disclosure, and tactical/owner lane interaction
 
@@ -10,6 +10,7 @@ Primary references:
 - `AGENTS.md`
 - `docs/decisions/dr-0017_dual_lane_replication_and_owner_asset_manifest.md`
 - `docs/plans/scan_intel_minimap_spatial_plan.md`
+- `docs/features/visibility_system_v2_signal_detection_contract.md`
 
 ## 0. Implementation Status
 
@@ -19,6 +20,19 @@ Primary references:
 2. Implemented: discoverable static landmarks, parallax-aware delivery behavior, extent-aware large-body culling, and lower-cadence landmark discovery maintenance are current runtime behavior.
 3. Implemented: tactical fog/contact and owner manifest lanes are separate read models that do not widen local-bubble authorization.
 4. Partial/open: richer faction/public redaction details, large-scale tuning, and future background-simulation promotion interactions still need follow-up as those systems mature.
+
+2026-04-27 status note:
+
+1. Implemented partial V2 baseline: generic `SignalSignature` detection now feeds redacted unknown tactical contacts, scanner-controlled approximate contact accuracy, signal-triggered static-landmark discovery, and buffered native local-view delivery requests.
+2. V2 does not replace the V1 authorization order. Signal-only detection may create a tactical/intel product or trigger `StaticLandmark` discovery, but it must not grant ordinary full entity replication by itself.
+3. Signal-only static-landmark discovery must not emit identity-bearing landmark notification payloads; player-facing signal messaging remains redacted until normal visibility/delivery discloses the body.
+4. Rapid zoom-out culling must use buffered/hysteretic projected bounds on both server delivery requests and client local render culling so large/parallaxed bodies do not snap in at viewport edges. Current native client requests apply viewport overscan; additional render-local culling tuning remains open.
+
+2026-04-27 status note:
+
+1. Tactical sensor ring client presentation now requires an effective scanner profile on the actively controlled non-player-anchor entity before TAB can open the ring.
+2. The target server contract is stricter than the first client slice: tactical contact disclosure and any scanner-derived contact detail must resolve scanner capability from the currently controlled entity, not from free-roam/player-anchor camera state.
+3. Free roam/player-anchor control has no scanner source for scanner-derived tactical products. Existing full tactical-map/fog behavior remains separate until server-side scanner-tier gating is implemented.
 
 2026-04-24 update:
 - Visibility spatial indexing and static-landmark discovery now resolve static non-physics world entities from canonical `WorldPosition` before falling back to Bevy `GlobalTransform`. This prevents static planets/celestial bodies from being indexed at stale/default transform positions before transform propagation catches up.

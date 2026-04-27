@@ -65,6 +65,9 @@ pub(crate) struct LoadingOverlayText;
 pub(crate) struct DebugOverlayPanelRoot;
 
 #[derive(Component)]
+pub(crate) struct DebugOverlayPanelText;
+
+#[derive(Component)]
 pub(crate) struct DebugOverlayPanelLabelText;
 
 #[derive(Component)]
@@ -87,6 +90,29 @@ pub(crate) struct DebugOverlayPanelSecondaryLabelShadowText;
 
 #[derive(Component)]
 pub(crate) struct DebugOverlayPanelSecondaryValueShadowText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelTertiaryLabelText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelTertiaryValueText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelTertiaryLabelShadowText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayPanelTertiaryValueShadowText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayCalloutRoot {
+    pub target: Option<Entity>,
+}
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayCalloutText;
+
+#[derive(Component)]
+pub(crate) struct DebugOverlayCalloutLine;
 
 #[derive(Component)]
 pub(crate) struct LoadingProgressBarFill;

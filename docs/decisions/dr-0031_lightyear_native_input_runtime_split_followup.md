@@ -21,6 +21,12 @@
 - Re-enabling Lightyear server-native input remains blocked on generic upstream support for target authorization, tracked by Lightyear issue `#1283`, plus the existing `#1200` panic fix.
 - Sidereal-specific authenticated session binding and control-generation checks remain outside Lightyear.
 
+2026-04-27 rollback follow-up:
+
+- Because replication still does not run Lightyear's native server input receiver, the native client disables Lightyear input-based rollback (`Rollback::FromInputs`) and relies on Lightyear state rollback/correction for authoritative reconciliation.
+- The client still keeps Lightyear native input locally for `ActionState<PlayerInput>` and rollback replay input history; only the server-confirmation trigger from Lightyear's native input path is disabled.
+- Authoritative server simulation remains driven by Sidereal's authenticated realtime input lane.
+
 ## Context
 
 - The replication server accumulates long-running Bevy warnings such as:

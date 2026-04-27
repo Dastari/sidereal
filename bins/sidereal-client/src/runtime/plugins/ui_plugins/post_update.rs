@@ -72,6 +72,7 @@ pub(super) fn add_in_world_post_update_systems(app: &mut App) {
                 .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(debug_overlay_enabled),
             ui::update_debug_overlay_text_ui_system.after(collect_debug_overlay_snapshot_system),
+            ui::sync_debug_entity_callouts_system.after(collect_debug_overlay_snapshot_system),
         )
             .run_if(in_state(ClientAppState::InWorld)),
     );

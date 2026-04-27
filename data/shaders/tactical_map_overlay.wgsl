@@ -13,6 +13,11 @@
 @group(2) @binding(10) var<uniform> glow_widths_px: vec4<f32>;      // x=major, y=minor, z=micro
 @group(2) @binding(11) var fog_mask: texture_2d<f32>;
 @group(2) @binding(12) var fog_mask_sampler: sampler;
+@group(2) @binding(13) var<uniform> gravity_well_params: vec4<f32>; // x=count, y=warp_strength, z=density_strength
+@group(2) @binding(14) var<uniform> gravity_well_0: vec4<f32>;      // xy=center, z=radius_m, w=mass_scale
+@group(2) @binding(15) var<uniform> gravity_well_1: vec4<f32>;
+@group(2) @binding(16) var<uniform> gravity_well_2: vec4<f32>;
+@group(2) @binding(17) var<uniform> gravity_well_3: vec4<f32>;
 
 fn hash21(p: vec2<f32>) -> f32 {
     let h = dot(p, vec2<f32>(127.1, 311.7));
@@ -51,6 +56,60 @@ fn screen_uv_from_centered(centered_uv: vec2<f32>, viewport: vec2<f32>) -> vec2<
     return vec2<f32>(0.5) + centered_uv / vec2<f32>(aspect, 1.0);
 }
 
+fn gravity_warp_for_well(world_pos: vec2<f32>, well: vec4<f32>) -> vec2<f32> {
+    let radius = max(well.z, 1.0);
+    let from_center = world_pos - well.xy;
+    let dist = length(from_center);
+    let influence = smoothstep(radius, 0.0, dist);
+    let direction = from_center / max(dist, 1.0);
+    let mass_scale = clamp(well.w, 0.25, 4.0);
+    let pull = radius * gravity_well_params.y * mass_scale * influence * influence;
+    return direction * pull;
+}
+
+fn gravity_well_intensity(world_pos: vec2<f32>, well: vec4<f32>) -> f32 {
+    let radius = max(well.z, 1.0);
+    let dist = length(world_pos - well.xy);
+    let influence = smoothstep(radius, 0.0, dist);
+    return influence * influence * clamp(well.w, 0.25, 4.0);
+}
+
+fn warped_grid_world_pos(world_pos: vec2<f32>) -> vec2<f32> {
+    let count = i32(clamp(round(gravity_well_params.x), 0.0, 4.0));
+    var warped = world_pos;
+    if count > 0 {
+        warped += gravity_warp_for_well(world_pos, gravity_well_0);
+    }
+    if count > 1 {
+        warped += gravity_warp_for_well(world_pos, gravity_well_1);
+    }
+    if count > 2 {
+        warped += gravity_warp_for_well(world_pos, gravity_well_2);
+    }
+    if count > 3 {
+        warped += gravity_warp_for_well(world_pos, gravity_well_3);
+    }
+    return warped;
+}
+
+fn combined_gravity_well_intensity(world_pos: vec2<f32>) -> f32 {
+    let count = i32(clamp(round(gravity_well_params.x), 0.0, 4.0));
+    var intensity = 0.0;
+    if count > 0 {
+        intensity += gravity_well_intensity(world_pos, gravity_well_0);
+    }
+    if count > 1 {
+        intensity += gravity_well_intensity(world_pos, gravity_well_1);
+    }
+    if count > 2 {
+        intensity += gravity_well_intensity(world_pos, gravity_well_2);
+    }
+    if count > 3 {
+        intensity += gravity_well_intensity(world_pos, gravity_well_3);
+    }
+    return clamp(intensity * gravity_well_params.z, 0.0, 1.0);
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = clamp(viewport_time.w, 0.0, 1.0);
@@ -76,6 +135,8 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         (viewport.y * 0.5 - screen_px.y) / safe_zoom
     );
     let world_pos = map_center_zoom_mode.xy + world_offset;
+    let grid_world_pos = warped_grid_world_pos(world_pos);
+    let gravity_intensity = combined_gravity_well_intensity(world_pos);
 
     let world_per_pixel = 1.0 / safe_zoom;
     let target_major_px = 140.0;
@@ -96,29 +157,29 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let micro_glow_w = max(glow_widths_px.z, 0.01) * world_per_pixel;
 
     let major = max(
-        grid_line(world_pos.x, major_spacing, major_core_w),
-        grid_line(world_pos.y, major_spacing, major_core_w)
+        grid_line(grid_world_pos.x, major_spacing, major_core_w),
+        grid_line(grid_world_pos.y, major_spacing, major_core_w)
     );
     let minor = max(
-        grid_line(world_pos.x, minor_spacing, minor_core_w),
-        grid_line(world_pos.y, minor_spacing, minor_core_w)
+        grid_line(grid_world_pos.x, minor_spacing, minor_core_w),
+        grid_line(grid_world_pos.y, minor_spacing, minor_core_w)
     );
     let micro = max(
-        grid_line(world_pos.x, micro_spacing, micro_core_w),
-        grid_line(world_pos.y, micro_spacing, micro_core_w)
+        grid_line(grid_world_pos.x, micro_spacing, micro_core_w),
+        grid_line(grid_world_pos.y, micro_spacing, micro_core_w)
     );
 
     let major_glow = max(
-        grid_line(world_pos.x, major_spacing, major_glow_w),
-        grid_line(world_pos.y, major_spacing, major_glow_w)
+        grid_line(grid_world_pos.x, major_spacing, major_glow_w),
+        grid_line(grid_world_pos.y, major_spacing, major_glow_w)
     );
     let minor_glow = max(
-        grid_line(world_pos.x, minor_spacing, minor_glow_w),
-        grid_line(world_pos.y, minor_spacing, minor_glow_w)
+        grid_line(grid_world_pos.x, minor_spacing, minor_glow_w),
+        grid_line(grid_world_pos.y, minor_spacing, minor_glow_w)
     );
     let micro_glow = max(
-        grid_line(world_pos.x, micro_spacing, micro_glow_w),
-        grid_line(world_pos.y, micro_spacing, micro_glow_w)
+        grid_line(grid_world_pos.x, micro_spacing, micro_glow_w),
+        grid_line(grid_world_pos.y, micro_spacing, micro_glow_w)
     );
 
     // Fade dense tiers when zoomed out too far.
@@ -130,9 +191,11 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     color = mix(color, grid_minor.rgb, minor * grid_minor.a * minor_fade);
     color = mix(color, grid_major.rgb, major * grid_major.a);
 
-    color += grid_micro.rgb * micro_glow * grid_glow_alpha.z * micro_fade;
-    color += grid_minor.rgb * minor_glow * grid_glow_alpha.y * minor_fade;
-    color += grid_major.rgb * major_glow * grid_glow_alpha.x;
+    let gravity_glow_boost = 1.0 + gravity_intensity * 1.35;
+    color += grid_micro.rgb * micro_glow * grid_glow_alpha.z * micro_fade * gravity_glow_boost;
+    color += grid_minor.rgb * minor_glow * grid_glow_alpha.y * minor_fade * gravity_glow_boost;
+    color += grid_major.rgb * major_glow * grid_glow_alpha.x * gravity_glow_boost;
+    color = mix(color, color * 0.55 + grid_major.rgb * 0.18, gravity_intensity * 0.38);
 
     // Origin axes.
     let origin_w = 2.4 * world_per_pixel;

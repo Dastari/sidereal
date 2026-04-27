@@ -1,13 +1,14 @@
 # Procedural Asteroids
 
 Status: Active feature reference
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 Owners: gameplay content + scripting + client rendering
 Scope: current Lua-authored asteroid field-member bootstrap and procedural asteroid visual/collision baseline
 
 ## 0. Status Notes
 
 - 2026-04-24: Current implementation remains phase-1 live: `asteroid.field_member` graph records are generated from Lua, persisted as individual world entities, replicated through normal world visibility, and rendered with procedural sprite/streamed shader support. Not yet implemented: the field-root activation/depletion/fracture model described in `docs/features/asteroid_field_system.md`. Native impact: current path is live. WASM impact: shared content/runtime path should remain target-shared; live browser validation remains deferred behind native stabilization.
+- 2026-04-27: Native asteroid rendering now binds the generated procedural normal map into `AsteroidSpriteShaderMaterial` and shades it through the shared world-lighting uniform. The normal texture is treated as linear data, while albedo remains sRGB. Native impact: asteroids should read as more faceted, bumped rocks under the active star/local light. WASM impact: shared material/shader bindings changed and must compile on browser targets.
 - 2026-04-26: Asteroid Field System V2 is now the active replacement direction for field roots, deterministic member lineage, zero-health fracture, resource profiles, and field ambient effects; see `docs/features/asteroid_field_system_v2.md`. This document remains the live reference for the current procedural sprite/member baseline that V2 builds on. Native impact: current asteroid visuals will evolve in the native client first. WASM impact: procedural generation and schemas remain shared-client compatible.
 - 2026-04-26: Procedural asteroid payloads now include surface style, pixel-step, crack intensity, mineral vein intensity, mineral accent color, and optional family seed key. The generator uses these to produce chunkier top-down ARPG-style silhouettes, quantized color bands, cracks, and ore accents. Native impact: native streamed asteroid visuals rebuild from the expanded payload. WASM impact: schema is shared and must be consumed by browser builds before live parity resumes.
 - 2026-03-12: The current implementation remains the live baseline, but it is no longer the intended end-state architecture. Planned direction is a persisted field-root model with clustered activation, larger size tiers, and authoritative fracture/depletion state; see `docs/features/asteroid_field_system.md`. Native impact: future runtime/client work required. WASM impact: shared gameplay/procedural-generation logic should stay target-shared.

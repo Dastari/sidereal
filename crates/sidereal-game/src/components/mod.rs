@@ -20,6 +20,7 @@ pub mod character_movement_controller;
 pub mod collision_aabb_m;
 pub mod collision_outline_m;
 pub mod collision_profile;
+pub mod contact_resolution_m;
 pub mod controlled_entity_guid;
 pub mod cost;
 pub mod damage_type;
@@ -67,6 +68,7 @@ pub mod script_state;
 pub mod selected_entity_guid;
 pub mod shard_assignment;
 pub mod ship_tag;
+pub mod signal_signature;
 pub mod simulation_motion_writer;
 pub mod size_m;
 pub mod space_background_shader_settings;
@@ -110,6 +112,7 @@ pub use character_movement_controller::CharacterMovementController;
 pub use collision_aabb_m::CollisionAabbM;
 pub use collision_outline_m::CollisionOutlineM;
 pub use collision_profile::{CollisionMode, CollisionProfile};
+pub use contact_resolution_m::ContactResolutionM;
 pub use controlled_entity_guid::ControlledEntityGuid;
 pub use cost::Cost;
 pub use damage_type::DamageType;
@@ -164,11 +167,12 @@ pub use runtime_world_visual_stack::{
     RuntimeWorldVisualPassDefinition, RuntimeWorldVisualStack,
     is_valid_world_visual_material_domain,
 };
-pub use scanner_component::ScannerComponent;
+pub use scanner_component::{ScannerComponent, ScannerContactDetailTier};
 pub use script_state::{ScriptState, ScriptValue};
 pub use selected_entity_guid::SelectedEntityGuid;
 pub use shard_assignment::ShardAssignment;
 pub use ship_tag::ShipTag;
+pub use signal_signature::SignalSignature;
 pub use simulation_motion_writer::SimulationMotionWriter;
 pub use size_m::SizeM;
 pub use space_background_shader_settings::SpaceBackgroundShaderSettings;

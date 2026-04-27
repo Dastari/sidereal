@@ -1,7 +1,7 @@
 # Client Notifications
 
 Status: Active partial implementation spec
-Last updated: 2026-04-24
+Last updated: 2026-04-27
 Owners: client runtime + replication + scripting
 Scope: server-authored non-blocking notification delivery, Bevy toast presentation, and player-scoped notification history
 
@@ -22,6 +22,12 @@ Primary references:
 5. Implemented: authoritative Lua runtime scripts can request player notifications through `ctx:notify_player(...)`; the host validates and converts requests into server notification commands.
 6. Partial/open: no notification history browser is implemented yet, and image rendering currently preserves logical `asset_id` in the payload without adding new image assets or a dedicated toast image resolver.
 7. Native impact: active Bevy UI path. WASM impact: protocol and queue model are shared-client compatible; live browser validation remains part of deferred WASM parity follow-through.
+
+2026-04-27 status note:
+
+1. Implemented: when a player successfully enters the world through replication auth binding, the replication server enqueues a `Generic` notification with event type `player_entered_world` for every other currently authenticated player session.
+2. The entering player's own session is excluded, and duplicate connected sessions for the same recipient player are collapsed to one persisted/player-scoped notification.
+3. Native impact: existing Bevy toast UI shows the message. WASM impact: shared notification protocol only; no platform-specific behavior.
 
 ## 1. Contract
 
@@ -64,6 +70,10 @@ Current payload variants:
 
 1. `Generic`
 2. `LandmarkDiscovery`
+
+Current generic event types include:
+
+1. `player_entered_world`
 
 ## 3. Persistence
 

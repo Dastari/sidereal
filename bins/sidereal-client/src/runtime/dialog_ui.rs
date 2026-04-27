@@ -2,10 +2,11 @@ use super::ecs_util::queue_despawn_if_exists;
 use bevy::log::info;
 use bevy::prelude::*;
 use sidereal_ui::layout;
-use sidereal_ui::theme::{ActiveUiTheme, UiVisualSettings, theme_definition};
+use sidereal_ui::theme::{ActiveUiTheme, UiSemanticTone, UiVisualSettings, theme_definition};
 use sidereal_ui::typography::text_font;
 use sidereal_ui::widgets::{
-    UiButtonVariant, UiInteractionState, button_surface, panel_surface, spawn_hud_frame_chrome,
+    UiButtonVariant, UiInteractionState, button_surface, panel_surface_with_tone,
+    spawn_hud_frame_chrome_with_tone,
 };
 
 /// Dialog UI System for client-side error/info/warning modals
@@ -160,22 +161,16 @@ fn show_next_dialog(
     dialog_queue.current = Some(dialog.clone());
     let theme = theme_definition(active_theme.0);
     let glow_intensity = visual_settings.glow_intensity();
-    let (panel_bg, _, panel_shadow) = panel_surface(theme, glow_intensity);
+    let tone = dialog_tone(dialog.severity);
+    let (panel_bg, panel_border, panel_shadow) =
+        panel_surface_with_tone(theme, glow_intensity, tone);
     let (button_bg, button_border, button_shadow) = button_surface(
         theme,
         UiButtonVariant::Outline,
         UiInteractionState::Idle,
         glow_intensity,
     );
-
-    let (title_color, border_color) = match dialog.severity {
-        DialogSeverity::Info => (Color::srgb(0.6, 0.8, 1.0), Color::srgba(0.3, 0.5, 0.7, 0.8)),
-        DialogSeverity::Warning => (Color::srgb(1.0, 0.8, 0.3), Color::srgba(0.8, 0.6, 0.2, 0.8)),
-        DialogSeverity::Error => (
-            Color::srgb(1.0, 0.4, 0.35),
-            Color::srgba(0.8, 0.2, 0.2, 0.8),
-        ),
-    };
+    let text_color = tone.foreground_color(theme);
 
     commands
         .spawn((layout::fullscreen_centered_root(), DialogRoot, ZIndex(1000)))
@@ -198,29 +193,30 @@ fn show_next_dialog(
                     )
                 },
                 panel_bg,
+                panel_border,
                 panel_shadow,
-                BorderColor::all(border_color),
             ))
             .with_children(|panel| {
-                spawn_hud_frame_chrome(
+                spawn_hud_frame_chrome_with_tone(
                     panel,
                     &mut images,
                     theme,
                     Some(severity_label(dialog.severity)),
                     &fonts.mono,
                     glow_intensity,
+                    tone,
                 );
 
                 panel.spawn((
                     Text::new(&dialog.title),
                     text_font(fonts.display.clone(), 28.0),
-                    TextColor(title_color),
+                    TextColor(text_color),
                 ));
 
                 panel.spawn((
                     Text::new(&dialog.message),
                     text_font(fonts.regular.clone(), 16.0),
-                    TextColor(theme.colors.foreground_color()),
+                    TextColor(text_color),
                     Node {
                         max_width: Val::Percent(100.0),
                         ..default()
@@ -237,7 +233,7 @@ fn show_next_dialog(
                             ..layout::button(
                                 Val::Px(120.0),
                                 44.0,
-                                theme.metrics.control_radius_px,
+                                theme.metrics.input_radius_px,
                                 theme.metrics.control_border_px,
                             )
                         },
@@ -315,5 +311,13 @@ fn severity_label(severity: DialogSeverity) -> &'static str {
         DialogSeverity::Info => "Info",
         DialogSeverity::Warning => "Warning",
         DialogSeverity::Error => "Error",
+    }
+}
+
+fn dialog_tone(severity: DialogSeverity) -> UiSemanticTone {
+    match severity {
+        DialogSeverity::Info => UiSemanticTone::Info,
+        DialogSeverity::Warning => UiSemanticTone::Warning,
+        DialogSeverity::Error => UiSemanticTone::Danger,
     }
 }

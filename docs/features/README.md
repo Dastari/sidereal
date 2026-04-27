@@ -1,7 +1,7 @@
 # Feature Docs
 
 Status: Active index
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 Owners: documentation + feature owners
 Scope: active feature contracts, feature references, and feature-scoped notes/specs
 
@@ -12,6 +12,9 @@ Update note (2026-04-24):
 
 Update note (2026-04-26):
 - Added `account_character_selection_layout_contract.md` for the reusable dashboard/native character-selection layout and account-scoped character lifecycle contract.
+
+Update note (2026-04-27):
+- Added `visibility_system_v2_signal_detection_contract.md` for the proposed Visibility System V2 direction covering signal-based detection, unknown tactical contacts, stable approximate positions, and zoom-safe delivery/client culling.
 
 Update note (2026-04-24):
 - Standardized the expected feature-document layout so each feature doc clearly states status, implementation coverage, open work, and validation scope.
@@ -85,6 +88,7 @@ Preferred status labels:
    - `background_world_simulation_contract.md`
    - `fly_by_wire_thrust_allocation_contract.md`
    - `resources_and_crafting_contract.md`
+   - `visibility_system_v2_signal_detection_contract.md`
 
 ## What Does Not Belong Here
 

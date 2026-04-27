@@ -6,7 +6,7 @@ use crate::runtime::debug_overlay::{
     count_fixed_update_runs_for_debug_diagnostics_system, toggle_debug_overlay_system,
     track_runtime_stall_diagnostics_system,
 };
-use crate::runtime::{bootstrap, owner_manifest, pause_menu, tactical, ui, visuals};
+use crate::runtime::{bootstrap, owner_manifest, pause_menu, sensor_ring, tactical, ui, visuals};
 
 pub(super) fn add_in_world_ui_update_systems(app: &mut App) {
     app.add_systems(
@@ -15,10 +15,18 @@ pub(super) fn add_in_world_ui_update_systems(app: &mut App) {
             gate_gameplay_camera_system,
             ui::toggle_tactical_map_mode_system,
             ui::sync_tactical_map_camera_zoom_system.after(ui::toggle_tactical_map_mode_system),
+            sensor_ring::update_active_scanner_profile_cache_system,
+            sensor_ring::toggle_tactical_sensor_ring_system
+                .after(sensor_ring::update_active_scanner_profile_cache_system),
+            sensor_ring::close_sensor_ring_when_unavailable_system
+                .after(sensor_ring::toggle_tactical_sensor_ring_system),
             ui::update_owned_entities_panel_system
                 .after(owner_manifest::receive_owner_asset_manifest_messages),
             ui::handle_owned_entities_panel_buttons,
             ui::update_tactical_map_overlay_system
+                .after(tactical::receive_tactical_snapshot_messages),
+            sensor_ring::update_tactical_sensor_ring_overlay_system
+                .after(sensor_ring::close_sensor_ring_when_unavailable_system)
                 .after(tactical::receive_tactical_snapshot_messages),
             ui::update_loading_overlay_system,
             ui::update_runtime_stream_icon_system,

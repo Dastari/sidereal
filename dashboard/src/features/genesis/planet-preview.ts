@@ -34,6 +34,7 @@ export function planetShaderSeedUnit(seed: number): number {
 export function buildGenesisPlanetPreviewUniforms(
   settings: GenesisPlanetShaderSettings,
   timeSeconds: number,
+  passFlags: Array<number> = [0, 0, 0, 0],
 ): ShaderPreviewUniformValues {
   const sunDir = normalizedSunDirection(settings.sun_direction_xy)
   return {
@@ -61,7 +62,12 @@ export function buildGenesisPlanetPreviewUniforms(
       flag(settings.enable_emissive),
       flag(settings.enable_ocean_specular),
     ),
-    'params.pass_flags_a': vec4(0, 0, 0, 0),
+    'params.pass_flags_a': vec4(
+      passFlags[0] ?? 0,
+      passFlags[1] ?? 0,
+      passFlags[2] ?? 0,
+      passFlags[3] ?? 0,
+    ),
     'params.lighting_a': vec4(
       settings.base_radius_scale,
       settings.normal_strength,

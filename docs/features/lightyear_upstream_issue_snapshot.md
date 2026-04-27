@@ -1,7 +1,7 @@
 # Lightyear Upstream Issue Snapshot
 
 Status: Active feature reference
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 Owners: replication + client runtime
 Scope: Open GitHub issues for `cBournhonesque/lightyear`  
 Source: <https://github.com/cBournhonesque/lightyear/issues> and the GitHub API endpoint `https://api.github.com/repos/cBournhonesque/lightyear/issues?state=open&per_page=100&page=1`  
@@ -20,6 +20,12 @@ Filter: Open issues only, excluding open pull requests
 1. Targeted upstream verification found [#1200](https://github.com/cBournhonesque/lightyear/issues/1200) still open. Sidereal now avoids that native server-input receive path locally by registering only the native input protocol message on replication.
 2. New interpolation issue [#1450](https://github.com/cBournhonesque/lightyear/issues/1450) is open: interpolated components can fail to converge when `ConfirmedHistory` collapses to one keyframe.
 3. Open PR [#1451](https://github.com/cBournhonesque/lightyear/pull/1451) proposes the current upstream fix shape: retain bracketing history while updates flow, clamp interpolation past the newest sample, and rebase/write the component on idle. Sidereal carries this as a local `lightyear_interpolation` patch while keeping the Dastari fork for other Lightyear crates.
+
+2026-04-27 status note:
+
+1. Targeted upstream search for a `lightyear_inputs` `HISTORY_DEPTH` / input-buffer retention issue did not find a matching open issue.
+2. Local diagnosis found upstream 0.26.4 keeps only 20 client input ticks, while Sidereal's native rollback budget is 160 ticks. A rollback deeper than retained input history can replay missing/neutral input and snap predicted entities back to their control-handoff seed.
+3. Sidereal carries a local `lightyear_inputs` patch that increases retained client input history to 512 ticks. Treat this as a candidate generic upstream fix, ideally by making input history retention configurable instead of hardcoded.
 
 Update 2026-04-23: PR [#1421](https://github.com/cBournhonesque/lightyear/pull/1421) was verified as merged into `cBournhonesque:main` via commit [`af25682`](https://github.com/cBournhonesque/lightyear/commit/af25682) on 2026-04-22. The associated GitHub Actions run [`24797547143`](https://github.com/cBournhonesque/lightyear/actions/runs/24797547143) was not clean: `Lint` failed in `Format`, and `Test` failed in `lightyear_tests` with exit code 1. Public unauthenticated metadata did not expose detailed `lightyear_tests` logs. Local reproduction against `af25682` and its parent `eedb9ed` found the visible formatting failure and the targeted `lightyear_interpolation` unit failure were already present before #1421; the new #1421 confirmed-history tests passed locally. This update does not refresh the full open-issue inventory below.
 

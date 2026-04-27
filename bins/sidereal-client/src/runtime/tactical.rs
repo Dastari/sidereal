@@ -308,12 +308,16 @@ mod tests {
             map_icon_asset_id: Some("map_icon_ship_svg".to_string()),
             faction_id: None,
             position_xy: pos,
+            size_m: None,
+            mass_kg: None,
             heading_rad: 0.0,
             velocity_xy: None,
             is_live_now: true,
             last_seen_tick: 10,
             classification: None,
             contact_quality: None,
+            signal_strength: None,
+            position_accuracy_m: None,
         }
     }
 

@@ -71,7 +71,11 @@ export function useDatabaseAdminData(
           ...account,
           characters: account.characters.map((character) =>
             character.playerEntityId === playerEntityId
-              ? { ...character, displayName }
+              ? {
+                  ...character,
+                  displayName,
+                  updatedAtEpochS: Math.floor(Date.now() / 1000),
+                }
               : character,
           ),
         })),

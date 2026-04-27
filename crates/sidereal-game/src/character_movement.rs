@@ -1,5 +1,5 @@
-use avian2d::prelude::{LinearVelocity, Position};
-use bevy::{math::DVec2, prelude::*};
+use avian2d::prelude::{LinearVelocity, Position, RigidBody};
+use bevy::{ecs::change_detection::Mut, math::DVec2, prelude::*};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -13,6 +13,32 @@ const DEFAULT_PLAYER_MAX_ACCEL_MPS2: f32 = 880.0;
 const DEFAULT_PLAYER_DAMPING_PER_S: f32 = 8.0;
 const MIN_PLAYER_SPEED_MPS: f32 = 1.0;
 const STOP_EPSILON_MPS: f32 = 0.05;
+
+fn integrate_non_physics_motion(
+    maybe_transform: Option<Mut<'_, Transform>>,
+    maybe_position: Option<Mut<'_, Position>>,
+    velocity_mps: DVec2,
+    dt_s: f32,
+) {
+    let translation_delta = velocity_mps * f64::from(dt_s);
+    match (maybe_transform, maybe_position) {
+        (Some(mut transform), Some(mut position)) => {
+            position.0 += translation_delta;
+            transform.translation.x = position.0.x as f32;
+            transform.translation.y = position.0.y as f32;
+            transform.translation.z = 0.0;
+        }
+        (Some(mut transform), None) => {
+            transform.translation.x += translation_delta.x as f32;
+            transform.translation.y += translation_delta.y as f32;
+            transform.translation.z = 0.0;
+        }
+        (None, Some(mut position)) => {
+            position.0 += translation_delta;
+        }
+        (None, None) => {}
+    }
+}
 
 fn parse_guid_like(value: &str) -> Option<Uuid> {
     Uuid::parse_str(value).ok()
@@ -70,6 +96,7 @@ pub fn process_character_movement_actions(
             &EntityGuid,
             Option<&CharacterMovementController>,
             Option<&mut LinearVelocity>,
+            Has<RigidBody>,
             Option<&mut Transform>,
             Option<&mut Position>,
             Option<&ControlledEntityGuid>,
@@ -87,6 +114,7 @@ pub fn process_character_movement_actions(
         entity_guid,
         maybe_controller,
         maybe_linear_velocity,
+        has_rigid_body,
         maybe_transform,
         maybe_position,
         controlled,
@@ -154,24 +182,27 @@ pub fn process_character_movement_actions(
                 damped_velocity = DVec2::ZERO;
             }
             linear_velocity.0 = damped_velocity;
+            if !has_rigid_body {
+                integrate_non_physics_motion(
+                    maybe_transform,
+                    maybe_position,
+                    damped_velocity,
+                    dt_s,
+                );
+            }
             continue;
         }
 
         // Fallback path for non-physics entities.
-        if let Some(mut transform) = maybe_transform {
-            let mut fallback_velocity = desired_velocity.as_vec2();
+        {
+            let mut fallback_velocity = desired_velocity;
             if desired_dir == Vec2::ZERO {
-                fallback_velocity *= damping as f32;
+                fallback_velocity *= damping;
             }
-            if fallback_velocity.length() <= STOP_EPSILON_MPS {
-                fallback_velocity = Vec2::ZERO;
+            if fallback_velocity.length() <= f64::from(STOP_EPSILON_MPS) {
+                fallback_velocity = DVec2::ZERO;
             }
-            transform.translation.x += fallback_velocity.x * dt_s;
-            transform.translation.y += fallback_velocity.y * dt_s;
-            transform.translation.z = 0.0;
-            if let Some(mut position) = maybe_position {
-                position.0 = transform.translation.truncate().as_dvec2();
-            }
+            integrate_non_physics_motion(maybe_transform, maybe_position, fallback_velocity, dt_s);
         }
     }
 }

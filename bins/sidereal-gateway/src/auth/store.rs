@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use sidereal_core::bootstrap_wire::AUTH_CHARACTERS_TABLE;
 use sidereal_persistence::script_catalog_schema_sql;
 use std::collections::HashMap;
+use std::future::poll_fn;
 use tokio::sync::RwLock;
-use tokio_postgres::{Client, NoTls};
-use tracing::error;
+use tokio_postgres::{AsyncMessage, Client, NoTls};
+use tracing::{debug, error};
 use uuid::Uuid;
 
 use crate::auth::crypto::now_epoch_s;
@@ -178,12 +179,27 @@ pub struct PostgresAuthStore {
 
 impl PostgresAuthStore {
     pub async fn connect(database_url: &str) -> Result<Self, AuthError> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls)
+        let (client, mut connection) = tokio_postgres::connect(database_url, NoTls)
             .await
             .map_err(|err| AuthError::Config(format!("postgres connect failed: {err}")))?;
         tokio::spawn(async move {
-            if let Err(err) = connection.await {
-                error!("gateway postgres connection ended: {}", err);
+            loop {
+                match poll_fn(|cx| connection.poll_message(cx)).await {
+                    Some(Ok(AsyncMessage::Notice(notice))) => {
+                        debug!(
+                            target: "tokio_postgres::connection",
+                            "{}: {}",
+                            notice.severity(),
+                            notice.message()
+                        );
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(err)) => {
+                        error!("gateway postgres connection ended: {}", err);
+                        break;
+                    }
+                    None => break,
+                }
             }
         });
         Ok(Self { client })

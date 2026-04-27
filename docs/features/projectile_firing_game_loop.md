@@ -1,7 +1,7 @@
 # Projectile Firing and Damage Loop Contract
 
 Status: Active implementation contract
-Last updated: 2026-04-24
+Last updated: 2026-04-27
 Owners: gameplay runtime + replication + client
 Scope: server-authoritative weapon firing, hitscan/tracer path, projectile entities, and client presentation
 
@@ -14,6 +14,14 @@ Scope: server-authoritative weapon firing, hitscan/tracer path, projectile entit
 3. Implemented: combat messages carry enough weapon identity for client presentation/audio resolution.
 4. Open work: shields/armor, richer weapon families, hit UI, advanced lag compensation, and broader VFX/SFX polish remain future work.
 5. WASM impact: gameplay/protocol path is shared; live browser validation is deferred behind native stabilization.
+
+2026-04-27 status note:
+
+1. Implemented: online local-shooter hitscan tracer presentation re-anchors the server fire notification to the client's predicted muzzle pose when the message belongs to the locally controlled entity and the weapon mount/hardpoint can be resolved.
+2. Implemented: observer clients still render the authoritative server origin and authoritative impact stop; local shooters keep the authoritative impact while avoiding muzzle drift from server/confirmed position lag.
+3. Implemented: gatling tracer visuals use a slower, longer cosmetic beam segment with a broader glow shader envelope so repeated shots read as a connected bullet stream rather than isolated short bolts.
+4. Native impact: native shooter-view weapon fire visuals now align with the predicted ship pose during ordinary prediction lead.
+5. WASM impact: shared client runtime and shader behavior only; no target-specific browser branch was introduced.
 
 Implementation status note (2026-03-12):
 

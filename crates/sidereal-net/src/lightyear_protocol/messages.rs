@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sidereal_game::EntityAction;
 
-pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 3;
+pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 6;
 
 /// Client authenticates replication session and binds transport identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -15,6 +15,8 @@ pub struct ClientAuthMessage {
 pub struct ServerSessionReadyMessage {
     pub player_entity_id: String,
     pub protocol_version: u32,
+    pub control_generation: u64,
+    pub controlled_entity_id: Option<String>,
 }
 
 /// Server denies a replication session for the selected player.
@@ -128,12 +130,16 @@ pub struct TacticalContact {
     pub map_icon_asset_id: Option<String>,
     pub faction_id: Option<String>,
     pub position_xy: [f64; 2],
+    pub size_m: Option<[f32; 3]>,
+    pub mass_kg: Option<f32>,
     pub heading_rad: f64,
     pub velocity_xy: Option<[f64; 2]>,
     pub is_live_now: bool,
     pub last_seen_tick: u64,
     pub classification: Option<String>,
     pub contact_quality: Option<String>,
+    pub signal_strength: Option<f32>,
+    pub position_accuracy_m: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

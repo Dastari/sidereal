@@ -226,7 +226,7 @@ pub(super) fn setup_character_select_screen(
                                         layout::leading_button(
                                             Val::Percent(100.0),
                                             58.0,
-                                            theme.metrics.control_radius_px,
+                                            theme.metrics.input_radius_px,
                                             theme.metrics.control_border_px,
                                             12.0,
                                         ),
@@ -286,7 +286,7 @@ pub(super) fn setup_character_select_screen(
                         layout::button(
                             Val::Percent(100.0),
                             46.0,
-                            theme.metrics.control_radius_px,
+                            theme.metrics.input_radius_px,
                             theme.metrics.control_border_px,
                         ),
                         Transform::default(),

@@ -14,7 +14,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui'
 
 type DatabaseSection = 'entities' | 'accounts' | 'tables'
-type AccountSortKey = 'email' | 'characters' | 'created'
+type AccountSortKey = 'email' | 'characters' | 'mfa' | 'created'
 type TableSortKey = 'name' | 'rows' | 'schema'
 
 const DATABASE_BRIDGE_TAB = {
@@ -168,6 +168,7 @@ export function DatabaseAccountsPage({
     sort: parseAsStringLiteral([
       'email',
       'characters',
+      'mfa',
       'created',
     ] as const).withDefault('email'),
   })

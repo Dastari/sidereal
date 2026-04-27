@@ -4,5 +4,6 @@ pub mod typography;
 pub mod widgets;
 
 pub use theme::{
-    ActiveUiTheme, UiTheme, UiThemeColors, UiThemeId, UiVisualSettings, theme_definition,
+    ActiveUiTheme, UiSemanticTone, UiTheme, UiThemeColors, UiThemeId, UiVisualSettings,
+    theme_definition,
 };

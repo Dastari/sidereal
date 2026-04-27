@@ -11,7 +11,7 @@ use super::resources::{
     HeadlessTransportMode, LogoutCleanupRequested, PendingDisconnectNotify,
     SessionReadyWatchdogConfig, SessionReadyWatchdogState,
 };
-use async_channel::{Receiver, TryRecvError, bounded};
+use async_channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
@@ -123,9 +123,18 @@ pub struct AssetBootstrapRequestState {
 
 struct AssetBootstrapRequestTask {
     receiver: Receiver<Result<AssetBootstrapRequestResult, String>>,
+    progress_receiver: Receiver<AssetBootstrapProgressUpdate>,
 }
 
 const MAX_PARALLEL_BOOTSTRAP_FETCHES: usize = 4;
+
+#[derive(Debug, Clone)]
+struct AssetBootstrapProgressUpdate {
+    manifest_seen: bool,
+    bootstrap_total_bytes: u64,
+    bootstrap_ready_bytes: u64,
+    status: String,
+}
 
 #[derive(Debug)]
 struct AssetBootstrapRequestResult {
@@ -161,6 +170,21 @@ fn try_recv_pending_result<T>(receiver: &Receiver<T>) -> Option<T> {
         Ok(result) => Some(result),
         Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => None,
     }
+}
+
+fn send_asset_bootstrap_progress(
+    sender: &Sender<AssetBootstrapProgressUpdate>,
+    manifest_seen: bool,
+    bootstrap_total_bytes: u64,
+    bootstrap_ready_bytes: u64,
+    status: impl Into<String>,
+) {
+    let _ = sender.try_send(AssetBootstrapProgressUpdate {
+        manifest_seen,
+        bootstrap_total_bytes,
+        bootstrap_ready_bytes,
+        status: status.into(),
+    });
 }
 
 fn handle_password_login_response(
@@ -418,6 +442,7 @@ pub fn submit_asset_bootstrap_request(
     );
 
     let (sender, receiver) = bounded(1);
+    let (progress_sender, progress_receiver) = unbounded();
     IoTaskPool::get()
         .spawn(async move {
             let result = async move {
@@ -429,6 +454,18 @@ pub fn submit_asset_bootstrap_request(
                 let manifest =
                     (gateway_http.fetch_bootstrap_manifest)(gateway_url.clone(), access_token.clone())
                         .await?;
+                let bootstrap_total_bytes = manifest
+                    .required_assets
+                    .iter()
+                    .fold(0u64, |total, entry| total.saturating_add(entry.byte_len));
+                let mut bootstrap_ready_bytes = 0u64;
+                send_asset_bootstrap_progress(
+                    &progress_sender,
+                    true,
+                    bootstrap_total_bytes,
+                    bootstrap_ready_bytes,
+                    "Verifying required asset cache...",
+                );
                 info!(
                     "asset bootstrap manifest fetched: required_assets={} catalog_assets={}",
                     manifest.required_assets.len(),
@@ -436,8 +473,6 @@ pub fn submit_asset_bootstrap_request(
                 );
                 let mut cache_index = (cache_adapter.load_index)(asset_root.clone()).await?;
                 let mut records = Vec::<AssetBootstrapRecord>::new();
-                let mut bootstrap_total_bytes = 0u64;
-                let mut bootstrap_ready_bytes = 0u64;
 
                 for entry in &manifest.catalog {
                     let ready = (cache_adapter.read_valid_asset)(
@@ -460,7 +495,6 @@ pub fn submit_asset_bootstrap_request(
 
                 let mut missing_required_assets = Vec::new();
                 for required in &manifest.required_assets {
-                    bootstrap_total_bytes = bootstrap_total_bytes.saturating_add(required.byte_len);
                     let satisfied = (cache_adapter.read_valid_asset)(
                         asset_root.clone(),
                         required.relative_cache_path.clone(),
@@ -470,8 +504,33 @@ pub fn submit_asset_bootstrap_request(
                     .is_some();
                     if !satisfied {
                         missing_required_assets.push(required.clone());
+                    } else {
+                        bootstrap_ready_bytes =
+                            bootstrap_ready_bytes.saturating_add(required.byte_len);
+                        send_asset_bootstrap_progress(
+                            &progress_sender,
+                            true,
+                            bootstrap_total_bytes,
+                            bootstrap_ready_bytes,
+                            format!(
+                                "Using cached asset: {}",
+                                required.asset_id
+                            ),
+                        );
                     }
-                    bootstrap_ready_bytes = bootstrap_ready_bytes.saturating_add(required.byte_len);
+                }
+                if !missing_required_assets.is_empty() {
+                    send_asset_bootstrap_progress(
+                        &progress_sender,
+                        true,
+                        bootstrap_total_bytes,
+                        bootstrap_ready_bytes,
+                        format!(
+                            "Downloading {} required asset{}...",
+                            missing_required_assets.len(),
+                            if missing_required_assets.len() == 1 { "" } else { "s" }
+                        ),
+                    );
                 }
 
                 let mut pending_fetches = Vec::<Task<Result<AssetBootstrapFetchedAsset, String>>>::new();
@@ -526,6 +585,15 @@ pub fn submit_asset_bootstrap_request(
                                 sha256_hex: fetched.sha256_hex,
                             },
                         );
+                        bootstrap_ready_bytes =
+                            bootstrap_ready_bytes.saturating_add(fetched.byte_len);
+                        send_asset_bootstrap_progress(
+                            &progress_sender,
+                            true,
+                            bootstrap_total_bytes,
+                            bootstrap_ready_bytes,
+                            "Cached required asset.",
+                        );
                     }
                 }
 
@@ -548,8 +616,24 @@ pub fn submit_asset_bootstrap_request(
                             sha256_hex: fetched.sha256_hex,
                         },
                     );
+                    bootstrap_ready_bytes =
+                        bootstrap_ready_bytes.saturating_add(fetched.byte_len);
+                    send_asset_bootstrap_progress(
+                        &progress_sender,
+                        true,
+                        bootstrap_total_bytes,
+                        bootstrap_ready_bytes,
+                        "Cached required asset.",
+                    );
                 }
 
+                send_asset_bootstrap_progress(
+                    &progress_sender,
+                    true,
+                    bootstrap_total_bytes,
+                    bootstrap_ready_bytes,
+                    "Finalizing asset cache...",
+                );
                 for required in &manifest.required_assets {
                     let version = asset_version_from_sha256_hex(&required.sha256_hex);
                     cache_index.by_asset_id.insert(
@@ -584,7 +668,10 @@ pub fn submit_asset_bootstrap_request(
             let _ = sender.send(result).await;
         })
         .detach();
-    request_state.pending = Some(AssetBootstrapRequestTask { receiver });
+    request_state.pending = Some(AssetBootstrapRequestTask {
+        receiver,
+        progress_receiver,
+    });
 }
 
 fn session_matches_ready_player(
@@ -727,6 +814,17 @@ pub fn poll_asset_bootstrap_request_results(
     let Some(task) = request_state.pending.as_ref() else {
         return;
     };
+    let mut saw_progress = false;
+    while let Some(progress) = try_recv_pending_result(&task.progress_receiver) {
+        asset_manager.bootstrap_manifest_seen = progress.manifest_seen;
+        asset_manager.bootstrap_total_bytes = progress.bootstrap_total_bytes;
+        asset_manager.bootstrap_ready_bytes = progress.bootstrap_ready_bytes;
+        session.status = progress.status;
+        saw_progress = true;
+    }
+    if saw_progress {
+        session.ui_dirty = true;
+    }
     let Some(result) = try_recv_pending_result(&task.receiver) else {
         return;
     };
@@ -1036,6 +1134,7 @@ pub fn receive_lightyear_session_ready_messages(
     >,
     session: Res<'_, ClientSession>,
     mut session_ready: ResMut<'_, SessionReadyState>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
     mut dialog_queue: ResMut<'_, super::dialog_ui::DialogQueue>,
 ) {
@@ -1069,9 +1168,21 @@ pub fn receive_lightyear_session_ready_messages(
                 cleanup_requested.0 = true;
                 continue;
             }
+            player_view_state.controlled_entity_generation = message.control_generation;
+            player_view_state.controlled_entity_id = message
+                .controlled_entity_id
+                .clone()
+                .or_else(|| session.player_entity_id.clone());
+            player_view_state.desired_controlled_entity_id =
+                player_view_state.controlled_entity_id.clone();
             info!(
-                "client session ready received for player_entity_id={}",
-                message.player_entity_id
+                "client session ready received for player_entity_id={} control_generation={} controlled_entity_id={}",
+                message.player_entity_id,
+                message.control_generation,
+                player_view_state
+                    .controlled_entity_id
+                    .as_deref()
+                    .unwrap_or("<player-anchor>")
             );
             session_ready.ready_player_entity_id = Some(message.player_entity_id);
         }
@@ -1277,7 +1388,10 @@ mod tests {
             })
             .detach();
         app.insert_resource(AssetBootstrapRequestState {
-            pending: Some(super::AssetBootstrapRequestTask { receiver }),
+            pending: Some(super::AssetBootstrapRequestTask {
+                receiver,
+                progress_receiver: bounded(1).1,
+            }),
             submitted: true,
             completed: false,
             failed: false,
@@ -1338,5 +1452,54 @@ mod tests {
         let request_state = app.world().resource::<AssetBootstrapRequestState>();
         assert!(request_state.submitted);
         assert!(request_state.pending.is_some());
+    }
+
+    #[test]
+    fn asset_bootstrap_progress_updates_before_completion() {
+        IoTaskPool::get_or_init(TaskPool::new);
+
+        let mut app = App::new();
+        app.insert_resource(ClientSession::default());
+        app.insert_resource(LocalAssetManager::default());
+        app.insert_resource(AudioCatalogState::default());
+        app.insert_resource(AssetCatalogHotReloadState::default());
+        app.insert_resource(DialogQueue::default());
+
+        let (_result_sender, result_receiver) = bounded(1);
+        let (progress_sender, progress_receiver) = bounded(1);
+        progress_sender
+            .try_send(super::AssetBootstrapProgressUpdate {
+                manifest_seen: true,
+                bootstrap_total_bytes: 100,
+                bootstrap_ready_bytes: 40,
+                status: "Downloading required assets...".to_string(),
+            })
+            .expect("progress channel should accept one update");
+        app.insert_resource(AssetBootstrapRequestState {
+            pending: Some(super::AssetBootstrapRequestTask {
+                receiver: result_receiver,
+                progress_receiver,
+            }),
+            submitted: true,
+            completed: false,
+            failed: false,
+        });
+        app.add_systems(Update, poll_asset_bootstrap_request_results);
+
+        app.update();
+
+        let request_state = app.world().resource::<AssetBootstrapRequestState>();
+        let session = app.world().resource::<ClientSession>();
+        let asset_manager = app.world().resource::<LocalAssetManager>();
+
+        assert!(
+            request_state.pending.is_some(),
+            "progress update should not complete the bootstrap request"
+        );
+        assert!(asset_manager.bootstrap_manifest_seen);
+        assert_eq!(asset_manager.bootstrap_total_bytes, 100);
+        assert_eq!(asset_manager.bootstrap_ready_bytes, 40);
+        assert_eq!(session.status, "Downloading required assets...");
+        assert!(session.ui_dirty);
     }
 }

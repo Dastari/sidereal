@@ -193,7 +193,7 @@ pub enum RuntimeFullscreenShaderKind {
     SpaceBackgroundNebula,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeWorldSpriteShaderKind {
     GenericSprite,
     Asteroid,
@@ -400,10 +400,10 @@ pub fn world_sprite_shader_kind(
     assignments: &RuntimeShaderAssignments,
     shader_asset_id: &str,
 ) -> Option<RuntimeWorldSpriteShaderKind> {
-    if assignments.generic_sprite_asset_id.as_deref() == Some(shader_asset_id) {
-        Some(RuntimeWorldSpriteShaderKind::GenericSprite)
-    } else if assignments.asteroid_sprite_asset_id.as_deref() == Some(shader_asset_id) {
+    if assignments.asteroid_sprite_asset_id.as_deref() == Some(shader_asset_id) {
         Some(RuntimeWorldSpriteShaderKind::Asteroid)
+    } else if assignments.generic_sprite_asset_id.as_deref() == Some(shader_asset_id) {
+        Some(RuntimeWorldSpriteShaderKind::GenericSprite)
     } else {
         None
     }
@@ -890,6 +890,7 @@ pub fn sync_runtime_shader_assignments_system(
 
 #[cfg(test)]
 mod tests {
+    use super::{RuntimeShaderAssignments, RuntimeWorldSpriteShaderKind, world_sprite_shader_kind};
     use serde_json::from_str;
     use sidereal_asset_runtime::{
         AssetCacheIndex, asset_version_from_sha256_hex, generated_asset_guid,
@@ -956,5 +957,19 @@ mod tests {
                 "asset version mismatch for {asset_id}"
             );
         }
+    }
+
+    #[test]
+    fn world_sprite_shader_kind_prefers_asteroid_when_assignments_overlap() {
+        let assignments = RuntimeShaderAssignments {
+            generic_sprite_asset_id: Some("asteroid_wgsl".to_string()),
+            asteroid_sprite_asset_id: Some("asteroid_wgsl".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            world_sprite_shader_kind(&assignments, "asteroid_wgsl"),
+            Some(RuntimeWorldSpriteShaderKind::Asteroid)
+        );
     }
 }

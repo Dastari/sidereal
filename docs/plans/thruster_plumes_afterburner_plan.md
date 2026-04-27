@@ -37,6 +37,13 @@ Implemented in this baseline:
 3. Native impact: plumes now resume reacting to authoritative throttle/afterburner state on modular ships rather than staying effectively invisible because the lookup never matched.
 4. WASM impact: no architecture split; the same mounted-module resolution logic applies to browser clients.
 
+## Implementation Status Notes (2026-04-27)
+
+1. Thruster plume attachment now handles childless engine entities, so the first plume child is created on freshly replicated engine modules instead of requiring an existing `Children` component.
+2. The runtime effect shader remains shader-first rather than texture-backed. The plume pass now uses smoother procedural noise, animated shear, a hotter core, outer halo, and afterburner shock-diamond accents through the existing `RuntimeEffectMaterial` ABI.
+3. Native impact: accelerating ships should show a visible plume from the mounted engine hardpoint once the engine entity and hull throttle state are present.
+4. WASM impact: no architecture split; the same WGSL/runtime-material path is used, with cache shader parity maintained for streamed asset loading.
+
 ## 1. Goal
 
 Add visually responsive spaceship thruster plumes that:

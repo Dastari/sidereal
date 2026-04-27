@@ -441,81 +441,191 @@ body > div:first-child {
   --sidebar-ring: oklch(0.75 0.18 195);
   --glow: oklch(0.75 0.18 195);
   --glow-muted: oklch(0.5 0.12 195);
+  --chart-1: oklch(0.75 0.18 195);
+  --chart-2: oklch(0.65 0.15 210);
+  --chart-3: oklch(0.7 0.12 180);
+  --chart-4: oklch(0.6 0.18 200);
+  --chart-5: oklch(0.8 0.1 190);
 }
 
 [data-theme='ares'] {
+  --background: oklch(0.06 0.02 250);
+  --foreground: oklch(0.95 0.02 220);
+  --card: oklch(0.1 0.02 250);
+  --card-foreground: oklch(0.92 0.02 220);
+  --popover: oklch(0.1 0.02 250);
+  --popover-foreground: oklch(0.92 0.02 220);
   --primary: oklch(0.6 0.25 25);
+  --primary-foreground: oklch(0.98 0 0);
   --secondary: oklch(0.65 0.18 55);
+  --secondary-foreground: oklch(0.1 0 0);
+  --muted: oklch(0.15 0.02 250);
+  --muted-foreground: oklch(0.6 0.04 220);
   --accent: oklch(0.7 0.2 50);
+  --accent-foreground: oklch(0.1 0 0);
+  --destructive: oklch(0.58 0.24 30);
   --border: oklch(0.3 0.12 25);
   --input: oklch(0.15 0.04 250);
   --ring: oklch(0.6 0.25 25);
+  --sidebar: oklch(0.08 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.02 220);
   --sidebar-primary: oklch(0.6 0.25 25);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
   --sidebar-accent: oklch(0.7 0.2 50);
+  --sidebar-accent-foreground: oklch(0.1 0 0);
   --sidebar-border: oklch(0.3 0.12 25);
   --sidebar-ring: oklch(0.6 0.25 25);
   --glow: oklch(0.6 0.25 25);
   --glow-muted: oklch(0.4 0.15 25);
+  --chart-1: oklch(0.6 0.25 25);
+  --chart-2: oklch(0.7 0.2 50);
+  --chart-3: oklch(0.55 0.22 35);
+  --chart-4: oklch(0.65 0.18 40);
+  --chart-5: oklch(0.75 0.15 60);
 }
 
 [data-theme='clu'] {
+  --background: oklch(0.06 0.02 250);
+  --foreground: oklch(0.95 0.02 220);
+  --card: oklch(0.1 0.02 250);
+  --card-foreground: oklch(0.92 0.02 220);
+  --popover: oklch(0.1 0.02 250);
+  --popover-foreground: oklch(0.92 0.02 220);
   --primary: oklch(0.75 0.2 55);
+  --primary-foreground: oklch(0.1 0 0);
   --secondary: oklch(0.18 0.06 50);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.15 0.04 50);
+  --muted-foreground: oklch(0.65 0 0);
   --accent: oklch(0.7 0.18 55);
+  --accent-foreground: oklch(0.1 0 0);
+  --destructive: oklch(0.58 0.24 30);
   --border: oklch(0.3 0.1 55);
   --input: oklch(0.2 0.06 55);
   --ring: oklch(0.75 0.2 55);
+  --sidebar: oklch(0.08 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.02 220);
   --sidebar-primary: oklch(0.75 0.2 55);
+  --sidebar-primary-foreground: oklch(0.1 0 0);
   --sidebar-accent: oklch(0.18 0.06 50);
+  --sidebar-accent-foreground: oklch(0.95 0 0);
   --sidebar-border: oklch(0.3 0.1 55);
   --sidebar-ring: oklch(0.75 0.2 55);
   --glow: oklch(0.75 0.2 55);
   --glow-muted: oklch(0.5 0.12 55);
+  --chart-1: oklch(0.75 0.2 55);
+  --chart-2: oklch(0.7 0.18 45);
+  --chart-3: oklch(0.65 0.15 65);
+  --chart-4: oklch(0.8 0.15 50);
+  --chart-5: oklch(0.6 0.2 60);
 }
 
 [data-theme='athena'] {
+  --background: oklch(0.06 0.02 250);
+  --foreground: oklch(0.95 0.02 220);
+  --card: oklch(0.1 0.02 250);
+  --card-foreground: oklch(0.92 0.02 220);
+  --popover: oklch(0.1 0.02 250);
+  --popover-foreground: oklch(0.92 0.02 220);
   --primary: oklch(0.85 0.18 90);
+  --primary-foreground: oklch(0.1 0 0);
   --secondary: oklch(0.18 0.05 85);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.15 0.03 85);
+  --muted-foreground: oklch(0.65 0 0);
   --accent: oklch(0.8 0.15 90);
+  --accent-foreground: oklch(0.1 0 0);
+  --destructive: oklch(0.58 0.24 30);
   --border: oklch(0.35 0.1 90);
   --input: oklch(0.2 0.06 90);
   --ring: oklch(0.85 0.18 90);
+  --sidebar: oklch(0.08 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.02 220);
   --sidebar-primary: oklch(0.85 0.18 90);
+  --sidebar-primary-foreground: oklch(0.1 0 0);
   --sidebar-accent: oklch(0.18 0.05 85);
+  --sidebar-accent-foreground: oklch(0.95 0 0);
   --sidebar-border: oklch(0.35 0.1 90);
   --sidebar-ring: oklch(0.85 0.18 90);
   --glow: oklch(0.85 0.18 90);
   --glow-muted: oklch(0.55 0.12 90);
+  --chart-1: oklch(0.85 0.18 90);
+  --chart-2: oklch(0.8 0.15 100);
+  --chart-3: oklch(0.75 0.12 80);
+  --chart-4: oklch(0.7 0.18 95);
+  --chart-5: oklch(0.9 0.1 85);
 }
 
 [data-theme='aphrodite'] {
+  --background: oklch(0.06 0.02 250);
+  --foreground: oklch(0.95 0.02 220);
+  --card: oklch(0.1 0.02 250);
+  --card-foreground: oklch(0.92 0.02 220);
+  --popover: oklch(0.1 0.02 250);
+  --popover-foreground: oklch(0.92 0.02 220);
   --primary: oklch(0.7 0.22 340);
+  --primary-foreground: oklch(0.98 0 0);
   --secondary: oklch(0.18 0.06 340);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.15 0.04 340);
+  --muted-foreground: oklch(0.65 0 0);
   --accent: oklch(0.65 0.2 340);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.58 0.24 30);
   --border: oklch(0.3 0.1 340);
   --input: oklch(0.2 0.06 340);
   --ring: oklch(0.7 0.22 340);
+  --sidebar: oklch(0.08 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.02 220);
   --sidebar-primary: oklch(0.7 0.22 340);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
   --sidebar-accent: oklch(0.18 0.06 340);
+  --sidebar-accent-foreground: oklch(0.95 0 0);
   --sidebar-border: oklch(0.3 0.1 340);
   --sidebar-ring: oklch(0.7 0.22 340);
   --glow: oklch(0.7 0.22 340);
   --glow-muted: oklch(0.5 0.15 340);
+  --chart-1: oklch(0.7 0.22 340);
+  --chart-2: oklch(0.65 0.2 350);
+  --chart-3: oklch(0.75 0.18 330);
+  --chart-4: oklch(0.6 0.22 345);
+  --chart-5: oklch(0.8 0.15 335);
 }
 
 [data-theme='poseidon'] {
+  --background: oklch(0.06 0.02 250);
+  --foreground: oklch(0.95 0.02 220);
+  --card: oklch(0.1 0.02 250);
+  --card-foreground: oklch(0.92 0.02 220);
+  --popover: oklch(0.1 0.02 250);
+  --popover-foreground: oklch(0.92 0.02 220);
   --primary: oklch(0.62 0.2 250);
+  --primary-foreground: oklch(0.98 0 0);
   --secondary: oklch(0.18 0.05 245);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.15 0.04 250);
+  --muted-foreground: oklch(0.65 0 0);
   --accent: oklch(0.58 0.18 245);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.58 0.24 30);
   --border: oklch(0.3 0.1 250);
   --input: oklch(0.18 0.06 250);
   --ring: oklch(0.62 0.2 250);
+  --sidebar: oklch(0.08 0.02 250);
+  --sidebar-foreground: oklch(0.92 0.02 220);
   --sidebar-primary: oklch(0.62 0.2 250);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
   --sidebar-accent: oklch(0.18 0.05 245);
+  --sidebar-accent-foreground: oklch(0.95 0 0);
   --sidebar-border: oklch(0.3 0.1 250);
   --sidebar-ring: oklch(0.62 0.2 250);
   --glow: oklch(0.62 0.2 250);
   --glow-muted: oklch(0.42 0.12 250);
+  --chart-1: oklch(0.6 0.2 250);
+  --chart-2: oklch(0.55 0.18 260);
+  --chart-3: oklch(0.65 0.15 240);
+  --chart-4: oklch(0.5 0.2 255);
+  --chart-5: oklch(0.7 0.12 245);
 }
 
 html[data-theme] body {
@@ -541,47 +651,59 @@ html[data-theme] body {
         color-mix(in oklch, var(--glow) 10%, transparent),
         transparent 30%
       ),
-      linear-gradient(180deg, color-mix(in oklch, var(--background) 94%, black), var(--background));
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--background) 94%, black),
+        var(--background)
+      );
   }
 
   .grid-header {
     border-color: color-mix(in oklch, var(--border) 82%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 88%, transparent),
-        color-mix(in oklch, var(--card) 96%, transparent)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 88%, transparent),
+      color-mix(in oklch, var(--card) 96%, transparent)
+    );
     box-shadow:
       inset 0 -1px 0 color-mix(in oklch, var(--border) 64%, transparent),
-      0 0 22px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+      0 0 22px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 100%),
+          transparent
+        );
     backdrop-filter: blur(18px);
   }
 
   .grid-sidebar-rail {
     border-color: color-mix(in oklch, var(--sidebar-border) 80%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--sidebar) 94%, transparent),
-        color-mix(in oklch, var(--background) 90%, transparent)
-      );
-    box-shadow: inset -1px 0 0 color-mix(in oklch, var(--border) 40%, transparent);
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--sidebar) 94%, transparent),
+      color-mix(in oklch, var(--background) 90%, transparent)
+    );
+    box-shadow: inset -1px 0 0
+      color-mix(in oklch, var(--border) 40%, transparent);
   }
 
   .grid-panel,
   .grid-surface {
     position: relative;
     border-color: color-mix(in oklch, var(--border) 82%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 92%, transparent),
-        color-mix(in oklch, var(--panel) 96%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 92%, transparent),
+      color-mix(in oklch, var(--panel) 96%, black)
+    );
     box-shadow:
       var(--grid-panel-shadow),
-      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+      0 0 26px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 100%),
+          transparent
+        );
     backdrop-filter: blur(var(--grid-panel-blur));
   }
 
@@ -592,13 +714,12 @@ html[data-theme] body {
     inset: 0;
     pointer-events: none;
     border-radius: inherit;
-    background:
-      linear-gradient(
-        transparent 0,
-        transparent 6px,
-        color-mix(in oklch, var(--glow-muted) 60%, transparent) 7px,
-        transparent 8px
-      );
+    background: linear-gradient(
+      transparent 0,
+      transparent 6px,
+      color-mix(in oklch, var(--glow-muted) 60%, transparent) 7px,
+      transparent 8px
+    );
     opacity: var(--grid-scanline-opacity);
     mix-blend-mode: screen;
   }
@@ -609,7 +730,12 @@ html[data-theme] body {
     inset: 0;
     pointer-events: none;
     border-radius: inherit;
-    border: 1px solid color-mix(in oklch, var(--glow) calc(var(--grid-bracket-opacity) * 100%), transparent);
+    border: 1px solid
+      color-mix(
+        in oklch,
+        var(--glow) calc(var(--grid-bracket-opacity) * 100%),
+        transparent
+      );
     clip-path: polygon(
       0 12px,
       12px 12px,
@@ -630,11 +756,19 @@ html[data-theme] body {
   .grid-hud-frame {
     box-shadow:
       var(--grid-panel-shadow),
-      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+      0 0 26px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 100%),
+          transparent
+        );
     backdrop-filter: blur(var(--grid-panel-blur));
   }
 
-  .grid-hud-frame > :not(.grid-hud-frame__overlay):not(.grid-hud-frame__corner):not(.grid-hud-frame__label) {
+  .grid-hud-frame
+    > :not(.grid-hud-frame__overlay):not(.grid-hud-frame__corner):not(
+      .grid-hud-frame__label
+    ) {
     position: relative;
     z-index: 1;
   }
@@ -658,30 +792,33 @@ html[data-theme] body {
   .grid-sidebar-nav {
     box-shadow:
       var(--grid-panel-shadow),
-      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+      0 0 26px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 100%),
+          transparent
+        );
   }
 
   .grid-sidebar-nav__scanline {
     opacity: calc(var(--grid-scanline-opacity) * 0.75);
-    background:
-      repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        color-mix(in oklch, var(--glow-muted) 22%, transparent) 2px,
-        color-mix(in oklch, var(--glow-muted) 22%, transparent) 4px
-      );
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      color-mix(in oklch, var(--glow-muted) 22%, transparent) 2px,
+      color-mix(in oklch, var(--glow-muted) 22%, transparent) 4px
+    );
     mix-blend-mode: screen;
   }
 
   .grid-sidebar-nav__header,
   .grid-sidebar-nav__footer {
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--sidebar) 92%, transparent),
-        color-mix(in oklch, var(--background) 88%, transparent)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--sidebar) 92%, transparent),
+      color-mix(in oklch, var(--background) 88%, transparent)
+    );
   }
 
   .grid-sidebar-nav__section-label {
@@ -718,7 +855,12 @@ html[data-theme] body {
     color: var(--primary);
     box-shadow:
       inset 2px 0 0 color-mix(in oklch, var(--primary) 80%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 84%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 84%),
+          transparent
+        );
   }
 
   .grid-sidebar-nav__item[data-active='true'] .grid-sidebar-nav__meta,
@@ -732,14 +874,13 @@ html[data-theme] body {
 
   .grid-scan-overlay__scanlines {
     opacity: var(--tron-scanline-opacity, 0.03);
-    background-image:
-      repeating-linear-gradient(
-        0deg,
-        color-mix(in oklch, var(--primary) 55%, transparent),
-        color-mix(in oklch, var(--primary) 55%, transparent) 1px,
-        transparent 1px,
-        transparent var(--tron-scanline-gap, 3px)
-      );
+    background-image: repeating-linear-gradient(
+      0deg,
+      color-mix(in oklch, var(--primary) 55%, transparent),
+      color-mix(in oklch, var(--primary) 55%, transparent) 1px,
+      transparent 1px,
+      transparent var(--tron-scanline-gap, 3px)
+    );
     mix-blend-mode: screen;
   }
 
@@ -795,26 +936,34 @@ html[data-theme] body {
   }
 
   .thegrid-slider__track {
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--primary) 12%, transparent),
-        color-mix(in oklch, var(--secondary) 16%, transparent)
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--primary) 12%, transparent),
+      color-mix(in oklch, var(--secondary) 16%, transparent)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 58%, transparent),
-      0 0 12px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 34%), transparent);
+      0 0 12px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 34%),
+          transparent
+        );
   }
 
   .thegrid-slider__range {
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--primary) 72%, transparent),
-        color-mix(in oklch, var(--primary) 48%, transparent)
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--primary) 72%, transparent),
+      color-mix(in oklch, var(--primary) 48%, transparent)
+    );
     box-shadow:
-      0 0 12px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 92%), transparent),
+      0 0 12px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 92%),
+          transparent
+        ),
       inset 0 0 0 1px color-mix(in oklch, var(--primary) 44%, transparent);
   }
 
@@ -827,61 +976,81 @@ html[data-theme] body {
   }
 
   .thegrid-slider__thumb {
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 96%, transparent),
-        color-mix(in oklch, var(--panel) 92%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 96%, transparent),
+      color-mix(in oklch, var(--panel) 92%, black)
+    );
     border: 1px solid color-mix(in oklch, var(--primary) 78%, transparent);
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 30%, transparent),
-      0 0 14px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 96%), transparent);
+      0 0 14px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 96%),
+          transparent
+        );
   }
 
   .grid-canvas-hud-chip {
     border: 1px solid color-mix(in oklch, var(--border) 78%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 90%, transparent),
-        color-mix(in oklch, var(--panel) 94%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 90%, transparent),
+      color-mix(in oklch, var(--panel) 94%, black)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 38%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 72%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 72%),
+          transparent
+        );
     backdrop-filter: blur(var(--grid-panel-blur));
   }
 
   .grid-button-group {
-    box-shadow:
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 76%), transparent);
+    box-shadow: 0 0 18px
+      color-mix(
+        in oklch,
+        var(--glow) calc(var(--grid-glow-opacity) * 76%),
+        transparent
+      );
   }
 
   .grid-button-group-text {
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 94%, transparent),
-        color-mix(in oklch, var(--panel) 96%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 94%, transparent),
+      color-mix(in oklch, var(--panel) 96%, black)
+    );
     border-color: color-mix(in oklch, var(--border) 78%, transparent);
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 48%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 52%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 52%),
+          transparent
+        );
   }
 
   .grid-tabs-list {
     border: 1px solid color-mix(in oklch, var(--border) 74%, transparent);
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 40%, transparent),
-      0 0 20px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 56%), transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 92%, transparent),
-        color-mix(in oklch, var(--panel) 96%, black)
-      );
+      0 0 20px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 56%),
+          transparent
+        );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 92%, transparent),
+      color-mix(in oklch, var(--panel) 96%, black)
+    );
   }
 
   .grid-tabs-trigger {
@@ -893,30 +1062,38 @@ html[data-theme] body {
     color: var(--primary);
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--primary) 32%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 74%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 74%),
+          transparent
+        );
   }
 
   .grid-switch {
     border-radius: 0;
     border-color: color-mix(in oklch, var(--border) 76%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 94%, transparent),
-        color-mix(in oklch, var(--panel) 94%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 94%, transparent),
+      color-mix(in oklch, var(--panel) 94%, black)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 65%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 76%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 76%),
+          transparent
+        );
   }
 
   .grid-switch[data-state='checked'] {
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--primary) 78%, transparent),
-        color-mix(in oklch, var(--primary) 58%, transparent)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--primary) 78%, transparent),
+      color-mix(in oklch, var(--primary) 58%, transparent)
+    );
     border-color: color-mix(in oklch, var(--primary) 84%, transparent);
   }
 
@@ -924,18 +1101,31 @@ html[data-theme] body {
     border: 1px solid color-mix(in oklch, var(--primary) 72%, transparent);
     box-shadow:
       0 0 0 1px color-mix(in oklch, var(--primary) 60%, transparent),
-      0 0 16px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 96%), transparent);
+      0 0 16px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 96%),
+          transparent
+        );
   }
 
   .grid-reticle {
     color: color-mix(in oklch, var(--primary) 88%, var(--foreground));
     filter: drop-shadow(
         0 0 10px
-          color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 92%), transparent)
+          color-mix(
+            in oklch,
+            var(--glow) calc(var(--grid-glow-opacity) * 92%),
+            transparent
+          )
       )
       drop-shadow(
         0 0 24px
-          color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 44%), transparent)
+          color-mix(
+            in oklch,
+            var(--glow) calc(var(--grid-glow-opacity) * 44%),
+            transparent
+          )
       );
   }
 
@@ -985,73 +1175,82 @@ html[data-theme] body {
 
   .grid-progress__track {
     border-top: 1px solid color-mix(in oklch, var(--border) 62%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 90%, transparent),
-        color-mix(in oklch, var(--panel) 96%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 90%, transparent),
+      color-mix(in oklch, var(--panel) 96%, black)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 22%, transparent),
-      0 0 16px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 36%), transparent);
+      0 0 16px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 36%),
+          transparent
+        );
   }
 
   .grid-progress__indicator {
     width: 100%;
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--primary) 0%, transparent) 0%,
-        color-mix(in oklch, var(--primary) 84%, transparent) 42%,
-        color-mix(in oklch, var(--foreground) 90%, transparent) 52%,
-        color-mix(in oklch, var(--primary) 0%, transparent) 100%
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--primary) 0%, transparent) 0%,
+      color-mix(in oklch, var(--primary) 84%, transparent) 42%,
+      color-mix(in oklch, var(--foreground) 90%, transparent) 52%,
+      color-mix(in oklch, var(--primary) 0%, transparent) 100%
+    );
     box-shadow:
-      0 0 12px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 86%), transparent),
-      0 0 28px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 46%), transparent);
+      0 0 12px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 86%),
+          transparent
+        ),
+      0 0 28px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 46%),
+          transparent
+        );
   }
 
   .grid-progress[data-variant='warning'] .grid-progress__indicator {
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--warning) 0%, transparent) 0%,
-        color-mix(in oklch, var(--warning) 84%, transparent) 42%,
-        color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
-        color-mix(in oklch, var(--warning) 0%, transparent) 100%
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--warning) 0%, transparent) 0%,
+      color-mix(in oklch, var(--warning) 84%, transparent) 42%,
+      color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
+      color-mix(in oklch, var(--warning) 0%, transparent) 100%
+    );
   }
 
   .grid-progress[data-variant='success'] .grid-progress__indicator {
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--success) 0%, transparent) 0%,
-        color-mix(in oklch, var(--success) 82%, transparent) 42%,
-        color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
-        color-mix(in oklch, var(--success) 0%, transparent) 100%
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--success) 0%, transparent) 0%,
+      color-mix(in oklch, var(--success) 82%, transparent) 42%,
+      color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
+      color-mix(in oklch, var(--success) 0%, transparent) 100%
+    );
   }
 
   .grid-progress[data-variant='danger'] .grid-progress__indicator {
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--destructive) 0%, transparent) 0%,
-        color-mix(in oklch, var(--destructive) 82%, transparent) 42%,
-        color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
-        color-mix(in oklch, var(--destructive) 0%, transparent) 100%
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--destructive) 0%, transparent) 0%,
+      color-mix(in oklch, var(--destructive) 82%, transparent) 42%,
+      color-mix(in oklch, var(--foreground) 86%, transparent) 52%,
+      color-mix(in oklch, var(--destructive) 0%, transparent) 100%
+    );
   }
 
   .grid-progress__indicator-glow {
-    background:
-      linear-gradient(
-        90deg,
-        transparent,
-        color-mix(in oklch, white 26%, transparent),
-        transparent
-      );
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklch, white 26%, transparent),
+      transparent
+    );
     mix-blend-mode: screen;
   }
 
@@ -1092,15 +1291,19 @@ html[data-theme] body {
   .grid-alert-dialog-content {
     position: relative;
     overflow: hidden;
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 94%, transparent),
-        color-mix(in oklch, var(--panel) 96%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 94%, transparent),
+      color-mix(in oklch, var(--panel) 96%, black)
+    );
     box-shadow:
       var(--grid-panel-shadow),
-      0 0 34px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+      0 0 34px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 100%),
+          transparent
+        );
   }
 
   .grid-dialog-content::before,
@@ -1109,13 +1312,12 @@ html[data-theme] body {
     position: absolute;
     inset: 0;
     pointer-events: none;
-    background:
-      linear-gradient(
-        transparent 0,
-        transparent 6px,
-        color-mix(in oklch, var(--glow-muted) 60%, transparent) 7px,
-        transparent 8px
-      );
+    background: linear-gradient(
+      transparent 0,
+      transparent 6px,
+      color-mix(in oklch, var(--glow-muted) 60%, transparent) 7px,
+      transparent 8px
+    );
     opacity: calc(var(--grid-scanline-opacity) * 0.9);
     mix-blend-mode: screen;
   }
@@ -1126,7 +1328,12 @@ html[data-theme] body {
     position: absolute;
     inset: 0;
     pointer-events: none;
-    border: 1px solid color-mix(in oklch, var(--glow) calc(var(--grid-bracket-opacity) * 100%), transparent);
+    border: 1px solid
+      color-mix(
+        in oklch,
+        var(--glow) calc(var(--grid-bracket-opacity) * 100%),
+        transparent
+      );
     clip-path: polygon(
       0 12px,
       12px 12px,
@@ -1153,7 +1360,12 @@ html[data-theme] body {
   .grid-dialog-close {
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 55%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 70%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 70%),
+          transparent
+        );
   }
 
   @keyframes tron-vertical-scan {
@@ -1171,7 +1383,12 @@ html[data-theme] body {
     border-color: color-mix(in oklch, var(--border) 70%, transparent);
     box-shadow:
       inset 0 1px 0 color-mix(in oklch, white 7%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 72%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 72%),
+          transparent
+        );
   }
 
   .grid-button--default:hover,
@@ -1181,7 +1398,12 @@ html[data-theme] body {
     transform: translateY(-1px);
     box-shadow:
       inset 0 1px 0 color-mix(in oklch, white 8%, transparent),
-      0 0 24px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+      0 0 24px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 100%),
+          transparent
+        );
   }
 
   .grid-button--outline,
@@ -1191,21 +1413,30 @@ html[data-theme] body {
 
   .grid-input {
     border-color: color-mix(in oklch, var(--border) 78%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 90%, transparent),
-        color-mix(in oklch, var(--panel) 96%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 90%, transparent),
+      color-mix(in oklch, var(--panel) 96%, black)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 38%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 44%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 44%),
+          transparent
+        );
   }
 
   .grid-input:focus-visible {
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--primary) 34%, transparent),
-      0 0 24px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 78%), transparent);
+      0 0 24px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 78%),
+          transparent
+        );
   }
 
   .grid-button--outline:hover,
@@ -1227,7 +1458,12 @@ html[data-theme] body {
     text-transform: uppercase;
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 50%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 52%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 52%),
+          transparent
+        );
   }
 
   .grid-badge--outline {
@@ -1237,7 +1473,12 @@ html[data-theme] body {
   .grid-dropdown-content {
     box-shadow:
       var(--grid-panel-shadow),
-      0 0 26px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 82%), transparent);
+      0 0 26px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 82%),
+          transparent
+        );
   }
 
   .grid-dropdown-item {
@@ -1251,7 +1492,8 @@ html[data-theme] body {
   .grid-dropdown-item[data-state='open'] {
     background: color-mix(in oklch, var(--secondary) 66%, transparent);
     color: var(--primary);
-    box-shadow: inset 2px 0 0 color-mix(in oklch, var(--primary) 70%, transparent);
+    box-shadow: inset 2px 0 0
+      color-mix(in oklch, var(--primary) 70%, transparent);
   }
 
   .grid-table-container::after {
@@ -1259,7 +1501,12 @@ html[data-theme] body {
     position: absolute;
     inset: 0;
     pointer-events: none;
-    border: 1px solid color-mix(in oklch, var(--glow) calc(var(--grid-bracket-opacity) * 82%), transparent);
+    border: 1px solid
+      color-mix(
+        in oklch,
+        var(--glow) calc(var(--grid-bracket-opacity) * 82%),
+        transparent
+      );
     opacity: calc(var(--grid-bracket-opacity) * 0.7);
     clip-path: polygon(
       0 10px,
@@ -1292,40 +1539,52 @@ html[data-theme] body {
   }
 
   .grid-slider-track {
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--primary) 8%, transparent),
-        color-mix(in oklch, var(--secondary) 14%, transparent)
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--primary) 8%, transparent),
+      color-mix(in oklch, var(--secondary) 14%, transparent)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 55%, transparent),
-      0 0 10px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 24%), transparent);
+      0 0 10px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 24%),
+          transparent
+        );
   }
 
   .grid-slider-range {
-    background:
-      linear-gradient(
-        90deg,
-        color-mix(in oklch, var(--primary) 76%, transparent),
-        color-mix(in oklch, var(--primary) 54%, transparent)
-      );
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--primary) 76%, transparent),
+      color-mix(in oklch, var(--primary) 54%, transparent)
+    );
     box-shadow:
-      0 0 14px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 92%), transparent),
+      0 0 14px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 92%),
+          transparent
+        ),
       inset 0 0 0 1px color-mix(in oklch, var(--primary) 38%, transparent);
   }
 
   .grid-slider-thumb {
     border-color: color-mix(in oklch, var(--primary) 76%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 96%, transparent),
-        color-mix(in oklch, var(--panel) 92%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 96%, transparent),
+      color-mix(in oklch, var(--panel) 92%, black)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 28%, transparent),
-      0 0 18px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 100%), transparent);
+      0 0 18px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 100%),
+          transparent
+        );
   }
 
   .thegrid-number-input__label {
@@ -1334,15 +1593,19 @@ html[data-theme] body {
 
   .thegrid-number-input__frame {
     border: 1px solid color-mix(in oklch, var(--border) 62%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in oklch, var(--card) 94%, transparent),
-        color-mix(in oklch, var(--panel) 94%, black)
-      );
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--card) 94%, transparent),
+      color-mix(in oklch, var(--panel) 94%, black)
+    );
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--border) 34%, transparent),
-      0 0 14px color-mix(in oklch, var(--glow) calc(var(--grid-glow-opacity) * 58%), transparent);
+      0 0 14px
+        color-mix(
+          in oklch,
+          var(--glow) calc(var(--grid-glow-opacity) * 58%),
+          transparent
+        );
   }
 
   .thegrid-number-input__button {

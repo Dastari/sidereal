@@ -1,7 +1,7 @@
 # Asset Delivery Contract
 
 Status: Active implementation contract
-Last updated: 2026-04-24
+Last updated: 2026-04-27
 Owners: gateway + client runtime + asset pipeline
 Scope: Lua-authored asset catalogs, gateway delivery, client cache/bootstrap, runtime dependency fetches
 Primary architecture reference: `docs/sidereal_design_document.md`
@@ -18,6 +18,12 @@ Related render-layer contract: `docs/decisions/dr-0027_lua_authored_render_layer
 3. Implemented: runtime optional asset dependencies can be requested after world entry, persisted into the cache, and surfaced through debug/perf counters.
 4. Implemented: audio and shader catalogs are now integrated with the same Lua-authored asset delivery model.
 5. Open work: production packaging still needs the single `assets.pak` distribution shape and broader live WASM validation for all asset classes.
+
+2026-04-27 status note:
+
+1. Implemented: authenticated bootstrap asset validation/download now streams progress from the async cache/download worker into `LocalAssetManager` while the request is still pending, so `AssetLoading` and loading overlays can show live required-byte progress instead of updating only at completion.
+2. Native impact: cache hits advance progress during required-asset verification, and missing assets advance only after the payload has been checksum-validated and written to the local cache.
+3. WASM impact: no protocol change; browser clients keep the same shared `LocalAssetManager` progress contract through their cache adapter.
 
 ## 1. Purpose
 
@@ -235,6 +241,7 @@ In `AssetLoading`, client must:
 6. Transition to `InWorld` only when all required assets validate.
 7. Required-asset stalls may surface warning/error dialogs and retry behavior, but they must not force bootstrap completion in degraded mode.
 8. Browser/WASM implementations may use platform storage primitives behind the cache adapter, but the gameplay/runtime layer must still consume validated asset bytes through the shared cache/index contract.
+9. While the bootstrap request is pending, `LocalAssetManager.bootstrap_total_bytes` and `bootstrap_ready_bytes` must be updated incrementally so loading UI and stall watchdogs observe real cache/download progress.
 
 ### 8.3 Runtime lazy fetch
 

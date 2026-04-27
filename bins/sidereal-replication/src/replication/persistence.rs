@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::replication::debug_env;
 
@@ -70,7 +70,6 @@ pub struct PersistenceFingerprintState {
 pub struct PersistenceWorkerState {
     sender: Option<SyncSender<PersistenceWriteBatch>>,
     latest_pending_batch: Option<PersistenceWriteBatch>,
-    next_batch_tick: u64,
     enqueued_batches: u64,
     queue_full_events: u64,
     coalesced_replacements: u64,
@@ -168,6 +167,105 @@ fn persistence_summary_logging_enabled() -> bool {
 
 fn mark_dirty_entity(dirty: &mut PersistenceDirtyState, guid: &EntityGuid) {
     dirty.dirty_entity_ids.insert(guid.0.to_string());
+}
+
+fn persistence_write_tick() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+fn graph_record_for_entity(
+    world: &World,
+    entity: Entity,
+    component_registry: &GeneratedComponentRegistry,
+    app_type_registry: &AppTypeRegistry,
+) -> Option<GraphEntityRecord> {
+    let guid = world.get::<EntityGuid>(entity)?;
+    if guid.0.is_nil() {
+        warn!(
+            "skipping persistence for entity {:?}: EntityGuid is nil; this entity is missing a valid runtime identity",
+            entity
+        );
+        return None;
+    }
+    if world.get::<BallisticProjectile>(entity).is_some() {
+        return None;
+    }
+
+    let entity_id = guid.0.to_string();
+    let mut labels = vec!["Entity".to_string()];
+    if let Some(entity_labels) = world.get::<EntityLabels>(entity) {
+        for label in &entity_labels.0 {
+            if label != "Entity" {
+                labels.push(label.clone());
+            }
+        }
+    }
+
+    let mut properties = serde_json::Map::<String, serde_json::Value>::new();
+    if let Some(mounted_on) = world.get::<MountedOn>(entity) {
+        properties.insert(
+            "parent_entity_id".to_string(),
+            serde_json::Value::String(mounted_on.parent_entity_id.to_string()),
+        );
+    }
+
+    let entity_ref = world.entity(entity);
+    let components = serialize_entity_components_to_graph_records(
+        &entity_id,
+        entity_ref,
+        component_registry,
+        app_type_registry,
+    );
+    Some(GraphEntityRecord {
+        entity_id,
+        labels,
+        properties: serde_json::Value::Object(properties),
+        components,
+    })
+}
+
+/// Persist one entity in a separate short-lived writer so infrequent critical runtime state
+/// changes do not sit behind the broad world snapshot queue.
+pub fn persist_entity_snapshot_async(world: &World, entity: Entity, reason: &'static str) {
+    let component_registry = world.resource::<GeneratedComponentRegistry>().clone();
+    let app_type_registry = world.resource::<AppTypeRegistry>().clone();
+    let Some(record) =
+        graph_record_for_entity(world, entity, &component_registry, &app_type_registry)
+    else {
+        return;
+    };
+    let database_url = std::env::var("REPLICATION_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://sidereal:sidereal@127.0.0.1:5432/sidereal".to_string());
+    let tick = persistence_write_tick();
+    thread::Builder::new()
+        .name(format!("replication-persistence-{reason}"))
+        .spawn(move || match GraphPersistence::connect(&database_url) {
+            Ok(mut persistence) => {
+                if let Err(err) = persistence.ensure_schema() {
+                    error!("critical persistence schema init failed for {reason}: {err}");
+                    return;
+                }
+                let entity_id = record.entity_id.clone();
+                if let Err(err) =
+                    persistence.persist_graph_records_transactional(&[record], tick)
+                {
+                    error!(
+                        "critical persistence write failed for {reason} entity={entity_id}: {err}"
+                    );
+                } else if persistence_summary_logging_enabled() {
+                    info!(
+                        "persisted critical simulation state for {reason} entity={entity_id} tick={tick}"
+                    );
+                }
+            }
+            Err(err) => {
+                error!("critical persistence connect failed for {reason}: {err}");
+            }
+        })
+        .expect("failed to start critical replication persistence writer thread");
 }
 
 /// Marks any entity whose registered components changed as dirty for persistence.
@@ -311,62 +409,18 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
     let mut next_fingerprints = HashMap::<String, u64>::new();
 
     let mut records = Vec::<GraphEntityRecord>::new();
-    let mut entity_query = world.query::<(
-        Entity,
-        &'_ EntityGuid,
-        Option<&'_ EntityLabels>,
-        Option<&'_ MountedOn>,
-        Option<&'_ BallisticProjectile>,
-    )>();
+    let mut entity_query = world.query::<Entity>();
 
-    for (entity, guid, entity_labels, mounted_on, ballistic_projectile) in entity_query.iter(world)
-    {
-        let entity_id = guid.0.to_string();
-
-        if guid.0.is_nil() {
-            // Defensive guard: runtime-only entities must never persist under a nil GUID because
-            // persistence treats `entity_id` as the canonical durable identity. Skip and warn so
-            // the worker does not get stuck retrying the same invalid batch forever.
-            warn!(
-                "skipping persistence for entity {:?}: EntityGuid is nil; this entity is missing a valid runtime identity",
-                entity
-            );
+    for entity in entity_query.iter(world) {
+        let Some(record) =
+            graph_record_for_entity(world, entity, &component_registry, &app_type_registry)
+        else {
             continue;
-        }
-
-        if ballistic_projectile.is_some() {
-            // Ballistic projectiles are replicated/predicted runtime entities, but they are
-            // intentionally not durable world state. They still carry EntityGuid for client-side
-            // clone matching, so persistence must explicitly exclude them here.
-            continue;
-        }
-
-        let mut labels = vec!["Entity".to_string()];
-        if let Some(el) = entity_labels {
-            for label in &el.0 {
-                if label != "Entity" {
-                    labels.push(label.clone());
-                }
-            }
-        }
-
-        let mut properties = serde_json::Map::<String, serde_json::Value>::new();
-
-        if let Some(mounted_on) = mounted_on {
-            properties.insert(
-                "parent_entity_id".to_string(),
-                serde_json::Value::String(mounted_on.parent_entity_id.to_string()),
-            );
-        }
-
-        let entity_ref = world.entity(entity);
-        let components = serialize_entity_components_to_graph_records(
-            &entity_id,
-            entity_ref,
-            &component_registry,
-            &app_type_registry,
-        );
-        let fingerprint = fingerprint_record_payload(&labels, &properties, &components);
+        };
+        let entity_id = record.entity_id.clone();
+        let properties = record.properties.as_object().cloned().unwrap_or_default();
+        let fingerprint =
+            fingerprint_record_payload(&record.labels, &properties, &record.components);
         let changed_since_last_snapshot =
             previous_fingerprints.get(&entity_id).copied() != Some(fingerprint);
         next_fingerprints.insert(entity_id.clone(), fingerprint);
@@ -374,13 +428,7 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
         if !persist_all && !dirty_entity_ids.contains(&entity_id) && !changed_since_last_snapshot {
             continue;
         }
-
-        records.push(GraphEntityRecord {
-            entity_id,
-            labels,
-            properties: serde_json::Value::Object(properties),
-            components,
-        });
+        records.push(record);
     }
 
     if records.is_empty() {
@@ -391,8 +439,7 @@ pub fn flush_simulation_state_persistence(world: &mut World) {
     }
 
     let mut worker_state = world.resource_mut::<PersistenceWorkerState>();
-    let tick = worker_state.next_batch_tick;
-    worker_state.next_batch_tick = worker_state.next_batch_tick.saturating_add(1);
+    let tick = persistence_write_tick();
     let batch = PersistenceWriteBatch { records, tick };
     enqueue_batch(&mut worker_state, batch);
 

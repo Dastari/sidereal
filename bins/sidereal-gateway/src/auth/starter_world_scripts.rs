@@ -1295,6 +1295,38 @@ mod tests {
     }
 
     #[test]
+    fn player_bundle_includes_contact_resolution_m() {
+        let root = scripts_root_dir();
+        let registry = load_bundle_registry(&root).expect("load bundle registry");
+        let player_bundle = registry
+            .bundles
+            .get("player.default")
+            .expect("player bundle");
+        let controlled_entity_guid = Uuid::new_v4().to_string();
+        let records = load_graph_records_for_bundle(
+            &root,
+            player_bundle,
+            ScriptContext {
+                account_id: Uuid::new_v4(),
+                player_entity_id: &Uuid::new_v4().to_string(),
+                email: "pilot@example.com",
+                controlled_entity_guid: Some(controlled_entity_guid.as_str()),
+            },
+        )
+        .expect("load graph records for player bundle");
+        let component_kinds = records
+            .iter()
+            .flat_map(|record| {
+                record
+                    .components
+                    .iter()
+                    .map(|component| component.component_kind.as_str())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert!(component_kinds.contains("contact_resolution_m"));
+    }
+
+    #[test]
     fn corvette_bundle_action_capabilities_use_canonical_actions_only() {
         let root = scripts_root_dir();
         let registry = load_bundle_registry(&root).expect("load bundle registry");
@@ -1406,5 +1438,6 @@ mod tests {
             })
             .collect::<std::collections::HashSet<_>>();
         assert!(component_kinds.contains("visibility_range_buff_m"));
+        assert!(component_kinds.contains("signal_signature"));
     }
 }

@@ -19,6 +19,11 @@ Primary references:
 - `system.asteroid_field.v1` remains the label for the current deterministic eager field-member baseline and earlier root-expansion planning.
 - New implementation work that introduces first-class field roots, deterministic member lineage, fracture/depletion state, Lua-authored resource profiles, or field ambient fullscreen effects should use `system.asteroid_field.v2`.
 
+2026-04-27 status note:
+- Visibility now has a V2 system label for the signal-detection, redacted unknown-contact, stable approximate-position, and zoom-safe culling direction; the first partial implementation is active.
+- `system.visibility_replication.v1` remains the label for the current implemented authorization, delivery narrowing, payload redaction, and static-landmark discovery baseline.
+- New implementation work that adds `SignalSignature`, unknown tactical contacts, signal-triggered landmark discovery, scanner contact-resolution accuracy, or zoom-out delivery/culling hysteresis should use `system.visibility.v2`.
+
 ## 1. Purpose
 
 Use this catalog when we need a stable label for a core system, for example:
@@ -60,6 +65,7 @@ If a system later gets a replacement or major architecture reset, keep the old l
 | Label | Human title | Current baseline | Primary references |
 | --- | --- | --- | --- |
 | `system.visibility_replication.v1` | Visibility and Replication System V1 | Active source-of-truth. Server-owned authorization, delivery narrowing, and payload redaction are the canonical visibility pipeline. | `docs/features/visibility_replication_contract.md`, `bins/sidereal-replication/src/replication/visibility.rs`, `bins/sidereal-client/src/runtime/replication.rs` |
+| `system.visibility.v2` | Visibility System V2 | Active partial implementation. V2 layers generic signal detection, redacted unknown tactical contacts with stable approximate positions, signal-triggered static-landmark discovery, and zoom-safe delivery/client culling over the V1 authorization/redaction baseline. | `docs/features/visibility_system_v2_signal_detection_contract.md`, `docs/decisions/dr-0037_visibility_signal_detection_and_stable_unknown_contacts.md`, `docs/features/tactical_and_owner_lane_protocol_contract.md`, `docs/features/procedural_planets.md` |
 | `system.fog_of_war_intel.v1` | Fog of War and Intel Memory System V1 | Active direction with live tactical lane support. Player exploration is permanent, live intel is temporary, and stale intel is server-stored memory. | `docs/decisions/dr-0018_fog_of_war_and_intel_memory_model.md`, `docs/features/tactical_and_owner_lane_protocol_contract.md`, `crates/sidereal-game/src/components/player_explored_cells.rs` |
 | `system.tactical_map.v1` | Tactical Map System V1 | Active implementation. The client maintains tactical fog/contact caches and server-driven tactical snapshots/deltas. | `bins/sidereal-client/src/runtime/tactical.rs`, `docs/features/tactical_and_owner_lane_protocol_contract.md`, `crates/sidereal-game/src/components/tactical_map_ui_settings.rs` |
 | `system.owner_asset_manifest.v1` | Owner Asset Manifest System V1 | Active implementation. Owned-asset UI data is delivered as a separate owner-only read model, not inferred from local-bubble world replication. | `bins/sidereal-client/src/runtime/owner_manifest.rs`, `bins/sidereal-replication/src/replication/owner_manifest.rs`, `docs/features/tactical_and_owner_lane_protocol_contract.md` |

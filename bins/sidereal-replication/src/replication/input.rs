@@ -99,7 +99,7 @@ pub struct NativeInputDrainState<'w> {
     pub controlled_entity_map: Res<'w, PlayerControlledEntityMap>,
     pub control_lease_generations: Res<'w, ClientControlLeaseGenerations>,
     pub latest_realtime_inputs: ResMut<'w, LatestRealtimeInputsByPlayer>,
-    pub realtime_input_activity: Res<'w, RealtimeInputActivityByPlayer>,
+    pub realtime_input_activity: ResMut<'w, RealtimeInputActivityByPlayer>,
     pub realtime_input_timeout: Res<'w, RealtimeInputTimeoutSeconds>,
     pub input_drop_metrics: ResMut<'w, ClientInputDropMetrics>,
     pub input_log_state: ResMut<'w, InputActivityLogState>,
@@ -582,51 +582,78 @@ pub fn drain_realtime_player_inputs_to_action_queue(
                 .latest_realtime_inputs
                 .by_player_entity_id
                 .remove(&player_id);
+            drain_state
+                .realtime_input_activity
+                .last_received_at_s_by_player_entity_id
+                .remove(&player_id);
             if !queue.pending.is_empty() {
                 queue.clear();
             }
             continue;
         }
-        let latest_for_player = drain_state
+
+        if drain_state
             .latest_realtime_inputs
             .by_player_entity_id
-            .get(&player_id);
-        let (actions, action_source) = match latest_for_player {
-            Some(_) if !latest_is_fresh => (&[][..], "stale_realtime"),
-            Some(latest) if latest.controlled_entity_id == controlled_entity_id => {
-                (latest.actions.as_slice(), "realtime")
+            .contains_key(&player_id)
+            && !latest_is_fresh
+        {
+            drain_state
+                .latest_realtime_inputs
+                .by_player_entity_id
+                .remove(&player_id);
+            drain_state
+                .realtime_input_activity
+                .last_received_at_s_by_player_entity_id
+                .remove(&player_id);
+            if !queue.pending.is_empty() {
+                queue.clear();
             }
+            continue;
+        }
+
+        let latest_target_mismatch = drain_state
+            .latest_realtime_inputs
+            .by_player_entity_id
+            .get(&player_id)
+            .is_some_and(|latest| latest.controlled_entity_id != controlled_entity_id);
+        if latest_target_mismatch {
             // Keep strict target matching even when the control generation is fresh.
             // The only tolerated equivalence is canonical self-control/player-anchor
             // routing, which is already normalized before this comparison.
-            Some(_) => {
-                drain_state.input_drop_metrics.controlled_target_mismatch = drain_state
-                    .input_drop_metrics
-                    .controlled_target_mismatch
-                    .saturating_add(1);
-                (&[][..], "mismatch")
+            drain_state.input_drop_metrics.controlled_target_mismatch = drain_state
+                .input_drop_metrics
+                .controlled_target_mismatch
+                .saturating_add(1);
+            drain_state
+                .latest_realtime_inputs
+                .by_player_entity_id
+                .remove(&player_id);
+            if !queue.pending.is_empty() {
+                queue.clear();
             }
-            None => (&[][..], "no_realtime"),
+            continue;
+        }
+
+        let Some(latest_for_player) = drain_state
+            .latest_realtime_inputs
+            .by_player_entity_id
+            .get(&player_id)
+        else {
+            if !queue.pending.is_empty() {
+                queue.clear();
+            }
+            continue;
         };
+        let actions = latest_for_player.actions.as_slice();
         if actions.is_empty() {
             // Latest snapshot has no actions; clear stale queue state.
             if !queue.pending.is_empty() {
                 queue.clear();
             }
-            if input_debug_logging_enabled()
-                && drain_state
-                    .latest_realtime_inputs
-                    .by_player_entity_id
-                    .contains_key(&player_id)
-            {
-                info!(
-                    player = %player_entity_id,
-                    controlled = %controlled_entity_id,
-                    "server input route has no actions after realtime selection"
-                );
-            }
             continue;
         }
+        let action_source = "realtime";
         replace_action_queue_from_actions(&mut queue, actions);
         let accepted_tick = drain_state
             .latest_realtime_inputs

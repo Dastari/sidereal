@@ -52,6 +52,7 @@ pub struct UiMetrics {
     pub panel_padding_px: f32,
     pub panel_radius_px: f32,
     pub control_radius_px: f32,
+    pub input_radius_px: f32,
     pub panel_border_px: f32,
     pub control_border_px: f32,
     pub row_gap_px: f32,
@@ -87,6 +88,14 @@ pub struct UiThemeColors {
     pub glow: Oklcha,
     pub glow_muted: Oklcha,
     pub overlay: Oklcha,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UiSemanticTone {
+    Info,
+    Success,
+    Warning,
+    Danger,
 }
 
 impl UiThemeColors {
@@ -179,6 +188,36 @@ impl UiThemeColors {
     }
 }
 
+impl UiSemanticTone {
+    pub fn accent_token(self, theme: UiTheme) -> Oklcha {
+        match self {
+            Self::Info => theme.colors.info,
+            Self::Success => theme.colors.success,
+            Self::Warning => theme.colors.warning,
+            Self::Danger => theme.colors.destructive,
+        }
+    }
+
+    pub fn accent_color(self, theme: UiTheme) -> Color {
+        self.accent_token(theme).into()
+    }
+
+    pub fn foreground_color(self, theme: UiTheme) -> Color {
+        match self {
+            Self::Info => theme.colors.foreground_color(),
+            Self::Warning | Self::Danger => Color::WHITE,
+            Self::Success => Color::srgb(0.04, 0.04, 0.04),
+        }
+    }
+
+    pub fn chrome_color(self, theme: UiTheme) -> Color {
+        match self {
+            Self::Info => self.accent_color(theme),
+            Self::Success | Self::Warning | Self::Danger => self.foreground_color(theme),
+        }
+    }
+}
+
 pub fn color(token: Oklcha) -> Color {
     token.into()
 }
@@ -193,6 +232,7 @@ pub fn theme_definition(theme_id: UiThemeId) -> UiTheme {
         panel_padding_px: 28.0,
         panel_radius_px: 0.0,
         control_radius_px: 0.0,
+        input_radius_px: 4.0,
         panel_border_px: 1.0,
         control_border_px: 1.0,
         row_gap_px: 14.0,
@@ -206,7 +246,7 @@ pub fn theme_definition(theme_id: UiThemeId) -> UiTheme {
             name: "tron",
             colors: UiThemeColors {
                 primary: oklch(0.75, 0.18, 195.0),
-                primary_foreground: oklch(0.1, 0.0, 0.0),
+                primary_foreground: oklch(0.98, 0.0, 0.0),
                 secondary: oklch(0.18, 0.05, 200.0),
                 secondary_foreground: oklch(0.95, 0.0, 0.0),
                 accent: oklch(0.7, 0.15, 195.0),
@@ -248,7 +288,7 @@ pub fn theme_definition(theme_id: UiThemeId) -> UiTheme {
             name: "clu",
             colors: UiThemeColors {
                 primary: oklch(0.75, 0.2, 55.0),
-                primary_foreground: oklch(0.1, 0.0, 0.0),
+                primary_foreground: oklch(0.98, 0.0, 0.0),
                 secondary: oklch(0.18, 0.06, 50.0),
                 secondary_foreground: oklch(0.95, 0.0, 0.0),
                 accent: oklch(0.7, 0.18, 55.0),
@@ -269,7 +309,7 @@ pub fn theme_definition(theme_id: UiThemeId) -> UiTheme {
             name: "athena",
             colors: UiThemeColors {
                 primary: oklch(0.85, 0.18, 90.0),
-                primary_foreground: oklch(0.1, 0.0, 0.0),
+                primary_foreground: oklch(0.98, 0.0, 0.0),
                 secondary: oklch(0.18, 0.05, 85.0),
                 secondary_foreground: oklch(0.95, 0.0, 0.0),
                 accent: oklch(0.8, 0.15, 90.0),
@@ -341,7 +381,7 @@ const fn shared_colors() -> UiThemeColors {
         popover: oklcha(0.1, 0.02, 250.0, 0.96),
         popover_foreground: oklch(0.92, 0.02, 220.0),
         primary: oklch(0.75, 0.18, 195.0),
-        primary_foreground: oklch(0.1, 0.0, 0.0),
+        primary_foreground: oklch(0.98, 0.0, 0.0),
         secondary: oklch(0.18, 0.05, 200.0),
         secondary_foreground: oklch(0.95, 0.0, 0.0),
         accent: oklch(0.7, 0.15, 195.0),

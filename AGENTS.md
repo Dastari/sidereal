@@ -133,20 +133,22 @@ Before marking work complete, run:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo check --workspace
+CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
+CARGO_INCREMENTAL=0 cargo check --workspace
 ```
 
 If client code was touched, also verify the WASM and Windows targets compile:
 
 ```bash
-cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
-cargo check -p sidereal-client --target x86_64-pc-windows-gnu
+CARGO_INCREMENTAL=0 cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
+CARGO_INCREMENTAL=0 cargo check -p sidereal-client --target x86_64-pc-windows-gnu
 ```
 
 This requires the targets to be installed (`rustup target add wasm32-unknown-unknown x86_64-pc-windows-gnu`) and a MinGW cross-linker (`x86_64-w64-mingw32-gcc`). The workspace `.cargo/config.toml` configures the linker for the Windows GNU target. If a target toolchain is not installed in the local environment, note it in the change but do not skip the check in CI.
 
 Run targeted tests for touched crates; run broader integration tests when flow boundaries are impacted.
+
+Use `CARGO_INCREMENTAL=0` for documented Clippy/check quality gates so repeated agent runs do not accumulate large Cargo incremental snapshots under `target/*/incremental`. Normal development `cargo run`/`cargo build` commands may still use incremental compilation unless a task explicitly opts out.
 
 ## 7. Documentation Maintenance Rule (Enforceable)
 

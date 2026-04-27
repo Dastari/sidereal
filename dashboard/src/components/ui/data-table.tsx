@@ -1,11 +1,5 @@
 import * as React from 'react'
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  Columns3,
-  Search,
-} from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   Table,
@@ -43,6 +37,9 @@ export type DataTableColumn<T> = {
 }
 
 export type DataTableSelectionMode = 'none' | 'single' | 'multiple'
+export type DataTableRowClassName<T> =
+  | string
+  | ((row: T, context: { selected: boolean; selectable: boolean }) => string)
 
 export type DataTableActionBarContext<T> = {
   selectedRows: Array<T>
@@ -58,9 +55,10 @@ interface DataTableProps<T> {
   loading?: boolean
   loadingLabel?: string
   emptyLabel?: string
+  getSearchText?: (row: T, visibleColumns: Array<DataTableColumn<T>>) => string
   className?: string
   tableClassName?: string
-  rowClassName?: string
+  rowClassName?: DataTableRowClassName<T>
   searchValue?: string
   onSearchValueChange?: (value: string) => void
   searchPlaceholder?: string
@@ -100,6 +98,7 @@ export function DataTable<T>({
   loading = false,
   loadingLabel = 'Loading...',
   emptyLabel = 'No rows to display.',
+  getSearchText,
   className,
   tableClassName,
   rowClassName,
@@ -200,17 +199,21 @@ export function DataTable<T>({
     const needle = effectiveSearch.trim().toLowerCase()
     if (!needle) return rows
     return rows.filter((row) => {
-      const haystack = visibleColumns
-        .map((column) => {
-          if (column.sortAccessor) return column.sortAccessor(row)
-          const rowAsRecord = row as Record<string, unknown>
-          return rowAsRecord[column.id]
-        })
-        .map((value) => String(value ?? '').toLowerCase())
-        .join(' ')
+      const haystack = (
+        getSearchText
+          ? getSearchText(row, visibleColumns)
+          : visibleColumns
+              .map((column) => {
+                if (column.sortAccessor) return column.sortAccessor(row)
+                const rowAsRecord = row as Record<string, unknown>
+                return rowAsRecord[column.id]
+              })
+              .map((value) => String(value ?? '').toLowerCase())
+              .join(' ')
+      ).toLowerCase()
       return haystack.includes(needle)
     })
-  }, [effectiveSearch, rows, visibleColumns])
+  }, [effectiveSearch, getSearchText, rows, visibleColumns])
 
   const sortedRows = React.useMemo(() => {
     if (!effectiveSortState) return filteredRows
@@ -242,7 +245,8 @@ export function DataTable<T>({
   }, [columns, effectiveSortState, filteredRows])
 
   const [internalPage, setInternalPage] = React.useState(1)
-  const [internalPageSize, setInternalPageSize] = React.useState(defaultPageSize)
+  const [internalPageSize, setInternalPageSize] =
+    React.useState(defaultPageSize)
   const effectivePage = page ?? internalPage
   const effectivePageSize = pageSize ?? internalPageSize
 
@@ -284,7 +288,12 @@ export function DataTable<T>({
       clearSelection: () => setSelectedRowIds(new Set()),
       visibleColumnIds,
     }),
-    [effectiveSelectedRowIds, selectedRows, setSelectedRowIds, visibleColumnIds],
+    [
+      effectiveSelectedRowIds,
+      selectedRows,
+      setSelectedRowIds,
+      visibleColumnIds,
+    ],
   )
 
   const infiniteContainerRef = React.useRef<HTMLDivElement | null>(null)
@@ -347,7 +356,9 @@ export function DataTable<T>({
 
   const allRenderedSelected =
     selectableRenderedRowIds.length > 0 &&
-    selectableRenderedRowIds.every((rowId) => effectiveSelectedRowIds.has(rowId))
+    selectableRenderedRowIds.every((rowId) =>
+      effectiveSelectedRowIds.has(rowId),
+    )
 
   const canToggleAll = selectionMode === 'multiple'
 
@@ -498,7 +509,9 @@ export function DataTable<T>({
         {loading ? (
           <TableRow>
             <TableCell
-              colSpan={visibleColumns.length + (selectionMode !== 'none' ? 1 : 0)}
+              colSpan={
+                visibleColumns.length + (selectionMode !== 'none' ? 1 : 0)
+              }
               className="text-muted-foreground"
             >
               {loadingLabel}
@@ -507,7 +520,9 @@ export function DataTable<T>({
         ) : renderedRows.length === 0 ? (
           <TableRow>
             <TableCell
-              colSpan={visibleColumns.length + (selectionMode !== 'none' ? 1 : 0)}
+              colSpan={
+                visibleColumns.length + (selectionMode !== 'none' ? 1 : 0)
+              }
               className="text-muted-foreground"
             >
               {emptyLabel}
@@ -518,10 +533,14 @@ export function DataTable<T>({
             const rowId = getRowId(row)
             const selected = effectiveSelectedRowIds.has(rowId)
             const selectable = canSelectRow(row)
+            const resolvedRowClassName =
+              typeof rowClassName === 'function'
+                ? rowClassName(row, { selected, selectable })
+                : rowClassName
             return (
               <TableRow
                 key={rowId}
-                className={rowClassName}
+                className={resolvedRowClassName}
                 data-state={selected ? 'selected' : undefined}
                 onClick={(event) => {
                   const target = event.target as HTMLElement | null
@@ -605,7 +624,12 @@ export function DataTable<T>({
         {showColumnVisibilityToggle && hideableColumns.length > 0 ? (
           <details className="relative">
             <summary className="list-none">
-              <Button type="button" variant="outline" size="sm" className="gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+              >
                 <Columns3 className="h-4 w-4" />
                 Columns
               </Button>
@@ -646,7 +670,9 @@ export function DataTable<T>({
           </Badge>
         ) : null}
 
-        {actionBar ? <div className="ml-auto">{actionBar(actionBarContext)}</div> : null}
+        {actionBar ? (
+          <div className="ml-auto">{actionBar(actionBarContext)}</div>
+        ) : null}
       </div>
 
       {paginationMode === 'infinite' ? (

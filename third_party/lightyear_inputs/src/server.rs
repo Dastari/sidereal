@@ -1,0 +1,348 @@
+//! Handle input messages received from the clients
+
+use crate::input_buffer::InputBuffer;
+use crate::input_message::{
+    ActionStateQueryData, ActionStateSequence, InputMessage, InputTarget, StateMut,
+};
+use crate::plugin::InputPlugin;
+use crate::{HISTORY_DEPTH, InputChannel};
+#[cfg(feature = "metrics")]
+use alloc::format;
+use bevy_app::{App, FixedPreUpdate, Plugin, PreUpdate};
+use bevy_ecs::component::Component;
+use bevy_ecs::prelude::Has;
+use bevy_ecs::{
+    entity::{Entity, MapEntities},
+    error::Result,
+    query::With,
+    resource::Resource,
+    schedule::{IntoScheduleConfigs, SystemSet},
+    system::{Commands, Query, Res, Single},
+};
+use bevy_utils::prelude::DebugName;
+use core::fmt::{Debug, Formatter};
+use lightyear_connection::client::Connected;
+use lightyear_connection::host::HostServer;
+use lightyear_connection::prelude::NetworkTarget;
+use lightyear_connection::server::Started;
+use lightyear_core::id::RemoteId;
+use lightyear_core::prelude::LocalTimeline;
+use lightyear_core::tick::TickDuration;
+use lightyear_link::prelude::{LinkOf, Server};
+use lightyear_messages::plugin::MessageSystems;
+use lightyear_messages::prelude::MessageReceiver;
+use lightyear_messages::server::ServerMultiMessageSender;
+use lightyear_replication::prelude::{PreSpawned, Room};
+use tracing::{debug, error, trace};
+
+pub struct ServerInputPlugin<S> {
+    pub rebroadcast_inputs: bool,
+    pub marker: core::marker::PhantomData<S>,
+}
+
+impl<S> Default for ServerInputPlugin<S> {
+    fn default() -> Self {
+        Self {
+            rebroadcast_inputs: false,
+            marker: core::marker::PhantomData,
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct ServerInputConfig<S> {
+    pub rebroadcast_inputs: bool,
+    pub marker: core::marker::PhantomData<S>,
+}
+
+#[deprecated(note = "Use InputSystems instead")]
+pub type InputSet = InputSystems;
+
+#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum InputSystems {
+    /// Receive the latest ActionDiffs from the client
+    ReceiveInputs,
+    /// Use the ActionDiff received from the client to update the `ActionState`
+    UpdateActionState,
+}
+
+/// Component that is used to customize how inputs will be rebroadcasted
+///
+/// If absent, the inputs received on a given `ClientOf` entity will be rebroadcasted to all other clients
+#[derive(Component)]
+pub enum InputRebroadcaster<S> {
+    // Rebroadcast to all users in the room
+    Room(Entity),
+    Target(NetworkTarget),
+    Marker(core::marker::PhantomData<S>),
+}
+
+impl<S> Debug for InputRebroadcaster<S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            InputRebroadcaster::Room(entity) => f.debug_tuple("Room").field(entity).finish(),
+            InputRebroadcaster::Target(target) => f.debug_tuple("Target").field(target).finish(),
+            InputRebroadcaster::Marker(_) => f
+                .debug_tuple("Marker")
+                .field(&DebugName::type_name::<S>())
+                .finish(),
+        }
+    }
+}
+
+impl<S> Default for InputRebroadcaster<S> {
+    fn default() -> Self {
+        Self::Target(NetworkTarget::All)
+    }
+}
+
+impl<S: ActionStateSequence + MapEntities> Plugin for ServerInputPlugin<S> {
+    fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<InputPlugin<S>>() {
+            app.add_plugins(InputPlugin::<S>::default());
+        }
+        app.insert_resource(ServerInputConfig::<S::Action> {
+            rebroadcast_inputs: self.rebroadcast_inputs,
+            marker: core::marker::PhantomData,
+        });
+
+        // SETS
+        // TODO:
+        //  - could there be an issue because, client updates `state` and `fixed_update_state` and sends it to server
+        //  - server only considers `state` since we receive messages in PreUpdate
+        //  - but host-server broadcasting their inputs only updates `state`
+        app.configure_sets(
+            PreUpdate,
+            (MessageSystems::Receive, InputSystems::ReceiveInputs).chain(),
+        );
+        app.configure_sets(FixedPreUpdate, InputSystems::UpdateActionState);
+
+        // for host server mode?
+        #[cfg(feature = "client")]
+        app.configure_sets(
+            FixedPreUpdate,
+            InputSystems::UpdateActionState.after(crate::client::InputSystems::BufferClientInputs),
+        );
+
+        // SYSTEMS
+        app.add_systems(
+            PreUpdate,
+            receive_input_message::<S>.in_set(InputSystems::ReceiveInputs),
+        );
+        app.add_systems(
+            FixedPreUpdate,
+            update_action_state::<S>.in_set(InputSystems::UpdateActionState),
+        );
+    }
+}
+
+// TODO: why do we need the Server? we could just run this on any receiver.
+//  (apart from rebroadcast inputs)
+
+/// Read the input messages from the server events to update the InputBuffers
+fn receive_input_message<S: ActionStateSequence>(
+    config: Res<ServerInputConfig<S::Action>>,
+    server: Query<&Server>,
+    // make sure to only rebroadcast inputs to connected clients
+    mut sender: ServerMultiMessageSender<With<Connected>>,
+    tick_duration: Res<TickDuration>,
+    rooms: Query<&Room>,
+    timeline: Res<LocalTimeline>,
+    mut receivers: Query<
+        (
+            Entity,
+            &LinkOf,
+            &mut MessageReceiver<InputMessage<S>>,
+            &RemoteId,
+            Option<&InputRebroadcaster<S::Action>>,
+        ),
+        // We also receive inputs from the HostClient, in case we want the HostClient's inputs to be
+        // rebroadcast to other clients (so that they can do prediction of the HostClient's entity)
+        With<Connected>,
+    >,
+    mut query: Query<Option<&mut InputBuffer<S::Snapshot, S::Action>>>,
+    prespawned: Query<(Entity, &PreSpawned), With<<S::State as ActionStateQueryData>::Main>>,
+    mut commands: Commands,
+) -> Result {
+    // TODO: use par_iter_mut
+    receivers.iter_mut().try_for_each(|(client_entity, link_of, mut receiver, client_id, rebroadcaster)| {
+        // TODO: this drains the messages... but the user might want to re-broadcast them?
+        //  should we just read instead?
+        let server_entity = link_of.server;
+        let tick = timeline.tick();
+        receiver.receive().try_for_each(|mut message| {
+            // ignore input messages from the local client (if running in host-server mode)
+            // if we're not doing rebroadcasting
+            if client_id.is_local() && !config.rebroadcast_inputs {
+                error!("Received input message from HostClient for action {:?} even though rebroadcasting is disabled. Ignoring the message.", DebugName::type_name::<S::Action>().shortname());
+                return Ok(())
+            }
+            // NOTE: This can cause issues because the clients expect a steady stream of messages.
+            //  For example the LastConfirmedTick could be really old which would cause a massive rollback
+            // if message.is_empty() {
+            //     return Ok(())
+            // }
+            trace!(?tick, ?client_id, action = ?DebugName::type_name::<S::Action>().shortname(), ?message.end_tick, ?message.inputs, "received input message");
+
+            // TODO: or should we try to store in a buffer the interpolation delay for the exact tick
+            //  that the message was intended for?
+            #[cfg(feature = "interpolation")]
+            if let Some(interpolation_delay) = message.interpolation_delay {
+                // update the interpolation delay estimate for the client
+                commands.entity(client_entity).insert(interpolation_delay);
+            }
+
+            #[cfg(feature = "prediction")]
+            if config.rebroadcast_inputs && let Ok(server) = server.get(server_entity) {
+                // only rebroadcast if the message is not already a rebroadcast
+                if !message.rebroadcast {
+                    debug!(action = ?DebugName::type_name::<S>().shortname(), "Rebroadcast input message {message:?} from client {client_id:?} with rebroadcaster {rebroadcaster:?}");
+                    message.rebroadcast = true;
+                    match rebroadcaster {
+                        None => {
+                            sender.send::<_, InputChannel>(
+                                &message,
+                                server,
+                                &NetworkTarget::AllExceptSingle(client_id.0)
+                            )?;
+                        }
+                        Some(InputRebroadcaster::Room(room)) => {
+                            if let Ok(room) = rooms.get(*room) {
+                                sender.send_to_entities::<_, InputChannel>(
+                                    &message,
+                                    room.clients.iter().filter(|e| **e != client_entity).copied()
+                                )?;
+                            }
+                        },
+                        Some(InputRebroadcaster::Target(target)) => {
+                            sender.send::<_, InputChannel>(
+                                &message,
+                                server,
+                                target
+                            )?;
+                        }
+                        Some(InputRebroadcaster::Marker(_)) => unreachable!()
+                    }
+                }
+            }
+
+            for data in message.inputs {
+                let Some(entity) = (match data.target {
+                    InputTarget::Entity(entity) => {
+                        Some(entity)
+                    },
+                    InputTarget::PreSpawned(hash) => {
+                        debug!(?hash, "Received input for prespawned entity");
+                        // we cannot match using the PreSpawnedReceiver since it only stores hashes for entities
+                        // with no Replicate component.
+                        // Instead, since there shouldn't be many entities with inputs and PreSpawned, we just iterate
+                        // through the query. We don't need to do entity-mapping because as soon as the entity is mapped
+                        // on the client, PreSpawned is removed and the input will contain the mapped entity.
+                        prespawned
+                            .iter()
+                            .filter_map(|(e, p)| p.hash.is_some_and(|h| h == hash).then_some(e)).next()
+                    }
+                }) else {
+                    debug!(?data.states, ?data.target, end_tick = ?message.end_tick, "received input message for unrecognized entity");
+                    continue
+                };
+                if let Ok(buffer) = query.get_mut(entity) {
+                    if let Some(mut buffer) = buffer {
+                       trace!(
+                            "Updating InputBuffer: {} using: {:?}",
+                            buffer.as_ref(),
+                            data.states
+                        );
+                        data.states.update_buffer(&mut buffer, message.end_tick, tick_duration.0);
+                    } else {
+                        debug!("Adding InputBuffer and ActionState which are missing on the entity");
+                        let mut buffer = InputBuffer::<S::Snapshot, S::Action>::default();
+                        data.states.update_buffer(&mut buffer, message.end_tick, tick_duration.0);
+                        commands.entity(entity).insert((
+                            buffer,
+                            S::State::base_value()
+                        ));
+                        // commands.command_scope(|mut commands| {
+                        //     commands.entity(entity).insert((
+                        //         buffer,
+                        //         ActionState::<A>::default(),
+                        //     ));
+                        // });
+                    }
+                } else {
+                    debug!(?entity, ?data.states, end_tick = ?message.end_tick, "received input message for non-existing entity");
+                }
+            }
+            Ok(())
+        })
+    })
+}
+
+/// Read the InputState for the current tick from the buffer, and use them to update the ActionState
+///
+/// NOTE: this will also run on HostClients! This is why we disable `get_action_state` in the client
+/// plugin for host-clients. This system also removes old inputs from the buffer, which is why we
+/// can also skip `clear_buffers` on host-clients
+fn update_action_state<S: ActionStateSequence>(
+    // TODO: what if there are multiple servers? maybe we can use Replicate to figure out which inputs should be replicating on which servers?
+    //  and use the timeline from that connection? i.e. find from which entity we got the first InputMessage?
+    //  presumably the entity is replicated to many clients, but only one client is controlling the entity?
+    timeline: Res<LocalTimeline>,
+    server: Single<(Entity, Has<HostServer>), With<Started>>,
+    mut action_state_query: Query<(
+        Entity,
+        StateMut<S>,
+        &mut InputBuffer<S::Snapshot, S::Action>,
+    )>,
+) {
+    let (server, host_client) = server.into_inner();
+    let tick = timeline.tick();
+    for (entity, action_state, mut input_buffer) in action_state_query.iter_mut() {
+        trace!(?tick, ?server, ?input_buffer, "input buffer on server");
+        // We only apply the ActionState from the buffer if we have one.
+        // If we don't (because the input packet is late or lost), we won't do anything.
+        // This is equivalent to considering that the player will keep playing the last action they played.
+        if let Some(snapshot) = input_buffer.get(tick) {
+            S::from_snapshot(S::State::into_inner(action_state), snapshot);
+            trace!(
+                ?tick,
+                ?entity,
+                "action state after update. Input Buffer: {}",
+                input_buffer.as_ref()
+            );
+
+            #[cfg(feature = "metrics")]
+            {
+                // The size of the buffer should always bet at least 1, and hopefully be a bit more than that
+                // so that we can handle lost messages
+                metrics::gauge!(format!(
+                    "inputs::{}::{}::buffer_size",
+                    DebugName::type_name::<S::Action>(),
+                    entity
+                ))
+                .set(input_buffer.len() as f64);
+            }
+        }
+
+        // NOTE: if we are the host-client, it is important to keep some history in the inputs
+        // The reason is that we are sending our inputs to other clients, which might cause rollbacks.
+        // For example there are new inputs starting from tick 7: L, L, L
+        // But the other clients might receive the message from tick 9 first (because of reordering), in which case it
+        // is important that they know that the action L was first pressed at tick 7! If the history is cut too short,
+        // then that information is not included in the message
+        // Basically, in host-client we are producer of inputs, so we need to include some redundancy. (like when
+        // normal clients send inputs)
+        let history_depth = if host_client {
+            HISTORY_DEPTH
+        } else {
+            // if we are a server and not a host-client, there is no need to keep history
+            1
+        };
+        // TODO: + we also want to keep enough inputs on the client to be able to do prediction effectively!
+        // remove all the previous values
+        // we keep the current value in the InputBuffer so that if future messages are lost, we can still
+        // fallback on the last known value
+        input_buffer.pop(tick - history_depth);
+        // info!("Buffer length: {}", input_buffer.len());
+    }
+}

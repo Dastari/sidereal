@@ -1,8 +1,9 @@
 use sidereal_game::{
     AsteroidField, AsteroidFieldAmbient, AsteroidFieldDamageState, AsteroidFieldLayout,
     AsteroidFieldMember, AsteroidFieldPopulation, AsteroidFractureProfile, AsteroidResourceProfile,
-    CollisionOutlineM, CollisionProfile, Cost, Destructible, Inventory, SiderealComponentMetadata,
-    ThrusterPlumeShaderSettings, VisibilityScope,
+    CollisionOutlineM, CollisionProfile, ContactResolutionM, Cost, Destructible, Inventory,
+    ScannerComponent, SiderealComponentMetadata, SignalSignature, ThrusterPlumeShaderSettings,
+    VisibilityScope,
 };
 
 #[test]
@@ -42,6 +43,33 @@ fn collision_outline_metadata_is_public_and_persisted() {
     assert!(meta.persist);
     assert!(meta.replicate);
     assert_eq!(meta.visibility, &[VisibilityScope::Public]);
+}
+
+#[test]
+fn signal_signature_metadata_is_public_and_persisted() {
+    let meta = <SignalSignature as SiderealComponentMetadata>::META;
+    assert_eq!(meta.kind, "signal_signature");
+    assert!(meta.persist);
+    assert!(meta.replicate);
+    assert_eq!(meta.visibility, &[VisibilityScope::Public]);
+}
+
+#[test]
+fn contact_resolution_metadata_is_owner_only_and_persisted() {
+    let meta = <ContactResolutionM as SiderealComponentMetadata>::META;
+    assert_eq!(meta.kind, "contact_resolution_m");
+    assert!(meta.persist);
+    assert!(meta.replicate);
+    assert_eq!(meta.visibility, &[VisibilityScope::OwnerOnly]);
+}
+
+#[test]
+fn scanner_component_metadata_is_owner_only_and_persisted() {
+    let meta = <ScannerComponent as SiderealComponentMetadata>::META;
+    assert_eq!(meta.kind, "scanner_component");
+    assert!(meta.persist);
+    assert!(meta.replicate);
+    assert_eq!(meta.visibility, &[VisibilityScope::OwnerOnly]);
 }
 
 #[test]

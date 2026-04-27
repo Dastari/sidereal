@@ -95,14 +95,53 @@ pub fn leading_button(
 }
 
 pub fn input_box(height_px: f32, radius_px: f32, border_px: f32) -> Node {
+    input_box_with_adornments(height_px, radius_px, border_px, false, false)
+}
+
+pub fn input_box_with_adornments(
+    height_px: f32,
+    radius_px: f32,
+    border_px: f32,
+    has_start_adornment: bool,
+    has_end_adornment: bool,
+) -> Node {
+    let radius_px = radius_px.max(0.0);
     Node {
         width: Val::Percent(100.0),
         height: Val::Px(height_px),
-        padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+        padding: UiRect {
+            left: Val::Px(if has_start_adornment { 10.0 } else { 12.0 }),
+            right: Val::Px(if has_end_adornment { 10.0 } else { 12.0 }),
+            top: Val::Px(8.0),
+            bottom: Val::Px(8.0),
+        },
         justify_content: JustifyContent::FlexStart,
         align_items: AlignItems::Center,
+        column_gap: Val::Px(8.0),
         border: UiRect::all(Val::Px(border_px)),
         border_radius: BorderRadius::all(Val::Px(radius_px)),
+        ..default()
+    }
+}
+
+pub fn input_text_slot() -> Node {
+    Node {
+        flex_grow: 1.0,
+        min_width: Val::Px(0.0),
+        height: Val::Percent(100.0),
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        overflow: Overflow::clip(),
+        ..default()
+    }
+}
+
+pub fn input_adornment() -> Node {
+    Node {
+        height: Val::Percent(100.0),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        flex_shrink: 0.0,
         ..default()
     }
 }

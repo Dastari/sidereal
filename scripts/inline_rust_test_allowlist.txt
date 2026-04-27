@@ -12,6 +12,7 @@ bins/sidereal-client/src/runtime/replication.rs
 bins/sidereal-replication/src/replication/control.rs
 bins/sidereal-replication/src/replication/notifications.rs
 bins/sidereal-client/src/runtime/render_layers.rs
+bins/sidereal-client/src/runtime/sensor_ring.rs
 bins/sidereal-client/src/runtime/shaders.rs
 bins/sidereal-client/src/runtime/tactical.rs
 bins/sidereal-client/src/runtime/transport.rs

@@ -171,11 +171,14 @@ pub fn send_local_view_mode_updates(
             }
         })
         .unwrap_or(ClientLocalViewMode::Tactical);
-    // Derive delivery radius from visible world half-diagonal + buffer.
-    // This keeps culling aligned with what the player can actually see.
-    const DELIVERY_RADIUS_BUFFER_M: f32 = 120.0;
+    // Derive delivery radius from visible world half-diagonal plus overscan.
+    // The server should already be streaming objects just outside the current
+    // viewport so rapid zoom-out does not expose an empty edge while waiting
+    // for the next local-view update round trip.
+    const DELIVERY_RADIUS_OVERSCAN_MULTIPLIER: f32 = 1.35;
+    const DELIVERY_RADIUS_BUFFER_M: f32 = 500.0;
     const DELIVERY_RADIUS_MIN_M: f32 = 300.0;
-    const DELIVERY_RADIUS_MAX_M: f32 = 5000.0;
+    const DELIVERY_RADIUS_MAX_M: f32 = 50000.0;
     let dynamic_delivery_range_m = gameplay_camera_projection
         .single()
         .ok()
@@ -186,7 +189,7 @@ pub fn send_local_view_mode_updates(
         .zip(windows.single().ok().and_then(safe_viewport_size))
         .map(|(ortho_scale, viewport_size)| {
             let half_extents = viewport_size * 0.5 * ortho_scale.max(0.0001);
-            (half_extents.length() + DELIVERY_RADIUS_BUFFER_M)
+            (half_extents.length() * DELIVERY_RADIUS_OVERSCAN_MULTIPLIER + DELIVERY_RADIUS_BUFFER_M)
                 .clamp(DELIVERY_RADIUS_MIN_M, DELIVERY_RADIUS_MAX_M)
         })
         .unwrap_or(DELIVERY_RADIUS_MIN_M);

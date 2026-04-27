@@ -1,7 +1,7 @@
 # Asteroid Field System V2
 
 Status: Active partial implementation spec
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 Owners: gameplay simulation + persistence + scripting + client rendering
 Scope: first-class asteroid field roots, deterministic member lineage, fracture/depletion, ore/resource profiles, and field ambient presentation
 Primary references: `docs/core_systems_catalog_v1.md`, `docs/features/procedural_asteroids.md`, `docs/features/resources_and_crafting_contract.md`, `docs/features/scripting_support.md`, `docs/features/visibility_replication_contract.md`, `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
@@ -9,6 +9,7 @@ Primary references: `docs/core_systems_catalog_v1.md`, `docs/features/procedural
 ## 0. Implementation Status
 
 - 2026-04-26: V2 supersedes the earlier V1 field-root proposal as the active implementation direction. Implemented in the first V2 slice: `asteroid.field` root authoring, V2 field/member/resource/fracture/ambient components, linked eager starter members, deterministic member/child key helpers, zero-health member fracture into linked child entities, field damage-state updates, procedural sprite style extensions, and asteroid shader style pass. Still pending: proximity activation/retirement, client-side ambient field blending, mining/extraction actions, and dashboard/editor V2 surfaces. Native impact: shared/server fracture is active; native client rendering consumes the updated procedural sprite/shader payloads. WASM impact: gameplay/procedural/fracture logic remains target-shared; platform differences stay at asset/render/transport boundaries.
+- 2026-04-27: V2 member visuals now feed generated normal-map textures into the dedicated asteroid material so field asteroids and fracture children use the same shared world-lighting/bump response. Starter field density and size defaults were also tuned toward denser, larger, split-capable rocks. Native impact: denser starter field and more relief-driven asteroid shading. WASM impact: shared material bindings changed; browser builds must use the same asteroid shader contract.
 
 ## 1. Purpose
 
@@ -157,7 +158,7 @@ Shader and generator requirements:
 6. controlled pixelation/quantization rather than blurry noise;
 7. mineral accents driven by procedural sprite/resource profile data.
 
-`data/shaders/asteroid.wgsl` remains a world-sprite shader. It should improve the style within the existing sprite material contract instead of adding a new ad-hoc material path.
+`data/shaders/asteroid.wgsl` remains a world-sprite shader. It uses the dedicated asteroid material contract: albedo texture, linear generated normal texture, and `SharedWorldLightingUniforms`. It should improve the style within that contract instead of adding a new ad-hoc material path.
 
 ## 8. Lua Authoring
 

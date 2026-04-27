@@ -413,7 +413,9 @@ impl GraphPersistence {
             set_parts.extend(cypher_set_clauses("e", &record.properties));
 
             let query = format!(
-                "MERGE (e:Entity {{entity_id:'{}'}}) SET {}",
+                "MERGE (e:Entity {{entity_id:'{}'}}) \
+                 WITH e WHERE e.last_tick IS NULL OR e.last_tick <= {tick} \
+                 SET {}",
                 escape_cypher_string(&record.entity_id),
                 set_parts.join(", "),
             );
@@ -430,6 +432,7 @@ impl GraphPersistence {
                 "MATCH (e:Entity {{entity_id:'{}'}}) \
                  OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(c:Component) \
                  WHERE c IS NOT NULL AND NOT c.component_id IN {} \
+                   AND (c.last_tick IS NULL OR c.last_tick <= {tick}) \
                  DETACH DELETE c",
                 escape_cypher_string(&record.entity_id),
                 cypher_literal(&incoming_component_ids),
@@ -444,7 +447,9 @@ impl GraphPersistence {
                 let mut comp_set = vec![reset_props_clause];
                 append_component_property_clauses(&mut comp_set, &component.properties);
                 self.run_cypher(&format!(
-                    "MERGE (c:Component {{component_id:'{}'}}) SET {}",
+                    "MERGE (c:Component {{component_id:'{}'}}) \
+                     WITH c WHERE c.last_tick IS NULL OR c.last_tick <= {tick} \
+                     SET {}",
                     escape_cypher_string(&component.component_id),
                     comp_set.join(", ")
                 ))?;
@@ -1291,6 +1296,7 @@ pub fn persist_graph_records_in_transaction(
         format!(
             "UNWIND {} AS row \
                  MERGE (e:Entity {{entity_id: row.entity_id}}) \
+                 WITH e, row WHERE e.last_tick IS NULL OR e.last_tick <= row.last_tick \
                  SET e += row",
             cypher_literal(&rows)
         )
@@ -1301,6 +1307,7 @@ pub fn persist_graph_records_in_transaction(
                  MATCH (e:Entity {{entity_id: row.entity_id}}) \
                  OPTIONAL MATCH (e)-[:HAS_COMPONENT]->(c:Component) \
                  WHERE c IS NOT NULL AND NOT c.component_id IN row.incoming_component_ids \
+                   AND (c.last_tick IS NULL OR c.last_tick <= row.last_tick) \
                  DETACH DELETE c",
             cypher_literal(&rows)
         )
@@ -1309,6 +1316,7 @@ pub fn persist_graph_records_in_transaction(
         format!(
             "UNWIND {} AS row \
                  MERGE (c:Component {{component_id: row.component_id}}) \
+                 WITH c, row WHERE c.last_tick IS NULL OR c.last_tick <= row.last_tick \
                  SET c += row",
             cypher_literal(&rows)
         )

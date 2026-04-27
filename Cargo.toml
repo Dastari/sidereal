@@ -53,6 +53,7 @@ uuid = { version = "1.8", features = ["serde", "v4"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
+unicode-segmentation = "1.12"
 
 [patch.crates-io]
 parry2d = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", package = "parry2d" }
@@ -60,6 +61,7 @@ parry2d-f64 = { git = "https://github.com/dimforge/parry.git", tag = "v0.25.3", 
 
 [patch."https://github.com/Dastari/lightyear"]
 lightyear_avian2d = { path = "third_party/lightyear_avian2d_f64" }
+lightyear_inputs = { path = "third_party/lightyear_inputs" }
 lightyear_inputs_native = { path = "third_party/lightyear_inputs_native" }
 lightyear_interpolation = { path = "third_party/lightyear_interpolation" }
 

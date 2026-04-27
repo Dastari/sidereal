@@ -1,0 +1,60 @@
+[package]
+name = "lightyear_inputs"
+version = "0.26.4"
+authors = ["Charles Bournhonesque <charlesbour@gmail.com>"]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "IO primitives for the lightyear networking library"
+repository = "https://github.com/cBournhonesque/lightyear"
+
+[features]
+default = ["std"]
+std = ["lightyear_transport/std"]
+client = [
+  "lightyear_connection/client",
+  "lightyear_messages/client",
+  "lightyear_sync/client",
+  "lightyear_replication/client",
+  "lightyear_transport/client",
+]
+server = [
+  "lightyear_connection/server",
+  "lightyear_messages/server",
+  "lightyear_sync/server",
+  "lightyear_link",
+  "lightyear_transport/server",
+]
+metrics = ["dep:metrics", "std"]
+prediction = []
+interpolation = ["dep:lightyear_interpolation"]
+
+[dependencies]
+lightyear_connection = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_core = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_sync = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false, optional = true }
+lightyear_link = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false, optional = true }
+lightyear_messages = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_transport = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_replication = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_prediction = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_interpolation = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false, optional = true }
+
+# utils
+metrics = { version = "0.24", optional = true }
+tracing = "0.1.40"
+
+# serde
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+
+# bevy
+bevy_app = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_platform = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_utils = { version = "0.18", default-features = false, features = ["debug"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[workspace]

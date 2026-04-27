@@ -79,6 +79,11 @@ export async function loadDatabaseAdminPayload(): Promise<DatabaseAdminPayload> 
       'auth_characters',
       schemaCandidates,
     )
+    const totpSecretsTableRef = await resolveTableRef(
+      client,
+      'auth_totp_secrets',
+      schemaCandidates,
+    )
     const scriptDocumentsTableRef = await resolveTableRef(
       client,
       'script_catalog_documents',
@@ -129,7 +134,9 @@ export async function loadDatabaseAdminPayload(): Promise<DatabaseAdminPayload> 
       Array<{
         playerEntityId: string
         createdAtEpochS: number
+        updatedAtEpochS: number
         displayName: string | null
+        status: string
       }>
     >()
     if (charactersTableRef) {
@@ -138,20 +145,28 @@ export async function loadDatabaseAdminPayload(): Promise<DatabaseAdminPayload> 
           SELECT
             account_id::text AS account_id,
             player_entity_id,
-            created_at_epoch_s
+            display_name,
+            status,
+            created_at_epoch_s,
+            updated_at_epoch_s
           FROM ${charactersTableRef.qualifiedName}
-          ORDER BY created_at_epoch_s DESC, player_entity_id ASC
+          ORDER BY created_at_epoch_s DESC, display_name ASC, player_entity_id ASC
         `,
       )
       for (const row of characterRows.rows) {
         const accountId = String(row.account_id)
         const playerEntityId = String(row.player_entity_id)
+        const authDisplayName = String(row.display_name ?? '').trim()
         const accountCharacters = charactersByAccountId.get(accountId) ?? []
         accountCharacters.push({
           playerEntityId,
           createdAtEpochS: Number(row.created_at_epoch_s ?? 0),
+          updatedAtEpochS: Number(row.updated_at_epoch_s ?? 0),
           displayName:
-            characterDisplayNameByEntityId.get(playerEntityId) ?? null,
+            authDisplayName ||
+            characterDisplayNameByEntityId.get(playerEntityId) ||
+            null,
+          status: String(row.status ?? 'active'),
         })
         charactersByAccountId.set(accountId, accountCharacters)
       }
@@ -166,7 +181,8 @@ export async function loadDatabaseAdminPayload(): Promise<DatabaseAdminPayload> 
                 a.email,
                 a.player_entity_id,
                 a.created_at_epoch_s,
-                COALESCE(characters.character_count, 0) AS character_count
+                COALESCE(characters.character_count, 0) AS character_count,
+                mfa.verified_at_epoch_s AS mfa_verified_at_epoch_s
               FROM ${accountsTableRef.qualifiedName} a
               ${
                 charactersTableRef
@@ -177,6 +193,16 @@ export async function loadDatabaseAdminPayload(): Promise<DatabaseAdminPayload> 
                      ) characters ON characters.account_id = a.account_id`
                   : 'LEFT JOIN (SELECT NULL::uuid AS account_id, 0::int AS character_count) characters ON FALSE'
               }
+              ${
+                totpSecretsTableRef
+                  ? `LEFT JOIN (
+                       SELECT account_id, MAX(verified_at_epoch_s)::bigint AS verified_at_epoch_s
+                       FROM ${totpSecretsTableRef.qualifiedName}
+                       WHERE disabled_at_epoch_s IS NULL
+                       GROUP BY account_id
+                     ) mfa ON mfa.account_id = a.account_id`
+                  : 'LEFT JOIN (SELECT NULL::uuid AS account_id, NULL::bigint AS verified_at_epoch_s) mfa ON FALSE'
+              }
               ORDER BY a.email ASC
             `,
           )
@@ -185,6 +211,11 @@ export async function loadDatabaseAdminPayload(): Promise<DatabaseAdminPayload> 
           email: String(row.email),
           primaryPlayerEntityId: String(row.player_entity_id),
           characterCount: Number(row.character_count ?? 0),
+          mfaTotpEnabled: row.mfa_verified_at_epoch_s != null,
+          mfaVerifiedAtEpochS:
+            row.mfa_verified_at_epoch_s == null
+              ? null
+              : Number(row.mfa_verified_at_epoch_s),
           createdAtEpochS: Number(row.created_at_epoch_s ?? 0),
           characters: charactersByAccountId.get(String(row.account_id)) ?? [],
         }))

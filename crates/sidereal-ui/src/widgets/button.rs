@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::theme::{UiTheme, color, with_alpha};
+use crate::theme::{UiSemanticTone, UiTheme, color, with_alpha};
 
 use super::shadow::{glow_box_shadow, no_box_shadow};
 
@@ -130,4 +130,37 @@ pub fn button_surface(
             no_box_shadow(),
         ),
     }
+}
+
+pub fn button_surface_with_tone(
+    theme: UiTheme,
+    tone: UiSemanticTone,
+    state: UiInteractionState,
+    glow_intensity: f32,
+) -> (BackgroundColor, BorderColor, BoxShadow) {
+    let accent_token = tone.accent_token(theme);
+    let accent_color = tone.accent_color(theme);
+    let chrome_color = tone.chrome_color(theme);
+    let alpha = match state {
+        UiInteractionState::Idle => 0.74,
+        UiInteractionState::Hovered => 0.84,
+        UiInteractionState::Pressed => 0.96,
+        UiInteractionState::Selected => 0.88,
+        UiInteractionState::Focused => 0.8,
+    };
+    let glow_alpha = match state {
+        UiInteractionState::Hovered | UiInteractionState::Focused => 0.052,
+        UiInteractionState::Pressed => 0.028,
+        UiInteractionState::Selected => 0.036,
+        UiInteractionState::Idle => 0.0,
+    };
+    (
+        BackgroundColor(accent_color.with_alpha(alpha)),
+        BorderColor::all(chrome_color.with_alpha(0.96)),
+        if glow_alpha > 0.0 {
+            glow_box_shadow(accent_token, glow_alpha, 1.0, 3.5, glow_intensity)
+        } else {
+            no_box_shadow()
+        },
+    )
 }

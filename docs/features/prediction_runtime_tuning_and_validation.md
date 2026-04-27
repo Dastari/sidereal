@@ -1,7 +1,7 @@
 # Prediction Runtime Tuning and Validation
 
 Status: Active feature reference
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 Owners: client runtime + replication
 Scope: Lightyear-native prediction/interpolation behavior verification and production default tuning
 
@@ -57,6 +57,51 @@ Scope: Lightyear-native prediction/interpolation behavior verification and produ
 3. Native impact: remote clients should receive movement based on the server's latest authoritative Avian state for that fixed tick.
 4. WASM impact: server-side schedule correction only; no browser-specific branch was introduced.
 
+2026-04-27 status note:
+
+1. Implemented: replication initializes a hydrated player's existing authoritative control lease at generation 1 before the first handoff request, so the first target change after server startup acks generation 2 instead of regressing the client from its local pending generation.
+2. Implemented: controlled predicted motion bootstrap ignores older/equal prediction seed generations on the same predicted entity, preventing stale handoff state from clearing prediction history and snapping the entity back to its handoff seed.
+3. Implemented: control handoff marks the player entity dirty and forces the next persistence pass so `controlled_entity_guid` survives quick server restarts instead of waiting for the normal persistence interval.
+4. Native impact: selecting a ship after login should no longer produce the generation 2 -> 1 reseed pattern seen in native logs, and quick restart/relogin should be less likely to return to free-roam after a successful handoff.
+5. WASM impact: shared client runtime and replication-server behavior only; no browser-specific branch was introduced.
+
+2026-04-27 status note:
+
+1. Implemented: native client prediction now disables Lightyear input-based rollback while keeping Lightyear state rollback/correction active.
+2. Reason: replication no longer runs Lightyear's native server input receiver, so Lightyear input rollback can only compare against local/native input tracker state that the server did not authoritatively confirm. Sidereal's authoritative reconciliation source is replicated server state generated from authenticated `ClientRealtimeInputMessage`.
+3. Implemented: control handoff also writes a targeted player-entity persistence snapshot, and graph persistence ignores older entity/component writes when a newer `last_tick` has already reached the database. This prevents queued broad snapshots from restoring stale `controlled_entity_guid` after a quick restart.
+4. Native impact: controlled ships should no longer snap back from Lightyear `Rollback::FromInputs` history after the server moves them, and successful ship selection should persist without waiting for large world snapshots.
+5. WASM impact: shared client prediction and replication persistence behavior only; no browser-specific branch was introduced.
+
+2026-04-27 status note:
+
+1. Implemented: shared character/free-roam movement now distinguishes physics-backed entities from non-physics player anchors.
+2. Reason: Avian `RigidBody` entities should set `LinearVelocity` and let physics integrate motion, but a self-controlled player anchor can have `LinearVelocity` without `RigidBody`; in that lane, shared fixed-step movement must also advance `Position`/`Transform` or client prediction stays at the handoff origin while the server confirms movement.
+3. Native impact: switching from a ship to free-roam/self-control should no longer produce local-prediction snapbacks caused by the player anchor receiving velocity but not moving locally.
+4. WASM impact: shared simulation behavior only; no target-specific branch was introduced.
+
+2026-04-27 status note:
+
+1. Implemented: `ServerSessionReadyMessage` now carries the server's current `control_generation` and authoritative `controlled_entity_id`.
+2. Reason: reconnecting clients could enter world with local `controlled_entity_generation = 0` while the replication server retained a later lease generation for the same player, causing every realtime input packet to be rejected as `stale_control_generation` until a separate control request happened.
+3. Native impact: reconnect/session bootstrap starts input from the current server lease instead of requiring a control handoff ACK before movement can be accepted.
+4. WASM impact: shared replication protocol change; browser clients must be rebuilt against the same protocol version.
+
+2026-04-27 status note:
+
+1. Implemented: replication now removes timed-out latest realtime input snapshots, stale-generation snapshots, and fresh-generation snapshots that target a no-longer-controlled entity as soon as the fixed-step drain observes them.
+2. Implemented: explicit client disconnect notify also clears that player's realtime input tick tracker, rate-limit windows, latest input snapshot, and input activity timestamp.
+3. Reason: latest realtime input is short-lived intent, not durable session state. Leaving an unusable snapshot resident after disconnect or handoff caused repeated fixed-tick "no actions after realtime selection" diagnostics and allowed stale state to keep contributing to drop counters.
+4. Native impact: crashed or closed native clients should stop producing repeated server input-route logs once their input snapshot times out or disconnect notify is processed.
+5. WASM impact: replication-server behavior only; no browser-specific branch was introduced.
+
+2026-04-27 status note:
+
+1. Implemented: replication disconnect cleanup now neutralizes the disconnected player's current authoritative control target by clearing its `ActionQueue`, setting `FlightComputer` throttle/yaw to neutral, clearing `brake_active`, and disabling afterburner state.
+2. Reason: realtime input snapshots are only one source of intent. A previously processed action can leave durable `FlightComputer` state non-neutral; if a client crashes while thrusting or turning, the server must not keep applying that stale player intent and burning fuel after the session is gone.
+3. Native impact: crashed or disconnected native clients should leave ships coasting with neutral controls instead of continuing thrust/turn input in the background.
+4. WASM impact: replication-server behavior only; no browser-specific branch was introduced.
+
 ## 1. Purpose
 
 Track remaining non-structural work after Lightyear-native migration completion:
@@ -98,6 +143,7 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - clears per-player realtime input tick/latest-intent state on a fresh authenticated bind so a restarted native client with a reset local input timeline is not rejected against stale ticks from a prior session,
   - stores latest input snapshot by player/tick,
   - expires realtime input snapshots after `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`) so authoritative motion cannot stay latched if the client loses focus, background-throttles, or misses the neutral heartbeat,
+  - removes expired, stale-generation, or wrong-controlled-target latest snapshots during drain so disconnected clients and completed control handoffs do not leave reusable input residue,
   - drains into `ActionQueue` by replace/overwrite (`queue.clear()` then push latest actions), never backlog append.
 - Remote/non-controlled visual smoothing path:
   - replicated Avian motion components (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`) are registered with Lightyear interpolation functions in protocol registration.
@@ -191,6 +237,15 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - restarting or reconnecting a native client no longer causes the replication server to drop the new lower tick stream as duplicate/out-of-order against a prior session.
 - WASM impact:
   - no platform branch; browser clients use the same authenticated session reset and stream-scoped ordering.
+
+2026-04-27 update:
+
+- Sidereal patches Lightyear's `lightyear_inputs` crate locally so client input buffers retain 512 ticks instead of upstream 0.26.4's hardcoded 20 ticks.
+- Reason: Sidereal's native rollback budget is currently 160 ticks. When a correction replay crossed Lightyear's 20-tick input-retention floor, the client no longer had historical `ActionState<PlayerInput>` samples and could replay from the control-handoff seed with missing/neutral input, producing repeated snapbacks while the authoritative server continued moving.
+- Native impact:
+  - predicted controlled motion now has enough local input history to replay across the configured rollback window after server restart, control handoff, focus jitter, or localhost stalls.
+- WASM impact:
+  - shared client/runtime dependency behavior only; no target-specific branch was introduced.
 
 2026-04-24 update:
 

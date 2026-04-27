@@ -7,3 +7,4 @@ authors.workspace = true
 
 [dependencies]
 bevy = { workspace = true, default-features = false, features = ["bevy_asset", "bevy_color", "bevy_image", "bevy_render", "bevy_text", "bevy_ui"] }
+unicode-segmentation = { workspace = true }

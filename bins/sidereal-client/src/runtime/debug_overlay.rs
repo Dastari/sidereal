@@ -8,8 +8,9 @@ use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::{ConfirmedTick, LocalTimeline};
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
-    CollisionAabbM, CollisionOutlineM, EntityGuid, Hardpoint, MountedOn, ParentGuid,
-    PlanetBodyShaderSettings, PlayerTag, SizeM, WorldPosition, WorldRotation,
+    BallisticWeapon, CollisionAabbM, CollisionOutlineM, DisplayName, Engine, EntityGuid,
+    EntityLabels, Hardpoint, MountedOn, ParentGuid, PlanetBodyShaderSettings, PlayerTag, SizeM,
+    WorldPosition, WorldRotation,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::HashMap;
@@ -45,6 +46,7 @@ const CONFIRMED_OVERLAY_POSITION_EPSILON_M: f32 = 0.05;
 const CONFIRMED_OVERLAY_ROTATION_EPSILON_RAD: f32 = 0.01;
 const VELOCITY_ARROW_SCALE: f32 = 0.5;
 const HARDPOINT_CROSS_HALF_SIZE: f32 = 2.0;
+const COMPONENT_MARKER_HALF_SIZE: f32 = 2.6;
 const VELOCITY_ARROW_SHAFT_THICKNESS: f32 = 0.18;
 const VELOCITY_ARROW_HEAD_LENGTH: f32 = 0.7;
 const VELOCITY_ARROW_HEAD_THICKNESS: f32 = 0.12;
@@ -179,6 +181,10 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 Option<&'_ PlayerTag>,
                 Option<&'_ ControlledEntity>,
                 Option<&'_ Visibility>,
+                Option<&'_ DisplayName>,
+                Option<&'_ EntityLabels>,
+                Has<Engine>,
+                Option<&'_ BallisticWeapon>,
             ),
             (
                 Has<lightyear::prelude::Replicated>,
@@ -198,6 +204,24 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             ),
         ),
         With<WorldEntity>,
+    >,
+    hardpoints: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            &'_ Hardpoint,
+            Option<&'_ ParentGuid>,
+            Option<&'_ MountedOn>,
+            Option<&'_ Visibility>,
+            Option<&'_ DisplayName>,
+            Option<&'_ EntityLabels>,
+            Has<lightyear::prelude::Replicated>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<lightyear::prelude::Predicted>,
+        ),
+        Without<WorldEntity>,
     >,
     stats_inputs: DebugOverlayStatsInputs<'_, '_>,
 ) {
@@ -377,7 +401,18 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         guid,
         global_transform,
         (size_m, collision_aabb, collision_outline, linear_velocity, angular_velocity),
-        (mounted_on, hardpoint, parent_guid, player_tag, controlled_marker, visibility),
+        (
+            mounted_on,
+            hardpoint,
+            parent_guid,
+            player_tag,
+            controlled_marker,
+            visibility,
+            display_name,
+            entity_labels,
+            has_engine,
+            ballistic_weapon,
+        ),
         (
             is_replicated,
             is_interpolated,
@@ -428,8 +463,18 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             hardpoint.is_some(),
         );
         let world = global_transform.compute_transform();
+        let label = debug_overlay_entity_label(
+            display_name,
+            entity_labels,
+            hardpoint,
+            mounted_on,
+            has_engine,
+            ballistic_weapon,
+        );
         let overlay_entity = DebugOverlayEntity {
             entity,
+            guid: guid.0,
+            label,
             lane: DebugEntityLane::Auxiliary,
             position_xy: world.translation.truncate(),
             rotation_rad: world.rotation.to_euler(EulerRot::XYZ).2,
@@ -441,6 +486,10 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 .unwrap_or_default(),
             collision,
             is_controlled: is_local_controlled,
+            is_component: mounted_on.is_some()
+                || hardpoint.is_some()
+                || has_engine
+                || ballistic_weapon.is_some(),
         };
 
         if is_predicted && is_interpolated {
@@ -513,6 +562,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         .count();
 
     let mut resolved_root_lanes = HashMap::<uuid::Uuid, DebugEntityLane>::new();
+    let mut resolved_root_poses = HashMap::<uuid::Uuid, (Vec2, f32)>::new();
 
     for (guid, candidates) in root_candidates_by_guid {
         if candidates.len() > 1 {
@@ -542,6 +592,13 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         if let Some(primary) = resolved.primary {
             let has_confirmed_ghost = resolved.confirmed_ghost.is_some();
             resolved_root_lanes.insert(guid, resolved.primary_lane);
+            resolved_root_poses.insert(
+                guid,
+                (
+                    primary.overlay_entity.position_xy,
+                    primary.overlay_entity.rotation_rad,
+                ),
+            );
             if primary.overlay_entity.is_controlled {
                 snapshot.controlled_lane = Some(DebugControlledLane {
                     guid,
@@ -570,6 +627,70 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
                 DebugEntityLane::ConfirmedGhost,
             );
         }
+    }
+
+    for (
+        entity,
+        guid,
+        hardpoint,
+        parent_guid,
+        mounted_on,
+        visibility,
+        display_name,
+        entity_labels,
+        is_replicated,
+        is_interpolated,
+        is_predicted,
+    ) in &hardpoints
+    {
+        if !debug_overlay_candidate_visible(visibility) {
+            continue;
+        }
+        let Some(parent_root_guid) = parent_guid
+            .map(|parent_guid| parent_guid.0)
+            .or_else(|| mounted_on.map(|mounted_on| mounted_on.parent_entity_id))
+        else {
+            continue;
+        };
+        let Some((parent_position_xy, parent_rotation_rad)) =
+            resolved_root_poses.get(&parent_root_guid).copied()
+        else {
+            continue;
+        };
+
+        let parent_rotation = Quat::from_rotation_z(parent_rotation_rad);
+        let hardpoint_world_offset = parent_rotation * hardpoint.offset_m;
+        let local_rotation_rad = hardpoint.local_rotation.to_euler(EulerRot::XYZ).2;
+        let overlay_entity = DebugOverlayEntity {
+            entity,
+            guid: guid.0,
+            label: debug_overlay_entity_label(
+                display_name,
+                entity_labels,
+                Some(hardpoint),
+                mounted_on,
+                false,
+                None,
+            ),
+            lane: DebugEntityLane::Auxiliary,
+            position_xy: parent_position_xy + hardpoint_world_offset.truncate(),
+            rotation_rad: parent_rotation_rad + local_rotation_rad,
+            velocity_xy: Vec2::ZERO,
+            angular_velocity_rps: 0.0,
+            collision: DebugCollisionShape::HardpointMarker,
+            is_controlled: false,
+            is_component: true,
+        };
+
+        auxiliary_entities.push(AuxiliaryDebugCandidate {
+            guid: guid.0,
+            parent_root_guid,
+            overlay_entity,
+            is_replicated,
+            is_interpolated,
+            is_predicted,
+            interpolated_ready: true,
+        });
     }
 
     let mut auxiliary_candidates_by_guid =
@@ -642,6 +763,10 @@ pub(crate) fn draw_debug_overlay_system(
             DebugCollisionShape::Outline { .. } => {}
         }
 
+        if entity.is_component {
+            draw_component_marker_square(&mut gizmos, pos, component_marker_color());
+        }
+
         if entity.is_controlled && entity.lane == DebugEntityLane::Predicted {
             controlled_predicted = Some((entity.position_xy, entity.rotation_rad));
         } else if entity.is_controlled && entity.lane == DebugEntityLane::ConfirmedGhost {
@@ -661,6 +786,24 @@ pub(crate) fn draw_debug_overlay_system(
             gizmos.line(predicted_pos, confirmed_pos, prediction_error_color);
         }
     }
+}
+
+fn draw_component_marker_square(gizmos: &mut Gizmos<'_, '_>, center: Vec3, color: Color) {
+    let half = COMPONENT_MARKER_HALF_SIZE;
+    let z = center.z + 0.08;
+    let corners = [
+        Vec3::new(center.x - half, center.y - half, z),
+        Vec3::new(center.x + half, center.y - half, z),
+        Vec3::new(center.x + half, center.y + half, z),
+        Vec3::new(center.x - half, center.y + half, z),
+    ];
+    for index in 0..corners.len() {
+        gizmos.line(corners[index], corners[(index + 1) % corners.len()], color);
+    }
+}
+
+fn component_marker_color() -> Color {
+    Color::srgb(0.2, 1.0, 0.35)
 }
 
 #[allow(clippy::type_complexity)]
@@ -834,6 +977,52 @@ fn build_collision_shape(
         .unwrap_or(DebugCollisionShape::None)
 }
 
+fn debug_overlay_entity_label(
+    display_name: Option<&DisplayName>,
+    entity_labels: Option<&EntityLabels>,
+    hardpoint: Option<&Hardpoint>,
+    mounted_on: Option<&MountedOn>,
+    has_engine: bool,
+    ballistic_weapon: Option<&BallisticWeapon>,
+) -> String {
+    if let Some(name) = display_name {
+        let trimmed = name.0.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_ascii_uppercase();
+        }
+    }
+    if let Some(weapon) = ballistic_weapon {
+        let trimmed = weapon.weapon_name.trim();
+        if !trimmed.is_empty() {
+            return format!("WEAPON {trimmed}").to_ascii_uppercase();
+        }
+        return "WEAPON".to_string();
+    }
+    if has_engine {
+        return "ENGINE".to_string();
+    }
+    if let Some(hardpoint) = hardpoint {
+        let trimmed = hardpoint.hardpoint_id.trim();
+        if !trimmed.is_empty() {
+            return format!("HARDPOINT {trimmed}").to_ascii_uppercase();
+        }
+        return "HARDPOINT".to_string();
+    }
+    if let Some(labels) = entity_labels
+        && let Some(label) = labels.0.iter().find(|label| !label.trim().is_empty())
+    {
+        return label.trim().to_ascii_uppercase();
+    }
+    if let Some(mounted_on) = mounted_on {
+        let trimmed = mounted_on.hardpoint_id.trim();
+        if !trimmed.is_empty() {
+            return format!("MOUNT {trimmed}").to_ascii_uppercase();
+        }
+        return "MOUNTED COMPONENT".to_string();
+    }
+    "ENTITY".to_string()
+}
+
 fn debug_overlay_candidate_visible(visibility: Option<&Visibility>) -> bool {
     !matches!(visibility, Some(Visibility::Hidden))
 }
@@ -916,6 +1105,11 @@ fn resolve_auxiliary_candidate<'a>(
     })
     .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_interpolated))
     .or_else(|| pick_best_auxiliary_candidate(candidates, |candidate| candidate.is_replicated))
+    .or_else(|| {
+        candidates
+            .iter()
+            .min_by_key(|candidate| candidate.overlay_entity.entity.to_bits())
+    })
 }
 
 fn pick_best_auxiliary_candidate(
@@ -1482,7 +1676,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn root_candidate(
         raw: u32,
-        _guid: uuid::Uuid,
+        guid: uuid::Uuid,
         is_controlled: bool,
         is_replicated: bool,
         is_interpolated: bool,
@@ -1493,6 +1687,8 @@ mod tests {
         RootDebugCandidate {
             overlay_entity: DebugOverlayEntity {
                 entity: Entity::from_bits(raw as u64),
+                guid,
+                label: "ENTITY".to_string(),
                 lane: DebugEntityLane::Auxiliary,
                 position_xy: Vec2::new(raw as f32, 0.0),
                 rotation_rad: 0.0,
@@ -1500,6 +1696,7 @@ mod tests {
                 angular_velocity_rps: 0.0,
                 collision: DebugCollisionShape::None,
                 is_controlled,
+                is_component: false,
             },
             is_replicated,
             is_interpolated,
@@ -1525,6 +1722,8 @@ mod tests {
             parent_root_guid,
             overlay_entity: DebugOverlayEntity {
                 entity: Entity::from_bits(raw as u64),
+                guid,
+                label: "COMPONENT".to_string(),
                 lane: DebugEntityLane::Auxiliary,
                 position_xy: Vec2::new(raw as f32, 0.0),
                 rotation_rad: 0.0,
@@ -1532,6 +1731,7 @@ mod tests {
                 angular_velocity_rps: 0.0,
                 collision: DebugCollisionShape::HardpointMarker,
                 is_controlled: false,
+                is_component: true,
             },
             is_replicated,
             is_interpolated,

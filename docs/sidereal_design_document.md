@@ -240,6 +240,12 @@ Authoritative realtime input snapshots are short-lived: the replication server e
 
 2026-04-24 update: `ClientRealtimeInputMessage` carries the server-issued `control_generation` lease observed by the client. The replication server rejects realtime input whose generation does not match the currently authoritative player lease so delayed packets from a previous controlled entity cannot apply intent to a newly controlled target.
 
+2026-04-27 update: native clients keep Lightyear native input for local `ActionState<PlayerInput>` and rollback replay history, but Lightyear input-based rollback is disabled because replication does not run Lightyear's native server input receiver. Authoritative reconciliation is server state rollback/correction from Sidereal realtime input.
+
+2026-04-27 update: `ServerSessionReadyMessage` includes the server's current `control_generation` and authoritative controlled target. A reconnecting client must adopt that lease before sending realtime input; otherwise the server will reject input as stale generation.
+
+2026-04-27 update: realtime input snapshots are discarded when they expire, carry a stale control generation, or target an entity the player no longer controls. Client disconnect notify also clears per-player realtime input tick/rate/latest-state resources. This keeps latest-intent state from surviving disconnects or control handoffs as reusable input residue.
+
 ### 5.2.1 Control and Camera Chain (Normative)
 
 Authoritative runtime chain:
@@ -266,6 +272,8 @@ Single-writer motion principle:
 1. Controlled mode: controlled entity simulation writes controlled motion; player-follow system writes player anchor.
 2. Uncontrolled mode: player movement system writes player motion.
 3. Camera systems never write authoritative simulation motion state.
+
+2026-04-27 update: self-controlled player anchors may be non-physics entities with `LinearVelocity` but no Avian `RigidBody`. Shared fixed-step player movement must therefore integrate their `Position`/`Transform` directly, while physics-backed controlled entities continue to leave integration to Avian.
 
 ### 5.3 Prediction and Interpolation
 
@@ -446,6 +454,7 @@ Implementation note:
   Client clears pending control only on matching ack/reject. Free-roam is self-control (`controlled_entity_guid = player guid`), not null control.
   `control_generation` is the server-issued lease generation for the currently authoritative target; clients must key bootstrap/handoff state off that generation instead of inventing a local sequence from clone discovery alone.
   Realtime input must include the same `control_generation`; stale-generation input is rejected before it can update or drain from the latest-input snapshot.
+  2026-04-27 update: a hydrated authoritative control lease is generation 1 before the first client handoff request; the first target change after startup must therefore acknowledge generation 2, and handoff updates write a targeted player-entity persistence snapshot for `controlled_entity_guid`. Graph persistence treats `last_tick` as a stale-write guard so older queued snapshots cannot overwrite newer control state.
 - **Camera/anchor contract:** camera always follows the player entity. When controlled target is not self, server continuously anchors player transform to the controlled entity.
 
 **Multiple ships per player**

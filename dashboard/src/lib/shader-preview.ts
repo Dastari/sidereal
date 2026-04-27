@@ -35,6 +35,15 @@ export type ShaderPreviewResult = {
   uniforms: Array<ShaderPreviewUniformDescriptor>
 }
 
+export type ShaderPreviewRenderOptions = {
+  clear?: boolean
+}
+
+export type ShaderPreviewSequencePass = {
+  values: ShaderPreviewUniformValues
+  clear?: boolean
+}
+
 type BindingDeclaration = {
   group: number
   binding: number
@@ -64,7 +73,10 @@ type PreparedPreviewPipeline = {
 }
 
 let previewContextPromise: Promise<PreviewContext> | null = null
-const preparedPipelineCache = new Map<string, Promise<PreparedPreviewPipeline>>()
+const preparedPipelineCache = new Map<
+  string,
+  Promise<PreparedPreviewPipeline>
+>()
 const configuredCanvasCache = new WeakMap<
   HTMLCanvasElement,
   {
@@ -104,7 +116,8 @@ const UNIFORM_DECLARATION =
   /@group\((\d+)\)\s*@binding\((\d+)\)\s*var<uniform>\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^;]+);(?:\s*\/\/\s*(.*))?/g
 const GENERIC_BINDING_DECLARATION =
   /@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<(uniform)>)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^;]+);(?:\s*\/\/\s*(.*))?/g
-const STRUCT_DECLARATION = /struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([\s\S]*?)\};?/g
+const STRUCT_DECLARATION =
+  /struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([\s\S]*?)\};?/g
 
 function prettifyLabel(raw: string): string {
   return raw
@@ -187,8 +200,16 @@ export function extractPreviewUniforms(
     const comment = match[5]
     const scalarOrVectorComponents = parseComponentCount(type)
     if (scalarOrVectorComponents > 0) {
-      const labels = inferComponentLabels(name, scalarOrVectorComponents, comment)
-      const defaults = inferDefaultValues(name, scalarOrVectorComponents, labels)
+      const labels = inferComponentLabels(
+        name,
+        scalarOrVectorComponents,
+        comment,
+      )
+      const defaults = inferDefaultValues(
+        name,
+        scalarOrVectorComponents,
+        labels,
+      )
       uniforms.push({
         name,
         binding,
@@ -197,12 +218,11 @@ export function extractPreviewUniforms(
         type,
         components: scalarOrVectorComponents,
         labels,
-        category:
-          /color|tint|rgb|rgba/i.test(name)
-            ? 'color'
-            : scalarOrVectorComponents === 1
-              ? 'scalar'
-              : 'vector',
+        category: /color|tint|rgb|rgba/i.test(name)
+          ? 'color'
+          : scalarOrVectorComponents === 1
+            ? 'scalar'
+            : 'vector',
         defaults,
         byteOffset: 0,
       })
@@ -220,7 +240,11 @@ export function extractPreviewUniforms(
         return
       }
       const flattenedName = `${name}.${field.name}`
-      const labels = inferComponentLabels(flattenedName, components, field.comment)
+      const labels = inferComponentLabels(
+        flattenedName,
+        components,
+        field.comment,
+      )
       const defaults = inferDefaultValues(flattenedName, components, labels)
       uniforms.push({
         name: flattenedName,
@@ -230,12 +254,11 @@ export function extractPreviewUniforms(
         type: field.type,
         components,
         labels,
-        category:
-          /color|tint|rgb|rgba/i.test(flattenedName)
-            ? 'color'
-            : components === 1
-              ? 'scalar'
-              : 'vector',
+        category: /color|tint|rgb|rgba/i.test(flattenedName)
+          ? 'color'
+          : components === 1
+            ? 'scalar'
+            : 'vector',
         defaults,
         byteOffset: fieldIndex * 16,
       })
@@ -259,7 +282,10 @@ function normalizePreviewSource(source: string): string {
     /^#import\s+bevy_sprite::mesh2d_vertex_output::VertexOutput\s*$/gm,
     '',
   )
-  adapted = adapted.replace(/@group\(\d+\)\s*@binding\((\d+)\)/g, '@group(0) @binding($1)')
+  adapted = adapted.replace(
+    /@group\(\d+\)\s*@binding\((\d+)\)/g,
+    '@group(0) @binding($1)',
+  )
 
   const hasVertexOutput = /\bstruct\s+VertexOutput\b/.test(adapted)
   const hasVertexEntryPoint = /@vertex\s+fn\s+/.test(adapted)
@@ -274,17 +300,21 @@ function normalizePreviewSource(source: string): string {
 }
 
 function extractBindingDeclarations(source: string): Array<BindingDeclaration> {
-  return Array.from(source.matchAll(GENERIC_BINDING_DECLARATION)).map((match) => ({
-    group: Number(match[1]),
-    binding: Number(match[2]),
-    qualifier: match[3] === 'uniform' ? 'uniform' : 'plain',
-    name: match[4],
-    type: match[5].trim(),
-    comment: match[6],
-  }))
+  return Array.from(source.matchAll(GENERIC_BINDING_DECLARATION)).map(
+    (match) => ({
+      group: Number(match[1]),
+      binding: Number(match[2]),
+      qualifier: match[3] === 'uniform' ? 'uniform' : 'plain',
+      name: match[4],
+      type: match[5].trim(),
+      comment: match[6],
+    }),
+  )
 }
 
-function extractStructDefinitions(source: string): Map<string, Array<StructField>> {
+function extractStructDefinitions(
+  source: string,
+): Map<string, Array<StructField>> {
   const structMap = new Map<string, Array<StructField>>()
   for (const match of source.matchAll(STRUCT_DECLARATION)) {
     const structName = match[1]
@@ -399,7 +429,9 @@ function packUniformData(
   if (descriptors.length === 0) {
     return new Float32Array(4).buffer
   }
-  const byteLength = Math.max(...descriptors.map((descriptor) => descriptor.byteOffset + 16))
+  const byteLength = Math.max(
+    ...descriptors.map((descriptor) => descriptor.byteOffset + 16),
+  )
   const packed = new Float32Array(byteLength / 4)
 
   for (const descriptor of descriptors) {
@@ -462,7 +494,8 @@ function buildPreviewTextureData(
         const dist = Math.sqrt(dx * dx + dy * dy)
         const rockMask = dist <= 0.48 ? 1 : 0
         const grain =
-          ((Math.sin((x + 13) * 0.31) + Math.cos((y + 7) * 0.27)) * 0.25 + 0.5) *
+          ((Math.sin((x + 13) * 0.31) + Math.cos((y + 7) * 0.27)) * 0.25 +
+            0.5) *
           rockMask
         r = Math.round((85 + grain * 90) * rockMask)
         g = Math.round((70 + grain * 70) * rockMask)
@@ -480,10 +513,7 @@ function buildPreviewTextureData(
   return data
 }
 
-function createPreviewTexture(
-  device: GPUDevice,
-  label: string,
-): GPUTexture {
+function createPreviewTexture(device: GPUDevice, label: string): GPUTexture {
   const width = 64
   const height = 64
   const texture = device.createTexture({
@@ -522,7 +552,9 @@ function clearFallback(
   ctx.textAlign = 'center'
   ctx.fillText(message, canvas.width / 2, canvas.height / 2)
 
-  const firstError = diagnostics.find((diagnostic) => diagnostic.type === 'error')
+  const firstError = diagnostics.find(
+    (diagnostic) => diagnostic.type === 'error',
+  )
   if (firstError) {
     ctx.font = '12px JetBrains Mono, monospace'
     ctx.fillStyle = '#ff9c9c'
@@ -602,7 +634,23 @@ async function preparePreviewPipeline(
         fragment: {
           module: shaderModule,
           entryPoint: 'fragment',
-          targets: [{ format }],
+          targets: [
+            {
+              format,
+              blend: {
+                color: {
+                  srcFactor: 'src-alpha',
+                  dstFactor: 'one-minus-src-alpha',
+                  operation: 'add',
+                },
+                alpha: {
+                  srcFactor: 'one',
+                  dstFactor: 'one-minus-src-alpha',
+                  operation: 'add',
+                },
+              },
+            },
+          ],
         },
         primitive: {
           topology: 'triangle-list',
@@ -639,6 +687,17 @@ export async function renderPreviewShader(
   canvas: HTMLCanvasElement,
   source: string,
   values: ShaderPreviewUniformValues,
+  options: ShaderPreviewRenderOptions = {},
+): Promise<ShaderPreviewResult> {
+  return renderPreviewShaderSequence(canvas, source, [
+    { values, clear: options.clear ?? true },
+  ])
+}
+
+export async function renderPreviewShaderSequence(
+  canvas: HTMLCanvasElement,
+  source: string,
+  passes: Array<ShaderPreviewSequencePass>,
 ): Promise<ShaderPreviewResult> {
   const uniforms = extractPreviewUniforms(source)
   const adaptedSource = normalizePreviewSource(source)
@@ -663,7 +722,11 @@ export async function renderPreviewShader(
   }
   const context = await getPreviewContext()
   const format = navigator.gpu.getPreferredCanvasFormat()
-  const canvasContext = getConfiguredCanvasContext(canvas, context.device, format)
+  const canvasContext = getConfiguredCanvasContext(
+    canvas,
+    context.device,
+    format,
+  )
   const prepared = await preparePreviewPipeline(
     context.device,
     format,
@@ -699,109 +762,85 @@ export async function renderPreviewShader(
     }
   }
 
-  const bindGroupEntries: Array<GPUBindGroupEntry> = []
   const ownedTextures: Array<GPUTexture> = []
-  for (const declaration of prepared.declarations) {
-    if (declaration.qualifier === 'uniform') {
-      const descriptors = uniformGroups.get(declaration.binding) ?? []
-      const buffer = context.device.createBuffer({
-        size: Math.max(16, packUniformData(descriptors, values).byteLength),
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        mappedAtCreation: false,
-      })
-      const packed = packUniformData(descriptors, values)
-      context.device.queue.writeBuffer(buffer, 0, packed)
-      bindGroupEntries.push({
-        binding: declaration.binding,
-        resource: { buffer },
-      })
-      continue
-    }
-
-    if (declaration.type === 'texture_2d<f32>') {
-      const texture = createPreviewTexture(context.device, declaration.name)
-      ownedTextures.push(texture)
-      bindGroupEntries.push({
-        binding: declaration.binding,
-        resource: texture.createView(),
-      })
-      continue
-    }
-
-    if (declaration.type === 'sampler') {
-      bindGroupEntries.push({
-        binding: declaration.binding,
-        resource: context.device.createSampler({
-          label: `preview-sampler-${declaration.name}`,
-          magFilter: 'linear',
-          minFilter: 'linear',
-          mipmapFilter: 'linear',
-          addressModeU: 'clamp-to-edge',
-          addressModeV: 'clamp-to-edge',
-        }),
-      })
-    }
-  }
-
-  const bindGroup =
-    bindGroupEntries.length > 0
-      ? (() => {
-          try {
-            return context.device.createBindGroup({
-              layout: prepared.pipeline.getBindGroupLayout(0),
-              entries: bindGroupEntries,
-            })
-          } catch (error) {
-            diagnostics.push({
-              message:
-                error instanceof Error
-                  ? error.message
-                  : 'Bind group creation failed',
-              line: null,
-              column: null,
-              type: 'error',
-            })
-            return null
-          }
-        })()
-      : null
-
-  if (diagnostics.some((diagnostic) => diagnostic.type === 'error')) {
-    clearFallback(canvas, 'Preview Invalid', diagnostics)
-    return {
-      ok: false,
-      diagnostics,
-      metrics: {
-        compileMs: prepared.compileMs,
-        pipelineMs: prepared.pipelineMs,
-        applyMs: Number((prepared.compileMs + prepared.pipelineMs).toFixed(2)),
-        frameMs: null,
-      },
-      adaptedSource,
-      uniforms,
-    }
-  }
 
   const frameStartedAt = performance.now()
   const encoder = context.device.createCommandEncoder({
     label: 'sidereal-shader-preview-encoder',
   })
-  const renderPass = encoder.beginRenderPass({
-    colorAttachments: [
-      {
-        view: canvasContext.getCurrentTexture().createView(),
-        clearValue: { r: 0.03, g: 0.05, b: 0.08, a: 1 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      },
-    ],
-  })
-  renderPass.setPipeline(prepared.pipeline)
-  if (bindGroup) {
-    renderPass.setBindGroup(0, bindGroup)
+  const targetView = canvasContext.getCurrentTexture().createView()
+
+  for (const [index, pass] of passes.entries()) {
+    const passBindGroupEntries: Array<GPUBindGroupEntry> = []
+    for (const declaration of prepared.declarations) {
+      if (declaration.qualifier === 'uniform') {
+        const descriptors = uniformGroups.get(declaration.binding) ?? []
+        const buffer = context.device.createBuffer({
+          size: Math.max(
+            16,
+            packUniformData(descriptors, pass.values).byteLength,
+          ),
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: false,
+        })
+        const packed = packUniformData(descriptors, pass.values)
+        context.device.queue.writeBuffer(buffer, 0, packed)
+        passBindGroupEntries.push({
+          binding: declaration.binding,
+          resource: { buffer },
+        })
+        continue
+      }
+
+      if (declaration.type === 'texture_2d<f32>') {
+        const texture = createPreviewTexture(context.device, declaration.name)
+        ownedTextures.push(texture)
+        passBindGroupEntries.push({
+          binding: declaration.binding,
+          resource: texture.createView(),
+        })
+        continue
+      }
+
+      if (declaration.type === 'sampler') {
+        passBindGroupEntries.push({
+          binding: declaration.binding,
+          resource: context.device.createSampler({
+            label: `preview-sampler-${declaration.name}`,
+            magFilter: 'linear',
+            minFilter: 'linear',
+            mipmapFilter: 'linear',
+            addressModeU: 'clamp-to-edge',
+            addressModeV: 'clamp-to-edge',
+          }),
+        })
+      }
+    }
+
+    const passBindGroup =
+      passBindGroupEntries.length > 0
+        ? context.device.createBindGroup({
+            layout: prepared.pipeline.getBindGroupLayout(0),
+            entries: passBindGroupEntries,
+          })
+        : null
+    const renderPass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: targetView,
+          clearValue: { r: 0.03, g: 0.05, b: 0.08, a: 1 },
+          loadOp: index === 0 && (pass.clear ?? true) ? 'clear' : 'load',
+          storeOp: 'store',
+        },
+      ],
+    })
+    renderPass.setPipeline(prepared.pipeline)
+    if (passBindGroup) {
+      renderPass.setBindGroup(0, passBindGroup)
+    }
+    renderPass.draw(3)
+    renderPass.end()
   }
-  renderPass.draw(3)
-  renderPass.end()
   context.device.queue.submit([encoder.finish()])
   await context.device.queue.onSubmittedWorkDone()
   for (const texture of ownedTextures) {

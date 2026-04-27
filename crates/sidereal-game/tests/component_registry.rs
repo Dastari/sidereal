@@ -53,6 +53,32 @@ fn cost_mapping_exists() {
 }
 
 #[test]
+fn visibility_v2_component_mappings_exist() {
+    let registry = generated_component_registry();
+    let signal = registry
+        .iter()
+        .find(|entry| entry.component_kind == "signal_signature")
+        .expect("signal_signature mapping should exist");
+    assert!(signal.type_path.ends_with("SignalSignature"));
+
+    let resolution = registry
+        .iter()
+        .find(|entry| entry.component_kind == "contact_resolution_m")
+        .expect("contact_resolution_m mapping should exist");
+    assert!(resolution.type_path.ends_with("ContactResolutionM"));
+}
+
+#[test]
+fn scanner_component_mapping_exists() {
+    let registry = generated_component_registry();
+    let mapping = registry
+        .iter()
+        .find(|entry| entry.component_kind == "scanner_component")
+        .expect("scanner_component mapping should exist");
+    assert!(mapping.type_path.ends_with("ScannerComponent"));
+}
+
+#[test]
 fn sidereal_game_plugin_inserts_generated_registry_resource() {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, SiderealGamePlugin));

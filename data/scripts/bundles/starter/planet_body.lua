@@ -58,6 +58,20 @@ function PlanetBody.build_graph_records(ctx)
     discovery_radius_m = ctx.discovery_radius_m,
     use_extent_for_discovery = ctx.use_extent_for_discovery ~= false,
   }
+  local default_signal_strength = 1.0
+  local default_signal_detection_radius_m = 4000.0
+  if (ctx.body_kind or 0) == 1 then
+    default_signal_strength = 2.0
+    default_signal_detection_radius_m = 12000.0
+  elseif (ctx.body_kind or 0) == 2 then
+    default_signal_strength = 1.5
+    default_signal_detection_radius_m = 6000.0
+  end
+  local signal_signature = {
+    strength = ctx.signal_strength or default_signal_strength,
+    detection_radius_m = ctx.signal_detection_radius_m or default_signal_detection_radius_m,
+    use_extent_for_detection = ctx.use_extent_for_signal_detection ~= false,
+  }
   local shader_settings = {
     enabled = ctx.enabled ~= false,
     enable_surface_detail = ctx.enable_surface_detail ~= false,
@@ -210,6 +224,7 @@ function PlanetBody.build_graph_records(ctx)
           height = body_size_m,
         }),
         component(entity_id, "static_landmark", static_landmark),
+        component(entity_id, "signal_signature", signal_signature),
         component(entity_id, "runtime_render_layer_override", runtime_render_layer_override),
         component(entity_id, "map_icon", {
           asset_id = ctx.map_icon_asset_id or "map_icon_planet_svg",

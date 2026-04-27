@@ -38,6 +38,17 @@ Update note (2026-04-26):
 - Character select should become a full-screen MMO-style character list/creation/enter-world flow while keeping `sidereal-ui` semantic tokens, HUD framing, persistent dialogs for critical auth failures, and shared native/WASM gameplay/runtime code.
 - The native/WASM game client auth screen now uses a reusable six-slot TOTP code input for authenticator challenges, matching the dashboard's individual-digit interaction model while preserving `sidereal-ui` HUD input surfaces.
 
+Update note (2026-04-27):
+
+- Primary `sidereal-ui` button labels use white foreground text by default across themes.
+- `UiMetrics.input_radius_px` is the shared rounded-corner token for reusable input boxes, TOTP digit boxes, and reusable button layouts. The current auth theme default is 4 px, while panels and non-button framed controls may remain angular through `panel_radius_px` and `control_radius_px`.
+- Reusable game-client text inputs use `sidereal-ui::widgets::TextInputState` for cursor, selection anchor/focus, word movement, selected-text replacement, grapheme-safe deletion, undo/redo, password masking, and start/end adornment layout. Native impact: auth email/password fields now use the shared state machine with click, drag, double-click word select, keyboard selection, OS clipboard shortcuts with an in-client fallback, and password display masking. WASM impact: the same shared state and Bevy UI systems compile for the WASM client; clipboard shortcuts use the in-client fallback until an async browser clipboard adapter is added at the platform boundary.
+- Auth input adornments use the bootstrap SVG icon assets (`ui_icon_email_svg`, `ui_icon_password_svg`, `ui_icon_eye_svg`, `ui_icon_eye_off_svg`) as their source of truth, with embedded bytes as the pre-auth startup fallback. The auth UI rasterizes those SVG bytes into theme-tinted `ImageNode` UI children so icons render inside the Bevy UI pass; tactical map markers continue to use the `bevy_svg` tessellation path for world/overlay markers. Password inputs include an end eye/eye-off toggle that switches only presentation masking, not the stored field value.
+- Status-aware frames, panels, notifications, dialogs, and buttons must use the shared `UiSemanticTone` helpers (`Info`, `Success`, `Warning`, `Danger`) so background, border, HUD chrome, glow, and foreground text remain consistent across components.
+- Warning-tone foreground text and semantic border/HUD chrome use white for contrast; alert icons must use the same semantic foreground color as dialog/status copy instead of hard-coded destructive red.
+- Toned HUD surfaces must remain visibly scanlined and must use high-contrast HUD chrome/corner brackets; do not render danger/warning/success as flat solid fills where the frame treatment disappears.
+- Authenticator/TOTP challenges are warning-state UI, not danger-state UI. Use danger only for failed, rejected, invalid, or blocked authentication states.
+
 ## 1. Design Philosophy
 
 Sidereal uses a **dark space-themed aesthetic** that emphasizes:
@@ -174,8 +185,11 @@ margin: UiRect::bottom(Val::Px(8.0))  // Section spacing
 ### Border Radius
 
 ```rust
-// Default sidereal-ui panels, buttons, and inputs
+// Default sidereal-ui panels and non-button framed controls
 border_radius: BorderRadius::all(Val::Px(0.0))
+
+// Reusable sidereal-ui input boxes, TOTP digit boxes, and button layouts
+border_radius: BorderRadius::all(Val::Px(theme.metrics.input_radius_px))
 ```
 
 ### Border Width

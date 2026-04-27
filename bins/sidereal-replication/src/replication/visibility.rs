@@ -10,9 +10,9 @@ use sidereal_game::{
     FullscreenLayer, MapIcon, MountedOn, OwnerId, ParentGuid, PlayerTag, PublicVisibility,
     RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
     RENDER_PHASE_FULLSCREEN_FOREGROUND, RuntimeRenderLayerDefinition, RuntimeRenderLayerOverride,
-    RuntimeWorldVisualStack, SizeM, StaticLandmark, VisibilityDisclosure, VisibilityGridCell,
-    VisibilityRangeM, VisibilityRangeSource, VisibilitySpatialGrid, WorldPosition,
-    default_main_world_render_layer,
+    RuntimeWorldVisualStack, SignalSignature, SizeM, StaticLandmark, VisibilityDisclosure,
+    VisibilityGridCell, VisibilityRangeM, VisibilityRangeSource, VisibilitySpatialGrid,
+    WorldPosition, default_main_world_render_layer,
 };
 use sidereal_net::{
     ClientLocalViewMode, ClientLocalViewModeMessage, NotificationPayload, NotificationPlacement,
@@ -297,6 +297,14 @@ struct CachedVisibilityEntity {
     is_global_render_config: bool,
 }
 
+type StaticLandmarkCacheEntry = (uuid::Uuid, StaticLandmark, Option<SignalSignature>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LandmarkDiscoveryCause {
+    Direct,
+    Signal,
+}
+
 #[derive(Resource, Default)]
 pub struct VisibilityEntityCache {
     by_entity: HashMap<Entity, CachedVisibilityEntity>,
@@ -332,7 +340,7 @@ pub struct VisibilityScratch {
     player_faction_by_owner: HashMap<String, String>,
     entities_by_cell: HashMap<(i64, i64), Vec<Entity>>,
     owned_entities_by_player: HashMap<String, Vec<Entity>>,
-    static_landmarks_by_entity: HashMap<Entity, (uuid::Uuid, StaticLandmark)>,
+    static_landmarks_by_entity: HashMap<Entity, StaticLandmarkCacheEntry>,
     max_static_landmark_discovery_padding_m: f32,
     client_states: Vec<ClientVisibilityComputedState>,
 }
@@ -494,6 +502,7 @@ pub struct VisibilityLandmarkDiscoveryParams<'w, 's> {
             Option<&'static Position>,
             Option<&'static WorldPosition>,
             &'static GlobalTransform,
+            Option<&'static SignalSignature>,
         ),
         With<Replicate>,
     >,
@@ -1095,13 +1104,15 @@ pub fn refresh_static_landmark_discoveries(
     *last_run_at_s = Some(now_s);
 
     let started_at = Instant::now();
-    let mut static_landmarks_by_entity = HashMap::<Entity, (uuid::Uuid, StaticLandmark)>::new();
+    let mut static_landmarks_by_entity = HashMap::<Entity, StaticLandmarkCacheEntry>::new();
     let mut visibility_position_by_entity = HashMap::<Entity, Vec3>::new();
     let mut visibility_extent_m_by_entity = HashMap::<Entity, f32>::new();
     let mut entities_by_cell = HashMap::<(i64, i64), Vec<Entity>>::new();
     let mut max_static_landmark_discovery_padding_m = 0.0f32;
 
-    for (entity, position, world_position, global_transform) in &params.all_replicated {
+    for (entity, position, world_position, global_transform, signal_signature) in
+        &params.all_replicated
+    {
         let Some(cached) = params.cache.by_entity.get(&entity) else {
             continue;
         };
@@ -1116,17 +1127,19 @@ pub fn refresh_static_landmark_discoveries(
             replicated_visibility_world_position(position, world_position, global_transform);
         visibility_position_by_entity.insert(entity, effective_world_pos);
         visibility_extent_m_by_entity.insert(entity, cached.entity_extent_m);
-        static_landmarks_by_entity.insert(entity, (guid, static_landmark.clone()));
+        static_landmarks_by_entity.insert(
+            entity,
+            (guid, static_landmark.clone(), signal_signature.copied()),
+        );
         entities_by_cell
             .entry(cell_key(effective_world_pos, runtime_cfg.cell_size_m))
             .or_default()
             .push(entity);
-        let discovery_padding_m = static_landmark.discovery_radius_m.unwrap_or(0.0).max(0.0)
-            + if static_landmark.use_extent_for_discovery {
-                cached.entity_extent_m
-            } else {
-                0.0
-            };
+        let discovery_padding_m = static_landmark_discovery_padding_m(
+            cached.entity_extent_m,
+            &static_landmark,
+            signal_signature,
+        );
         max_static_landmark_discovery_padding_m =
             max_static_landmark_discovery_padding_m.max(discovery_padding_m);
     }
@@ -1143,7 +1156,7 @@ pub fn refresh_static_landmark_discoveries(
             .as_deref()
             .map(|component| component.landmark_entity_ids.iter().copied().collect())
             .unwrap_or_default();
-        let mut newly_discovered = Vec::<(uuid::Uuid, Entity)>::new();
+        let mut newly_discovered = Vec::<(uuid::Uuid, Entity, LandmarkDiscoveryCause)>::new();
         let mut discovery_candidates = HashSet::<Entity>::new();
         for (visibility_pos, visibility_range_m) in &client_context.visibility_sources {
             add_entities_in_radius(
@@ -1157,7 +1170,7 @@ pub fn refresh_static_landmark_discoveries(
         let discovery_context =
             PlayerVisibilityContextRef::from_cached_client_context(client_context);
         for target_entity in discovery_candidates {
-            let Some((target_guid, static_landmark)) =
+            let Some((target_guid, static_landmark, signal_signature)) =
                 static_landmarks_by_entity.get(&target_entity)
             else {
                 continue;
@@ -1171,13 +1184,14 @@ pub fn refresh_static_landmark_discoveries(
                 .get(&target_entity)
                 .copied()
                 .unwrap_or(0.0);
-            if landmark_discovery_overlap(
+            if let Some(discovery_cause) = landmark_discovery_cause(
                 target_position,
                 entity_extent_m,
                 static_landmark,
+                signal_signature.as_ref(),
                 &discovery_context,
             ) {
-                newly_discovered.push((*target_guid, target_entity));
+                newly_discovered.push((*target_guid, target_entity, discovery_cause));
             }
         }
         metrics.discovered_new_total = metrics
@@ -1185,32 +1199,36 @@ pub fn refresh_static_landmark_discoveries(
             .saturating_add(newly_discovered.len());
         if !newly_discovered.is_empty() {
             if let Some(component) = discovered_component.as_deref_mut() {
-                for (landmark_id, landmark_entity) in newly_discovered {
+                for (landmark_id, landmark_entity, discovery_cause) in newly_discovered {
                     if component.insert(landmark_id) {
                         discovered_static_landmarks.insert(landmark_id);
-                        enqueue_static_landmark_discovery_notification(
-                            &mut params.notification_queue,
-                            client_context.player_entity_id.as_str(),
-                            landmark_id,
-                            landmark_entity,
-                            &static_landmarks_by_entity,
-                            &params.landmark_notification_meta,
-                        );
+                        if matches!(discovery_cause, LandmarkDiscoveryCause::Direct) {
+                            enqueue_static_landmark_discovery_notification(
+                                &mut params.notification_queue,
+                                client_context.player_entity_id.as_str(),
+                                landmark_id,
+                                landmark_entity,
+                                &static_landmarks_by_entity,
+                                &params.landmark_notification_meta,
+                            );
+                        }
                     }
                 }
             } else {
                 let mut component = DiscoveredStaticLandmarks::default();
-                for (landmark_id, landmark_entity) in newly_discovered {
+                for (landmark_id, landmark_entity, discovery_cause) in newly_discovered {
                     if component.insert(landmark_id) {
                         discovered_static_landmarks.insert(landmark_id);
-                        enqueue_static_landmark_discovery_notification(
-                            &mut params.notification_queue,
-                            client_context.player_entity_id.as_str(),
-                            landmark_id,
-                            landmark_entity,
-                            &static_landmarks_by_entity,
-                            &params.landmark_notification_meta,
-                        );
+                        if matches!(discovery_cause, LandmarkDiscoveryCause::Direct) {
+                            enqueue_static_landmark_discovery_notification(
+                                &mut params.notification_queue,
+                                client_context.player_entity_id.as_str(),
+                                landmark_id,
+                                landmark_entity,
+                                &static_landmarks_by_entity,
+                                &params.landmark_notification_meta,
+                            );
+                        }
                     }
                 }
                 commands.entity(player_entity).insert(component);
@@ -1227,7 +1245,7 @@ fn enqueue_static_landmark_discovery_notification(
     player_entity_id: &str,
     landmark_id: uuid::Uuid,
     landmark_entity: Entity,
-    static_landmarks_by_entity: &HashMap<Entity, (uuid::Uuid, StaticLandmark)>,
+    static_landmarks_by_entity: &HashMap<Entity, StaticLandmarkCacheEntry>,
     landmark_notification_meta: &Query<
         '_,
         '_,
@@ -1238,7 +1256,7 @@ fn enqueue_static_landmark_discovery_notification(
         ),
     >,
 ) {
-    let Some((_, static_landmark)) = static_landmarks_by_entity.get(&landmark_entity) else {
+    let Some((_, static_landmark, _)) = static_landmarks_by_entity.get(&landmark_entity) else {
         return;
     };
     let (display_name, map_icon_asset_id, world_position_xy) = landmark_notification_meta
@@ -1563,33 +1581,65 @@ fn effective_discovered_landmark_extent_m(
         * max_visual_scale_multiplier(visual_stack)
 }
 
-fn landmark_discovery_overlap(
+fn static_landmark_discovery_padding_m(
+    entity_extent_m: f32,
+    static_landmark: &StaticLandmark,
+    signal_signature: Option<&SignalSignature>,
+) -> f32 {
+    let landmark_radius_m = static_landmark.discovery_radius_m.unwrap_or(0.0).max(0.0);
+    let signal_radius_m = signal_signature
+        .map(|signal| signal.detection_radius_m.max(0.0))
+        .unwrap_or(0.0);
+    let uses_extent = static_landmark.use_extent_for_discovery
+        || signal_signature.is_some_and(|signal| signal.use_extent_for_detection);
+    landmark_radius_m
+        + signal_radius_m
+        + if uses_extent {
+            entity_extent_m.max(0.0)
+        } else {
+            0.0
+        }
+}
+
+fn direct_static_landmark_discovery_padding_m(
+    entity_extent_m: f32,
+    static_landmark: &StaticLandmark,
+) -> f32 {
+    static_landmark.discovery_radius_m.unwrap_or(0.0).max(0.0)
+        + if static_landmark.use_extent_for_discovery {
+            entity_extent_m.max(0.0)
+        } else {
+            0.0
+        }
+}
+
+fn landmark_discovery_cause(
     entity_position: Option<Vec3>,
     entity_extent_m: f32,
     static_landmark: &StaticLandmark,
+    signal_signature: Option<&SignalSignature>,
     visibility_context: &PlayerVisibilityContextRef<'_>,
-) -> bool {
+) -> Option<LandmarkDiscoveryCause> {
     if static_landmark.always_known {
-        return true;
+        return Some(LandmarkDiscoveryCause::Direct);
     }
     if !static_landmark.discoverable {
-        return false;
+        return None;
     }
-    let Some(target_position) = entity_position else {
-        return false;
-    };
-    visibility_context
-        .visibility_sources
-        .iter()
-        .any(|(visibility_pos, visibility_range_m)| {
-            let extra_radius = static_landmark.discovery_radius_m.unwrap_or(0.0).max(0.0)
-                + if static_landmark.use_extent_for_discovery {
-                    entity_extent_m
-                } else {
-                    0.0
-                };
-            (target_position - *visibility_pos).length() <= *visibility_range_m + extra_radius
-        })
+    let target_position = entity_position?;
+    let direct_extra_radius =
+        direct_static_landmark_discovery_padding_m(entity_extent_m, static_landmark);
+    let signal_extra_radius =
+        static_landmark_discovery_padding_m(entity_extent_m, static_landmark, signal_signature);
+    let mut signal_detected = false;
+    for (visibility_pos, visibility_range_m) in visibility_context.visibility_sources {
+        let distance_m = (target_position - *visibility_pos).length();
+        if distance_m <= *visibility_range_m + direct_extra_radius {
+            return Some(LandmarkDiscoveryCause::Direct);
+        }
+        signal_detected |= distance_m <= *visibility_range_m + signal_extra_radius;
+    }
+    signal_detected.then_some(LandmarkDiscoveryCause::Signal)
 }
 
 fn apply_visibility_membership_diff(
@@ -1963,18 +2013,14 @@ pub fn update_network_visibility(
         if let Some(guid) = cached.guid
             && let Some(static_landmark) = cached.static_landmark.as_ref()
         {
-            let discovery_padding_m = static_landmark.discovery_radius_m.unwrap_or(0.0).max(0.0)
-                + if static_landmark.use_extent_for_discovery {
-                    cached.entity_extent_m
-                } else {
-                    0.0
-                };
+            let discovery_padding_m =
+                static_landmark_discovery_padding_m(cached.entity_extent_m, static_landmark, None);
             scratch.max_static_landmark_discovery_padding_m = scratch
                 .max_static_landmark_discovery_padding_m
                 .max(discovery_padding_m);
             scratch
                 .static_landmarks_by_entity
-                .insert(entity, (guid, static_landmark.clone()));
+                .insert(entity, (guid, static_landmark.clone(), None));
         }
         scratch
             .root_public_by_entity
@@ -3890,6 +3936,72 @@ mod tests {
             replicated_visibility_world_position(None, Some(&world_position), &stale_global);
 
         assert_eq!(resolved, Vec3::new(8000.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn landmark_signal_signature_extends_discovery_overlap() {
+        let landmark = StaticLandmark {
+            kind: "Planet".to_string(),
+            discoverable: true,
+            always_known: false,
+            discovery_radius_m: None,
+            use_extent_for_discovery: false,
+        };
+        let signal = SignalSignature {
+            strength: 1.0,
+            detection_radius_m: 1000.0,
+            use_extent_for_detection: false,
+        };
+        let context = cached_client_visibility_context(
+            "player-a",
+            None,
+            300.0,
+            vec![(Vec3::ZERO, 300.0)],
+            [],
+        );
+        let visibility_context = PlayerVisibilityContextRef::from_cached_client_context(&context);
+
+        assert_eq!(
+            landmark_discovery_cause(
+                Some(Vec3::new(1200.0, 0.0, 0.0)),
+                0.0,
+                &landmark,
+                None,
+                &visibility_context,
+            ),
+            None
+        );
+        assert_eq!(
+            landmark_discovery_cause(
+                Some(Vec3::new(1200.0, 0.0, 0.0)),
+                0.0,
+                &landmark,
+                Some(&signal),
+                &visibility_context,
+            ),
+            Some(LandmarkDiscoveryCause::Signal)
+        );
+    }
+
+    #[test]
+    fn landmark_signal_discovery_padding_uses_extent_once() {
+        let landmark = StaticLandmark {
+            kind: "Planet".to_string(),
+            discoverable: true,
+            always_known: false,
+            discovery_radius_m: Some(200.0),
+            use_extent_for_discovery: true,
+        };
+        let signal = SignalSignature {
+            strength: 1.0,
+            detection_radius_m: 1000.0,
+            use_extent_for_detection: true,
+        };
+
+        assert_eq!(
+            static_landmark_discovery_padding_m(500.0, &landmark, Some(&signal)),
+            1700.0
+        );
     }
 
     #[test]

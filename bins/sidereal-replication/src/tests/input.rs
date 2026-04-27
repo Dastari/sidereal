@@ -171,6 +171,18 @@ fn drain_clears_stale_realtime_input_after_timeout() {
 
     let queue = app.world().get::<ActionQueue>(player_entity).unwrap();
     assert!(queue.pending.is_empty());
+    assert!(
+        !app.world()
+            .resource::<LatestRealtimeInputsByPlayer>()
+            .by_player_entity_id
+            .contains_key(&player_id)
+    );
+    assert!(
+        !app.world()
+            .resource::<RealtimeInputActivityByPlayer>()
+            .last_received_at_s_by_player_entity_id
+            .contains_key(&player_id)
+    );
 }
 
 #[test]
@@ -228,6 +240,12 @@ fn drain_rejects_stale_generation_input_during_control_handoff() {
 
     let queue = app.world().get::<ActionQueue>(ship_b_entity).unwrap();
     assert!(queue.pending.is_empty());
+    assert!(
+        !app.world()
+            .resource::<LatestRealtimeInputsByPlayer>()
+            .by_player_entity_id
+            .contains_key(&player_id)
+    );
     assert_eq!(
         app.world()
             .resource::<ClientInputDropMetrics>()
@@ -291,6 +309,12 @@ fn drain_rejects_target_mismatch_with_matching_control_generation() {
 
     let queue = app.world().get::<ActionQueue>(ship_b_entity).unwrap();
     assert!(queue.pending.is_empty());
+    assert!(
+        !app.world()
+            .resource::<LatestRealtimeInputsByPlayer>()
+            .by_player_entity_id
+            .contains_key(&player_id)
+    );
     assert_eq!(
         app.world()
             .resource::<ClientInputDropMetrics>()

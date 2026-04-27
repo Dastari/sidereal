@@ -100,7 +100,9 @@ export function TablesPanel({
             <div className="truncate font-medium text-foreground">
               {document.scriptPath}
             </div>
-            <div className="text-xs text-muted-foreground">{document.family}</div>
+            <div className="text-xs text-muted-foreground">
+              {document.family}
+            </div>
           </div>
         ),
       },
@@ -131,7 +133,8 @@ export function TablesPanel({
   )
 
   const defaultSortState = useMemo<DataTableSortState>(() => {
-    if (sortKey === 'rows') return { columnId: 'rowEstimate', direction: 'desc' }
+    if (sortKey === 'rows')
+      return { columnId: 'rowEstimate', direction: 'desc' }
     if (sortKey === 'name') return { columnId: 'tableName', direction: 'asc' }
     return { columnId: 'schemaName', direction: 'asc' }
   }, [sortKey])
@@ -147,7 +150,8 @@ export function TablesPanel({
                 Relational Tables
               </CardTitle>
               <div className="mt-1 text-sm text-muted-foreground">
-                Information schema view over persisted auth, scripting, and support tables.
+                Information schema view over persisted auth, scripting, and
+                support tables.
               </div>
             </div>
             <Badge variant="secondary">{filteredTables.length}</Badge>
@@ -157,6 +161,9 @@ export function TablesPanel({
               columns={tableColumns}
               rows={filteredTables}
               getRowId={(table) => `${table.schemaName}.${table.tableName}`}
+              getSearchText={(table) =>
+                `${table.schemaName} ${table.tableName} ${table.tableType} ${table.rowEstimate ?? ''}`
+              }
               loading={loading}
               loadingLabel="Loading relational tables..."
               emptyLabel="No tables matched the current filter."
@@ -187,12 +194,19 @@ export function TablesPanel({
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between rounded-lg border border-border/70 bg-background/50 px-3 py-2 text-sm">
               <span className="text-muted-foreground">Documents</span>
-              <span className="font-medium tabular-nums">{scriptDocuments.length}</span>
+              <span className="font-medium tabular-nums">
+                {scriptDocuments.length}
+              </span>
             </div>
             <DataTable
               columns={scriptColumns}
               rows={scriptDocuments}
               getRowId={(document) => document.scriptPath}
+              getSearchText={(document) =>
+                `${document.scriptPath} ${document.family} ${
+                  document.activeRevision ?? ''
+                } ${document.hasDraft ? 'draft' : 'published'}`
+              }
               loading={loading}
               loadingLabel="Loading script catalog rows..."
               emptyLabel="No script catalog rows found."
@@ -202,7 +216,8 @@ export function TablesPanel({
             />
             <div className="rounded-lg border border-border/70 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
               <DatabaseZap className="mr-2 inline h-3.5 w-3.5 text-primary" />
-              This section is wired to live SQL metadata and script catalog rows, not a placeholder.
+              This section is wired to live SQL metadata and script catalog
+              rows, not a placeholder.
             </div>
           </CardContent>
         </Card>

@@ -16,7 +16,9 @@ use super::components::{
     BackdropCamera, ClientSceneEntity, DebugOverlayCamera, DebugOverlayPanelLabelShadowText,
     DebugOverlayPanelLabelText, DebugOverlayPanelRoot, DebugOverlayPanelSecondaryLabelShadowText,
     DebugOverlayPanelSecondaryLabelText, DebugOverlayPanelSecondaryValueShadowText,
-    DebugOverlayPanelSecondaryValueText, DebugOverlayPanelValueShadowText,
+    DebugOverlayPanelSecondaryValueText, DebugOverlayPanelTertiaryLabelShadowText,
+    DebugOverlayPanelTertiaryLabelText, DebugOverlayPanelTertiaryValueShadowText,
+    DebugOverlayPanelTertiaryValueText, DebugOverlayPanelText, DebugOverlayPanelValueShadowText,
     DebugOverlayPanelValueText, DebugVelocityArrowHeadLower, DebugVelocityArrowHeadUpper,
     DebugVelocityArrowShaft, FullscreenForegroundCamera, GameplayCamera, GameplayHud,
     HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
@@ -223,7 +225,7 @@ pub(super) fn spawn_world_scene(
                 position_type: PositionType::Absolute,
                 left: px(14),
                 top: px(14),
-                width: px(820),
+                width: px(1040),
                 ..default()
             },
             Visibility::Hidden,
@@ -243,118 +245,194 @@ pub(super) fn spawn_world_scene(
                 },
                 Text::new("FPS\nFrame"),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelLabelShadowText,
             ));
             panel.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(181),
+                    left: px(137),
                     top: px(1),
                     ..default()
                 },
                 Text::new("--\n--.-- ms"),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelValueShadowText,
             ));
             panel.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(321),
+                    left: px(331),
                     top: px(1),
                     ..default()
                 },
                 Text::new(""),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelSecondaryLabelShadowText,
             ));
             panel.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(501),
+                    left: px(467),
                     top: px(1),
                     ..default()
                 },
                 Text::new(""),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelSecondaryValueShadowText,
+            ));
+            panel.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(661),
+                    top: px(1),
+                    ..default()
+                },
+                Text::new(""),
+                TextFont {
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelText,
+                DebugOverlayPanelTertiaryLabelShadowText,
+            ));
+            panel.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(797),
+                    top: px(1),
+                    ..default()
+                },
+                Text::new(""),
+                TextFont {
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+                DebugOverlayPanelText,
+                DebugOverlayPanelTertiaryValueShadowText,
             ));
             panel.spawn((
                 Text::new("FPS\nFrame"),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelLabelText,
             ));
             panel.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(180),
+                    left: px(136),
                     top: px(0),
                     ..default()
                 },
                 Text::new("--\n--.-- ms"),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelValueText,
             ));
             panel.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(320),
+                    left: px(330),
                     top: px(0),
                     ..default()
                 },
                 Text::new(""),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelSecondaryLabelText,
             ));
             panel.spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(500),
+                    left: px(466),
                     top: px(0),
                     ..default()
                 },
                 Text::new(""),
                 TextFont {
-                    font: Handle::<Font>::default(),
-                    font_size: 15.0,
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelText,
                 DebugOverlayPanelSecondaryValueText,
+            ));
+            panel.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(660),
+                    top: px(0),
+                    ..default()
+                },
+                Text::new(""),
+                TextFont {
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelText,
+                DebugOverlayPanelTertiaryLabelText,
+            ));
+            panel.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(796),
+                    top: px(0),
+                    ..default()
+                },
+                Text::new(""),
+                TextFont {
+                    font: fonts.mono_bold.clone(),
+                    font_size: 13.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.85, 0.92, 1.0)),
+                DebugOverlayPanelText,
+                DebugOverlayPanelTertiaryValueText,
             ));
         });
 

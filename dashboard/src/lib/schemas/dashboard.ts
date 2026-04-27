@@ -3,9 +3,17 @@ import { decodeSoundId } from '@/features/audio-studio/types'
 
 export const uuidSchema = z.string().uuid()
 
+const uuidLikeSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
+    'entityId must use UUID text form',
+  )
+
 export const databaseAccountsSearchSchema = z.object({
   search: z.string().catch(''),
-  sort: z.enum(['email', 'characters', 'created']).catch('email'),
+  sort: z.enum(['email', 'characters', 'mfa', 'created']).catch('email'),
 })
 
 export const databaseTablesSearchSchema = z.object({
@@ -293,7 +301,7 @@ export const genesisPlanetDefinitionSchema = z.object({
   entity_labels: z.array(z.string().trim().min(1)).max(16),
   tags: z.array(z.string().trim().min(1).max(32)).max(16),
   spawn: z.object({
-    entity_id: uuidSchema,
+    entity_id: uuidLikeSchema,
     owner_id: z.string().trim().min(1, 'ownerId is required').max(96),
     size_m: genesisFiniteNumberSchema.min(1).max(1_000_000),
     spawn_position: genesisVec2Schema,

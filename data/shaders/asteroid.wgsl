@@ -1,17 +1,21 @@
 // Asteroid 2D Sprite Shader
 //
-// Converted from the prior 3D/PBR mesh shader to the current 2D sprite material
-// pipeline used by StreamedSpriteShaderMaterial.
+// Converted from the prior 3D/PBR mesh shader to the current 2D asteroid
+// material pipeline used by AsteroidSpriteShaderMaterial.
 //
 // Bindings match sprite material contract:
 // @group(2) @binding(0) texture_2d
 // @group(2) @binding(1) sampler
 // @group(2) @binding(2) SharedWorldLightingUniforms
+// @group(2) @binding(3) generated normal texture
+// @group(2) @binding(4) generated normal sampler
 
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 @group(2) @binding(0) var image: texture_2d<f32>;
 @group(2) @binding(1) var image_sampler: sampler;
+@group(2) @binding(3) var normal_image: texture_2d<f32>;
+@group(2) @binding(4) var normal_sampler: sampler;
 
 struct SharedWorldLightingUniforms {
     primary_dir_intensity: vec4<f32>,
@@ -31,6 +35,12 @@ fn saturate(v: f32) -> f32 {
 
 fn posterize3(c: vec3<f32>, steps: f32) -> vec3<f32> {
     return floor(c * steps + vec3<f32>(0.5)) / steps;
+}
+
+fn normal_from_map(uv: vec2<f32>) -> vec3<f32> {
+    let sample = textureSample(normal_image, normal_sampler, uv).rgb;
+    let decoded = sample * 2.0 - vec3<f32>(1.0, 1.0, 1.0);
+    return normalize(vec3<f32>(decoded.xy * 1.85, max(decoded.z, 0.14)));
 }
 
 fn hash12(p: vec2<f32>) -> f32 {
@@ -125,6 +135,10 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let craters = crater_mask(uv);
     let cracks = pow(1.0 - abs(fbm2d(uv * 17.0 + vec2<f32>(7.3, 2.4)) - 0.5) * 2.0, 5.0);
     let veins = vein_mask(uv) * smoothstep(0.2, 0.9, grain);
+    let fracture_ridge_a = pow(1.0 - abs(sin(centered.x * 12.0 - centered.y * 8.0 + grain * 5.7)), 5.0);
+    let fracture_ridge_b = pow(1.0 - abs(sin(centered.x * -7.0 + centered.y * 15.0 + grain * 4.1)), 6.0);
+    let ridges = max(fracture_ridge_a * 0.75, fracture_ridge_b * 0.55)
+        * (1.0 - smoothstep(0.18, 0.95, r));
 
     // Rock base tint: slightly warm/cool variation from noise.
     let rock_tint = mix(
@@ -151,6 +165,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let rim_highlight = smoothstep(0.2, 0.9, craters) * 0.08;
     color += rim_highlight;
     color *= 1.0 - cracks * 0.22;
+    color *= 1.0 - ridges * 0.18;
 
     // Veins + tiny glow pockets.
     color = mix(color, mineral_tint, veins * 0.55);
@@ -167,24 +182,31 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         centered.y,
         sqrt(max(0.0, 1.0 - dot(centered, centered)))
     ));
+    let relief_normal = normal_from_map(uv);
+    let surface_normal = normalize(sphere_normal * 0.52 + relief_normal * 0.88);
     let primary_dir = normalize(lighting.primary_dir_intensity.xyz);
-    let primary_ndl = saturate(dot(sphere_normal, primary_dir));
-    let wrap_raw = saturate(primary_ndl * 0.78 + 0.22);
-    let wrap = floor(wrap_raw * 4.0 + 0.5) / 4.0;
-    let backlight = pow(saturate(dot(sphere_normal, -primary_dir)), 1.8);
+    let primary_ndl = saturate(dot(surface_normal, primary_dir));
+    let wrap_raw = saturate(primary_ndl * 0.90 + 0.10);
+    let wrap = floor(wrap_raw * 7.0 + 0.5) / 7.0;
+    let backlight = pow(saturate(dot(surface_normal, -primary_dir)), 2.1);
     let primary_light = lighting.primary_color_elevation.rgb
         * lighting.primary_dir_intensity.w
         * wrap;
-    let local_ndl = saturate(dot(sphere_normal, normalize(lighting.local_dir_intensity.xyz)));
+    let local_ndl = saturate(dot(surface_normal, normalize(lighting.local_dir_intensity.xyz)));
     let local_light = lighting.local_color_radius.rgb
         * lighting.local_dir_intensity.w
         * (0.22 + local_ndl * 0.78);
     let ambient_light = lighting.ambient.rgb * lighting.ambient.w;
     let backlight_term = lighting.backlight.rgb * lighting.backlight.w * backlight;
     let flash = lighting.flash.rgb * lighting.flash.w;
+    let shadow_cool = vec3<f32>(0.42, 0.55, 0.68) * (1.0 - primary_ndl) * 0.18;
+    let ridge_highlight = lighting.primary_color_elevation.rgb * ridges * primary_ndl * 0.22;
+    let bevel_highlight = lighting.primary_color_elevation.rgb * edge_contrast * primary_ndl * 0.16;
     let vein_glint = mix(vec3<f32>(0.03, 0.05, 0.07), mineral_tint * 0.08, veins);
-    let lit_color = posterize3(color * (ambient_light + primary_light + backlight_term + local_light), 6.0)
+    let lit_color = posterize3(color * (ambient_light + primary_light + backlight_term + local_light + shadow_cool), 7.0)
         + flash * 0.18
+        + ridge_highlight
+        + bevel_highlight
         + vein_glint
         + veins * 0.05;
     return vec4<f32>(clamp(lit_color, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);

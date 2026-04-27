@@ -236,7 +236,7 @@ fn spawn_menu_button(
             layout::button(
                 percent(100.0),
                 44.0,
-                theme.metrics.control_radius_px,
+                theme.metrics.input_radius_px,
                 theme.metrics.control_border_px,
             ),
             Transform::default(),

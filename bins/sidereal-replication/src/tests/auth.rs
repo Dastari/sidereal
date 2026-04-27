@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use lightyear::prelude::PeerId;
 
+use crate::replication::PlayerControlledEntityMap;
 use crate::replication::PlayerRuntimeEntityMap;
 use crate::replication::auth::{
     AUTH_CONFIG_DENIED_REASON, AuthenticatedClientBindings, cleanup_client_auth_bindings,
@@ -16,7 +17,7 @@ use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::visibility::{ClientVisibilityRegistry, VisibilityClientContextCache};
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{RemoteId, ReplicationState};
-use sidereal_game::EntityAction;
+use sidereal_game::{ActionQueue, AfterburnerState, EntityAction, EntityGuid, FlightComputer};
 use sidereal_net::{PlayerEntityId, RuntimeEntityId};
 
 #[test]
@@ -32,6 +33,7 @@ fn cleanup_drops_visibility_for_disconnected_client() {
     app.init_resource::<VisibilityClientContextCache>();
     app.init_resource::<ClientControlRequestOrder>();
     app.init_resource::<ClientLastActivity>();
+    app.init_resource::<PlayerControlledEntityMap>();
     app.add_systems(Update, cleanup_client_auth_bindings);
 
     let client = app
@@ -77,6 +79,69 @@ fn cleanup_drops_visibility_for_disconnected_client() {
             .player_entity_id_by_client
             .contains_key(&client)
     );
+}
+
+#[test]
+fn cleanup_neutralizes_disconnected_player_control_intent() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<AuthenticatedClientBindings>();
+    app.init_resource::<ClientInputTickTracker>();
+    app.init_resource::<InputRateLimitState>();
+    app.init_resource::<LatestRealtimeInputsByPlayer>();
+    app.init_resource::<RealtimeInputActivityByPlayer>();
+    app.init_resource::<ClientVisibilityRegistry>();
+    app.init_resource::<VisibilityClientContextCache>();
+    app.init_resource::<ClientControlRequestOrder>();
+    app.init_resource::<ClientLastActivity>();
+    app.init_resource::<PlayerControlledEntityMap>();
+    app.add_systems(Update, cleanup_client_auth_bindings);
+
+    let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
+    let player_wire = player_id.canonical_wire_id();
+    let controlled_guid = RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222").unwrap();
+    let client = app
+        .world_mut()
+        .spawn((ClientOf, RemoteId(PeerId::Netcode(42))))
+        .id();
+    let controlled = app
+        .world_mut()
+        .spawn((
+            EntityGuid(controlled_guid.0),
+            ActionQueue {
+                pending: vec![EntityAction::Forward, EntityAction::Right],
+            },
+            FlightComputer {
+                profile: "test".to_string(),
+                throttle: 1.0,
+                yaw_input: -1.0,
+                brake_active: true,
+                turn_rate_deg_s: 90.0,
+            },
+            AfterburnerState { active: true },
+        ))
+        .id();
+
+    app.world_mut()
+        .resource_mut::<AuthenticatedClientBindings>()
+        .by_client_entity
+        .insert(client, player_wire);
+    app.world_mut()
+        .resource_mut::<PlayerControlledEntityMap>()
+        .by_player_entity_id
+        .insert(player_id, controlled);
+
+    app.world_mut().entity_mut(client).despawn();
+    app.update();
+
+    let queue = app.world().get::<ActionQueue>(controlled).unwrap();
+    assert!(queue.pending.is_empty());
+    let computer = app.world().get::<FlightComputer>(controlled).unwrap();
+    assert_eq!(computer.throttle, 0.0);
+    assert_eq!(computer.yaw_input, 0.0);
+    assert!(!computer.brake_active);
+    let afterburner = app.world().get::<AfterburnerState>(controlled).unwrap();
+    assert!(!afterburner.active);
 }
 
 #[test]

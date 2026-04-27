@@ -10,7 +10,7 @@ use sidereal_core::gateway_dtos::{
     EnterWorldResponse, LoginRequest, MeResponse, PasswordLoginResponse,
     StartupAssetManifestResponse, TotpLoginChallengeRequest,
 };
-use sidereal_game::EntityAction;
+use sidereal_game::{EntityAction, ScannerContactDetailTier};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -182,6 +182,41 @@ impl Default for TacticalMapUiState {
     }
 }
 
+#[derive(Debug, Resource)]
+pub(crate) struct TacticalSensorRingUiState {
+    pub enabled: bool,
+    pub alpha: f32,
+    pub last_controlled_entity_id: Option<String>,
+    pub last_unavailable_notice_at_s: f64,
+}
+
+impl Default for TacticalSensorRingUiState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            alpha: 0.0,
+            last_controlled_entity_id: None,
+            last_unavailable_notice_at_s: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ResolvedScannerProfile {
+    pub detail_tier: ScannerContactDetailTier,
+    pub level: u8,
+    pub effective_range_m: f32,
+    pub supports_density: bool,
+    pub supports_directional_awareness: bool,
+    pub max_contacts: u16,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct ActiveScannerProfileCache {
+    pub controlled_entity_id: Option<String>,
+    pub profile: Option<ResolvedScannerProfile>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum DebugOverlayMode {
@@ -230,6 +265,8 @@ pub(crate) enum DebugCollisionShape {
 #[derive(Debug, Clone)]
 pub(crate) struct DebugOverlayEntity {
     pub entity: Entity,
+    pub guid: uuid::Uuid,
+    pub label: String,
     pub lane: DebugEntityLane,
     pub position_xy: Vec2,
     pub rotation_rad: f32,
@@ -237,6 +274,7 @@ pub(crate) struct DebugOverlayEntity {
     pub angular_velocity_rps: f32,
     pub collision: DebugCollisionShape,
     pub is_controlled: bool,
+    pub is_component: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -579,6 +617,20 @@ pub(crate) struct DebugOverlayDisplayMetrics {
     pub sampled_frame_ms: Option<f64>,
     pub last_sample_at_s: f64,
     pub initialized: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DebugOverlayCalloutEntry {
+    pub root: Entity,
+    pub text: Entity,
+    pub line: Entity,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct DebugOverlayCalloutRegistry {
+    pub active_by_target: HashMap<Entity, DebugOverlayCalloutEntry>,
+    pub free_entries: Vec<DebugOverlayCalloutEntry>,
+    pub allocated_entries: usize,
 }
 
 #[derive(Debug, Resource, Default)]

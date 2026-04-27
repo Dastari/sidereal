@@ -1,4 +1,4 @@
-use avian2d::prelude::{LinearVelocity, Position};
+use avian2d::prelude::{LinearVelocity, Position, RigidBody};
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use sidereal_game::{
@@ -44,6 +44,52 @@ fn movement_actions_move_when_not_controlled() {
 
     let velocity = app.world().entity(entity).get::<LinearVelocity>().unwrap();
     assert!(velocity.0.y > 0.0);
+    let position = app.world().entity(entity).get::<Position>().unwrap();
+    assert!(position.0.y > 0.0);
+    let transform = app.world().entity(entity).get::<Transform>().unwrap();
+    assert!(transform.translation.y > 0.0);
+}
+
+#[test]
+fn movement_actions_with_rigidbody_leave_position_to_physics() {
+    let mut app = App::new();
+    app.insert_resource(Time::<Fixed>::from_hz(30.0));
+    let own_guid = Uuid::new_v4();
+    let entity = app
+        .world_mut()
+        .spawn((
+            PlayerTag,
+            SimulationMotionWriter,
+            ActionQueue {
+                pending: vec![EntityAction::Forward],
+            },
+            EntityGuid(own_guid),
+            CharacterMovementController {
+                speed_mps: 30.0,
+                max_accel_mps2: 120.0,
+                damping_per_s: 8.0,
+            },
+            Transform::default(),
+            Position(Vec2::ZERO.into()),
+            LinearVelocity(Vec2::ZERO.into()),
+            RigidBody::Dynamic,
+            ControlledEntityGuid(Some(own_guid.to_string())),
+        ))
+        .id();
+
+    app.world_mut()
+        .resource_mut::<Time<Fixed>>()
+        .advance_by(Duration::from_millis(33));
+    let _ = app
+        .world_mut()
+        .run_system_once(process_character_movement_actions);
+
+    let velocity = app.world().entity(entity).get::<LinearVelocity>().unwrap();
+    assert!(velocity.0.y > 0.0);
+    let position = app.world().entity(entity).get::<Position>().unwrap();
+    assert_eq!(position.0, Vec2::ZERO.into());
+    let transform = app.world().entity(entity).get::<Transform>().unwrap();
+    assert_eq!(transform.translation, Vec3::ZERO);
 }
 
 #[test]

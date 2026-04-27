@@ -33,134 +33,119 @@ use super::app_state::{
 use super::assets::{LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetNetIndicatorState};
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    ActiveNameplateEntry, CanonicalPresentationEntity, ControlledEntity,
-    DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
-    DebugOverlayPanelSecondaryLabelShadowText, DebugOverlayPanelSecondaryLabelText,
-    DebugOverlayPanelSecondaryValueShadowText, DebugOverlayPanelSecondaryValueText,
-    DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, EntityNameplateHealthFill,
-    EntityNameplateRoot, GameplayCamera, GameplayHud, HudFuelBarFill, HudHealthBarFill,
-    HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot, LoadingOverlayText,
-    LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
-    OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass, RuntimeScreenOverlayPassKind,
-    SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue, TacticalMapCursorText,
-    TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle, UiOverlayCamera,
-    UiOverlayLayer, WorldEntity,
+    ActiveNameplateEntry, CanonicalPresentationEntity, ControlledEntity, DebugOverlayCalloutLine,
+    DebugOverlayCalloutRoot, DebugOverlayCalloutText, DebugOverlayPanelLabelShadowText,
+    DebugOverlayPanelLabelText, DebugOverlayPanelRoot, DebugOverlayPanelSecondaryLabelShadowText,
+    DebugOverlayPanelSecondaryLabelText, DebugOverlayPanelSecondaryValueShadowText,
+    DebugOverlayPanelSecondaryValueText, DebugOverlayPanelTertiaryLabelShadowText,
+    DebugOverlayPanelTertiaryLabelText, DebugOverlayPanelTertiaryValueShadowText,
+    DebugOverlayPanelTertiaryValueText, DebugOverlayPanelText, DebugOverlayPanelValueShadowText,
+    DebugOverlayPanelValueText, EntityNameplateHealthFill, EntityNameplateRoot, GameplayCamera,
+    GameplayHud, HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText,
+    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction,
+    OwnedEntitiesPanelButton, OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass,
+    RuntimeScreenOverlayPassKind, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
+    TacticalMapCursorText, TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle,
+    UiOverlayCamera, UiOverlayLayer, WorldEntity,
 };
 use super::dev_console::{DevConsoleState, is_console_open};
 use super::ecs_util::queue_despawn_if_exists;
 use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
-    CameraMotionState, ClientControlRequestState, ClientInputSendState, DebugOverlayDisplayMetrics,
-    DebugOverlaySnapshot, DebugOverlayState, EmbeddedFonts, HudPerfCounters, NameplateRegistry,
-    NameplateRegistryEntry, NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache,
-    TacticalFogCache, TacticalMapUiState,
+    CameraMotionState, ClientControlRequestState, ClientInputSendState, DebugOverlayCalloutEntry,
+    DebugOverlayCalloutRegistry, DebugOverlayDisplayMetrics, DebugOverlaySnapshot,
+    DebugOverlayState, EmbeddedFonts, HudPerfCounters, NameplateRegistry, NameplateRegistryEntry,
+    NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache, TacticalFogCache,
+    TacticalMapUiState,
 };
+
+type DebugCalloutLineQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static mut Node,
+        &'static mut UiTransform,
+        &'static mut Visibility,
+    ),
+    With<DebugOverlayCalloutLine>,
+>;
+
+type DebugCalloutTargetQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Option<&'static GlobalTransform>,
+        Option<&'static Visibility>,
+        Option<&'static SizeM>,
+    ),
+    Without<DebugOverlayCalloutRoot>,
+>;
 
 #[allow(clippy::type_complexity)]
 #[derive(SystemParam)]
 pub(super) struct DebugOverlayTextUiQueries<'w, 's> {
     root_query: Query<'w, 's, &'static mut Visibility, With<DebugOverlayPanelRoot>>,
-    text_queries: ParamSet<
+    text_query: Query<
         'w,
         's,
         (
-            Query<
-                'w,
-                's,
-                &'static mut Text,
-                (
-                    With<DebugOverlayPanelLabelText>,
-                    Without<DebugOverlayPanelLabelShadowText>,
-                    Without<DebugOverlayPanelValueText>,
-                    Without<DebugOverlayPanelValueShadowText>,
-                ),
-            >,
-            Query<
-                'w,
-                's,
-                &'static mut Text,
-                (
-                    With<DebugOverlayPanelLabelShadowText>,
-                    Without<DebugOverlayPanelLabelText>,
-                    Without<DebugOverlayPanelValueText>,
-                    Without<DebugOverlayPanelValueShadowText>,
-                ),
-            >,
-            Query<
-                'w,
-                's,
-                (&'static mut Text, &'static mut TextColor),
-                (
-                    With<DebugOverlayPanelValueText>,
-                    Without<DebugOverlayPanelLabelText>,
-                    Without<DebugOverlayPanelLabelShadowText>,
-                    Without<DebugOverlayPanelValueShadowText>,
-                ),
-            >,
-            Query<
-                'w,
-                's,
-                &'static mut Text,
-                (
-                    With<DebugOverlayPanelValueShadowText>,
-                    Without<DebugOverlayPanelLabelText>,
-                    Without<DebugOverlayPanelLabelShadowText>,
-                    Without<DebugOverlayPanelValueText>,
-                ),
-            >,
-            Query<
-                'w,
-                's,
-                &'static mut Text,
-                (
-                    With<DebugOverlayPanelSecondaryLabelText>,
-                    Without<DebugOverlayPanelSecondaryLabelShadowText>,
-                    Without<DebugOverlayPanelSecondaryValueText>,
-                    Without<DebugOverlayPanelSecondaryValueShadowText>,
-                ),
-            >,
-            Query<
-                'w,
-                's,
-                &'static mut Text,
-                (
-                    With<DebugOverlayPanelSecondaryLabelShadowText>,
-                    Without<DebugOverlayPanelSecondaryLabelText>,
-                    Without<DebugOverlayPanelSecondaryValueText>,
-                    Without<DebugOverlayPanelSecondaryValueShadowText>,
-                ),
-            >,
-            Query<
-                'w,
-                's,
-                (&'static mut Text, &'static mut TextColor),
-                (
-                    With<DebugOverlayPanelSecondaryValueText>,
-                    Without<DebugOverlayPanelSecondaryLabelText>,
-                    Without<DebugOverlayPanelSecondaryLabelShadowText>,
-                    Without<DebugOverlayPanelSecondaryValueShadowText>,
-                ),
-            >,
-            Query<
-                'w,
-                's,
-                &'static mut Text,
-                (
-                    With<DebugOverlayPanelSecondaryValueShadowText>,
-                    Without<DebugOverlayPanelSecondaryLabelText>,
-                    Without<DebugOverlayPanelSecondaryLabelShadowText>,
-                    Without<DebugOverlayPanelSecondaryValueText>,
-                ),
-            >,
+            &'static mut Text,
+            Option<&'static mut TextColor>,
+            Option<&'static DebugOverlayPanelLabelText>,
+            Option<&'static DebugOverlayPanelLabelShadowText>,
+            Option<&'static DebugOverlayPanelValueText>,
+            Option<&'static DebugOverlayPanelValueShadowText>,
+            Option<&'static DebugOverlayPanelSecondaryLabelText>,
+            Option<&'static DebugOverlayPanelSecondaryLabelShadowText>,
+            Option<&'static DebugOverlayPanelSecondaryValueText>,
+            Option<&'static DebugOverlayPanelSecondaryValueShadowText>,
+            Option<&'static DebugOverlayPanelTertiaryLabelText>,
+            Option<&'static DebugOverlayPanelTertiaryLabelShadowText>,
+            Option<&'static DebugOverlayPanelTertiaryValueText>,
+            Option<&'static DebugOverlayPanelTertiaryValueShadowText>,
+        ),
+        With<DebugOverlayPanelText>,
+    >,
+}
+
+#[allow(clippy::type_complexity)]
+#[derive(SystemParam)]
+pub(super) struct DebugOverlayCalloutUiQueries<'w, 's> {
+    registry: ResMut<'w, DebugOverlayCalloutRegistry>,
+    root_query: Query<
+        'w,
+        's,
+        (
+            &'static DebugOverlayCalloutRoot,
+            &'static mut Node,
+            &'static mut Visibility,
         ),
     >,
+    text_query: Query<'w, 's, &'static mut Text, With<DebugOverlayCalloutText>>,
+    line_query: DebugCalloutLineQuery<'w, 's>,
+    target_query: DebugCalloutTargetQuery<'w, 's>,
+    gameplay_camera:
+        Query<'w, 's, (Entity, &'static Camera, &'static Transform), With<GameplayCamera>>,
+    window_query: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
 }
 
 const TACTICAL_FOG_MASK_RESOLUTION: u32 = 384;
 const TACTICAL_ICON_WORLD_HEIGHT_M: f32 = 24.0;
+const TACTICAL_PLANET_ICON_SCALE_MULTIPLIER: f32 = 8.0;
+const TACTICAL_GRAVITY_WELL_COUNT: usize = 4;
+const TACTICAL_GRAVITY_WELL_MIN_RADIUS_M: f32 = 180.0;
+const TACTICAL_GRAVITY_WELL_MAX_RADIUS_M: f32 = 4_500.0;
 const TACTICAL_CONTACT_SMOOTHING_RATE: f32 = 8.0;
 const TACTICAL_CONTACT_PREDICTION_HORIZON_S: f32 = 0.25;
-const DEBUG_OVERLAY_TEXT_COLUMN_COUNT: usize = 2;
+const DEBUG_OVERLAY_TEXT_COLUMN_COUNT: usize = 3;
+const DEBUG_OVERLAY_VALUE_MAX_CHARS: usize = 30;
+const DEBUG_CALLOUT_WIDTH_PX: f32 = 178.0;
+const DEBUG_CALLOUT_ROW_HEIGHT_PX: f32 = 11.0;
+const DEBUG_CALLOUT_PADDING_PX: f32 = 5.0;
+const DEBUG_CALLOUT_TARGET_GAP_PX: f32 = 38.0;
+const DEBUG_CALLOUT_LINE_THICKNESS_PX: f32 = 1.5;
+const DEBUG_CALLOUT_HOVER_RADIUS_PX: f32 = 16.0;
+const DEBUG_CALLOUT_VIEWPORT_MARGIN_PX: f32 = 8.0;
 const NAMEPLATE_BAR_WIDTH_PX: f32 = 100.0;
 const NAMEPLATE_BAR_HEIGHT_PX: f32 = 8.0;
 const NAMEPLATE_VERTICAL_GAP_PX: f32 = 6.0;
@@ -275,17 +260,37 @@ fn release_nameplate_entry(
 fn split_debug_overlay_text_columns(
     row_pairs: &[(String, String)],
 ) -> [DebugOverlayTextColumn; DEBUG_OVERLAY_TEXT_COLUMN_COUNT] {
-    let rows_per_column = row_pairs
+    let mut columns = std::array::from_fn(|_| DebugOverlayTextColumn::default());
+    let mut dynamic_rows = Vec::new();
+
+    for (label, value) in row_pairs {
+        if let Some(column_index) = preferred_debug_overlay_text_column(label) {
+            columns[column_index].labels.push(label.clone());
+            columns[column_index].values.push(value.clone());
+        } else {
+            dynamic_rows.push((label, value));
+        }
+    }
+
+    let rows_per_dynamic_column = dynamic_rows
         .len()
         .div_ceil(DEBUG_OVERLAY_TEXT_COLUMN_COUNT)
         .max(1);
-    let mut columns = std::array::from_fn(|_| DebugOverlayTextColumn::default());
-    for (index, (label, value)) in row_pairs.iter().enumerate() {
-        let column_index = (index / rows_per_column).min(DEBUG_OVERLAY_TEXT_COLUMN_COUNT - 1);
+    for (index, (label, value)) in dynamic_rows.into_iter().enumerate() {
+        let column_index =
+            (index / rows_per_dynamic_column).min(DEBUG_OVERLAY_TEXT_COLUMN_COUNT - 1);
         columns[column_index].labels.push(label.clone());
         columns[column_index].values.push(value.clone());
     }
     columns
+}
+
+fn preferred_debug_overlay_text_column(label: &str) -> Option<usize> {
+    match label {
+        "Sent Input" | "Recover Input" | "Control Lane" | "Ctrl Bootstrap" | "Control GUID"
+        | "Confirmed Ghost" => Some(DEBUG_OVERLAY_TEXT_COLUMN_COUNT - 1),
+        _ => None,
+    }
 }
 
 /// Propagates the UI overlay render layer to all descendants of HUD roots so they are drawn
@@ -447,7 +452,10 @@ pub(super) fn update_debug_overlay_text_ui_system(
         format_sent_input_actions(&input_send_state.last_sent_actions),
     ));
     for row in &snapshot.text_rows {
-        row_pairs.push((row.label.clone(), row.value.clone()));
+        row_pairs.push((
+            row.label.clone(),
+            truncate_debug_overlay_value(&row.value, DEBUG_OVERLAY_VALUE_MAX_CHARS),
+        ));
     }
     let columns = split_debug_overlay_text_columns(&row_pairs);
     let header_labels_text = header_row_pairs
@@ -463,45 +471,64 @@ pub(super) fn update_debug_overlay_text_ui_system(
     let primary_labels_text = if columns[0].labels.is_empty() {
         header_labels_text.clone()
     } else {
-        format!("{header_labels_text}\n\n{}", columns[0].labels.join("\n"))
+        format!("{header_labels_text}\n{}", columns[0].labels.join("\n"))
     };
     let primary_values_text = if columns[0].values.is_empty() {
         header_values_text.clone()
     } else {
-        format!("{header_values_text}\n\n{}", columns[0].values.join("\n"))
+        format!("{header_values_text}\n{}", columns[0].values.join("\n"))
     };
     let secondary_labels_text = columns[1].labels.join("\n");
     let secondary_values_text = columns[1].values.join("\n");
+    let tertiary_labels_text = columns[2].labels.join("\n");
+    let tertiary_values_text = columns[2].values.join("\n");
 
     let debug_value_color = Color::srgb(0.85, 0.92, 1.0);
-
-    if let Ok(mut label_text) = ui_queries.text_queries.p0().single_mut() {
-        label_text.0 = primary_labels_text.clone();
-    }
-    if let Ok(mut label_shadow_text) = ui_queries.text_queries.p1().single_mut() {
-        label_shadow_text.0 = primary_labels_text.clone();
-    }
-    if let Ok((mut value_text, mut value_text_color)) = ui_queries.text_queries.p2().single_mut() {
-        value_text.0 = primary_values_text.clone();
-        value_text_color.0 = debug_value_color;
-    }
-    if let Ok(mut value_shadow_text) = ui_queries.text_queries.p3().single_mut() {
-        value_shadow_text.0 = primary_values_text;
-    }
-    if let Ok(mut secondary_label_text) = ui_queries.text_queries.p4().single_mut() {
-        secondary_label_text.0 = secondary_labels_text.clone();
-    }
-    if let Ok(mut secondary_label_shadow_text) = ui_queries.text_queries.p5().single_mut() {
-        secondary_label_shadow_text.0 = secondary_labels_text;
-    }
-    if let Ok((mut secondary_value_text, mut secondary_value_text_color)) =
-        ui_queries.text_queries.p6().single_mut()
+    for (
+        mut text,
+        color,
+        primary_label,
+        primary_label_shadow,
+        primary_value,
+        primary_value_shadow,
+        secondary_label,
+        secondary_label_shadow,
+        secondary_value,
+        secondary_value_shadow,
+        tertiary_label,
+        tertiary_label_shadow,
+        tertiary_value,
+        tertiary_value_shadow,
+    ) in &mut ui_queries.text_query
     {
-        secondary_value_text.0 = secondary_values_text.clone();
-        secondary_value_text_color.0 = debug_value_color;
-    }
-    if let Ok(mut secondary_value_shadow_text) = ui_queries.text_queries.p7().single_mut() {
-        secondary_value_shadow_text.0 = secondary_values_text;
+        if primary_label.is_some() || primary_label_shadow.is_some() {
+            text.0 = primary_labels_text.clone();
+        } else if primary_value.is_some() {
+            text.0 = primary_values_text.clone();
+            if let Some(mut color) = color {
+                color.0 = debug_value_color;
+            }
+        } else if primary_value_shadow.is_some() {
+            text.0 = primary_values_text.clone();
+        } else if secondary_label.is_some() || secondary_label_shadow.is_some() {
+            text.0 = secondary_labels_text.clone();
+        } else if secondary_value.is_some() {
+            text.0 = secondary_values_text.clone();
+            if let Some(mut color) = color {
+                color.0 = debug_value_color;
+            }
+        } else if secondary_value_shadow.is_some() {
+            text.0 = secondary_values_text.clone();
+        } else if tertiary_label.is_some() || tertiary_label_shadow.is_some() {
+            text.0 = tertiary_labels_text.clone();
+        } else if tertiary_value.is_some() {
+            text.0 = tertiary_values_text.clone();
+            if let Some(mut color) = color {
+                color.0 = debug_value_color;
+            }
+        } else if tertiary_value_shadow.is_some() {
+            text.0 = tertiary_values_text.clone();
+        }
     }
 }
 
@@ -512,7 +539,7 @@ fn format_sent_input_actions(actions: &[EntityAction]) -> String {
 
     let names: Vec<&'static str> = actions.iter().map(describe_entity_action).collect();
     let value = format!("[{}]", names.join(", "));
-    truncate_debug_overlay_value(&value, 52)
+    truncate_debug_overlay_value(&value, DEBUG_OVERLAY_VALUE_MAX_CHARS)
 }
 
 fn truncate_debug_overlay_value(value: &str, max_chars: usize) -> String {
@@ -962,7 +989,8 @@ pub(super) fn update_tactical_map_overlay_system(
             let marker_key = "self".to_string();
             seen_marker_keys.insert(marker_key.clone());
             let (_, _, heading_rad) = controlled_transform.rotation.to_euler(EulerRot::XYZ);
-            let icon_scale = tactical_svg_marker_scale(&svg_assets, &svg_handle, map_zoom);
+            let icon_scale = tactical_svg_marker_scale(&svg_assets, &svg_handle, map_zoom)
+                * tactical_marker_scale_multiplier("ship");
             let base_translation = tactical_map_marker_translation(screen_xy, width, height, -8.5);
             let marker_translation = tactical_icon_centered_translation(
                 &svg_assets,
@@ -1027,7 +1055,8 @@ pub(super) fn update_tactical_map_overlay_system(
         ) else {
             continue;
         };
-        let icon_scale = tactical_svg_marker_scale(&svg_assets, &svg_handle, map_zoom);
+        let icon_scale = tactical_svg_marker_scale(&svg_assets, &svg_handle, map_zoom)
+            * tactical_marker_scale_multiplier(contact.kind.as_str());
         let base_translation = tactical_map_marker_translation(screen_xy, width, height, -8.4);
         let marker_translation = tactical_icon_centered_translation(
             &svg_assets,
@@ -1206,6 +1235,14 @@ fn tactical_svg_marker_scale(
         .unwrap_or(16.0);
     let target_height_px = (TACTICAL_ICON_WORLD_HEIGHT_M * map_zoom_px_per_world).max(2.0);
     (target_height_px / svg_height).clamp(0.08, 12.0)
+}
+
+fn tactical_marker_scale_multiplier(kind: &str) -> f32 {
+    if kind.eq_ignore_ascii_case("planet") {
+        TACTICAL_PLANET_ICON_SCALE_MULTIPLIER
+    } else {
+        1.0
+    }
 }
 
 fn tactical_icon_centered_translation(
@@ -1394,6 +1431,7 @@ pub(super) fn update_runtime_screen_overlay_passes_system(
     time: Res<'_, Time>,
     tactical_map_state: Res<'_, TacticalMapUiState>,
     fog_cache: Res<'_, TacticalFogCache>,
+    contacts_cache: Res<'_, TacticalContactsCache>,
     camera_motion: Res<'_, CameraMotionState>,
     windows: Query<'_, '_, &'_ Window, With<PrimaryWindow>>,
     mut map_queries: ParamSet<
@@ -1469,6 +1507,7 @@ pub(super) fn update_runtime_screen_overlay_passes_system(
                     material,
                     &mut images,
                     &fog_cache,
+                    &contacts_cache,
                     &map_settings,
                     width,
                     height,
@@ -1488,6 +1527,7 @@ fn update_tactical_runtime_screen_overlay_material(
     material: &mut TacticalMapOverlayMaterial,
     images: &mut Assets<Image>,
     fog_cache: &TacticalFogCache,
+    contacts_cache: &TacticalContactsCache,
     map_settings: &TacticalMapUiSettings,
     width: f32,
     height: f32,
@@ -1558,6 +1598,7 @@ fn update_tactical_runtime_screen_overlay_material(
         map_settings.glow_width_micro_px,
         0.0,
     );
+    update_tactical_gravity_well_uniforms(material, contacts_cache, world_center);
     update_tactical_fog_mask_texture(
         images,
         material,
@@ -1568,6 +1609,84 @@ fn update_tactical_runtime_screen_overlay_material(
         map_zoom,
         fog_mask_state,
     );
+}
+
+fn update_tactical_gravity_well_uniforms(
+    material: &mut TacticalMapOverlayMaterial,
+    contacts_cache: &TacticalContactsCache,
+    world_center: Vec2,
+) {
+    let mut wells = contacts_cache
+        .contacts_by_entity_id
+        .values()
+        .filter_map(tactical_gravity_well_from_contact)
+        .collect::<Vec<_>>();
+    wells.sort_by(|left, right| {
+        let left_score = left.radius_m * left.mass_scale
+            / left.center.distance_squared(world_center).max(1.0).sqrt();
+        let right_score = right.radius_m * right.mass_scale
+            / right.center.distance_squared(world_center).max(1.0).sqrt();
+        right_score.total_cmp(&left_score)
+    });
+
+    let mut uniforms = [Vec4::ZERO; TACTICAL_GRAVITY_WELL_COUNT];
+    for (index, well) in wells.iter().take(TACTICAL_GRAVITY_WELL_COUNT).enumerate() {
+        uniforms[index] = Vec4::new(well.center.x, well.center.y, well.radius_m, well.mass_scale);
+    }
+
+    material.gravity_well_params = Vec4::new(
+        wells.len().min(TACTICAL_GRAVITY_WELL_COUNT) as f32,
+        0.18,
+        0.45,
+        0.0,
+    );
+    material.gravity_well_0 = uniforms[0];
+    material.gravity_well_1 = uniforms[1];
+    material.gravity_well_2 = uniforms[2];
+    material.gravity_well_3 = uniforms[3];
+}
+
+struct TacticalGravityWell {
+    center: Vec2,
+    radius_m: f32,
+    mass_scale: f32,
+}
+
+fn tactical_gravity_well_from_contact(
+    contact: &sidereal_net::TacticalContact,
+) -> Option<TacticalGravityWell> {
+    if !contact.is_live_now || !tactical_contact_has_gravity_well(contact.kind.as_str()) {
+        return None;
+    }
+
+    let size_radius = contact
+        .size_m
+        .map(|size| size.into_iter().fold(0.0_f32, f32::max) * 0.5)
+        .unwrap_or(0.0);
+    let mass_scale = contact
+        .mass_kg
+        .filter(|mass| *mass > 0.0)
+        .map(|mass| (mass.log10() / 12.0).clamp(0.75, 2.5))
+        .unwrap_or(1.0);
+    let radius_m = (size_radius * (5.0 + mass_scale * 2.0))
+        .max(TACTICAL_GRAVITY_WELL_MIN_RADIUS_M)
+        .clamp(
+            TACTICAL_GRAVITY_WELL_MIN_RADIUS_M,
+            TACTICAL_GRAVITY_WELL_MAX_RADIUS_M,
+        );
+
+    Some(TacticalGravityWell {
+        center: Vec2::new(contact.position_xy[0] as f32, contact.position_xy[1] as f32),
+        radius_m,
+        mass_scale,
+    })
+}
+
+fn tactical_contact_has_gravity_well(kind: &str) -> bool {
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "planet" | "star" | "blackhole" | "black_hole"
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1814,7 +1933,7 @@ pub(super) fn update_owned_entities_panel_system(
                     layout::leading_button(
                         percent(100.0),
                         34.0,
-                        theme.metrics.control_radius_px,
+                        theme.metrics.input_radius_px,
                         theme.metrics.control_border_px,
                         10.0,
                     ),
@@ -1860,7 +1979,7 @@ pub(super) fn update_owned_entities_panel_system(
                             layout::leading_button(
                                 percent(100.0),
                                 34.0,
-                                theme.metrics.control_radius_px,
+                                theme.metrics.input_radius_px,
                                 theme.metrics.control_border_px,
                                 10.0,
                             ),
@@ -2386,6 +2505,440 @@ pub(super) fn update_entity_nameplate_positions_system(
     hud_perf.nameplate_position_max_ms = hud_perf.nameplate_position_max_ms.max(elapsed_ms);
 }
 
+pub(super) fn sync_debug_entity_callouts_system(
+    debug_overlay: Res<'_, DebugOverlayState>,
+    snapshot: Res<'_, DebugOverlaySnapshot>,
+    mut commands: Commands<'_, '_>,
+    fonts: Res<'_, EmbeddedFonts>,
+    mut ui_queries: DebugOverlayCalloutUiQueries<'_, '_>,
+) {
+    if !debug_overlay.enabled {
+        for (_, _, mut visibility) in &mut ui_queries.root_query {
+            *visibility = Visibility::Hidden;
+        }
+        for (_, _, mut visibility) in &mut ui_queries.line_query {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let Some((_camera_entity, camera, camera_transform)) =
+        select_debug_callout_camera(&ui_queries.gameplay_camera)
+    else {
+        for (_, _, mut visibility) in &mut ui_queries.root_query {
+            *visibility = Visibility::Hidden;
+        }
+        for (_, _, mut visibility) in &mut ui_queries.line_query {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    };
+    let camera_global = GlobalTransform::from(camera_transform);
+    let (cursor_px, window_size) = {
+        let Ok(window) = ui_queries.window_query.single() else {
+            return;
+        };
+        (
+            window.cursor_position(),
+            Vec2::new(window.width(), window.height()),
+        )
+    };
+    let controlled_position = snapshot
+        .entities
+        .iter()
+        .find(|entity| {
+            entity.is_controlled
+                && !matches!(
+                    entity.lane,
+                    super::resources::DebugEntityLane::Auxiliary
+                        | super::resources::DebugEntityLane::ConfirmedGhost
+                )
+        })
+        .map(|entity| entity.position_xy);
+
+    let desired_targets = snapshot
+        .entities
+        .iter()
+        .map(|entity| entity.entity)
+        .collect::<HashSet<_>>();
+    let stale_targets = ui_queries
+        .registry
+        .active_by_target
+        .keys()
+        .copied()
+        .filter(|target| !desired_targets.contains(target))
+        .collect::<Vec<_>>();
+    for target in stale_targets {
+        if let Some(entry) = ui_queries.registry.active_by_target.remove(&target) {
+            release_debug_callout_entry(&mut commands, &mut ui_queries.registry, entry);
+        }
+    }
+
+    for entity in &snapshot.entities {
+        let Some(callout_target) =
+            debug_callout_target(entity, &ui_queries.target_query, &camera, &camera_global)
+        else {
+            if let Some(entry) = ui_queries
+                .registry
+                .active_by_target
+                .get(&entity.entity)
+                .copied()
+            {
+                hide_debug_callout_entry(&mut ui_queries, entry);
+            }
+            continue;
+        };
+        let viewport_pos = callout_target.center_viewport_pos;
+        if viewport_pos.x < -DEBUG_CALLOUT_VIEWPORT_MARGIN_PX
+            || viewport_pos.x > window_size.x + DEBUG_CALLOUT_VIEWPORT_MARGIN_PX
+            || viewport_pos.y < -DEBUG_CALLOUT_VIEWPORT_MARGIN_PX
+            || viewport_pos.y > window_size.y + DEBUG_CALLOUT_VIEWPORT_MARGIN_PX
+        {
+            if let Some(entry) = ui_queries
+                .registry
+                .active_by_target
+                .get(&entity.entity)
+                .copied()
+            {
+                hide_debug_callout_entry(&mut ui_queries, entry);
+            }
+            continue;
+        }
+
+        let entry = if let Some(entry) = ui_queries
+            .registry
+            .active_by_target
+            .get(&entity.entity)
+            .copied()
+        {
+            entry
+        } else {
+            ui_queries.registry.allocated_entries =
+                ui_queries.registry.allocated_entries.saturating_add(1);
+            let entry = ui_queries
+                .registry
+                .free_entries
+                .pop()
+                .unwrap_or_else(|| spawn_debug_callout_entry(&mut commands, &fonts));
+            ui_queries
+                .registry
+                .active_by_target
+                .insert(entity.entity, entry);
+            entry
+        };
+        let hovered = cursor_px.is_some_and(|cursor_px| {
+            cursor_px.distance(viewport_pos) <= DEBUG_CALLOUT_HOVER_RADIUS_PX
+        });
+        if let Ok((root, mut node, mut visibility)) = ui_queries.root_query.get_mut(entry.root) {
+            let text = debug_callout_text(entity, controlled_position, hovered);
+            let line_count = text.lines().count().max(1) as f32;
+            let height_px =
+                line_count * DEBUG_CALLOUT_ROW_HEIGHT_PX + DEBUG_CALLOUT_PADDING_PX * 2.0 + 2.0;
+            let callout_rect =
+                debug_callout_rect(callout_target.anchor_viewport_pos, height_px, window_size);
+            node.left = px(callout_rect.min.x);
+            node.top = px(callout_rect.min.y);
+            node.height = px(height_px);
+            *visibility = Visibility::Visible;
+            if root.target != Some(entity.entity)
+                && let Ok(mut root_commands) = commands.get_entity(entry.root)
+            {
+                root_commands.insert(DebugOverlayCalloutRoot {
+                    target: Some(entity.entity),
+                });
+            }
+            if let Ok(mut text_value) = ui_queries.text_query.get_mut(entry.text) {
+                text_value.0 = text;
+            }
+            sync_debug_callout_line(
+                &mut ui_queries.line_query,
+                entry.line,
+                callout_rect,
+                viewport_pos,
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DebugCalloutTarget {
+    center_viewport_pos: Vec2,
+    anchor_viewport_pos: Vec2,
+}
+
+#[derive(Clone, Copy)]
+struct DebugCalloutRect {
+    min: Vec2,
+    max: Vec2,
+}
+
+fn debug_callout_target(
+    entity: &super::resources::DebugOverlayEntity,
+    target_query: &DebugCalloutTargetQuery<'_, '_>,
+    camera: &Camera,
+    camera_global: &GlobalTransform,
+) -> Option<DebugCalloutTarget> {
+    let (center_world, anchor_world) =
+        if let Ok((global_transform, maybe_visibility, size_m)) = target_query.get(entity.entity) {
+            if maybe_visibility
+                .is_some_and(|entity_visibility| *entity_visibility == Visibility::Hidden)
+            {
+                return None;
+            }
+            if let Some(global_transform) = global_transform {
+                let world_pos = global_transform.translation();
+                let anchor_world = size_m
+                    .map(|size| {
+                        Vec3::new(
+                            world_pos.x - size.width * 0.5,
+                            world_pos.y + size.length * 0.5,
+                            0.0,
+                        )
+                    })
+                    .unwrap_or(Vec3::new(world_pos.x, world_pos.y, 0.0));
+                (Vec3::new(world_pos.x, world_pos.y, 0.0), anchor_world)
+            } else {
+                debug_callout_snapshot_world_positions(entity)
+            }
+        } else {
+            debug_callout_snapshot_world_positions(entity)
+        };
+    let center_viewport_pos = camera.world_to_viewport(camera_global, center_world).ok()?;
+    let anchor_viewport_pos = camera
+        .world_to_viewport(camera_global, anchor_world)
+        .unwrap_or(center_viewport_pos);
+    Some(DebugCalloutTarget {
+        center_viewport_pos,
+        anchor_viewport_pos,
+    })
+}
+
+fn debug_callout_snapshot_world_positions(
+    entity: &super::resources::DebugOverlayEntity,
+) -> (Vec3, Vec3) {
+    let center = entity.position_xy.extend(0.0);
+    let anchor = match &entity.collision {
+        super::resources::DebugCollisionShape::Aabb { half_extents } => Vec3::new(
+            entity.position_xy.x - half_extents.x,
+            entity.position_xy.y + half_extents.y,
+            0.0,
+        ),
+        super::resources::DebugCollisionShape::Outline { points } if !points.is_empty() => {
+            let min_x = points
+                .iter()
+                .map(|point| point.x)
+                .fold(f32::INFINITY, f32::min);
+            let max_y = points
+                .iter()
+                .map(|point| point.y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            Vec3::new(
+                entity.position_xy.x + min_x,
+                entity.position_xy.y + max_y,
+                0.0,
+            )
+        }
+        _ => center,
+    };
+    (center, anchor)
+}
+
+fn debug_callout_rect(
+    anchor_viewport_pos: Vec2,
+    height_px: f32,
+    window_size: Vec2,
+) -> DebugCalloutRect {
+    let unclamped_left =
+        anchor_viewport_pos.x - DEBUG_CALLOUT_WIDTH_PX - DEBUG_CALLOUT_TARGET_GAP_PX;
+    let unclamped_top = anchor_viewport_pos.y - height_px - DEBUG_CALLOUT_TARGET_GAP_PX;
+    let max_left = (window_size.x - DEBUG_CALLOUT_WIDTH_PX - DEBUG_CALLOUT_VIEWPORT_MARGIN_PX)
+        .max(DEBUG_CALLOUT_VIEWPORT_MARGIN_PX);
+    let max_top = (window_size.y - height_px - DEBUG_CALLOUT_VIEWPORT_MARGIN_PX)
+        .max(DEBUG_CALLOUT_VIEWPORT_MARGIN_PX);
+    let min = Vec2::new(
+        unclamped_left.clamp(DEBUG_CALLOUT_VIEWPORT_MARGIN_PX, max_left),
+        unclamped_top.clamp(DEBUG_CALLOUT_VIEWPORT_MARGIN_PX, max_top),
+    );
+    DebugCalloutRect {
+        min,
+        max: min + Vec2::new(DEBUG_CALLOUT_WIDTH_PX, height_px),
+    }
+}
+
+fn sync_debug_callout_line(
+    line_query: &mut DebugCalloutLineQuery<'_, '_>,
+    line_entity: Entity,
+    callout_rect: DebugCalloutRect,
+    target_viewport_pos: Vec2,
+) {
+    let Ok((mut node, mut transform, mut visibility)) = line_query.get_mut(line_entity) else {
+        return;
+    };
+    let start = closest_point_on_debug_callout_rect(callout_rect, target_viewport_pos);
+    let delta = target_viewport_pos - start;
+    let length = delta.length();
+    if length <= 1.0 {
+        *visibility = Visibility::Hidden;
+        return;
+    }
+    let midpoint = start + delta * 0.5;
+    node.left = px(midpoint.x - length * 0.5);
+    node.top = px(midpoint.y - DEBUG_CALLOUT_LINE_THICKNESS_PX * 0.5);
+    node.width = px(length);
+    node.height = px(DEBUG_CALLOUT_LINE_THICKNESS_PX);
+    *transform = UiTransform::from_rotation(Rot2::radians(delta.y.atan2(delta.x)));
+    *visibility = Visibility::Visible;
+}
+
+fn closest_point_on_debug_callout_rect(rect: DebugCalloutRect, target: Vec2) -> Vec2 {
+    Vec2::new(
+        target.x.clamp(rect.min.x, rect.max.x),
+        target.y.clamp(rect.min.y, rect.max.y),
+    )
+}
+
+fn hide_debug_callout_entry(
+    ui_queries: &mut DebugOverlayCalloutUiQueries<'_, '_>,
+    entry: DebugOverlayCalloutEntry,
+) {
+    if let Ok((_, _, mut visibility)) = ui_queries.root_query.get_mut(entry.root) {
+        *visibility = Visibility::Hidden;
+    }
+    if let Ok((_, _, mut visibility)) = ui_queries.line_query.get_mut(entry.line) {
+        *visibility = Visibility::Hidden;
+    }
+}
+
+fn select_debug_callout_camera(
+    gameplay_camera: &Query<'_, '_, (Entity, &'_ Camera, &'_ Transform), With<GameplayCamera>>,
+) -> Option<(Entity, Camera, Transform)> {
+    let mut selected_camera: Option<(Entity, bool, Camera, Transform)> = None;
+    for (entity, camera, transform) in gameplay_camera {
+        let candidate = (entity, camera.is_active, camera.clone(), *transform);
+        if selected_camera
+            .as_ref()
+            .is_none_or(|(current_entity, current_active, _, _)| {
+                if camera.is_active != *current_active {
+                    return camera.is_active;
+                }
+                entity.to_bits() < current_entity.to_bits()
+            })
+        {
+            selected_camera = Some(candidate);
+        }
+    }
+    selected_camera.map(|(entity, _, camera, transform)| (entity, camera, transform))
+}
+
+fn spawn_debug_callout_entry(
+    commands: &mut Commands<'_, '_>,
+    fonts: &EmbeddedFonts,
+) -> DebugOverlayCalloutEntry {
+    let root = commands
+        .spawn((
+            Name::new("DebugEntityCallout"),
+            Node {
+                position_type: PositionType::Absolute,
+                width: px(DEBUG_CALLOUT_WIDTH_PX),
+                height: px(48.0),
+                left: px(0.0),
+                top: px(0.0),
+                border: UiRect::all(px(1.0)),
+                padding: UiRect::all(px(DEBUG_CALLOUT_PADDING_PX)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.68)),
+            BorderColor::all(Color::srgba(0.22, 1.0, 0.4, 0.76)),
+            Visibility::Hidden,
+            UiOverlayLayer,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+            DebugOverlayCalloutRoot { target: None },
+            DespawnOnExit(ClientAppState::InWorld),
+        ))
+        .id();
+    let text = commands
+        .spawn((
+            Text::new(""),
+            text_font(fonts.mono.clone(), 9.5),
+            TextColor(Color::srgb(0.78, 1.0, 0.82)),
+            DebugOverlayCalloutText,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+        ))
+        .id();
+    let line = commands
+        .spawn((
+            Name::new("DebugEntityCalloutLine"),
+            Node {
+                position_type: PositionType::Absolute,
+                width: px(1.0),
+                height: px(DEBUG_CALLOUT_LINE_THICKNESS_PX),
+                left: px(0.0),
+                top: px(0.0),
+                ..default()
+            },
+            UiTransform::IDENTITY,
+            BackgroundColor(Color::srgba(0.22, 1.0, 0.4, 0.78)),
+            Visibility::Hidden,
+            UiOverlayLayer,
+            DebugOverlayCalloutLine,
+            RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
+            DespawnOnExit(ClientAppState::InWorld),
+        ))
+        .id();
+    commands.entity(root).add_child(text);
+    DebugOverlayCalloutEntry { root, text, line }
+}
+
+fn release_debug_callout_entry(
+    commands: &mut Commands<'_, '_>,
+    registry: &mut DebugOverlayCalloutRegistry,
+    entry: DebugOverlayCalloutEntry,
+) {
+    registry.free_entries.push(entry);
+    if let Ok(mut root_commands) = commands.get_entity(entry.root) {
+        root_commands.insert((Visibility::Hidden, DebugOverlayCalloutRoot { target: None }));
+    }
+    if let Ok(mut line_commands) = commands.get_entity(entry.line) {
+        line_commands.insert(Visibility::Hidden);
+    }
+}
+
+fn debug_callout_text(
+    entity: &super::resources::DebugOverlayEntity,
+    controlled_position: Option<Vec2>,
+    hovered: bool,
+) -> String {
+    let mut lines = Vec::with_capacity(if hovered { 8 } else { 5 });
+    lines.push(entity.label.clone());
+    lines.push(format!("ID {}", short_uuid(entity.guid)));
+    lines.push(format!(
+        "POS {:>7.1} {:>7.1}",
+        entity.position_xy.x, entity.position_xy.y
+    ));
+    lines.push(format!("ROT {:>6.1} DEG", entity.rotation_rad.to_degrees()));
+    if hovered {
+        if let Some(controlled_position) = controlled_position {
+            let relative = entity.position_xy - controlled_position;
+            lines.push(format!("REL {:>7.1} {:>7.1}", relative.x, relative.y));
+        }
+        lines.push(format!("LANE {:?}", entity.lane).to_ascii_uppercase());
+        lines.push(format!("ECS {}", entity.entity.to_bits()));
+        lines.push(format!(
+            "VEL {:>6.1} {:>6.1}",
+            entity.velocity_xy.x, entity.velocity_xy.y
+        ));
+    }
+    lines.join("\n")
+}
+
+fn short_uuid(guid: uuid::Uuid) -> String {
+    guid.to_string()
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2396,8 +2949,11 @@ mod tests {
         CanonicalPresentationEntity, DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText,
         DebugOverlayPanelRoot, DebugOverlayPanelSecondaryLabelShadowText,
         DebugOverlayPanelSecondaryLabelText, DebugOverlayPanelSecondaryValueShadowText,
-        DebugOverlayPanelSecondaryValueText, DebugOverlayPanelValueShadowText,
-        DebugOverlayPanelValueText, EntityNameplateRoot, UiOverlayLayer, WorldEntity,
+        DebugOverlayPanelSecondaryValueText, DebugOverlayPanelTertiaryLabelShadowText,
+        DebugOverlayPanelTertiaryLabelText, DebugOverlayPanelTertiaryValueShadowText,
+        DebugOverlayPanelTertiaryValueText, DebugOverlayPanelText,
+        DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText, EntityNameplateRoot,
+        UiOverlayLayer, WorldEntity,
     };
     use crate::runtime::platform::UI_OVERLAY_RENDER_LAYER;
     use crate::runtime::resources::{
@@ -2440,10 +2996,32 @@ mod tests {
 
         let columns = split_debug_overlay_text_columns(&rows);
 
-        assert_eq!(columns[0].labels, vec!["A", "B", "C"]);
-        assert_eq!(columns[0].values, vec!["1", "2", "3"]);
-        assert_eq!(columns[1].labels, vec!["D", "E"]);
-        assert_eq!(columns[1].values, vec!["4", "5"]);
+        assert_eq!(columns[0].labels, vec!["A", "B"]);
+        assert_eq!(columns[0].values, vec!["1", "2"]);
+        assert_eq!(columns[1].labels, vec!["C", "D"]);
+        assert_eq!(columns[1].values, vec!["3", "4"]);
+        assert_eq!(columns[2].labels, vec!["E"]);
+        assert_eq!(columns[2].values, vec!["5"]);
+    }
+
+    #[test]
+    fn debug_overlay_text_rows_pin_control_data_to_right_column() {
+        let rows = vec![
+            ("Sent Input".to_string(), "[Long Neutral]".to_string()),
+            ("A".to_string(), "1".to_string()),
+            (
+                "Control GUID".to_string(),
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string(),
+            ),
+            ("B".to_string(), "2".to_string()),
+        ];
+
+        let columns = split_debug_overlay_text_columns(&rows);
+
+        assert!(!columns[0].labels.contains(&"Sent Input".to_string()));
+        assert!(!columns[1].labels.contains(&"Control GUID".to_string()));
+        assert!(columns[2].labels.contains(&"Sent Input".to_string()));
+        assert!(columns[2].labels.contains(&"Control GUID".to_string()));
     }
 
     #[test]
@@ -2461,34 +3039,75 @@ mod tests {
 
         app.world_mut()
             .spawn((DebugOverlayPanelRoot, Visibility::Hidden));
-        app.world_mut()
-            .spawn((DebugOverlayPanelLabelText, Text::new("")));
-        app.world_mut()
-            .spawn((DebugOverlayPanelLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelLabelText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelLabelShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
         app.world_mut().spawn((
             DebugOverlayPanelValueText,
+            DebugOverlayPanelText,
             Text::new(""),
             TextColor(Color::WHITE),
         ));
-        app.world_mut()
-            .spawn((DebugOverlayPanelValueShadowText, Text::new("")));
-        app.world_mut()
-            .spawn((DebugOverlayPanelSecondaryLabelText, Text::new("")));
-        app.world_mut()
-            .spawn((DebugOverlayPanelSecondaryLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelValueShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryLabelText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryLabelShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
         app.world_mut().spawn((
             DebugOverlayPanelSecondaryValueText,
+            DebugOverlayPanelText,
             Text::new(""),
             TextColor(Color::WHITE),
         ));
-        app.world_mut()
-            .spawn((DebugOverlayPanelSecondaryValueShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryValueShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryLabelText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryLabelShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryValueText,
+            DebugOverlayPanelText,
+            Text::new(""),
+            TextColor(Color::WHITE),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryValueShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
 
         app.update();
     }
 
     #[test]
-    fn debug_overlay_sent_input_stays_in_primary_header_block() {
+    fn debug_overlay_sent_input_moves_to_right_column() {
         let mut app = App::new();
         app.init_resource::<Time>();
         app.init_resource::<DiagnosticsStore>();
@@ -2533,28 +3152,69 @@ mod tests {
 
         app.world_mut()
             .spawn((DebugOverlayPanelRoot, Visibility::Hidden));
-        app.world_mut()
-            .spawn((DebugOverlayPanelLabelText, Text::new("")));
-        app.world_mut()
-            .spawn((DebugOverlayPanelLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelLabelText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelLabelShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
         app.world_mut().spawn((
             DebugOverlayPanelValueText,
+            DebugOverlayPanelText,
             Text::new(""),
             TextColor(Color::WHITE),
         ));
-        app.world_mut()
-            .spawn((DebugOverlayPanelValueShadowText, Text::new("")));
-        app.world_mut()
-            .spawn((DebugOverlayPanelSecondaryLabelText, Text::new("")));
-        app.world_mut()
-            .spawn((DebugOverlayPanelSecondaryLabelShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelValueShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryLabelText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryLabelShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
         app.world_mut().spawn((
             DebugOverlayPanelSecondaryValueText,
+            DebugOverlayPanelText,
             Text::new(""),
             TextColor(Color::WHITE),
         ));
-        app.world_mut()
-            .spawn((DebugOverlayPanelSecondaryValueShadowText, Text::new("")));
+        app.world_mut().spawn((
+            DebugOverlayPanelSecondaryValueShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryLabelText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryLabelShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryValueText,
+            DebugOverlayPanelText,
+            Text::new(""),
+            TextColor(Color::WHITE),
+        ));
+        app.world_mut().spawn((
+            DebugOverlayPanelTertiaryValueShadowText,
+            DebugOverlayPanelText,
+            Text::new(""),
+        ));
 
         app.update();
 
@@ -2577,8 +3237,19 @@ mod tests {
                 .clone()
         };
 
-        assert!(primary_labels_value.contains("Sent Input"));
+        let tertiary_labels_value = {
+            let world = app.world_mut();
+            world
+                .query_filtered::<&Text, With<DebugOverlayPanelTertiaryLabelText>>()
+                .single(world)
+                .expect("tertiary labels")
+                .0
+                .clone()
+        };
+
+        assert!(!primary_labels_value.contains("Sent Input"));
         assert!(!secondary_labels_value.contains("Sent Input"));
+        assert!(tertiary_labels_value.contains("Sent Input"));
     }
 
     #[test]

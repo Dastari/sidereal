@@ -29,6 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
+import { TheGridNumberInput } from '@/components/thegridcn/thegrid-number-input'
 import { useSessionStorageNumber } from '@/hooks/use-session-storage-number'
 import { apiDelete, apiGet, apiPost } from '@/lib/api/client'
 
@@ -775,6 +776,24 @@ function GenesisShaderForm({
             onChange={(cloud_coverage) => onUpdateSettings({ cloud_coverage })}
           />
           <NumberField
+            label="Cloud Alpha"
+            value={settings.cloud_alpha}
+            step={0.01}
+            onChange={(cloud_alpha) => onUpdateSettings({ cloud_alpha })}
+          />
+          <NumberField
+            label="Cloud Scale"
+            value={settings.cloud_scale}
+            step={0.01}
+            onChange={(cloud_scale) => onUpdateSettings({ cloud_scale })}
+          />
+          <NumberField
+            label="Cloud Speed"
+            value={settings.cloud_speed}
+            step={0.01}
+            onChange={(cloud_speed) => onUpdateSettings({ cloud_speed })}
+          />
+          <NumberField
             label="Atmosphere"
             value={settings.atmosphere_thickness}
             step={0.01}
@@ -783,11 +802,95 @@ function GenesisShaderForm({
             }
           />
           <NumberField
+            label="Atmosphere Alpha"
+            value={settings.atmosphere_alpha}
+            step={0.01}
+            onChange={(atmosphere_alpha) =>
+              onUpdateSettings({ atmosphere_alpha })
+            }
+          />
+          <NumberField
+            label="Atmosphere Falloff"
+            value={settings.atmosphere_falloff}
+            step={0.01}
+            onChange={(atmosphere_falloff) =>
+              onUpdateSettings({ atmosphere_falloff })
+            }
+          />
+          <NumberField
+            label="Corona Size"
+            value={settings.corona_intensity}
+            step={0.01}
+            onChange={(corona_intensity) =>
+              onUpdateSettings({ corona_intensity })
+            }
+          />
+          <NumberField
             label="Emissive"
             value={settings.emissive_strength}
             step={0.01}
             onChange={(emissive_strength) =>
               onUpdateSettings({ emissive_strength })
+            }
+          />
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
+          <NumberField
+            label="Light Wrap"
+            value={settings.light_wrap}
+            step={0.01}
+            onChange={(light_wrap) => onUpdateSettings({ light_wrap })}
+          />
+          <NumberField
+            label="Ambient"
+            value={settings.ambient_strength}
+            step={0.01}
+            onChange={(ambient_strength) =>
+              onUpdateSettings({ ambient_strength })
+            }
+          />
+          <NumberField
+            label="Rim"
+            value={settings.rim_strength}
+            step={0.01}
+            onChange={(rim_strength) => onUpdateSettings({ rim_strength })}
+          />
+          <NumberField
+            label="Fresnel"
+            value={settings.fresnel_strength}
+            step={0.01}
+            onChange={(fresnel_strength) =>
+              onUpdateSettings({ fresnel_strength })
+            }
+          />
+          <NumberField
+            label="Surface Activity"
+            value={settings.surface_activity}
+            step={0.01}
+            onChange={(surface_activity) =>
+              onUpdateSettings({ surface_activity })
+            }
+          />
+          <NumberField
+            label="Bands"
+            value={settings.bands_count}
+            step={0.01}
+            onChange={(bands_count) => onUpdateSettings({ bands_count })}
+          />
+          <NumberField
+            label="Storm"
+            value={settings.storm_intensity}
+            step={0.01}
+            onChange={(storm_intensity) =>
+              onUpdateSettings({ storm_intensity })
+            }
+          />
+          <NumberField
+            label="Cloud Shadow"
+            value={settings.cloud_shadow_strength}
+            step={0.01}
+            onChange={(cloud_shadow_strength) =>
+              onUpdateSettings({ cloud_shadow_strength })
             }
           />
         </div>
@@ -811,6 +914,13 @@ function GenesisShaderForm({
             value={settings.color_atmosphere_rgb}
             onChange={(color_atmosphere_rgb) =>
               onUpdateSettings({ color_atmosphere_rgb })
+            }
+          />
+          <ColorField
+            label="Clouds"
+            value={settings.color_clouds_rgb}
+            onChange={(color_clouds_rgb) =>
+              onUpdateSettings({ color_clouds_rgb })
             }
           />
           <ColorField
@@ -1015,11 +1125,12 @@ function NumberField({
       <Label className="text-xs uppercase tracking-[0.14em] text-muted-foreground">
         {label}
       </Label>
-      <Input
-        type="number"
+      <TheGridNumberInput
         value={Number.isFinite(value) ? value : 0}
         step={step}
-        onChange={(event) => onChange(Number(event.target.value))}
+        onChange={onChange}
+        className="w-full"
+        inputClassName="min-w-0 flex-1 text-xs"
       />
     </div>
   )
@@ -1044,10 +1155,14 @@ function SelectField({
       <select
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="grid-input border-input h-9 w-full border bg-transparent px-3 text-sm"
+        className="grid-input border-input h-9 w-full border bg-background px-3 text-sm text-foreground [color-scheme:dark]"
       >
         {options.map(([optionValue, optionLabel]) => (
-          <option key={optionValue} value={optionValue}>
+          <option
+            key={optionValue}
+            value={optionValue}
+            className="bg-background text-foreground"
+          >
             {optionLabel}
           </option>
         ))}

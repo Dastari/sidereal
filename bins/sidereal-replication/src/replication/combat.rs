@@ -18,7 +18,7 @@ use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::control::owner_prediction_target;
 use crate::replication::runtime_scripting::{ScriptEvent, ScriptEventQueue};
 
-const TRACER_VISUAL_SPEED_MPS: f64 = 1800.0;
+const TRACER_VISUAL_SPEED_MPS: f64 = 650.0;
 const TRACER_VISUAL_MIN_TTL_S: f64 = 0.01;
 
 pub fn init_resources(_app: &mut App) {}

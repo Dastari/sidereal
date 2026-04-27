@@ -22,6 +22,7 @@ const DEFAULT_INFO_DISMISS_S: f32 = 5.0;
 const DEFAULT_SUCCESS_DISMISS_S: f32 = 5.0;
 const DEFAULT_WARNING_DISMISS_S: f32 = 7.0;
 const DEFAULT_ERROR_DISMISS_S: f32 = 9.0;
+const PLAYER_ENTERED_WORLD_EVENT_TYPE: &str = "player_entered_world";
 
 #[derive(Debug, Clone)]
 pub struct NotificationCommand {
@@ -152,6 +153,49 @@ pub fn enqueue_player_notification(
     command: NotificationCommand,
 ) {
     queue.push(command);
+}
+
+pub(crate) fn enqueue_player_entered_world_notifications(
+    queue: &mut NotificationCommandQueue,
+    bindings: &AuthenticatedClientBindings,
+    entering_player_entity_id: &str,
+    entering_display_name: Option<&str>,
+) -> usize {
+    let entering_player_entity_id = canonical_player_entity_id(entering_player_entity_id);
+    let entering_display_name = entering_display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("A player");
+
+    let mut recipient_player_entity_ids = HashSet::<String>::new();
+    for bound_player_entity_id in bindings.by_client_entity.values() {
+        let recipient_player_entity_id = canonical_player_entity_id(bound_player_entity_id);
+        if recipient_player_entity_id != entering_player_entity_id {
+            recipient_player_entity_ids.insert(recipient_player_entity_id);
+        }
+    }
+
+    let recipient_count = recipient_player_entity_ids.len();
+    for recipient_player_entity_id in recipient_player_entity_ids {
+        queue.push(NotificationCommand {
+            player_entity_id: recipient_player_entity_id,
+            title: "Player Online".to_string(),
+            body: format!("{entering_display_name} entered the world."),
+            severity: NotificationSeverity::Info,
+            placement: NotificationPlacement::BottomRight,
+            image: None,
+            payload: NotificationPayload::Generic {
+                event_type: PLAYER_ENTERED_WORLD_EVENT_TYPE.to_string(),
+                data: serde_json::json!({
+                    "player_entity_id": entering_player_entity_id,
+                    "display_name": entering_display_name,
+                }),
+            },
+            auto_dismiss_after_s: None,
+        });
+    }
+
+    recipient_count
 }
 
 pub fn process_notification_commands(
@@ -413,5 +457,58 @@ mod tests {
             message.auto_dismiss_after_s,
             Some(DEFAULT_WARNING_DISMISS_S)
         );
+    }
+
+    #[test]
+    fn player_entered_world_notifications_target_other_bound_players_once() {
+        let entering_player = "11111111-1111-1111-1111-111111111111";
+        let recipient_a = "22222222-2222-2222-2222-222222222222";
+        let recipient_b = "33333333-3333-3333-3333-333333333333";
+        let mut bindings = AuthenticatedClientBindings::default();
+        bindings
+            .by_client_entity
+            .insert(Entity::from_bits(1), entering_player.to_string());
+        bindings
+            .by_client_entity
+            .insert(Entity::from_bits(2), recipient_a.to_string());
+        bindings
+            .by_client_entity
+            .insert(Entity::from_bits(3), recipient_a.to_string());
+        bindings
+            .by_client_entity
+            .insert(Entity::from_bits(4), recipient_b.to_string());
+
+        let mut queue = NotificationCommandQueue::default();
+        let queued = enqueue_player_entered_world_notifications(
+            &mut queue,
+            &bindings,
+            entering_player,
+            Some("Talanah"),
+        );
+
+        assert_eq!(queued, 2);
+        assert_eq!(queue.len(), 2);
+        let recipients = queue
+            .pending
+            .iter()
+            .map(|command| command.player_entity_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(!recipients.contains(entering_player));
+        assert!(recipients.contains(recipient_a));
+        assert!(recipients.contains(recipient_b));
+        for command in &queue.pending {
+            assert_eq!(command.title, "Player Online");
+            assert_eq!(command.body, "Talanah entered the world.");
+            assert_eq!(command.severity, NotificationSeverity::Info);
+            assert_eq!(command.placement, NotificationPlacement::BottomRight);
+            match &command.payload {
+                NotificationPayload::Generic { event_type, data } => {
+                    assert_eq!(event_type, PLAYER_ENTERED_WORLD_EVENT_TYPE);
+                    assert_eq!(data["player_entity_id"], entering_player);
+                    assert_eq!(data["display_name"], "Talanah");
+                }
+                _ => panic!("expected generic player-entered-world payload"),
+            }
+        }
     }
 }

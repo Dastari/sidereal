@@ -158,7 +158,7 @@ pub(crate) fn seed_controlled_predicted_motion_from_confirmed(
     else {
         return;
     };
-    if seed.is_some_and(|seed| seed.generation == generation) {
+    if seed.is_some_and(|seed| seed.generation >= generation) {
         return;
     }
 
@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn predicted_controlled_motion_seed_does_not_repeat_same_generation() {
+    fn predicted_controlled_motion_seed_ignores_existing_or_newer_generation() {
         let mut app = App::new();
         let target_id = "ce9e421c-8b62-458a-803e-51e9ad272908".to_string();
         let target_guid = Uuid::parse_str(&target_id).unwrap();
@@ -1040,10 +1040,10 @@ mod tests {
         app.insert_resource(LocalTimeline::default());
         app.insert_resource(ControlBootstrapState {
             authoritative_target_entity_id: Some(target_id.clone()),
-            generation: 3,
+            generation: 2,
             phase: ControlBootstrapPhase::ActivePredicted {
                 target_entity_id: target_id,
-                generation: 3,
+                generation: 2,
                 entity: target_entity,
             },
             last_transition_at_s: 0.0,

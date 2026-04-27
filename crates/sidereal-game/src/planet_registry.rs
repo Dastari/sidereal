@@ -28,6 +28,12 @@ pub struct PlanetSpawnDefinition {
     pub map_icon_asset_id: String,
     #[serde(default = "default_planet_visual_shader_asset_id")]
     pub planet_visual_shader_asset_id: String,
+    #[serde(default)]
+    pub signal_strength: Option<f32>,
+    #[serde(default)]
+    pub signal_detection_radius_m: Option<f32>,
+    #[serde(default)]
+    pub use_extent_for_signal_detection: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Reflect, Serialize, Deserialize)]

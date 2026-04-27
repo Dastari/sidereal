@@ -10,9 +10,11 @@ use sidereal_gateway::auth::{
     UdpBootstrapDispatcher,
 };
 use std::sync::Arc;
-use tracing::{Level, info};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
+
+const DEFAULT_LOG_FILTER: &str = "info,postgres::config=warn";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,8 +33,10 @@ async fn main() -> anyhow::Result<()> {
     } = prepare_timestamped_log_file("sidereal-gateway")
         .context("failed to create gateway log file")?;
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new("info,postgres::config=warn"))
-        .with_max_level(Level::INFO)
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
+        )
         .with_target(true)
         .with_writer(std::io::stderr.and(log_file))
         .try_init();

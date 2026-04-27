@@ -333,10 +333,7 @@ pub(crate) fn poll_startup_asset_request_results(
                 payload.manifest.audio_catalog_version,
                 payload.manifest.audio_catalog,
             );
-            session.status = format!(
-                "Startup preload complete ({} required assets).",
-                payload.manifest.required_assets.len()
-            );
+            session.status.clear();
             session.ui_dirty = true;
         }
         Err(err) => {
@@ -472,9 +469,6 @@ mod tests {
         );
         assert_eq!(audio_catalog.version.as_deref(), Some("audio-v1"));
         assert_eq!(state.get(), &ClientAppState::Auth);
-        assert_eq!(
-            session.status,
-            "Startup preload complete (1 required assets)."
-        );
+        assert!(session.status.is_empty());
     }
 }

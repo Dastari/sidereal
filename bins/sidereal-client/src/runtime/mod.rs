@@ -32,6 +32,7 @@ mod replication;
 mod resources;
 mod scene;
 mod scene_world;
+mod sensor_ring;
 mod shaders;
 mod startup_assets;
 mod startup_loading_ui;

@@ -96,13 +96,13 @@ WorldInit.world_defaults = {
   asteroid_field_entity_id = "0012ebad-0000-0000-0000-000000000020",
   planet_bundle_id = "planet.body",
   environment_lighting_bundle_id = "environment.lighting",
-  asteroid_field_count = 120,
+  asteroid_field_count = 150,
   asteroid_field_center = { x = 0.0, y = 0.0 },
-  asteroid_field_radius_min_m = 500.0,
-  asteroid_field_radius_max_m = 2600.0,
-  asteroid_field_radial_jitter_m = 240.0,
-  asteroid_size_min_m = 4.0,
-  asteroid_size_max_m = 28.0,
+  asteroid_field_radius_min_m = 260.0,
+  asteroid_field_radius_max_m = 1450.0,
+  asteroid_field_radial_jitter_m = 110.0,
+  asteroid_size_min_m = 12.0,
+  asteroid_size_max_m = 72.0,
   asteroid_spin_min_rad_s = -0.06,
   asteroid_spin_max_rad_s = 0.06,
   starter_planet = {
@@ -289,6 +289,9 @@ local function build_planet_records(ctx)
           spawn_rotation_rad = spawn.spawn_rotation_rad,
           map_icon_asset_id = spawn.map_icon_asset_id,
           planet_visual_shader_asset_id = spawn.planet_visual_shader_asset_id,
+          signal_strength = spawn.signal_strength,
+          signal_detection_radius_m = spawn.signal_detection_radius_m,
+          use_extent_for_signal_detection = spawn.use_extent_for_signal_detection,
         }
         for key, value in pairs(shader_settings) do
           bundle_ctx[key] = value

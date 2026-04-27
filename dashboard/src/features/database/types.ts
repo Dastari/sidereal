@@ -3,6 +3,8 @@ export type DatabaseAccountRecord = {
   email: string
   primaryPlayerEntityId: string
   characterCount: number
+  mfaTotpEnabled: boolean
+  mfaVerifiedAtEpochS: number | null
   createdAtEpochS: number
   characters: Array<DatabaseCharacterRecord>
 }
@@ -10,7 +12,9 @@ export type DatabaseAccountRecord = {
 export type DatabaseCharacterRecord = {
   playerEntityId: string
   createdAtEpochS: number
+  updatedAtEpochS: number
   displayName: string | null
+  status: string
 }
 
 export type DatabaseTableRecord = {

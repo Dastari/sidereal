@@ -40,6 +40,11 @@ Update note (2026-04-26):
 - Public registration/login, email one-time code and magic-link completion, TOTP setup, account character management, and admin dashboard routes should use the same semantic theme tokens and local UI wrappers.
 - Admin dashboard routes and server data loaders must be guarded by gateway account session, route-specific scopes, and verified MFA after the migration.
 
+Update note (2026-04-27):
+
+- Dense dashboard record lists should use the reusable `dashboard/src/components/ui/data-table.tsx` wrapper rather than route-local table controls. Configure it through column definitions, custom row search text, selection/action bars, pagination mode, row class callbacks, and column visibility settings.
+- The `/database/accounts` route is the current reference implementation for account/character/MFA table usage: account data is grouped by account, characters are rendered as nested account-owned records, and TOTP enrollment status is shown as table data rather than inferred from session state.
+
 ## 1. Scope
 
 This guide defines the enforceable UI, theming, routing, validation, and frontend architecture standards for the web frontend under `dashboard/`.

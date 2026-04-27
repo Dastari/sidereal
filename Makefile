@@ -204,19 +204,19 @@ fmt:
 	cargo fmt --all -- --check
 
 clippy:
-	cargo clippy --workspace --all-targets -- -D warnings
+	CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets -- -D warnings
 
 check:
-	cargo check --workspace
+	CARGO_INCREMENTAL=0 cargo check --workspace
 
 inline-test-guard:
 	./scripts/check_inline_rust_tests.sh
 
 wasm-check:
-	cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
+	CARGO_INCREMENTAL=0 cargo check -p sidereal-client --target wasm32-unknown-unknown --features bevy/webgpu
 
 windows-check:
-	cargo check -p sidereal-client --target x86_64-pc-windows-gnu
+	CARGO_INCREMENTAL=0 cargo check -p sidereal-client --target x86_64-pc-windows-gnu
 
 windows-build:
 	cargo build -p sidereal-client --bin sidereal-client --target x86_64-pc-windows-gnu
@@ -238,8 +238,10 @@ target-size:
 	fi
 
 clean-lite:
-	@echo "Removing incremental/debug caches under target/ ..."
-	rm -rf target/debug/incremental target/debug/.fingerprint target/debug/build
+	@echo "Removing incremental/check caches under target/ ..."
+	@if [ -d target ]; then \
+		find target -mindepth 2 -maxdepth 3 -type d \( -name incremental -o -name .fingerprint -o -name build \) -prune -exec rm -rf {} +; \
+	fi
 	@echo "Done. Use 'make target-size' to inspect remaining artifacts."
 
 clean-full:

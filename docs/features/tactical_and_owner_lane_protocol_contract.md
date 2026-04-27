@@ -1,7 +1,7 @@
 # Tactical and Owner Lane Protocol Contract
 
 Status: Active implementation contract
-Last updated: 2026-04-24
+Last updated: 2026-04-27
 Owners: replication + client runtime + UI
 Scope: tactical fog/contact lanes and owner asset manifest lane schemas/runtime behavior
 
@@ -29,6 +29,25 @@ Primary references:
 1. DR-0035 makes f64 authoritative world coordinates the target for tactical contacts, owner manifest position summaries, discovery metadata, and world-space notification payloads.
 2. Tactical/contact/manifest protocol fields that carry absolute world position or velocity should use f64 arrays. UI/render consumers cast to f32 only after subtracting the active camera/map origin or otherwise projecting to local display coordinates.
 3. Dashboard consumers use TypeScript `number` / JSON numbers for these f64 payloads.
+
+2026-04-27 update:
+
+1. Visibility System V2 proposes signal-only tactical contacts for high-signal entities that are not fully visible through replication visibility.
+2. Signal-only contacts are redacted unknown contacts with relative strength and stable approximate position; they do not grant full entity replication or unauthorized component fields.
+3. The V2 protocol extension adds optional `signal_strength` and `position_accuracy_m` fields to `TacticalContact`.
+
+2026-04-27 update:
+
+1. The tactical sensor ring introduces scanner-tier interpretation for contact presentation, documented in `docs/features/tactical_sensor_ring_design_contract.md`.
+2. Current client ring implementation consumes `TacticalContact` data as disclosed by the existing tactical lane; server-side scanner-tier redaction remains open follow-up.
+3. Target server behavior: tactical contact output must be gated by the currently controlled non-player-anchor entity's effective `ScannerComponent`; free roam/player-anchor control must not be used as a scanner source.
+
+2026-04-27 update:
+
+1. `TacticalContact` now includes optional public `size_m` and `mass_kg` metadata when disclosed by the tactical lane.
+2. The native client tactical map uses live planet/star/black-hole contacts from those fields to drive shader-side gravity-well grid warping; planet tactical icons render at 8x the standard tactical marker scale.
+3. WASM impact: the behavior is shared client runtime/shader logic and must compile with the normal `sidereal-client` WASM target; no browser-only transport or asset-loading behavior changed.
+4. The replication protocol version is `6` for the tactical contact size/mass field addition.
 
 ## 1. Objective
 
@@ -135,12 +154,16 @@ pub struct TacticalContact {
     pub map_icon_asset_id: Option<String>,
     pub faction_id: Option<String>,
     pub position_xy: [f64; 2],
+    pub size_m: Option<[f32; 3]>,
+    pub mass_kg: Option<f32>,
     pub heading_rad: f64,
     pub velocity_xy: Option<[f64; 2]>,
     pub is_live_now: bool,
     pub last_seen_tick: u64,
     pub classification: Option<String>,
     pub contact_quality: Option<String>,
+    pub signal_strength: Option<f32>,
+    pub position_accuracy_m: Option<f32>,
 }
 ```
 
@@ -149,7 +172,18 @@ Notes:
 1. `is_live_now=true` means currently scanner/live visible.
 2. `is_live_now=false` means stale memory projection.
 3. `map_icon_asset_id` is sourced from entity `map_icon` (`MapIcon { asset_id }`) when present.
-4. Fields remain redaction-scoped by policy/grants.
+4. `signal_strength` and `position_accuracy_m` are set only for Visibility V2 signal-derived contacts.
+5. Fields remain redaction-scoped by policy/grants.
+6. For scanner-tier tactical products, `contact_quality` describes the scanner-disclosed quality band and `classification` may carry only server-authorized relationship values such as `friendly`, `hostile`, `neutral`, or `unknown`.
+7. The client must not derive relationship/classification from replicated private ECS data for tactical ring presentation.
+8. `size_m` and `mass_kg` are optional public tactical presentation hints; clients may use them for non-authoritative visual scale/gravity-well effects only.
+
+### 4.3.1 V2 Signal Contact Rules
+
+1. Signal-only unknown contacts use `kind = "unknown"`, `classification = Some("unknown")`, and `map_icon_asset_id = Some("map_icon_unknown_contact_svg")`.
+2. Signal-only unknown contacts carry `signal_strength` plus `position_accuracy_m`.
+3. Signal-only contacts must not include unauthorized faction, velocity, exact classification, or component-derived details.
+4. The replication protocol version is `5` for the `TacticalContact` signal field addition and `6` for the size/mass presentation field addition.
 
 ## 4.4 Landmark Discovery Notification Direction
 

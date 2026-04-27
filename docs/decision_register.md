@@ -65,6 +65,41 @@ For each decision:
 
 ## Decisions
 
+## DR-0037: Visibility Signal Detection and Stable Unknown Contacts
+- Status: Proposed
+- Date: 2026-04-27
+- Owners: replication + gameplay visibility + tactical UI + planet/content authoring
+- Context:
+  - Planets and other high-signal bodies can become visible too late through the current scanner/static-landmark path, producing visual snap-in near local delivery edges.
+  - Tactical contacts currently come from fully visible replicated entities, so the player cannot receive a redacted "unknown signal" contact with relative strength before full visibility.
+  - Rapid zoom-out can outrun tight server delivery and client local culling, especially around parallaxed planets.
+- Decision:
+  - Adopt Visibility System V2 as the direction for generic `SignalSignature`, observer `ContactResolutionM`, redacted unknown tactical contacts, signal-triggered static-landmark discovery, and zoom-safe delivery/client culling.
+  - Signal-only detection does not grant ordinary full entity replication.
+  - Unknown signal contacts carry relative strength and stable approximate position until full visibility or improved scanner resolution updates them.
+- Alternatives considered:
+  - Increase only planet `StaticLandmark.discovery_radius_m`: rejected because it does not generalize to unknown non-landmark signals.
+  - Make planets public visibility: rejected because it bypasses player-scoped discovery.
+  - Let signal grant full entity replication: rejected because unknown contacts must not leak identity or component payloads.
+- Consequences:
+  - Positive:
+    - High-signal entities become perceivable earlier without leaking full data.
+    - Planets can be discovered before they snap into the local bubble.
+    - Scanner quality can improve approximate contact accuracy later.
+  - Negative:
+    - Tactical contact schema and per-player tactical state must evolve.
+    - More redaction and stability tests are required.
+- Follow-up:
+  - Implement the V2 feature contract in phase order.
+  - Add a question-mark unknown contact icon asset and register it in the asset registry.
+- Decision doc:
+  - `docs/decisions/dr-0037_visibility_signal_detection_and_stable_unknown_contacts.md`
+- References:
+  - `docs/features/visibility_system_v2_signal_detection_contract.md`
+  - `docs/features/visibility_replication_contract.md`
+  - `docs/features/tactical_and_owner_lane_protocol_contract.md`
+  - `docs/core_systems_catalog_v1.md`
+
 ## DR-0036: Gateway Account Auth, Dashboard Sessions, and Character Creation
 - Status: Proposed
 - Date: 2026-04-26

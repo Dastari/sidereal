@@ -1,7 +1,7 @@
 # Genesis Planet Registry
 
 Status: Active partial implementation spec
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 Owners: dashboard + scripting + gameplay content + client rendering
 Scope: Genesis dashboard planet authoring, Lua planet registry files, and typed runtime registry exposure
 Primary references:
@@ -17,6 +17,7 @@ Primary references:
 - 2026-04-24: Stage 2 dashboard authoring has begun. `/genesis` now loads full editable planet definitions, exposes metadata/spawn/shader controls, supports deterministic randomization from the selected seed, and proxies save/publish/discard actions through script-catalog draft APIs for the planet file plus `planets/registry.lua`. Dashboard mutations are guarded by the existing dashboard admin session and Zod request validation. Remaining Stage 2 work: richer live shader preview integration, create/delete planet flows, and end-to-end gateway validation tests for saved Lua.
 - 2026-04-26: `/genesis` now includes an initial live WebGPU visual preview panel for the selected planet definition. The preview reuses the dashboard shader preview renderer, loads the registry-declared `planet_visual_shader_asset_id` from the shader catalog, and maps `PlanetBodyShaderSettings` into the same `PlanetBodyUniforms` layout used by the native client main planet pass. Native impact: none; this is dashboard-only preview tooling. WASM impact: uses the existing browser WebGPU shader preview path, not the Bevy client runtime. Remaining preview work: exact multi-pass composition parity for clouds/rings/corona and tighter validation against generated shader editor ranges.
 - 2026-04-26: Genesis catalog reads now fall back to repository disk files under `data/scripts/planets/` when the gateway script-catalog API is unavailable, so local dashboard-only development still shows Helion and Aurelia. Save, publish, and discard remain gateway script-catalog operations and do not write directly to disk from the dashboard.
+- 2026-04-27: The `/genesis` preview now uses normal alpha blending in the dashboard preview pipeline and renders the planet visual shader in the same body/cloud/ring pass categories used by the native client, with pass flags rather than separate shader assets. The dashboard form exposes the currently authored cloud alpha/scale/speed, atmosphere alpha/falloff, corona size/intensity, and related lighting/weather controls. Remaining preview work: exact native transform scale/depth parity for all pass overlays and range metadata generated from the Lua shader editor schema.
 
 ## 1. Purpose
 

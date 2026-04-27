@@ -6,7 +6,8 @@ use lightyear::prelude::{
     RemoteId, Replicate, ReplicationState, Server, ServerMultiMessageSender,
 };
 use sidereal_game::{
-    ActionQueue, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId, PlayerTag,
+    ActionQueue, AfterburnerState, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId,
+    PlayerTag,
 };
 use std::collections::HashMap;
 
@@ -16,6 +17,9 @@ use sidereal_net::{
 };
 
 use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::persistence::{
+    PersistenceDirtyState, SimulationPersistenceTimer, persist_entity_snapshot_async,
+};
 use crate::replication::{
     PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity,
     visibility::VisibilityMembershipCache,
@@ -29,6 +33,16 @@ pub struct ClientControlRequestOrder {
 #[derive(Resource, Default)]
 pub struct ClientControlLeaseGenerations {
     pub generation_by_player: HashMap<String, u64>,
+}
+
+impl ClientControlLeaseGenerations {
+    pub(crate) fn ensure_initialized_for_player(&mut self, player_wire: &str) -> u64 {
+        let generation = self
+            .generation_by_player
+            .entry(player_wire.to_string())
+            .or_insert(1);
+        *generation
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -100,21 +114,39 @@ fn observer_interpolation_target(
     (!observer_clients.is_empty()).then_some(InterpolationTarget::manual(observer_clients))
 }
 
-fn neutralize_control_intent_on_handoff(
+pub(crate) fn neutralize_control_intent(world: &mut World, controlled_entity: Entity) -> bool {
+    let mut changed = false;
+    if let Some(mut queue) = world.get_mut::<ActionQueue>(controlled_entity)
+        && !queue.pending.is_empty()
+    {
+        queue.clear();
+        changed = true;
+    }
+    if let Some(mut flight_computer) = world.get_mut::<FlightComputer>(controlled_entity)
+        && (flight_computer.throttle != 0.0
+            || flight_computer.yaw_input != 0.0
+            || flight_computer.brake_active)
+    {
+        flight_computer.throttle = 0.0;
+        flight_computer.yaw_input = 0.0;
+        flight_computer.brake_active = false;
+        changed = true;
+    }
+    if let Some(mut afterburner_state) = world.get_mut::<AfterburnerState>(controlled_entity)
+        && afterburner_state.active
+    {
+        afterburner_state.active = false;
+        changed = true;
+    }
+    changed
+}
+
+pub(crate) fn queue_neutralize_control_intent(
     commands: &mut Commands<'_, '_>,
-    previous_controlled_entity: Entity,
+    controlled_entity: Entity,
 ) {
     commands.queue(move |world: &mut World| {
-        if let Some(mut queue) = world.get_mut::<ActionQueue>(previous_controlled_entity) {
-            queue.clear();
-        }
-        if let Some(mut flight_computer) =
-            world.get_mut::<FlightComputer>(previous_controlled_entity)
-        {
-            flight_computer.throttle = 0.0;
-            flight_computer.yaw_input = 0.0;
-            flight_computer.brake_active = true;
-        }
+        neutralize_control_intent(world, controlled_entity);
     });
 }
 
@@ -327,11 +359,8 @@ pub fn receive_client_control_requests(
                 .ok()
                 .and_then(|guid| guid.0.clone())
                 .or_else(|| Some(player_runtime_id.clone()));
-            let current_generation = lease_generations
-                .generation_by_player
-                .get(bound_player.as_str())
-                .copied()
-                .unwrap_or(0);
+            let current_generation =
+                lease_generations.ensure_initialized_for_player(bound_player.as_str());
             info!(
                 "server control handover request player={} client={:?} remote={} seq={} previous_controlled={} requested_raw={} requested_guid={}",
                 bound_player,
@@ -407,9 +436,22 @@ pub fn receive_client_control_requests(
                 .get(&bound_player_id)
                 .copied();
             let currently_bound_entity = currently_bound.unwrap_or(player_entity);
-            commands
-                .entity(player_entity)
-                .insert(ControlledEntityGuid(resolved_control_guid.clone()));
+            let player_guid_for_persistence = player_guid.clone();
+            let resolved_control_guid_for_persistence = resolved_control_guid.clone();
+            commands.queue(move |world: &mut World| {
+                if let Ok(mut player) = world.get_entity_mut(player_entity) {
+                    player.insert(ControlledEntityGuid(
+                        resolved_control_guid_for_persistence.clone(),
+                    ));
+                }
+                if let Some(mut dirty) = world.get_resource_mut::<PersistenceDirtyState>() {
+                    dirty.dirty_entity_ids.insert(player_guid_for_persistence);
+                }
+                if let Some(mut timer) = world.get_resource_mut::<SimulationPersistenceTimer>() {
+                    timer.last_flush_at_s = None;
+                }
+                persist_entity_snapshot_async(world, player_entity, "control");
+            });
 
             controlled_entity_map
                 .by_player_entity_id
@@ -421,7 +463,7 @@ pub fn receive_client_control_requests(
                 .generation_by_player
                 .insert(bound_player.clone(), control_generation);
             if rebind_required {
-                neutralize_control_intent_on_handoff(&mut commands, currently_bound_entity);
+                queue_neutralize_control_intent(&mut commands, currently_bound_entity);
             }
 
             info!(
@@ -848,9 +890,9 @@ pub fn reconcile_control_replication_roles(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_visible_clients_for_role_rearm, next_control_generation,
-        observer_interpolation_target, owner_interpolation_target, owner_only_replicate,
-        owner_prediction_target, reconcile_control_replication_roles,
+        ClientControlLeaseGenerations, collect_visible_clients_for_role_rearm,
+        next_control_generation, observer_interpolation_target, owner_interpolation_target,
+        owner_only_replicate, owner_prediction_target, reconcile_control_replication_roles,
     };
     use crate::replication::auth::AuthenticatedClientBindings;
     use crate::replication::{
@@ -872,6 +914,23 @@ mod tests {
         assert_eq!(next_control_generation(0, false), 1);
         assert_eq!(next_control_generation(1, false), 1);
         assert_eq!(next_control_generation(1, true), 2);
+    }
+
+    #[test]
+    fn control_generation_initializes_existing_authoritative_lease() {
+        let mut generations = ClientControlLeaseGenerations::default();
+
+        let current =
+            generations.ensure_initialized_for_player("1521601b-7e69-4700-853f-eb1eb3a41199");
+
+        assert_eq!(current, 1);
+        assert_eq!(next_control_generation(current, true), 2);
+        assert_eq!(
+            generations
+                .generation_by_player
+                .get("1521601b-7e69-4700-853f-eb1eb3a41199"),
+            Some(&1)
+        );
     }
 
     #[test]
