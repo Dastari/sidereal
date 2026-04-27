@@ -8,19 +8,32 @@ import {
   discardGenesisPlanetDraft,
   saveGenesisPlanetDraft,
 } from '@/lib/genesis.server'
-import { requireDashboardAdmin } from '@/server/dashboard-auth'
+import {
+  getDashboardSession,
+  requireDashboardAdmin,
+} from '@/server/dashboard-auth'
 
 export const Route = createFileRoute('/api/genesis/planets/$planetId/draft')({
   server: {
     handlers: {
       POST: async ({ params, request }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(request, 'scripts:write')
         if (authFailure) return authFailure
+        const session = getDashboardSession(request)
+        if (!session) {
+          return json(
+            { error: 'Dashboard account session required' },
+            { status: 403 },
+          )
+        }
 
         const parsedParams = genesisPlanetParamsSchema.safeParse(params)
         if (!parsedParams.success) {
           return json(
-            { error: parsedParams.error.issues[0]?.message ?? 'Invalid planet id' },
+            {
+              error:
+                parsedParams.error.issues[0]?.message ?? 'Invalid planet id',
+            },
             { status: 400 },
           )
         }
@@ -31,40 +44,64 @@ export const Route = createFileRoute('/api/genesis/planets/$planetId/draft')({
           return json(
             {
               error:
-                parsedBody.error.issues[0]?.message ?? 'Invalid Genesis draft payload',
+                parsedBody.error.issues[0]?.message ??
+                'Invalid Genesis draft payload',
             },
             { status: 400 },
           )
         }
-        if (parsedBody.data.definition.planet_id !== parsedParams.data.planetId) {
+        if (
+          parsedBody.data.definition.planet_id !== parsedParams.data.planetId
+        ) {
           return json({ error: 'planet id mismatch' }, { status: 400 })
         }
 
         try {
-          return json(await saveGenesisPlanetDraft(parsedBody.data))
+          return json(
+            await saveGenesisPlanetDraft(parsedBody.data, session.accessToken),
+          )
         } catch (error) {
           const message =
-            error instanceof Error ? error.message : 'Failed to save Genesis draft'
+            error instanceof Error
+              ? error.message
+              : 'Failed to save Genesis draft'
           return json({ error: message }, { status: 500 })
         }
       },
       DELETE: async ({ params, request }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(request, 'scripts:write')
         if (authFailure) return authFailure
+        const session = getDashboardSession(request)
+        if (!session) {
+          return json(
+            { error: 'Dashboard account session required' },
+            { status: 403 },
+          )
+        }
 
         const parsedParams = genesisPlanetParamsSchema.safeParse(params)
         if (!parsedParams.success) {
           return json(
-            { error: parsedParams.error.issues[0]?.message ?? 'Invalid planet id' },
+            {
+              error:
+                parsedParams.error.issues[0]?.message ?? 'Invalid planet id',
+            },
             { status: 400 },
           )
         }
 
         try {
-          return json(await discardGenesisPlanetDraft(parsedParams.data.planetId))
+          return json(
+            await discardGenesisPlanetDraft(
+              parsedParams.data.planetId,
+              session.accessToken,
+            ),
+          )
         } catch (error) {
           const message =
-            error instanceof Error ? error.message : 'Failed to discard Genesis draft'
+            error instanceof Error
+              ? error.message
+              : 'Failed to discard Genesis draft'
           return json({ error: message }, { status: 500 })
         }
       },

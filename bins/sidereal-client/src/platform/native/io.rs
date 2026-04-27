@@ -7,9 +7,8 @@ use sidereal_asset_runtime::{
 };
 use sidereal_core::gateway_dtos::{
     AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
-    EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
-    PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest,
-    StartupAssetManifestResponse,
+    EnterWorldResponse, LoginRequest, MeResponse, PasswordLoginResponse,
+    StartupAssetManifestResponse, TotpLoginChallengeRequest,
 };
 
 use crate::runtime::{AssetCacheAdapter, CacheFuture, GatewayFuture, GatewayHttpAdapter};
@@ -132,60 +131,40 @@ pub(super) fn write_cached_asset(
     std::fs::write(&target, bytes).map_err(|err| err.to_string())
 }
 
-fn native_login(gateway_url: String, payload: LoginRequest) -> Result<AuthTokens, String> {
-    post_json(format!("{gateway_url}/auth/login"), None, &payload)
-}
-
-fn native_login_async(gateway_url: String, payload: LoginRequest) -> GatewayFuture<AuthTokens> {
-    Box::pin(async move { native_login(gateway_url, payload) })
-}
-
-fn native_register(gateway_url: String, payload: RegisterRequest) -> Result<AuthTokens, String> {
-    post_json(format!("{gateway_url}/auth/register"), None, &payload)
-}
-
-fn native_register_async(
+fn native_login(
     gateway_url: String,
-    payload: RegisterRequest,
-) -> GatewayFuture<AuthTokens> {
-    Box::pin(async move { native_register(gateway_url, payload) })
-}
-
-fn native_request_password_reset(
-    gateway_url: String,
-    payload: PasswordResetRequest,
-) -> Result<PasswordResetResponse, String> {
+    payload: LoginRequest,
+) -> Result<PasswordLoginResponse, String> {
     post_json(
-        format!("{gateway_url}/auth/password-reset/request"),
+        format!("{gateway_url}/auth/v1/login/password"),
         None,
         &payload,
     )
 }
 
-fn native_request_password_reset_async(
+fn native_login_async(
     gateway_url: String,
-    payload: PasswordResetRequest,
-) -> GatewayFuture<PasswordResetResponse> {
-    Box::pin(async move { native_request_password_reset(gateway_url, payload) })
+    payload: LoginRequest,
+) -> GatewayFuture<PasswordLoginResponse> {
+    Box::pin(async move { native_login(gateway_url, payload) })
 }
 
-fn native_confirm_password_reset(
+fn native_verify_totp_login_challenge(
     gateway_url: String,
-    payload: PasswordResetConfirmRequest,
-) -> Result<(), String> {
-    let _: PasswordResetConfirmResponse = post_json(
-        format!("{gateway_url}/auth/password-reset/confirm"),
+    payload: TotpLoginChallengeRequest,
+) -> Result<AuthTokens, String> {
+    post_json(
+        format!("{gateway_url}/auth/v1/login/challenge/totp"),
         None,
         &payload,
-    )?;
-    Ok(())
+    )
 }
 
-fn native_confirm_password_reset_async(
+fn native_verify_totp_login_challenge_async(
     gateway_url: String,
-    payload: PasswordResetConfirmRequest,
-) -> GatewayFuture<()> {
-    Box::pin(async move { native_confirm_password_reset(gateway_url, payload) })
+    payload: TotpLoginChallengeRequest,
+) -> GatewayFuture<AuthTokens> {
+    Box::pin(async move { native_verify_totp_login_challenge(gateway_url, payload) })
 }
 
 fn native_fetch_me(gateway_url: String, access_token: String) -> Result<MeResponse, String> {
@@ -281,9 +260,7 @@ fn native_fetch_asset_bytes_async(url: String, access_token: String) -> GatewayF
 pub(crate) fn native_gateway_http_adapter() -> GatewayHttpAdapter {
     GatewayHttpAdapter {
         login: native_login_async,
-        register: native_register_async,
-        request_password_reset: native_request_password_reset_async,
-        confirm_password_reset: native_confirm_password_reset_async,
+        verify_totp_login_challenge: native_verify_totp_login_challenge_async,
         fetch_me: native_fetch_me_async,
         fetch_characters: native_fetch_characters_async,
         enter_world: native_enter_world_async,

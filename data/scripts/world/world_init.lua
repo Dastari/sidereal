@@ -92,7 +92,8 @@ WorldInit.world_defaults = {
     },
   },
   pirate_patrol_bundle_id = "ship.corvette",
-  asteroid_bundle_id = "asteroid.field_member",
+  asteroid_bundle_id = "asteroid.field",
+  asteroid_field_entity_id = "0012ebad-0000-0000-0000-000000000020",
   planet_bundle_id = "planet.body",
   environment_lighting_bundle_id = "environment.lighting",
   asteroid_field_count = 120,
@@ -247,6 +248,7 @@ local function build_asteroid_field_records(ctx)
   end
 
   return ctx.spawn_bundle_graph_records(asteroid_bundle_id, {
+    field_entity_id = defaults.asteroid_field_entity_id,
     field_count = count,
     owner_id = "npc:asteroid_field",
     field_center = defaults.asteroid_field_center or { x = 0.0, y = 0.0 },

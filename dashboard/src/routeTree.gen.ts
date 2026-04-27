@@ -10,13 +10,19 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShaderWorkbenchRouteImport } from './routes/shader-workbench'
+import { Route as SetupRouteImport } from './routes/setup'
+import { Route as MfaSetupRouteImport } from './routes/mfa-setup'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as DashboardRouteImport } from './routes/_dashboard'
 import { Route as DashboardIndexRouteImport } from './routes/_dashboard.index'
 import { Route as ApiShadersRouteImport } from './routes/api.shaders'
+import { Route as ApiPasswordResetRouteImport } from './routes/api.password-reset'
 import { Route as ApiGraphRouteImport } from './routes/api.graph'
 import { Route as ApiDatabaseRouteImport } from './routes/api.database'
 import { Route as ApiDashboardSessionRouteImport } from './routes/api.dashboard-session'
 import { Route as ApiBrpRouteImport } from './routes/api.brp'
+import { Route as ApiBootstrapRouteImport } from './routes/api.bootstrap'
 import { Route as DashboardSoundStudioRouteImport } from './routes/_dashboard.sound-studio'
 import { Route as DashboardShaderWorkshopRouteImport } from './routes/_dashboard.shader-workshop'
 import { Route as DashboardSettingsRouteImport } from './routes/_dashboard.settings'
@@ -28,24 +34,50 @@ import { Route as DashboardDatabaseRouteImport } from './routes/_dashboard.datab
 import { Route as DashboardDatabaseIndexRouteImport } from './routes/_dashboard.database.index'
 import { Route as ApiShadersUploadRouteImport } from './routes/api.shaders.upload'
 import { Route as ApiShadersShaderIdRouteImport } from './routes/api.shaders.$shaderId'
+import { Route as ApiPasswordResetConfirmRouteImport } from './routes/api.password-reset.confirm'
 import { Route as ApiGenesisPlanetsRouteImport } from './routes/api.genesis.planets'
 import { Route as ApiDeleteEntityEntityIdRouteImport } from './routes/api.delete-entity.$entityId'
 import { Route as ApiAudioCuesSoundIdRouteImport } from './routes/api.audio-cues.$soundId'
 import { Route as ApiAdminSpawnEntityRouteImport } from './routes/api.admin.spawn-entity'
+import { Route as ApiAccountCharactersRouteImport } from './routes/api.account.characters'
 import { Route as DashboardSoundStudioSoundIdRouteImport } from './routes/_dashboard.sound-studio.$soundId'
 import { Route as DashboardShaderWorkshopShaderIdRouteImport } from './routes/_dashboard.shader-workshop.$shaderId'
 import { Route as DashboardGameWorldEntityGuidRouteImport } from './routes/_dashboard.game-world.$entityGuid'
 import { Route as DashboardDatabaseTablesRouteImport } from './routes/_dashboard.database.tables'
 import { Route as DashboardDatabaseAccountsRouteImport } from './routes/_dashboard.database.accounts'
 import { Route as DashboardDatabaseEntityGuidRouteImport } from './routes/_dashboard.database.$entityGuid'
+import { Route as ApiAccountCharactersPlayerEntityIdRouteImport } from './routes/api.account.characters.$playerEntityId'
 import { Route as ApiGenesisPlanetsPlanetIdPublishRouteImport } from './routes/api.genesis.planets.$planetId.publish'
 import { Route as ApiGenesisPlanetsPlanetIdDraftRouteImport } from './routes/api.genesis.planets.$planetId.draft'
 import { Route as ApiDatabaseCharactersPlayerEntityIdDisplayNameRouteImport } from './routes/api.database.characters.$playerEntityId.display-name'
 import { Route as ApiDatabaseAccountsAccountIdPasswordResetRouteImport } from './routes/api.database.accounts.$accountId.password-reset'
+import { Route as ApiAccountMfaTotpVerifyRouteImport } from './routes/api.account.mfa.totp.verify'
+import { Route as ApiAccountMfaTotpEnrollRouteImport } from './routes/api.account.mfa.totp.enroll'
+import { Route as ApiAccountCharactersPlayerEntityIdResetRouteImport } from './routes/api.account.characters.$playerEntityId.reset'
 
 const ShaderWorkbenchRoute = ShaderWorkbenchRouteImport.update({
   id: '/shader-workbench',
   path: '/shader-workbench',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupRoute = SetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MfaSetupRoute = MfaSetupRouteImport.update({
+  id: '/mfa-setup',
+  path: '/mfa-setup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
+  id: '/forgot-password',
+  path: '/forgot-password',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardRoute = DashboardRouteImport.update({
@@ -60,6 +92,11 @@ const DashboardIndexRoute = DashboardIndexRouteImport.update({
 const ApiShadersRoute = ApiShadersRouteImport.update({
   id: '/api/shaders',
   path: '/api/shaders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPasswordResetRoute = ApiPasswordResetRouteImport.update({
+  id: '/api/password-reset',
+  path: '/api/password-reset',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGraphRoute = ApiGraphRouteImport.update({
@@ -80,6 +117,11 @@ const ApiDashboardSessionRoute = ApiDashboardSessionRouteImport.update({
 const ApiBrpRoute = ApiBrpRouteImport.update({
   id: '/api/brp',
   path: '/api/brp',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiBootstrapRoute = ApiBootstrapRouteImport.update({
+  id: '/api/bootstrap',
+  path: '/api/bootstrap',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardSoundStudioRoute = DashboardSoundStudioRouteImport.update({
@@ -137,6 +179,11 @@ const ApiShadersShaderIdRoute = ApiShadersShaderIdRouteImport.update({
   path: '/$shaderId',
   getParentRoute: () => ApiShadersRoute,
 } as any)
+const ApiPasswordResetConfirmRoute = ApiPasswordResetConfirmRouteImport.update({
+  id: '/confirm',
+  path: '/confirm',
+  getParentRoute: () => ApiPasswordResetRoute,
+} as any)
 const ApiGenesisPlanetsRoute = ApiGenesisPlanetsRouteImport.update({
   id: '/api/genesis/planets',
   path: '/api/genesis/planets',
@@ -155,6 +202,11 @@ const ApiAudioCuesSoundIdRoute = ApiAudioCuesSoundIdRouteImport.update({
 const ApiAdminSpawnEntityRoute = ApiAdminSpawnEntityRouteImport.update({
   id: '/api/admin/spawn-entity',
   path: '/api/admin/spawn-entity',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAccountCharactersRoute = ApiAccountCharactersRouteImport.update({
+  id: '/api/account/characters',
+  path: '/api/account/characters',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardSoundStudioSoundIdRoute =
@@ -192,6 +244,12 @@ const DashboardDatabaseEntityGuidRoute =
     path: '/$entityGuid',
     getParentRoute: () => DashboardDatabaseRoute,
   } as any)
+const ApiAccountCharactersPlayerEntityIdRoute =
+  ApiAccountCharactersPlayerEntityIdRouteImport.update({
+    id: '/$playerEntityId',
+    path: '/$playerEntityId',
+    getParentRoute: () => ApiAccountCharactersRoute,
+  } as any)
 const ApiGenesisPlanetsPlanetIdPublishRoute =
   ApiGenesisPlanetsPlanetIdPublishRouteImport.update({
     id: '/$planetId/publish',
@@ -216,9 +274,29 @@ const ApiDatabaseAccountsAccountIdPasswordResetRoute =
     path: '/accounts/$accountId/password-reset',
     getParentRoute: () => ApiDatabaseRoute,
   } as any)
+const ApiAccountMfaTotpVerifyRoute = ApiAccountMfaTotpVerifyRouteImport.update({
+  id: '/api/account/mfa/totp/verify',
+  path: '/api/account/mfa/totp/verify',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAccountMfaTotpEnrollRoute = ApiAccountMfaTotpEnrollRouteImport.update({
+  id: '/api/account/mfa/totp/enroll',
+  path: '/api/account/mfa/totp/enroll',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAccountCharactersPlayerEntityIdResetRoute =
+  ApiAccountCharactersPlayerEntityIdResetRouteImport.update({
+    id: '/reset',
+    path: '/reset',
+    getParentRoute: () => ApiAccountCharactersPlayerEntityIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof DashboardIndexRoute
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/login': typeof LoginRoute
+  '/mfa-setup': typeof MfaSetupRoute
+  '/setup': typeof SetupRoute
   '/shader-workbench': typeof ShaderWorkbenchRoute
   '/database': typeof DashboardDatabaseRouteWithChildren
   '/game-client': typeof DashboardGameClientRoute
@@ -228,10 +306,12 @@ export interface FileRoutesByFullPath {
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/sound-studio': typeof DashboardSoundStudioRouteWithChildren
+  '/api/bootstrap': typeof ApiBootstrapRoute
   '/api/brp': typeof ApiBrpRoute
   '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
+  '/api/password-reset': typeof ApiPasswordResetRouteWithChildren
   '/api/shaders': typeof ApiShadersRouteWithChildren
   '/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
   '/database/accounts': typeof DashboardDatabaseAccountsRoute
@@ -239,19 +319,29 @@ export interface FileRoutesByFullPath {
   '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/sound-studio/$soundId': typeof DashboardSoundStudioSoundIdRoute
+  '/api/account/characters': typeof ApiAccountCharactersRouteWithChildren
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/genesis/planets': typeof ApiGenesisPlanetsRouteWithChildren
+  '/api/password-reset/confirm': typeof ApiPasswordResetConfirmRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/database/': typeof DashboardDatabaseIndexRoute
+  '/api/account/characters/$playerEntityId': typeof ApiAccountCharactersPlayerEntityIdRouteWithChildren
+  '/api/account/characters/$playerEntityId/reset': typeof ApiAccountCharactersPlayerEntityIdResetRoute
+  '/api/account/mfa/totp/enroll': typeof ApiAccountMfaTotpEnrollRoute
+  '/api/account/mfa/totp/verify': typeof ApiAccountMfaTotpVerifyRoute
   '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
   '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
   '/api/genesis/planets/$planetId/publish': typeof ApiGenesisPlanetsPlanetIdPublishRoute
 }
 export interface FileRoutesByTo {
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/login': typeof LoginRoute
+  '/mfa-setup': typeof MfaSetupRoute
+  '/setup': typeof SetupRoute
   '/shader-workbench': typeof ShaderWorkbenchRoute
   '/game-client': typeof DashboardGameClientRoute
   '/game-world': typeof DashboardGameWorldRouteWithChildren
@@ -260,10 +350,12 @@ export interface FileRoutesByTo {
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/sound-studio': typeof DashboardSoundStudioRouteWithChildren
+  '/api/bootstrap': typeof ApiBootstrapRoute
   '/api/brp': typeof ApiBrpRoute
   '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
+  '/api/password-reset': typeof ApiPasswordResetRouteWithChildren
   '/api/shaders': typeof ApiShadersRouteWithChildren
   '/': typeof DashboardIndexRoute
   '/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
@@ -272,13 +364,19 @@ export interface FileRoutesByTo {
   '/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/sound-studio/$soundId': typeof DashboardSoundStudioSoundIdRoute
+  '/api/account/characters': typeof ApiAccountCharactersRouteWithChildren
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/genesis/planets': typeof ApiGenesisPlanetsRouteWithChildren
+  '/api/password-reset/confirm': typeof ApiPasswordResetConfirmRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/database': typeof DashboardDatabaseIndexRoute
+  '/api/account/characters/$playerEntityId': typeof ApiAccountCharactersPlayerEntityIdRouteWithChildren
+  '/api/account/characters/$playerEntityId/reset': typeof ApiAccountCharactersPlayerEntityIdResetRoute
+  '/api/account/mfa/totp/enroll': typeof ApiAccountMfaTotpEnrollRoute
+  '/api/account/mfa/totp/verify': typeof ApiAccountMfaTotpVerifyRoute
   '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
   '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
@@ -287,6 +385,10 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_dashboard': typeof DashboardRouteWithChildren
+  '/forgot-password': typeof ForgotPasswordRoute
+  '/login': typeof LoginRoute
+  '/mfa-setup': typeof MfaSetupRoute
+  '/setup': typeof SetupRoute
   '/shader-workbench': typeof ShaderWorkbenchRoute
   '/_dashboard/database': typeof DashboardDatabaseRouteWithChildren
   '/_dashboard/game-client': typeof DashboardGameClientRoute
@@ -296,10 +398,12 @@ export interface FileRoutesById {
   '/_dashboard/settings': typeof DashboardSettingsRoute
   '/_dashboard/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
   '/_dashboard/sound-studio': typeof DashboardSoundStudioRouteWithChildren
+  '/api/bootstrap': typeof ApiBootstrapRoute
   '/api/brp': typeof ApiBrpRoute
   '/api/dashboard-session': typeof ApiDashboardSessionRoute
   '/api/database': typeof ApiDatabaseRouteWithChildren
   '/api/graph': typeof ApiGraphRoute
+  '/api/password-reset': typeof ApiPasswordResetRouteWithChildren
   '/api/shaders': typeof ApiShadersRouteWithChildren
   '/_dashboard/': typeof DashboardIndexRoute
   '/_dashboard/database/$entityGuid': typeof DashboardDatabaseEntityGuidRoute
@@ -308,13 +412,19 @@ export interface FileRoutesById {
   '/_dashboard/game-world/$entityGuid': typeof DashboardGameWorldEntityGuidRoute
   '/_dashboard/shader-workshop/$shaderId': typeof DashboardShaderWorkshopShaderIdRoute
   '/_dashboard/sound-studio/$soundId': typeof DashboardSoundStudioSoundIdRoute
+  '/api/account/characters': typeof ApiAccountCharactersRouteWithChildren
   '/api/admin/spawn-entity': typeof ApiAdminSpawnEntityRoute
   '/api/audio-cues/$soundId': typeof ApiAudioCuesSoundIdRoute
   '/api/delete-entity/$entityId': typeof ApiDeleteEntityEntityIdRoute
   '/api/genesis/planets': typeof ApiGenesisPlanetsRouteWithChildren
+  '/api/password-reset/confirm': typeof ApiPasswordResetConfirmRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
   '/_dashboard/database/': typeof DashboardDatabaseIndexRoute
+  '/api/account/characters/$playerEntityId': typeof ApiAccountCharactersPlayerEntityIdRouteWithChildren
+  '/api/account/characters/$playerEntityId/reset': typeof ApiAccountCharactersPlayerEntityIdResetRoute
+  '/api/account/mfa/totp/enroll': typeof ApiAccountMfaTotpEnrollRoute
+  '/api/account/mfa/totp/verify': typeof ApiAccountMfaTotpVerifyRoute
   '/api/database/accounts/$accountId/password-reset': typeof ApiDatabaseAccountsAccountIdPasswordResetRoute
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
   '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
@@ -324,6 +434,10 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/forgot-password'
+    | '/login'
+    | '/mfa-setup'
+    | '/setup'
     | '/shader-workbench'
     | '/database'
     | '/game-client'
@@ -333,10 +447,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/shader-workshop'
     | '/sound-studio'
+    | '/api/bootstrap'
     | '/api/brp'
     | '/api/dashboard-session'
     | '/api/database'
     | '/api/graph'
+    | '/api/password-reset'
     | '/api/shaders'
     | '/database/$entityGuid'
     | '/database/accounts'
@@ -344,19 +460,29 @@ export interface FileRouteTypes {
     | '/game-world/$entityGuid'
     | '/shader-workshop/$shaderId'
     | '/sound-studio/$soundId'
+    | '/api/account/characters'
     | '/api/admin/spawn-entity'
     | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
     | '/api/genesis/planets'
+    | '/api/password-reset/confirm'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
     | '/database/'
+    | '/api/account/characters/$playerEntityId'
+    | '/api/account/characters/$playerEntityId/reset'
+    | '/api/account/mfa/totp/enroll'
+    | '/api/account/mfa/totp/verify'
     | '/api/database/accounts/$accountId/password-reset'
     | '/api/database/characters/$playerEntityId/display-name'
     | '/api/genesis/planets/$planetId/draft'
     | '/api/genesis/planets/$planetId/publish'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/forgot-password'
+    | '/login'
+    | '/mfa-setup'
+    | '/setup'
     | '/shader-workbench'
     | '/game-client'
     | '/game-world'
@@ -365,10 +491,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/shader-workshop'
     | '/sound-studio'
+    | '/api/bootstrap'
     | '/api/brp'
     | '/api/dashboard-session'
     | '/api/database'
     | '/api/graph'
+    | '/api/password-reset'
     | '/api/shaders'
     | '/'
     | '/database/$entityGuid'
@@ -377,13 +505,19 @@ export interface FileRouteTypes {
     | '/game-world/$entityGuid'
     | '/shader-workshop/$shaderId'
     | '/sound-studio/$soundId'
+    | '/api/account/characters'
     | '/api/admin/spawn-entity'
     | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
     | '/api/genesis/planets'
+    | '/api/password-reset/confirm'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
     | '/database'
+    | '/api/account/characters/$playerEntityId'
+    | '/api/account/characters/$playerEntityId/reset'
+    | '/api/account/mfa/totp/enroll'
+    | '/api/account/mfa/totp/verify'
     | '/api/database/accounts/$accountId/password-reset'
     | '/api/database/characters/$playerEntityId/display-name'
     | '/api/genesis/planets/$planetId/draft'
@@ -391,6 +525,10 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_dashboard'
+    | '/forgot-password'
+    | '/login'
+    | '/mfa-setup'
+    | '/setup'
     | '/shader-workbench'
     | '/_dashboard/database'
     | '/_dashboard/game-client'
@@ -400,10 +538,12 @@ export interface FileRouteTypes {
     | '/_dashboard/settings'
     | '/_dashboard/shader-workshop'
     | '/_dashboard/sound-studio'
+    | '/api/bootstrap'
     | '/api/brp'
     | '/api/dashboard-session'
     | '/api/database'
     | '/api/graph'
+    | '/api/password-reset'
     | '/api/shaders'
     | '/_dashboard/'
     | '/_dashboard/database/$entityGuid'
@@ -412,13 +552,19 @@ export interface FileRouteTypes {
     | '/_dashboard/game-world/$entityGuid'
     | '/_dashboard/shader-workshop/$shaderId'
     | '/_dashboard/sound-studio/$soundId'
+    | '/api/account/characters'
     | '/api/admin/spawn-entity'
     | '/api/audio-cues/$soundId'
     | '/api/delete-entity/$entityId'
     | '/api/genesis/planets'
+    | '/api/password-reset/confirm'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
     | '/_dashboard/database/'
+    | '/api/account/characters/$playerEntityId'
+    | '/api/account/characters/$playerEntityId/reset'
+    | '/api/account/mfa/totp/enroll'
+    | '/api/account/mfa/totp/verify'
     | '/api/database/accounts/$accountId/password-reset'
     | '/api/database/characters/$playerEntityId/display-name'
     | '/api/genesis/planets/$planetId/draft'
@@ -427,16 +573,25 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRouteWithChildren
+  ForgotPasswordRoute: typeof ForgotPasswordRoute
+  LoginRoute: typeof LoginRoute
+  MfaSetupRoute: typeof MfaSetupRoute
+  SetupRoute: typeof SetupRoute
   ShaderWorkbenchRoute: typeof ShaderWorkbenchRoute
+  ApiBootstrapRoute: typeof ApiBootstrapRoute
   ApiBrpRoute: typeof ApiBrpRoute
   ApiDashboardSessionRoute: typeof ApiDashboardSessionRoute
   ApiDatabaseRoute: typeof ApiDatabaseRouteWithChildren
   ApiGraphRoute: typeof ApiGraphRoute
+  ApiPasswordResetRoute: typeof ApiPasswordResetRouteWithChildren
   ApiShadersRoute: typeof ApiShadersRouteWithChildren
+  ApiAccountCharactersRoute: typeof ApiAccountCharactersRouteWithChildren
   ApiAdminSpawnEntityRoute: typeof ApiAdminSpawnEntityRoute
   ApiAudioCuesSoundIdRoute: typeof ApiAudioCuesSoundIdRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
   ApiGenesisPlanetsRoute: typeof ApiGenesisPlanetsRouteWithChildren
+  ApiAccountMfaTotpEnrollRoute: typeof ApiAccountMfaTotpEnrollRoute
+  ApiAccountMfaTotpVerifyRoute: typeof ApiAccountMfaTotpVerifyRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -446,6 +601,34 @@ declare module '@tanstack/react-router' {
       path: '/shader-workbench'
       fullPath: '/shader-workbench'
       preLoaderRoute: typeof ShaderWorkbenchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup': {
+      id: '/setup'
+      path: '/setup'
+      fullPath: '/setup'
+      preLoaderRoute: typeof SetupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mfa-setup': {
+      id: '/mfa-setup'
+      path: '/mfa-setup'
+      fullPath: '/mfa-setup'
+      preLoaderRoute: typeof MfaSetupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/forgot-password': {
+      id: '/forgot-password'
+      path: '/forgot-password'
+      fullPath: '/forgot-password'
+      preLoaderRoute: typeof ForgotPasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_dashboard': {
@@ -467,6 +650,13 @@ declare module '@tanstack/react-router' {
       path: '/api/shaders'
       fullPath: '/api/shaders'
       preLoaderRoute: typeof ApiShadersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/password-reset': {
+      id: '/api/password-reset'
+      path: '/api/password-reset'
+      fullPath: '/api/password-reset'
+      preLoaderRoute: typeof ApiPasswordResetRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/graph': {
@@ -495,6 +685,13 @@ declare module '@tanstack/react-router' {
       path: '/api/brp'
       fullPath: '/api/brp'
       preLoaderRoute: typeof ApiBrpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/bootstrap': {
+      id: '/api/bootstrap'
+      path: '/api/bootstrap'
+      fullPath: '/api/bootstrap'
+      preLoaderRoute: typeof ApiBootstrapRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_dashboard/sound-studio': {
@@ -574,6 +771,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiShadersShaderIdRouteImport
       parentRoute: typeof ApiShadersRoute
     }
+    '/api/password-reset/confirm': {
+      id: '/api/password-reset/confirm'
+      path: '/confirm'
+      fullPath: '/api/password-reset/confirm'
+      preLoaderRoute: typeof ApiPasswordResetConfirmRouteImport
+      parentRoute: typeof ApiPasswordResetRoute
+    }
     '/api/genesis/planets': {
       id: '/api/genesis/planets'
       path: '/api/genesis/planets'
@@ -600,6 +804,13 @@ declare module '@tanstack/react-router' {
       path: '/api/admin/spawn-entity'
       fullPath: '/api/admin/spawn-entity'
       preLoaderRoute: typeof ApiAdminSpawnEntityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/account/characters': {
+      id: '/api/account/characters'
+      path: '/api/account/characters'
+      fullPath: '/api/account/characters'
+      preLoaderRoute: typeof ApiAccountCharactersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_dashboard/sound-studio/$soundId': {
@@ -644,6 +855,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardDatabaseEntityGuidRouteImport
       parentRoute: typeof DashboardDatabaseRoute
     }
+    '/api/account/characters/$playerEntityId': {
+      id: '/api/account/characters/$playerEntityId'
+      path: '/$playerEntityId'
+      fullPath: '/api/account/characters/$playerEntityId'
+      preLoaderRoute: typeof ApiAccountCharactersPlayerEntityIdRouteImport
+      parentRoute: typeof ApiAccountCharactersRoute
+    }
     '/api/genesis/planets/$planetId/publish': {
       id: '/api/genesis/planets/$planetId/publish'
       path: '/$planetId/publish'
@@ -671,6 +889,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/database/accounts/$accountId/password-reset'
       preLoaderRoute: typeof ApiDatabaseAccountsAccountIdPasswordResetRouteImport
       parentRoute: typeof ApiDatabaseRoute
+    }
+    '/api/account/mfa/totp/verify': {
+      id: '/api/account/mfa/totp/verify'
+      path: '/api/account/mfa/totp/verify'
+      fullPath: '/api/account/mfa/totp/verify'
+      preLoaderRoute: typeof ApiAccountMfaTotpVerifyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/account/mfa/totp/enroll': {
+      id: '/api/account/mfa/totp/enroll'
+      path: '/api/account/mfa/totp/enroll'
+      fullPath: '/api/account/mfa/totp/enroll'
+      preLoaderRoute: typeof ApiAccountMfaTotpEnrollRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/account/characters/$playerEntityId/reset': {
+      id: '/api/account/characters/$playerEntityId/reset'
+      path: '/reset'
+      fullPath: '/api/account/characters/$playerEntityId/reset'
+      preLoaderRoute: typeof ApiAccountCharactersPlayerEntityIdResetRouteImport
+      parentRoute: typeof ApiAccountCharactersPlayerEntityIdRoute
     }
   }
 }
@@ -772,6 +1011,17 @@ const ApiDatabaseRouteWithChildren = ApiDatabaseRoute._addFileChildren(
   ApiDatabaseRouteChildren,
 )
 
+interface ApiPasswordResetRouteChildren {
+  ApiPasswordResetConfirmRoute: typeof ApiPasswordResetConfirmRoute
+}
+
+const ApiPasswordResetRouteChildren: ApiPasswordResetRouteChildren = {
+  ApiPasswordResetConfirmRoute: ApiPasswordResetConfirmRoute,
+}
+
+const ApiPasswordResetRouteWithChildren =
+  ApiPasswordResetRoute._addFileChildren(ApiPasswordResetRouteChildren)
+
 interface ApiShadersRouteChildren {
   ApiShadersShaderIdRoute: typeof ApiShadersShaderIdRoute
   ApiShadersUploadRoute: typeof ApiShadersUploadRoute
@@ -785,6 +1035,33 @@ const ApiShadersRouteChildren: ApiShadersRouteChildren = {
 const ApiShadersRouteWithChildren = ApiShadersRoute._addFileChildren(
   ApiShadersRouteChildren,
 )
+
+interface ApiAccountCharactersPlayerEntityIdRouteChildren {
+  ApiAccountCharactersPlayerEntityIdResetRoute: typeof ApiAccountCharactersPlayerEntityIdResetRoute
+}
+
+const ApiAccountCharactersPlayerEntityIdRouteChildren: ApiAccountCharactersPlayerEntityIdRouteChildren =
+  {
+    ApiAccountCharactersPlayerEntityIdResetRoute:
+      ApiAccountCharactersPlayerEntityIdResetRoute,
+  }
+
+const ApiAccountCharactersPlayerEntityIdRouteWithChildren =
+  ApiAccountCharactersPlayerEntityIdRoute._addFileChildren(
+    ApiAccountCharactersPlayerEntityIdRouteChildren,
+  )
+
+interface ApiAccountCharactersRouteChildren {
+  ApiAccountCharactersPlayerEntityIdRoute: typeof ApiAccountCharactersPlayerEntityIdRouteWithChildren
+}
+
+const ApiAccountCharactersRouteChildren: ApiAccountCharactersRouteChildren = {
+  ApiAccountCharactersPlayerEntityIdRoute:
+    ApiAccountCharactersPlayerEntityIdRouteWithChildren,
+}
+
+const ApiAccountCharactersRouteWithChildren =
+  ApiAccountCharactersRoute._addFileChildren(ApiAccountCharactersRouteChildren)
 
 interface ApiGenesisPlanetsRouteChildren {
   ApiGenesisPlanetsPlanetIdDraftRoute: typeof ApiGenesisPlanetsPlanetIdDraftRoute
@@ -801,16 +1078,25 @@ const ApiGenesisPlanetsRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRouteWithChildren,
+  ForgotPasswordRoute: ForgotPasswordRoute,
+  LoginRoute: LoginRoute,
+  MfaSetupRoute: MfaSetupRoute,
+  SetupRoute: SetupRoute,
   ShaderWorkbenchRoute: ShaderWorkbenchRoute,
+  ApiBootstrapRoute: ApiBootstrapRoute,
   ApiBrpRoute: ApiBrpRoute,
   ApiDashboardSessionRoute: ApiDashboardSessionRoute,
   ApiDatabaseRoute: ApiDatabaseRouteWithChildren,
   ApiGraphRoute: ApiGraphRoute,
+  ApiPasswordResetRoute: ApiPasswordResetRouteWithChildren,
   ApiShadersRoute: ApiShadersRouteWithChildren,
+  ApiAccountCharactersRoute: ApiAccountCharactersRouteWithChildren,
   ApiAdminSpawnEntityRoute: ApiAdminSpawnEntityRoute,
   ApiAudioCuesSoundIdRoute: ApiAudioCuesSoundIdRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,
   ApiGenesisPlanetsRoute: ApiGenesisPlanetsRouteWithChildren,
+  ApiAccountMfaTotpEnrollRoute: ApiAccountMfaTotpEnrollRoute,
+  ApiAccountMfaTotpVerifyRoute: ApiAccountMfaTotpVerifyRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -4,11 +4,18 @@ import {
   createDatabaseAdminErrorPayload,
   loadDatabaseAdminPayload,
 } from '@/server/database-admin'
+import { requireDashboardAdmin } from '@/server/dashboard-auth'
 
 export const Route = createFileRoute('/api/database')({
   server: {
     handlers: {
-      GET: async () => {
+      GET: async ({ request }) => {
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:database:read',
+        )
+        if (authFailure) return authFailure
+
         try {
           return json(await loadDatabaseAdminPayload())
         } catch (error) {

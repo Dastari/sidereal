@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use crate::{
     ActionQueue, AfterburnerCapability, AfterburnerState, Engine, EntityAction, EntityGuid,
-    FlightComputer, FlightControlAuthority, FlightTuning, FuelTank, MaxVelocityMps, MountedOn,
-    PlayerTag, SimulationMotionWriter, SizeM, TotalMassKg,
+    FlightComputer, FlightControlAuthority, FlightFuelConsumptionEnabled, FlightTuning, FuelTank,
+    MaxVelocityMps, MountedOn, PlayerTag, SimulationMotionWriter, SizeM, TotalMassKg,
 };
 
 const PASSIVE_ANGULAR_DAMP_RATE: f32 = 4.0;
@@ -33,7 +33,7 @@ type BodyForceQuery<'w, 's> = Query<
     's,
     (
         &'static EntityGuid,
-        &'static Transform,
+        &'static Rotation,
         Option<&'static TotalMassKg>,
         &'static FlightTuning,
         &'static MaxVelocityMps,
@@ -161,6 +161,7 @@ pub fn process_flight_actions(
 #[allow(clippy::type_complexity)]
 pub fn apply_engine_thrust(
     time: Res<Time<Fixed>>,
+    fuel_consumption_enabled: Option<Res<FlightFuelConsumptionEnabled>>,
     // Hull entities with flight computers (by GUID)
     computers: Query<
         (&EntityGuid, &FlightComputer, Option<&AfterburnerState>),
@@ -173,6 +174,10 @@ pub fn apply_engine_thrust(
     mut fuel_tanks: Query<(&MountedOn, &mut FuelTank)>,
 ) {
     let dt = time.delta_secs();
+    let consume_fuel = fuel_consumption_enabled
+        .as_deref()
+        .map(|flag| flag.0)
+        .unwrap_or(true);
 
     // Build control state by root parent GUID from hull flight-computer only.
     let mut control_by_parent = HashMap::<Uuid, (f32, f32, f32, bool, bool)>::new();
@@ -323,24 +328,26 @@ pub fn apply_engine_thrust(
         );
     }
 
-    // Consume fuel from all tanks on the parent, proportionally by available fuel.
-    // Equal tanks drain equally; uneven tanks drain proportionally.
-    for (mounted_on, mut fuel_tank) in &mut fuel_tanks {
-        let Some(total_burn) = fuel_burn_kg_by_parent.get(&mounted_on.parent_entity_id) else {
-            continue;
-        };
-        if *total_burn <= 0.0 {
-            continue;
+    if consume_fuel {
+        // Consume fuel from all tanks on the parent, proportionally by available fuel.
+        // Equal tanks drain equally; uneven tanks drain proportionally.
+        for (mounted_on, mut fuel_tank) in &mut fuel_tanks {
+            let Some(total_burn) = fuel_burn_kg_by_parent.get(&mounted_on.parent_entity_id) else {
+                continue;
+            };
+            if *total_burn <= 0.0 {
+                continue;
+            }
+            let available_total = fuel_available_kg_by_parent
+                .get(&mounted_on.parent_entity_id)
+                .copied()
+                .unwrap_or(0.0);
+            if available_total <= 0.0 {
+                continue;
+            }
+            let share = (*total_burn) * (fuel_tank.fuel_kg.max(0.0) / available_total);
+            fuel_tank.fuel_kg = (fuel_tank.fuel_kg - share).max(0.0);
         }
-        let available_total = fuel_available_kg_by_parent
-            .get(&mounted_on.parent_entity_id)
-            .copied()
-            .unwrap_or(0.0);
-        if available_total <= 0.0 {
-            continue;
-        }
-        let share = (*total_burn) * (fuel_tank.fuel_kg.max(0.0) / available_total);
-        fuel_tank.fuel_kg = (fuel_tank.fuel_kg - share).max(0.0);
     }
 
     let mut kinematics_by_guid = HashMap::<Uuid, (Vec2, f32)>::new();
@@ -352,7 +359,7 @@ pub fn apply_engine_thrust(
     }
 
     // Apply aggregated forces to parent bodies using Avian's Forces helper
-    for (guid, transform, total_mass, flight_tuning, max_velocity, size_m, mut forces) in
+    for (guid, rotation, total_mass, flight_tuning, max_velocity, size_m, mut forces) in
         &mut body_queries.p0()
     {
         let mass_kg = total_mass.map(|mass| mass.0.max(1.0)).unwrap_or(1.0);
@@ -388,7 +395,7 @@ pub fn apply_engine_thrust(
                 (throttle, yaw_input, turn_rate_deg_s, brake_active),
                 velocity,
                 angular_velocity,
-                transform.rotation,
+                Quat::from_rotation_z(rotation.as_radians() as f32),
                 mass_kg,
                 planar_moi_kg_m2,
                 flight_tuning,

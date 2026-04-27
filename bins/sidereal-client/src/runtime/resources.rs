@@ -7,8 +7,8 @@ use bevy::prelude::*;
 use sidereal_asset_runtime::AssetCacheIndex;
 use sidereal_core::gateway_dtos::{
     AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
-    EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
-    PasswordResetRequest, PasswordResetResponse, RegisterRequest, StartupAssetManifestResponse,
+    EnterWorldResponse, LoginRequest, MeResponse, PasswordLoginResponse,
+    StartupAssetManifestResponse, TotpLoginChallengeRequest,
 };
 use sidereal_game::EntityAction;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,11 +28,9 @@ pub(crate) type CacheFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> 
 
 #[derive(Clone, Copy, Resource)]
 pub(crate) struct GatewayHttpAdapter {
-    pub login: fn(String, LoginRequest) -> GatewayFuture<AuthTokens>,
-    pub register: fn(String, RegisterRequest) -> GatewayFuture<AuthTokens>,
-    pub request_password_reset:
-        fn(String, PasswordResetRequest) -> GatewayFuture<PasswordResetResponse>,
-    pub confirm_password_reset: fn(String, PasswordResetConfirmRequest) -> GatewayFuture<()>,
+    pub login: fn(String, LoginRequest) -> GatewayFuture<PasswordLoginResponse>,
+    pub verify_totp_login_challenge:
+        fn(String, TotpLoginChallengeRequest) -> GatewayFuture<AuthTokens>,
     pub fetch_me: fn(String, String) -> GatewayFuture<MeResponse>,
     pub fetch_characters: fn(String, String) -> GatewayFuture<CharactersResponse>,
     pub enter_world: fn(String, String, EnterWorldRequest) -> GatewayFuture<EnterWorldResponse>,
@@ -355,7 +353,7 @@ impl ClientInputTimelineTuning {
             std::env::var("SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS")
                 .ok()
                 .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(0);
+                .unwrap_or(max_predicted_ticks);
         Self {
             fixed_input_delay_ticks,
             max_predicted_ticks,
@@ -1028,6 +1026,7 @@ pub(crate) struct ClientInputSendState {
     pub last_sent_at_s: f64,
     pub last_sent_actions: Vec<EntityAction>,
     pub last_sent_target_entity_id: Option<String>,
+    pub headless_script_started_at_s: Option<f64>,
 }
 
 impl Default for ClientInputSendState {
@@ -1036,6 +1035,7 @@ impl Default for ClientInputSendState {
             last_sent_at_s: f64::NEG_INFINITY,
             last_sent_actions: Vec::new(),
             last_sent_target_entity_id: None,
+            headless_script_started_at_s: None,
         }
     }
 }

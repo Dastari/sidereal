@@ -6,11 +6,13 @@
 // Bindings match sprite material contract:
 // @group(2) @binding(0) texture_2d
 // @group(2) @binding(1) sampler
+// @group(2) @binding(2) SharedWorldLightingUniforms
 
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 @group(2) @binding(0) var image: texture_2d<f32>;
 @group(2) @binding(1) var image_sampler: sampler;
+
 struct SharedWorldLightingUniforms {
     primary_dir_intensity: vec4<f32>,
     primary_color_elevation: vec4<f32>,
@@ -23,10 +25,12 @@ struct SharedWorldLightingUniforms {
 
 @group(2) @binding(2) var<uniform> lighting: SharedWorldLightingUniforms;
 
-const PI: f32 = 3.14159265359;
-
 fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
+}
+
+fn posterize3(c: vec3<f32>, steps: f32) -> vec3<f32> {
+    return floor(c * steps + vec3<f32>(0.5)) / steps;
 }
 
 fn hash12(p: vec2<f32>) -> f32 {
@@ -96,20 +100,30 @@ fn vein_mask(uv: vec2<f32>) -> f32 {
 
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = mesh.uv;
+    let uv_raw = mesh.uv;
+    let pixel_grid = 128.0;
+    let uv = (floor(uv_raw * pixel_grid) + vec2<f32>(0.5, 0.5)) / pixel_grid;
     let base = textureSample(image, image_sampler, uv);
 
     if base.a <= 0.001 {
         discard;
     }
 
+    let texel = vec2<f32>(1.0 / pixel_grid, 1.0 / pixel_grid);
+    let alpha_l = textureSample(image, image_sampler, uv - vec2<f32>(texel.x, 0.0)).a;
+    let alpha_r = textureSample(image, image_sampler, uv + vec2<f32>(texel.x, 0.0)).a;
+    let alpha_d = textureSample(image, image_sampler, uv - vec2<f32>(0.0, texel.y)).a;
+    let alpha_u = textureSample(image, image_sampler, uv + vec2<f32>(0.0, texel.y)).a;
+    let edge_contrast = saturate((base.a - min(min(alpha_l, alpha_r), min(alpha_d, alpha_u))) * 3.0);
+
     // Radial falloff keeps center fuller and edges rockier.
     let centered = uv * 2.0 - vec2<f32>(1.0, 1.0);
     let r = clamp(length(centered), 0.0, 1.0);
     let body_falloff = smoothstep(1.0, 0.2, 1.0 - r);
 
-    let grain = fbm2d(uv * 18.0 + vec2<f32>(2.1, 7.4));
+    let grain = floor(fbm2d(uv * 18.0 + vec2<f32>(2.1, 7.4)) * 6.0) / 6.0;
     let craters = crater_mask(uv);
+    let cracks = pow(1.0 - abs(fbm2d(uv * 17.0 + vec2<f32>(7.3, 2.4)) - 0.5) * 2.0, 5.0);
     let veins = vein_mask(uv) * smoothstep(0.2, 0.9, grain);
 
     // Rock base tint: slightly warm/cool variation from noise.
@@ -128,21 +142,24 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = base.rgb;
 
-    // Re-color texture toward rocky palette but preserve source detail.
-    color = mix(color, color * rock_tint, 0.65);
+    // Re-color texture toward a small rocky palette for a stronger top-down ARPG read.
+    color = mix(color, color * rock_tint, 0.72);
+    color = posterize3(color, 5.0);
 
     // Crater bowls darken; rims slightly brighten.
     color *= 1.0 - craters * 0.45;
     let rim_highlight = smoothstep(0.2, 0.9, craters) * 0.08;
     color += rim_highlight;
+    color *= 1.0 - cracks * 0.22;
 
     // Veins + tiny glow pockets.
     color = mix(color, mineral_tint, veins * 0.55);
     let gem = smoothstep(0.78, 0.93, fbm2d(uv * 34.0 + vec2<f32>(5.5, 14.3))) * veins;
     color += mineral_tint * gem * 0.18;
 
-    // Gentle edge darkening for spherical read.
-    color *= mix(0.72, 1.0, body_falloff);
+    // Stronger sprite rim and chipped-edge contrast than the old soft spherical read.
+    color *= mix(0.62, 1.0, body_falloff);
+    color *= 1.0 - edge_contrast * 0.28;
 
     // Preserve source alpha masking.
     let sphere_normal = normalize(vec3<f32>(
@@ -152,7 +169,8 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     ));
     let primary_dir = normalize(lighting.primary_dir_intensity.xyz);
     let primary_ndl = saturate(dot(sphere_normal, primary_dir));
-    let wrap = saturate(primary_ndl * 0.78 + 0.22);
+    let wrap_raw = saturate(primary_ndl * 0.78 + 0.22);
+    let wrap = floor(wrap_raw * 4.0 + 0.5) / 4.0;
     let backlight = pow(saturate(dot(sphere_normal, -primary_dir)), 1.8);
     let primary_light = lighting.primary_color_elevation.rgb
         * lighting.primary_dir_intensity.w
@@ -164,8 +182,10 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let ambient_light = lighting.ambient.rgb * lighting.ambient.w;
     let backlight_term = lighting.backlight.rgb * lighting.backlight.w * backlight;
     let flash = lighting.flash.rgb * lighting.flash.w;
-    let lit_color = color * (ambient_light + primary_light + backlight_term + local_light)
+    let vein_glint = mix(vec3<f32>(0.03, 0.05, 0.07), mineral_tint * 0.08, veins);
+    let lit_color = posterize3(color * (ambient_light + primary_light + backlight_term + local_light), 6.0)
         + flash * 0.18
+        + vein_glint
         + veins * 0.05;
     return vec4<f32>(clamp(lit_color, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
 }

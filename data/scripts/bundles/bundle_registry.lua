@@ -60,6 +60,14 @@ local C = {
   BallisticWeapon = "ballistic_weapon",
   AmmoCount = "ammo_count",
   ScriptState = "script_state",
+  AsteroidField = "asteroid_field",
+  AsteroidFieldLayout = "asteroid_field_layout",
+  AsteroidFieldPopulation = "asteroid_field_population",
+  AsteroidFieldDamageState = "asteroid_field_damage_state",
+  AsteroidFieldMember = "asteroid_field_member",
+  AsteroidFractureProfile = "asteroid_fracture_profile",
+  AsteroidResourceProfile = "asteroid_resource_profile",
+  AsteroidFieldAmbient = "asteroid_field_ambient",
 }
 
 local SHIP_REQUIRED_COMPONENT_KINDS = {
@@ -114,6 +122,7 @@ local ASTEROID_REQUIRED_COMPONENT_KINDS = {
   C.DisplayName,
   C.EntityLabels,
   C.HealthPool,
+  C.Destructible,
   C.OwnerId,
   C.MassKg,
   C.SizeM,
@@ -126,6 +135,40 @@ local ASTEROID_REQUIRED_COMPONENT_KINDS = {
   C.MapIcon,
   C.WorldPosition,
   C.WorldRotation,
+  C.AvianPosition,
+  C.AvianRotation,
+  C.AvianLinearVelocity,
+  C.AvianAngularVelocity,
+  C.AvianRigidBody,
+  C.AvianLinearDamping,
+  C.AvianAngularDamping,
+}
+
+local ASTEROID_FIELD_REQUIRED_COMPONENT_KINDS = {
+  C.DisplayName,
+  C.EntityLabels,
+  C.OwnerId,
+  C.MapIcon,
+  C.WorldPosition,
+  C.WorldRotation,
+  C.AsteroidField,
+  C.AsteroidFieldLayout,
+  C.AsteroidFieldPopulation,
+  C.AsteroidFieldDamageState,
+  C.AsteroidFractureProfile,
+  C.AsteroidResourceProfile,
+  C.AsteroidFieldAmbient,
+  C.AsteroidFieldMember,
+  C.HealthPool,
+  C.Destructible,
+  C.MassKg,
+  C.SizeM,
+  C.CollisionProfile,
+  C.CollisionOutlineM,
+  C.CollisionAabbM,
+  C.VisualAssetId,
+  C.ProceduralSprite,
+  C.SpriteShaderAssetId,
   C.AvianPosition,
   C.AvianRotation,
   C.AvianLinearVelocity,
@@ -181,7 +224,7 @@ local PLAYER_REQUIRED_COMPONENT_KINDS = {
 BundleRegistry.bundle_classes = {
   player = { "player.default" },
   ship = { "ship.corvette", "ship.rocinante" },
-  world = { "asteroid.field_member", "planet.body", "environment.lighting" },
+  world = { "asteroid.field", "asteroid.field_member", "planet.body", "environment.lighting" },
 }
 
 BundleRegistry.bundles = {
@@ -204,6 +247,11 @@ BundleRegistry.bundles = {
     bundle_class = "world",
     graph_records_script = "bundles/starter/asteroid_field.lua",
     required_component_kinds = ASTEROID_REQUIRED_COMPONENT_KINDS,
+  },
+  ["asteroid.field"] = {
+    bundle_class = "world",
+    graph_records_script = "bundles/starter/asteroid_field.lua",
+    required_component_kinds = ASTEROID_FIELD_REQUIRED_COMPONENT_KINDS,
   },
   ["planet.body"] = {
     bundle_class = "world",

@@ -4,9 +4,9 @@ use lightyear::prelude::input::native::ActionState;
 use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::{MessageReceiver, RemoteId};
 use sidereal_game::{ActionQueue, ControlledEntityGuid, EntityAction, EntityGuid, PlayerTag};
-use sidereal_net::{ClientRealtimeInputMessage, PlayerInput};
+use sidereal_net::{ClientRealtimeInputMessage, PlayerInput, replace_action_queue_from_actions};
 use sidereal_net::{PlayerEntityId, RuntimeEntityId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::control::ClientControlLeaseGenerations;
@@ -15,7 +15,27 @@ use crate::replication::{PlayerControlledEntityMap, SimulatedControlledEntity, d
 
 #[derive(Resource, Default)]
 pub struct ClientInputTickTracker {
-    pub last_accepted_tick_by_player_entity_id: HashMap<String, u64>,
+    pub last_accepted_tick_by_stream: HashMap<ClientInputStreamKey, u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClientInputStreamKey {
+    pub client_entity: Entity,
+    pub player_entity_id: PlayerEntityId,
+    pub controlled_entity_id: RuntimeEntityId,
+    pub control_generation: u64,
+}
+
+impl ClientInputTickTracker {
+    pub(crate) fn clear_player(&mut self, player_entity_id: PlayerEntityId) {
+        self.last_accepted_tick_by_stream
+            .retain(|key, _| key.player_entity_id != player_entity_id);
+    }
+
+    pub(crate) fn retain_live_clients(&mut self, live_clients: &HashSet<Entity>) {
+        self.last_accepted_tick_by_stream
+            .retain(|key, _| live_clients.contains(&key.client_entity));
+    }
 }
 
 #[derive(Resource, Debug, Default)]
@@ -177,6 +197,7 @@ impl ClientInputDropMetrics {
             .saturating_add(self.unbound_client)
             .saturating_add(self.spoofed_player_id)
             .saturating_add(self.stale_control_generation)
+            .saturating_add(self.controlled_target_mismatch)
     }
 }
 
@@ -258,6 +279,7 @@ fn log_input_drop(
         player = %bound_player_wire,
         claimed_player = %message.player_entity_id,
         controlled = %message.controlled_entity_id,
+        control_generation = message.control_generation,
         received_tick = message.tick,
         last_accepted_tick = last_accepted_tick.unwrap_or(0),
         reason = ?failure,
@@ -355,9 +377,53 @@ pub fn receive_latest_realtime_input_messages(
             continue;
         };
 
+        let current_generation =
+            current_control_generation(&lease_generations, bound_player_wire.as_str());
+        if best.control_generation != current_generation {
+            input_drop_metrics.stale_control_generation = input_drop_metrics
+                .stale_control_generation
+                .saturating_add(1);
+            warn!(
+                remote = ?remote_id.0,
+                player = %bound_player_wire,
+                controlled = %best.controlled_entity_id,
+                received_generation = best.control_generation,
+                current_generation = current_generation,
+                received_tick = best.tick,
+                "dropping realtime input with stale control generation"
+            );
+            continue;
+        }
+
+        let Some(controlled_id) =
+            canonical_controlled_entity_id(&best.controlled_entity_id, bound_player_id)
+        else {
+            input_drop_metrics.empty_after_filter =
+                input_drop_metrics.empty_after_filter.saturating_add(1);
+            warn!(
+                "dropping realtime input with invalid controlled entity id: player={} controlled_raw={}",
+                bound_player_wire, best.controlled_entity_id
+            );
+            continue;
+        };
+        if best.controlled_entity_id != controlled_id.to_string()
+            && best.controlled_entity_id != bound_player_wire
+        {
+            warn!(
+                "realtime input invariant: controlled entity id encoding normalized raw={} canonical={}",
+                best.controlled_entity_id, controlled_id
+            );
+        }
+
+        let stream_key = ClientInputStreamKey {
+            client_entity,
+            player_entity_id: bound_player_id,
+            controlled_entity_id: controlled_id,
+            control_generation: best.control_generation,
+        };
         let last_accepted_tick = input_tick_tracker
-            .last_accepted_tick_by_player_entity_id
-            .get(bound_player_wire.as_str())
+            .last_accepted_tick_by_stream
+            .get(&stream_key)
             .copied();
         match validate_input_message(&best, last_accepted_tick, now_s, &mut rate_limit_state) {
             Ok(()) => {}
@@ -412,23 +478,6 @@ pub fn receive_latest_realtime_input_messages(
                 continue;
             }
         }
-        let current_generation =
-            current_control_generation(&lease_generations, bound_player_wire.as_str());
-        if best.control_generation != current_generation {
-            input_drop_metrics.stale_control_generation = input_drop_metrics
-                .stale_control_generation
-                .saturating_add(1);
-            warn!(
-                remote = ?remote_id.0,
-                player = %bound_player_wire,
-                controlled = %best.controlled_entity_id,
-                received_generation = best.control_generation,
-                current_generation = current_generation,
-                received_tick = best.tick,
-                "dropping realtime input with stale control generation"
-            );
-            continue;
-        }
 
         let entry =
             latest
@@ -440,29 +489,12 @@ pub fn receive_latest_realtime_input_messages(
                     control_generation: current_generation,
                     actions: Vec::new(),
                 });
-        if best.tick >= entry.tick {
+        let latest_same_control_stream = entry.control_generation == best.control_generation
+            && entry.controlled_entity_id == controlled_id;
+        if !latest_same_control_stream || best.tick >= entry.tick {
             input_tick_tracker
-                .last_accepted_tick_by_player_entity_id
-                .insert(bound_player_wire.clone(), best.tick);
-            let Some(controlled_id) =
-                canonical_controlled_entity_id(&best.controlled_entity_id, bound_player_id)
-            else {
-                input_drop_metrics.empty_after_filter =
-                    input_drop_metrics.empty_after_filter.saturating_add(1);
-                warn!(
-                    "dropping realtime input with invalid controlled entity id: player={} controlled_raw={}",
-                    bound_player_wire, best.controlled_entity_id
-                );
-                continue;
-            };
-            if best.controlled_entity_id != controlled_id.to_string()
-                && best.controlled_entity_id != bound_player_wire
-            {
-                warn!(
-                    "realtime input invariant: controlled entity id encoding normalized raw={} canonical={}",
-                    best.controlled_entity_id, controlled_id
-                );
-            }
+                .last_accepted_tick_by_stream
+                .insert(stream_key, best.tick);
             entry.tick = best.tick;
             entry.controlled_entity_id = controlled_id;
             entry.control_generation = best.control_generation;
@@ -481,7 +513,7 @@ pub fn receive_latest_realtime_input_messages(
 }
 
 #[allow(clippy::type_complexity)]
-pub fn drain_native_player_inputs_to_action_queue(
+pub fn drain_realtime_player_inputs_to_action_queue(
     entities: Query<
         '_,
         '_,
@@ -564,18 +596,9 @@ pub fn drain_native_player_inputs_to_action_queue(
             Some(latest) if latest.controlled_entity_id == controlled_entity_id => {
                 (latest.actions.as_slice(), "realtime")
             }
-            // Accept realtime input for the authoritative target even when the client's
-            // controlled id encoding/routing is stale or mismatched. The server-side
-            // authoritative control map already scoped this entity to the player.
-            Some(latest) if is_authoritative_target => {
-                drain_state.input_drop_metrics.controlled_target_mismatch = drain_state
-                    .input_drop_metrics
-                    .controlled_target_mismatch
-                    .saturating_add(1);
-                (latest.actions.as_slice(), "realtime_mismatch_accepted")
-            }
-            // For non-simulated entities, keep strict target matching to avoid
-            // accidentally applying player intent outside authoritative control flow.
+            // Keep strict target matching even when the control generation is fresh.
+            // The only tolerated equivalence is canonical self-control/player-anchor
+            // routing, which is already normalized before this comparison.
             Some(_) => {
                 drain_state.input_drop_metrics.controlled_target_mismatch = drain_state
                     .input_drop_metrics
@@ -604,12 +627,7 @@ pub fn drain_native_player_inputs_to_action_queue(
             }
             continue;
         }
-        // Server input should reflect the latest client intent snapshot for this tick.
-        // Replacing (instead of appending) prevents stale-intent backlog under jitter/redundancy.
-        queue.clear();
-        for action in actions.iter().copied() {
-            queue.push(action);
-        }
+        replace_action_queue_from_actions(&mut queue, actions);
         let accepted_tick = drain_state
             .latest_realtime_inputs
             .by_player_entity_id

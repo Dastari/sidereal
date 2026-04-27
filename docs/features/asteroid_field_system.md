@@ -1,13 +1,14 @@
 # Asteroid Field System
 
 Status: Proposed feature contract
-Last updated: 2026-04-24
+Last updated: 2026-04-26
 Owners: gameplay simulation + persistence + scripting
 Scope: future first-class asteroid-field roots, clustered activation, fracture, and depletion
 
 ## 0. Status Notes
 
 - 2026-04-24: Not implemented yet as a field-root runtime. The current live implementation remains the bootstrap-only `asteroid.field_member` scatter model documented in `docs/features/procedural_asteroids.md`. Existing foundations available for this future work include Lua bundles, graph persistence, procedural asteroid sprite/collision generation, server-authoritative health/destruction, and visibility culling. Native impact: future server/client/runtime work required. WASM impact: shared gameplay/procedural logic must remain target-shared.
+- 2026-04-26: This V1 proposal is superseded for new implementation by `docs/features/asteroid_field_system_v2.md`. Keep this document as historical context for the original field-root direction and migration origin. Native impact: new work should target V2 component and Lua authoring surfaces. WASM impact: unchanged authority split; V2 keeps shared gameplay/procedural logic target-shared.
 - 2026-03-12: This document defines the intended replacement for the current bootstrap-only `asteroid.field_member` scatter model. The target direction is a persisted asteroid-field entity that owns clustered asteroid content, supports large size tiers, and authoritatively fractures destructible asteroids into smaller child bodies. Native impact: server/runtime/client work required. WASM impact: shared gameplay, replication, and procedural-generation logic should remain target-shared; browser-specific work stays limited to asset/loading/render boundary behavior.
 - 2026-03-12: Destruction/fracture visuals should follow the scripting-support ownership split. Default asteroid explosion/fracture/loot behavior belongs in Rust-defined authored profiles/components referenced by field/member content, while Lua hooks are reserved for exceptional lifecycle overrides. Native impact: future runtime/schema work required. WASM impact: no special browser-only behavior; the contract stays in shared gameplay/runtime code.
 

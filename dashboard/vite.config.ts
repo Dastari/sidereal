@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import { tanstackStart } from '@tanstack/react-start/plugin/vite'
 import viteReact from '@vitejs/plugin-react'
-import viteTsConfigPaths from 'vite-tsconfig-paths'
 import tailwindcss from '@tailwindcss/vite'
 
 const packageJson = JSON.parse(
@@ -12,7 +11,7 @@ const packageJson = JSON.parse(
 
 const config = defineConfig({
   server: {
-    host: '0.0.0.0'
+    host: '0.0.0.0',
   },
   define: {
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(
@@ -24,14 +23,7 @@ const config = defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
-  plugins: [
-    viteTsConfigPaths({
-      projects: ['./tsconfig.json'],
-    }),
-    tailwindcss(),
-    tanstackStart(),
-    viteReact(),
-  ],
+  plugins: [tailwindcss(), tanstackStart(), viteReact()],
 })
 
 export default config

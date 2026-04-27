@@ -9,6 +9,19 @@ pub struct RegisterRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapStatusResponse {
+    pub required: bool,
+    pub configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapAdminRequest {
+    pub email: String,
+    pub password: String,
+    pub setup_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
@@ -24,6 +37,18 @@ pub struct AuthTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub token_type: String,
+    pub expires_in_s: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordLoginResponse {
+    pub status: String,
+    #[serde(default)]
+    pub tokens: Option<AuthTokens>,
+    #[serde(default)]
+    pub challenge_id: Option<String>,
+    #[serde(default)]
+    pub challenge_type: Option<String>,
     pub expires_in_s: u64,
 }
 
@@ -50,15 +75,70 @@ pub struct PasswordResetConfirmResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailLoginRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailLoginResponse {
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailLoginVerifyRequest {
+    pub challenge_id: String,
+    pub code: Option<String>,
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TotpEnrollResponse {
+    pub enrollment_id: String,
+    pub issuer: String,
+    pub account_label: String,
+    pub provisioning_uri: String,
+    pub qr_svg: String,
+    pub manual_secret: String,
+    pub expires_in_s: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TotpVerifyRequest {
+    pub enrollment_id: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TotpVerifyResponse {
+    pub accepted: bool,
+    #[serde(default)]
+    pub tokens: Option<AuthTokens>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TotpLoginChallengeRequest {
+    pub challenge_id: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeResponse {
     pub account_id: String,
     pub email: String,
+    /// Legacy compatibility field. Account tokens no longer imply a selected character.
+    #[serde(default)]
     pub player_entity_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharacterSummary {
     pub player_entity_id: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub created_at_epoch_s: u64,
+    #[serde(default = "default_active_character_status")]
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,8 +147,38 @@ pub struct CharactersResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateCharacterRequest {
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateCharacterResponse {
+    pub player_entity_id: String,
+    pub display_name: String,
+    pub created_at_epoch_s: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteCharacterResponse {
+    pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetCharacterResponse {
+    pub player_entity_id: String,
+    pub display_name: String,
+    pub created_at_epoch_s: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnterWorldRequest {
     pub player_entity_id: String,
+}
+
+fn default_active_character_status() -> String {
+    "active".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -83,6 +193,8 @@ pub struct EnterWorldResponse {
     pub accepted: bool,
     #[serde(default)]
     pub replication_transport: ReplicationTransportConfig,
+    #[serde(default)]
+    pub tokens: Option<AuthTokens>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

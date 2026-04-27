@@ -1,16 +1,14 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { spawnEntityBodySchema } from '@/lib/schemas/dashboard'
-import { requireDashboardAdmin } from '@/server/dashboard-auth'
+import {
+  getDashboardSession,
+  requireDashboardAdmin,
+} from '@/server/dashboard-auth'
 
 function parseGatewayUrl(): string {
   const raw = process.env.GATEWAY_API_URL?.trim() || 'http://127.0.0.1:8080'
   return raw.endsWith('/') ? raw.slice(0, -1) : raw
-}
-
-function parseBearerToken(): string | null {
-  const token = process.env.SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN?.trim()
-  return token && token.length > 0 ? token : null
 }
 
 type SpawnEntityBody = {
@@ -23,9 +21,16 @@ export const Route = createFileRoute('/api/admin/spawn-entity')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(request, 'admin:spawn')
         if (authFailure) {
           return authFailure
+        }
+        const session = getDashboardSession(request)
+        if (!session) {
+          return json(
+            { error: 'Dashboard account session required' },
+            { status: 403 },
+          )
         }
 
         let body: SpawnEntityBody
@@ -47,21 +52,12 @@ export const Route = createFileRoute('/api/admin/spawn-entity')({
         }
 
         const gatewayBaseUrl = parseGatewayUrl()
-        const bearer = parseBearerToken()
-        if (!bearer) {
-          return json(
-            {
-              error: 'SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN is not configured',
-            },
-            { status: 500 },
-          )
-        }
 
         const response = await fetch(`${gatewayBaseUrl}/admin/spawn-entity`, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            authorization: `Bearer ${bearer}`,
+            authorization: `Bearer ${session.accessToken}`,
           },
           body: JSON.stringify({
             player_entity_id: parsedBody.data.player_entity_id,

@@ -1885,6 +1885,33 @@ mod tests {
     }
 
     #[test]
+    fn asteroid_field_v2_bundle_spawns_root_and_linked_members() {
+        let root = scripts_root_dir();
+        let mut overrides = serde_json::Map::new();
+        overrides.insert(
+            "field_entity_id".to_string(),
+            serde_json::Value::String("0012ebad-0000-0000-0000-000000000020".to_string()),
+        );
+        overrides.insert("field_count".to_string(), serde_json::json!(3));
+        let records =
+            spawn_bundle_graph_records(&root, "asteroid.field", &overrides).expect("spawn field");
+
+        assert_eq!(records.len(), 4);
+        assert!(
+            records[0]
+                .components
+                .iter()
+                .any(|component| component.component_kind == "asteroid_field")
+        );
+        assert!(records.iter().skip(1).all(|record| {
+            record
+                .components
+                .iter()
+                .any(|component| component.component_kind == "asteroid_field_member")
+        }));
+    }
+
+    #[test]
     fn init_resources_preserves_inferred_component_editor_schema_entries() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, SiderealGameCorePlugin));

@@ -3,6 +3,12 @@
 Status: Accepted decision detail (`DR-0001`)  
 Date: 2026-02-24
 
+Update note 2026-04-26:
+
+- `DR-0036` keeps the account/character/session terminology but changes the target lifecycle: account registration creates only account/auth state, while explicit character creation creates the persisted player ECS entity and starter-world graph records.
+- Dashboard account sessions, SMTP email login/password reset, TOTP MFA, scoped JWT claims, and JWKS are gateway-owned account/session concerns.
+- Replication bind remains character-scoped and must use a character-scoped world token after the `DR-0036` migration.
+
 ## Purpose
 
 Define unambiguous identity terminology and boundaries across auth, runtime, and persistence.
@@ -45,4 +51,6 @@ Define unambiguous identity terminology and boundaries across auth, runtime, and
 ## References
 
 - `docs/decision_register.md` (`DR-0001`)
+- `docs/decision_register.md` (`DR-0036`)
 - `docs/sidereal_design_document.md`
+- `docs/plans/gateway_dashboard_auth_character_flow_plan_2026-04-26.md`

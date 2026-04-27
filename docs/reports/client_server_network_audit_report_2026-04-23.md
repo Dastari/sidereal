@@ -2,6 +2,8 @@
 
 Status note 2026-04-23: Fresh audit run from current repository state. Existing audit reports were intentionally ignored as evidence. This pass used `docs/prompts/client_server_network_audit_prompt.md`, the source-of-truth networking/visibility/asset contracts, current Lightyear/Bevy references, and direct code inspection.
 
+Status note 2026-04-26: Follow-up implementation closed two items from this audit. `control_generation` was already present in realtime input when this report was written; the remaining gap was mismatch tolerance. The replication server now rejects `controlled_entity_id` mismatches after canonical player-anchor/self-control normalization, even when generation matches. The replication process also no longer installs Lightyear's native server input runtime; it keeps only protocol registration for native input messages and routes authoritative gameplay input through Sidereal's authenticated realtime lane. Remote motion diagnostics and a local `lightyear_interpolation` patch now cover upstream Lightyear [#1450](https://github.com/cBournhonesque/lightyear/issues/1450) / [#1451](https://github.com/cBournhonesque/lightyear/pull/1451). Native impact: replication crash path and native client remote interpolation are directly affected. WASM impact: no browser-specific transport change; shared client interpolation code compiles through the same patched crate.
+
 ## Scope
 
 Reviewed Lightyear dependency pinning, protocol messages/channels, authentication/session binding, control target changes, realtime input routing, server visibility membership, tactical/owner lanes, asset bootstrap/delivery, and client bootstrap/adoption behavior.
@@ -103,7 +105,9 @@ This avoids input loss during handoff, but it can apply intent meant for the pre
 
 Recommendation:
 
-Include `control_generation` in `ClientRealtimeInputMessage`. Accept mismatched controlled IDs only when the generation matches the server’s current generation or when the target is the player anchor self-control case.
+2026-04-26 follow-up: `control_generation` is implemented and strict target matching is now enforced. Accepting mismatched controlled IDs by generation alone was rejected because it can still apply intent for the previous target to the new authoritative target. The only tolerated equivalence is canonical player-anchor/self-control normalization before comparison.
+
+Earlier recommendation: include `control_generation` in `ClientRealtimeInputMessage`. Accept mismatched controlled IDs only when the generation matches the server’s current generation or when the target is the player anchor self-control case.
 
 ### Medium - Message Directions Are Broader Than Their Semantics
 

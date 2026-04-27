@@ -16,23 +16,14 @@ impl Default for AudioBusSettings {
     }
 }
 
-#[derive(Debug, Resource, Clone)]
+#[derive(Debug, Resource, Clone, Default)]
 pub(crate) struct AudioSettings {
     pub initialized_catalog_version: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub master_volume_db: f32,
+    #[cfg(not(target_arch = "wasm32"))]
     pub master_muted: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     pub master_low_pass_hz: Option<f64>,
     pub buses: HashMap<String, AudioBusSettings>,
-}
-
-impl Default for AudioSettings {
-    fn default() -> Self {
-        Self {
-            initialized_catalog_version: None,
-            master_volume_db: 0.0,
-            master_muted: false,
-            master_low_pass_hz: None,
-            buses: HashMap::new(),
-        }
-    }
 }

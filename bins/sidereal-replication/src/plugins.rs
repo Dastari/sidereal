@@ -70,10 +70,10 @@ impl Plugin for ReplicationInputPlugin {
             FixedUpdate,
             (
                 health::begin_fixed_step_diagnostics,
-                input::drain_native_player_inputs_to_action_queue,
+                input::drain_realtime_player_inputs_to_action_queue,
             )
                 .chain()
-                .before(PhysicsSystems::Prepare),
+                .in_set(sidereal_game::SiderealSimulationSet::ApplyInputActions),
         );
     }
 }
@@ -84,7 +84,7 @@ impl Plugin for ReplicationControlPlugin {
     fn build(&self, app: &mut App) {
         combat::init_resources(app);
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             (
                 combat::mark_new_ballistic_projectiles_prespawned
                     .after(sidereal_game::process_weapon_fire_actions),
@@ -120,7 +120,7 @@ enum ReplicationVisibilitySet {
 impl Plugin for ReplicationVisibilityPlugin {
     fn build(&self, app: &mut App) {
         app.configure_sets(
-            FixedUpdate,
+            FixedPostUpdate,
             (
                 ReplicationVisibilitySet::TransformSync,
                 ReplicationVisibilitySet::ObserverAnchors,
@@ -136,7 +136,7 @@ impl Plugin for ReplicationVisibilityPlugin {
                 .after(PhysicsSystems::Writeback),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             (
                 simulation_entities::sync_controlled_entity_transforms,
                 simulation_entities::sync_world_entity_transforms_from_world_space,
@@ -144,42 +144,47 @@ impl Plugin for ReplicationVisibilityPlugin {
                 .in_set(ReplicationVisibilitySet::TransformSync),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             runtime_state::update_client_observer_anchor_positions
                 .in_set(ReplicationVisibilitySet::ObserverAnchors),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             runtime_state::compute_controlled_entity_visibility_ranges
                 .in_set(ReplicationVisibilitySet::VisibilityRanges),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             visibility::refresh_visibility_entity_cache
                 .in_set(ReplicationVisibilitySet::EntityCache),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             visibility::refresh_visibility_spatial_index
                 .in_set(ReplicationVisibilitySet::SpatialIndex),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             visibility::refresh_static_landmark_discoveries
                 .in_set(ReplicationVisibilitySet::LandmarkDiscovery),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             visibility::ensure_network_visibility_for_replicated_entities
                 .in_set(ReplicationVisibilitySet::MembershipEnsure),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             (visibility::update_network_visibility,)
                 .in_set(ReplicationVisibilitySet::MembershipUpdate),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
+            visibility::log_motion_replication_diagnostics
+                .after(ReplicationVisibilitySet::MembershipUpdate),
+        );
+        app.add_systems(
+            FixedPostUpdate,
             (
                 assets::stream_asset_catalog_version_messages,
                 owner_manifest::stream_owner_asset_manifest_messages,
@@ -198,7 +203,7 @@ impl Plugin for ReplicationPersistencePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, persistence::start_persistence_worker);
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             (
                 mark_dirty_persistable_entities,
                 mark_dirty_persistable_entities_spatial,
@@ -206,12 +211,12 @@ impl Plugin for ReplicationPersistencePlugin {
                 .after(PhysicsSystems::Writeback),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             persistence::flush_simulation_state_persistence
                 .after(ReplicationVisibilitySet::MembershipUpdate),
         );
         app.add_systems(
-            FixedUpdate,
+            FixedPostUpdate,
             health::end_fixed_step_diagnostics
                 .after(ReplicationVisibilitySet::Streaming)
                 .after(persistence::flush_simulation_state_persistence),

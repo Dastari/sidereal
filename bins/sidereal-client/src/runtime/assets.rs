@@ -96,6 +96,7 @@ impl LocalAssetManager {
             .map(|record| record.relative_cache_path.as_str())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn is_asset_ready(&self, asset_id: &str) -> bool {
         self.records_by_asset_id
             .get(asset_id)
@@ -1390,9 +1391,7 @@ mod tests {
         app.insert_resource(Time::<()>::default());
         app.insert_resource(GatewayHttpAdapter {
             login: |_, _| Box::pin(async { unreachable!("unused in test") }),
-            register: |_, _| Box::pin(async { unreachable!("unused in test") }),
-            request_password_reset: |_, _| Box::pin(async { unreachable!("unused in test") }),
-            confirm_password_reset: |_, _| Box::pin(async { unreachable!("unused in test") }),
+            verify_totp_login_challenge: |_, _| Box::pin(async { unreachable!("unused in test") }),
             fetch_me: |_, _| Box::pin(async { unreachable!("unused in test") }),
             fetch_characters: |_, _| Box::pin(async { unreachable!("unused in test") }),
             enter_world: |_, _, _| Box::pin(async { unreachable!("unused in test") }),

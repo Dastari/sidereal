@@ -13,7 +13,12 @@ import { requireDashboardAdmin } from '@/server/dashboard-auth'
 export const Route = createFileRoute('/api/audio-cues/$soundId')({
   server: {
     handlers: {
-      GET: async ({ params }) => {
+      GET: async ({ request, params }) => {
+        const authFailure = requireDashboardAdmin(request, 'scripts:read')
+        if (authFailure) {
+          return authFailure
+        }
+
         const parsedParams = audioStudioParamsSchema.safeParse(params)
         if (!parsedParams.success) {
           return json(
@@ -26,7 +31,9 @@ export const Route = createFileRoute('/api/audio-cues/$soundId')({
         }
 
         try {
-          const payload = await loadAudioCueAssetBytes(parsedParams.data.soundId)
+          const payload = await loadAudioCueAssetBytes(
+            parsedParams.data.soundId,
+          )
           return new Response(new Uint8Array(payload.bytes), {
             status: 200,
             headers: {
@@ -43,7 +50,7 @@ export const Route = createFileRoute('/api/audio-cues/$soundId')({
         }
       },
       POST: async ({ request, params }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(request, 'scripts:write')
         if (authFailure) {
           return authFailure
         }

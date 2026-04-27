@@ -16,7 +16,8 @@ use bevy::log::info;
 use bevy::log::{BoxedFmtLayer, LogPlugin};
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
-use lightyear::input::native::prelude::InputPlugin as NativeInputPlugin;
+use lightyear::input::native::input_message::NativeStateSequence;
+use lightyear::input::plugin::InputPlugin;
 use lightyear::prelude::server::ServerPlugins;
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_core::logging::prepare_timestamped_log_file;
@@ -119,7 +120,12 @@ fn main() {
     app.add_plugins(ServerPlugins {
         tick_duration: Duration::from_secs_f64(1.0 / f64::from(SIM_TICK_HZ)),
     });
-    app.add_plugins(NativeInputPlugin::<sidereal_net::PlayerInput>::default());
+    // Register Lightyear's native input message protocol without installing the
+    // server receive path. Sidereal's authoritative gameplay input is
+    // ClientRealtimeInputMessage; the native message shape remains registered so
+    // old/in-flight clients deserialize and drop cleanly instead of crashing the
+    // replication process through lightyear_inputs::server::receive_input_message.
+    app.add_plugins(InputPlugin::<NativeStateSequence<sidereal_net::PlayerInput>>::default());
     register_lightyear_server_protocol(&mut app);
     lifecycle::configure_remote(&mut app, &remote_cfg);
 
@@ -224,6 +230,7 @@ fn register_plugins(app: &mut App) {
             auth::audit_pending_client_auth_state,
             auth::receive_client_disconnect_notify,
             auth::cleanup_client_auth_bindings,
+            auth::reset_realtime_input_on_fresh_auth_bind,
             assets::request_script_catalog_reload_on_disk_changes_system,
             assets::poll_runtime_asset_catalog_changes_system,
             input::receive_latest_realtime_input_messages,

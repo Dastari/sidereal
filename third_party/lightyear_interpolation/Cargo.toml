@@ -1,0 +1,45 @@
+[package]
+name = "lightyear_interpolation"
+version = "0.26.4"
+authors = ["Charles Bournhonesque <charlesbour@gmail.com>"]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "IO primitives for the lightyear networking library"
+repository = "https://github.com/cBournhonesque/lightyear"
+
+[features]
+default = ["std"]
+std = ["lightyear_replication/std"]
+metrics = ["dep:metrics", "std"]
+
+[dependencies]
+lightyear_utils = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_serde = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_core = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_connection = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_messages = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_replication = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false, features = ["interpolation"] }
+lightyear_sync = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false, features = ["client"] }
+
+# utils
+metrics = { version = "0.24", optional = true }
+tracing = "0.1.40"
+
+# serde
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+
+# bevy
+bevy_app = { version = "0.18", default-features = false }
+bevy_derive = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_math = { version = "0.18", default-features = false, features = ["curve"] }
+bevy_platform = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_time = { version = "0.18", default-features = false }
+bevy_utils = { version = "0.18", default-features = false, features = ["debug"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[workspace]

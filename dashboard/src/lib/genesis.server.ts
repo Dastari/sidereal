@@ -1,3 +1,5 @@
+import path from 'node:path'
+import { promises as fs } from 'node:fs'
 import type {
   GenesisPlanetCatalog,
   GenesisPlanetDefinition,
@@ -94,10 +96,52 @@ function parseGatewayUrl(): string {
   return raw.endsWith('/') ? raw.slice(0, -1) : raw
 }
 
-function parseBearerToken(): string {
-  const token = process.env.SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN?.trim()
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function resolveScriptsRoot(): Promise<string> {
+  const candidates = [
+    process.env.SIDEREAL_REPO_ROOT?.trim(),
+    process.cwd(),
+    path.resolve(process.cwd(), '..'),
+  ].filter((value): value is string => Boolean(value && value.length > 0))
+
+  for (const candidate of candidates) {
+    const scriptsRoot = path.join(path.resolve(candidate), 'data', 'scripts')
+    if (await pathExists(scriptsRoot)) {
+      return scriptsRoot
+    }
+  }
+
+  throw new Error('Unable to locate data/scripts for Genesis disk fallback')
+}
+
+function validateScriptCatalogPath(scriptPath: string): string {
+  const normalized = scriptPath.replace(/\\/g, '/')
+  if (
+    normalized.startsWith('/') ||
+    normalized.includes('../') ||
+    normalized.includes('..\\') ||
+    normalized.includes('\0') ||
+    !normalized.endsWith('.lua')
+  ) {
+    throw new Error(`script path is not allowed: ${scriptPath}`)
+  }
+  return normalized
+}
+
+function parseBearerToken(bearerToken?: string): string {
+  const token =
+    bearerToken?.trim() ??
+    process.env.SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN?.trim()
   if (!token) {
-    throw new Error('SIDEREAL_DASHBOARD_ADMIN_BEARER_TOKEN is not configured')
+    throw new Error('gateway bearer token is not available')
   }
   return token
 }
@@ -105,15 +149,19 @@ function parseBearerToken(): string {
 async function gatewayJson<T>(
   scriptPath: string,
   init?: RequestInit,
+  bearerToken?: string,
 ): Promise<T> {
-  const response = await fetch(`${parseGatewayUrl()}/admin/scripts/${scriptPath}`, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${parseBearerToken()}`,
-      ...(init?.headers ?? {}),
+  const response = await fetch(
+    `${parseGatewayUrl()}/admin/scripts/${scriptPath}`,
+    {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${parseBearerToken(bearerToken)}`,
+        ...(init?.headers ?? {}),
+      },
     },
-  })
+  )
   const payload = (await response.json().catch(() => ({}))) as Record<
     string,
     unknown
@@ -130,35 +178,74 @@ async function gatewayJson<T>(
 
 async function fetchScriptDetail(
   scriptPath: string,
+  bearerToken?: string,
 ): Promise<ScriptDetailResponse> {
-  return gatewayJson<ScriptDetailResponse>(`detail/${scriptPath}`)
+  return gatewayJson<ScriptDetailResponse>(
+    `detail/${scriptPath}`,
+    undefined,
+    bearerToken,
+  )
+}
+
+async function fetchScriptDetailForCatalogRead(
+  scriptPath: string,
+  bearerToken?: string,
+): Promise<ScriptDetailResponse> {
+  try {
+    return await fetchScriptDetail(scriptPath, bearerToken)
+  } catch {
+    const scriptsRoot = await resolveScriptsRoot()
+    const normalized = validateScriptCatalogPath(scriptPath)
+    const sourcePath = path.resolve(scriptsRoot, normalized)
+    const safePrefix = `${scriptsRoot}${path.sep}`
+    if (!sourcePath.startsWith(safePrefix)) {
+      throw new Error(`script path escapes data/scripts: ${scriptPath}`)
+    }
+    const diskSource = await fs.readFile(sourcePath, 'utf8')
+    return {
+      script_path: normalized,
+      active_source: diskSource,
+      draft_source: null,
+    }
+  }
 }
 
 async function saveScriptDraft(
   scriptPath: string,
   source: string,
   family: string,
+  bearerToken?: string,
 ): Promise<void> {
-  await gatewayJson(`draft/${scriptPath}`, {
-    method: 'POST',
-    body: JSON.stringify({
-      source,
-      origin: 'genesis_dashboard',
-      family,
-    }),
-  })
+  await gatewayJson(
+    `draft/${scriptPath}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        source,
+        origin: 'genesis_dashboard',
+        family,
+      }),
+    },
+    bearerToken,
+  )
 }
 
-async function publishScriptDraftIfPresent(scriptPath: string): Promise<void> {
-  const detail = await fetchScriptDetail(scriptPath)
+async function publishScriptDraftIfPresent(
+  scriptPath: string,
+  bearerToken?: string,
+): Promise<void> {
+  const detail = await fetchScriptDetail(scriptPath, bearerToken)
   if (typeof detail.draft_source !== 'string') return
-  await gatewayJson(`publish/${scriptPath}`, { method: 'POST' })
+  await gatewayJson(`publish/${scriptPath}`, { method: 'POST' }, bearerToken)
 }
 
-async function discardScriptDraftIfPresent(scriptPath: string): Promise<void> {
-  const detail = await fetchScriptDetail(scriptPath)
+async function discardScriptDraftIfPresent(
+  scriptPath: string,
+  bearerToken?: string,
+): Promise<void> {
+  const detail = await fetchScriptDetail(scriptPath, bearerToken)
   if (typeof detail.draft_source !== 'string') return
-  await gatewayJson(`draft/${scriptPath}`, { method: 'DELETE' })
+  await gatewayJson(`draft/${scriptPath}`, { method: 'DELETE' }, bearerToken)
 }
 
 function activeSource(detail: ScriptDetailResponse): string {
@@ -191,7 +278,9 @@ function parseNumberField(
   field: string,
   fallback: number,
 ): number {
-  const match = source.match(new RegExp(`${field}\\s*=\\s*(-?\\d+(?:\\.\\d+)?)`))
+  const match = source.match(
+    new RegExp(`${field}\\s*=\\s*(-?\\d+(?:\\.\\d+)?)`),
+  )
   return match ? Number(match[1]) : fallback
 }
 
@@ -235,7 +324,9 @@ function parseVec2Field(
   fallback: Vec2Tuple,
 ): Vec2Tuple {
   const match = source.match(
-    new RegExp(`${field}\\s*=\\s*\\{\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)\\s*\\}`),
+    new RegExp(
+      `${field}\\s*=\\s*\\{\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)\\s*\\}`,
+    ),
   )
   return match ? [Number(match[1]), Number(match[2])] : fallback
 }
@@ -250,7 +341,9 @@ function parseVec3Field(
       `${field}\\s*=\\s*\\{\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)\\s*\\}`,
     ),
   )
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : fallback
+  return match
+    ? [Number(match[1]), Number(match[2]), Number(match[3])]
+    : fallback
 }
 
 function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
@@ -262,8 +355,16 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'enable_surface_detail',
       defaults.enable_surface_detail,
     ),
-    enable_craters: parseBooleanField(source, 'enable_craters', defaults.enable_craters),
-    enable_clouds: parseBooleanField(source, 'enable_clouds', defaults.enable_clouds),
+    enable_craters: parseBooleanField(
+      source,
+      'enable_craters',
+      defaults.enable_craters,
+    ),
+    enable_clouds: parseBooleanField(
+      source,
+      'enable_clouds',
+      defaults.enable_clouds,
+    ),
     enable_atmosphere: parseBooleanField(
       source,
       'enable_atmosphere',
@@ -297,9 +398,21 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'base_radius_scale',
       defaults.base_radius_scale,
     ),
-    normal_strength: parseNumberField(source, 'normal_strength', defaults.normal_strength),
-    detail_level: parseNumberField(source, 'detail_level', defaults.detail_level),
-    rotation_speed: parseNumberField(source, 'rotation_speed', defaults.rotation_speed),
+    normal_strength: parseNumberField(
+      source,
+      'normal_strength',
+      defaults.normal_strength,
+    ),
+    detail_level: parseNumberField(
+      source,
+      'detail_level',
+      defaults.detail_level,
+    ),
+    rotation_speed: parseNumberField(
+      source,
+      'rotation_speed',
+      defaults.rotation_speed,
+    ),
     light_wrap: parseNumberField(source, 'light_wrap', defaults.light_wrap),
     ambient_strength: parseNumberField(
       source,
@@ -311,8 +424,16 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'specular_strength',
       defaults.specular_strength,
     ),
-    specular_power: parseNumberField(source, 'specular_power', defaults.specular_power),
-    rim_strength: parseNumberField(source, 'rim_strength', defaults.rim_strength),
+    specular_power: parseNumberField(
+      source,
+      'specular_power',
+      defaults.specular_power,
+    ),
+    rim_strength: parseNumberField(
+      source,
+      'rim_strength',
+      defaults.rim_strength,
+    ),
     rim_power: parseNumberField(source, 'rim_power', defaults.rim_power),
     fresnel_strength: parseNumberField(
       source,
@@ -329,9 +450,17 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'night_glow_strength',
       defaults.night_glow_strength,
     ),
-    continent_size: parseNumberField(source, 'continent_size', defaults.continent_size),
+    continent_size: parseNumberField(
+      source,
+      'continent_size',
+      defaults.continent_size,
+    ),
     ocean_level: parseNumberField(source, 'ocean_level', defaults.ocean_level),
-    mountain_height: parseNumberField(source, 'mountain_height', defaults.mountain_height),
+    mountain_height: parseNumberField(
+      source,
+      'mountain_height',
+      defaults.mountain_height,
+    ),
     roughness: parseNumberField(source, 'roughness', defaults.roughness),
     terrain_octaves: parseIntegerField(
       source,
@@ -343,22 +472,38 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'terrain_lacunarity',
       defaults.terrain_lacunarity,
     ),
-    terrain_gain: parseNumberField(source, 'terrain_gain', defaults.terrain_gain),
-    crater_density: parseNumberField(source, 'crater_density', defaults.crater_density),
+    terrain_gain: parseNumberField(
+      source,
+      'terrain_gain',
+      defaults.terrain_gain,
+    ),
+    crater_density: parseNumberField(
+      source,
+      'crater_density',
+      defaults.crater_density,
+    ),
     crater_size: parseNumberField(source, 'crater_size', defaults.crater_size),
     volcano_density: parseNumberField(
       source,
       'volcano_density',
       defaults.volcano_density,
     ),
-    ice_cap_size: parseNumberField(source, 'ice_cap_size', defaults.ice_cap_size),
+    ice_cap_size: parseNumberField(
+      source,
+      'ice_cap_size',
+      defaults.ice_cap_size,
+    ),
     storm_intensity: parseNumberField(
       source,
       'storm_intensity',
       defaults.storm_intensity,
     ),
     bands_count: parseNumberField(source, 'bands_count', defaults.bands_count),
-    spot_density: parseNumberField(source, 'spot_density', defaults.spot_density),
+    spot_density: parseNumberField(
+      source,
+      'spot_density',
+      defaults.spot_density,
+    ),
     surface_activity: parseNumberField(
       source,
       'surface_activity',
@@ -369,7 +514,11 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'corona_intensity',
       defaults.corona_intensity,
     ),
-    cloud_coverage: parseNumberField(source, 'cloud_coverage', defaults.cloud_coverage),
+    cloud_coverage: parseNumberField(
+      source,
+      'cloud_coverage',
+      defaults.cloud_coverage,
+    ),
     cloud_scale: parseNumberField(source, 'cloud_scale', defaults.cloud_scale),
     cloud_speed: parseNumberField(source, 'cloud_speed', defaults.cloud_speed),
     cloud_alpha: parseNumberField(source, 'cloud_alpha', defaults.cloud_alpha),
@@ -394,7 +543,11 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'emissive_strength',
       defaults.emissive_strength,
     ),
-    sun_intensity: parseNumberField(source, 'sun_intensity', defaults.sun_intensity),
+    sun_intensity: parseNumberField(
+      source,
+      'sun_intensity',
+      defaults.sun_intensity,
+    ),
     surface_saturation: parseNumberField(
       source,
       'surface_saturation',
@@ -435,7 +588,11 @@ function parseShaderSettings(source: string): GenesisPlanetShaderSettings {
       'color_atmosphere_rgb',
       defaults.color_atmosphere_rgb,
     ),
-    color_clouds_rgb: parseVec3Field(source, 'color_clouds_rgb', defaults.color_clouds_rgb),
+    color_clouds_rgb: parseVec3Field(
+      source,
+      'color_clouds_rgb',
+      defaults.color_clouds_rgb,
+    ),
     color_night_lights_rgb: parseVec3Field(
       source,
       'color_night_lights_rgb',
@@ -477,7 +634,10 @@ function parsePlanetDefinition(
     planet_id: parseStringField(source, 'planet_id', entry.planetId),
     script_path: entry.scriptPath,
     display_name: parseStringField(source, 'display_name', entry.planetId),
-    entity_labels: parseStringListField(source, 'entity_labels', ['Planet', 'CelestialBody']),
+    entity_labels: parseStringListField(source, 'entity_labels', [
+      'Planet',
+      'CelestialBody',
+    ]),
     tags: parseStringListField(source, 'tags', entry.tags),
     spawn: parseSpawnDefinition(source),
     shader_settings: parseShaderSettings(source),
@@ -513,7 +673,9 @@ function formatBoolean(value: boolean): string {
   return value ? 'true' : 'false'
 }
 
-function serializePlanetDefinition(definition: GenesisPlanetDefinition): string {
+function serializePlanetDefinition(
+  definition: GenesisPlanetDefinition,
+): string {
   const settings = definition.shader_settings
   return `return {
   planet_id = ${luaString(definition.planet_id)},
@@ -620,12 +782,20 @@ return PlanetRegistry
 `
 }
 
-export async function loadGenesisPlanetCatalog(): Promise<GenesisPlanetCatalog> {
-  const registry = await fetchScriptDetail(REGISTRY_SCRIPT_PATH)
+export async function loadGenesisPlanetCatalog(
+  bearerToken?: string,
+): Promise<GenesisPlanetCatalog> {
+  const registry = await fetchScriptDetailForCatalogRead(
+    REGISTRY_SCRIPT_PATH,
+    bearerToken,
+  )
   const registryEntries = parseRegistryEntries(activeSource(registry))
   const entries = await Promise.all(
     registryEntries.map(async (entry): Promise<GenesisPlanetEntry> => {
-      const detail = await fetchScriptDetail(entry.scriptPath)
+      const detail = await fetchScriptDetailForCatalogRead(
+        entry.scriptPath,
+        bearerToken,
+      )
       const source = activeSource(detail)
       const definition = parsePlanetDefinition(source, entry)
       return {
@@ -650,8 +820,9 @@ export async function loadGenesisPlanetCatalog(): Promise<GenesisPlanetCatalog> 
 
 export async function saveGenesisPlanetDraft(
   request: GenesisPlanetDraftRequest,
+  bearerToken?: string,
 ): Promise<GenesisPlanetCatalog> {
-  const registry = await fetchScriptDetail(REGISTRY_SCRIPT_PATH)
+  const registry = await fetchScriptDetail(REGISTRY_SCRIPT_PATH, bearerToken)
   const entries = parseRegistryEntries(activeSource(registry))
   const entryIndex = entries.findIndex(
     (entry) => entry.planetId === request.definition.planet_id,
@@ -674,29 +845,41 @@ export async function saveGenesisPlanetDraft(
     request.definition.script_path,
     serializePlanetDefinition(request.definition),
     'planet',
+    bearerToken,
   )
-  await saveScriptDraft(REGISTRY_SCRIPT_PATH, serializeRegistry(entries), 'planet_registry')
-  return loadGenesisPlanetCatalog()
+  await saveScriptDraft(
+    REGISTRY_SCRIPT_PATH,
+    serializeRegistry(entries),
+    'planet_registry',
+    bearerToken,
+  )
+  return loadGenesisPlanetCatalog(bearerToken)
 }
 
 export async function publishGenesisPlanetDraft(
   planetId: string,
+  bearerToken?: string,
 ): Promise<GenesisPlanetCatalog> {
-  const catalog = await loadGenesisPlanetCatalog()
-  const entry = catalog.entries.find((candidate) => candidate.planetId === planetId)
+  const catalog = await loadGenesisPlanetCatalog(bearerToken)
+  const entry = catalog.entries.find(
+    (candidate) => candidate.planetId === planetId,
+  )
   if (!entry) throw new Error(`unknown Genesis planet ${planetId}`)
-  await publishScriptDraftIfPresent(entry.scriptPath)
-  await publishScriptDraftIfPresent(REGISTRY_SCRIPT_PATH)
-  return loadGenesisPlanetCatalog()
+  await publishScriptDraftIfPresent(entry.scriptPath, bearerToken)
+  await publishScriptDraftIfPresent(REGISTRY_SCRIPT_PATH, bearerToken)
+  return loadGenesisPlanetCatalog(bearerToken)
 }
 
 export async function discardGenesisPlanetDraft(
   planetId: string,
+  bearerToken?: string,
 ): Promise<GenesisPlanetCatalog> {
-  const catalog = await loadGenesisPlanetCatalog()
-  const entry = catalog.entries.find((candidate) => candidate.planetId === planetId)
+  const catalog = await loadGenesisPlanetCatalog(bearerToken)
+  const entry = catalog.entries.find(
+    (candidate) => candidate.planetId === planetId,
+  )
   if (!entry) throw new Error(`unknown Genesis planet ${planetId}`)
-  await discardScriptDraftIfPresent(entry.scriptPath)
-  await discardScriptDraftIfPresent(REGISTRY_SCRIPT_PATH)
-  return loadGenesisPlanetCatalog()
+  await discardScriptDraftIfPresent(entry.scriptPath, bearerToken)
+  await discardScriptDraftIfPresent(REGISTRY_SCRIPT_PATH, bearerToken)
+  return loadGenesisPlanetCatalog(bearerToken)
 }

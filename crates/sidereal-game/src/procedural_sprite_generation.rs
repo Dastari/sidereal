@@ -1,6 +1,6 @@
 use crate::{
-    CollisionOutlineM, ProceduralSprite, compute_collision_half_extents_from_rgba_alpha,
-    generate_rdp_collision_outline_from_rgba,
+    CollisionOutlineM, ProceduralSprite, ProceduralSpriteSurfaceStyle,
+    compute_collision_half_extents_from_rgba_alpha, generate_rdp_collision_outline_from_rgba,
 };
 use std::f32::consts::TAU;
 
@@ -78,12 +78,27 @@ fn generate_asteroid_rocky_v1(
 ) -> Result<ProceduralSpriteImageSet, String> {
     let width = sprite.resolution_px.max(64);
     let height = sprite.resolution_px.max(64);
-    let seed = seed_from_key(seed_key);
+    let effective_seed_key = sprite.family_seed_key.as_deref().unwrap_or(seed_key);
+    let seed = seed_from_key(effective_seed_key);
     let mut albedo_rgba = vec![0u8; (width * height * 4) as usize];
     let mut normal_rgba = vec![0u8; (width * height * 4) as usize];
     let mut heights = vec![0.0f32; (width * height) as usize];
     let crater_count = sprite.crater_count.clamp(1, 12) as usize;
     let mut crater_centers = [(0.0f32, 0.0f32, 0.0f32); 12];
+    let pixel_step = sprite.pixel_step_px.clamp(1, 8);
+    let style_silhouette = match sprite.surface_style {
+        ProceduralSpriteSurfaceStyle::Rocky => 1.0,
+        ProceduralSpriteSurfaceStyle::Carbonaceous => 0.82,
+        ProceduralSpriteSurfaceStyle::Metallic => 0.72,
+        ProceduralSpriteSurfaceStyle::Shard => 1.42,
+        ProceduralSpriteSurfaceStyle::GemRich => 0.95,
+    };
+    let style_crater_scale = match sprite.surface_style {
+        ProceduralSpriteSurfaceStyle::Metallic => 0.55,
+        ProceduralSpriteSurfaceStyle::Shard => 0.45,
+        ProceduralSpriteSurfaceStyle::GemRich => 0.72,
+        ProceduralSpriteSurfaceStyle::Rocky | ProceduralSpriteSurfaceStyle::Carbonaceous => 1.0,
+    };
 
     for (idx, crater) in crater_centers.iter_mut().enumerate().take(crater_count) {
         let salt = idx as u64 * 17;
@@ -95,8 +110,10 @@ fn generate_asteroid_rocky_v1(
 
     for y in 0..height {
         for x in 0..width {
-            let fx = (x as f32 + 0.5) / width as f32;
-            let fy = (y as f32 + 0.5) / height as f32;
+            let qx = (x / pixel_step) * pixel_step;
+            let qy = (y / pixel_step) * pixel_step;
+            let fx = (qx as f32 + pixel_step as f32 * 0.5) / width as f32;
+            let fy = (qy as f32 + pixel_step as f32 * 0.5) / height as f32;
             let nx = fx * 2.0 - 1.0;
             let ny = fy * 2.0 - 1.0;
             let angle = ny.atan2(nx);
@@ -105,10 +122,12 @@ fn generate_asteroid_rocky_v1(
             let lobe_0 = (angle * 2.0 + hash01(seed, 11) * TAU).sin();
             let lobe_1 = (angle * 3.0 + hash01(seed, 12) * TAU).cos();
             let lobe_2 = (angle * 5.0 + hash01(seed, 13) * TAU).sin();
+            let shard_lobe = (angle * 8.0 + hash01(seed, 14) * TAU).sin().abs();
             let silhouette_radius = 0.74
-                + lobe_0 * sprite.lobe_amplitude
+                + lobe_0 * sprite.lobe_amplitude * style_silhouette
                 + lobe_1 * (sprite.lobe_amplitude * 0.62)
                 + lobe_2 * (sprite.lobe_amplitude * 0.42)
+                + shard_lobe * sprite.lobe_amplitude * 0.18
                 + (hash01(seed, (x as u64 + 1) * 3 + (y as u64 + 1) * 5) - 0.5) * sprite.edge_noise;
 
             let edge = silhouette_radius - dist;
@@ -118,7 +137,7 @@ fn generate_asteroid_rocky_v1(
 
             let alpha = (edge / 0.03).clamp(0.0, 1.0);
             let lighting = (0.55 + (-nx * 0.32) + (ny * 0.18)).clamp(0.18, 1.0);
-            let grain = hash01(seed, x as u64 * 131 + y as u64 * 977);
+            let grain = hash01(seed, qx as u64 * 131 + qy as u64 * 977);
             let mut shade = 0.38 + lighting * 0.42 + (grain - 0.5) * 0.12;
             let mut height_value = 0.55 + lighting * 0.18 + (grain - 0.5) * 0.06;
 
@@ -126,21 +145,44 @@ fn generate_asteroid_rocky_v1(
                 let dx = nx - crater.0;
                 let dy = ny - crater.1;
                 let crater_dist = (dx * dx + dy * dy).sqrt();
-                if crater_dist < crater.2 {
-                    let t = 1.0 - (crater_dist / crater.2).clamp(0.0, 1.0);
+                let crater_radius = crater.2 * style_crater_scale;
+                if crater_dist < crater_radius {
+                    let t = 1.0 - (crater_dist / crater_radius).clamp(0.0, 1.0);
                     shade -= t * 0.18;
                     height_value -= t * 0.28;
                 }
             }
 
+            let crack_wave = ((angle * 7.0 + dist * 11.0 + hash01(seed, 41) * TAU).sin()).abs();
+            let crack = (1.0 - crack_wave).max(0.0).powf(8.0)
+                * sprite.crack_intensity.clamp(0.0, 1.0)
+                * (0.4 + dist * 0.8);
+            shade -= crack * 0.34;
+            height_value -= crack * 0.22;
+
+            let vein_wave = ((nx * 13.0 + ny * 7.0 + hash01(seed, 53) * TAU).sin()).abs();
+            let vein = (1.0 - vein_wave).max(0.0).powf(10.0)
+                * sprite.mineral_vein_intensity.clamp(0.0, 1.0)
+                * (0.35 + grain * 0.65);
+
+            shade = (shade * 5.0).round() / 5.0;
             shade = shade.clamp(0.08, 0.92);
             height_value = height_value.clamp(0.0, 1.0);
 
             let dark = sprite.palette_dark_rgb;
             let light = sprite.palette_light_rgb;
-            let r = ((dark[0] + (light[0] - dark[0]) * shade).clamp(0.0, 1.0) * 255.0) as u8;
-            let g = ((dark[1] + (light[1] - dark[1]) * shade).clamp(0.0, 1.0) * 255.0) as u8;
-            let b = ((dark[2] + (light[2] - dark[2]) * shade).clamp(0.0, 1.0) * 255.0) as u8;
+            let mut color = [
+                dark[0] + (light[0] - dark[0]) * shade,
+                dark[1] + (light[1] - dark[1]) * shade,
+                dark[2] + (light[2] - dark[2]) * shade,
+            ];
+            let mineral = sprite.mineral_accent_rgb;
+            color[0] = color[0] + (mineral[0] - color[0]) * vein;
+            color[1] = color[1] + (mineral[1] - color[1]) * vein;
+            color[2] = color[2] + (mineral[2] - color[2]) * vein;
+            let r = (color[0].clamp(0.0, 1.0) * 255.0) as u8;
+            let g = (color[1].clamp(0.0, 1.0) * 255.0) as u8;
+            let b = (color[2].clamp(0.0, 1.0) * 255.0) as u8;
             let idx = ((y * width + x) * 4) as usize;
             albedo_rgba[idx] = r;
             albedo_rgba[idx + 1] = g;

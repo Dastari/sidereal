@@ -1,7 +1,7 @@
 use bevy::ecs::entity::{EntityMapper, MapEntities};
 use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
-use sidereal_game::EntityAction;
+use sidereal_game::{ActionQueue, EntityAction};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Reflect)]
 pub struct PlayerInput {
@@ -62,4 +62,18 @@ impl PlayerInput {
             actions: actions_from_axis_inputs(thrust, turn, brake, afterburner, fire_primary),
         }
     }
+}
+
+/// Replace an action queue with one input snapshot.
+///
+/// Both client prediction and server authority use latest-intent semantics:
+/// each fixed tick consumes the current snapshot, not an appended backlog.
+pub fn replace_action_queue_from_player_input(queue: &mut ActionQueue, input: &PlayerInput) {
+    replace_action_queue_from_actions(queue, &input.actions);
+}
+
+/// Replace an action queue with one action snapshot.
+pub fn replace_action_queue_from_actions(queue: &mut ActionQueue, actions: &[EntityAction]) {
+    queue.clear();
+    queue.pending.extend_from_slice(actions);
 }

@@ -1,6 +1,7 @@
 use sidereal_game::{
-    ProceduralSprite, compute_collision_half_extents_from_procedural_sprite,
-    generate_procedural_sprite_image_set, generate_rdp_collision_outline_from_procedural_sprite,
+    ProceduralSprite, ProceduralSpriteSurfaceStyle,
+    compute_collision_half_extents_from_procedural_sprite, generate_procedural_sprite_image_set,
+    generate_rdp_collision_outline_from_procedural_sprite,
 };
 
 fn test_sprite() -> ProceduralSprite {
@@ -12,6 +13,12 @@ fn test_sprite() -> ProceduralSprite {
         crater_count: 6,
         palette_dark_rgb: [0.18, 0.16, 0.14],
         palette_light_rgb: [0.54, 0.48, 0.42],
+        surface_style: ProceduralSpriteSurfaceStyle::Rocky,
+        pixel_step_px: 2,
+        crack_intensity: 0.35,
+        mineral_vein_intensity: 0.18,
+        mineral_accent_rgb: [0.72, 0.52, 0.24],
+        family_seed_key: None,
     }
 }
 

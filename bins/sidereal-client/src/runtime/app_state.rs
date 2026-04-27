@@ -20,17 +20,13 @@ pub(crate) enum ClientAppState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuthAction {
     Login,
-    Register,
-    ForgotRequest,
-    ForgotConfirm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FocusField {
     Email,
     Password,
-    ResetToken,
-    NewPassword,
+    TotpCode,
 }
 
 #[derive(Debug, Resource)]
@@ -40,8 +36,8 @@ pub(crate) struct ClientSession {
     pub focus: FocusField,
     pub email: String,
     pub password: String,
-    pub reset_token: String,
-    pub new_password: String,
+    pub totp_code: String,
+    pub totp_challenge_id: Option<String>,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
     pub account_id: Option<String>,
@@ -53,8 +49,24 @@ pub(crate) struct ClientSession {
 
 #[derive(Debug, Resource, Default)]
 pub(crate) struct CharacterSelectionState {
-    pub characters: Vec<String>,
+    pub characters: Vec<CharacterSelectionEntry>,
     pub selected_player_entity_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CharacterSelectionEntry {
+    pub player_entity_id: String,
+    pub display_name: String,
+    pub status: String,
+}
+
+impl CharacterSelectionState {
+    pub(crate) fn selected_character(&self) -> Option<&CharacterSelectionEntry> {
+        let selected_id = self.selected_player_entity_id.as_deref()?;
+        self.characters
+            .iter()
+            .find(|character| character.player_entity_id == selected_id)
+    }
 }
 
 #[derive(Debug, Resource, Default)]
@@ -105,15 +117,14 @@ impl Default for ClientSession {
             focus: FocusField::Email,
             email: "pilot@example.com".to_string(),
             password: "very-strong-password".to_string(),
-            reset_token: String::new(),
-            new_password: "new-very-strong-password".to_string(),
+            totp_code: String::new(),
+            totp_challenge_id: None,
             access_token: None,
             refresh_token: None,
             account_id: None,
             player_entity_id: None,
             replication_transport: ReplicationTransportConfig::default(),
-            status: "Ready. F1 Login, F2 Register, F3 Forgot Request, F4 Forgot Confirm."
-                .to_string(),
+            status: "Ready. Enter your gateway account credentials.".to_string(),
             ui_dirty: true,
         }
     }

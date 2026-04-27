@@ -1,7 +1,7 @@
 # Scripting Support
 
 Status: Active implementation contract
-Last updated: 2026-04-24
+Last updated: 2026-04-26
 Owners: scripting + replication + gameplay
 Scope: authoritative Lua scripting, script catalogs, validated mutation APIs, and content authoring boundaries
 
@@ -17,6 +17,9 @@ Scope: authoritative Lua scripting, script catalogs, validated mutation APIs, an
 
 Update note (2026-04-24):
 - Genesis planet registry authoring has started. Planet/celestial definitions now use `data/scripts/planets/registry.lua` plus one Lua file per named body, decoded through `crates/sidereal-scripting` into a typed `PlanetRegistry` resource and consumed by `world_init.lua` through validated bundle spawn context. Genesis dashboard writes are expected to use script draft/publish APIs, not direct disk mutation. Native impact: server-side content registry and unchanged planet bundle/render path. WASM impact: no authoritative script execution moves client-side.
+
+Update note (2026-04-26):
+- Asteroid Field System V2 adds the target Lua authoring surface for field roots and asteroid resource/fracture/ambient profiles. `asteroid.field` is the primary world-content primitive for new fields, while `asteroid.field_member` remains a migration helper and isolated-rock path. The registry surface is `data/scripts/asteroids/registry.lua`, decoded through `crates/sidereal-scripting` by `load_asteroid_registry_from_root` / `load_asteroid_registry_from_source`, and validated for duplicate profile IDs plus field-profile references. Native impact: authoritative host and native client will consume the same validated field/member/profile outputs. WASM impact: no authoritative Lua execution moves client-side; browser clients consume replicated field/member metadata and shader assets.
 
 Update note (2026-04-24):
 - Runtime Lua contexts now expose `ctx:notify_player({...})` for validated server-authored non-blocking player notifications. The script API emits a Rust-owned notification intent; Lua does not receive UI, network, or database handles. Native impact: clients can render the resulting toast through the shared notification lane. WASM impact: protocol and payload model remain shared-client compatible.

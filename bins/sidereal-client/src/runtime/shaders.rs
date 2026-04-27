@@ -625,6 +625,17 @@ fn non_empty_asset_id(asset_id: &str) -> Option<String> {
     (!asset_id.trim().is_empty()).then(|| asset_id.to_string())
 }
 
+fn catalog_shader_asset_id_by_family(
+    asset_manager: &LocalAssetManager,
+    shader_family: &str,
+) -> Option<String> {
+    asset_manager
+        .catalog_by_asset_id
+        .iter()
+        .find(|(_, entry)| entry.shader_family.as_deref() == Some(shader_family))
+        .map(|(asset_id, _)| asset_id.clone())
+}
+
 fn first_sprite_shader_asset_id<'a, I>(
     entries: I,
     exclude_asset_ids: &[Option<&str>],
@@ -785,11 +796,12 @@ pub fn sync_runtime_shader_assignments_system(
     }
 
     if next.runtime_effect_asset_id.is_none() {
-        next.runtime_effect_asset_id = asset_manager
-            .catalog_by_asset_id
-            .iter()
-            .find(|(_, entry)| entry.shader_family.as_deref() == Some("effect"))
-            .map(|(asset_id, _)| asset_id.clone());
+        next.runtime_effect_asset_id = catalog_shader_asset_id_by_family(&asset_manager, "effect");
+    }
+
+    if next.asteroid_sprite_asset_id.is_none() {
+        next.asteroid_sprite_asset_id =
+            catalog_shader_asset_id_by_family(&asset_manager, "world_sprite_asteroid");
     }
 
     for (shader_asset_id, _planet, procedural_sprite) in &sprite_shader_asset_ids {
@@ -822,34 +834,21 @@ pub fn sync_runtime_shader_assignments_system(
         }
     }
 
-    next.generic_sprite_asset_id = first_sprite_shader_asset_id(
-        sprite_shader_asset_ids.iter().filter_map(
-            |(shader_asset_id, planet_settings, procedural_sprite)| {
-                shader_asset_id.0.as_deref().map(|asset_id| {
-                    (
-                        asset_id,
-                        planet_settings.is_some(),
-                        procedural_sprite
-                            .is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1"),
-                    )
-                })
-            },
-        ),
-        &[
-            next.planet_visual_asset_id.as_deref(),
-            next.asteroid_sprite_asset_id.as_deref(),
-        ],
-    )
-    .or_else(|| {
-        first_sprite_shader_asset_id(
-            streamed_sprite_shader_asset_ids.iter().map(
+    next.generic_sprite_asset_id =
+        catalog_shader_asset_id_by_family(&asset_manager, "world_sprite_generic");
+
+    if next.generic_sprite_asset_id.is_none() {
+        next.generic_sprite_asset_id = first_sprite_shader_asset_id(
+            sprite_shader_asset_ids.iter().filter_map(
                 |(shader_asset_id, planet_settings, procedural_sprite)| {
-                    (
-                        shader_asset_id.0.as_str(),
-                        planet_settings.is_some(),
-                        procedural_sprite
-                            .is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1"),
-                    )
+                    shader_asset_id.0.as_deref().map(|asset_id| {
+                        (
+                            asset_id,
+                            planet_settings.is_some(),
+                            procedural_sprite
+                                .is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1"),
+                        )
+                    })
                 },
             ),
             &[
@@ -857,7 +856,25 @@ pub fn sync_runtime_shader_assignments_system(
                 next.asteroid_sprite_asset_id.as_deref(),
             ],
         )
-    });
+        .or_else(|| {
+            first_sprite_shader_asset_id(
+                streamed_sprite_shader_asset_ids.iter().map(
+                    |(shader_asset_id, planet_settings, procedural_sprite)| {
+                        (
+                            shader_asset_id.0.as_str(),
+                            planet_settings.is_some(),
+                            procedural_sprite
+                                .is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1"),
+                        )
+                    },
+                ),
+                &[
+                    next.planet_visual_asset_id.as_deref(),
+                    next.asteroid_sprite_asset_id.as_deref(),
+                ],
+            )
+        });
+    }
 
     if *assignments != next || catalog_reloaded {
         *assignments = next;

@@ -5,7 +5,7 @@ use crate::replication::input::{
     ClientInputDropMetrics, InputActivityLogState, InputRateLimitState, InputValidationFailure,
     LatestRealtimeInput, LatestRealtimeInputsByPlayer, MAX_ACTIONS_PER_PACKET,
     MAX_MESSAGES_PER_SECOND, RealtimeInputActivityByPlayer, RealtimeInputTimeoutSeconds,
-    canonical_controlled_entity_id, drain_native_player_inputs_to_action_queue,
+    canonical_controlled_entity_id, drain_realtime_player_inputs_to_action_queue,
     validate_input_message,
 };
 use bevy::prelude::*;
@@ -86,7 +86,7 @@ fn drain_keeps_fresh_realtime_input_before_timeout() {
     app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(InputActivityLogState::default());
-    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+    app.add_systems(Update, drain_realtime_player_inputs_to_action_queue);
 
     let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
     let player_guid = player_id.0;
@@ -132,7 +132,7 @@ fn drain_clears_stale_realtime_input_after_timeout() {
     app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(InputActivityLogState::default());
-    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+    app.add_systems(Update, drain_realtime_player_inputs_to_action_queue);
 
     let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
     let player_guid = player_id.0;
@@ -184,7 +184,7 @@ fn drain_rejects_stale_generation_input_during_control_handoff() {
     app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(InputActivityLogState::default());
-    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+    app.add_systems(Update, drain_realtime_player_inputs_to_action_queue);
 
     let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
     let ship_a_id = RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222").unwrap();
@@ -237,7 +237,7 @@ fn drain_rejects_stale_generation_input_during_control_handoff() {
 }
 
 #[test]
-fn drain_keeps_mismatch_tolerance_with_matching_control_generation() {
+fn drain_rejects_target_mismatch_with_matching_control_generation() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.insert_resource(PlayerControlledEntityMap::default());
@@ -247,7 +247,7 @@ fn drain_keeps_mismatch_tolerance_with_matching_control_generation() {
     app.insert_resource(RealtimeInputTimeoutSeconds(0.35));
     app.insert_resource(ClientInputDropMetrics::default());
     app.insert_resource(InputActivityLogState::default());
-    app.add_systems(Update, drain_native_player_inputs_to_action_queue);
+    app.add_systems(Update, drain_realtime_player_inputs_to_action_queue);
 
     let player_id = PlayerEntityId::parse("11111111-1111-1111-1111-111111111111").unwrap();
     let ship_a_id = RuntimeEntityId::parse("22222222-2222-2222-2222-222222222222").unwrap();
@@ -290,7 +290,7 @@ fn drain_keeps_mismatch_tolerance_with_matching_control_generation() {
     app.update();
 
     let queue = app.world().get::<ActionQueue>(ship_b_entity).unwrap();
-    assert_eq!(queue.pending, vec![EntityAction::Forward]);
+    assert!(queue.pending.is_empty());
     assert_eq!(
         app.world()
             .resource::<ClientInputDropMetrics>()

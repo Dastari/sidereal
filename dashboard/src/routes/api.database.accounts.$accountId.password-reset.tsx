@@ -37,7 +37,10 @@ export const Route = createFileRoute(
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:database:write',
+        )
         if (authFailure) {
           return authFailure
         }
@@ -81,7 +84,7 @@ export const Route = createFileRoute(
           }
 
           const response = await fetch(
-            `${parseGatewayUrl()}/auth/password-reset/request`,
+            `${parseGatewayUrl()}/auth/v1/password-reset/request`,
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },

@@ -19,8 +19,7 @@ use lightyear::prelude::{MessageReceiver, MessageSender, Transport};
 use sidereal_asset_runtime::{AssetCacheIndexRecord, asset_version_from_sha256_hex, sha256_hex};
 use sidereal_core::gateway_dtos::{
     AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
-    EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
-    PasswordResetRequest, RegisterRequest,
+    EnterWorldResponse, LoginRequest, MeResponse, PasswordLoginResponse, TotpLoginChallengeRequest,
 };
 use sidereal_net::{
     ClientAuthMessage, ControlChannel, LIGHTYEAR_PROTOCOL_VERSION, PlayerEntityId,
@@ -31,6 +30,13 @@ fn canonicalize_player_entity_id(raw: &str) -> String {
     PlayerEntityId::parse(raw)
         .map(PlayerEntityId::canonical_wire_id)
         .unwrap_or_else(|| raw.to_string())
+}
+
+fn normalize_totp_code(raw: &str) -> String {
+    raw.chars()
+        .filter(|chr| chr.is_ascii_digit())
+        .take(6)
+        .collect()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -82,15 +88,15 @@ enum GatewayRequestResult {
 
 #[derive(Debug)]
 enum AuthRequestResult {
-    LoginOrRegister {
+    Login {
         tokens: AuthTokens,
         me: MeResponse,
         characters: CharactersResponse,
     },
-    PasswordResetRequested {
-        reset_token: Option<String>,
+    TotpRequired {
+        challenge_id: String,
+        expires_in_s: u64,
     },
-    PasswordResetConfirmed,
     Error(String),
 }
 
@@ -98,6 +104,7 @@ enum AuthRequestResult {
 enum EnterWorldRequestResult {
     Accepted {
         player_entity_id: String,
+        tokens: Option<AuthTokens>,
         replication_transport: sidereal_core::gateway_dtos::ReplicationTransportConfig,
     },
     Rejected {
@@ -156,6 +163,30 @@ fn try_recv_pending_result<T>(receiver: &Receiver<T>) -> Option<T> {
     }
 }
 
+fn handle_password_login_response(
+    response: PasswordLoginResponse,
+) -> Result<(Option<AuthTokens>, Option<String>), String> {
+    match response.status.as_str() {
+        "authenticated" => response
+            .tokens
+            .map(|tokens| (Some(tokens), None))
+            .ok_or_else(|| "gateway returned authenticated login without tokens".to_string()),
+        "mfa_required" => {
+            let challenge_id = response
+                .challenge_id
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "gateway requested MFA without a challenge id".to_string())?;
+            Err(format!(
+                "mfa_required:{challenge_id}:{}",
+                response.expires_in_s
+            ))
+        }
+        other => Err(format!(
+            "gateway returned unsupported login status: {other}"
+        )),
+    }
+}
+
 pub fn init_gateway_request_state(app: &mut App) {
     app.insert_resource(GatewayRequestState::default());
     app.insert_resource(AssetBootstrapRequestState::default());
@@ -172,12 +203,21 @@ pub fn submit_auth_request(
         return;
     }
 
+    if session.selected_action == AuthAction::Login && session.totp_challenge_id.is_some() {
+        session.totp_code = normalize_totp_code(&session.totp_code);
+        if session.totp_code.len() != 6 {
+            session.status = "Enter the 6-digit authenticator code.".to_string();
+            session.ui_dirty = true;
+            return;
+        }
+    }
+
     let gateway_url = session.gateway_url.clone();
     let selected_action = session.selected_action;
+    let pending_totp_challenge_id = session.totp_challenge_id.clone();
+    let totp_code = session.totp_code.clone();
     let email = session.email.clone();
     let password = session.password.clone();
-    let reset_token = session.reset_token.clone();
-    let new_password = session.new_password.clone();
     session.status = "Submitting request...".to_string();
     session.ui_dirty = true;
     let (sender, receiver) = bounded(1);
@@ -185,44 +225,48 @@ pub fn submit_auth_request(
         .spawn(async move {
             let auth_result: Result<(Option<AuthTokens>, Option<String>), String> =
                 match selected_action {
-                    AuthAction::Login => (gateway_http.login)(
-                        gateway_url.clone(),
-                        LoginRequest {
-                            email: email.clone(),
-                            password: password.clone(),
-                        },
-                    )
-                    .await
-                    .map(|tokens| (Some(tokens), None::<String>)),
-                    AuthAction::Register => (gateway_http.register)(
-                        gateway_url.clone(),
-                        RegisterRequest {
-                            email: email.clone(),
-                            password: password.clone(),
-                        },
-                    )
-                    .await
-                    .map(|tokens| (Some(tokens), None::<String>)),
-                    AuthAction::ForgotRequest => (gateway_http.request_password_reset)(
-                        gateway_url.clone(),
-                        PasswordResetRequest {
-                            email: email.clone(),
-                        },
-                    )
-                    .await
-                    .map(|resp| (None, resp.reset_token)),
-                    AuthAction::ForgotConfirm => (gateway_http.confirm_password_reset)(
-                        gateway_url.clone(),
-                        PasswordResetConfirmRequest {
-                            reset_token: reset_token.clone(),
-                            new_password: new_password.clone(),
-                        },
-                    )
-                    .await
-                    .map(|()| (None, None::<String>)),
+                    AuthAction::Login => {
+                        if let Some(challenge_id) = pending_totp_challenge_id.clone() {
+                            (gateway_http.verify_totp_login_challenge)(
+                                gateway_url.clone(),
+                                TotpLoginChallengeRequest {
+                                    challenge_id,
+                                    code: totp_code.clone(),
+                                },
+                            )
+                            .await
+                            .map(|tokens| (Some(tokens), None::<String>))
+                        } else {
+                            match (gateway_http.login)(
+                                gateway_url.clone(),
+                                LoginRequest {
+                                    email: email.clone(),
+                                    password: password.clone(),
+                                },
+                            )
+                            .await
+                            {
+                                Ok(response) => handle_password_login_response(response),
+                                Err(err) => Err(err),
+                            }
+                        }
+                    }
                 };
 
             let request_result = match auth_result {
+                Err(err) if err.starts_with("mfa_required:") => {
+                    let mut parts = err.splitn(3, ':');
+                    let _ = parts.next();
+                    let challenge_id = parts.next().unwrap_or_default().to_string();
+                    let expires_in_s = parts
+                        .next()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    GatewayRequestResult::Auth(AuthRequestResult::TotpRequired {
+                        challenge_id,
+                        expires_in_s,
+                    })
+                }
                 Ok((Some(tokens), _)) => {
                     match fetch_auth_me(gateway_http, &gateway_url, &tokens.access_token).await {
                         Ok(me) => match fetch_auth_characters(
@@ -233,7 +277,7 @@ pub fn submit_auth_request(
                         .await
                         {
                             Ok(characters) => {
-                                GatewayRequestResult::Auth(AuthRequestResult::LoginOrRegister {
+                                GatewayRequestResult::Auth(AuthRequestResult::Login {
                                     tokens,
                                     me,
                                     characters,
@@ -248,15 +292,9 @@ pub fn submit_auth_request(
                         ))),
                     }
                 }
-                Ok((None, reset_token)) => {
-                    if selected_action == AuthAction::ForgotRequest {
-                        GatewayRequestResult::Auth(AuthRequestResult::PasswordResetRequested {
-                            reset_token,
-                        })
-                    } else {
-                        GatewayRequestResult::Auth(AuthRequestResult::PasswordResetConfirmed)
-                    }
-                }
+                Ok((None, _)) => GatewayRequestResult::Auth(AuthRequestResult::Error(
+                    "Request failed: gateway did not return auth tokens".to_string(),
+                )),
                 Err(err) => GatewayRequestResult::Auth(AuthRequestResult::Error(format!(
                     "Request failed: {err}"
                 ))),
@@ -333,6 +371,7 @@ pub fn submit_enter_world_request(
                 Ok(response) if response.accepted => {
                     GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
                         player_entity_id: requested_player,
+                        tokens: response.tokens,
                         replication_transport: response.replication_transport,
                     })
                 }
@@ -587,7 +626,7 @@ pub fn poll_gateway_request_results(
     request_state.pending = None;
 
     match payload {
-        GatewayRequestResult::Auth(AuthRequestResult::LoginOrRegister {
+        GatewayRequestResult::Auth(AuthRequestResult::Login {
             tokens,
             me,
             characters,
@@ -595,10 +634,16 @@ pub fn poll_gateway_request_results(
             session.access_token = Some(tokens.access_token.clone());
             session.refresh_token = Some(tokens.refresh_token);
             session.account_id = Some(me.account_id.clone());
+            session.totp_challenge_id = None;
+            session.totp_code.clear();
             character_selection.characters = characters
                 .characters
                 .into_iter()
-                .map(|c| c.player_entity_id)
+                .map(|character| CharacterSelectionEntry {
+                    player_entity_id: canonicalize_player_entity_id(&character.player_entity_id),
+                    display_name: character.display_name,
+                    status: character.status,
+                })
                 .collect();
             if character_selection.characters.is_empty() {
                 session.status = "Authenticated but no characters are available.".to_string();
@@ -608,8 +653,10 @@ pub fn poll_gateway_request_results(
                         .to_string(),
                 );
             } else {
-                character_selection.selected_player_entity_id =
-                    character_selection.characters.first().cloned();
+                character_selection.selected_player_entity_id = character_selection
+                    .characters
+                    .first()
+                    .map(|character| character.player_entity_id.clone());
                 session.player_entity_id = None;
                 session_ready.ready_player_entity_id = None;
                 session.status =
@@ -617,17 +664,22 @@ pub fn poll_gateway_request_results(
                 next_state.set(ClientAppState::CharacterSelect);
             }
         }
-        GatewayRequestResult::Auth(AuthRequestResult::PasswordResetRequested { reset_token }) => {
-            if let Some(token) = reset_token {
-                session.reset_token = token;
-            }
-            session.status = "Password reset token requested. Use F4 to confirm reset.".to_string();
-        }
-        GatewayRequestResult::Auth(AuthRequestResult::PasswordResetConfirmed) => {
-            session.status = "Password reset confirmed. Switch to Login (F1).".to_string();
+        GatewayRequestResult::Auth(AuthRequestResult::TotpRequired {
+            challenge_id,
+            expires_in_s,
+        }) => {
+            session.totp_challenge_id = Some(challenge_id);
+            session.totp_code.clear();
+            session.focus = FocusField::TotpCode;
+            session.status = if expires_in_s > 0 {
+                format!("Authenticator code required. Challenge expires in {expires_in_s}s.")
+            } else {
+                "Authenticator code required.".to_string()
+            };
         }
         GatewayRequestResult::EnterWorld(EnterWorldRequestResult::Accepted {
             player_entity_id,
+            tokens,
             replication_transport,
         }) => {
             if let Err(err) = validate_world_entry_transport(&replication_transport) {
@@ -635,6 +687,10 @@ pub fn poll_gateway_request_results(
                 dialog_queue.push_error("Browser Transport Unavailable", err);
                 session.ui_dirty = true;
                 return;
+            }
+            if let Some(tokens) = tokens {
+                session.access_token = Some(tokens.access_token);
+                session.refresh_token = Some(tokens.refresh_token);
             }
             session.player_entity_id = Some(canonicalize_player_entity_id(&player_entity_id));
             session.replication_transport = replication_transport;
@@ -831,12 +887,17 @@ pub fn trigger_asset_catalog_refresh_requests(
 pub fn configure_headless_session_from_env(
     mut commands: Commands<'_, '_>,
     mut session: ResMut<'_, ClientSession>,
+    mut player_view_state: ResMut<'_, LocalPlayerViewState>,
 ) {
     if let Ok(player_entity_id) = std::env::var("SIDEREAL_CLIENT_HEADLESS_PLAYER_ENTITY_ID") {
         session.player_entity_id = Some(canonicalize_player_entity_id(&player_entity_id));
     }
     if let Ok(access_token) = std::env::var("SIDEREAL_CLIENT_HEADLESS_ACCESS_TOKEN") {
         session.access_token = Some(access_token);
+    }
+    if let Ok(controlled_entity_id) = std::env::var("SIDEREAL_CLIENT_HEADLESS_CONTROLLED_ENTITY_ID")
+    {
+        player_view_state.desired_controlled_entity_id = Some(controlled_entity_id);
     }
     let next_player = std::env::var("SIDEREAL_CLIENT_HEADLESS_SWITCH_PLAYER_ENTITY_ID").ok();
     let next_token = std::env::var("SIDEREAL_CLIENT_HEADLESS_SWITCH_ACCESS_TOKEN").ok();
@@ -1172,9 +1233,7 @@ mod tests {
     fn gateway_http_adapter() -> GatewayHttpAdapter {
         GatewayHttpAdapter {
             login: |_, _| Box::pin(async { Err("unused".to_string()) }),
-            register: |_, _| Box::pin(async { Err("unused".to_string()) }),
-            request_password_reset: |_, _| Box::pin(async { Err("unused".to_string()) }),
-            confirm_password_reset: |_, _| Box::pin(async { Err("unused".to_string()) }),
+            verify_totp_login_challenge: |_, _| Box::pin(async { Err("unused".to_string()) }),
             fetch_me: |_, _| Box::pin(async { Err("unused".to_string()) }),
             fetch_characters: |_, _| Box::pin(async { Err("unused".to_string()) }),
             enter_world: |_, _, _| Box::pin(async { Err("unused".to_string()) }),

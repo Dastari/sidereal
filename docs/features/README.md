@@ -1,7 +1,7 @@
 # Feature Docs
 
 Status: Active index
-Last updated: 2026-04-24
+Last updated: 2026-04-26
 Owners: documentation + feature owners
 Scope: active feature contracts, feature references, and feature-scoped notes/specs
 
@@ -9,6 +9,9 @@ This folder is for active feature-scoped documentation, not for decision records
 
 Update note (2026-04-24):
 - Added `genesis_planet_registry_contract.md` for the dedicated Genesis planet/celestial authoring workflow and Lua planet registry contract.
+
+Update note (2026-04-26):
+- Added `account_character_selection_layout_contract.md` for the reusable dashboard/native character-selection layout and account-scoped character lifecycle contract.
 
 Update note (2026-04-24):
 - Standardized the expected feature-document layout so each feature doc clearly states status, implementation coverage, open work, and validation scope.
@@ -72,7 +75,9 @@ Preferred status labels:
    - `lightyear_upstream_issue_snapshot.md`
 3. Active feature-scoped notes/specs:
    - `dashboard_route_shell_refactor_note.md`
+   - `account_character_selection_layout_contract.md`
    - `genesis_planet_registry_contract.md`
+   - `asteroid_field_system_v2.md`
    - `shader_editor_dashboard_implementation_spec.md`
    - `lightyear_integration_analysis.md`
 4. Proposed feature contracts:

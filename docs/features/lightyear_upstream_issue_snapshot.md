@@ -1,7 +1,7 @@
 # Lightyear Upstream Issue Snapshot
 
 Status: Active feature reference
-Last updated: 2026-04-24
+Last updated: 2026-04-26
 Owners: replication + client runtime
 Scope: Open GitHub issues for `cBournhonesque/lightyear`  
 Source: <https://github.com/cBournhonesque/lightyear/issues> and the GitHub API endpoint `https://api.github.com/repos/cBournhonesque/lightyear/issues?state=open&per_page=100&page=1`  
@@ -14,6 +14,12 @@ Filter: Open issues only, excluding open pull requests
 1. This document is an upstream triage reference, not an implementation contract.
 2. The full open-issue inventory remains the 2026-03-08 snapshot; the 2026-04-23 note below is a targeted PR verification update only.
 3. Current Sidereal guidance remains conservative: check this snapshot before assuming an unexplained Lightyear behavior is local-only, and update it when a new upstream search changes the local risk assessment.
+
+2026-04-26 status note:
+
+1. Targeted upstream verification found [#1200](https://github.com/cBournhonesque/lightyear/issues/1200) still open. Sidereal now avoids that native server-input receive path locally by registering only the native input protocol message on replication.
+2. New interpolation issue [#1450](https://github.com/cBournhonesque/lightyear/issues/1450) is open: interpolated components can fail to converge when `ConfirmedHistory` collapses to one keyframe.
+3. Open PR [#1451](https://github.com/cBournhonesque/lightyear/pull/1451) proposes the current upstream fix shape: retain bracketing history while updates flow, clamp interpolation past the newest sample, and rebase/write the component on idle. Sidereal carries this as a local `lightyear_interpolation` patch while keeping the Dastari fork for other Lightyear crates.
 
 Update 2026-04-23: PR [#1421](https://github.com/cBournhonesque/lightyear/pull/1421) was verified as merged into `cBournhonesque:main` via commit [`af25682`](https://github.com/cBournhonesque/lightyear/commit/af25682) on 2026-04-22. The associated GitHub Actions run [`24797547143`](https://github.com/cBournhonesque/lightyear/actions/runs/24797547143) was not clean: `Lint` failed in `Format`, and `Test` failed in `lightyear_tests` with exit code 1. Public unauthenticated metadata did not expose detailed `lightyear_tests` logs. Local reproduction against `af25682` and its parent `eedb9ed` found the visible formatting failure and the targeted `lightyear_interpolation` unit failure were already present before #1421; the new #1421 confirmed-history tests passed locally. This update does not refresh the full open-issue inventory below.
 
@@ -60,6 +66,8 @@ These are the upstream issues that currently matter most to Sidereal's architect
 | [#692](https://github.com/cBournhonesque/lightyear/issues/692) `Server doesn't check ConnectionToken's server address` | Upstream netcode token validation has a security gap. | Do not rely on Lightyear token checks alone for trust boundaries; keep gateway/auth/session validation explicit. |
 | [#1402](https://github.com/cBournhonesque/lightyear/issues/1402) `Default no_input_delay config...` | Default localhost input timing is unreliable even in a simple setup. | Treat localhost and host-mode input results as suspect; validate with explicit latency settings and dedicated-server paths. |
 | [#1434](https://github.com/cBournhonesque/lightyear/issues/1434) `Bevy Enhanced Input and host-client does not work` | Fresh upstream report of client input / control regression around missing `Controlled`, reported on `0.26.4` and `main`. | Treat this as adjacent evidence that control/input assignment remains fragile upstream. Not a direct match for Sidereal's dedicated-server rollback/bootstrap repro, but relevant context when evaluating `0.26.4` behavior. |
+| [#1200](https://github.com/cBournhonesque/lightyear/issues/1200) `Panic: subtract with overflow` | Matches the replication crash path in `lightyear_inputs::server::receive_input_message`. | Do not install Lightyear's native server input runtime on replication while this remains open. Sidereal keeps protocol compatibility only and routes authoritative input through `ClientRealtimeInputMessage`. |
+| [#1450](https://github.com/cBournhonesque/lightyear/issues/1450) `Interpolated component never converges on Confirmed once ConfirmedHistory shrinks to one keyframe` | Directly matches two-client remote motion symptoms where confirmed state can advance but presentation/interpolation freezes behind it. | Keep the local `lightyear_interpolation` patch from #1451 until upstream lands/releases an equivalent fix and Sidereal's two-client motion diagnostic passes against it. |
 | [#1417](https://github.com/cBournhonesque/lightyear/issues/1417) `ServerMultiMessageSender` HostClient receive bug | Host-client message delivery remains inconsistent. | Do not use host-client correctness as a sign that our dedicated transport path is sound, or vice versa. |
 | [#1394](https://github.com/cBournhonesque/lightyear/issues/1394) and [#1348](https://github.com/cBournhonesque/lightyear/issues/1348) | Multiple recent host-client input regressions are still open. | Prefer dedicated client/server validation for gameplay input work. |
 | [#1235](https://github.com/cBournhonesque/lightyear/issues/1235), [#1251](https://github.com/cBournhonesque/lightyear/issues/1251), [#942](https://github.com/cBournhonesque/lightyear/issues/942), [#888](https://github.com/cBournhonesque/lightyear/issues/888) | Prediction and rollback behaviour still has unresolved correctness and ergonomics gaps. | Keep Sidereal's prediction/reconciliation decisions conservative and test-heavy. |
@@ -81,6 +89,13 @@ Not part of the issue count above, but directly relevant:
   - Local checks against `af25682` and parent `eedb9ed` indicate the visible failures were pre-existing: `cargo fmt --all -- --check` failed on unrelated `lightyear_avian` / `lightyear_replication` files in both commits, and `cargo test -p lightyear_interpolation --lib` failed in both commits on `plugin::tests::test_interpolation_delay` due to exact float comparison (`0.6000061` vs `0.6`). The new #1421 confirmed-history tests passed locally.
   - This appears to address one specific interpolation-history gap that also shows up in Sidereal's control-transfer analysis.
   - Treat it as landed on upstream `main` with no reproduced evidence that it caused the visible CI failures, but still not as a released dependency until a tagged Lightyear release includes it and Sidereal validates it against the predicted/interpolated handoff flow.
+
+## Related Open Pull Request
+
+- [#1451](https://github.com/cBournhonesque/lightyear/pull/1451) `fix(interpolation): converge on latest confirmed value under packet loss`
+  - Open as of 2026-04-26.
+  - Proposed behavior is relevant to Sidereal remote motion: keep a bracketing pair in `ConfirmedHistory`, clamp interpolation fraction, and write/rebase the current component on idle convergence.
+  - Sidereal locally patches `lightyear_interpolation` with this behavior through Cargo's `[patch."https://github.com/Dastari/lightyear"]` override while continuing to use the pinned Dastari fork for the rest of Lightyear.
 
 ## Full Inventory
 

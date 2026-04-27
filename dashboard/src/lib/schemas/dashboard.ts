@@ -13,8 +13,67 @@ export const databaseTablesSearchSchema = z.object({
   sort: z.enum(['name', 'rows', 'schema']).catch('schema'),
 })
 
-export const dashboardSessionLoginSchema = z.object({
+export const dashboardPasswordLoginSchema = z.object({
+  email: z.string().trim().email('email must be valid'),
   password: z.string().trim().min(1, 'password is required'),
+})
+
+export const dashboardRegisterSchema = z.object({
+  mode: z.literal('register'),
+  email: z.string().trim().email('email must be valid'),
+  password: z
+    .string()
+    .trim()
+    .min(12, 'password must be at least 12 characters'),
+})
+
+export const dashboardSetupAdminSchema = z.object({
+  email: z.string().trim().email('email must be valid'),
+  password: z
+    .string()
+    .trim()
+    .min(12, 'password must be at least 12 characters'),
+  setupToken: z.string().trim().min(1, 'setup token is required'),
+})
+
+export const accountCharacterCreateSchema = z.object({
+  displayName: z
+    .string()
+    .trim()
+    .min(2, 'displayName must be between 2 and 64 characters')
+    .max(64, 'displayName must be between 2 and 64 characters')
+    .regex(
+      /^[A-Za-z0-9 _-]+$/,
+      'displayName may contain letters, numbers, spaces, hyphens, and underscores',
+    ),
+})
+
+export const dashboardMfaLoginSchema = z.object({
+  challenge_id: uuidSchema,
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, 'code must be 6 digits'),
+})
+
+export const dashboardTotpEnrollmentVerifySchema = z.object({
+  enrollmentId: uuidSchema,
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, 'code must be 6 digits'),
+})
+
+export const publicPasswordResetRequestSchema = z.object({
+  email: z.string().trim().email('email must be valid'),
+})
+
+export const publicPasswordResetConfirmSchema = z.object({
+  resetToken: z.string().trim().min(1, 'reset token is required'),
+  newPassword: z
+    .string()
+    .trim()
+    .min(12, 'password must be at least 12 characters'),
 })
 
 export const passwordResetParamsSchema = z.object({

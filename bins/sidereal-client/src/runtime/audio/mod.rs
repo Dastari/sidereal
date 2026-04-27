@@ -2,6 +2,7 @@ mod backend;
 mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_backend;
+#[cfg(not(target_arch = "wasm32"))]
 mod null_backend;
 mod settings;
 mod state;

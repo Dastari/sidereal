@@ -4,6 +4,23 @@
 - Date: 2026-03-08
 - Owners: networking / replication runtime
 
+## 0. Status Notes
+
+2026-04-26 status note:
+
+- Implemented on the replication server: `NativeInputPlugin<PlayerInput>` is no longer installed in `bins/sidereal-replication`.
+- Replication now registers only `lightyear::input::native::input_message::NativeStateSequence<PlayerInput>` through Lightyear's backend `InputPlugin` so legacy/in-flight native input packets remain protocol-compatible without running `lightyear_inputs::server::receive_input_message`.
+- Authoritative gameplay input remains Sidereal's authenticated `ClientRealtimeInputMessage` lane. `controlled_entity_id` mismatches are rejected after canonical player-anchor/self-control normalization, even when `control_generation` matches.
+- Native client behavior is unchanged for local prediction: the client still installs Lightyear native input for `ActionState<PlayerInput>` / `InputMarker<PlayerInput>`.
+- WASM impact: no browser transport/runtime behavior change; the server-side split only removes a native server input receive system from replication.
+
+2026-04-26 prediction parity follow-up:
+
+- Sidereal now keeps the Lightyear server-native input runtime disabled while adding shared client/server fixed-step simulation scheduling through `SiderealSharedSimulationPlugin`.
+- Server authority and client prediction both convert current input snapshots into `ActionQueue` through the same helper API.
+- Re-enabling Lightyear server-native input remains blocked on generic upstream support for target authorization, tracked by Lightyear issue `#1283`, plus the existing `#1200` panic fix.
+- Sidereal-specific authenticated session binding and control-generation checks remain outside Lightyear.
+
 ## Context
 
 - The replication server accumulates long-running Bevy warnings such as:
@@ -57,7 +74,7 @@ Sidereal should then reevaluate whether the replication server needs Lightyear n
 ## Follow-up
 
 1. Track upstream Lightyear issue `#1200` and retest when a fix lands.
-2. Implement the native input runtime split in `/home/toby/dev/lightyear` only if Sidereal still needs the server-native path after the current stabilized input architecture is reassessed.
+2. Reassess whether Sidereal should ever re-enable Lightyear's native server input runtime after upstream fixes land; the current authoritative path intentionally remains Sidereal realtime input.
 3. Remove the remaining overnight warning sources we own locally:
    - dormant hierarchy rebuild system registration
    - unnecessary replication-side asset/scene runtime plugins if still present

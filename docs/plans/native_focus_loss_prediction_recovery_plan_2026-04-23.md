@@ -6,6 +6,8 @@ Status note 2026-04-24: Implementation started with the narrow recovery-state/in
 
 Status note 2026-04-24 follow-up: First implementation slice is now in place. `NativePredictionRecoveryState` / `NativePredictionRecoveryTuning` are initialized in the client runtime; focus transitions force a neutral realtime input boundary; refocus after `SIDEREAL_CLIENT_FOCUS_RECOVERY_MIN_UNFOCUSED_S` enters a short active-input suppression window; debug overlay/logs expose recovery phase, suppression state, last unfocused duration, transition count, and forced-neutral send count. Direct predicted Avian realignment remains intentionally unimplemented pending native repro logs with these diagnostics.
 
+Status note 2026-04-26 follow-up: Two native clients running side by side showed that the zero unfocused prediction window caused artificial test-only stalls and snapbacks because only one OS window can be focused at a time. The default was changed so unfocused clients preserve the focused prediction budget while still sending neutral input boundaries; `SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS=0` remains available for strict focus-stall diagnostics.
+
 ## 1. Problem
 
 Sidereal already has focus-aware tuning:

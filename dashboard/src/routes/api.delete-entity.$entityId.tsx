@@ -67,7 +67,10 @@ export const Route = createFileRoute('/api/delete-entity/$entityId')({
   server: {
     handlers: {
       DELETE: async ({ request, params }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:database:write',
+        )
         if (authFailure) {
           return authFailure
         }

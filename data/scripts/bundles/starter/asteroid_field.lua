@@ -57,6 +57,12 @@ local function build_single_asteroid(ctx, opts)
     crater_count = 6,
     palette_dark_rgb = { 0.18, 0.16, 0.14 },
     palette_light_rgb = { 0.54, 0.48, 0.42 },
+    surface_style = "Rocky",
+    pixel_step_px = 2,
+    crack_intensity = 0.3,
+    mineral_vein_intensity = 0.16,
+    mineral_accent_rgb = { 0.72, 0.52, 0.24 },
+    family_seed_key = nil,
   }
   local collision_half_extents = { diameter_m * 0.5, diameter_m * 0.5 }
   if ctx.compute_collision_half_extents_from_procedural ~= nil then
@@ -110,6 +116,20 @@ local function build_single_asteroid(ctx, opts)
     component(asteroid_id, "avian_angular_damping", 0.0),
   }
 
+  if opts.field_entity_id ~= nil then
+    asteroid_components[#asteroid_components + 1] =
+      component(asteroid_id, "asteroid_field_member", {
+        field_entity_id = opts.field_entity_id,
+        cluster_key = opts.cluster_key or "core",
+        member_key = opts.member_key or asteroid_id,
+        parent_member_key = opts.parent_member_key,
+        size_tier = opts.size_tier or "Medium",
+        fracture_depth = opts.fracture_depth or 0,
+        resource_profile_id = opts.resource_profile_id or "asteroid.resource.common_ore",
+        fracture_profile_id = opts.fracture_profile_id or "asteroid.fracture.default",
+      })
+  end
+
   if sprite_shader_asset_id ~= nil and sprite_shader_asset_id ~= "" then
     asteroid_components[#asteroid_components + 1] =
       component(asteroid_id, "sprite_shader_asset_id", sprite_shader_asset_id)
@@ -128,9 +148,109 @@ local function build_single_asteroid(ctx, opts)
   return new_entity(asteroid_id, { "Entity", "Asteroid" }, nil, asteroid_components)
 end
 
+local function asteroid_member_key(field_entity_id, cluster_key, index)
+  return string.format("%s:%s:%04d", field_entity_id, cluster_key, index)
+end
+
+local function size_tier_for_diameter(diameter_m)
+  if diameter_m >= 120.0 then
+    return "Massive"
+  elseif diameter_m >= 40.0 then
+    return "Large"
+  elseif diameter_m >= 12.0 then
+    return "Medium"
+  else
+    return "Small"
+  end
+end
+
+local function build_field_root(ctx, field_entity_id, center_x, center_y, count, min_radius, max_radius)
+  local owner_id = ctx.owner_id or "npc:asteroid_field"
+  local field_radius_m = math.max(max_radius or 2600.0, min_radius or 500.0)
+  return new_entity(field_entity_id, { "Entity", "AsteroidField" }, nil, {
+    component(field_entity_id, "display_name", ctx.display_name or "Starter Asteroid Field"),
+    component(field_entity_id, "entity_labels", { "AsteroidField", "ResourceField", "V2" }),
+    component(field_entity_id, "owner_id", owner_id),
+    component(field_entity_id, "map_icon", { asset_id = ctx.map_icon_asset_id or "map_icon_planet_svg" }),
+    component(field_entity_id, "world_position", { center_x, center_y }),
+    component(field_entity_id, "world_rotation", 0.0),
+    component(field_entity_id, "asteroid_field", {
+      field_profile_id = ctx.field_profile_id or "asteroid.field.starter_belt",
+      content_version = ctx.content_version or 2,
+      layout_seed = ctx.layout_seed or 424242,
+      activation_radius_m = ctx.activation_radius_m or (field_radius_m + 800.0),
+      field_radius_m = field_radius_m,
+      max_active_members = ctx.max_active_members or count,
+      max_active_fragments = ctx.max_active_fragments or 96,
+      max_fracture_depth = ctx.max_fracture_depth or 2,
+      ambient_profile_id = ctx.ambient_profile_id or "asteroid.ambient.starter_dust",
+    }),
+    component(field_entity_id, "asteroid_field_layout", {
+      shape = ctx.field_shape or "ClusterPatch",
+      density = ctx.field_density or 0.55,
+      clusters = {
+        {
+          cluster_key = "core",
+          offset_xy_m = { 0.0, 0.0 },
+          radius_m = field_radius_m,
+          density_weight = 1.0,
+          preferred_size_tier = "Medium",
+          rarity_weight = 0.2,
+        },
+      },
+      spawn_noise_amplitude_m = ctx.field_radial_jitter_m or 240.0,
+      spawn_noise_frequency = 0.35,
+    }),
+    component(field_entity_id, "asteroid_field_population", {
+      target_large_count = math.max(math.floor(count * 0.08), 1),
+      target_medium_count = math.max(math.floor(count * 0.58), 1),
+      target_small_count = math.max(count - math.floor(count * 0.66), 1),
+      large_size_range_m = { min_m = 40.0, max_m = 120.0 },
+      medium_size_range_m = { min_m = 12.0, max_m = 40.0 },
+      small_size_range_m = { min_m = 3.0, max_m = 12.0 },
+      sprite_profile_id = ctx.sprite_profile_id or "asteroid.sprite.top_down_rocky",
+      resource_profile_id = ctx.resource_profile_id or "asteroid.resource.common_ore",
+      fracture_profile_id = ctx.fracture_profile_id or "asteroid.fracture.default",
+    }),
+    component(field_entity_id, "asteroid_field_damage_state", { entries = {} }),
+    component(field_entity_id, "asteroid_fracture_profile", {
+      break_massive_into_large_min = 2,
+      break_massive_into_large_max = 3,
+      break_large_into_medium_min = 2,
+      break_large_into_medium_max = 5,
+      break_medium_into_small_min = 2,
+      break_medium_into_small_max = 6,
+      child_impulse_min_mps = 0.4,
+      child_impulse_max_mps = 2.0,
+      mass_retention_ratio = 0.82,
+      terminal_debris_loss_ratio = 0.65,
+    }),
+    component(field_entity_id, "asteroid_resource_profile", {
+      profile_id = ctx.resource_profile_id or "asteroid.resource.common_ore",
+      extraction_profile_id = "extraction.mining_laser.basic",
+      yield_table = {
+        { item_id = "resource.iron_ore", weight = 1.0, min_units = 4.0, max_units = 18.0 },
+        { item_id = "resource.nickel_ore", weight = 0.55, min_units = 2.0, max_units = 10.0 },
+        { item_id = "resource.silicate_rock", weight = 0.85, min_units = 3.0, max_units = 16.0 },
+        { item_id = "resource.rare_earth_oxides", weight = 0.12, min_units = 1.0, max_units = 4.0 },
+      },
+      depletion_pool_units = 100.0,
+    }),
+    component(field_entity_id, "asteroid_field_ambient", {
+      trigger_radius_m = field_radius_m,
+      fade_band_m = 600.0,
+      background_shader_asset_id = nil,
+      foreground_shader_asset_id = nil,
+      post_process_shader_asset_id = nil,
+      max_intensity = 0.65,
+    }),
+  })
+end
+
 function AsteroidFieldBundle.build_graph_records(ctx)
   local count = math.max(math.floor(ctx.field_count or 1), 1)
-  if count <= 1 then
+  local emit_field_root = ctx.bundle_id == "asteroid.field" or ctx.emit_field_root == true
+  if count <= 1 and not emit_field_root then
     return {
       build_single_asteroid(ctx, ctx),
     }
@@ -165,6 +285,12 @@ function AsteroidFieldBundle.build_graph_records(ctx)
   local map_icon_asset_id = ctx.map_icon_asset_id or "map_icon_planet_svg"
   local sprite_shader_asset_id = ctx.sprite_shader_asset_id
 
+  local field_entity_id = ctx.field_entity_id or "0012ebad-0000-0000-0000-000000000020"
+  if emit_field_root then
+    records[#records + 1] =
+      build_field_root(ctx, field_entity_id, center_x, center_y, count, min_radius, max_radius)
+  end
+
   for i = 1, count do
     local u = i / count
     local angle = i * 2.399963229728653 + (hash01(i, 1.0) - 0.5) * 0.42
@@ -182,25 +308,39 @@ function AsteroidFieldBundle.build_graph_records(ctx)
 
     local asteroid_kind_roll = hash01(i, 8.0)
     local asteroid_kind = "Rocky"
+    local surface_style = "Rocky"
     local palette_dark_rgb = { 0.18, 0.16, 0.14 }
     local palette_light_rgb = { 0.54, 0.48, 0.42 }
+    local mineral_accent_rgb = { 0.72, 0.52, 0.24 }
+    local mineral_vein_intensity = 0.16
     local crater_count = 6
     if asteroid_kind_roll > 0.94 then
       asteroid_kind = "Gem-rich"
+      surface_style = "GemRich"
       palette_dark_rgb = { 0.15, 0.14, 0.18 }
       palette_light_rgb = { 0.46, 0.45, 0.56 }
+      mineral_accent_rgb = { 0.25, 0.72, 0.94 }
+      mineral_vein_intensity = 0.45
       crater_count = 5
     elseif asteroid_kind_roll > 0.74 then
       asteroid_kind = "Metallic"
+      surface_style = "Metallic"
       palette_dark_rgb = { 0.16, 0.17, 0.19 }
       palette_light_rgb = { 0.58, 0.60, 0.63 }
+      mineral_accent_rgb = { 0.90, 0.70, 0.32 }
+      mineral_vein_intensity = 0.26
       crater_count = 4
     elseif asteroid_kind_roll > 0.54 then
       asteroid_kind = "Carbonaceous"
+      surface_style = "Carbonaceous"
       palette_dark_rgb = { 0.08, 0.08, 0.09 }
       palette_light_rgb = { 0.30, 0.29, 0.27 }
+      mineral_accent_rgb = { 0.50, 0.64, 0.54 }
+      mineral_vein_intensity = 0.10
       crater_count = 7
     end
+    local cluster_key = "core"
+    local member_key = asteroid_member_key(field_entity_id, cluster_key, i)
 
     records[#records + 1] = build_single_asteroid(ctx, {
       owner_id = owner_id,
@@ -215,6 +355,12 @@ function AsteroidFieldBundle.build_graph_records(ctx)
       visual_asset_id = visual_asset_id,
       map_icon_asset_id = map_icon_asset_id,
       sprite_shader_asset_id = sprite_shader_asset_id,
+      field_entity_id = emit_field_root and field_entity_id or nil,
+      cluster_key = cluster_key,
+      member_key = member_key,
+      size_tier = size_tier_for_diameter(diameter_m),
+      resource_profile_id = ctx.resource_profile_id or "asteroid.resource.common_ore",
+      fracture_profile_id = ctx.fracture_profile_id or "asteroid.fracture.default",
       procedural_sprite = {
         generator_id = "asteroid_rocky_v1",
         resolution_px = 160,
@@ -223,6 +369,12 @@ function AsteroidFieldBundle.build_graph_records(ctx)
         crater_count = crater_count,
         palette_dark_rgb = palette_dark_rgb,
         palette_light_rgb = palette_light_rgb,
+        surface_style = surface_style,
+        pixel_step_px = 2,
+        crack_intensity = 0.24 + hash01(i, 11.0) * 0.32,
+        mineral_vein_intensity = mineral_vein_intensity,
+        mineral_accent_rgb = mineral_accent_rgb,
+        family_seed_key = member_key,
       },
     })
   end

@@ -2,7 +2,7 @@ use bevy::app::AppExit;
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
-use bevy::log::info;
+use bevy::log::{info, warn};
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use sidereal_ui::layout;
@@ -18,6 +18,8 @@ use super::resources::GatewayHttpAdapter;
 use super::{
     AuthAction, ClientAppState, ClientSession, EmbeddedFonts, FocusField, submit_auth_request,
 };
+
+const TOTP_CODE_LENGTH: usize = 6;
 
 #[derive(Component)]
 struct AuthUiRoot;
@@ -56,13 +58,33 @@ struct AuthUiCursor {
 }
 
 #[derive(Component)]
+struct AuthUiTotpCodeInput;
+
+#[derive(Component)]
+struct AuthUiTotpDigitBox {
+    field: FocusField,
+    index: usize,
+}
+
+#[derive(Component)]
+struct AuthUiTotpDigitText {
+    index: usize,
+}
+
+#[derive(Component)]
+struct AuthUiTotpDigitCursor {
+    index: usize,
+}
+
+#[derive(Component)]
 struct AuthUiButton(AuthButtonKind);
 
 #[derive(Clone, Copy)]
 enum AuthButtonKind {
     Submit,
-    SwitchFlow(AuthAction),
     Focus(FocusField),
+    FocusTotpDigit(usize),
+    ForgotPasswordLink,
     Quit,
 }
 
@@ -70,6 +92,11 @@ enum AuthButtonKind {
 struct CursorBlink {
     timer: Timer,
     visible: bool,
+}
+
+#[derive(Resource, Debug, Default, Clone, Copy)]
+struct TotpInputCursor {
+    index: usize,
 }
 
 impl Default for CursorBlink {
@@ -83,6 +110,7 @@ impl Default for CursorBlink {
 
 pub fn register_auth_ui(app: &mut App) {
     app.init_resource::<CursorBlink>();
+    app.init_resource::<TotpInputCursor>();
     app.add_systems(OnEnter(ClientAppState::Auth), setup_auth_screen);
     app.add_systems(
         Update,
@@ -143,9 +171,9 @@ fn setup_auth_screen(
 
             root.spawn((
                 layout::panel(
-                    Val::Px(560.0),
-                    theme.metrics.panel_padding_px,
-                    theme.metrics.row_gap_px,
+                    Val::Px(420.0),
+                    16.0,
+                    10.0,
                     theme.metrics.panel_radius_px,
                     theme.metrics.panel_border_px,
                 ),
@@ -167,7 +195,7 @@ fn setup_auth_screen(
 
                 panel.spawn((
                     Text::new("SIDEREAL"),
-                    text_font(fonts.display.clone(), 42.0),
+                    text_font(fonts.display.clone(), 30.0),
                     TextColor(theme.colors.foreground_color()),
                 ));
 
@@ -196,32 +224,21 @@ fn setup_auth_screen(
                     FocusField::Password,
                     true,
                 );
-                spawn_input_field(
+                spawn_totp_code_input(
                     panel,
                     &fonts,
                     theme,
                     glow_intensity,
-                    "Reset Token",
-                    FocusField::ResetToken,
-                    false,
+                    "Authenticator Code",
+                    FocusField::TotpCode,
                 );
-                spawn_input_field(
-                    panel,
-                    &fonts,
-                    theme,
-                    glow_intensity,
-                    "New Password",
-                    FocusField::NewPassword,
-                    true,
-                );
-
                 panel
                     .spawn((
                         Button,
                         AuthUiButton(AuthButtonKind::Submit),
                         layout::button(
                             Val::Percent(100.0),
-                            48.0,
+                            42.0,
                             theme.metrics.control_radius_px,
                             theme.metrics.control_border_px,
                         ),
@@ -240,43 +257,26 @@ fn setup_auth_screen(
 
                 panel
                     .spawn((
-                        layout::grid(2, 34.0, 8.0),
+                        Button,
+                        AuthUiButton(AuthButtonKind::ForgotPasswordLink),
+                        Node {
+                            align_self: AlignSelf::FlexEnd,
+                            width: Val::Px(170.0),
+                            height: Val::Px(24.0),
+                            justify_content: JustifyContent::FlexEnd,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
                         Transform::default(),
                         GlobalTransform::default(),
+                        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
                     ))
-                    .with_children(|row| {
-                        spawn_flow_button(
-                            row,
-                            &fonts,
-                            theme,
-                            glow_intensity,
-                            "Login",
-                            AuthAction::Login,
-                        );
-                        spawn_flow_button(
-                            row,
-                            &fonts,
-                            theme,
-                            glow_intensity,
-                            "Register",
-                            AuthAction::Register,
-                        );
-                        spawn_flow_button(
-                            row,
-                            &fonts,
-                            theme,
-                            glow_intensity,
-                            "Forgot Request",
-                            AuthAction::ForgotRequest,
-                        );
-                        spawn_flow_button(
-                            row,
-                            &fonts,
-                            theme,
-                            glow_intensity,
-                            "Forgot Confirm",
-                            AuthAction::ForgotConfirm,
-                        );
+                    .with_children(|link| {
+                        link.spawn((
+                            Text::new("Forgot Password?"),
+                            text_font(fonts.mono_bold.clone(), 13.0),
+                            TextColor(theme.colors.primary_color()),
+                        ));
                     });
                 panel
                     .spawn((
@@ -374,42 +374,87 @@ fn spawn_input_field(
         });
 }
 
-fn spawn_flow_button(
+fn spawn_totp_code_input(
     parent: &mut ChildSpawnerCommands,
     fonts: &EmbeddedFonts,
     theme: sidereal_ui::theme::UiTheme,
     glow_intensity: f32,
     label: &str,
-    action: AuthAction,
+    field: FocusField,
 ) {
-    let (bg, border, shadow) = button_surface(
-        theme,
-        UiButtonVariant::Outline,
-        UiInteractionState::Idle,
-        glow_intensity,
-    );
     parent
         .spawn((
-            Button,
-            AuthUiButton(AuthButtonKind::SwitchFlow(action)),
-            layout::button(
-                Val::Percent(100.0),
-                34.0,
-                theme.metrics.control_radius_px,
-                theme.metrics.control_border_px,
-            ),
+            layout::vertical_stack(6.0),
             Transform::default(),
             GlobalTransform::default(),
-            bg,
-            border,
-            shadow,
+            AuthUiFieldContainer { field },
+            AuthUiTotpCodeInput,
         ))
-        .with_children(|button| {
-            button.spawn((
+        .with_children(|container| {
+            container.spawn((
                 Text::new(label.to_ascii_uppercase()),
-                text_font(fonts.mono_bold.clone(), 15.0),
-                TextColor(theme.colors.panel_foreground_color()),
+                text_font(fonts.bold.clone(), 11.0),
+                TextColor(theme.colors.muted_foreground_color()),
             ));
+
+            container
+                .spawn((
+                    Node {
+                        display: Display::Grid,
+                        width: Val::Percent(100.0),
+                        height: Val::Px(48.0),
+                        grid_template_columns: RepeatedGridTrack::flex(
+                            TOTP_CODE_LENGTH as u16,
+                            1.0,
+                        ),
+                        column_gap: Val::Px(8.0),
+                        ..default()
+                    },
+                    Transform::default(),
+                    GlobalTransform::default(),
+                ))
+                .with_children(|digits| {
+                    for index in 0..TOTP_CODE_LENGTH {
+                        let (input_bg, input_border, input_shadow) =
+                            input_surface(theme, false, glow_intensity);
+                        let mut digit_entity = digits.spawn_empty();
+                        digit_entity.insert(Button);
+                        digit_entity.insert(AuthUiButton(AuthButtonKind::FocusTotpDigit(index)));
+                        digit_entity.insert(AuthUiTotpDigitBox { field, index });
+                        digit_entity.insert(Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(48.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(theme.metrics.control_border_px)),
+                            border_radius: BorderRadius::all(Val::Px(
+                                theme.metrics.control_radius_px,
+                            )),
+                            ..default()
+                        });
+                        digit_entity.insert(Transform::default());
+                        digit_entity.insert(GlobalTransform::default());
+                        digit_entity.insert(input_bg);
+                        digit_entity.insert(input_border);
+                        digit_entity.insert(input_shadow);
+                        digit_entity.with_children(|digit| {
+                            digit.spawn((
+                                Text::new(""),
+                                text_font(fonts.mono_bold.clone(), 22.0),
+                                TextColor(theme.colors.panel_foreground_color()),
+                                AuthUiTotpDigitText { index },
+                            ));
+
+                            digit.spawn((
+                                Text::new("|"),
+                                text_font(fonts.mono.clone(), 18.0),
+                                TextColor(theme.colors.glow_color()),
+                                AuthUiTotpDigitCursor { index },
+                                Visibility::Hidden,
+                            ));
+                        });
+                    }
+                });
         });
 }
 
@@ -440,6 +485,7 @@ fn handle_auth_keyboard_input(
     keys: Res<'_, ButtonInput<KeyCode>>,
     dev_console_state: Option<Res<'_, DevConsoleState>>,
     mut session: ResMut<'_, ClientSession>,
+    mut totp_cursor: ResMut<'_, TotpInputCursor>,
     mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
     gateway_http: Res<'_, GatewayHttpAdapter>,
 ) {
@@ -456,39 +502,46 @@ fn handle_auth_keyboard_input(
             Key::F1 => {
                 session.selected_action = AuthAction::Login;
                 session.focus = FocusField::Email;
-                session.ui_dirty = true;
-            }
-            Key::F2 => {
-                session.selected_action = AuthAction::Register;
-                session.focus = FocusField::Email;
-                session.ui_dirty = true;
-            }
-            Key::F3 => {
-                session.selected_action = AuthAction::ForgotRequest;
-                session.focus = FocusField::Email;
-                session.ui_dirty = true;
-            }
-            Key::F4 => {
-                session.selected_action = AuthAction::ForgotConfirm;
-                session.focus = FocusField::ResetToken;
+                session.totp_challenge_id = None;
+                session.totp_code.clear();
+                totp_cursor.index = 0;
                 session.ui_dirty = true;
             }
             Key::Tab => {
-                session.focus = next_focus_field(session.selected_action, session.focus);
+                session.focus = next_focus_field(&session, session.focus);
+                if session.focus == FocusField::TotpCode {
+                    totp_cursor.index = next_totp_cursor_index(&session.totp_code);
+                }
                 session.ui_dirty = true;
             }
             Key::Enter => {
                 submit = true;
             }
             Key::Backspace => {
-                active_field_mut(&mut session).pop();
+                if session.focus == FocusField::TotpCode {
+                    handle_totp_backspace(&mut session.totp_code, &mut totp_cursor);
+                } else {
+                    active_field_mut(&mut session).pop();
+                }
+                session.ui_dirty = true;
+            }
+            Key::ArrowLeft if session.focus == FocusField::TotpCode => {
+                totp_cursor.index = totp_cursor.index.saturating_sub(1);
+                session.ui_dirty = true;
+            }
+            Key::ArrowRight if session.focus == FocusField::TotpCode => {
+                totp_cursor.index = (totp_cursor.index.saturating_add(1)).min(TOTP_CODE_LENGTH - 1);
                 session.ui_dirty = true;
             }
             _ => {
                 if let Some(inserted_text) = &event.text
                     && inserted_text.chars().all(is_printable_char)
                 {
-                    active_field_mut(&mut session).push_str(inserted_text);
+                    if session.focus == FocusField::TotpCode {
+                        insert_totp_digits(&mut session.totp_code, &mut totp_cursor, inserted_text);
+                    } else {
+                        active_field_mut(&mut session).push_str(inserted_text);
+                    }
                     session.ui_dirty = true;
                 }
             }
@@ -504,23 +557,36 @@ fn handle_auth_keyboard_input(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn handle_auth_button_interactions(
     mut interactions: Query<
         '_,
         '_,
-        (&Interaction, &AuthUiButton, Option<&AuthUiInputBox>),
+        (
+            &Interaction,
+            &AuthUiButton,
+            Option<&AuthUiInputBox>,
+            Option<&AuthUiTotpDigitBox>,
+        ),
         Changed<Interaction>,
     >,
     mut session: ResMut<'_, ClientSession>,
+    mut totp_cursor: ResMut<'_, TotpInputCursor>,
     mut request_state: ResMut<'_, super::auth_net::GatewayRequestState>,
     gateway_http: Res<'_, GatewayHttpAdapter>,
     mut app_exit: MessageWriter<'_, AppExit>,
 ) {
-    for (interaction, button, input_box) in &mut interactions {
+    for (interaction, button, input_box, totp_digit) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
                 if let Some(input) = input_box {
                     session.focus = input.field;
+                    session.ui_dirty = true;
+                    continue;
+                }
+                if let Some(input) = totp_digit {
+                    session.focus = input.field;
+                    totp_cursor.index = input.index.min(TOTP_CODE_LENGTH - 1);
                     session.ui_dirty = true;
                     continue;
                 }
@@ -529,13 +595,28 @@ fn handle_auth_button_interactions(
                     AuthButtonKind::Submit => {
                         submit_auth_request(&mut session, request_state.as_mut(), *gateway_http);
                     }
-                    AuthButtonKind::SwitchFlow(action) => {
-                        session.selected_action = action;
-                        session.focus = first_focus_field(action);
-                        session.ui_dirty = true;
-                    }
                     AuthButtonKind::Focus(field) => {
                         session.focus = field;
+                        session.ui_dirty = true;
+                    }
+                    AuthButtonKind::FocusTotpDigit(index) => {
+                        session.focus = FocusField::TotpCode;
+                        totp_cursor.index = index.min(TOTP_CODE_LENGTH - 1);
+                        session.ui_dirty = true;
+                    }
+                    AuthButtonKind::ForgotPasswordLink => {
+                        let url = forgot_password_url();
+                        match open_external_url(&url) {
+                            Ok(()) => {
+                                session.status =
+                                    "Opened password reset in your browser.".to_string();
+                            }
+                            Err(err) => {
+                                warn!("failed to open password reset URL: {err}");
+                                session.status =
+                                    format!("Open this URL to reset your password: {url}");
+                            }
+                        }
                         session.ui_dirty = true;
                     }
                     AuthButtonKind::Quit => {
@@ -553,6 +634,7 @@ fn sync_auth_button_visuals(
     active_theme: Res<'_, ActiveUiTheme>,
     visual_settings: Res<'_, UiVisualSettings>,
     session: Res<'_, ClientSession>,
+    totp_cursor: Res<'_, TotpInputCursor>,
     mut query: Query<
         '_,
         '_,
@@ -560,6 +642,7 @@ fn sync_auth_button_visuals(
             &Interaction,
             &AuthUiButton,
             Option<&AuthUiInputBox>,
+            Option<&AuthUiTotpDigitBox>,
             &mut BackgroundColor,
             Option<&mut BorderColor>,
             Option<&mut BoxShadow>,
@@ -568,17 +651,30 @@ fn sync_auth_button_visuals(
 ) {
     let theme = theme_definition(active_theme.0);
     let glow_intensity = visual_settings.glow_intensity();
-    for (interaction, button, input_box, mut bg, border, shadow) in &mut query {
+    for (interaction, button, input_box, totp_digit, mut bg, border, shadow) in &mut query {
+        if matches!(button.0, AuthButtonKind::ForgotPasswordLink) {
+            *bg = match *interaction {
+                Interaction::Hovered | Interaction::Pressed => {
+                    BackgroundColor(theme.colors.primary_color().with_alpha(0.08))
+                }
+                Interaction::None => BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+            };
+            continue;
+        }
+
         let state = match *interaction {
             Interaction::Pressed => UiInteractionState::Pressed,
             Interaction::Hovered => UiInteractionState::Hovered,
             Interaction::None => match button.0 {
-                AuthButtonKind::SwitchFlow(action) if action == session.selected_action => {
-                    UiInteractionState::Selected
-                }
                 AuthButtonKind::Focus(field)
-                    if field == session.focus
-                        && is_field_visible(session.selected_action, field) =>
+                    if field == session.focus && is_field_visible(&session, field) =>
+                {
+                    UiInteractionState::Focused
+                }
+                AuthButtonKind::FocusTotpDigit(index)
+                    if session.focus == FocusField::TotpCode
+                        && is_field_visible(&session, FocusField::TotpCode)
+                        && index == totp_cursor.index =>
                 {
                     UiInteractionState::Focused
                 }
@@ -586,7 +682,7 @@ fn sync_auth_button_visuals(
             },
         };
 
-        let (next_bg, next_border, next_shadow) = if input_box.is_some() {
+        let (next_bg, next_border, next_shadow) = if input_box.is_some() || totp_digit.is_some() {
             input_surface(
                 theme,
                 matches!(
@@ -598,8 +694,9 @@ fn sync_auth_button_visuals(
         } else {
             let variant = match button.0 {
                 AuthButtonKind::Submit => UiButtonVariant::Primary,
-                AuthButtonKind::SwitchFlow(_) => UiButtonVariant::Outline,
                 AuthButtonKind::Focus(_) => UiButtonVariant::Outline,
+                AuthButtonKind::FocusTotpDigit(_) => UiButtonVariant::Outline,
+                AuthButtonKind::ForgotPasswordLink => UiButtonVariant::Outline,
                 AuthButtonKind::Quit => UiButtonVariant::Outline,
             };
             button_surface(theme, variant, state, glow_intensity)
@@ -629,13 +726,13 @@ fn update_auth_text(
     >,
 ) {
     let theme = theme_definition(active_theme.0);
-    let flow_title = flow_title(session.selected_action);
+    let flow_title = flow_title(&session);
 
     for mut text in &mut text_sets.p1() {
         text.0 = flow_title.to_string();
     }
 
-    let submit_label = submit_label(session.selected_action);
+    let submit_label = submit_label(&session);
     for mut text in &mut text_sets.p2() {
         text.0 = submit_label.to_ascii_uppercase();
     }
@@ -656,7 +753,7 @@ fn update_auth_field_layout(
     mut field_containers: Query<'_, '_, (&AuthUiFieldContainer, &mut Visibility)>,
 ) {
     for (container, mut visibility) in &mut field_containers {
-        *visibility = if is_field_visible(session.selected_action, container.field) {
+        *visibility = if is_field_visible(&session, container.field) {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -667,15 +764,17 @@ fn update_auth_field_layout(
 fn update_auth_field_content(
     session: Res<'_, ClientSession>,
     blink: Res<'_, CursorBlink>,
+    totp_cursor: Res<'_, TotpInputCursor>,
     mut input_text_query: Query<'_, '_, (&AuthUiInputText, &mut Text)>,
+    mut totp_text_query: Query<'_, '_, (&AuthUiTotpDigitText, &mut Text)>,
     mut cursor_query: Query<'_, '_, (&AuthUiCursor, &mut Visibility)>,
+    mut totp_cursor_query: Query<'_, '_, (&AuthUiTotpDigitCursor, &mut Visibility)>,
 ) {
     for (input, mut text) in &mut input_text_query {
         let value = match input.field {
             FocusField::Email => session.email.as_str(),
             FocusField::Password => session.password.as_str(),
-            FocusField::ResetToken => session.reset_token.as_str(),
-            FocusField::NewPassword => session.new_password.as_str(),
+            FocusField::TotpCode => session.totp_code.as_str(),
         };
 
         text.0 = if input.is_password {
@@ -688,7 +787,28 @@ fn update_auth_field_content(
     for (cursor, mut visibility) in &mut cursor_query {
         let visible = blink.visible
             && session.focus == cursor.field
-            && is_field_visible(session.selected_action, cursor.field);
+            && is_field_visible(&session, cursor.field);
+        *visibility = if visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    let totp_digits = normalize_totp_code(&session.totp_code);
+    for (digit, mut text) in &mut totp_text_query {
+        text.0 = totp_digits
+            .chars()
+            .nth(digit.index)
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+    }
+
+    for (cursor, mut visibility) in &mut totp_cursor_query {
+        let visible = blink.visible
+            && session.focus == FocusField::TotpCode
+            && is_field_visible(&session, FocusField::TotpCode)
+            && cursor.index == totp_cursor.index;
         *visibility = if visible {
             Visibility::Visible
         } else {
@@ -697,53 +817,92 @@ fn update_auth_field_content(
     }
 }
 
-fn flow_title(action: AuthAction) -> &'static str {
-    match action {
-        AuthAction::Login => "Login",
-        AuthAction::Register => "Register",
-        AuthAction::ForgotRequest => "Request Password Reset",
-        AuthAction::ForgotConfirm => "Confirm Password Reset",
-    }
+fn normalize_totp_code(raw: &str) -> String {
+    raw.chars()
+        .filter(|value| value.is_ascii_digit())
+        .take(TOTP_CODE_LENGTH)
+        .collect()
 }
 
-fn submit_label(action: AuthAction) -> &'static str {
-    match action {
-        AuthAction::Login => "Login",
-        AuthAction::Register => "Create Account",
-        AuthAction::ForgotRequest => "Request Reset Token",
-        AuthAction::ForgotConfirm => "Set New Password",
-    }
+fn next_totp_cursor_index(code: &str) -> usize {
+    normalize_totp_code(code)
+        .len()
+        .min(TOTP_CODE_LENGTH.saturating_sub(1))
 }
 
-fn is_field_visible(action: AuthAction, field: FocusField) -> bool {
-    match action {
-        AuthAction::Login | AuthAction::Register => {
-            matches!(field, FocusField::Email | FocusField::Password)
+fn insert_totp_digits(code: &mut String, cursor: &mut TotpInputCursor, raw: &str) {
+    let inserted = normalize_totp_code(raw);
+    if inserted.is_empty() {
+        return;
+    }
+
+    let mut digits: Vec<char> = normalize_totp_code(code).chars().collect();
+    digits.resize(TOTP_CODE_LENGTH, '\0');
+    let mut index = cursor.index.min(TOTP_CODE_LENGTH - 1);
+    for digit in inserted.chars() {
+        digits[index] = digit;
+        if index >= TOTP_CODE_LENGTH - 1 {
+            break;
         }
-        AuthAction::ForgotRequest => matches!(field, FocusField::Email),
-        AuthAction::ForgotConfirm => {
-            matches!(field, FocusField::ResetToken | FocusField::NewPassword)
-        }
+        index += 1;
+    }
+    *code = digits.into_iter().filter(|digit| *digit != '\0').collect();
+    cursor.index = index.min(TOTP_CODE_LENGTH - 1);
+}
+
+fn handle_totp_backspace(code: &mut String, cursor: &mut TotpInputCursor) {
+    let mut digits: Vec<char> = normalize_totp_code(code).chars().collect();
+    if digits.is_empty() {
+        cursor.index = 0;
+        return;
+    }
+
+    let active_index = cursor.index.min(TOTP_CODE_LENGTH - 1);
+    let remove_index = if active_index < digits.len() {
+        active_index
+    } else {
+        digits.len().saturating_sub(1)
+    };
+    digits.remove(remove_index);
+    *code = digits.into_iter().collect();
+    cursor.index = remove_index.saturating_sub(usize::from(remove_index > 0));
+}
+
+fn flow_title(session: &ClientSession) -> &'static str {
+    if session.totp_challenge_id.is_some() && session.selected_action == AuthAction::Login {
+        return "Authenticator Required";
+    }
+    match session.selected_action {
+        AuthAction::Login => "Login",
     }
 }
 
-fn first_focus_field(action: AuthAction) -> FocusField {
-    match action {
-        AuthAction::Login | AuthAction::Register | AuthAction::ForgotRequest => FocusField::Email,
-        AuthAction::ForgotConfirm => FocusField::ResetToken,
+fn submit_label(session: &ClientSession) -> &'static str {
+    if session.totp_challenge_id.is_some() && session.selected_action == AuthAction::Login {
+        return "Verify Code";
+    }
+    match session.selected_action {
+        AuthAction::Login => "Login",
     }
 }
 
-fn next_focus_field(action: AuthAction, current: FocusField) -> FocusField {
-    match action {
-        AuthAction::Login | AuthAction::Register => match current {
+fn is_field_visible(session: &ClientSession, field: FocusField) -> bool {
+    let totp_required =
+        session.selected_action == AuthAction::Login && session.totp_challenge_id.is_some();
+    match session.selected_action {
+        AuthAction::Login if totp_required => matches!(field, FocusField::TotpCode),
+        AuthAction::Login => matches!(field, FocusField::Email | FocusField::Password),
+    }
+}
+
+fn next_focus_field(session: &ClientSession, current: FocusField) -> FocusField {
+    if session.selected_action == AuthAction::Login && session.totp_challenge_id.is_some() {
+        return FocusField::TotpCode;
+    }
+    match session.selected_action {
+        AuthAction::Login => match current {
             FocusField::Email => FocusField::Password,
             _ => FocusField::Email,
-        },
-        AuthAction::ForgotRequest => FocusField::Email,
-        AuthAction::ForgotConfirm => match current {
-            FocusField::ResetToken => FocusField::NewPassword,
-            _ => FocusField::ResetToken,
         },
     }
 }
@@ -752,9 +911,61 @@ fn active_field_mut(session: &mut ClientSession) -> &mut String {
     match session.focus {
         FocusField::Email => &mut session.email,
         FocusField::Password => &mut session.password,
-        FocusField::ResetToken => &mut session.reset_token,
-        FocusField::NewPassword => &mut session.new_password,
+        FocusField::TotpCode => &mut session.totp_code,
     }
+}
+
+fn forgot_password_url() -> String {
+    let base = dashboard_base_url();
+    format!("{}/forgot-password", base.trim_end_matches('/'))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn dashboard_base_url() -> String {
+    std::env::var("SIDEREAL_DASHBOARD_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dashboard_base_url() -> String {
+    "/".to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_external_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command.spawn().map(|_| ()).map_err(|err| err.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_external_url(url: &str) -> Result<(), String> {
+    web_sys::window()
+        .ok_or_else(|| "browser window is unavailable".to_string())?
+        .open_with_url(url)
+        .map(|_| ())
+        .map_err(|err| format!("{err:?}"))
 }
 
 fn mask(value: &str) -> String {

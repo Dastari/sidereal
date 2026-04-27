@@ -65,6 +65,48 @@ For each decision:
 
 ## Decisions
 
+## DR-0036: Gateway Account Auth, Dashboard Sessions, and Character Creation
+- Status: Proposed
+- Date: 2026-04-26
+- Owners: Gateway + dashboard/frontend + client runtime + replication
+- Context:
+  - Dashboard admin access currently uses a separate password-backed session, while game users authenticate through the gateway.
+  - Registration currently creates a default character and starter-world state, but the intended UX requires explicit character creation/selection after account login.
+  - Gateway auth needs SMTP-backed password reset/email login, TOTP MFA, scoped tokens, JWKS, and rate limiting before dashboard/admin routes can rely on game-account authentication.
+  - 2026-04-26 update: the gateway has implemented account-only registration, explicit character creation, v1 email login code/magic-link verification, SMTP/log/noop delivery, no-token v1 password reset request responses, per-email delivery throttles, TOTP enrollment/QR/verification primitives, login-time TOTP challenges, and MFA session-context token claims.
+  - 2026-04-26 update: first-administrator OOBE is implemented through gateway `/auth/v1/bootstrap/status`, gateway `/auth/v1/bootstrap/admin`, `GATEWAY_BOOTSTRAP_TOKEN`, durable `auth_bootstrap_state`, and dashboard `/setup`.
+- Decision:
+  - Gateway becomes the single account, session, token, email-auth, MFA, character ownership, and world-entry auth authority.
+  - Account registration creates only account/auth state.
+  - Character creation creates the player ECS entity ownership row and persisted starter-world graph records.
+  - First administrator setup is a one-time gateway bootstrap ceremony locked by database state.
+  - Dashboard admin routes require gateway account session, admin/dev role, route-specific scopes, and verified MFA.
+  - Email login supports both one-time codes and magic links through SMTP delivery.
+  - TOTP app-based MFA uses provisioning URI + QR generation.
+  - Replication validates character-scoped world tokens through asymmetric JWT/JWKS rather than a shared gateway secret.
+- Alternatives considered:
+  - Keep the dashboard admin password: rejected (separate auth authority, no account roles/scopes/MFA/audit context).
+  - Keep default character creation during registration: rejected (conflicts with explicit character creation and selection).
+  - Use in-memory rate limiting: rejected for target implementation (restartable and not multi-instance safe).
+- Consequences:
+  - Positive:
+    - One auth model covers public site, dashboard, game client, and replication bind.
+    - Account roles/scopes can grant backend administrator access.
+    - Multi-character account UX becomes first-class.
+  - Negative:
+    - Breaking auth schema update during early development.
+    - Gateway, dashboard, client, and replication must migrate together.
+- Follow-up:
+  - Implement the detailed plan in phase order.
+  - Update `AGENTS.md` when the new auth rules become implemented contributor requirements.
+- Decision doc:
+  - `docs/decisions/dr-0036_gateway_account_auth_dashboard_and_character_creation.md`
+- References:
+  - `docs/plans/gateway_dashboard_auth_character_flow_plan_2026-04-26.md`
+  - `docs/sidereal_design_document.md`
+  - `docs/frontend_ui_styling_guide.md`
+  - `docs/ui_design_guide.md`
+
 ## DR-0035: f64 Authoritative World Coordinates
 - Status: Accepted
 - Date: 2026-04-24
@@ -203,6 +245,9 @@ For each decision:
 - Follow-up:
   - Track upstream Lightyear issue `#1200`.
   - Reassess whether replication should ever re-enable native server input after upstream fixes land.
+- Implementation update 2026-04-26:
+  - Implemented in `bins/sidereal-replication`: server installs protocol-only native input registration for `NativeStateSequence<PlayerInput>` and no longer runs Lightyear's native server input receive path.
+  - Authoritative input remains Sidereal realtime input, with strict controlled-target matching after canonical self-control normalization.
 - Decision doc:
   - `docs/decisions/dr-0031_lightyear_native_input_runtime_split_followup.md`
 
@@ -586,7 +631,7 @@ For each decision:
   - `bins/sidereal-replication/src/bootstrap.rs`
 
 ## DR-0009: Register Is Fail-Closed on Starter-World Persistence
-- Status: Accepted
+- Status: Superseded by `DR-0036`
 - Date: 2026-02-24
 - Owners: Gateway + persistence team
 - Context:
@@ -606,14 +651,16 @@ For each decision:
   - Negative:
     - Current implementation is non-atomic across auth DB and graph persistence, so failed persistence can still strand an account row.
 - Follow-up:
-  - Add compensation/transaction strategy to avoid stranded account rows on persistence failure.
-  - Add explicit test coverage for partial-failure remediation.
+  - Superseded target: move fail-closed starter-world persistence from registration to explicit character creation.
+  - Add compensation/transaction strategy so failed graph persistence does not leave listable active characters.
+  - Add explicit test coverage for partial-failure remediation in character creation.
 - Decision doc:
   - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
 - References:
   - `docs/decisions/dr-0002_explicit_world_entry_flow.md`
   - `bins/sidereal-gateway/src/auth.rs`
   - `docs/sidereal_design_document.md`
+  - `docs/decisions/dr-0036_gateway_account_auth_dashboard_and_character_creation.md`
 
 ## DR-0010: World Snapshot APIs Must Be Character-Scoped
 - Status: Proposed

@@ -1,5 +1,7 @@
 use bevy::prelude::*;
-use sidereal_audio::{AudioCueDefinition, AudioProfileDefinition, AudioRegistry};
+#[cfg(not(target_arch = "wasm32"))]
+use sidereal_audio::AudioCueDefinition;
+use sidereal_audio::{AudioProfileDefinition, AudioRegistry};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Resource, Clone, Default)]
@@ -30,6 +32,7 @@ impl AudioCatalogState {
         self.registry.as_ref()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn cue(&self, profile_id: &str, cue_id: &str) -> Option<&AudioCueDefinition> {
         self.profiles_by_id.get(profile_id)?.cues.get(cue_id)
     }

@@ -81,6 +81,7 @@ pub struct LoadedLuaModule {
 
 pub const WORLD_INIT_SCRIPT_REL_PATH: &str = "world/world_init.lua";
 pub const PLANET_REGISTRY_SCRIPT_REL_PATH: &str = "planets/registry.lua";
+pub const ASTEROID_REGISTRY_SCRIPT_REL_PATH: &str = "asteroids/registry.lua";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldInitScriptConfig {
@@ -160,6 +161,184 @@ pub fn load_planet_registry_from_root(
         Path::new(PLANET_REGISTRY_SCRIPT_REL_PATH),
         &sources_by_script_path,
     )
+}
+
+pub fn load_asteroid_registry_from_root(
+    scripts_root: &Path,
+) -> Result<sidereal_game::AsteroidRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let registry_path =
+        resolve_script_path_from_root(scripts_root, ASTEROID_REGISTRY_SCRIPT_REL_PATH)?;
+    let registry_source = std::fs::read_to_string(&registry_path).map_err(|err| {
+        ScriptError::Io(format!("read {} failed: {err}", registry_path.display()))
+    })?;
+    load_asteroid_registry_from_source(
+        &registry_source,
+        Path::new(ASTEROID_REGISTRY_SCRIPT_REL_PATH),
+        &policy,
+    )
+}
+
+pub fn load_asteroid_registry_from_source(
+    registry_source: &str,
+    registry_path: &Path,
+    policy: &LuaSandboxPolicy,
+) -> Result<sidereal_game::AsteroidRegistry, ScriptError> {
+    let registry_module = load_lua_module_from_source(registry_source, registry_path, policy)?;
+    let registry_value = Value::Table(registry_module.root().clone());
+    let registry_json = lua_value_to_json(registry_value)?;
+    let registry = serde_json::from_value::<sidereal_game::AsteroidRegistry>(registry_json)
+        .map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: asteroid registry decode failed: {err}",
+                registry_path.display()
+            ))
+        })?;
+    validate_asteroid_registry(registry_path, &registry)?;
+    Ok(registry)
+}
+
+fn validate_asteroid_registry(
+    registry_path: &Path,
+    registry: &sidereal_game::AsteroidRegistry,
+) -> Result<(), ScriptError> {
+    if registry.schema_version == 0 {
+        return Err(ScriptError::Contract(format!(
+            "{}: schema_version must be >= 1",
+            registry_path.display()
+        )));
+    }
+    validate_unique_ids(
+        registry_path,
+        "field_profile_id",
+        registry
+            .field_profiles
+            .iter()
+            .map(|profile| profile.field_profile_id.as_str()),
+    )?;
+    validate_unique_ids(
+        registry_path,
+        "sprite_profile_id",
+        registry
+            .sprite_profiles
+            .iter()
+            .map(|profile| profile.sprite_profile_id.as_str()),
+    )?;
+    validate_unique_ids(
+        registry_path,
+        "fracture_profile_id",
+        registry
+            .fracture_profiles
+            .iter()
+            .map(|profile| profile.fracture_profile_id.as_str()),
+    )?;
+    validate_unique_ids(
+        registry_path,
+        "resource_profile_id",
+        registry
+            .resource_profiles
+            .iter()
+            .map(|profile| profile.resource_profile_id.as_str()),
+    )?;
+    validate_unique_ids(
+        registry_path,
+        "ambient_profile_id",
+        registry
+            .ambient_profiles
+            .iter()
+            .map(|profile| profile.ambient_profile_id.as_str()),
+    )?;
+
+    let sprite_ids = registry
+        .sprite_profiles
+        .iter()
+        .map(|profile| profile.sprite_profile_id.as_str())
+        .collect::<HashSet<_>>();
+    let fracture_ids = registry
+        .fracture_profiles
+        .iter()
+        .map(|profile| profile.fracture_profile_id.as_str())
+        .collect::<HashSet<_>>();
+    let resource_ids = registry
+        .resource_profiles
+        .iter()
+        .map(|profile| profile.resource_profile_id.as_str())
+        .collect::<HashSet<_>>();
+    let ambient_ids = registry
+        .ambient_profiles
+        .iter()
+        .map(|profile| profile.ambient_profile_id.as_str())
+        .collect::<HashSet<_>>();
+
+    for profile in &registry.field_profiles {
+        if !sprite_ids.contains(profile.sprite_profile_id.as_str()) {
+            return Err(ScriptError::Contract(format!(
+                "{}: field_profile_id={} references unknown sprite_profile_id={}",
+                registry_path.display(),
+                profile.field_profile_id,
+                profile.sprite_profile_id
+            )));
+        }
+        if !fracture_ids.contains(profile.fracture_profile_id.as_str()) {
+            return Err(ScriptError::Contract(format!(
+                "{}: field_profile_id={} references unknown fracture_profile_id={}",
+                registry_path.display(),
+                profile.field_profile_id,
+                profile.fracture_profile_id
+            )));
+        }
+        if !resource_ids.contains(profile.resource_profile_id.as_str()) {
+            return Err(ScriptError::Contract(format!(
+                "{}: field_profile_id={} references unknown resource_profile_id={}",
+                registry_path.display(),
+                profile.field_profile_id,
+                profile.resource_profile_id
+            )));
+        }
+        if let Some(ambient_profile_id) = &profile.ambient_profile_id
+            && !ambient_ids.contains(ambient_profile_id.as_str())
+        {
+            return Err(ScriptError::Contract(format!(
+                "{}: field_profile_id={} references unknown ambient_profile_id={}",
+                registry_path.display(),
+                profile.field_profile_id,
+                ambient_profile_id
+            )));
+        }
+    }
+    for profile in &registry.resource_profiles {
+        if profile.yield_table.is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "{}: resource_profile_id={} yield_table must not be empty",
+                registry_path.display(),
+                profile.resource_profile_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_ids<'a>(
+    registry_path: &Path,
+    field_name: &str,
+    ids: impl Iterator<Item = &'a str>,
+) -> Result<(), ScriptError> {
+    let mut seen = HashSet::<&str>::new();
+    for id in ids {
+        if id.is_empty() {
+            return Err(ScriptError::Contract(format!(
+                "{}: {field_name} must not be empty",
+                registry_path.display()
+            )));
+        }
+        if !seen.insert(id) {
+            return Err(ScriptError::Contract(format!(
+                "{}: duplicate {field_name}={id}",
+                registry_path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn load_planet_registry_from_sources(

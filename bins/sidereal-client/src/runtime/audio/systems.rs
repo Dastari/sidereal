@@ -2,16 +2,19 @@ use super::backend::AudioBackendResource;
 use super::catalog::AudioCatalogState;
 use super::settings::{AudioBusSettings, AudioSettings};
 use super::state::AudioAssetDemandState;
-use crate::runtime::assets::{
-    AssetCatalogHotReloadState, LocalAssetManager, RuntimeAssetDependencyState,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::assets::LocalAssetManager;
+use crate::runtime::assets::{AssetCatalogHotReloadState, RuntimeAssetDependencyState};
 use crate::runtime::combat_messages::{
     RemoteEntityDestructionRuntimeMessage, RemoteWeaponFiredRuntimeMessage,
 };
 use crate::runtime::components::GameplayCamera;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::resources::{AssetCacheAdapter, AssetRootPath};
 use bevy::prelude::*;
-use sidereal_game::{BallisticWeapon, EntityDestroyedEvent, EntityGuid, ShotFiredEvent};
+#[cfg(not(target_arch = "wasm32"))]
+use sidereal_game::{BallisticWeapon, EntityGuid};
+use sidereal_game::{EntityDestroyedEvent, ShotFiredEvent};
 use std::collections::HashSet;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,6 +67,7 @@ pub(crate) fn sync_audio_listener_system(
     backend.sync_listener(translation, rotation);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ensure_menu_music_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
@@ -86,6 +90,10 @@ pub(crate) fn ensure_menu_music_system(
     );
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn ensure_menu_music_system() {}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ensure_world_music_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
@@ -107,6 +115,9 @@ pub(crate) fn ensure_world_music_system(
         "main",
     );
 }
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn ensure_world_music_system() {}
 
 pub(crate) fn debug_audio_probe_system(
     #[cfg(not(target_arch = "wasm32"))] keys: Res<'_, ButtonInput<KeyCode>>,
@@ -154,6 +165,7 @@ pub(crate) fn debug_audio_probe_system(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn receive_local_destruction_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
@@ -186,7 +198,15 @@ pub(crate) fn receive_local_destruction_audio_system(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn receive_local_destruction_audio_system(
+    mut events: MessageReader<'_, '_, EntityDestroyedEvent>,
+) {
+    for _ in events.read() {}
+}
+
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn receive_remote_destruction_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
@@ -223,7 +243,15 @@ pub(crate) fn receive_remote_destruction_audio_system(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn receive_remote_destruction_audio_system(
+    mut events: MessageReader<'_, '_, RemoteEntityDestructionRuntimeMessage>,
+) {
+    for _ in events.read() {}
+}
+
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn receive_local_weapon_fire_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
@@ -268,7 +296,15 @@ pub(crate) fn receive_local_weapon_fire_audio_system(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn receive_local_weapon_fire_audio_system(
+    mut events: MessageReader<'_, '_, ShotFiredEvent>,
+) {
+    for _ in events.read() {}
+}
+
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn receive_remote_weapon_fire_audio_system(
     mut backend: NonSendMut<'_, AudioBackendResource>,
     catalog: Res<'_, AudioCatalogState>,
@@ -310,6 +346,14 @@ pub(crate) fn receive_remote_weapon_fire_audio_system(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn receive_remote_weapon_fire_audio_system(
+    mut events: MessageReader<'_, '_, RemoteWeaponFiredRuntimeMessage>,
+) {
+    for _ in events.read() {}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn resolve_weapon_fire_profile_id(weapon: &BallisticWeapon) -> Option<&str> {
     if let Some(profile_id) = weapon.fire_audio_profile_id.as_deref() {
         return Some(profile_id);
@@ -355,6 +399,7 @@ pub(crate) fn queue_audio_asset_demands_system(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
 fn ensure_music_profile(
     backend: &mut NonSendMut<'_, AudioBackendResource>,
     catalog: &AudioCatalogState,
@@ -366,33 +411,30 @@ fn ensure_music_profile(
     profile_id: &str,
     cue_id: &str,
 ) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let Some(profile_asset_ids) = catalog.profile_asset_ids(profile_id) else {
-            return;
-        };
-        if catalog.cue(profile_id, cue_id).is_none() {
-            return;
-        }
-        if !profile_asset_ids
-            .iter()
-            .all(|asset_id| asset_manager.is_asset_ready(asset_id))
-        {
-            return;
-        }
-        let resolver = AudioAssetResolver {
-            asset_root: &asset_root.0,
-            asset_manager,
-            cache_adapter,
-        };
-        backend.ensure_music(
-            profile_id,
-            cue_id,
-            catalog,
-            settings,
-            &resolver,
-            &mut demand.desired_asset_ids,
-            &mut demand.critical_asset_ids,
-        );
+    let Some(profile_asset_ids) = catalog.profile_asset_ids(profile_id) else {
+        return;
+    };
+    if catalog.cue(profile_id, cue_id).is_none() {
+        return;
     }
+    if !profile_asset_ids
+        .iter()
+        .all(|asset_id| asset_manager.is_asset_ready(asset_id))
+    {
+        return;
+    }
+    let resolver = AudioAssetResolver {
+        asset_root: &asset_root.0,
+        asset_manager,
+        cache_adapter,
+    };
+    backend.ensure_music(
+        profile_id,
+        cue_id,
+        catalog,
+        settings,
+        &resolver,
+        &mut demand.desired_asset_ids,
+        &mut demand.critical_asset_ids,
+    );
 }

@@ -82,7 +82,7 @@ Update note (2026-04-24):
 Server-authoritative entity spawning for dashboard/dev tooling uses a dedicated gateway-admin path:
 
 1. Gateway endpoint: `POST /admin/spawn-entity`.
-2. Caller must present a valid access token with role `admin` or `dev_tool`.
+2. Caller must present a valid gateway access token with role `admin`, `dev_tool`, or `developer`, `session_context.mfa_verified=true`, and scope `admin:spawn`.
 3. Gateway forwards a control command to replication over the replication control channel.
 4. Replication validates:
    - canonical `player_entity_id` UUID,
@@ -461,13 +461,31 @@ Implementation note:
 ## 8. Auth and Session Identity
 
 - Gateway owns auth lifecycle (`register/login/refresh/reset`).
-- Registration must create and persist account + default character player entity + starter corvette graph records in durability storage.
+- 2026-04-26 target update: gateway auth is being expanded to own dashboard account sessions, SMTP-backed password reset/email login, TOTP MFA, scoped JWT claims, refresh-token rotation, JWKS, and explicit character creation. The implementation plan is `docs/plans/gateway_dashboard_auth_character_flow_plan_2026-04-26.md`, with decision detail `docs/decisions/dr-0036_gateway_account_auth_dashboard_and_character_creation.md`.
+- 2026-04-26 implementation update: gateway v1 email login now supports one-time code and magic-link token requests/verification, v1 password reset request delivers by email without returning raw reset tokens, and delivery can run in `GATEWAY_EMAIL_DELIVERY=noop|log|smtp` mode. SMTP mode requires `GATEWAY_SMTP_RELAY`, `GATEWAY_SMTP_USERNAME`, `GATEWAY_SMTP_PASSWORD`, and `GATEWAY_SMTP_FROM`; challenge links use `GATEWAY_PUBLIC_BASE_URL`, and delivery throttles use `GATEWAY_EMAIL_RESEND_COOLDOWN_S` plus `GATEWAY_EMAIL_MAX_PER_EMAIL_PER_HOUR`.
+- 2026-04-26 implementation update: gateway v1 TOTP enrollment supports `/auth/v1/mfa/totp/enroll` and `/auth/v1/mfa/totp/verify`, returning a provisioning URI and QR SVG and storing encrypted pending/verified TOTP secrets. `GATEWAY_AUTH_SECRET_KEY_B64` should be a 32-byte base64 key in production; `GATEWAY_TOTP_ISSUER`, `GATEWAY_TOTP_STEP_S`, `GATEWAY_TOTP_DIGITS`, `GATEWAY_TOTP_ALLOWED_DRIFT_STEPS`, and `GATEWAY_TOTP_ENROLLMENT_TTL_S` configure the primitive.
+- 2026-04-26 implementation update: gateway v1 password login returns a persisted TOTP login challenge for accounts with verified TOTP, `/auth/v1/login/challenge/totp` consumes successful challenges, and issued access tokens include defaulted `scope` plus `session_context` claims. TOTP-authenticated tokens set `auth_method=password_totp`, `mfa_verified=true`, and `mfa_methods=["totp"]`.
+- 2026-04-26 implementation update: native/WASM game-client login uses the v1 password/TOTP challenge flow. Legacy `/auth/login` must not issue direct tokens for accounts with verified TOTP.
+- 2026-04-26 implementation update: game-client auth UI is login-only. Registration and password reset request/confirm are dashboard web flows; native clients open dashboard `/forgot-password` via `SIDEREAL_DASHBOARD_URL` (default `http://127.0.0.1:3000`). Legacy gateway `/auth/password-reset/*` routes are removed in favor of `/auth/v1/password-reset/*`.
+- 2026-04-26 implementation update: `/auth/v1/mfa/totp/verify` returns fresh MFA-verified tokens after enrollment, and dashboard `/mfa-setup` uses those tokens to let newly bootstrapped admin/dev accounts complete authenticator setup before entering guarded dashboard routes.
+- 2026-04-26 implementation update: gateway stores account roles/scopes in `auth_account_roles` and `auth_account_scopes`; issued access tokens include persisted roles, a space-delimited `scope` string, and `session_context.active_scope`. Gateway admin spawn and script-management endpoints now require admin/dev role, verified MFA, and route-specific scopes (`admin:spawn`, `scripts:read`, `scripts:write`).
+- 2026-04-26 implementation update: dashboard `/login` proxies gateway login/register/TOTP challenge completion and stores gateway tokens in an encrypted HttpOnly `sidereal_dashboard_auth` cookie using `SIDEREAL_DASHBOARD_SESSION_SECRET`. The pathless dashboard route uses a TanStack Router `beforeLoad` auth guard, and dashboard API handlers now use the gateway-backed admin/MFA/scope guard.
+- 2026-04-26 implementation update: first administrator setup is gateway-owned through `/auth/v1/bootstrap/status` and `/auth/v1/bootstrap/admin`. Bootstrap requires `GATEWAY_BOOTSTRAP_TOKEN`, is eligible only while the database has no bootstrap state and no admin/dev role, records completion in `auth_bootstrap_state`, and is surfaced by dashboard `/setup` before normal login.
+- 2026-04-26 implementation update: authenticated dashboard root `/` is now the `My Account` character-selection surface. Account character list/create/delete/reset operations are gateway-owned and documented with the reusable layout contract in `docs/features/account_character_selection_layout_contract.md`.
+- 2026-04-26 implementation update: regular authenticated dashboard users may access only `/` for My Account character management. All other dashboard tool routes remain admin-only and require admin/dev/developer role, verified MFA, `dashboard:access`, and route-specific scopes where applicable.
+- 2026-04-26 implementation update: gateway world entry now returns fresh character-scoped tokens whose `player_entity_id` claim and `session_context.active_character_id` match the selected character. The native client uses those tokens for replication auth and renders character display names from gateway character summaries in the character-select roster.
+- Registration creates account/auth state only; it must not create a default character or starter-world graph records after the `DR-0036` migration lands.
+- Explicit character creation creates and persists the account-owned character/player entity and starter graph records in durability storage.
+- Public dashboard/web registration is the account creation surface; the game client supports login and character selection/creation, but not public account registration.
+- Dashboard admin access uses gateway account sessions with admin/dev role, route-specific scopes, and verified MFA. The legacy standalone dashboard admin password is superseded by the `DR-0036` target.
 - Register/login are auth-only and must not implicitly bind a runtime world session.
 - Runtime bootstrap handoff from gateway to replication is explicit `Enter World` behavior and must be idempotent per `player_entity_id`.
+- Runtime replication auth must use the character-scoped token returned by `Enter World`, not the account login token.
 - `Enter World` requests must ensure runtime presence/bind for the selected character on every reconnect attempt; idempotency must not prevent reconnect rebind when runtime entities are missing.
 - Player-specific runtime/persistent data is player-entity scoped. Authoritative control state persists via `controlled_entity_guid` on the player entity; score, quest progression, and other character-local settings persist on the player entity in graph persistence.
 - Account identity is an auth container and external reference. An account may own multiple player entities (characters); `player_entity_id` selects which character/session identity is bound for runtime control.
 - Replication binds session transport identity to authenticated `player_entity_id`.
+- Replication must validate character-scoped world tokens for session bind. The `DR-0036` target replaces shared symmetric gateway JWT secret validation with asymmetric JWT/JWKS validation.
 - Replication auth denial must be explicit: invalid player ids, rejected tokens, ownership mismatches, and temporarily unavailable player runtime entities return `ServerSessionDeniedMessage` rather than only logging and dropping the request.
 - Client world entry state transition is `Auth -> CharacterSelect -> WorldLoading -> AssetLoading -> InWorld`; replication session-ready bind acknowledgment for the selected `player_entity_id` is the gate that starts bootstrap-required asset validation/download, and transition to `InWorld` occurs only after session-ready, required asset validation/download, and replicated player-entity presence on client.
 - Input packets with mismatched identity claims are rejected.

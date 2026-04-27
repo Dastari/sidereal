@@ -50,6 +50,14 @@ export const Route = createFileRoute('/api/brp')({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:brp:proxy',
+        )
+        if (authFailure) {
+          return authFailure
+        }
+
         const url = new URL(request.url)
         const snapshot = url.searchParams.get('snapshot')
         const target = parseTarget(url.searchParams.get('target'))
@@ -142,7 +150,10 @@ export const Route = createFileRoute('/api/brp')({
         }
       },
       POST: async ({ request }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:brp:proxy',
+        )
         if (authFailure) {
           return authFailure
         }

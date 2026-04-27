@@ -1,7 +1,7 @@
 # Prediction Runtime Tuning and Validation
 
 Status: Active feature reference
-Last updated: 2026-04-24
+Last updated: 2026-04-26
 Owners: client runtime + replication
 Scope: Lightyear-native prediction/interpolation behavior verification and production default tuning
 
@@ -13,6 +13,49 @@ Scope: Lightyear-native prediction/interpolation behavior verification and produ
 2. Implemented: client runtime now tracks native focus transitions, sends forced-neutral input on focus loss/regain, suppresses immediate active-input sends for a short recovery window, and exposes recovery state in the debug overlay.
 3. Known risk: native full-client tests still include pre-existing visual/transform failures unrelated to the first focus-loss recovery slice; keep this tracker current as those are resolved.
 4. WASM impact: no browser-specific runtime behavior changed in the native focus-loss slice; shared prediction code must remain target-compatible.
+
+2026-04-26 status note:
+
+1. Implemented: native/client runtime disables the Lightyear/Avian pre-physics `Transform -> Position` sync while using `PositionButInterpolateTransform`.
+2. Reason: Sidereal's simulation state is Avian `Position`/`Rotation` owned; render `Transform` may be visually corrected/interpolated and must not feed back into predicted physics state.
+3. Native impact: local predicted control should no longer be reset by stale visual transforms before fixed-step physics runs.
+4. WASM impact: shared client runtime behavior only; no target-specific branch was introduced.
+
+2026-04-26 status note:
+
+1. Implemented: client prediction disables authoritative `FuelTank` consumption while continuing to read replicated fuel availability for local thrust prediction.
+2. Reason: `FuelTank` is server-owned replicated gameplay state, not a predicted rollback component. Consuming it inside client prediction or rollback can starve local thrust over time and create progressively larger confirmed-vs-predicted corrections.
+3. Native impact: controlled ship prediction no longer mutates non-rollback fuel state during input resimulation.
+4. WASM impact: shared client runtime behavior only; no target-specific branch was introduced.
+
+2026-04-26 status note:
+
+1. Implemented: unfocused native clients now default `SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS` to the focused `SIDEREAL_CLIENT_MAX_PREDICTED_TICKS` value instead of zero.
+2. Reason: two local native clients cannot both hold OS window focus; dropping Lightyear prediction lead to zero on each focus change caused artificial stalls/recovery snapbacks during multiplayer diagnostics even though realtime input delivery remained healthy.
+3. Native impact: focus changes still force neutral input boundaries and recovery diagnostics, but they no longer reconfigure the input timeline into a no-prediction mode unless explicitly requested with `SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS=0` or `--input-unfocused-max-predicted-ticks 0`.
+4. WASM impact: shared client runtime default only; browser focus/background throttling remains platform-managed.
+
+2026-04-26 status note:
+
+1. Implemented: shared flight force calculation now derives thrust heading from Avian `Rotation`, not render `Transform`, and client prediction repairs predicted controlled `Mass`/`AngularInertia` whenever replicated size/mass/collision setup changes.
+2. Reason: authoritative and predicted physics must use the same simulation-owned state. A predicted clone with missing or stale inertia can rotate faster or slower than the server even when input delivery is healthy.
+3. Native impact: controlled ship turning diagnostics now log rotation, angular velocity, mass, and inertia on both client and server via `SIDEREAL_DEBUG_MOTION_REPLICATION=1`.
+4. WASM impact: shared simulation/client runtime behavior only; no target-specific branch was introduced.
+
+2026-04-26 status note:
+
+1. Implemented: `sidereal-game` now exposes `SiderealSharedSimulationPlugin`, `SimulationRuntimeRole`, and `SiderealSimulationSet`.
+2. Reason: server-authoritative simulation and client prediction need one fixed-step gameplay/Avian pipeline instead of duplicated client/server system lists that can drift.
+3. Native impact: replication uses the `ServerAuthority` role; native client prediction uses the `ClientPrediction` role and still relies on client-side marker gating so remote entities do not gain local motion authority. Shared post-physics systems now run in `FixedPostUpdate` after Avian's default physics schedule.
+4. WASM impact: shared client runtime behavior only; no target-specific branch was introduced.
+5. Validation: `crates/sidereal-game/tests/shared_simulation_plugin.rs` now includes Avian-backed parity tests comparing server-authority and client-prediction motion for forward thrust, combined thrust/turn, sustained left turn, and sustained right turn.
+
+2026-04-26 status note:
+
+1. Implemented: replication post-physics control, visibility, persistence, and fixed-step diagnostics now run in `FixedPostUpdate` after Avian writeback instead of being scheduled in `FixedUpdate` with ineffective cross-schedule `after(PhysicsSystems::Writeback)` ordering.
+2. Reason: observer anchors, visibility membership, persistence dirty marking, and streamed tactical/owner state must sample authoritative post-physics motion, not pre-step state.
+3. Native impact: remote clients should receive movement based on the server's latest authoritative Avian state for that fixed tick.
+4. WASM impact: server-side schedule correction only; no browser-specific branch was introduced.
 
 ## 1. Purpose
 
@@ -50,8 +93,9 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - control/session uses `ControlChannel` (reliable),
   - asset stream/request/ack uses `AssetChannel` (reliable, isolated from input path).
 - Server ingress keeps latest-intent semantics:
-  - validates tick ordering and rate limits per authenticated player,
-  - validates `control_generation` against the server-issued control lease before accepting a realtime input snapshot,
+  - validates tick ordering per authenticated client/player/controlled-entity/control-generation input stream and rate limits per authenticated player,
+  - validates `control_generation` against the server-issued control lease before applying tick-order rejection or accepting a realtime input snapshot,
+  - clears per-player realtime input tick/latest-intent state on a fresh authenticated bind so a restarted native client with a reset local input timeline is not rejected against stale ticks from a prior session,
   - stores latest input snapshot by player/tick,
   - expires realtime input snapshots after `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`) so authoritative motion cannot stay latched if the client loses focus, background-throttles, or misses the neutral heartbeat,
   - drains into `ActionQueue` by replace/overwrite (`queue.clear()` then push latest actions), never backlog append.
@@ -77,6 +121,7 @@ Track remaining non-structural work after Lightyear-native migration completion:
     - server assigns marker to authoritative `FlightComputer` roots by default,
     - client assigns marker only to locally controlled root and removes it from receive-only roots,
     - replicated entities retain `FlightComputer` data (no destructive client stripping), preserving component parity for effects/inspection while enforcing single-writer motion ownership.
+  - client prediction does not consume replicated `FuelTank` state; only the authoritative server path burns fuel.
 - WASM impact:
   - no target-specific branching introduced,
   - interpolation registration and scheduling behavior are shared between native and WASM builds.
@@ -137,6 +182,15 @@ Track remaining non-structural work after Lightyear-native migration completion:
   - delayed pre-handoff packets can no longer apply held movement/fire intent to the newly controlled entity after a control lease advances.
 - WASM impact:
   - no platform branch; browser clients use the same input payload and lease validation.
+
+2026-04-26 update:
+
+- Realtime input ordering state is now scoped to the authenticated client input stream instead of only the player UUID.
+- A fresh authenticated bind clears that player's previous latest realtime input and sequence/rate windows, matching the existing control-request sequence reset.
+- Native impact:
+  - restarting or reconnecting a native client no longer causes the replication server to drop the new lower tick stream as duplicate/out-of-order against a prior session.
+- WASM impact:
+  - no platform branch; browser clients use the same authenticated session reset and stream-scoped ordering.
 
 2026-04-24 update:
 
@@ -232,5 +286,15 @@ Track remaining non-structural work after Lightyear-native migration completion:
 7. Transform repair was narrowed after the Lightyear fork gained late-lane Avian transform bootstrap.
    - `bins/sidereal-client/src/runtime/transforms.rs` now seeds only uninitialized `FrameInterpolate<Transform>` state for predicted/interpolated lanes rather than using broad drift snapback as a normal runtime path.
 8. Client timeline tuning is now less aggressive under native focus churn.
-   - `bins/sidereal-client/src/runtime/transport.rs` now configures a bounded focused prediction window and an unfocused no-prediction window instead of leaving Lightyear's input timeline at a 100-tick prediction allowance.
+   - `bins/sidereal-client/src/runtime/transport.rs` now configures a bounded focused prediction window and, by default, preserves that same bounded window while unfocused. A zero unfocused prediction window remains available only as an explicit diagnostic override.
    - The same file now inserts a tuned `InterpolationConfig` so remote observer entities keep a slightly deeper interpolation buffer instead of riding the default low-delay path.
+
+2026-04-26 update:
+
+1. Controlled predicted motion now seeds from confirmed server state when a control generation becomes active.
+   - `bins/sidereal-client/src/runtime/motion.rs` copies `Confirmed<Position>`, `Confirmed<Rotation>`, `Confirmed<LinearVelocity>`, and `Confirmed<AngularVelocity>` into the active local predicted entity once per `ControlBootstrapState` generation.
+   - The same handoff step seeds Lightyear `PredictionHistory` and `FrameInterpolate<Transform>` at the confirmed/current timeline ticks so the first rollback after a ship-control switch cannot replay from a stale origin baseline.
+2. This is a bootstrap invariant, not a continuous drift repair path.
+   - Normal movement remains shared fixed-step prediction plus server reconciliation.
+   - Native impact: ship-control handoff starts prediction from the latest authoritative pose.
+   - WASM impact: same shared client runtime code path; no platform-specific behavior was added.

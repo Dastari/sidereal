@@ -26,7 +26,9 @@ use sidereal_net::{
     ControlChannel, InputChannel, ManifestChannel, NotificationChannel, TacticalDeltaChannel,
     TacticalSnapshotChannel,
 };
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
+#[cfg(not(target_arch = "wasm32"))]
+use std::net::{IpAddr, ToSocketAddrs};
 
 use super::app_state::{ClientAppState, ClientSession};
 use super::dialog_ui::DialogQueue;
@@ -318,7 +320,6 @@ pub fn start_lightyear_client_transport_inner(
             "wasm client lightyear WebTransport connecting to {}",
             remote_addr
         );
-        return;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -596,11 +597,14 @@ pub fn handle_unexpected_server_disconnect_system(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_input_sync_config, input_delay_config_from_tuning,
-        interpolation_config_from_tuning, resolved_local_udp_bind_from_config, resolved_udp_addr,
+        default_input_sync_config, input_delay_config_from_tuning, interpolation_config_from_tuning,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::{resolved_local_udp_bind_from_config, resolved_udp_addr};
+    #[cfg(not(target_arch = "wasm32"))]
     use crate::runtime::app_state::ClientSession;
     use crate::runtime::resources::{ClientInputTimelineTuning, ClientInterpolationTimelineTuning};
+    #[cfg(not(target_arch = "wasm32"))]
     use sidereal_core::gateway_dtos::ReplicationTransportConfig;
     use std::time::Duration;
 
@@ -613,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn unfocused_input_delay_config_disables_prediction_lead() {
+    fn explicit_unfocused_input_delay_config_can_disable_prediction_lead() {
         let tuning = ClientInputTimelineTuning {
             fixed_input_delay_ticks: 3,
             max_predicted_ticks: 24,
@@ -648,6 +652,7 @@ mod tests {
         assert_eq!(config.maximum_predicted_ticks, 20);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_udp_addr_rewrites_loopback_gateway_advertisement_for_remote_gateway() {
         let session = ClientSession {
@@ -664,6 +669,7 @@ mod tests {
         assert_eq!(addr.to_string(), "192.168.50.25:7001");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_udp_addr_keeps_loopback_for_local_gateway() {
         let session = ClientSession {
@@ -680,6 +686,7 @@ mod tests {
         assert_eq!(addr.to_string(), "127.0.0.1:7001");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_local_udp_default_uses_wildcard_for_remote_target() {
         let remote = "192.168.50.25:7001".parse().expect("remote addr");
@@ -689,6 +696,7 @@ mod tests {
         assert_eq!(bind.to_string(), "0.0.0.0:0");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_local_udp_default_keeps_loopback_for_local_target() {
         let remote = "127.0.0.1:7001".parse().expect("remote addr");

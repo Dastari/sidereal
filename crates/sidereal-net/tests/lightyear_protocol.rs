@@ -3,11 +3,12 @@
 use bevy::prelude::App;
 use lightyear::prelude::client::ClientPlugins;
 use lightyear::prelude::server::ServerPlugins;
-use sidereal_game::EntityAction;
+use sidereal_game::{ActionQueue, EntityAction};
 use sidereal_net::{
     NotificationPayload, NotificationPlacement, NotificationSeverity, PlayerInput,
     ServerNotificationMessage, register_lightyear_client_protocol,
-    register_lightyear_server_protocol,
+    register_lightyear_server_protocol, replace_action_queue_from_actions,
+    replace_action_queue_from_player_input,
 };
 
 #[test]
@@ -35,6 +36,24 @@ fn player_input_matches_axis_mapping() {
             EntityAction::AfterburnerOff
         ]
     );
+}
+
+#[test]
+fn player_input_replaces_action_queue_snapshot() {
+    let mut queue = ActionQueue {
+        pending: vec![EntityAction::FirePrimary],
+    };
+    let input = PlayerInput {
+        actions: vec![EntityAction::Forward, EntityAction::Left],
+    };
+
+    replace_action_queue_from_player_input(&mut queue, &input);
+
+    assert_eq!(queue.pending, input.actions);
+
+    replace_action_queue_from_actions(&mut queue, &[EntityAction::LongitudinalNeutral]);
+
+    assert_eq!(queue.pending, vec![EntityAction::LongitudinalNeutral]);
 }
 
 #[test]

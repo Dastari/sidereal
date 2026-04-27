@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
 pub mod actions;
+pub mod asteroid_field;
+pub mod asteroid_registry;
 pub mod character_movement;
 pub mod collision_outline_generation;
 pub mod combat;
@@ -19,6 +21,12 @@ pub mod world_spatial;
 
 // Re-export commonly used items
 pub use actions::*;
+pub use asteroid_field::{
+    AsteroidChildPlan, AsteroidFractureParent, asteroid_child_member_key, asteroid_member_key,
+    build_fracture_child_plans, fracture_child_count, fracture_child_sprite,
+    fracture_depleted_asteroid_members, next_smaller_tier,
+};
+pub use asteroid_registry::*;
 pub use character_movement::{
     process_character_movement_actions, sync_player_to_controlled_entity,
 };
@@ -66,6 +74,38 @@ impl Default for CombatAuthorityEnabled {
     }
 }
 
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct FlightFuelConsumptionEnabled(pub bool);
+
+impl Default for FlightFuelConsumptionEnabled {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// Runtime role for the shared fixed-step simulation pipeline.
+///
+/// Server authority owns durable gameplay state. Client prediction runs the same
+/// motion/intent systems for the locally controlled predicted entity, with
+/// server-owned side effects disabled by resources and marker gating.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimulationRuntimeRole {
+    ServerAuthority,
+    ClientPrediction,
+}
+
+/// Shared schedule boundaries for Sidereal's fixed-step simulation.
+///
+/// Input systems outside this crate should write their latest intent in
+/// `ApplyInputActions`; gameplay/physics systems consume it afterward.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SiderealSimulationSet {
+    PrepareMotionAuthority,
+    ApplyInputActions,
+    SimulateGameplay,
+    PostPhysics,
+}
+
 // Re-export flight systems (not components, those come from generated)
 pub use flight::{
     angular_inertia_from_size, apply_engine_thrust, clamp_angular_velocity,
@@ -107,7 +147,104 @@ impl Plugin for SiderealGameCorePlugin {
             .register_type::<PlanetRegistryEntry>()
             .register_type::<PlanetSpawnDefinition>()
             .register_type::<PlanetDefinition>()
-            .register_type::<PlanetRegistry>();
+            .register_type::<PlanetRegistry>()
+            .register_type::<AsteroidRegistry>();
+    }
+}
+
+/// Shared fixed-step simulation systems used by both authoritative server
+/// simulation and client-side prediction.
+pub struct SiderealSharedSimulationPlugin {
+    pub role: SimulationRuntimeRole,
+}
+
+impl Plugin for SiderealSharedSimulationPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(self.role);
+        app.configure_sets(
+            FixedUpdate,
+            (
+                SiderealSimulationSet::PrepareMotionAuthority,
+                SiderealSimulationSet::ApplyInputActions,
+                SiderealSimulationSet::SimulateGameplay,
+            )
+                .chain(),
+        );
+        app.configure_sets(
+            FixedPostUpdate,
+            SiderealSimulationSet::PostPhysics
+                .after(avian2d::prelude::PhysicsSystems::StepSimulation),
+        );
+
+        match self.role {
+            SimulationRuntimeRole::ServerAuthority => {
+                app.add_systems(
+                    FixedUpdate,
+                    (
+                        grant_flight_control_authority_system,
+                        revoke_stale_flight_control_authority_system,
+                        grant_simulation_motion_writer_system,
+                        revoke_stale_simulation_motion_writer_system,
+                    )
+                        .chain()
+                        .in_set(SiderealSimulationSet::PrepareMotionAuthority),
+                );
+                app.add_systems(
+                    FixedUpdate,
+                    (
+                        validate_action_capabilities,
+                        process_character_movement_actions,
+                        process_flight_actions,
+                        bootstrap_weapon_cooldown_state,
+                        tick_weapon_cooldowns,
+                        process_weapon_fire_actions,
+                        update_ballistic_projectiles,
+                        resolve_shot_impacts,
+                        apply_damage_from_shot_impacts,
+                        fracture_depleted_asteroid_members,
+                        begin_pending_destructions,
+                        advance_pending_destructions,
+                        recompute_total_mass,
+                        apply_engine_thrust,
+                    )
+                        .chain()
+                        .in_set(SiderealSimulationSet::SimulateGameplay),
+                );
+                app.add_systems(
+                    FixedPostUpdate,
+                    (
+                        stabilize_idle_motion,
+                        clamp_angular_velocity,
+                        sync_player_to_controlled_entity,
+                    )
+                        .chain()
+                        .in_set(SiderealSimulationSet::PostPhysics),
+                );
+            }
+            SimulationRuntimeRole::ClientPrediction => {
+                app.add_systems(
+                    FixedUpdate,
+                    (
+                        validate_action_capabilities,
+                        process_character_movement_actions,
+                        process_flight_actions,
+                        bootstrap_weapon_cooldown_state,
+                        tick_weapon_cooldowns,
+                        process_weapon_fire_actions,
+                        update_ballistic_projectiles,
+                        apply_engine_thrust,
+                    )
+                        .chain()
+                        .in_set(SiderealSimulationSet::SimulateGameplay),
+                );
+                app.add_systems(
+                    FixedPostUpdate,
+                    (stabilize_idle_motion, clamp_angular_velocity)
+                        .chain()
+                        .in_set(SiderealSimulationSet::PostPhysics),
+                );
+            }
+        }
     }
 }
 
@@ -131,6 +268,13 @@ impl Plugin for SiderealGamePlugin {
             .is_none()
         {
             app.insert_resource(CombatAuthorityEnabled::default());
+        }
+        if app
+            .world()
+            .get_resource::<FlightFuelConsumptionEnabled>()
+            .is_none()
+        {
+            app.insert_resource(FlightFuelConsumptionEnabled::default());
         }
         app.add_message::<ShotFiredEvent>();
         app.add_message::<ShotImpactResolvedEvent>();
@@ -160,39 +304,8 @@ impl Plugin for SiderealGamePlugin {
                 bootstrap_root_dynamic_entity_colliders,
             ),
         );
-        app.add_systems(
-            FixedUpdate,
-            (
-                grant_flight_control_authority_system,
-                revoke_stale_flight_control_authority_system,
-                grant_simulation_motion_writer_system,
-                revoke_stale_simulation_motion_writer_system,
-                validate_action_capabilities,
-                process_character_movement_actions,
-                process_flight_actions,
-                bootstrap_weapon_cooldown_state,
-                tick_weapon_cooldowns,
-                process_weapon_fire_actions,
-                update_ballistic_projectiles,
-                resolve_shot_impacts,
-                apply_damage_from_shot_impacts,
-                begin_pending_destructions,
-                advance_pending_destructions,
-                recompute_total_mass,
-                apply_engine_thrust,
-            )
-                .chain()
-                .before(avian2d::prelude::PhysicsSystems::StepSimulation),
-        );
-        app.add_systems(
-            FixedUpdate,
-            (
-                stabilize_idle_motion,
-                clamp_angular_velocity,
-                sync_player_to_controlled_entity,
-            )
-                .chain()
-                .after(avian2d::prelude::PhysicsSystems::StepSimulation),
-        );
+        app.add_plugins(SiderealSharedSimulationPlugin {
+            role: SimulationRuntimeRole::ServerAuthority,
+        });
     }
 }

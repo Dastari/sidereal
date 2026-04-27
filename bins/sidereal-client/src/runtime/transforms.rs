@@ -1,18 +1,199 @@
 //! World entity transform sync, interpolation, and player/camera lock.
 
-use avian2d::prelude::{Position, Rotation};
+use avian2d::prelude::{
+    AngularInertia, AngularVelocity, LinearVelocity, Mass, Position, RigidBody, Rotation,
+};
 use bevy::{math::DVec2, prelude::*};
 use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
 use lightyear::prelude::Confirmed;
+use lightyear::prelude::input::native::{ActionState, InputMarker};
 use sidereal_game::{
-    EntityGuid, FullscreenLayer, RENDER_DOMAIN_FULLSCREEN, RENDER_PHASE_FULLSCREEN_BACKGROUND,
-    RENDER_PHASE_FULLSCREEN_FOREGROUND, RuntimeRenderLayerDefinition, WorldPosition, WorldRotation,
+    EntityGuid, FlightControlAuthority, FullscreenLayer, RENDER_DOMAIN_FULLSCREEN,
+    RENDER_PHASE_FULLSCREEN_BACKGROUND, RENDER_PHASE_FULLSCREEN_FOREGROUND,
+    RuntimeRenderLayerDefinition, SimulationMotionWriter, WorldPosition, WorldRotation,
     resolve_world_position, resolve_world_rotation_rad,
 };
+use sidereal_net::PlayerInput;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
-use super::components::{PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity};
+use super::app_state::{ClientSession, LocalPlayerViewState};
+use super::components::{
+    ControlledEntity, PendingInitialVisualReady, PendingVisibilityFadeIn, WorldEntity,
+};
+
+fn motion_replication_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SIDEREAL_DEBUG_MOTION_REPLICATION")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct ClientMotionReplicationDiagnosticsState {
+    last_logged_at_s: f64,
+    last_transform_by_guid: HashMap<uuid::Uuid, Vec3>,
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn log_motion_replication_diagnostics(
+    time: Res<'_, Time>,
+    session: Res<'_, ClientSession>,
+    player_view_state: Res<'_, LocalPlayerViewState>,
+    mut state: Local<'_, ClientMotionReplicationDiagnosticsState>,
+    entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Option<&'_ Confirmed<Position>>,
+            Option<&'_ ConfirmedHistory<Position>>,
+            Option<&'_ Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ LinearVelocity>,
+            Option<&'_ AngularVelocity>,
+            &'_ Transform,
+            Has<lightyear::prelude::Predicted>,
+            Has<lightyear::prelude::Interpolated>,
+            Has<ControlledEntity>,
+            Has<SimulationMotionWriter>,
+            Has<FlightControlAuthority>,
+        ),
+        With<WorldEntity>,
+    >,
+    extras: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ Confirmed<Rotation>>,
+            Option<&'_ Mass>,
+            Option<&'_ AngularInertia>,
+            Has<InputMarker<PlayerInput>>,
+            Option<&'_ ActionState<PlayerInput>>,
+            Has<RigidBody>,
+        ),
+    >,
+) {
+    if !motion_replication_diagnostics_enabled() {
+        return;
+    }
+    const LOG_INTERVAL_S: f64 = 1.0;
+    let now_s = time.elapsed_secs_f64();
+    if now_s - state.last_logged_at_s < LOG_INTERVAL_S {
+        return;
+    }
+    state.last_logged_at_s = now_s;
+
+    let player_guid = session
+        .player_entity_id
+        .as_deref()
+        .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
+        .or_else(|| {
+            session
+                .player_entity_id
+                .as_deref()
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        });
+    let controlled_guid = player_view_state
+        .controlled_entity_id
+        .as_deref()
+        .and_then(sidereal_runtime_sync::parse_guid_from_entity_id)
+        .or_else(|| {
+            player_view_state
+                .controlled_entity_id
+                .as_deref()
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        });
+
+    for (
+        entity,
+        guid,
+        confirmed_position,
+        position_history,
+        position,
+        rotation,
+        velocity,
+        angular_velocity,
+        transform,
+        is_predicted,
+        is_interpolated,
+        is_controlled,
+        has_motion_writer,
+        has_flight_authority,
+    ) in &entities
+    {
+        let (
+            confirmed_rotation,
+            mass,
+            angular_inertia,
+            has_input_marker,
+            action_state,
+            has_rigidbody,
+        ) = extras
+            .get(entity)
+            .unwrap_or((None, None, None, false, None, false));
+        let previous = state
+            .last_transform_by_guid
+            .insert(guid.0, transform.translation);
+        let transform_changed_since_last = previous
+            .is_some_and(|previous| previous.distance_squared(transform.translation) > 0.0001);
+        let history_len = position_history.map(ConfirmedHistory::len).unwrap_or(0);
+        let current = position.map(|value| value.0);
+        let relevant_to_local_control =
+            Some(guid.0) == controlled_guid || Some(guid.0) == player_guid;
+        if !relevant_to_local_control
+            && !is_controlled
+            && !is_predicted
+            && confirmed_position.is_none()
+            && current.is_none()
+            && history_len == 0
+        {
+            continue;
+        }
+        let history_newest_tick = position_history
+            .and_then(ConfirmedHistory::newest)
+            .map(|(tick, _)| tick.0);
+        let confirmed = confirmed_position.map(|value| value.0.0);
+        let confirmed_rotation_rad = confirmed_rotation.map(|value| value.0.as_radians());
+        let linear_velocity = velocity.map(|value| value.0);
+        let rotation_rad = rotation.map(|value| value.as_radians());
+        let angular_velocity_rad_s = angular_velocity.map(|value| value.0);
+        let mass_kg = mass.map(|value| value.0);
+        let angular_inertia_kg_m2 = angular_inertia.map(|value| value.0);
+        let actions = action_state.map(|state| state.0.actions.as_slice());
+        info!(
+            ?entity,
+            guid = %guid.0,
+            is_predicted,
+            is_interpolated,
+            is_controlled,
+            has_motion_writer,
+            has_flight_authority,
+            has_input_marker,
+            has_rigidbody,
+            confirmed_position = ?confirmed,
+            confirmed_rotation_rad,
+            current_position = ?current,
+            rotation_rad,
+            linear_velocity = ?linear_velocity,
+            angular_velocity_rad_s,
+            mass_kg,
+            angular_inertia_kg_m2,
+            history_len,
+            history_newest_tick,
+            transform_x = transform.translation.x,
+            transform_y = transform.translation.y,
+            transform_rotation_rad = transform.rotation.to_euler(EulerRot::XYZ).2,
+            actions = ?actions,
+            transform_changed_since_last,
+            "client motion replication diagnostic"
+        );
+    }
+}
 
 fn apply_planar_transform(transform: &mut Transform, planar_position: DVec2, heading: f64) {
     transform.translation.x = planar_position.x as f32;

@@ -1,28 +1,59 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
-import { dashboardSessionLoginSchema } from '@/lib/schemas/dashboard'
 import {
-  clearDashboardAdminSessionCookie,
-  createDashboardAdminSessionCookie,
+  dashboardMfaLoginSchema,
+  dashboardPasswordLoginSchema,
+  dashboardRegisterSchema,
+} from '@/lib/schemas/dashboard'
+import {
+  clearDashboardSessionCookie,
+  createDashboardSessionCookie,
+  createDashboardSessionFromPassword,
+  createDashboardSessionFromRegistration,
+  createDashboardSessionFromTotpChallenge,
+  dashboardSessionStatus,
   getDashboardSession,
   isDashboardAdminConfigured,
+  refreshDashboardSession,
   rejectCrossOriginMutation,
-  verifyDashboardAdminPassword,
 } from '@/server/dashboard-auth'
 
-type LoginBody = {
+type SessionLoginBody = {
+  email?: unknown
   password?: unknown
+  challenge_id?: unknown
+  code?: unknown
+  mode?: unknown
 }
 
 export const Route = createFileRoute('/api/dashboard-session')({
   server: {
     handlers: {
-      GET: ({ request }) => {
+      GET: async ({ request }) => {
         const session = getDashboardSession(request)
-        return json({
-          authenticated: session?.role === 'admin',
-          configured: isDashboardAdminConfigured(),
-        })
+        if (!session) {
+          return json(dashboardSessionStatus(null))
+        }
+
+        try {
+          const refreshed = await refreshDashboardSession(session)
+          const headers =
+            refreshed.accessToken === session.accessToken
+              ? undefined
+              : {
+                  'set-cookie': createDashboardSessionCookie(
+                    request,
+                    refreshed,
+                  ),
+                }
+          return json(dashboardSessionStatus(refreshed), { headers })
+        } catch {
+          return json(dashboardSessionStatus(null), {
+            headers: {
+              'set-cookie': clearDashboardSessionCookie(),
+            },
+          })
+        }
       },
       POST: async ({ request }) => {
         const crossOriginFailure = rejectCrossOriginMutation(request)
@@ -34,19 +65,70 @@ export const Route = createFileRoute('/api/dashboard-session')({
           return json(
             {
               error:
-                'Dashboard admin auth is not configured. Set SIDEREAL_DASHBOARD_ADMIN_PASSWORD.',
+                'Dashboard auth is not configured. Set SIDEREAL_DASHBOARD_SESSION_SECRET.',
             },
             { status: 503 },
           )
         }
 
-        let body: LoginBody
+        let body: SessionLoginBody
         try {
-          body = (await request.json()) as LoginBody
+          body = (await request.json()) as SessionLoginBody
         } catch {
           return json({ error: 'Invalid JSON body' }, { status: 400 })
         }
-        const parsedBody = dashboardSessionLoginSchema.safeParse(body)
+
+        const mfaBody = dashboardMfaLoginSchema.safeParse(body)
+        if (mfaBody.success) {
+          try {
+            const session = await createDashboardSessionFromTotpChallenge(
+              mfaBody.data.challenge_id,
+              mfaBody.data.code,
+            )
+            return json(dashboardSessionStatus(session), {
+              headers: {
+                'set-cookie': createDashboardSessionCookie(request, session),
+              },
+            })
+          } catch (error) {
+            return json(
+              {
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : 'MFA verification failed',
+              },
+              { status: 403 },
+            )
+          }
+        }
+
+        const registerBody = dashboardRegisterSchema.safeParse(body)
+        if (registerBody.success) {
+          try {
+            const session = await createDashboardSessionFromRegistration(
+              registerBody.data.email,
+              registerBody.data.password,
+            )
+            return json(dashboardSessionStatus(session), {
+              headers: {
+                'set-cookie': createDashboardSessionCookie(request, session),
+              },
+            })
+          } catch (error) {
+            return json(
+              {
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : 'Registration failed',
+              },
+              { status: 403 },
+            )
+          }
+        }
+
+        const parsedBody = dashboardPasswordLoginSchema.safeParse(body)
         if (!parsedBody.success) {
           return json(
             {
@@ -57,18 +139,37 @@ export const Route = createFileRoute('/api/dashboard-session')({
           )
         }
 
-        if (!verifyDashboardAdminPassword(parsedBody.data.password)) {
-          return json({ error: 'Invalid admin password' }, { status: 403 })
-        }
-
-        return json(
-          { authenticated: true },
-          {
+        try {
+          const result = await createDashboardSessionFromPassword(
+            parsedBody.data.email,
+            parsedBody.data.password,
+          )
+          if (result.status === 'mfa_required') {
+            return json({
+              authenticated: false,
+              configured: true,
+              mfaRequired: true,
+              challengeId: result.challengeId,
+              challengeType: result.challengeType,
+              expiresInS: result.expiresInS,
+            })
+          }
+          return json(dashboardSessionStatus(result.session), {
             headers: {
-              'set-cookie': createDashboardAdminSessionCookie(request),
+              'set-cookie': createDashboardSessionCookie(
+                request,
+                result.session,
+              ),
             },
-          },
-        )
+          })
+        } catch (error) {
+          return json(
+            {
+              error: error instanceof Error ? error.message : 'Login failed',
+            },
+            { status: 403 },
+          )
+        }
       },
       DELETE: ({ request }) => {
         const crossOriginFailure = rejectCrossOriginMutation(request)
@@ -76,14 +177,11 @@ export const Route = createFileRoute('/api/dashboard-session')({
           return crossOriginFailure
         }
 
-        return json(
-          { authenticated: false },
-          {
-            headers: {
-              'set-cookie': clearDashboardAdminSessionCookie(),
-            },
+        return json(dashboardSessionStatus(null), {
+          headers: {
+            'set-cookie': clearDashboardSessionCookie(),
           },
-        )
+        })
       },
     },
   },

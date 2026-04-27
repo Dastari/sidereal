@@ -1,5 +1,6 @@
 use super::*;
 
+use avian2d::physics_transform::PhysicsTransformConfig;
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use lightyear::avian2d::plugin::AvianReplicationMode;
@@ -9,11 +10,10 @@ use lightyear::input::native::prelude::InputPlugin as NativeInputPlugin;
 use lightyear::prelude::client::{Client, ClientPlugins, Connected};
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
-    BallisticProjectileSpawnedEvent, CombatAuthorityEnabled, EntityDestroyedEvent, ShotFiredEvent,
-    ShotHitEvent, ShotImpactResolvedEvent, apply_engine_thrust, bootstrap_weapon_cooldown_state,
-    clamp_angular_velocity, process_character_movement_actions, process_flight_actions,
-    process_weapon_fire_actions, stabilize_idle_motion, sync_mounted_hierarchy,
-    tick_weapon_cooldowns, update_ballistic_projectiles,
+    BallisticProjectileSpawnedEvent, CombatAuthorityEnabled, EntityDestroyedEvent,
+    FlightFuelConsumptionEnabled, ShotFiredEvent, ShotHitEvent, ShotImpactResolvedEvent,
+    SiderealSharedSimulationPlugin, SiderealSimulationSet, SimulationRuntimeRole,
+    process_weapon_fire_actions, sync_mounted_hierarchy, update_ballistic_projectiles,
 };
 use sidereal_net::register_lightyear_client_protocol;
 use sidereal_runtime_sync::RuntimeEntityHierarchy;
@@ -57,6 +57,7 @@ fn init_asset_runtime_resources(app: &mut App, asset_root: String) {
 
 fn init_control_and_prediction_resources(app: &mut App) {
     app.insert_resource(CombatAuthorityEnabled(false));
+    app.insert_resource(FlightFuelConsumptionEnabled(false));
     app.insert_resource(MotionOwnershipReconcileState {
         dirty: true,
         ..default()
@@ -135,6 +136,14 @@ pub(crate) fn configure_client_runtime(
         rollback_resources: false,
         rollback_islands: false,
     });
+    // Sidereal's simulation state is Position/Rotation-owned. In
+    // PositionButInterpolateTransform mode Lightyear/Avian enables a pre-physics
+    // Transform -> Position sync by default; that lets visual correction or stale
+    // render transforms overwrite predicted physics state and causes local control
+    // to snap back toward the confirmed visual lane.
+    app.world_mut()
+        .resource_mut::<PhysicsTransformConfig>()
+        .transform_to_position = false;
     app.add_plugins(FrameInterpolationPlugin::<Transform>::default());
     app.add_plugins(NativeInputPlugin::<sidereal_net::PlayerInput>::default());
     register_lightyear_client_protocol(app);
@@ -158,6 +167,9 @@ pub(crate) fn configure_client_runtime(
     init_debug_and_diagnostics_resources(app, headless_transport);
     init_tactical_resources(app);
     init_scene_and_render_resources(app);
+    app.add_plugins(SiderealSharedSimulationPlugin {
+        role: SimulationRuntimeRole::ClientPrediction,
+    });
     app.add_systems(
         Update,
         (
@@ -198,25 +210,18 @@ pub(crate) fn configure_client_runtime(
         (
             motion::enforce_motion_ownership_for_world_entities,
             motion::sync_controlled_mass_from_total_mass,
-            process_character_movement_actions,
-            process_flight_actions,
-            bootstrap_weapon_cooldown_state,
-            tick_weapon_cooldowns,
-            process_weapon_fire_actions,
-            replication::mark_new_ballistic_projectiles_prespawned,
-            update_ballistic_projectiles,
-            apply_engine_thrust,
         )
             .chain()
-            .before(avian2d::prelude::PhysicsSystems::StepSimulation),
+            .before(SiderealSimulationSet::SimulateGameplay),
     );
-    app.add_systems(FixedPreUpdate, motion::mark_motion_ownership_dirty_signals);
     app.add_systems(
         FixedUpdate,
-        (stabilize_idle_motion, clamp_angular_velocity)
-            .chain()
-            .after(avian2d::prelude::PhysicsSystems::StepSimulation),
+        replication::mark_new_ballistic_projectiles_prespawned
+            .after(process_weapon_fire_actions)
+            .before(update_ballistic_projectiles)
+            .in_set(SiderealSimulationSet::SimulateGameplay),
     );
+    app.add_systems(FixedPreUpdate, motion::mark_motion_ownership_dirty_signals);
     app.add_systems(
         PostUpdate,
         sync_mounted_hierarchy.before(bevy::transform::TransformSystems::Propagate),

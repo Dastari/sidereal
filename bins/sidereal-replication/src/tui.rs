@@ -144,6 +144,7 @@ struct TuiApp {
     world_tree_last_keys: Vec<String>,
     world_tree_last_rows_data: Vec<WorldTreeRow>,
     world_tree_expandable_keys: HashSet<String>,
+    world_tree_seen_expandable_keys: HashSet<String>,
     world_tree_keep_selected_visible: bool,
     collapsed_world_tree_keys: HashSet<String>,
     world_center_x: f32,
@@ -190,6 +191,7 @@ impl Default for TuiApp {
             world_tree_last_keys: Vec::new(),
             world_tree_last_rows_data: Vec::new(),
             world_tree_expandable_keys: HashSet::new(),
+            world_tree_seen_expandable_keys: HashSet::new(),
             world_tree_keep_selected_visible: false,
             collapsed_world_tree_keys: HashSet::new(),
             world_center_x: 0.0,
@@ -822,7 +824,7 @@ struct WorldTreeRow {
     accent: Color,
 }
 
-fn build_world_tree_rows(explorer: &WorldExplorerSnapshot, app: &TuiApp) -> Vec<WorldTreeRow> {
+fn build_world_tree_rows(explorer: &WorldExplorerSnapshot, app: &mut TuiApp) -> Vec<WorldTreeRow> {
     let mut rows = Vec::new();
     for group in &explorer.groups {
         push_group_tree_rows(&mut rows, group, app);
@@ -833,8 +835,10 @@ fn build_world_tree_rows(explorer: &WorldExplorerSnapshot, app: &TuiApp) -> Vec<
 fn push_group_tree_rows(
     rows: &mut Vec<WorldTreeRow>,
     group: &WorldExplorerGroupSnapshot,
-    app: &TuiApp,
+    app: &mut TuiApp,
 ) {
+    let expandable = !group.entities.is_empty();
+    ensure_world_tree_key_defaults_collapsed(app, &group.key, expandable);
     let expanded = !app.collapsed_world_tree_keys.contains(&group.key);
     rows.push(WorldTreeRow {
         key: group.key.clone(),
@@ -845,7 +849,7 @@ fn push_group_tree_rows(
         entity_display_name: None,
         entity_position_xy: None,
         latency_ms: None,
-        expandable: !group.entities.is_empty(),
+        expandable,
         expanded,
         accent: Color::Rgb(167, 139, 250),
     });
@@ -860,10 +864,12 @@ fn push_group_tree_rows(
 fn push_entity_tree_rows(
     rows: &mut Vec<WorldTreeRow>,
     entity: &WorldExplorerEntitySnapshot,
-    app: &TuiApp,
+    app: &mut TuiApp,
     depth: usize,
 ) {
     let key = format!("entity:{}", entity.guid);
+    let expandable = !entity.children.is_empty();
+    ensure_world_tree_key_defaults_collapsed(app, &key, expandable);
     let expanded = !app.collapsed_world_tree_keys.contains(&key);
     let mut label = entity
         .display_name
@@ -881,7 +887,7 @@ fn push_entity_tree_rows(
         entity_display_name: entity.display_name.clone(),
         entity_position_xy: entity.position_xy,
         latency_ms: entity.latency_ms,
-        expandable: !entity.children.is_empty(),
+        expandable,
         expanded,
         accent: if entity.is_player_anchor {
             Color::Rgb(125, 211, 252)
@@ -896,6 +902,12 @@ fn push_entity_tree_rows(
     }
     for child in &entity.children {
         push_entity_tree_rows(rows, child, app, depth + 1);
+    }
+}
+
+fn ensure_world_tree_key_defaults_collapsed(app: &mut TuiApp, key: &str, expandable: bool) {
+    if expandable && app.world_tree_seen_expandable_keys.insert(key.to_string()) {
+        app.collapsed_world_tree_keys.insert(key.to_string());
     }
 }
 
@@ -2246,7 +2258,9 @@ fn select_log_line_at(app: &mut TuiApp, logs: &[String], column: u16, row: u16) 
 #[cfg(test)]
 mod tests {
     use super::{
-        InputMode, LogLevelFilter, PaneFocus, Rect, TuiApp, filtered_logs, pane_at_position,
+        InputMode, LogLevelFilter, PaneFocus, Rect, TuiApp, WorldExplorerEntitySnapshot,
+        WorldExplorerGroupSnapshot, WorldExplorerSnapshot, build_world_tree_rows, filtered_logs,
+        pane_at_position,
     };
 
     #[test]
@@ -2281,5 +2295,48 @@ mod tests {
         assert_eq!(pane_at_position(&app, 5, 15), Some(PaneFocus::Sessions));
         assert_eq!(pane_at_position(&app, 40, 15), Some(PaneFocus::World));
         assert_eq!(pane_at_position(&app, 80, 15), Some(PaneFocus::Health));
+    }
+
+    #[test]
+    fn world_tree_defaults_new_expandable_rows_to_collapsed() {
+        let mut app = TuiApp::default();
+        let snapshot = WorldExplorerSnapshot {
+            groups: vec![WorldExplorerGroupSnapshot {
+                key: "group:ship".to_string(),
+                label: "ship".to_string(),
+                entities: vec![WorldExplorerEntitySnapshot {
+                    guid: "parent".to_string(),
+                    display_name: Some("Parent".to_string()),
+                    kind_label: "ship".to_string(),
+                    children: vec![WorldExplorerEntitySnapshot {
+                        guid: "child".to_string(),
+                        display_name: Some("Child".to_string()),
+                        kind_label: "engine".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let rows = build_world_tree_rows(&snapshot, &mut app);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "group:ship");
+        assert!(rows[0].expandable);
+        assert!(!rows[0].expanded);
+
+        app.collapsed_world_tree_keys.remove("group:ship");
+        let rows = build_world_tree_rows(&snapshot, &mut app);
+        assert_eq!(
+            rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(),
+            vec!["group:ship", "entity:parent"]
+        );
+        let parent = rows
+            .iter()
+            .find(|row| row.key == "entity:parent")
+            .expect("parent row");
+        assert!(parent.expandable);
+        assert!(!parent.expanded);
     }
 }

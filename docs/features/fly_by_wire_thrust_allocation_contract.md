@@ -1,7 +1,7 @@
 # Fly-By-Wire Thrust Allocation Contract
 
 Status: Proposed feature contract
-Last updated: 2026-04-24
+Last updated: 2026-04-26
 Owners: gameplay simulation + client runtime + scripting
 Scope: future replacement flight-control stack for actuator/thrust allocation
 
@@ -13,6 +13,13 @@ Scope: future replacement flight-control stack for actuator/thrust allocation
 2. Current flight still uses the existing fixed-step force/torque path around `ActionQueue`, `FlightComputer`, mounted engine budget aggregation, and Avian force application.
 3. Existing `ThrusterPlumeShaderSettings`/shader work is presentation plumbing, not the authoritative allocation system described here.
 4. Native/WASM impact: future allocation math must stay in shared gameplay/runtime code; platform differences belong only at input, visual, and audio boundaries.
+
+2026-04-26 status note:
+
+1. Implemented in the current flight path: fuel consumption is runtime-gated by `FlightFuelConsumptionEnabled`.
+2. Server/replication runtime uses the default enabled mode and remains the only authority that burns `FuelTank` state.
+3. Client prediction disables fuel consumption while still reading replicated fuel availability for local thrust prediction.
+4. Native/WASM impact: this is shared gameplay behavior with a client runtime resource override; it does not introduce target-specific logic.
 
 Update note (2026-03-13):
 - This contract defines the target replacement for the current `ActionQueue -> FlightComputer(throttle/yaw) -> aggregated engine budget -> hull net force/torque` flight path in `crates/sidereal-game/src/flight.rs`.
@@ -42,6 +49,7 @@ Current authoritative flight in `crates/sidereal-game/src/flight.rs` works like 
    - aggregates all mounted engine capability by parent UUID,
    - derives forward/reverse/torque thrust budgets,
    - gates those budgets by fuel,
+   - consumes fuel only when `FlightFuelConsumptionEnabled(true)` is active,
    - computes one net hull force and one net hull torque,
    - applies those values through Avian's `Forces` helper.
 4. Client plume visuals infer drive state from hull-level `FlightComputer` state and engine presence.

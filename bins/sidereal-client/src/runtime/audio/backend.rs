@@ -4,51 +4,48 @@ use super::native_backend::{
     AudioAssetResolver, DebugProbeMode, LoopEmitterRequest, NativeAudioBackend, OneShotRequest,
     load_clip_asset_id,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use super::null_backend::NullAudioBackend;
 use super::settings::AudioSettings;
+#[cfg(not(target_arch = "wasm32"))]
 use bevy::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashSet;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) enum AudioBackendKind {
-    #[cfg(not(target_arch = "wasm32"))]
     Native(Box<NativeAudioBackend>),
     Null(NullAudioBackend),
 }
 
+#[cfg_attr(target_arch = "wasm32", derive(Default))]
 pub(crate) struct AudioBackendResource {
+    #[cfg(not(target_arch = "wasm32"))]
     backend: AudioBackendKind,
-    logged_errors: std::collections::HashSet<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    logged_errors: HashSet<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for AudioBackendResource {
     fn default() -> Self {
-        let backend = {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                match NativeAudioBackend::new() {
-                    Ok(backend) => AudioBackendKind::Native(Box::new(backend)),
-                    Err(err) => {
-                        warn!("audio backend unavailable; falling back to null backend: {err}");
-                        AudioBackendKind::Null(NullAudioBackend)
-                    }
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
+        let backend = match NativeAudioBackend::new() {
+            Ok(backend) => AudioBackendKind::Native(Box::new(backend)),
+            Err(err) => {
+                warn!("audio backend unavailable; falling back to null backend: {err}");
                 AudioBackendKind::Null(NullAudioBackend)
             }
         };
         Self {
             backend,
-            logged_errors: std::collections::HashSet::new(),
+            logged_errors: HashSet::new(),
         }
     }
 }
 
 impl AudioBackendResource {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn sync_graph(&mut self, catalog: &AudioCatalogState, settings: &AudioSettings) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let AudioBackendKind::Native(backend) = &mut self.backend
             && let Err(err) = backend.sync_graph(catalog, settings)
         {
@@ -56,11 +53,22 @@ impl AudioBackendResource {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn sync_graph(&mut self, _catalog: &AudioCatalogState, _settings: &AudioSettings) {}
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn sync_listener(&mut self, position: Vec3, rotation: Quat) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let AudioBackendKind::Native(backend) = &mut self.backend {
             backend.sync_listener(position, rotation);
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn sync_listener(
+        &mut self,
+        _position: bevy::prelude::Vec3,
+        _rotation: bevy::prelude::Quat,
+    ) {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -166,13 +174,16 @@ impl AudioBackendResource {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn tick(&mut self, now_s: f64, settings: &AudioSettings) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let AudioBackendKind::Native(backend) = &mut self.backend {
             backend.sync_settings(settings);
             backend.tick(now_s);
         }
     }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn tick(&mut self, _now_s: f64, _settings: &AudioSettings) {}
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn play_debug_probe(
@@ -193,6 +204,7 @@ impl AudioBackendResource {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn log_once(&mut self, message: String) {
         if self.logged_errors.insert(message.clone()) {
             warn!("{message}");

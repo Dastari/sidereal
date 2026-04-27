@@ -1,14 +1,17 @@
 use avian2d::prelude::{AngularVelocity, LinearVelocity};
+use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use sidereal_game::flight::compute_flight_forces;
 use sidereal_game::{
-    ActionQueue, AfterburnerState, EntityAction, FlightComputer, FlightControlAuthority, MountedOn,
-    SimulationMotionWriter,
+    ActionQueue, AfterburnerState, Engine, EntityAction, EntityGuid, FlightComputer,
+    FlightControlAuthority, FlightFuelConsumptionEnabled, FuelTank, MountedOn,
+    SimulationMotionWriter, apply_engine_thrust,
 };
 use sidereal_game::{
     clamp_angular_velocity, compute_brake_decel_accel_mps2, process_flight_actions,
     sanitize_planar_angular_velocity, stabilize_idle_motion,
 };
+use std::time::Duration;
 use uuid::Uuid;
 
 #[test]
@@ -133,6 +136,109 @@ fn process_flight_actions_toggles_afterburner_state() {
         .get::<AfterburnerState>()
         .unwrap();
     assert!(!afterburner_state.active);
+}
+
+#[test]
+fn apply_engine_thrust_does_not_consume_fuel_when_disabled_for_prediction() {
+    let mut app = App::new();
+    app.insert_resource(Time::<Fixed>::from_hz(30.0));
+    app.insert_resource(FlightFuelConsumptionEnabled(false));
+    let parent_guid = Uuid::new_v4();
+    let tank = app
+        .world_mut()
+        .spawn((
+            EntityGuid(Uuid::new_v4()),
+            MountedOn {
+                parent_entity_id: parent_guid,
+                hardpoint_id: "fuel".to_string(),
+            },
+            FuelTank { fuel_kg: 10.0 },
+        ))
+        .id();
+    app.world_mut().spawn((
+        EntityGuid(parent_guid),
+        FlightComputer {
+            profile: "basic_fly_by_wire".to_string(),
+            throttle: 1.0,
+            yaw_input: 0.0,
+            brake_active: false,
+            turn_rate_deg_s: 45.0,
+        },
+        FlightControlAuthority,
+        SimulationMotionWriter,
+    ));
+    app.world_mut().spawn((
+        EntityGuid(Uuid::new_v4()),
+        MountedOn {
+            parent_entity_id: parent_guid,
+            hardpoint_id: "engine".to_string(),
+        },
+        Engine {
+            thrust: 100.0,
+            reverse_thrust: 50.0,
+            torque_thrust: 25.0,
+            burn_rate_kg_s: 3.0,
+        },
+    ));
+
+    app.world_mut()
+        .resource_mut::<Time<Fixed>>()
+        .advance_by(Duration::from_millis(100));
+    let _ = app.world_mut().run_system_once(apply_engine_thrust);
+
+    let fuel = app.world().entity(tank).get::<FuelTank>().unwrap();
+    assert_eq!(fuel.fuel_kg, 10.0);
+}
+
+#[test]
+fn apply_engine_thrust_consumes_fuel_by_default_for_authority() {
+    let mut app = App::new();
+    app.insert_resource(Time::<Fixed>::from_hz(30.0));
+    let parent_guid = Uuid::new_v4();
+    let tank = app
+        .world_mut()
+        .spawn((
+            EntityGuid(Uuid::new_v4()),
+            MountedOn {
+                parent_entity_id: parent_guid,
+                hardpoint_id: "fuel".to_string(),
+            },
+            FuelTank { fuel_kg: 10.0 },
+        ))
+        .id();
+    app.world_mut().spawn((
+        EntityGuid(parent_guid),
+        FlightComputer {
+            profile: "basic_fly_by_wire".to_string(),
+            throttle: 1.0,
+            yaw_input: 0.0,
+            brake_active: false,
+            turn_rate_deg_s: 45.0,
+        },
+        FlightControlAuthority,
+        SimulationMotionWriter,
+    ));
+    app.world_mut().spawn((
+        EntityGuid(Uuid::new_v4()),
+        MountedOn {
+            parent_entity_id: parent_guid,
+            hardpoint_id: "engine".to_string(),
+        },
+        Engine {
+            thrust: 100.0,
+            reverse_thrust: 50.0,
+            torque_thrust: 25.0,
+            burn_rate_kg_s: 3.0,
+        },
+    ));
+
+    app.world_mut()
+        .resource_mut::<Time<Fixed>>()
+        .advance_by(Duration::from_millis(100));
+    let _ = app.world_mut().run_system_once(apply_engine_thrust);
+
+    let fuel = app.world().entity(tank).get::<FuelTank>().unwrap();
+    assert!(fuel.fuel_kg < 10.0);
 }
 
 #[test]

@@ -15,12 +15,14 @@ import type {
   GenesisPlanetShaderSettings,
   Vec3Tuple,
 } from '@/features/genesis/types'
+import { GenesisPlanetPreview } from '@/features/genesis/GenesisPlanetPreview'
 import {
   AppLayout,
   Panel,
   PanelContent,
   PanelHeader,
 } from '@/components/layout/AppLayout'
+import { HorizontalSplitPanels } from '@/components/layout/ResizablePanels'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,6 +34,7 @@ import { apiDelete, apiGet, apiPost } from '@/lib/api/client'
 
 const DEFAULT_GENESIS_SIDEBAR_WIDTH = 320
 const DEFAULT_GENESIS_DETAIL_WIDTH = 400
+const DEFAULT_GENESIS_DEFINITION_WIDTH = 760
 
 type OperationState = 'idle' | 'saving' | 'publishing' | 'discarding'
 
@@ -105,11 +108,19 @@ function randomizeDefinition(
   const nextSettings: GenesisPlanetShaderSettings = {
     ...settings,
     base_radius_scale: Number(randomRange(rng, 0.46, 0.72).toFixed(3)),
-    normal_strength: Number(randomRange(rng, isStar ? 0.02 : 0.35, isStar ? 0.18 : 1.1).toFixed(3)),
-    detail_level: Number(randomRange(rng, isStar ? 0.1 : 0.36, isStar ? 0.34 : 0.86).toFixed(3)),
+    normal_strength: Number(
+      randomRange(rng, isStar ? 0.02 : 0.35, isStar ? 0.18 : 1.1).toFixed(3),
+    ),
+    detail_level: Number(
+      randomRange(rng, isStar ? 0.1 : 0.36, isStar ? 0.34 : 0.86).toFixed(3),
+    ),
     rotation_speed: Number(randomRange(rng, -0.008, 0.008).toFixed(4)),
-    rim_strength: Number(randomRange(rng, isStar ? 0.7 : 0.16, isStar ? 1.5 : 0.64).toFixed(3)),
-    fresnel_strength: Number(randomRange(rng, isStar ? 0.55 : 0.22, isStar ? 1.2 : 0.62).toFixed(3)),
+    rim_strength: Number(
+      randomRange(rng, isStar ? 0.7 : 0.16, isStar ? 1.5 : 0.64).toFixed(3),
+    ),
+    fresnel_strength: Number(
+      randomRange(rng, isStar ? 0.55 : 0.22, isStar ? 1.2 : 0.62).toFixed(3),
+    ),
     continent_size: Number(randomRange(rng, 0.38, 0.82).toFixed(3)),
     ocean_level: Number(randomRange(rng, 0.28, 0.68).toFixed(3)),
     mountain_height: Number(randomRange(rng, 0.18, 0.72).toFixed(3)),
@@ -118,12 +129,18 @@ function randomizeDefinition(
     crater_size: Number(randomRange(rng, 0.06, 0.42).toFixed(3)),
     ice_cap_size: Number(randomRange(rng, 0.02, 0.28).toFixed(3)),
     storm_intensity: Number(randomRange(rng, 0.02, 0.44).toFixed(3)),
-    surface_activity: Number(randomRange(rng, isStar ? 0.62 : 0.02, isStar ? 1.0 : 0.28).toFixed(3)),
-    corona_intensity: Number(randomRange(rng, isStar ? 0.78 : 0.0, isStar ? 1.5 : 0.12).toFixed(3)),
+    surface_activity: Number(
+      randomRange(rng, isStar ? 0.62 : 0.02, isStar ? 1.0 : 0.28).toFixed(3),
+    ),
+    corona_intensity: Number(
+      randomRange(rng, isStar ? 0.78 : 0.0, isStar ? 1.5 : 0.12).toFixed(3),
+    ),
     cloud_coverage: Number(randomRange(rng, 0.22, 0.78).toFixed(3)),
     cloud_scale: Number(randomRange(rng, 0.9, 2.6).toFixed(3)),
     cloud_speed: Number(randomRange(rng, -0.28, 0.28).toFixed(3)),
-    atmosphere_thickness: Number(randomRange(rng, isStar ? 0.18 : 0.08, isStar ? 0.32 : 0.22).toFixed(3)),
+    atmosphere_thickness: Number(
+      randomRange(rng, isStar ? 0.18 : 0.08, isStar ? 0.32 : 0.22).toFixed(3),
+    ),
     atmosphere_alpha: Number(randomRange(rng, 0.34, 0.82).toFixed(3)),
     surface_saturation: Number(randomRange(rng, 0.88, 1.34).toFixed(3)),
     surface_contrast: Number(randomRange(rng, 0.9, 1.28).toFixed(3)),
@@ -185,8 +202,12 @@ function parseList(value: string): Array<string> {
 }
 
 export function GenesisPage() {
-  const [catalog, setCatalog] = React.useState<GenesisPlanetCatalog | null>(null)
-  const [selectedPlanetId, setSelectedPlanetId] = React.useState<string | null>(null)
+  const [catalog, setCatalog] = React.useState<GenesisPlanetCatalog | null>(
+    null,
+  )
+  const [selectedPlanetId, setSelectedPlanetId] = React.useState<string | null>(
+    null,
+  )
   const [draftDefinition, setDraftDefinition] =
     React.useState<GenesisPlanetDefinition | null>(null)
   const [draftSpawnEnabled, setDraftSpawnEnabled] = React.useState(false)
@@ -202,6 +223,11 @@ export function GenesisPage() {
     'dashboard:genesis:detail-panel-width',
     DEFAULT_GENESIS_DETAIL_WIDTH,
   )
+  const [definitionPanelWidth, setDefinitionPanelWidth] =
+    useSessionStorageNumber(
+      'dashboard:genesis:definition-panel-width',
+      DEFAULT_GENESIS_DEFINITION_WIDTH,
+    )
 
   React.useEffect(() => {
     let cancelled = false
@@ -215,7 +241,9 @@ export function GenesisPage() {
       .catch((error: unknown) => {
         if (cancelled) return
         setErrorText(
-          error instanceof Error ? error.message : 'Failed to load Genesis catalog.',
+          error instanceof Error
+            ? error.message
+            : 'Failed to load Genesis catalog.',
         )
       })
     return () => {
@@ -251,14 +279,17 @@ export function GenesisPage() {
   const dirty = React.useMemo(() => {
     if (!selectedEntry || !draftDefinition) return false
     return (
-      JSON.stringify(draftDefinition) !== JSON.stringify(selectedEntry.definition) ||
+      JSON.stringify(draftDefinition) !==
+        JSON.stringify(selectedEntry.definition) ||
       draftSpawnEnabled !== selectedEntry.spawnEnabled
     )
   }, [draftDefinition, draftSpawnEnabled, selectedEntry])
 
   const updateDefinition = React.useCallback(
     (patch: Partial<GenesisPlanetDefinition>) => {
-      setDraftDefinition((current) => (current ? { ...current, ...patch } : current))
+      setDraftDefinition((current) =>
+        current ? { ...current, ...patch } : current,
+      )
     },
     [],
   )
@@ -281,7 +312,9 @@ export function GenesisPage() {
     (nextCatalog: GenesisPlanetCatalog) => {
       setCatalog(nextCatalog)
       const nextSelected =
-        nextCatalog.entries.find((entry) => entry.planetId === selectedPlanetId) ??
+        nextCatalog.entries.find(
+          (entry) => entry.planetId === selectedPlanetId,
+        ) ??
         nextCatalog.entries.at(0) ??
         null
       setSelectedPlanetId(nextSelected?.planetId ?? null)
@@ -305,7 +338,9 @@ export function GenesisPage() {
       replaceCatalog(nextCatalog)
       setStatusText('Draft saved to the Lua script catalog.')
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : 'Failed to save draft.')
+      setErrorText(
+        error instanceof Error ? error.message : 'Failed to save draft.',
+      )
     } finally {
       setOperation('idle')
     }
@@ -323,7 +358,9 @@ export function GenesisPage() {
       replaceCatalog(nextCatalog)
       setStatusText('Genesis draft published.')
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : 'Failed to publish draft.')
+      setErrorText(
+        error instanceof Error ? error.message : 'Failed to publish draft.',
+      )
     } finally {
       setOperation('idle')
     }
@@ -341,7 +378,9 @@ export function GenesisPage() {
       replaceCatalog(nextCatalog)
       setStatusText('Genesis draft discarded.')
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : 'Failed to discard draft.')
+      setErrorText(
+        error instanceof Error ? error.message : 'Failed to discard draft.',
+      )
     } finally {
       setOperation('idle')
     }
@@ -355,23 +394,6 @@ export function GenesisPage() {
       detailPanelWidth={detailPanelWidth}
       onSidebarResize={setSidebarWidth}
       onDetailPanelResize={setDetailPanelWidth}
-      header={
-        <div className="flex items-center gap-4 px-5 py-3">
-          <div className="min-w-0">
-            <div className="font-display text-lg uppercase tracking-[0.22em] text-primary">
-              Genesis
-            </div>
-            <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-              Planet registry authoring, deterministic randomization, and Lua publishing.
-            </div>
-          </div>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <Badge variant="outline">{entries.length} bodies</Badge>
-            {dirty ? <Badge variant="secondary">Unsaved edits</Badge> : null}
-            {catalog?.registryHasDraft ? <Badge variant="secondary">Registry draft</Badge> : null}
-          </div>
-        </div>
-      }
       sidebar={
         <Panel>
           <PanelHeader>
@@ -409,7 +431,9 @@ export function GenesisPage() {
                   >
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{entry.displayName}</span>
-                      {entry.hasDraft ? <Badge variant="secondary">Draft</Badge> : null}
+                      {entry.hasDraft ? (
+                        <Badge variant="secondary">Draft</Badge>
+                      ) : null}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {entry.planetId} / {bodyKindLabel(entry.bodyKind)}
@@ -439,79 +463,131 @@ export function GenesisPage() {
         />
       }
     >
-      <Panel>
-        <PanelHeader>
-          <div className="flex flex-wrap items-center gap-3">
-            <Globe2 className="h-5 w-5 text-primary" />
-            <div>
-              <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
-                Planet Definition
+      <HorizontalSplitPanels
+        leftWidth={definitionPanelWidth}
+        minLeftWidth={520}
+        minRightWidth={360}
+        onLeftWidthChange={setDefinitionPanelWidth}
+        left={
+          <Panel>
+            <PanelHeader>
+              <div className="flex flex-wrap items-center gap-3">
+                <Globe2 className="h-5 w-5 text-primary" />
+                <div>
+                  <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
+                    Planet Definition
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Edits save to planet Lua drafts and update the registry
+                    draft together.
+                  </div>
+                </div>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">{entries.length} bodies</Badge>
+                  {dirty ? (
+                    <Badge variant="secondary">Unsaved edits</Badge>
+                  ) : null}
+                  {catalog?.registryHasDraft ? (
+                    <Badge variant="secondary">Registry draft</Badge>
+                  ) : null}
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground">
-                Edits save to planet Lua drafts and update the registry draft together.
+            </PanelHeader>
+            <PanelContent>
+              {draftDefinition ? (
+                <ScrollArea className="h-full">
+                  <div className="grid gap-4 p-4 xl:grid-cols-2">
+                    <GenesisIdentityForm
+                      definition={draftDefinition}
+                      spawnEnabled={draftSpawnEnabled}
+                      onSpawnEnabledChange={setDraftSpawnEnabled}
+                      onUpdate={updateDefinition}
+                    />
+                    <GenesisSpawnForm
+                      definition={draftDefinition}
+                      onUpdate={updateDefinition}
+                    />
+                    <GenesisShaderForm
+                      definition={draftDefinition}
+                      onUpdateSettings={updateSettings}
+                    />
+                  </div>
+                </ScrollArea>
+              ) : (
+                <div className="flex h-full min-h-96 items-center justify-center border border-border bg-background/40">
+                  <div className="max-w-md text-center text-sm text-muted-foreground">
+                    Select a planet definition to edit Genesis registry data.
+                  </div>
+                </div>
+              )}
+            </PanelContent>
+          </Panel>
+        }
+        right={
+          <Panel>
+            <PanelHeader>
+              <div className="flex flex-wrap items-center gap-3">
+                <Dices className="h-5 w-5 text-primary" />
+                <div>
+                  <div className="text-sm font-semibold uppercase tracking-[0.18em] text-primary">
+                    Planet Preview
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Live shader preview from the selected Genesis definition.
+                  </div>
+                </div>
+                <div className="ml-auto flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!draftDefinition || operationBusy}
+                    onClick={() =>
+                      setDraftDefinition((current) =>
+                        current ? randomizeDefinition(current) : current,
+                      )
+                    }
+                  >
+                    <Dices className="mr-2 h-4 w-4" />
+                    Randomize
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!draftDefinition || operationBusy}
+                    onClick={() =>
+                      setDraftDefinition((current) =>
+                        current
+                          ? randomizeDefinition(nextSeedDefinition(current))
+                          : current,
+                      )
+                    }
+                  >
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    New Seed
+                  </Button>
+                </div>
               </div>
-            </div>
-            <div className="ml-auto flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!draftDefinition || operationBusy}
-                onClick={() =>
-                  setDraftDefinition((current) =>
-                    current ? randomizeDefinition(current) : current,
-                  )
-                }
-              >
-                <Dices className="mr-2 h-4 w-4" />
-                Randomize
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!draftDefinition || operationBusy}
-                onClick={() =>
-                  setDraftDefinition((current) =>
-                    current ? randomizeDefinition(nextSeedDefinition(current)) : current,
-                  )
-                }
-              >
-                <RefreshCw className="mr-2 h-4 w-4" />
-                New Seed
-              </Button>
-            </div>
-          </div>
-        </PanelHeader>
-        <PanelContent>
-          {draftDefinition ? (
-            <ScrollArea className="h-full">
-              <div className="grid gap-4 p-4 xl:grid-cols-2">
-                <GenesisIdentityForm
-                  definition={draftDefinition}
-                  spawnEnabled={draftSpawnEnabled}
-                  onSpawnEnabledChange={setDraftSpawnEnabled}
-                  onUpdate={updateDefinition}
-                />
-                <GenesisSpawnForm
-                  definition={draftDefinition}
-                  onUpdate={updateDefinition}
-                />
-                <GenesisShaderForm
-                  definition={draftDefinition}
-                  onUpdateSettings={updateSettings}
-                />
-              </div>
-            </ScrollArea>
-          ) : (
-            <div className="flex h-full min-h-96 items-center justify-center border border-border bg-background/40">
-              <div className="max-w-md text-center text-sm text-muted-foreground">
-                Select a planet definition to edit Genesis registry data.
-              </div>
-            </div>
-          )}
-        </PanelContent>
-      </Panel>
+            </PanelHeader>
+            <PanelContent>
+              {draftDefinition ? (
+                <ScrollArea className="h-full">
+                  <div className="p-4">
+                    <GenesisPlanetPreview definition={draftDefinition} />
+                  </div>
+                </ScrollArea>
+              ) : (
+                <div className="flex h-full min-h-96 items-center justify-center border border-border bg-background/40">
+                  <div className="max-w-md text-center text-sm text-muted-foreground">
+                    Select a planet definition to preview its shader.
+                  </div>
+                </div>
+              )}
+            </PanelContent>
+          </Panel>
+        }
+      />
     </AppLayout>
   )
 }
@@ -581,12 +657,16 @@ function GenesisSpawnForm({
       <NumberField
         label="Position X"
         value={spawn.spawn_position[0]}
-        onChange={(x) => updateSpawn({ spawn_position: [x, spawn.spawn_position[1]] })}
+        onChange={(x) =>
+          updateSpawn({ spawn_position: [x, spawn.spawn_position[1]] })
+        }
       />
       <NumberField
         label="Position Y"
         value={spawn.spawn_position[1]}
-        onChange={(y) => updateSpawn({ spawn_position: [spawn.spawn_position[0], y] })}
+        onChange={(y) =>
+          updateSpawn({ spawn_position: [spawn.spawn_position[0], y] })
+        }
       />
       <NumberField
         label="Rotation Rad"
@@ -658,7 +738,9 @@ function GenesisShaderForm({
             label="Radius"
             value={settings.base_radius_scale}
             step={0.01}
-            onChange={(base_radius_scale) => onUpdateSettings({ base_radius_scale })}
+            onChange={(base_radius_scale) =>
+              onUpdateSettings({ base_radius_scale })
+            }
           />
           <NumberField
             label="Rotation"
@@ -676,7 +758,9 @@ function GenesisShaderForm({
             label="Normal"
             value={settings.normal_strength}
             step={0.01}
-            onChange={(normal_strength) => onUpdateSettings({ normal_strength })}
+            onChange={(normal_strength) =>
+              onUpdateSettings({ normal_strength })
+            }
           />
           <NumberField
             label="Ocean Level"
@@ -702,19 +786,25 @@ function GenesisShaderForm({
             label="Emissive"
             value={settings.emissive_strength}
             step={0.01}
-            onChange={(emissive_strength) => onUpdateSettings({ emissive_strength })}
+            onChange={(emissive_strength) =>
+              onUpdateSettings({ emissive_strength })
+            }
           />
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-4">
           <ColorField
             label="Primary"
             value={settings.color_primary_rgb}
-            onChange={(color_primary_rgb) => onUpdateSettings({ color_primary_rgb })}
+            onChange={(color_primary_rgb) =>
+              onUpdateSettings({ color_primary_rgb })
+            }
           />
           <ColorField
             label="Secondary"
             value={settings.color_secondary_rgb}
-            onChange={(color_secondary_rgb) => onUpdateSettings({ color_secondary_rgb })}
+            onChange={(color_secondary_rgb) =>
+              onUpdateSettings({ color_secondary_rgb })
+            }
           />
           <ColorField
             label="Atmosphere"
@@ -726,7 +816,9 @@ function GenesisShaderForm({
           <ColorField
             label="Emissive"
             value={settings.color_emissive_rgb}
-            onChange={(color_emissive_rgb) => onUpdateSettings({ color_emissive_rgb })}
+            onChange={(color_emissive_rgb) =>
+              onUpdateSettings({ color_emissive_rgb })
+            }
           />
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-4">
@@ -745,12 +837,16 @@ function GenesisShaderForm({
           <ToggleRow
             label="Atmosphere"
             checked={settings.enable_atmosphere}
-            onChange={(enable_atmosphere) => onUpdateSettings({ enable_atmosphere })}
+            onChange={(enable_atmosphere) =>
+              onUpdateSettings({ enable_atmosphere })
+            }
           />
           <ToggleRow
             label="Emissive"
             checked={settings.enable_emissive}
-            onChange={(enable_emissive) => onUpdateSettings({ enable_emissive })}
+            onChange={(enable_emissive) =>
+              onUpdateSettings({ enable_emissive })
+            }
           />
         </div>
       </FormSection>
@@ -804,9 +900,18 @@ function GenesisActionPanel({
           <Readout label="Planet ID" value={entry.planetId} />
           <Readout label="Lua File" value={entry.scriptPath} />
           <Readout label="Body Kind" value={bodyKindLabel(entry.bodyKind)} />
-          <Readout label="Planet Type" value={planetTypeLabel(entry.planetType)} />
-          <Readout label="Seed" value={entry.seed?.toString() ?? 'Unspecified'} />
-          <Readout label="Bootstrap" value={entry.spawnEnabled ? 'Enabled' : 'Library only'} />
+          <Readout
+            label="Planet Type"
+            value={planetTypeLabel(entry.planetType)}
+          />
+          <Readout
+            label="Seed"
+            value={entry.seed?.toString() ?? 'Unspecified'}
+          />
+          <Readout
+            label="Bootstrap"
+            value={entry.spawnEnabled ? 'Enabled' : 'Library only'}
+          />
           <div className="flex flex-wrap gap-2">
             {entry.tags.map((tag) => (
               <Badge key={tag} variant="outline">
@@ -837,7 +942,11 @@ function GenesisActionPanel({
               <Upload className="mr-2 h-4 w-4" />
               {operation === 'publishing' ? 'Publishing...' : 'Publish Draft'}
             </Button>
-            <Button variant="outline" disabled={busy || !entry.hasDraft} onClick={onDiscard}>
+            <Button
+              variant="outline"
+              disabled={busy || !entry.hasDraft}
+              onClick={onDiscard}
+            >
               <RotateCcw className="mr-2 h-4 w-4" />
               {operation === 'discarding' ? 'Discarding...' : 'Discard Draft'}
             </Button>
@@ -1001,7 +1110,9 @@ function Readout({ label, value }: { label: string; value: string }) {
       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
         {label}
       </div>
-      <div className="mt-1 break-words font-mono text-xs text-foreground">{value}</div>
+      <div className="mt-1 break-words font-mono text-xs text-foreground">
+        {value}
+      </div>
     </div>
   )
 }

@@ -42,10 +42,16 @@ pub(crate) struct SessionReadyThrottleState {
     pub last_sent_at_s_by_client_entity: HashMap<Entity, f64>,
 }
 
+#[derive(Resource, Default)]
+pub(crate) struct AuthenticatedInputSessionState {
+    pub player_entity_id_by_client: HashMap<Entity, String>,
+}
+
 pub fn init_resources(app: &mut App) {
     app.insert_resource(AuthenticatedClientBindings::default());
     app.insert_resource(PendingAuthAuditState::default());
     app.insert_resource(SessionReadyThrottleState::default());
+    app.insert_resource(AuthenticatedInputSessionState::default());
 }
 
 static MISSING_GATEWAY_JWT_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
@@ -77,6 +83,74 @@ fn send_session_denied_message(
             "replication failed sending session-denied to remote={:?} player={} err={}",
             remote_id, denied.player_entity_id, err
         );
+    }
+}
+
+pub(crate) fn reset_realtime_input_session_for_player(
+    player_entity_id: PlayerEntityId,
+    input_tick_tracker: &mut ClientInputTickTracker,
+    input_rate_limit_state: &mut InputRateLimitState,
+    latest_realtime_inputs: &mut LatestRealtimeInputsByPlayer,
+    realtime_input_activity: &mut RealtimeInputActivityByPlayer,
+) {
+    let player_wire = player_entity_id.canonical_wire_id();
+    input_tick_tracker.clear_player(player_entity_id);
+    input_rate_limit_state
+        .current_window_index_by_player_entity_id
+        .remove(player_wire.as_str());
+    input_rate_limit_state
+        .message_count_in_window_by_player_entity_id
+        .remove(player_wire.as_str());
+    latest_realtime_inputs
+        .by_player_entity_id
+        .remove(&player_entity_id);
+    realtime_input_activity
+        .last_received_at_s_by_player_entity_id
+        .remove(&player_entity_id);
+}
+
+pub fn reset_realtime_input_on_fresh_auth_bind(
+    bindings: Res<'_, AuthenticatedClientBindings>,
+    mut session_state: ResMut<'_, AuthenticatedInputSessionState>,
+    mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
+    mut input_rate_limit_state: ResMut<'_, InputRateLimitState>,
+    mut latest_realtime_inputs: ResMut<'_, LatestRealtimeInputsByPlayer>,
+    mut realtime_input_activity: ResMut<'_, RealtimeInputActivityByPlayer>,
+) {
+    let live_clients = bindings
+        .by_client_entity
+        .keys()
+        .copied()
+        .collect::<HashSet<_>>();
+    session_state
+        .player_entity_id_by_client
+        .retain(|client_entity, _| live_clients.contains(client_entity));
+
+    for (client_entity, player_wire) in &bindings.by_client_entity {
+        if session_state
+            .player_entity_id_by_client
+            .get(client_entity)
+            .is_some_and(|known_player| known_player == player_wire)
+        {
+            continue;
+        }
+        let Some(player_entity_id) = PlayerEntityId::parse(player_wire.as_str()) else {
+            warn!(
+                "replication auth input reset skipped invalid bound player id client={:?} player={}",
+                client_entity, player_wire
+            );
+            continue;
+        };
+        reset_realtime_input_session_for_player(
+            player_entity_id,
+            &mut input_tick_tracker,
+            &mut input_rate_limit_state,
+            &mut latest_realtime_inputs,
+            &mut realtime_input_activity,
+        );
+        session_state
+            .player_entity_id_by_client
+            .insert(*client_entity, player_wire.clone());
     }
 }
 
@@ -120,11 +194,7 @@ pub fn cleanup_client_auth_bindings(
         .iter()
         .map(|id| canonical_player_entity_id(id))
         .collect();
-    input_tick_tracker
-        .last_accepted_tick_by_player_entity_id
-        .retain(|player_entity_id, _| {
-            live_canonical.contains(&canonical_player_entity_id(player_entity_id))
-        });
+    input_tick_tracker.retain_live_clients(&live_clients);
     input_rate_limit_state
         .current_window_index_by_player_entity_id
         .retain(|player_entity_id, _| {
@@ -472,6 +542,8 @@ pub fn receive_client_auth_messages(
             // New authenticated bind is a fresh control session for this player.
             // Reset per-player request ordering so newly started clients (seq from 1)
             // are not rejected as stale against a prior disconnected session.
+            // Realtime input timeline state is reset by reset_realtime_input_on_fresh_auth_bind,
+            // after auth cleanup has a stable binding set for this frame.
             control_order
                 .last_request_seq_by_player
                 .remove(&message_player_wire);
@@ -552,6 +624,8 @@ fn decode_access_token(token: &str, jwt_secret: &str) -> Option<AuthClaims> {
             sub: decoded.claims.sub.unwrap_or_default(),
             player_entity_id: decoded.claims.player_entity_id,
             roles: decoded.claims.roles,
+            scope: String::new(),
+            session_context: Default::default(),
             iat: decoded.claims.iat.unwrap_or_default(),
             exp: decoded.claims.exp,
             jti: decoded.claims.jti.unwrap_or_default(),

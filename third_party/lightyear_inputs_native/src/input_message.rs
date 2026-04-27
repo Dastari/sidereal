@@ -1,0 +1,311 @@
+use crate::action_state::{ActionState, InputMarker};
+use alloc::{vec, vec::Vec};
+use bevy_ecs::entity::{EntityMapper, MapEntities};
+use bevy_reflect::{FromReflect, Reflect, Reflectable};
+use core::cmp::max;
+use core::fmt::Debug;
+use core::time::Duration;
+use lightyear_core::prelude::Tick;
+use lightyear_inputs::input_buffer::{Compressed, InputBuffer};
+use lightyear_inputs::input_message::{ActionStateSequence, InputSnapshot};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+pub type NativeBuffer<A> = InputBuffer<ActionState<A>, A>;
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Reflect)]
+pub struct NativeStateSequence<A> {
+    states: Vec<Compressed<A>>,
+}
+
+impl<A: Debug + Default + PartialEq + Clone + Send + Sync + 'static> InputSnapshot
+    for ActionState<A>
+{
+    fn decay_tick(&mut self, _tick_duration: Duration) {}
+}
+
+impl<A> IntoIterator for NativeStateSequence<A> {
+    type Item = Compressed<ActionState<A>>;
+    type IntoIter = core::iter::Map<
+        vec::IntoIter<Compressed<A>>,
+        fn(Compressed<A>) -> Compressed<ActionState<A>>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.states.into_iter().map(|input| match input {
+            Compressed::Absent => Compressed::Absent,
+            Compressed::SameAsPrecedent => Compressed::SameAsPrecedent,
+            Compressed::Input(i) => Compressed::Input(ActionState(i)),
+        })
+    }
+}
+
+impl<
+    A: Serialize
+        + DeserializeOwned
+        + Clone
+        + PartialEq
+        + Send
+        + Sync
+        + Debug
+        + Default
+        + Reflectable
+        + FromReflect
+        + 'static,
+> ActionStateSequence for NativeStateSequence<A>
+{
+    type Action = A;
+    type Snapshot = ActionState<A>;
+    type State = ActionState<A>;
+    type Marker = InputMarker<A>;
+
+    fn len(&self) -> usize {
+        self.states.len()
+    }
+
+    fn get_snapshots_from_message(
+        self,
+        _tick_duration: Duration,
+    ) -> impl Iterator<Item = Compressed<Self::Snapshot>> {
+        self.states.into_iter().map(|input| match input {
+            Compressed::Absent => Compressed::Absent,
+            Compressed::SameAsPrecedent => Compressed::SameAsPrecedent,
+            Compressed::Input(i) => Compressed::Input(ActionState(i)),
+        })
+    }
+
+    fn build_from_input_buffer<'w, 's>(
+        input_buffer: &InputBuffer<Self::Snapshot, Self::Action>,
+        num_ticks: u16,
+        end_tick: Tick,
+    ) -> Option<Self> {
+        let buffer_start_tick = input_buffer.start_tick?;
+        // find the first tick for which we have an `ActionState` buffered
+        let start_tick = max(end_tick - num_ticks + 1, buffer_start_tick);
+
+        // find the initial state, (which we convert out of SameAsPrecedent)
+        let start_state = input_buffer
+            .get(start_tick)
+            .map_or(Compressed::Absent, |input| input.into());
+        let mut states = vec![start_state];
+
+        // append the other states until the end tick
+        let buffer_start = (start_tick + 1 - buffer_start_tick) as usize;
+        let buffer_end = (end_tick + 1 - buffer_start_tick) as usize;
+        for idx in buffer_start..buffer_end {
+            let state =
+                input_buffer
+                    .buffer
+                    .get(idx)
+                    .map_or(Compressed::Absent, |input| match input {
+                        Compressed::Absent => Compressed::Absent,
+                        Compressed::SameAsPrecedent => Compressed::SameAsPrecedent,
+                        Compressed::Input(v) => v.into(),
+                    });
+            states.push(state);
+        }
+        Some(Self { states })
+    }
+
+    fn to_snapshot(state: &ActionState<A>) -> Self::Snapshot {
+        (*state).clone()
+    }
+
+    fn from_snapshot(state: &mut ActionState<A>, snapshot: &Self::Snapshot) {
+        *state = snapshot.clone();
+    }
+}
+
+impl<A: MapEntities> MapEntities for NativeStateSequence<A> {
+    fn map_entities<E: EntityMapper>(&mut self, entity_mapper: &mut E) {
+        self.states.iter_mut().for_each(|state| {
+            if let Compressed::Input(action_state) = state {
+                action_state.map_entities(entity_mapper);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::collections::VecDeque;
+    use std::time::Duration;
+    use test_log::test;
+
+    #[test]
+    fn test_build_sequence_from_buffer() {
+        let mut input_buffer = InputBuffer::default();
+        input_buffer.set_empty(Tick(2));
+        input_buffer.set(Tick(3), ActionState(1));
+        input_buffer.set(Tick(7), ActionState(2));
+
+        let sequence =
+            NativeStateSequence::<usize>::build_from_input_buffer(&input_buffer, 9, Tick(10))
+                .unwrap();
+        assert_eq!(
+            sequence,
+            NativeStateSequence::<usize> {
+                states: vec![
+                    // tick 2
+                    Compressed::Absent,
+                    // tick 3
+                    Compressed::Input(1),
+                    Compressed::SameAsPrecedent,
+                    Compressed::SameAsPrecedent,
+                    Compressed::SameAsPrecedent,
+                    Compressed::Input(2),
+                    // TODO: why is it marked as absent instead of SameAsPrecedent??
+                    //  by default, when inputs are absent should we mark them as SameAsPrecedent?
+                    Compressed::Absent,
+                    Compressed::Absent,
+                    Compressed::Absent,
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn test_update_buffer_from_sequence() {
+        let mut input_buffer = InputBuffer::default();
+        let sequence = NativeStateSequence::<i32> {
+            states: vec![
+                // tick 13
+                Compressed::Absent,
+                // tick 14
+                Compressed::Input(0),
+                Compressed::SameAsPrecedent,
+                // tick 16
+                Compressed::Input(1),
+                Compressed::SameAsPrecedent,
+                // tick 18
+                Compressed::Absent,
+                Compressed::SameAsPrecedent,
+                // Tick 20
+                Compressed::SameAsPrecedent,
+            ],
+        };
+        sequence.update_buffer(&mut input_buffer, Tick(20), Duration::default());
+        assert_eq!(input_buffer.get(Tick(20)), None,);
+        assert_eq!(input_buffer.get(Tick(19)), None,);
+        assert_eq!(input_buffer.get(Tick(18)), None,);
+        assert_eq!(input_buffer.get(Tick(17)), Some(&ActionState::<i32>(1)));
+        assert_eq!(input_buffer.get(Tick(16)), Some(&ActionState::<i32>(1)));
+        assert_eq!(input_buffer.get(Tick(15)), Some(&ActionState::<i32>(0)));
+        assert_eq!(input_buffer.get(Tick(14)), Some(&ActionState::<i32>(0)));
+        assert_eq!(input_buffer.get(Tick(13)), None,);
+    }
+
+    /// Test that the sequence updates the buffer correctly when the sequence's start tick is lower than the input
+    /// buffer's start tick
+    #[test]
+    fn test_update_buffer_from_sequence_lower_start_tick() {
+        let mut input_buffer = InputBuffer {
+            start_tick: Some(Tick(10)),
+            buffer: VecDeque::from([
+                Compressed::Input(ActionState(0)),
+                Compressed::SameAsPrecedent,
+                Compressed::SameAsPrecedent,
+            ]),
+            last_remote_tick: Some(Tick(12)),
+            marker: core::marker::PhantomData,
+        };
+        let sequence = NativeStateSequence::<usize> {
+            states: vec![
+                // tick 7
+                Compressed::Absent,
+                Compressed::SameAsPrecedent,
+                // tick 9
+                Compressed::Input(0),
+                Compressed::SameAsPrecedent,
+                Compressed::SameAsPrecedent,
+                Compressed::SameAsPrecedent,
+                Compressed::SameAsPrecedent,
+                Compressed::Input(1),
+            ],
+        };
+        let mismatch = sequence.update_buffer(&mut input_buffer, Tick(14), Duration::default());
+        assert_eq!(mismatch, Some(Tick(14)));
+        assert_eq!(input_buffer.get(Tick(14)), Some(&ActionState(1)));
+        assert_eq!(input_buffer.get(Tick(13)), Some(&ActionState(0)));
+        assert_eq!(input_buffer.get(Tick(12)), Some(&ActionState(0)));
+        assert_eq!(input_buffer.get(Tick(11)), Some(&ActionState(0)));
+        assert_eq!(input_buffer.get(Tick(10)), Some(&ActionState(0)));
+        assert_eq!(input_buffer.get(Tick(9)), None);
+        assert_eq!(input_buffer.get(Tick(8)), None);
+        assert_eq!(input_buffer.get(Tick(7)), None);
+    }
+
+    #[test]
+    fn test_update_buffer_from_sequence_absent() {
+        let mut input_buffer = InputBuffer {
+            start_tick: Some(Tick(10)),
+            buffer: VecDeque::from([
+                Compressed::Input(ActionState(0)),
+                Compressed::Absent,
+                Compressed::SameAsPrecedent,
+            ]),
+            last_remote_tick: Some(Tick(12)),
+            marker: core::marker::PhantomData,
+        };
+        let sequence = NativeStateSequence::<usize> {
+            states: vec![
+                // Tick 11
+                Compressed::Absent,
+                // Tick 12
+                Compressed::SameAsPrecedent,
+            ],
+        };
+        sequence.update_buffer(&mut input_buffer, Tick(12), Duration::default());
+        assert_eq!(input_buffer.get(Tick(12)), None);
+        assert_eq!(input_buffer.get(Tick(11)), None);
+        assert_eq!(input_buffer.get(Tick(10)), Some(&ActionState(0)));
+    }
+
+    #[test]
+    fn test_update_buffer_from_sequence_present() {
+        let mut input_buffer = InputBuffer {
+            start_tick: Some(Tick(10)),
+            buffer: VecDeque::from([Compressed::Absent, Compressed::SameAsPrecedent]),
+            last_remote_tick: Some(Tick(11)),
+            marker: core::marker::PhantomData,
+        };
+        let sequence = NativeStateSequence::<usize> {
+            states: vec![
+                // Tick 9
+                Compressed::Input(0),
+                // Tick 10
+                Compressed::Absent,
+                // Tick 11
+                Compressed::SameAsPrecedent,
+            ],
+        };
+        let mismatch = sequence.update_buffer(&mut input_buffer, Tick(11), Duration::default());
+        assert_eq!(mismatch, None);
+        assert_eq!(input_buffer.get(Tick(11)), None);
+        assert_eq!(input_buffer.get(Tick(10)), None);
+        assert_eq!(input_buffer.get(Tick(9)), None);
+    }
+
+    /// Check that everything after the mismatch is cleared
+    #[test]
+    fn test_update_buffer_from_sequence_clip_after() {
+        let mut input_buffer = InputBuffer {
+            start_tick: Some(Tick(10)),
+            buffer: VecDeque::from([Compressed::Absent, Compressed::Input(ActionState(3))]),
+            last_remote_tick: Some(Tick(9)),
+            marker: core::marker::PhantomData,
+        };
+        let sequence = NativeStateSequence::<usize> {
+            states: vec![
+                // Tick 10
+                Compressed::Input(0),
+            ],
+        };
+        let mismatch = sequence.update_buffer(&mut input_buffer, Tick(10), Duration::default());
+        assert_eq!(mismatch, Some(Tick(10)));
+        // check that everything after tick 10 is empty
+        assert_eq!(input_buffer.get(Tick(11)), None);
+        assert_eq!(input_buffer.len(), 1);
+    }
+}

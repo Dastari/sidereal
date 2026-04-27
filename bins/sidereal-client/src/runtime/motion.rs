@@ -3,34 +3,59 @@
 use avian2d::prelude::*;
 use bevy::ecs::query::Has;
 use bevy::{math::DVec2, prelude::*};
+use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
+use lightyear::prediction::prelude::PredictionHistory;
 use lightyear::prelude::input::native::{ActionState, InputMarker};
 use lightyear::prelude::is_in_rollback;
+use lightyear::prelude::{Confirmed, ConfirmedTick, LocalTimeline};
 use sidereal_game::{
-    ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid, Hardpoint,
-    MountedOn, PlayerTag, SimulationMotionWriter, SizeM, TotalMassKg, angular_inertia_from_size,
-    collider_from_collision_shape, default_flight_action_capabilities,
+    ActionQueue, CollisionAabbM, CollisionOutlineM, CollisionProfile, EntityGuid,
+    FlightControlAuthority, Hardpoint, MountedOn, PlayerTag, SimulationMotionWriter, SizeM,
+    TotalMassKg, angular_inertia_from_size, collider_from_collision_shape,
+    default_flight_action_capabilities,
 };
-use sidereal_net::PlayerInput;
+use sidereal_net::{PlayerInput, replace_action_queue_from_player_input};
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::collections::HashSet;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
-    ControlledEntity, NearbyCollisionProxy, SuppressedPredictedDuplicateVisual, WorldEntity,
+    ControlledEntity, NearbyCollisionProxy, PredictedMotionBootstrapSeed,
+    SuppressedPredictedDuplicateVisual, WorldEntity,
 };
 use super::resources::{
     ControlBootstrapPhase, ControlBootstrapState, MotionOwnershipReconcileState,
     NearbyCollisionProxyTuning,
 };
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn mark_motion_ownership_dirty_signals(
     session: Res<'_, ClientSession>,
     player_view_state: Res<'_, LocalPlayerViewState>,
     added_world_entities: Query<'_, '_, Entity, Added<WorldEntity>>,
+    changed_physics_setup: Query<
+        '_,
+        '_,
+        Entity,
+        (
+            With<WorldEntity>,
+            Or<(
+                Changed<SizeM>,
+                Changed<TotalMassKg>,
+                Changed<CollisionProfile>,
+                Changed<CollisionAabbM>,
+                Changed<CollisionOutlineM>,
+            )>,
+        ),
+    >,
     mut reconcile_state: ResMut<'_, MotionOwnershipReconcileState>,
 ) {
-    if session.is_changed() || player_view_state.is_changed() || !added_world_entities.is_empty() {
+    if session.is_changed()
+        || player_view_state.is_changed()
+        || !added_world_entities.is_empty()
+        || !changed_physics_setup.is_empty()
+    {
         reconcile_state.dirty = true;
     }
 }
@@ -50,19 +75,230 @@ pub(crate) fn apply_predicted_input_to_action_queue(
 ) {
     for (entity, action_state, maybe_queue) in &mut query {
         if let Some(mut queue) = maybe_queue {
-            // Replace with current snapshot so we don't accumulate across ticks (same as server).
-            queue.clear();
-            for action in &action_state.0.actions {
-                queue.push(*action);
-            }
+            replace_action_queue_from_player_input(&mut queue, &action_state.0);
         } else {
-            commands.entity(entity).insert((
-                ActionQueue {
-                    pending: action_state.0.actions.clone(),
-                },
-                default_flight_action_capabilities(),
+            let mut queue = ActionQueue::default();
+            replace_action_queue_from_player_input(&mut queue, &action_state.0);
+            commands
+                .entity(entity)
+                .insert((queue, default_flight_action_capabilities()));
+        }
+    }
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub(crate) fn seed_controlled_predicted_motion_from_confirmed(
+    mut commands: Commands<'_, '_>,
+    timeline: Res<'_, LocalTimeline>,
+    control_bootstrap_state: Res<'_, ControlBootstrapState>,
+    rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
+    mut query: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Option<&'_ EntityGuid>,
+            &'_ Confirmed<Position>,
+            Option<&'_ Confirmed<Rotation>>,
+            Option<&'_ Confirmed<LinearVelocity>>,
+            Option<&'_ Confirmed<AngularVelocity>>,
+            Option<&'_ ConfirmedTick>,
+            Option<&'_ mut Position>,
+            Option<&'_ mut Rotation>,
+            Option<&'_ mut LinearVelocity>,
+            Option<&'_ mut AngularVelocity>,
+            Option<&'_ mut Transform>,
+            Option<&'_ mut FrameInterpolate<Transform>>,
+            Option<&'_ PredictedMotionBootstrapSeed>,
+        ),
+        (
+            With<ControlledEntity>,
+            With<SimulationMotionWriter>,
+            With<lightyear::prelude::Predicted>,
+        ),
+    >,
+    mut histories: Query<
+        '_,
+        '_,
+        (
+            Option<&'_ mut PredictionHistory<Position>>,
+            Option<&'_ mut PredictionHistory<Rotation>>,
+            Option<&'_ mut PredictionHistory<LinearVelocity>>,
+            Option<&'_ mut PredictionHistory<AngularVelocity>>,
+        ),
+    >,
+) {
+    if is_in_rollback(rollback_query) {
+        return;
+    }
+    let ControlBootstrapPhase::ActivePredicted {
+        generation,
+        entity: active_entity,
+        ..
+    } = control_bootstrap_state.phase
+    else {
+        return;
+    };
+    let Ok((
+        entity,
+        guid,
+        confirmed_position,
+        confirmed_rotation,
+        confirmed_linear_velocity,
+        confirmed_angular_velocity,
+        confirmed_tick,
+        position,
+        rotation,
+        linear_velocity,
+        angular_velocity,
+        transform,
+        frame_interpolate,
+        seed,
+    )) = query.get_mut(active_entity)
+    else {
+        return;
+    };
+    if seed.is_some_and(|seed| seed.generation == generation) {
+        return;
+    }
+
+    let position_value = confirmed_position.0;
+    let rotation_value = confirmed_rotation
+        .map(|value| value.0)
+        .unwrap_or(Rotation::IDENTITY);
+    let linear_velocity_value = confirmed_linear_velocity
+        .map(|value| value.0)
+        .unwrap_or(LinearVelocity::ZERO);
+    let angular_velocity_value = confirmed_angular_velocity
+        .map(|value| value.0)
+        .unwrap_or(AngularVelocity::ZERO);
+
+    if let Some(mut position) = position {
+        *position = position_value;
+    } else {
+        commands.entity(entity).insert(position_value);
+    }
+    if let Some(mut rotation) = rotation {
+        *rotation = rotation_value;
+    } else {
+        commands.entity(entity).insert(rotation_value);
+    }
+    if let Some(mut linear_velocity) = linear_velocity {
+        *linear_velocity = linear_velocity_value;
+    } else {
+        commands.entity(entity).insert(linear_velocity_value);
+    }
+    if let Some(mut angular_velocity) = angular_velocity {
+        *angular_velocity = angular_velocity_value;
+    } else {
+        commands.entity(entity).insert(angular_velocity_value);
+    }
+
+    let seeded_transform = Transform {
+        translation: Vec3::new(position_value.0.x as f32, position_value.0.y as f32, 0.0),
+        rotation: Quat::from_rotation_z(rotation_value.as_radians() as f32),
+        ..Default::default()
+    };
+    if let Some(mut transform) = transform {
+        *transform = seeded_transform;
+    } else {
+        commands.entity(entity).insert(seeded_transform);
+    }
+    if let Some(mut frame_interpolate) = frame_interpolate {
+        frame_interpolate.previous_value = Some(seeded_transform);
+        frame_interpolate.current_value = Some(seeded_transform);
+    }
+
+    let current_tick = timeline.tick();
+    let seed_tick = confirmed_tick
+        .map(|confirmed_tick| confirmed_tick.tick)
+        .filter(|tick| *tick <= current_tick)
+        .unwrap_or(current_tick);
+    if let Ok((
+        position_history,
+        rotation_history,
+        linear_velocity_history,
+        angular_velocity_history,
+    )) = histories.get_mut(entity)
+    {
+        if let Some(mut history) = position_history {
+            seed_prediction_history(&mut history, seed_tick, current_tick, position_value);
+        } else {
+            commands.entity(entity).insert(new_prediction_history(
+                seed_tick,
+                current_tick,
+                position_value,
             ));
         }
+        if let Some(mut history) = rotation_history {
+            seed_prediction_history(&mut history, seed_tick, current_tick, rotation_value);
+        } else {
+            commands.entity(entity).insert(new_prediction_history(
+                seed_tick,
+                current_tick,
+                rotation_value,
+            ));
+        }
+        if let Some(mut history) = linear_velocity_history {
+            seed_prediction_history(&mut history, seed_tick, current_tick, linear_velocity_value);
+        } else {
+            commands.entity(entity).insert(new_prediction_history(
+                seed_tick,
+                current_tick,
+                linear_velocity_value,
+            ));
+        }
+        if let Some(mut history) = angular_velocity_history {
+            seed_prediction_history(
+                &mut history,
+                seed_tick,
+                current_tick,
+                angular_velocity_value,
+            );
+        } else {
+            commands.entity(entity).insert(new_prediction_history(
+                seed_tick,
+                current_tick,
+                angular_velocity_value,
+            ));
+        }
+    }
+    commands
+        .entity(entity)
+        .insert(PredictedMotionBootstrapSeed { generation });
+
+    bevy::log::info!(
+        entity = ?entity,
+        guid = ?guid.map(|guid| guid.0),
+        generation,
+        confirmed_tick = ?confirmed_tick.map(|tick| tick.tick),
+        current_tick = ?current_tick,
+        position = ?position_value.0,
+        rotation_rad = rotation_value.as_radians(),
+        "seeded controlled predicted motion from confirmed state"
+    );
+}
+
+fn new_prediction_history<C: Component + Clone>(
+    seed_tick: lightyear::prelude::Tick,
+    current_tick: lightyear::prelude::Tick,
+    value: C,
+) -> PredictionHistory<C> {
+    let mut history = PredictionHistory::<C>::default();
+    seed_prediction_history(&mut history, seed_tick, current_tick, value);
+    history
+}
+
+fn seed_prediction_history<C: Component + Clone>(
+    history: &mut PredictionHistory<C>,
+    seed_tick: lightyear::prelude::Tick,
+    current_tick: lightyear::prelude::Tick,
+    value: C,
+) {
+    history.clear();
+    history.add_update(seed_tick, value.clone());
+    if current_tick != seed_tick {
+        history.add_update(current_tick, value);
     }
 }
 
@@ -307,6 +543,7 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
                 // Free-roam routes input to the local player anchor (non-physics).
                 // Keep ActionQueue on this entity so character prediction can run.
                 entity_commands.remove::<NearbyCollisionProxy>();
+                entity_commands.remove::<FlightControlAuthority>();
                 entity_commands.remove::<(
                     RigidBody,
                     Collider,
@@ -318,12 +555,13 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
                 )>();
                 continue;
             }
+            entity_commands.insert(FlightControlAuthority);
             let has_physics_data = size_m.is_some() && total_mass_kg.is_some_and(|m| m.0 > 0.0);
             let allow_collider = collision_profile
                 .copied()
                 .is_some_and(CollisionProfile::is_collidable);
             let has_rigidbody = rigidbody_markers.get(entity).is_ok();
-            if has_physics_data && allow_collider && !has_rigidbody {
+            if has_physics_data && allow_collider {
                 let size = size_m.copied().unwrap();
                 let mass_kg = total_mass_kg.map(|m| m.0).unwrap();
                 let collider = collider_from_collision_shape(
@@ -357,6 +595,7 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
         if controlled.is_some() {
             commands.entity(entity).remove::<ControlledEntity>();
         }
+        commands.entity(entity).remove::<FlightControlAuthority>();
 
         let is_root_entity =
             mounted_on.is_none() && hardpoint.is_none() && player_tag.is_none() && _guid.is_some();
@@ -512,5 +751,312 @@ pub(crate) fn enforce_controlled_planar_motion(
         if !transform.rotation.is_finite() {
             transform.rotation = Quat::IDENTITY;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        enforce_motion_ownership_for_world_entities,
+        seed_controlled_predicted_motion_from_confirmed,
+    };
+    use crate::runtime::app_state::{ClientSession, LocalPlayerViewState};
+    use crate::runtime::components::{ControlledEntity, PredictedMotionBootstrapSeed, WorldEntity};
+    use crate::runtime::resources::{
+        ControlBootstrapPhase, ControlBootstrapState, MotionOwnershipReconcileState,
+        NearbyCollisionProxyTuning,
+    };
+    use avian2d::prelude::{
+        AngularInertia, AngularVelocity, LinearVelocity, Mass, Position, RigidBody, Rotation,
+    };
+    use bevy::app::Update;
+    use bevy::prelude::{App, Time, Transform, Vec2};
+    use lightyear::frame_interpolation::FrameInterpolate;
+    use lightyear::prediction::prelude::PredictionHistory;
+    use lightyear::prelude::{Confirmed, ConfirmedTick, LocalTimeline, Tick};
+    use sidereal_game::{
+        CollisionProfile, EntityGuid, FlightControlAuthority, SimulationMotionWriter, SizeM,
+        TotalMassKg,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn predicted_controlled_ship_gets_client_flight_authority() {
+        let mut app = App::new();
+        let player_id = "1521601b-7e69-4700-853f-eb1eb3a41199".to_string();
+        let target_id = "ce9e421c-8b62-458a-803e-51e9ad272908".to_string();
+        let stale_id = "c2f492d0-1000-4e11-b43e-729f2b2ea178".to_string();
+        let target_guid = Uuid::parse_str(&target_id).unwrap();
+        let stale_guid = Uuid::parse_str(&stale_id).unwrap();
+
+        let target_entity = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(target_guid),
+                Position::default(),
+                Rotation::default(),
+                lightyear::prelude::Predicted,
+            ))
+            .id();
+        let stale_entity = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(stale_guid),
+                Position::default(),
+                Rotation::default(),
+                FlightControlAuthority,
+                ControlledEntity {
+                    entity_id: stale_id,
+                    player_entity_id: player_id.clone(),
+                },
+            ))
+            .id();
+
+        app.insert_resource(Time::<()>::default());
+        app.insert_resource(ClientSession {
+            player_entity_id: Some(player_id),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some(target_id.clone()),
+            ..Default::default()
+        });
+        app.insert_resource(ControlBootstrapState {
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: target_id.clone(),
+                generation: 1,
+                entity: target_entity,
+            },
+            authoritative_target_entity_id: Some(target_id),
+            generation: 1,
+            ..Default::default()
+        });
+        app.insert_resource(NearbyCollisionProxyTuning {
+            radius_m: 0.0,
+            max_proxies: 0,
+            reconcile_interval_s: 1.0,
+        });
+        app.insert_resource(MotionOwnershipReconcileState {
+            dirty: true,
+            ..Default::default()
+        });
+        app.add_systems(Update, enforce_motion_ownership_for_world_entities);
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<FlightControlAuthority>(target_entity)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<FlightControlAuthority>(stale_entity)
+                .is_none()
+        );
+        assert!(app.world().get::<ControlledEntity>(stale_entity).is_none());
+    }
+
+    #[test]
+    fn predicted_controlled_ship_repairs_missing_mass_and_inertia_on_existing_rigidbody() {
+        let mut app = App::new();
+        let player_id = "1521601b-7e69-4700-853f-eb1eb3a41199".to_string();
+        let target_id = "ce9e421c-8b62-458a-803e-51e9ad272908".to_string();
+        let target_guid = Uuid::parse_str(&target_id).unwrap();
+
+        let target_entity = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(target_guid),
+                Position::default(),
+                Rotation::default(),
+                RigidBody::Dynamic,
+                SizeM {
+                    length: 12.0,
+                    width: 6.0,
+                    height: 2.0,
+                },
+                TotalMassKg(480.0),
+                CollisionProfile::solid_aabb(),
+                lightyear::prelude::Predicted,
+            ))
+            .id();
+
+        app.insert_resource(Time::<()>::default());
+        app.insert_resource(ClientSession {
+            player_entity_id: Some(player_id),
+            ..Default::default()
+        });
+        app.insert_resource(LocalPlayerViewState {
+            controlled_entity_id: Some(target_id.clone()),
+            ..Default::default()
+        });
+        app.insert_resource(ControlBootstrapState {
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: target_id.clone(),
+                generation: 1,
+                entity: target_entity,
+            },
+            authoritative_target_entity_id: Some(target_id),
+            generation: 1,
+            ..Default::default()
+        });
+        app.insert_resource(NearbyCollisionProxyTuning {
+            radius_m: 0.0,
+            max_proxies: 0,
+            reconcile_interval_s: 1.0,
+        });
+        app.insert_resource(MotionOwnershipReconcileState {
+            dirty: true,
+            ..Default::default()
+        });
+        app.add_systems(Update, enforce_motion_ownership_for_world_entities);
+
+        app.update();
+
+        assert_eq!(app.world().get::<Mass>(target_entity), Some(&Mass(480.0)));
+        assert!(
+            app.world()
+                .get::<AngularInertia>(target_entity)
+                .is_some_and(|inertia| inertia.0 > 1.0)
+        );
+    }
+
+    #[test]
+    fn predicted_controlled_motion_seeds_from_confirmed_on_control_generation() {
+        let mut app = App::new();
+        let target_id = "ce9e421c-8b62-458a-803e-51e9ad272908".to_string();
+        let target_guid = Uuid::parse_str(&target_id).unwrap();
+        let target_entity = app
+            .world_mut()
+            .spawn((
+                WorldEntity,
+                EntityGuid(target_guid),
+                ControlledEntity {
+                    entity_id: target_id.clone(),
+                    player_entity_id: "1521601b-7e69-4700-853f-eb1eb3a41199".to_string(),
+                },
+                SimulationMotionWriter,
+                lightyear::prelude::Predicted,
+                Position(Vec2::ZERO.into()),
+                Rotation::IDENTITY,
+                LinearVelocity(Vec2::ZERO.into()),
+                AngularVelocity(0.0),
+            ))
+            .id();
+        app.world_mut().entity_mut(target_entity).insert((
+            Confirmed(Position(Vec2::new(100.0, -25.0).into())),
+            Confirmed(Rotation::radians(0.75)),
+            Confirmed(LinearVelocity(Vec2::new(6.0, -2.0).into())),
+            Confirmed(AngularVelocity(0.25)),
+            ConfirmedTick { tick: Tick(40) },
+            PredictionHistory::<Position>::default(),
+            PredictionHistory::<Rotation>::default(),
+            PredictionHistory::<LinearVelocity>::default(),
+            PredictionHistory::<AngularVelocity>::default(),
+            Transform::default(),
+            FrameInterpolate::<Transform>::default(),
+        ));
+        let mut timeline = LocalTimeline::default();
+        timeline.apply_delta(50);
+        app.insert_resource(timeline);
+        app.insert_resource(ControlBootstrapState {
+            authoritative_target_entity_id: Some(target_id.clone()),
+            generation: 7,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: target_id,
+                generation: 7,
+                entity: target_entity,
+            },
+            last_transition_at_s: 0.0,
+        });
+        app.add_systems(Update, seed_controlled_predicted_motion_from_confirmed);
+
+        app.update();
+
+        let entity = app.world().entity(target_entity);
+        assert_eq!(
+            entity.get::<Position>().map(|value| value.0),
+            Some(Vec2::new(100.0, -25.0).into())
+        );
+        assert_eq!(
+            entity
+                .get::<Rotation>()
+                .map(|rotation| rotation.as_radians()),
+            Some(0.75)
+        );
+        assert_eq!(
+            entity.get::<LinearVelocity>().map(|value| value.0),
+            Some(Vec2::new(6.0, -2.0).into())
+        );
+        assert_eq!(
+            entity.get::<AngularVelocity>().map(|value| value.0),
+            Some(0.25)
+        );
+        let transform = entity.get::<Transform>().expect("transform");
+        assert_eq!(transform.translation.x, 100.0);
+        assert_eq!(transform.translation.y, -25.0);
+        let frame = entity
+            .get::<FrameInterpolate<Transform>>()
+            .expect("frame interpolation");
+        assert!(frame.previous_value.is_some());
+        assert!(frame.current_value.is_some());
+        assert_eq!(
+            entity.get::<PredictedMotionBootstrapSeed>(),
+            Some(&PredictedMotionBootstrapSeed { generation: 7 })
+        );
+        assert_eq!(
+            entity
+                .get::<PredictionHistory<Position>>()
+                .expect("position history")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn predicted_controlled_motion_seed_does_not_repeat_same_generation() {
+        let mut app = App::new();
+        let target_id = "ce9e421c-8b62-458a-803e-51e9ad272908".to_string();
+        let target_guid = Uuid::parse_str(&target_id).unwrap();
+        let target_entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(target_guid),
+                ControlledEntity {
+                    entity_id: target_id.clone(),
+                    player_entity_id: "1521601b-7e69-4700-853f-eb1eb3a41199".to_string(),
+                },
+                SimulationMotionWriter,
+                lightyear::prelude::Predicted,
+                PredictedMotionBootstrapSeed { generation: 3 },
+                Position(Vec2::new(5.0, 6.0).into()),
+                Confirmed(Position(Vec2::new(100.0, -25.0).into())),
+            ))
+            .id();
+        app.insert_resource(LocalTimeline::default());
+        app.insert_resource(ControlBootstrapState {
+            authoritative_target_entity_id: Some(target_id.clone()),
+            generation: 3,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: target_id,
+                generation: 3,
+                entity: target_entity,
+            },
+            last_transition_at_s: 0.0,
+        });
+        app.add_systems(Update, seed_controlled_predicted_motion_from_confirmed);
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .get::<Position>(target_entity)
+                .map(|value| value.0),
+            Some(Vec2::new(5.0, 6.0).into())
+        );
     }
 }

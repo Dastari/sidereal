@@ -39,7 +39,10 @@ export const Route = createFileRoute(
   server: {
     handlers: {
       POST: async ({ request, params }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:database:write',
+        )
         if (authFailure) {
           return authFailure
         }

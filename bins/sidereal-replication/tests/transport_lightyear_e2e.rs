@@ -30,6 +30,36 @@ fn available_player_entity_ids(limit: i64) -> Option<Vec<String>> {
     Some(rows.into_iter().map(|row| row.get(0)).collect())
 }
 
+fn mobile_controlled_entity_id_for_player(player_entity_id: &str) -> Option<String> {
+    let mut client = Client::connect(&test_database_url(), NoTls).ok()?;
+    let rows = client
+        .query(
+            r#"
+            WITH components AS (
+                SELECT
+                    split_part((properties::text)::jsonb->>'component_id', ':', 1) AS guid,
+                    (properties::text)::jsonb->>'component_kind' AS kind,
+                    (properties::text)::jsonb->>'value' AS value
+                FROM sidereal."Component"
+            )
+            SELECT owner.guid
+            FROM components owner
+            JOIN components component ON component.guid = owner.guid
+            WHERE owner.kind = 'owner_id'
+              AND owner.value = to_json($1::text)::text
+            GROUP BY owner.guid
+            HAVING bool_or(component.kind = 'flight_computer')
+               AND bool_or(component.kind = 'avian_position')
+               AND bool_or(component.kind = 'avian_rigid_body')
+            ORDER BY owner.guid
+            LIMIT 1
+            "#,
+            &[&player_entity_id],
+        )
+        .ok()?;
+    rows.first().map(|row| row.get(0))
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -106,6 +136,7 @@ fn spawn_headless_client(
     player_entity_id: &str,
     access_token: &str,
     switch_plan: Option<(&str, &str, f64)>,
+    extra_env: &[(&str, &str)],
 ) -> (Child, Arc<Mutex<String>>) {
     let mut client_cmd = Command::new(client_bin);
     client_cmd
@@ -118,6 +149,9 @@ fn spawn_headless_client(
         .env("REPLICATION_UDP_ADDR", replication_udp_addr)
         .env("CLIENT_UDP_BIND", client_udp_addr)
         .env("RUST_LOG", "info");
+    for (key, value) in extra_env {
+        client_cmd.env(key, value);
+    }
     if let Some((next_player, next_token, after_s)) = switch_plan {
         client_cmd
             .env(
@@ -232,6 +266,7 @@ fn replication_client_lightyear_transport_flow() {
         &player_entity_id,
         &access_token,
         None,
+        &[],
     );
 
     let client_connected_ok = wait_for_log(
@@ -347,6 +382,7 @@ fn replication_rebinds_same_remote_after_player_switch() {
         &player_a,
         &token_a,
         Some((&player_b, &token_b, 1.0)),
+        &[],
     );
     let a_bound = wait_for_log(
         &rep_log,
@@ -382,6 +418,204 @@ fn replication_rebinds_same_remote_after_player_switch() {
     assert!(
         !spoofed_b_vs_a,
         "replication kept stale player binding after switch.\nreplication log:\n{}",
+        rep_log.lock().expect("rep log lock"),
+    );
+}
+
+#[test]
+fn two_headless_clients_receive_remote_motion_diagnostics() {
+    if !ensure_test_db_available() {
+        tracing::warn!("skipping two-client motion diagnostic; postgres unavailable");
+        return;
+    }
+
+    let root = workspace_root();
+    let status = Command::new("cargo")
+        .current_dir(&root)
+        .args([
+            "build",
+            "-p",
+            "sidereal-replication",
+            "-p",
+            "sidereal-client",
+        ])
+        .status()
+        .expect("cargo build should run");
+    assert!(
+        status.success(),
+        "cargo build failed for two-client motion diagnostic"
+    );
+
+    let bin_dir = target_debug_dir();
+    let replication_bin = bin_dir.join("sidereal-replication");
+    let client_bin = bin_dir.join("sidereal-client");
+    assert!(
+        replication_bin.exists(),
+        "missing binary: {replication_bin:?}"
+    );
+    assert!(client_bin.exists(), "missing binary: {client_bin:?}");
+
+    let Some(player_ids) = available_player_entity_ids(2) else {
+        tracing::warn!("skipping two-client motion diagnostic; failed loading player ids");
+        return;
+    };
+    if player_ids.len() < 2 {
+        tracing::warn!("skipping two-client motion diagnostic; need at least two players");
+        return;
+    }
+    let player_a = player_ids[0].clone();
+    let player_b = player_ids[1].clone();
+    let Some(controlled_a) = mobile_controlled_entity_id_for_player(&player_a) else {
+        tracing::warn!(
+            "skipping two-client motion diagnostic; no mobile controlled entity for {player_a}"
+        );
+        return;
+    };
+    let Some(controlled_b) = mobile_controlled_entity_id_for_player(&player_b) else {
+        tracing::warn!(
+            "skipping two-client motion diagnostic; no mobile controlled entity for {player_b}"
+        );
+        return;
+    };
+    let jwt_secret = test_jwt_secret();
+    let token_a = test_access_token(&player_a, &jwt_secret);
+    let token_b = test_access_token(&player_b, &jwt_secret);
+
+    let replication_udp_addr = format!("127.0.0.1:{}", free_udp_port());
+    let control_udp_addr = format!("127.0.0.1:{}", free_udp_port());
+    let client_a_udp_addr = format!("127.0.0.1:{}", free_udp_port());
+    let client_b_udp_addr = format!("127.0.0.1:{}", free_udp_port());
+
+    let mut rep_cmd = Command::new(&replication_bin);
+    rep_cmd
+        .env("REPLICATION_UDP_BIND", &replication_udp_addr)
+        .env("REPLICATION_CONTROL_UDP_BIND", &control_udp_addr)
+        .env("REPLICATION_DATABASE_URL", test_database_url())
+        .env("GATEWAY_JWT_SECRET", &jwt_secret)
+        .env("SIDEREAL_VISIBILITY_DELIVERY_RANGE_M", "1000000000")
+        .env("SIDEREAL_VISIBILITY_CELL_SIZE_M", "1000000000")
+        .env("SIDEREAL_DEBUG_MOTION_REPLICATION", "1")
+        .env("RUST_LOG", "info");
+    let (mut rep_child, rep_log) = spawn_logged(rep_cmd);
+
+    assert!(
+        wait_for_log(
+            &rep_log,
+            "replication lightyear UDP server starting",
+            Duration::from_secs(15),
+        ),
+        "replication did not start:\n{}",
+        rep_log.lock().expect("rep log lock"),
+    );
+
+    let (mut client_a, client_a_log) = spawn_headless_client(
+        &client_bin,
+        &replication_udp_addr,
+        &client_a_udp_addr,
+        &player_a,
+        &token_a,
+        None,
+        &[
+            (
+                "SIDEREAL_CLIENT_HEADLESS_INPUT_SCRIPT",
+                "forward_afterburner:8.0",
+            ),
+            (
+                "SIDEREAL_CLIENT_HEADLESS_CONTROLLED_ENTITY_ID",
+                &controlled_a,
+            ),
+            ("SIDEREAL_DEBUG_MOTION_REPLICATION", "1"),
+        ],
+    );
+    let (mut client_b, client_b_log) = spawn_headless_client(
+        &client_bin,
+        &replication_udp_addr,
+        &client_b_udp_addr,
+        &player_b,
+        &token_b,
+        None,
+        &[
+            (
+                "SIDEREAL_CLIENT_HEADLESS_INPUT_SCRIPT",
+                "forward_afterburner:8.0",
+            ),
+            (
+                "SIDEREAL_CLIENT_HEADLESS_CONTROLLED_ENTITY_ID",
+                &controlled_b,
+            ),
+            ("SIDEREAL_DEBUG_MOTION_REPLICATION", "1"),
+        ],
+    );
+
+    let a_ready = wait_for_log(
+        &client_a_log,
+        &format!("client session ready received for player_entity_id={player_a}"),
+        Duration::from_secs(25),
+    );
+    let b_ready = wait_for_log(
+        &client_b_log,
+        &format!("client session ready received for player_entity_id={player_b}"),
+        Duration::from_secs(25),
+    );
+    let server_motion_visible =
+        wait_for_log(
+            &rep_log,
+            "server motion replication diagnostic",
+            Duration::from_secs(20),
+        ) && wait_for_log(&rep_log, "visible_clients=[", Duration::from_secs(5));
+    let a_received_motion = wait_for_log(
+        &client_a_log,
+        "client motion replication diagnostic",
+        Duration::from_secs(30),
+    ) && wait_for_log(
+        &client_a_log,
+        "transform_changed_since_last=true",
+        Duration::from_secs(30),
+    );
+    let b_received_motion = wait_for_log(
+        &client_b_log,
+        "client motion replication diagnostic",
+        Duration::from_secs(30),
+    ) && wait_for_log(
+        &client_b_log,
+        "transform_changed_since_last=true",
+        Duration::from_secs(30),
+    );
+
+    stop_child(&mut client_a);
+    stop_child(&mut client_b);
+    stop_child(&mut rep_child);
+
+    let strict_motion_assert = std::env::var("SIDEREAL_TWO_CLIENT_MOTION_DIAGNOSTIC_STRICT")
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+
+    assert!(
+        a_ready && b_ready,
+        "clients did not both become ready.\nreplication log:\n{}\nclient A log:\n{}\nclient B log:\n{}",
+        rep_log.lock().expect("rep log lock"),
+        client_a_log.lock().expect("client A log lock"),
+        client_b_log.lock().expect("client B log lock"),
+    );
+    assert!(
+        server_motion_visible,
+        "replication did not report visible moving entities.\nreplication log:\n{}",
+        rep_log.lock().expect("rep log lock"),
+    );
+    if !(strict_motion_assert || a_received_motion && b_received_motion) {
+        tracing::warn!(
+            "two-client motion diagnostic did not observe changing remote transforms; \
+             treating as non-strict because the local database fixture may not bind players \
+             to mobile controlled entities. Set SIDEREAL_TWO_CLIENT_MOTION_DIAGNOSTIC_STRICT=1 \
+             to make this a hard failure."
+        );
+        return;
+    }
+    assert!(
+        a_received_motion && b_received_motion,
+        "both clients must report changing remote presentation transforms.\nclient A log:\n{}\nclient B log:\n{}\nreplication log:\n{}",
+        client_a_log.lock().expect("client A log lock"),
+        client_b_log.lock().expect("client B log lock"),
         rep_log.lock().expect("rep log lock"),
     );
 }

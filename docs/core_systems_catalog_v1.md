@@ -14,6 +14,11 @@ Primary references:
 - These labels are intended to give later design docs, plans, tickets, and dashboard/editor surfaces a consistent naming baseline.
 - This catalog is a reference/index, not a replacement for the deeper contracts and plans it links to.
 
+2026-04-26 status note:
+- Asteroid fields now have a V2 system label for the field-root, fracture, resource-profile, and ambient-presentation replacement direction.
+- `system.asteroid_field.v1` remains the label for the current deterministic eager field-member baseline and earlier root-expansion planning.
+- New implementation work that introduces first-class field roots, deterministic member lineage, fracture/depletion state, Lua-authored resource profiles, or field ambient fullscreen effects should use `system.asteroid_field.v2`.
+
 ## 1. Purpose
 
 Use this catalog when we need a stable label for a core system, for example:
@@ -71,7 +76,8 @@ If a system later gets a replacement or major architecture reset, keep the old l
 | `system.audio.v1` | Audio System V1 | Proposed contract with minimal current baseline. The repo now has an explicit reusable audio runtime direction and audio registry crate/test surface. | `docs/features/audio_runtime_contract.md`, `docs/plans/audio_runtime_implementation_plan_2026-03-13.md`, `crates/sidereal-audio/`, `bins/sidereal-client/src/runtime/audio.rs` |
 | `system.planet.v1` | Planet System V1 | Active implementation. Static celestial bodies are Lua-authored authoritative entities rendered through layered 2D shader passes. | `docs/features/procedural_planets.md`, `crates/sidereal-game/src/components/planet_body_shader_settings.rs`, `bins/sidereal-client/src/runtime/visuals.rs` |
 | `system.genesis_planet_authoring.v1` | Genesis Planet Authoring System V1 | Active partial implementation. Dedicated planet/celestial authoring uses Lua planet registry files, typed validation, dashboard metadata/spawn/shader editing, deterministic randomization, and script-catalog draft/publish workflow. | `docs/features/genesis_planet_registry_contract.md`, `docs/features/procedural_planets.md`, `data/scripts/planets/registry.lua`, `crates/sidereal-scripting/src/lib.rs`, `dashboard/src/features/genesis/GenesisPage.tsx` |
-| `system.asteroid_field.v1` | Asteroid Field System V1 | Active phase-1 baseline plus proposed V1 field-root expansion. Current live implementation uses deterministic procedural asteroid members; the intended V1 direction adds persisted field roots and fracture/depletion state. | `docs/features/procedural_asteroids.md`, `docs/features/asteroid_field_system.md`, `data/scripts/bundles/starter/asteroid_field.lua` |
+| `system.asteroid_field.v1` | Asteroid Field System V1 | Active legacy baseline. Current live implementation uses deterministic Lua-authored eager asteroid member generation with procedural sprite/collision payloads. | `docs/features/procedural_asteroids.md`, `docs/features/asteroid_field_system.md`, `data/scripts/bundles/starter/asteroid_field.lua` |
+| `system.asteroid_field.v2` | Asteroid Field System V2 | Active implementation direction. V2 replaces the eager-member baseline with first-class persisted field roots, deterministic member lineage, zero-health fracture, field-owned depletion/resource state, Lua-authored ore profiles, and optional field ambient fullscreen/post-process presentation. | `docs/features/asteroid_field_system_v2.md`, `docs/features/resources_and_crafting_contract.md`, `docs/features/scripting_support.md`, `data/scripts/bundles/starter/asteroid_field.lua` |
 
 ## 6. Content and Runtime Support Systems
 

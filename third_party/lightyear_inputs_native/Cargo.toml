@@ -1,0 +1,39 @@
+[package]
+name = "lightyear_inputs_native"
+version = "0.26.4"
+authors = ["Charles Bournhonesque <charlesbour@gmail.com>"]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "IO primitives for the lightyear networking library"
+repository = "https://github.com/cBournhonesque/lightyear"
+
+[features]
+default = ["std"]
+std = ["lightyear_inputs/std"]
+client = ["lightyear_inputs/client"]
+server = ["lightyear_inputs/server"]
+
+[dependencies]
+lightyear_core = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_inputs = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+
+# utils
+tracing = "0.1.40"
+
+# serde
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+
+# bevy
+bevy_app = { version = "0.18", default-features = false }
+bevy_derive = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+
+[dev-dependencies]
+test-log = { version = "0.2.17", default-features = false, features = ["trace", "color"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[workspace]

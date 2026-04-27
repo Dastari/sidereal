@@ -6,7 +6,7 @@
 
 Update note (2026-03-12):
 
-- Dashboard mutation routes are now expected to flow through the shared password-backed admin session boundary exposed by `/api/dashboard-session` and enforced by the shared server-side guard in `dashboard/src/server/dashboard-auth.ts`.
+- 2026-04-26 update: dashboard routes and API handlers are expected to flow through the gateway-backed account session boundary exposed by `/api/dashboard-session` and enforced by the shared server-side guard in `dashboard/src/server/dashboard-auth.ts`. Do not add new dashboard admin-password flows.
 - Temporary local auth uses an HttpOnly SameSite=Strict cookie plus same-origin mutation checks; this is an interim operator auth point, not a replacement for future role-based session auth.
 - Password reset workflows must return acceptance state only; raw reset tokens must not be rendered back into the browser by default.
 - The database tool now uses route-owned initial data loading through a shared server loader/server function path instead of effect-owned first-render fetches.
@@ -32,6 +32,13 @@ Update note (2026-03-14):
 Update note (2026-04-24):
 
 - Dashboard world-coordinate API and BRP parsing surfaces consume authoritative Rust f64 coordinate payloads as JSON numbers and TypeScript `number` values. Do not downcast, round, stringify, or integer-coerce world positions/velocities in loaders, schemas, or explorer state; only rendering layers may project to f32/canvas space.
+
+Update note (2026-04-26):
+
+- The target dashboard auth direction is gateway-backed account auth, documented in `docs/plans/gateway_dashboard_auth_character_flow_plan_2026-04-26.md` and `docs/decisions/dr-0036_gateway_account_auth_dashboard_and_character_creation.md`.
+- The existing password-backed `/api/dashboard-session` admin boundary is superseded by the `DR-0036` target once implementation lands.
+- Public registration/login, email one-time code and magic-link completion, TOTP setup, account character management, and admin dashboard routes should use the same semantic theme tokens and local UI wrappers.
+- Admin dashboard routes and server data loaders must be guarded by gateway account session, route-specific scopes, and verified MFA after the migration.
 
 ## 1. Scope
 

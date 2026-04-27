@@ -1,9 +1,10 @@
 use bevy::prelude::*;
-use sidereal_game::process_character_movement_actions;
+use sidereal_game::SiderealSimulationSet;
 
 use crate::runtime::app_state::ClientAppState;
 use crate::runtime::motion::{
     apply_predicted_input_to_action_queue, enforce_controlled_planar_motion,
+    seed_controlled_predicted_motion_from_confirmed,
 };
 use crate::runtime::{
     assets, backdrop, control, input, owner_manifest, replication, tactical, transforms,
@@ -68,6 +69,8 @@ fn add_shared_replication_runtime_systems(app: &mut App) {
                 .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
             transforms::reveal_world_entities_when_initial_transform_ready
                 .after(transforms::sync_interpolated_world_entity_transforms_without_history),
+            transforms::log_motion_replication_diagnostics
+                .after(transforms::reveal_world_entities_when_initial_transform_ready),
         ),
     );
 }
@@ -151,11 +154,12 @@ impl Plugin for ClientPredictionPlugin {
             app.add_systems(
                 FixedUpdate,
                 (
+                    seed_controlled_predicted_motion_from_confirmed,
                     apply_predicted_input_to_action_queue,
                     enforce_controlled_planar_motion,
                 )
                     .chain()
-                    .before(process_character_movement_actions)
+                    .before(SiderealSimulationSet::SimulateGameplay)
                     .run_if(in_state(ClientAppState::InWorld)),
             );
         }

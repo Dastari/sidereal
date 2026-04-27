@@ -13,8 +13,9 @@ use sidereal_ui::widgets::{
 use super::app_state::{CharacterSelectionState, ClientAppState, ClientSession};
 use super::auth_net;
 use super::components::{
-    CharacterSelectButton, CharacterSelectEnterButton, CharacterSelectRoot,
-    CharacterSelectStatusText, UiOverlayCamera,
+    CharacterSelectButton, CharacterSelectEnterButton, CharacterSelectPreviewMetaText,
+    CharacterSelectPreviewNameText, CharacterSelectRoot, CharacterSelectStatusText,
+    UiOverlayCamera,
 };
 use super::platform::UI_OVERLAY_RENDER_LAYER;
 use super::resources::EmbeddedFonts;
@@ -79,12 +80,6 @@ pub(super) fn setup_character_select_screen(
     let theme = theme_definition(active_theme.0);
     let glow_intensity = visual_settings.glow_intensity();
     let (panel_bg, panel_border, panel_shadow) = panel_surface(theme, glow_intensity);
-    let (enter_bg, enter_border, enter_shadow) = button_surface(
-        theme,
-        UiButtonVariant::Primary,
-        UiInteractionState::Idle,
-        glow_intensity,
-    );
 
     commands
         .spawn((
@@ -97,9 +92,9 @@ pub(super) fn setup_character_select_screen(
         .with_children(|root| {
             root.spawn((
                 layout::panel(
-                    Val::Px(580.0),
+                    Val::Px(940.0),
                     theme.metrics.panel_padding_px,
-                    12.0,
+                    16.0,
                     theme.metrics.panel_radius_px,
                     theme.metrics.panel_border_px,
                 ),
@@ -121,50 +116,169 @@ pub(super) fn setup_character_select_screen(
 
                 panel.spawn((
                     Text::new("Character Select"),
-                    text_font(fonts.display.clone(), 32.0),
+                    text_font(fonts.display.clone(), 34.0),
                     TextColor(theme.colors.foreground_color()),
                 ));
                 panel.spawn((
-                    Text::new("Choose a character, then Enter World."),
+                    Text::new("Choose a character, then enter world."),
                     text_font(fonts.mono.clone(), 12.0),
                     TextColor(theme.colors.muted_foreground_color()),
                 ));
 
-                for player_entity_id in &character_selection.characters {
-                    let (button_bg, button_border, button_shadow) = button_surface(
-                        theme,
-                        UiButtonVariant::Secondary,
-                        UiInteractionState::Idle,
-                        glow_intensity,
-                    );
-                    panel
-                        .spawn((
-                            Button,
-                            CharacterSelectButton {
-                                player_entity_id: player_entity_id.clone(),
-                            },
-                            layout::leading_button(
-                                Val::Percent(100.0),
-                                40.0,
-                                theme.metrics.control_radius_px,
-                                theme.metrics.control_border_px,
-                                12.0,
-                            ),
-                            Transform::default(),
-                            GlobalTransform::default(),
-                            button_bg,
-                            button_border,
-                            button_shadow,
-                        ))
-                        .with_children(|button| {
-                            button.spawn((
-                                Text::new(player_entity_id.to_ascii_uppercase()),
-                                text_font(fonts.mono_bold.clone(), 17.0),
-                                TextColor(theme.colors.panel_foreground_color()),
-                            ));
-                        });
-                }
+                panel
+                    .spawn((
+                        layout::horizontal_stack(18.0, JustifyContent::SpaceBetween),
+                        Transform::default(),
+                        GlobalTransform::default(),
+                    ))
+                    .with_children(|content| {
+                        let (preview_bg, preview_border, preview_shadow) = panel_surface(
+                            theme,
+                            glow_intensity * 0.65,
+                        );
+                        content
+                            .spawn((
+                                Node {
+                                    width: Val::Percent(58.0),
+                                    min_height: Val::Px(330.0),
+                                    padding: UiRect::all(Val::Px(18.0)),
+                                    border: UiRect::all(Val::Px(theme.metrics.panel_border_px)),
+                                    border_radius: BorderRadius::all(Val::Px(
+                                        theme.metrics.panel_radius_px,
+                                    )),
+                                    flex_direction: FlexDirection::Column,
+                                    justify_content: JustifyContent::FlexEnd,
+                                    row_gap: Val::Px(8.0),
+                                    ..default()
+                                },
+                                Transform::default(),
+                                GlobalTransform::default(),
+                                preview_bg,
+                                preview_border,
+                                preview_shadow,
+                            ))
+                            .with_children(|preview| {
+                                spawn_hud_frame_chrome(
+                                    preview,
+                                    &mut images,
+                                    theme,
+                                    Some("Selected Character"),
+                                    &fonts.mono.clone(),
+                                    glow_intensity,
+                                );
+                                let selected = character_selection.selected_character();
+                                preview.spawn((
+                                    Text::new(
+                                        selected
+                                            .map(character_display_name)
+                                            .unwrap_or("No Character")
+                                            .to_string(),
+                                    ),
+                                    text_font(fonts.display.clone(), 28.0),
+                                    TextColor(theme.colors.primary_color()),
+                                    CharacterSelectPreviewNameText,
+                                ));
+                                preview.spawn((
+                                    Text::new(
+                                        selected
+                                            .map(|character| {
+                                                format!(
+                                                    "{} / {}",
+                                                    character.status.to_ascii_uppercase(),
+                                                    short_player_id(&character.player_entity_id)
+                                                )
+                                            })
+                                            .unwrap_or_else(|| {
+                                                "Create a character from the dashboard or account site."
+                                                    .to_string()
+                                            }),
+                                    ),
+                                    text_font(fonts.mono.clone(), 13.0),
+                                    TextColor(theme.colors.muted_foreground_color()),
+                                    CharacterSelectPreviewMetaText,
+                                ));
+                            });
 
+                        content
+                            .spawn((
+                                Node {
+                                    width: Val::Percent(42.0),
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(10.0),
+                                    ..default()
+                                },
+                                Transform::default(),
+                                GlobalTransform::default(),
+                            ))
+                            .with_children(|list| {
+                                for character in &character_selection.characters {
+                                    let (button_bg, button_border, button_shadow) = button_surface(
+                                        theme,
+                                        UiButtonVariant::Secondary,
+                                        UiInteractionState::Idle,
+                                        glow_intensity,
+                                    );
+                                    list.spawn((
+                                        Button,
+                                        CharacterSelectButton {
+                                            player_entity_id: character.player_entity_id.clone(),
+                                        },
+                                        layout::leading_button(
+                                            Val::Percent(100.0),
+                                            58.0,
+                                            theme.metrics.control_radius_px,
+                                            theme.metrics.control_border_px,
+                                            12.0,
+                                        ),
+                                        Transform::default(),
+                                        GlobalTransform::default(),
+                                        button_bg,
+                                        button_border,
+                                        button_shadow,
+                                    ))
+                                    .with_children(|button| {
+                                        button
+                                            .spawn((
+                                                Node {
+                                                    width: Val::Percent(100.0),
+                                                    flex_direction: FlexDirection::Column,
+                                                    row_gap: Val::Px(2.0),
+                                                    ..default()
+                                                },
+                                                Transform::default(),
+                                                GlobalTransform::default(),
+                                            ))
+                                            .with_children(|text_stack| {
+                                                text_stack.spawn((
+                                                    Text::new(character_display_name(character)),
+                                                    text_font(fonts.mono_bold.clone(), 17.0),
+                                                    TextColor(
+                                                        theme.colors.panel_foreground_color(),
+                                                    ),
+                                                ));
+                                                text_stack.spawn((
+                                                    Text::new(format!(
+                                                        "{}  {}",
+                                                        character.status.to_ascii_uppercase(),
+                                                        short_player_id(&character.player_entity_id)
+                                                    )),
+                                                    text_font(fonts.mono.clone(), 11.0),
+                                                    TextColor(
+                                                        theme.colors.muted_foreground_color(),
+                                                    ),
+                                                ));
+                                            });
+                                    });
+                                }
+                            });
+                    });
+
+                let (enter_bg, enter_border, enter_shadow) = button_surface(
+                    theme,
+                    UiButtonVariant::Primary,
+                    UiInteractionState::Idle,
+                    glow_intensity,
+                );
                 panel
                     .spawn((
                         Button,
@@ -199,6 +313,27 @@ pub(super) fn setup_character_select_screen(
         });
 }
 
+fn character_display_name(character: &super::app_state::CharacterSelectionEntry) -> &str {
+    let trimmed = character.display_name.trim();
+    if trimmed.is_empty() {
+        "Unnamed Character"
+    } else {
+        trimmed
+    }
+}
+
+fn short_player_id(player_entity_id: &str) -> String {
+    let trimmed = player_entity_id.trim();
+    if trimmed.len() <= 12 {
+        return trimmed.to_ascii_uppercase();
+    }
+    format!(
+        "{}...{}",
+        &trimmed[..8].to_ascii_uppercase(),
+        &trimmed[trimmed.len() - 4..].to_ascii_uppercase()
+    )
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn handle_character_select_buttons(
     app_state: Option<Res<'_, State<ClientAppState>>>,
@@ -216,7 +351,36 @@ pub(super) fn handle_character_select_buttons(
     mut character_selection: ResMut<'_, CharacterSelectionState>,
     mut request_state: ResMut<'_, auth_net::GatewayRequestState>,
     gateway_http: Res<'_, super::resources::GatewayHttpAdapter>,
-    mut status_texts: Query<'_, '_, &mut Text, With<CharacterSelectStatusText>>,
+    mut status_texts: Query<
+        '_,
+        '_,
+        &mut Text,
+        (
+            With<CharacterSelectStatusText>,
+            Without<CharacterSelectPreviewNameText>,
+            Without<CharacterSelectPreviewMetaText>,
+        ),
+    >,
+    mut preview_name_texts: Query<
+        '_,
+        '_,
+        &mut Text,
+        (
+            With<CharacterSelectPreviewNameText>,
+            Without<CharacterSelectStatusText>,
+            Without<CharacterSelectPreviewMetaText>,
+        ),
+    >,
+    mut preview_meta_texts: Query<
+        '_,
+        '_,
+        &mut Text,
+        (
+            With<CharacterSelectPreviewMetaText>,
+            Without<CharacterSelectStatusText>,
+            Without<CharacterSelectPreviewNameText>,
+        ),
+    >,
 ) {
     if !app_state
         .as_ref()
@@ -250,6 +414,26 @@ pub(super) fn handle_character_select_buttons(
     }
     for mut text in &mut status_texts {
         text.0 = session.status.clone();
+    }
+    let selected = character_selection.selected_character();
+    for mut text in &mut preview_name_texts {
+        text.0 = selected
+            .map(character_display_name)
+            .unwrap_or("No Character")
+            .to_string();
+    }
+    for mut text in &mut preview_meta_texts {
+        text.0 = selected
+            .map(|character| {
+                format!(
+                    "{} / {}",
+                    character.status.to_ascii_uppercase(),
+                    short_player_id(&character.player_entity_id)
+                )
+            })
+            .unwrap_or_else(|| {
+                "Create a character from the dashboard or account site.".to_string()
+            });
     }
 }
 

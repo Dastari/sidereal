@@ -166,6 +166,12 @@ pub(crate) struct CharacterSelectRoot;
 pub(crate) struct CharacterSelectStatusText;
 
 #[derive(Component)]
+pub(crate) struct CharacterSelectPreviewNameText;
+
+#[derive(Component)]
+pub(crate) struct CharacterSelectPreviewMetaText;
+
+#[derive(Component)]
 pub(crate) struct CharacterSelectButton {
     pub player_entity_id: String,
 }
@@ -221,6 +227,9 @@ pub(crate) enum StreamedVisualAttachmentKind {
     GenericShader,
     AsteroidShader,
 }
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamedProceduralSpriteVisualFingerprint(pub u64);
 
 #[derive(Component)]
 pub(crate) struct StreamedVisualChild;
@@ -343,6 +352,11 @@ pub(crate) struct StreamedSpriteShaderAssetId(pub String);
 
 #[derive(Component)]
 pub(crate) struct SuppressedPredictedDuplicateVisual;
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PredictedMotionBootstrapSeed {
+    pub generation: u64,
+}
 
 #[derive(Component)]
 pub(crate) struct ReplicatedAdoptionHandled;

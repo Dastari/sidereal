@@ -7,8 +7,7 @@ use bevy::window::{Window, WindowPlugin};
 use sidereal_asset_runtime::AssetCacheIndex;
 use sidereal_core::gateway_dtos::{
     AssetBootstrapManifestResponse, AuthTokens, CharactersResponse, EnterWorldRequest,
-    EnterWorldResponse, LoginRequest, MeResponse, PasswordResetConfirmRequest,
-    PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetResponse, RegisterRequest,
+    EnterWorldResponse, LoginRequest, MeResponse, PasswordLoginResponse, TotpLoginChallengeRequest,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -210,21 +209,10 @@ async fn get_bytes(url: String, bearer_token: Option<String>) -> Result<Vec<u8>,
     response_bytes(response).await
 }
 
-fn wasm_login(gateway_url: String, payload: LoginRequest) -> GatewayFuture<AuthTokens> {
-    Box::pin(async move { post_json(format!("{gateway_url}/auth/login"), None, payload).await })
-}
-
-fn wasm_register(gateway_url: String, payload: RegisterRequest) -> GatewayFuture<AuthTokens> {
-    Box::pin(async move { post_json(format!("{gateway_url}/auth/register"), None, payload).await })
-}
-
-fn wasm_request_password_reset(
-    gateway_url: String,
-    payload: PasswordResetRequest,
-) -> GatewayFuture<PasswordResetResponse> {
+fn wasm_login(gateway_url: String, payload: LoginRequest) -> GatewayFuture<PasswordLoginResponse> {
     Box::pin(async move {
         post_json(
-            format!("{gateway_url}/auth/password-reset/request"),
+            format!("{gateway_url}/auth/v1/login/password"),
             None,
             payload,
         )
@@ -232,18 +220,17 @@ fn wasm_request_password_reset(
     })
 }
 
-fn wasm_confirm_password_reset(
+fn wasm_verify_totp_login_challenge(
     gateway_url: String,
-    payload: PasswordResetConfirmRequest,
-) -> GatewayFuture<()> {
+    payload: TotpLoginChallengeRequest,
+) -> GatewayFuture<AuthTokens> {
     Box::pin(async move {
-        let _: PasswordResetConfirmResponse = post_json(
-            format!("{gateway_url}/auth/password-reset/confirm"),
+        post_json(
+            format!("{gateway_url}/auth/v1/login/challenge/totp"),
             None,
             payload,
         )
-        .await?;
-        Ok(())
+        .await
     })
 }
 
@@ -305,9 +292,7 @@ fn wasm_fetch_asset_bytes(url: String, access_token: String) -> GatewayFuture<Ve
 fn wasm_gateway_http_adapter() -> GatewayHttpAdapter {
     GatewayHttpAdapter {
         login: wasm_login,
-        register: wasm_register,
-        request_password_reset: wasm_request_password_reset,
-        confirm_password_reset: wasm_confirm_password_reset,
+        verify_totp_login_challenge: wasm_verify_totp_login_challenge,
         fetch_me: wasm_fetch_me,
         fetch_characters: wasm_fetch_characters,
         enter_world: wasm_enter_world,

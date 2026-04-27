@@ -1,11 +1,13 @@
 mod bootstrap_dispatch;
 mod config;
 mod crypto;
+mod email;
 mod error;
 mod service;
 mod starter_world;
 mod starter_world_scripts;
 mod store;
+mod totp;
 mod types;
 
 pub use bootstrap_dispatch::{
@@ -16,6 +18,10 @@ pub use config::AuthConfig;
 pub use crypto::{
     hash_password, hash_token, normalize_email, now_epoch_s, validate_email, validate_password,
     verify_password,
+};
+pub use email::{
+    EmailDelivery, EmailMessage, EmailTemplate, LogEmailDelivery, NoopEmailDelivery,
+    RecordingEmailDelivery, SmtpEmailDelivery,
 };
 pub use error::AuthError;
 pub use service::AuthService;
@@ -31,7 +37,10 @@ pub use starter_world_scripts::{
     reload_script_catalog_from_disk, save_script_catalog_draft, scripts_root_dir,
 };
 pub use store::{AuthStore, InMemoryAuthStore, PostgresAuthStore};
+pub use totp::totp_code;
 pub use types::{
-    Account, AccountCharacter, AuthMe, PasswordResetRequestResult, PasswordResetTokenRecord,
-    RefreshTokenRecord,
+    Account, AccountCharacter, AuthMe, EmailLoginChallengeRecord, EmailLoginRequestResult,
+    EmailLoginVerifyResult, PasswordLoginResult, PasswordResetRequestResult,
+    PasswordResetTokenRecord, RefreshTokenRecord, TotpEnrollmentRecord, TotpEnrollmentResult,
+    TotpLoginChallengeRecord,
 };

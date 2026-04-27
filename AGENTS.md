@@ -15,6 +15,7 @@ Project operating contract for human and AI contributors working in this reposit
 - Component authoring workflow/macros: `docs/component_authoring_guide.md`
 - Visibility/replication implementation contract: `docs/features/visibility_replication_contract.md`
 - Asset delivery implementation contract: `docs/features/asset_delivery_contract.md`
+- Account/character selection layout contract: `docs/features/account_character_selection_layout_contract.md`
 - Lightyear upstream issue triage reference: `docs/features/lightyear_upstream_issue_snapshot.md`
 - Native client/server transform and ownership audit: `docs/reports/native_runtime_system_ownership_audit_2026-03-09.md`
 - UI design system and component patterns: `docs/ui_design_guide.md`
@@ -92,6 +93,8 @@ If any code change conflicts with docs, update docs in the same change or stop a
 - Major dashboard tool routes must stay lazily split and keep heavy feature implementations out of the eagerly loaded shell/runtime path.
 - Dashboard route params, search params, form payloads, and API mutation bodies should use Zod or an equivalently strict schema boundary; do not keep expanding ad hoc manual validation for normal frontend boundary parsing.
 - Dashboard destructive/admin workflows must not use browser-native `window.prompt`/`window.confirm`/`window.alert`, and new privileged mutation routes must be structured around a shared server-side auth/authorization guard point.
+- Gateway admin endpoints must require gateway-issued access tokens with an admin/dev role, verified MFA in `session_context`, and the route-specific scope. Do not add or preserve admin routes guarded only by the legacy dashboard/admin password.
+- First-administrator setup must go through the gateway bootstrap flow (`GATEWAY_BOOTSTRAP_TOKEN`, `/auth/v1/bootstrap/*`, and `auth_bootstrap_state`). Do not add dashboard-only or script-only first-admin bypasses, and do not make the bootstrap flow re-openable except by resetting the development database.
 
 ## 4. Implementation Workflow Requirements
 

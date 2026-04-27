@@ -1,15 +1,17 @@
 # Resources and Crafting Contract
 
 Status: Proposed feature contract
-Last updated: 2026-04-24
+Last updated: 2026-04-26
 Owners: gameplay simulation + persistence + scripting
 Scope: future resource extraction, refining, crafting, inventories, recipes, and manufacturing
 Primary architecture reference: `docs/sidereal_design_document.md`
-Related contracts: `docs/features/background_world_simulation_contract.md`, `docs/features/scripting_support.md`, `docs/features/asteroid_field_system.md`, `docs/component_authoring_guide.md`
+Related contracts: `docs/features/background_world_simulation_contract.md`, `docs/features/scripting_support.md`, `docs/features/asteroid_field_system.md`, `docs/features/asteroid_field_system_v2.md`, `docs/component_authoring_guide.md`
 
 ## 0. Status Notes
 
 - 2026-04-24: Not implemented yet as a full resource/crafting runtime. Existing implemented foundations include `Inventory`, dynamic mass components (`CargoMassKg`, `ModuleMassKg`, `TotalMassKg`), mounted-module mass derivation, graph persistence, and Lua bundle/catalog infrastructure. Missing: item/resource/recipe/facility catalogs, extraction/salvage systems, queue progression, crafting transactions, manufacturing jobs, and UI flows. Native/WASM impact: future authoritative systems must remain server/shared-code driven with platform differences limited to UI and input.
+- 2026-04-26: Asteroid Field System V2 introduces the first concrete extraction-source shape for future mining: field/member resource profiles with logical `item_id` yield tables, depletion pools, and `extraction_profile_id` references. Mining and inventory output transactions remain future work, but asteroid resource composition must be Lua-authored and server-validated rather than hardcoded in Rust. Native impact: field/member resource state will be consumed by future native mining UI and gameplay. WASM impact: no browser authority split; clients consume shared replicated/public metadata only.
+- 2026-04-26: The initial V2 implementation stores asteroid resource profiles on field roots and links active members to resource profile ids. Zero-health fracture updates field damage state but does not yet mint inventory resources; mining/extraction actions remain the future server-authoritative path for turning depletion into inventory outputs.
 - 2026-03-16: Initial contract for Sidereal's material, refining, and crafting foundation. Native impact: future shared gameplay/runtime work is required for extraction nodes, facility queues, inventory transactions, and module/ship manufacturing flows. WASM impact: no browser-only authority split is introduced; recipe validation, queue progression, and item/facility definitions should remain in shared gameplay/runtime code, with browser differences limited to UI/input and asset-loading boundaries.
 
 ## 1. Purpose

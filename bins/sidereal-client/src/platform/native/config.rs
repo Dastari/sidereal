@@ -439,6 +439,7 @@ fn help_text() -> String {
         "                                          env: SIDEREAL_CLIENT_MAX_PREDICTED_TICKS",
         "      --input-unfocused-max-predicted-ticks TICKS",
         "                                          Maximum client prediction lead allowed while unfocused",
+        "                                          defaults to focused max; set 0 for strict focus-stall testing",
         "                                          env: SIDEREAL_CLIENT_UNFOCUSED_MAX_PREDICTED_TICKS",
         "      --interpolation-min-delay-ms MS     Minimum interpolation delay applied to remote entities",
         "                                          env: SIDEREAL_CLIENT_INTERPOLATION_MIN_DELAY_MS",

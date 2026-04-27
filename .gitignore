@@ -1,4 +1,5 @@
 /target/
+/.env
 /data/postgresql/
 /data/cache_stream/
 /data/published_assets/
@@ -7,4 +8,3 @@
 /target-codex-dashboard
 /target-codex-validate
 /logs
-

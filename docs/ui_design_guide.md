@@ -31,6 +31,13 @@ Update note (2026-04-24):
 - Toasts use the same `sidereal-ui` panel surface, HUD frame chrome, semantic theme colors, and button surface primitives as dialogs and other framed UI.
 - Critical failures still use persistent dialogs. Toasts are reserved for non-blocking status, discovery, objective, cache, and similar events.
 
+Update note (2026-04-26):
+
+- The target auth/character flow is documented in `docs/plans/gateway_dashboard_auth_character_flow_plan_2026-04-26.md`.
+- The native/WASM game client target is login-only for account auth; public account registration moves to the web surface.
+- Character select should become a full-screen MMO-style character list/creation/enter-world flow while keeping `sidereal-ui` semantic tokens, HUD framing, persistent dialogs for critical auth failures, and shared native/WASM gameplay/runtime code.
+- The native/WASM game client auth screen now uses a reusable six-slot TOTP code input for authenticator challenges, matching the dashboard's individual-digit interaction model while preserving `sidereal-ui` HUD input surfaces.
+
 ## 1. Design Philosophy
 
 Sidereal uses a **dark space-themed aesthetic** that emphasizes:

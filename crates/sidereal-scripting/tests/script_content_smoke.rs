@@ -81,6 +81,70 @@ fn shared_bundle_registry_module_exposes_corvette_bundle_contract() {
 }
 
 #[test]
+fn shared_bundle_registry_module_exposes_asteroid_field_v2_contract() {
+    let policy = LuaSandboxPolicy::from_env();
+    let module = load_lua_module_from_root(
+        &shared_scripts_root(),
+        "bundles/bundle_registry.lua",
+        &policy,
+    )
+    .expect("bundle registry module");
+    let bundles = module
+        .root()
+        .get::<Table>("bundles")
+        .expect("bundles table");
+    let asteroid_field = bundles
+        .get::<Table>("asteroid.field")
+        .expect("asteroid field bundle entry");
+
+    assert_eq!(
+        table_get_required_string(&asteroid_field, "bundle_class", "asteroid.field")
+            .expect("bundle_class"),
+        "world"
+    );
+    assert_eq!(
+        table_get_required_string(&asteroid_field, "graph_records_script", "asteroid.field")
+            .expect("graph_records_script"),
+        "bundles/starter/asteroid_field.lua"
+    );
+    let required = table_get_required_string_list(
+        &asteroid_field,
+        "required_component_kinds",
+        "asteroid.field",
+    )
+    .expect("required_component_kinds");
+    assert!(required.contains(&"asteroid_field".to_string()));
+    assert!(required.contains(&"asteroid_field_member".to_string()));
+    assert!(required.contains(&"asteroid_resource_profile".to_string()));
+}
+
+#[test]
+fn shared_asteroid_registry_exposes_starter_profiles() {
+    let policy = LuaSandboxPolicy::from_env();
+    let module =
+        load_lua_module_from_root(&shared_scripts_root(), "asteroids/registry.lua", &policy)
+            .expect("asteroid registry module");
+    let field_profiles = module
+        .root()
+        .get::<Table>("field_profiles")
+        .expect("field_profiles table");
+    let first = field_profiles
+        .get::<Table>(1)
+        .expect("starter field profile");
+
+    assert_eq!(
+        table_get_required_string(&first, "field_profile_id", "asteroids/registry.lua")
+            .expect("field_profile_id"),
+        "asteroid.field.starter_belt"
+    );
+    assert_eq!(
+        table_get_required_string(&first, "resource_profile_id", "asteroids/registry.lua")
+            .expect("resource_profile_id"),
+        "asteroid.resource.common_ore"
+    );
+}
+
+#[test]
 fn shared_player_init_module_exposes_expected_entrypoint() {
     let policy = LuaSandboxPolicy::from_env();
     let module =

@@ -3,6 +3,12 @@
 Status: Accepted decision detail (`DR-0002`)  
 Date: 2026-02-24
 
+Update note 2026-04-26:
+
+- `DR-0036` supersedes the earlier registration detail where account registration created the default character and starter corvette.
+- Target lifecycle after the `DR-0036` migration: registration creates account/auth state only; explicit character creation creates character ownership and starter-world graph records.
+- World entry remains explicit and character-scoped.
+
 ## Purpose
 
 Define the authoritative lifecycle from authentication to in-world runtime binding.
@@ -11,8 +17,8 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 
 1. Register:
    - create account,
-   - create default character ownership row,
-   - persist starter character + starter corvette graph records,
+   - target after `DR-0036`: do not create a default character,
+   - target after `DR-0036`: do not persist starter character/starter ship graph records,
    - return auth tokens,
    - do not auto-enter world.
 2. Login:
@@ -21,13 +27,19 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
    - do not auto-enter world.
 3. Character Select:
    - client requests account-owned characters.
-4. Enter World:
+4. Character Create:
+   - client or dashboard submits a display name,
+   - gateway creates the account-owned character row,
+   - gateway persists starter character + starter ship graph records,
+   - gateway returns the active character summary.
+5. Enter World:
    - client submits selected `player_entity_id`,
    - gateway validates account ownership,
+   - gateway mints a character-scoped world token,
    - bootstrap dispatch occurs.
-5. Runtime bind:
+6. Runtime bind:
    - replication validates identity/ownership and binds session to selected character.
-6. World loading gate:
+7. World loading gate:
    - client remains in `WorldLoading` after `/world/enter` acceptance,
    - bootstrap-required asset fetch must not begin until replication emits session-ready bind acknowledgment for the selected `player_entity_id`,
    - transition to `InWorld` only after session-ready, required asset bootstrap, and replicated selected-player presence all complete.
@@ -55,7 +67,7 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
   - reject request,
   - preserve server integrity,
   - no crash/no panic/no silent fallback entity creation.
-- Replication auth misconfiguration (for example missing/invalid `GATEWAY_JWT_SECRET` on replication):
+- Replication auth misconfiguration (current shared-secret flow, or target asymmetric public-key/JWKS flow after `DR-0036`):
   - deny session explicitly,
   - keep client out of world,
   - do not silently leave client hanging in `WorldLoading`.
@@ -68,7 +80,8 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 
 ## Test Requirements
 
-- Register creates durable starter world records.
+- Target after `DR-0036`: register creates account/auth state only and no character.
+- Target after `DR-0036`: explicit character creation creates durable starter world records.
 - Login/register do not dispatch runtime bootstrap.
 - Enter World dispatches only when ownership is valid.
 - Identity mismatch paths are explicitly rejected.
@@ -76,4 +89,6 @@ Define the authoritative lifecycle from authentication to in-world runtime bindi
 ## References
 
 - `docs/decision_register.md` (`DR-0002`)
+- `docs/decision_register.md` (`DR-0036`)
 - `docs/sidereal_design_document.md`
+- `docs/plans/gateway_dashboard_auth_character_flow_plan_2026-04-26.md`

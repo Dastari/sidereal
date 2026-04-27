@@ -5,7 +5,8 @@ use config::{BootstrapMode, CliAction};
 use sidereal_core::logging::{RunLogFile, prepare_timestamped_log_file};
 use sidereal_gateway::api::app_with_service;
 use sidereal_gateway::auth::{
-    AuthConfig, AuthService, BootstrapDispatcher, DirectBootstrapDispatcher, PostgresAuthStore,
+    AuthConfig, AuthService, BootstrapDispatcher, DirectBootstrapDispatcher, EmailDelivery,
+    LogEmailDelivery, NoopEmailDelivery, PostgresAuthStore, SmtpEmailDelivery,
     UdpBootstrapDispatcher,
 };
 use std::sync::Arc;
@@ -64,10 +65,13 @@ async fn main() -> anyhow::Result<()> {
         ),
         BootstrapMode::Direct => Arc::new(DirectBootstrapDispatcher::from_env()),
     };
-    let service = Arc::new(AuthService::new(
+    let email_delivery = email_delivery_from_env().context("invalid email delivery config")?;
+    let service = Arc::new(AuthService::new_with_dependencies(
         auth_config,
         Arc::new(store),
         bootstrap_dispatcher,
+        Arc::new(sidereal_gateway::auth::GraphStarterWorldPersister),
+        email_delivery,
     ));
 
     let listener = tokio::net::TcpListener::bind(cli_config.bind_addr)
@@ -78,4 +82,21 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("gateway server failed")?;
     Ok(())
+}
+
+fn email_delivery_from_env() -> anyhow::Result<Arc<dyn EmailDelivery>> {
+    let mode = std::env::var("GATEWAY_EMAIL_DELIVERY")
+        .unwrap_or_else(|_| "noop".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match mode.as_str() {
+        "smtp" => SmtpEmailDelivery::from_env()?
+            .map(|delivery| Arc::new(delivery) as Arc<dyn EmailDelivery>)
+            .ok_or_else(|| anyhow::anyhow!("SMTP email delivery was not created")),
+        "log" => Ok(Arc::new(LogEmailDelivery)),
+        "noop" | "" => Ok(Arc::new(NoopEmailDelivery)),
+        other => {
+            anyhow::bail!("GATEWAY_EMAIL_DELIVERY must be one of noop, log, or smtp; got {other}")
+        }
+    }
 }

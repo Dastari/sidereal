@@ -4,6 +4,14 @@ pub mod action_queue;
 pub mod afterburner_capability;
 pub mod afterburner_state;
 pub mod ammo_count;
+pub mod asteroid_field;
+pub mod asteroid_field_ambient;
+pub mod asteroid_field_damage_state;
+pub mod asteroid_field_layout;
+pub mod asteroid_field_member;
+pub mod asteroid_field_population;
+pub mod asteroid_fracture_profile;
+pub mod asteroid_resource_profile;
 pub mod ballistic_projectile;
 pub mod ballistic_weapon;
 pub mod base_mass_kg;
@@ -84,6 +92,16 @@ pub use action_queue::ActionQueue;
 pub use afterburner_capability::AfterburnerCapability;
 pub use afterburner_state::AfterburnerState;
 pub use ammo_count::AmmoCount;
+pub use asteroid_field::{AsteroidField, AsteroidFieldShape, AsteroidSizeTier};
+pub use asteroid_field_ambient::AsteroidFieldAmbient;
+pub use asteroid_field_damage_state::{
+    AsteroidFieldDamageState, AsteroidMemberStateEntry, AsteroidMemberStateKind,
+};
+pub use asteroid_field_layout::{AsteroidFieldCluster, AsteroidFieldLayout};
+pub use asteroid_field_member::AsteroidFieldMember;
+pub use asteroid_field_population::{AsteroidFieldPopulation, AsteroidSizeRangeM};
+pub use asteroid_fracture_profile::AsteroidFractureProfile;
+pub use asteroid_resource_profile::{AsteroidResourceProfile, AsteroidYieldEntry};
 pub use ballistic_projectile::BallisticProjectile;
 pub use ballistic_weapon::{BallisticWeapon, WeaponCooldownState};
 pub use base_mass_kg::BaseMassKg;
@@ -131,7 +149,7 @@ pub use player_explored_cells::{
     PlayerExploredCells, PlayerExploredCellsChunk, PlayerExploredCellsChunkEncoding,
 };
 pub use player_tag::PlayerTag;
-pub use procedural_sprite::ProceduralSprite;
+pub use procedural_sprite::{ProceduralSprite, ProceduralSpriteSurfaceStyle};
 pub use public_visibility::PublicVisibility;
 pub use runtime_post_process_stack::{RuntimePostProcessPass, RuntimePostProcessStack};
 pub use runtime_render_layer_definition::{

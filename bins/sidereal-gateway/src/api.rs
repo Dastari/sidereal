@@ -1,6 +1,7 @@
 use crate::auth::{
     AuthConfig, AuthError, AuthService, InMemoryAuthStore, NoopBootstrapDispatcher,
-    NoopStarterWorldPersister, ScriptCatalogResource, current_script_catalog, scripts_root_dir,
+    NoopStarterWorldPersister, PasswordLoginResult, ScriptCatalogResource, current_script_catalog,
+    scripts_root_dir,
 };
 use axum::extract::Path;
 use axum::extract::State;
@@ -20,13 +21,16 @@ use sidereal_asset_runtime::{
 use sidereal_audio::{AudioRegistry, audio_registry_version};
 use sidereal_core::gateway_dtos::{
     AdminSpawnEntityRequest, AdminSpawnEntityResponse, AssetBootstrapManifestEntry,
-    AssetBootstrapManifestResponse, AuthTokens, CharacterSummary, CharactersResponse,
-    DiscardScriptDraftResponse, EnterWorldRequest, EnterWorldResponse, ListScriptsResponse,
-    LoginRequest, MeResponse, PasswordResetConfirmRequest, PasswordResetConfirmResponse,
-    PasswordResetRequest, PasswordResetResponse, PublishScriptResponse, RefreshRequest,
-    RegisterRequest, ReloadScriptsFromDiskResponse, ReplicationTransportConfig,
-    SaveScriptDraftRequest, SaveScriptDraftResponse, ScriptCatalogDocumentDetailDto,
-    StartupAssetManifestResponse,
+    AssetBootstrapManifestResponse, AuthTokens, BootstrapAdminRequest, BootstrapStatusResponse,
+    CharacterSummary, CharactersResponse, CreateCharacterRequest, CreateCharacterResponse,
+    DeleteCharacterResponse, DiscardScriptDraftResponse, EmailLoginRequest, EmailLoginResponse,
+    EmailLoginVerifyRequest, EnterWorldRequest, EnterWorldResponse, ListScriptsResponse,
+    LoginRequest, MeResponse, PasswordLoginResponse, PasswordResetConfirmRequest,
+    PasswordResetConfirmResponse, PasswordResetRequest, PasswordResetResponse,
+    PublishScriptResponse, RefreshRequest, RegisterRequest, ReloadScriptsFromDiskResponse,
+    ReplicationTransportConfig, ResetCharacterResponse, SaveScriptDraftRequest,
+    SaveScriptDraftResponse, ScriptCatalogDocumentDetailDto, StartupAssetManifestResponse,
+    TotpEnrollResponse, TotpLoginChallengeRequest, TotpVerifyRequest, TotpVerifyResponse,
 };
 use sidereal_scripting::{load_asset_registry_from_source, load_audio_registry_from_source};
 use std::path::{Path as FsPath, PathBuf};
@@ -74,14 +78,42 @@ pub fn app(config: AuthConfig) -> Router {
 pub fn app_with_service(service: SharedAuthService) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/auth/v1/bootstrap/status", get(bootstrap_status))
+        .route("/auth/v1/bootstrap/admin", post(bootstrap_admin))
         .route("/auth/register", post(register))
+        .route("/auth/v1/register", post(register))
         .route("/auth/login", post(login))
+        .route("/auth/v1/login/password", post(login_password_v1))
+        .route("/auth/v1/login/email/request", post(email_login_request))
+        .route("/auth/v1/login/email/verify", post(email_login_verify))
+        .route("/auth/v1/login/challenge/totp", post(totp_login_challenge))
         .route("/auth/refresh", post(refresh))
-        .route("/auth/password-reset/request", post(password_reset_request))
-        .route("/auth/password-reset/confirm", post(password_reset_confirm))
+        .route("/auth/v1/refresh", post(refresh))
+        .route(
+            "/auth/v1/password-reset/request",
+            post(password_reset_request_public),
+        )
+        .route(
+            "/auth/v1/password-reset/confirm",
+            post(password_reset_confirm),
+        )
+        .route("/auth/v1/mfa/totp/enroll", post(totp_enroll))
+        .route("/auth/v1/mfa/totp/verify", post(totp_verify))
         .route("/auth/me", get(me))
+        .route("/auth/v1/me", get(me))
         .route("/auth/characters", get(characters))
+        .route("/auth/v1/characters", get(characters))
+        .route("/auth/v1/characters", post(create_character))
+        .route(
+            "/auth/v1/characters/{player_entity_id}",
+            axum::routing::delete(delete_character),
+        )
+        .route(
+            "/auth/v1/characters/{player_entity_id}/reset",
+            post(reset_character),
+        )
         .route("/world/enter", post(enter_world))
+        .route("/auth/v1/world/enter", post(enter_world))
         .route("/admin/spawn-entity", post(admin_spawn_entity))
         .route("/admin/scripts", get(list_scripts))
         .route(
@@ -160,6 +192,29 @@ async fn health() -> StatusCode {
     StatusCode::OK
 }
 
+async fn bootstrap_status(
+    State(service): State<SharedAuthService>,
+) -> Result<Json<BootstrapStatusResponse>, ApiError> {
+    Ok(Json(BootstrapStatusResponse {
+        required: service.bootstrap_required().await?,
+        configured: service.bootstrap_configured(),
+    }))
+}
+
+async fn bootstrap_admin(
+    State(service): State<SharedAuthService>,
+    Json(req): Json<BootstrapAdminRequest>,
+) -> Result<Json<AuthTokens>, ApiError> {
+    let tokens = service
+        .bootstrap_first_admin(&req.email, &req.password, &req.setup_token)
+        .await?;
+    info!(
+        "gateway bootstrap first admin succeeded for email={}",
+        req.email
+    );
+    Ok(Json(tokens))
+}
+
 async fn register(
     State(service): State<SharedAuthService>,
     Json(req): Json<RegisterRequest>,
@@ -173,9 +228,42 @@ async fn login(
     State(service): State<SharedAuthService>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<AuthTokens>, ApiError> {
-    let tokens = service.login(&req.email, &req.password).await?;
-    info!("gateway login succeeded for email={}", req.email);
-    Ok(Json(tokens))
+    match service.login_password_v1(&req.email, &req.password).await? {
+        PasswordLoginResult::Authenticated { tokens } => {
+            info!("gateway login succeeded for email={}", req.email);
+            Ok(Json(tokens))
+        }
+        PasswordLoginResult::TotpRequired { .. } => Err(AuthError::Unauthorized(
+            "MFA required; use /auth/v1/login/password".to_string(),
+        )
+        .into()),
+    }
+}
+
+async fn login_password_v1(
+    State(service): State<SharedAuthService>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Json<PasswordLoginResponse>, ApiError> {
+    let result = service.login_password_v1(&req.email, &req.password).await?;
+    match result {
+        PasswordLoginResult::Authenticated { tokens } => Ok(Json(PasswordLoginResponse {
+            status: "authenticated".to_string(),
+            expires_in_s: tokens.expires_in_s,
+            tokens: Some(tokens),
+            challenge_id: None,
+            challenge_type: None,
+        })),
+        PasswordLoginResult::TotpRequired {
+            challenge_id,
+            expires_in_s,
+        } => Ok(Json(PasswordLoginResponse {
+            status: "mfa_required".to_string(),
+            tokens: None,
+            challenge_id: Some(challenge_id.to_string()),
+            challenge_type: Some("totp".to_string()),
+            expires_in_s,
+        })),
+    }
 }
 
 async fn refresh(
@@ -186,14 +274,14 @@ async fn refresh(
     Ok(Json(tokens))
 }
 
-async fn password_reset_request(
+async fn password_reset_request_public(
     State(service): State<SharedAuthService>,
     Json(req): Json<PasswordResetRequest>,
 ) -> Result<Json<PasswordResetResponse>, ApiError> {
-    let result = service.password_reset_request(&req.email).await?;
+    let result = service.password_reset_request_public(&req.email).await?;
     Ok(Json(PasswordResetResponse {
         accepted: result.accepted,
-        reset_token: result.reset_token,
+        reset_token: None,
     }))
 }
 
@@ -205,6 +293,68 @@ async fn password_reset_confirm(
         .password_reset_confirm(&req.reset_token, &req.new_password)
         .await?;
     Ok(Json(PasswordResetConfirmResponse { accepted: true }))
+}
+
+async fn email_login_request(
+    State(service): State<SharedAuthService>,
+    Json(req): Json<EmailLoginRequest>,
+) -> Result<Json<EmailLoginResponse>, ApiError> {
+    let result = service.request_email_login(&req.email).await?;
+    Ok(Json(EmailLoginResponse {
+        accepted: result.accepted,
+    }))
+}
+
+async fn email_login_verify(
+    State(service): State<SharedAuthService>,
+    Json(req): Json<EmailLoginVerifyRequest>,
+) -> Result<Json<AuthTokens>, ApiError> {
+    let tokens = service
+        .verify_email_login(&req.challenge_id, req.code.as_deref(), req.token.as_deref())
+        .await?;
+    Ok(Json(tokens))
+}
+
+async fn totp_enroll(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+) -> Result<Json<TotpEnrollResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    let enrollment = service.enroll_totp(access_token).await?;
+    Ok(Json(TotpEnrollResponse {
+        enrollment_id: enrollment.enrollment_id.to_string(),
+        issuer: enrollment.issuer,
+        account_label: enrollment.account_label,
+        provisioning_uri: enrollment.provisioning_uri,
+        qr_svg: enrollment.qr_svg,
+        manual_secret: enrollment.manual_secret,
+        expires_in_s: enrollment.expires_in_s,
+    }))
+}
+
+async fn totp_verify(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+    Json(req): Json<TotpVerifyRequest>,
+) -> Result<Json<TotpVerifyResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    let result = service
+        .verify_totp_enrollment(access_token, &req.enrollment_id, &req.code)
+        .await?;
+    Ok(Json(TotpVerifyResponse {
+        accepted: true,
+        tokens: Some(result),
+    }))
+}
+
+async fn totp_login_challenge(
+    State(service): State<SharedAuthService>,
+    Json(req): Json<TotpLoginChallengeRequest>,
+) -> Result<Json<AuthTokens>, ApiError> {
+    let tokens = service
+        .verify_totp_login_challenge(&req.challenge_id, &req.code)
+        .await?;
+    Ok(Json(tokens))
 }
 
 async fn me(
@@ -236,8 +386,57 @@ async fn characters(
             .into_iter()
             .map(|character| CharacterSummary {
                 player_entity_id: character.player_entity_id,
+                display_name: character.display_name,
+                created_at_epoch_s: character.created_at_epoch_s,
+                status: character.status,
             })
             .collect(),
+    }))
+}
+
+async fn create_character(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+    Json(req): Json<CreateCharacterRequest>,
+) -> Result<Json<CreateCharacterResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    let character = service
+        .create_character(access_token, &req.display_name)
+        .await?;
+    Ok(Json(CreateCharacterResponse {
+        player_entity_id: character.player_entity_id,
+        display_name: character.display_name,
+        created_at_epoch_s: character.created_at_epoch_s,
+        status: character.status,
+    }))
+}
+
+async fn delete_character(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+    Path(player_entity_id): Path<String>,
+) -> Result<Json<DeleteCharacterResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    service
+        .delete_character(access_token, &player_entity_id)
+        .await?;
+    Ok(Json(DeleteCharacterResponse { accepted: true }))
+}
+
+async fn reset_character(
+    State(service): State<SharedAuthService>,
+    headers: HeaderMap,
+    Path(player_entity_id): Path<String>,
+) -> Result<Json<ResetCharacterResponse>, ApiError> {
+    let access_token = extract_bearer_token(&headers)?;
+    let character = service
+        .reset_character(access_token, &player_entity_id)
+        .await?;
+    Ok(Json(ResetCharacterResponse {
+        player_entity_id: character.player_entity_id,
+        display_name: character.display_name,
+        created_at_epoch_s: character.created_at_epoch_s,
+        status: character.status,
     }))
 }
 
@@ -247,12 +446,13 @@ async fn enter_world(
     Json(req): Json<EnterWorldRequest>,
 ) -> Result<Json<EnterWorldResponse>, ApiError> {
     let access_token = extract_bearer_token(&headers)?;
-    service
+    let tokens = service
         .enter_world(access_token, &req.player_entity_id)
         .await?;
     Ok(Json(EnterWorldResponse {
         accepted: true,
         replication_transport: replication_transport_config_from_env(),
+        tokens: Some(tokens),
     }))
 }
 

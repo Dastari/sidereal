@@ -1,4 +1,6 @@
 use sidereal_game::{
+    AsteroidField, AsteroidFieldAmbient, AsteroidFieldDamageState, AsteroidFieldLayout,
+    AsteroidFieldMember, AsteroidFieldPopulation, AsteroidFractureProfile, AsteroidResourceProfile,
     CollisionOutlineM, CollisionProfile, Cost, Destructible, Inventory, SiderealComponentMetadata,
     ThrusterPlumeShaderSettings, VisibilityScope,
 };
@@ -58,4 +60,74 @@ fn thruster_plume_settings_metadata_is_public() {
     assert!(meta.persist);
     assert!(meta.replicate);
     assert_eq!(meta.visibility, &[VisibilityScope::Public]);
+}
+
+#[test]
+fn asteroid_field_v2_public_metadata_is_persisted_and_replicated() {
+    for (kind, persist, replicate, visibility) in [
+        (
+            <AsteroidField as SiderealComponentMetadata>::META.kind,
+            <AsteroidField as SiderealComponentMetadata>::META.persist,
+            <AsteroidField as SiderealComponentMetadata>::META.replicate,
+            <AsteroidField as SiderealComponentMetadata>::META.visibility,
+        ),
+        (
+            <AsteroidFieldLayout as SiderealComponentMetadata>::META.kind,
+            <AsteroidFieldLayout as SiderealComponentMetadata>::META.persist,
+            <AsteroidFieldLayout as SiderealComponentMetadata>::META.replicate,
+            <AsteroidFieldLayout as SiderealComponentMetadata>::META.visibility,
+        ),
+        (
+            <AsteroidFieldPopulation as SiderealComponentMetadata>::META.kind,
+            <AsteroidFieldPopulation as SiderealComponentMetadata>::META.persist,
+            <AsteroidFieldPopulation as SiderealComponentMetadata>::META.replicate,
+            <AsteroidFieldPopulation as SiderealComponentMetadata>::META.visibility,
+        ),
+        (
+            <AsteroidFieldMember as SiderealComponentMetadata>::META.kind,
+            <AsteroidFieldMember as SiderealComponentMetadata>::META.persist,
+            <AsteroidFieldMember as SiderealComponentMetadata>::META.replicate,
+            <AsteroidFieldMember as SiderealComponentMetadata>::META.visibility,
+        ),
+        (
+            <AsteroidFieldAmbient as SiderealComponentMetadata>::META.kind,
+            <AsteroidFieldAmbient as SiderealComponentMetadata>::META.persist,
+            <AsteroidFieldAmbient as SiderealComponentMetadata>::META.replicate,
+            <AsteroidFieldAmbient as SiderealComponentMetadata>::META.visibility,
+        ),
+    ] {
+        assert!(kind.starts_with("asteroid_"));
+        assert!(persist);
+        assert!(replicate);
+        assert_eq!(visibility, &[VisibilityScope::Public]);
+    }
+}
+
+#[test]
+fn asteroid_field_v2_server_owned_metadata_is_not_replicated() {
+    for (kind, persist, replicate, visibility) in [
+        (
+            <AsteroidFieldDamageState as SiderealComponentMetadata>::META.kind,
+            <AsteroidFieldDamageState as SiderealComponentMetadata>::META.persist,
+            <AsteroidFieldDamageState as SiderealComponentMetadata>::META.replicate,
+            <AsteroidFieldDamageState as SiderealComponentMetadata>::META.visibility,
+        ),
+        (
+            <AsteroidFractureProfile as SiderealComponentMetadata>::META.kind,
+            <AsteroidFractureProfile as SiderealComponentMetadata>::META.persist,
+            <AsteroidFractureProfile as SiderealComponentMetadata>::META.replicate,
+            <AsteroidFractureProfile as SiderealComponentMetadata>::META.visibility,
+        ),
+        (
+            <AsteroidResourceProfile as SiderealComponentMetadata>::META.kind,
+            <AsteroidResourceProfile as SiderealComponentMetadata>::META.persist,
+            <AsteroidResourceProfile as SiderealComponentMetadata>::META.replicate,
+            <AsteroidResourceProfile as SiderealComponentMetadata>::META.visibility,
+        ),
+    ] {
+        assert!(kind.starts_with("asteroid_"));
+        assert!(persist);
+        assert!(!replicate);
+        assert_eq!(visibility, &[VisibilityScope::OwnerOnly]);
+    }
 }

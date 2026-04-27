@@ -1,0 +1,332 @@
+use crate::Interpolated;
+use crate::prelude::InterpolationRegistry;
+use bevy_ecs::prelude::Changed;
+use bevy_ecs::prelude::*;
+use bevy_reflect::Reflect;
+use bevy_utils::prelude::DebugName;
+use lightyear_core::history_buffer::{HistoryBuffer, HistoryState};
+use lightyear_core::prelude::Tick;
+use lightyear_replication::components::{Confirmed, ConfirmedTick};
+#[allow(unused_imports)]
+use tracing::{info, trace};
+
+/// Stores a buffer of past component values received from the remote
+#[derive(Component, Debug, Reflect)]
+pub struct ConfirmedHistory<C> {
+    history: HistoryBuffer<C>,
+}
+
+impl<C> Default for ConfirmedHistory<C> {
+    fn default() -> Self {
+        Self {
+            history: HistoryBuffer::<C>::default(),
+        }
+    }
+}
+
+impl<C> PartialEq for ConfirmedHistory<C> {
+    fn eq(&self, other: &Self) -> bool {
+        self.history.eq(&other.history)
+    }
+}
+
+impl<C> ConfirmedHistory<C> {
+    pub fn len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Get the n-th oldest tick in the buffer (starts from n = 0)
+    pub fn get_nth_tick(&self, n: usize) -> Option<Tick> {
+        self.history.get_nth(n).map(|(t, _)| *t)
+    }
+
+    /// The oldest value in the history, which is used as the start value for the interpolation
+    pub fn start(&self) -> Option<(Tick, &C)> {
+        self.get_nth(0)
+    }
+
+    /// The second oldest value in the history, which is used as the end value for the interpolation
+    pub fn end(&self) -> Option<(Tick, &C)> {
+        self.get_nth(1)
+    }
+
+    /// The most recent value in the history.
+    pub fn newest(&self) -> Option<(Tick, &C)> {
+        match self.history.most_recent() {
+            None | Some((_, HistoryState::Removed)) => None,
+            Some((t, HistoryState::Updated(v))) => Some((*t, v)),
+        }
+    }
+
+    /// Get the n-th oldest tick in the buffer (starts from n = 0)
+    pub(crate) fn get_nth(&self, n: usize) -> Option<(Tick, &C)> {
+        match self.history.get_nth(n) {
+            None | Some((_, HistoryState::Removed)) => None,
+            Some((t, HistoryState::Updated(v))) => Some((*t, v)),
+        }
+    }
+
+    /// Push a new value in the history.
+    /// It MUST be more recent than all previous values, which is guaranteed from
+    /// how lightyear_replication::receive works
+    pub fn push(&mut self, tick: Tick, value: C) {
+        self.history.add_update(tick, value)
+    }
+
+    /// Pop the oldest value in the history
+    pub fn pop(&mut self) -> Option<(Tick, C)> {
+        match self.history.pop() {
+            None | Some((_, HistoryState::Removed)) => None,
+            Some((t, HistoryState::Updated(v))) => Some((t, v)),
+        }
+    }
+}
+
+impl<C: Component + Clone> ConfirmedHistory<C> {
+    pub fn interpolate(
+        &self,
+        interpolation_tick: Tick,
+        interpolation_overstep: f32,
+        interpolation_registry: &InterpolationRegistry,
+    ) -> Option<C> {
+        let (start_tick, start) = self.start()?;
+        // It is possible that the interpolation_tick is early compared to the updates
+        // in the history: e.g. we received an update H, then no update for a while so
+        // we rebased it forward, and then two new updates arrive ahead of the
+        // interpolation tick (X...H1...H2). In that case interpolation should not run.
+        if interpolation_tick < start_tick {
+            return None;
+        }
+        let (end_tick, end) = self.end()?;
+        // Clamp (rather than extrapolate past end_tick): bounds jerk to
+        // |newest - behind| on direction reversals. Extrapolation would look smoother
+        // in pure continuous motion but amplify the mismatch when the server path
+        // diverges from the extrapolated one. Revisit if we add velocity-aware
+        // interpolation with reconciliation.
+        let fraction = (((interpolation_tick - start_tick) as f32 + interpolation_overstep)
+            / (end_tick - start_tick) as f32)
+            .clamp(0.0, 1.0);
+        trace!(
+            ?start_tick,
+            ?end_tick,
+            ?interpolation_tick,
+            ?interpolation_overstep,
+            ?fraction,
+            "Interpolate {:?}",
+            DebugName::type_name::<C>()
+        );
+        Some(interpolation_registry.interpolate(start.clone(), end.clone(), fraction))
+    }
+}
+
+/// When [`Confirmed<C>`] is inserted on an Interpolated entity, insert a [`ConfirmedHistory::<C>`] component
+///
+// TODO: should we populate the history immediately with the component value?
+pub(crate) fn insert_confirmed_history<C: Component>(
+    trigger: On<Add, Confirmed<C>>,
+    mut commands: Commands,
+    query: Query<(), (With<Interpolated>, Without<ConfirmedHistory<C>>)>,
+) {
+    if query.get(trigger.entity).is_ok() {
+        commands
+            .entity(trigger.entity)
+            .try_insert(ConfirmedHistory::<C>::default());
+    }
+}
+
+/// When [`Interpolated`] is inserted on an entity that already has [`Confirmed<C>`], we also
+/// need to ensure [`ConfirmedHistory<C>`] exists.
+///
+/// This complements [`insert_confirmed_history`] so both marker insertion orders are supported:
+/// - `Interpolated` first, then `Confirmed<C>`
+/// - `Confirmed<C>` first, then `Interpolated`
+pub(crate) fn insert_confirmed_history_on_interpolated<C: Component>(
+    trigger: On<Add, Interpolated>,
+    mut commands: Commands,
+    query: Query<(), (With<Confirmed<C>>, Without<ConfirmedHistory<C>>)>,
+) {
+    if query.get(trigger.entity).is_ok() {
+        commands
+            .entity(trigger.entity)
+            .try_insert(ConfirmedHistory::<C>::default());
+    }
+}
+
+/// When we receive a server update for an interpolated component, we need to store it in the confirmed history,
+pub(crate) fn apply_confirmed_update<C: Component + Clone>(
+    // TODO: this should be a trigger, we should trigger an event whenever Confirmed gets inserted or modified
+
+    // TODO: use the interpolation receiver corresponding to the Confirmed entity (via Replicated)
+    mut interpolated_entities: Query<
+        (&mut ConfirmedHistory<C>, &Confirmed<C>, &ConfirmedTick),
+        (With<Interpolated>, Changed<Confirmed<C>>),
+    >,
+) {
+    let kind = DebugName::type_name::<C>();
+    for (mut history, confirmed_component, confirmed) in interpolated_entities.iter_mut() {
+        // // if has_authority is true, we will consider the Confirmed value as the source of truth
+        // // else it will be the server updates
+        // // TODO: as an alternative, we could set the confirmed.tick to be equal to the current tick
+        // //  if we have authority! Then it would also work for prediction?
+        // let tick = if has_authority {
+        //     timeline.tick()
+        // } else {
+        //     confirmed.tick
+        // };
+        let tick = confirmed.tick;
+
+        // let Some(tick) = client
+        //     .replication_receiver()
+        //     .get_confirmed_tick(confirmed_entity)
+        // else {
+        //     error!(
+        //         "Could not find replication channel for entity {:?}",
+        //         confirmed_entity
+        //     );
+        //     continue;
+        // };
+
+        let component = confirmed_component.clone();
+        trace!(?kind, tick = ?tick, "adding confirmed update to history");
+        // update the history at the value that the entity currently is
+        // NOTE: it is guaranteed that the confirmed update is more recent than all previous updates
+        //  We enforce this invariant in replication::receive
+        history.push(tick, component.0);
+        // TODO: here we do not want to update directly the component, that will be done during interpolation
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_app::App;
+    use lightyear_core::prelude::Tick;
+
+    #[derive(Component, Clone, PartialEq, Debug)]
+    struct TestComp(f32);
+
+    fn lerp_test_comp(start: TestComp, end: TestComp, t: f32) -> TestComp {
+        TestComp(start.0 + (end.0 - start.0) * t)
+    }
+
+    fn registry() -> InterpolationRegistry {
+        let mut registry = InterpolationRegistry::default();
+        registry.set_interpolation::<TestComp>(lerp_test_comp);
+        registry
+    }
+
+    #[test]
+    fn interpolate_blends_between_two_keyframes() {
+        let registry = registry();
+        let mut history = ConfirmedHistory::<TestComp>::default();
+        history.push(Tick(10), TestComp(0.0));
+        history.push(Tick(20), TestComp(10.0));
+
+        assert_eq!(
+            history.interpolate(Tick(15), 0.0, &registry),
+            Some(TestComp(5.0))
+        );
+    }
+
+    #[test]
+    fn interpolate_clamps_when_past_end_tick() {
+        let registry = registry();
+        let mut history = ConfirmedHistory::<TestComp>::default();
+        history.push(Tick(10), TestComp(0.0));
+        history.push(Tick(20), TestComp(10.0));
+
+        assert_eq!(
+            history.interpolate(Tick(30), 0.0, &registry),
+            Some(TestComp(10.0))
+        );
+        assert_eq!(
+            history.interpolate(Tick(20), 0.5, &registry),
+            Some(TestComp(10.0))
+        );
+    }
+
+    #[test]
+    fn interpolate_returns_none_with_single_keyframe() {
+        let registry = registry();
+        let mut history = ConfirmedHistory::<TestComp>::default();
+        history.push(Tick(10), TestComp(42.0));
+
+        assert_eq!(history.interpolate(Tick(10), 0.0, &registry), None);
+        assert_eq!(history.interpolate(Tick(50), 0.5, &registry), None);
+    }
+
+    #[test]
+    fn interpolate_returns_none_when_tick_is_before_start() {
+        let registry = registry();
+        let mut history = ConfirmedHistory::<TestComp>::default();
+        history.push(Tick(10), TestComp(0.0));
+        history.push(Tick(20), TestComp(10.0));
+
+        assert_eq!(history.interpolate(Tick(5), 0.0, &registry), None);
+    }
+
+    #[test]
+    fn interpolate_returns_none_when_history_is_empty() {
+        let registry = registry();
+        let history = ConfirmedHistory::<TestComp>::default();
+
+        assert_eq!(history.interpolate(Tick(0), 0.0, &registry), None);
+    }
+
+    #[test]
+    fn inserts_history_when_confirmed_added_after_interpolated() {
+        let mut app = App::new();
+        app.add_observer(insert_confirmed_history::<TestComp>);
+        app.add_observer(insert_confirmed_history_on_interpolated::<TestComp>);
+
+        let entity = app.world_mut().spawn(Interpolated).id();
+        app.update();
+        app.world_mut()
+            .entity_mut(entity)
+            .insert((Confirmed(TestComp(1.0)), ConfirmedTick { tick: Tick(7) }));
+        app.update();
+
+        assert!(
+            app.world()
+                .entity(entity)
+                .contains::<ConfirmedHistory<TestComp>>()
+        );
+    }
+
+    #[test]
+    fn inserts_history_when_interpolated_added_after_confirmed() {
+        let mut app = App::new();
+        app.add_observer(insert_confirmed_history::<TestComp>);
+        app.add_observer(insert_confirmed_history_on_interpolated::<TestComp>);
+
+        let entity = app
+            .world_mut()
+            .spawn((Confirmed(TestComp(2.0)), ConfirmedTick { tick: Tick(11) }))
+            .id();
+        app.update();
+        app.world_mut().entity_mut(entity).insert(Interpolated);
+        app.update();
+
+        assert!(
+            app.world()
+                .entity(entity)
+                .contains::<ConfirmedHistory<TestComp>>()
+        );
+    }
+
+    #[test]
+    fn does_not_insert_history_without_confirmed_component() {
+        let mut app = App::new();
+        app.add_observer(insert_confirmed_history::<TestComp>);
+        app.add_observer(insert_confirmed_history_on_interpolated::<TestComp>);
+
+        let entity = app.world_mut().spawn(Interpolated).id();
+        app.update();
+
+        assert!(
+            !app.world()
+                .entity(entity)
+                .contains::<ConfirmedHistory<TestComp>>()
+        );
+    }
+}

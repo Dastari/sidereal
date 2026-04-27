@@ -33,11 +33,12 @@ use super::components::{
     BallisticProjectileVisualAttached, CanonicalPresentationEntity, ControlledEntity,
     PendingInitialVisualReady, PendingVisibilityFadeIn, PlanetBodyCamera,
     ResolvedRuntimeRenderLayer, RuntimeWorldVisualFamily, RuntimeWorldVisualPass,
-    RuntimeWorldVisualPassKind, RuntimeWorldVisualPassSet, StreamedSpriteShaderAssetId,
-    StreamedVisualAssetId, StreamedVisualAttached, StreamedVisualAttachmentKind,
-    StreamedVisualChild, SuppressedPredictedDuplicateVisual, WeaponImpactExplosion,
-    WeaponImpactExplosionPool, WeaponImpactSpark, WeaponImpactSparkPool, WeaponTracerBolt,
-    WeaponTracerCooldowns, WeaponTracerPool, WorldEntity,
+    RuntimeWorldVisualPassKind, RuntimeWorldVisualPassSet,
+    StreamedProceduralSpriteVisualFingerprint, StreamedSpriteShaderAssetId, StreamedVisualAssetId,
+    StreamedVisualAttached, StreamedVisualAttachmentKind, StreamedVisualChild,
+    SuppressedPredictedDuplicateVisual, WeaponImpactExplosion, WeaponImpactExplosionPool,
+    WeaponImpactSpark, WeaponImpactSparkPool, WeaponTracerBolt, WeaponTracerCooldowns,
+    WeaponTracerPool, WorldEntity,
 };
 use super::ecs_util::queue_despawn_if_exists;
 use super::lighting::{CameraLocalLightSet, WorldLightingState};
@@ -437,9 +438,26 @@ fn procedural_sprite_fingerprint(sprite: &ProceduralSprite) -> u64 {
         .palette_dark_rgb
         .iter()
         .chain(sprite.palette_light_rgb.iter())
+        .chain(sprite.mineral_accent_rgb.iter())
     {
         seed ^= u64::from(value.to_bits()).rotate_left(7);
         seed = seed.wrapping_mul(0x100000001b3);
+    }
+    seed ^= u64::from(sprite.pixel_step_px) << 40;
+    seed ^= u64::from(sprite.crack_intensity.to_bits()).rotate_left(11);
+    seed ^= u64::from(sprite.mineral_vein_intensity.to_bits()).rotate_left(17);
+    seed ^= match sprite.surface_style {
+        sidereal_game::ProceduralSpriteSurfaceStyle::Rocky => 0x01,
+        sidereal_game::ProceduralSpriteSurfaceStyle::Carbonaceous => 0x02,
+        sidereal_game::ProceduralSpriteSurfaceStyle::Metallic => 0x03,
+        sidereal_game::ProceduralSpriteSurfaceStyle::Shard => 0x04,
+        sidereal_game::ProceduralSpriteSurfaceStyle::GemRich => 0x05,
+    };
+    if let Some(family_seed_key) = &sprite.family_seed_key {
+        for byte in family_seed_key.as_bytes() {
+            seed ^= u64::from(*byte);
+            seed = seed.wrapping_mul(0x100000001b3);
+        }
     }
     seed
 }
@@ -883,6 +901,7 @@ pub(super) fn cleanup_streamed_visual_children_system(
             Has<PlanetBodyShaderSettings>,
             Has<StreamedVisualAttached>,
             Option<&'_ StreamedVisualAttachmentKind>,
+            Option<&'_ StreamedProceduralSpriteVisualFingerprint>,
             Has<SuppressedPredictedDuplicateVisual>,
             Option<&'_ PlayerTag>,
             Has<ControlledEntityGuid>,
@@ -902,13 +921,19 @@ pub(super) fn cleanup_streamed_visual_children_system(
         has_planet_shader,
         has_visual_attached,
         attached_kind,
+        procedural_visual_fingerprint,
         is_suppressed,
         player_tag,
         has_controlled_entity_guid,
     ) in &parents
     {
+        let is_procedural_asteroid =
+            procedural_sprite.is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1");
         let world_sprite_kind = sprite_shader_asset_id
-            .and_then(|shader| shaders::world_sprite_shader_kind(&shader_assignments, &shader.0));
+            .and_then(|shader| shaders::world_sprite_shader_kind(&shader_assignments, &shader.0))
+            .or_else(|| {
+                is_procedural_asteroid.then_some(shaders::RuntimeWorldSpriteShaderKind::Asteroid)
+            });
         let has_streamed_sprite_shader_path = sprite_shader_asset_id.is_some_and(|shader| {
             shaders::world_sprite_shader_ready(
                 &asset_root.0,
@@ -929,12 +954,19 @@ pub(super) fn cleanup_streamed_visual_children_system(
         } else {
             None
         };
+        let desired_procedural_fingerprint = procedural_sprite
+            .filter(|sprite| sprite.generator_id == "asteroid_rocky_v1")
+            .map(procedural_sprite_fingerprint);
+        let procedural_image_changed = procedural_visual_fingerprint
+            .map(|stored| Some(stored.0) != desired_procedural_fingerprint)
+            .unwrap_or_else(|| desired_procedural_fingerprint.is_some());
         let should_clear_visual = visual_asset_id.is_none()
             || catalog_reloaded
             || has_planet_shader
             || is_suppressed
             || player_tag.is_some()
             || has_controlled_entity_guid
+            || procedural_image_changed
             || desired_kind.is_some_and(|desired| {
                 streamed_visual_needs_rebuild(attached_kind.copied(), desired)
             });
@@ -951,7 +983,11 @@ pub(super) fn cleanup_streamed_visual_children_system(
         if (has_visual_attached || removed_any_child)
             && let Ok(mut parent_commands) = commands.get_entity(parent_entity)
         {
-            parent_commands.remove::<(StreamedVisualAttached, StreamedVisualAttachmentKind)>();
+            parent_commands.remove::<(
+                StreamedVisualAttached,
+                StreamedVisualAttachmentKind,
+                StreamedProceduralSpriteVisualFingerprint,
+            )>();
         }
     }
 }
@@ -1023,48 +1059,50 @@ pub(super) fn attach_streamed_visual_assets_system(
         };
         ensure_visual_parent_spatial_components(&mut entity_commands);
 
+        let is_procedural_asteroid =
+            procedural_sprite.is_some_and(|sprite| sprite.generator_id == "asteroid_rocky_v1");
+        let desired_procedural_fingerprint = procedural_sprite
+            .filter(|sprite| sprite.generator_id == "asteroid_rocky_v1")
+            .map(procedural_sprite_fingerprint);
         let world_sprite_kind = sprite_shader
-            .and_then(|shader| shaders::world_sprite_shader_kind(&shader_assignments, &shader.0));
-        let is_asteroid_shader = matches!(
-            world_sprite_kind,
-            Some(shaders::RuntimeWorldSpriteShaderKind::Asteroid)
-        );
-        let generated_asteroid_image = if is_asteroid_shader
-            && let Some(procedural_sprite) = procedural_sprite
-            && procedural_sprite.generator_id == "asteroid_rocky_v1"
-        {
-            let guid = entity_guid
-                .map(|guid| guid.0)
-                .unwrap_or_else(uuid::Uuid::nil);
-            let fingerprint = procedural_sprite_fingerprint(procedural_sprite);
-            Some(
-                cached_assets
-                    .asteroid_sprite_cache
-                    .entry((guid, fingerprint))
-                    .or_insert_with(|| {
-                        let generated = generate_procedural_sprite_image_set(
-                            &guid.to_string(),
-                            procedural_sprite,
-                        )
-                        .expect("procedural asteroid sprite generation must succeed");
-                        let albedo = images.add(image_from_rgba(
-                            generated.width,
-                            generated.height,
-                            generated.albedo_rgba,
-                        ));
-                        let normal = images.add(image_from_rgba(
-                            generated.width,
-                            generated.height,
-                            generated.normal_rgba,
-                        ));
-                        (albedo, normal)
-                    })
-                    .0
-                    .clone(),
-            )
-        } else {
-            None
-        };
+            .and_then(|shader| shaders::world_sprite_shader_kind(&shader_assignments, &shader.0))
+            .or_else(|| {
+                is_procedural_asteroid.then_some(shaders::RuntimeWorldSpriteShaderKind::Asteroid)
+            });
+        let generated_asteroid_image =
+            if is_procedural_asteroid && let Some(procedural_sprite) = procedural_sprite {
+                let guid = entity_guid
+                    .map(|guid| guid.0)
+                    .unwrap_or_else(uuid::Uuid::nil);
+                let fingerprint = procedural_sprite_fingerprint(procedural_sprite);
+                Some(
+                    cached_assets
+                        .asteroid_sprite_cache
+                        .entry((guid, fingerprint))
+                        .or_insert_with(|| {
+                            let generated = generate_procedural_sprite_image_set(
+                                &guid.to_string(),
+                                procedural_sprite,
+                            )
+                            .expect("procedural asteroid sprite generation must succeed");
+                            let albedo = images.add(image_from_rgba(
+                                generated.width,
+                                generated.height,
+                                generated.albedo_rgba,
+                            ));
+                            let normal = images.add(image_from_rgba(
+                                generated.width,
+                                generated.height,
+                                generated.normal_rgba,
+                            ));
+                            (albedo, normal)
+                        })
+                        .0
+                        .clone(),
+                )
+            } else {
+                None
+            };
 
         let image_handle = if let Some(handle) = generated_asteroid_image.clone() {
             handle
@@ -1137,6 +1175,12 @@ pub(super) fn attach_streamed_visual_assets_system(
                     StreamedVisualAttached,
                     StreamedVisualAttachmentKind::AsteroidShader,
                 ));
+                if let Some(fingerprint) = desired_procedural_fingerprint {
+                    entity_commands
+                        .try_insert(StreamedProceduralSpriteVisualFingerprint(fingerprint));
+                } else {
+                    entity_commands.remove::<StreamedProceduralSpriteVisualFingerprint>();
+                }
                 continue;
             }
             StreamedVisualMaterialKind::GenericShader => {
@@ -1164,6 +1208,7 @@ pub(super) fn attach_streamed_visual_assets_system(
                     StreamedVisualAttached,
                     StreamedVisualAttachmentKind::GenericShader,
                 ));
+                entity_commands.remove::<StreamedProceduralSpriteVisualFingerprint>();
                 continue;
             }
             StreamedVisualMaterialKind::Plain => {}
@@ -1186,6 +1231,7 @@ pub(super) fn attach_streamed_visual_assets_system(
             ));
         });
         entity_commands.try_insert((StreamedVisualAttached, StreamedVisualAttachmentKind::Plain));
+        entity_commands.remove::<StreamedProceduralSpriteVisualFingerprint>();
     }
 }
 

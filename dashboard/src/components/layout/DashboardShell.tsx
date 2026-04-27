@@ -3,11 +3,11 @@ import {
   Database,
   FileCode2,
   Gamepad2,
-  Gauge,
   Globe2,
   Orbit,
   Settings,
   Sparkles,
+  UserRound,
   Volume2,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
@@ -20,6 +20,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import {
+  hasDashboardAdminAccess,
+  useDashboardSession,
+} from '@/lib/dashboard-auth'
 import { cn } from '@/lib/utils'
 
 export type ToolNavItem = {
@@ -32,9 +36,9 @@ export type ToolNavItem = {
 export const toolNavItems: Array<ToolNavItem> = [
   {
     to: '/',
-    label: 'Dashboard',
-    description: 'Service health, counters, and endpoint status.',
-    icon: Gauge,
+    label: 'My Account',
+    description: 'Account character selection, creation, reset, and deletion.',
+    icon: UserRound,
   },
   {
     to: '/database',
@@ -63,7 +67,8 @@ export const toolNavItems: Array<ToolNavItem> = [
   {
     to: '/genesis',
     label: 'Genesis',
-    description: 'Planet registry authoring, deterministic randomization, and Lua publishing.',
+    description:
+      'Planet registry authoring, deterministic randomization, and Lua publishing.',
     icon: Globe2,
   },
   {
@@ -101,6 +106,10 @@ const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.0.0'
 
 export function DashboardShell() {
   const location = useLocation()
+  const session = useDashboardSession()
+  const visibleNavItems = hasDashboardAdminAccess(session)
+    ? toolNavItems
+    : toolNavItems.slice(0, 1)
   const activeTool = getActiveTool(location.pathname)
 
   return (
@@ -122,7 +131,7 @@ export function DashboardShell() {
 
       <div className="flex min-h-0 flex-1">
         <aside className="grid-sidebar-rail flex w-18 shrink-0 flex-col items-center gap-2 border-r px-2 py-2">
-          {toolNavItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon
             const active =
               item.to === '/'

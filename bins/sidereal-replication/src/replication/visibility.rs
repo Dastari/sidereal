@@ -1,4 +1,4 @@
-use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
+use avian2d::prelude::{AngularInertia, AngularVelocity, LinearVelocity, Mass, Position, Rotation};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use lightyear::prelude::server::ClientOf;
@@ -22,13 +22,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::replication::PlayerRuntimeEntityMap;
 use crate::replication::auth::AuthenticatedClientBindings;
 use crate::replication::debug_env;
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::notifications::{
     NotificationCommand, NotificationCommandQueue, enqueue_player_notification,
 };
+use crate::replication::{PlayerRuntimeEntityMap, SimulatedControlledEntity};
 
 pub const DEFAULT_VIEW_RANGE_M: f32 = 300.0;
 const DEFAULT_VISIBILITY_CELL_SIZE_M: f32 = 2000.0;
@@ -705,10 +705,101 @@ pub fn init_resources(app: &mut App) {
         bypass_all_filters: bypass_all_visibility_filters_from_env(),
     });
     app.insert_resource(VisibilityTelemetryLogState::default());
+    app.insert_resource(MotionReplicationDiagnosticsLogState::default());
     app.insert_resource(VisibilityPreparationMetrics::default());
     app.insert_resource(VisibilityLandmarkDiscoveryMetrics::default());
     app.insert_resource(VisibilityRuntimeMetrics::default());
     app.insert_resource(ClientLocalViewModeRegistry::default());
+}
+
+#[derive(Resource, Default)]
+pub struct MotionReplicationDiagnosticsLogState {
+    last_logged_at_s: f64,
+}
+
+fn motion_replication_diagnostics_enabled() -> bool {
+    debug_env("SIDEREAL_DEBUG_MOTION_REPLICATION")
+}
+
+#[allow(clippy::type_complexity)]
+pub fn log_motion_replication_diagnostics(
+    time: Res<'_, Time>,
+    mut log_state: ResMut<'_, MotionReplicationDiagnosticsLogState>,
+    membership_cache: Res<'_, VisibilityMembershipCache>,
+    entities: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ EntityGuid,
+            Ref<'_, Position>,
+            Option<&'_ Rotation>,
+            Option<&'_ LinearVelocity>,
+            Option<&'_ AngularVelocity>,
+            Option<&'_ Mass>,
+            Option<&'_ AngularInertia>,
+            Has<Replicate>,
+            Option<&'_ ReplicationState>,
+        ),
+        Or<(With<SimulatedControlledEntity>, With<PlayerTag>)>,
+    >,
+) {
+    if !motion_replication_diagnostics_enabled() {
+        return;
+    }
+    const LOG_INTERVAL_S: f64 = 1.0;
+    let now_s = time.elapsed_secs_f64();
+    if now_s - log_state.last_logged_at_s < LOG_INTERVAL_S {
+        return;
+    }
+    log_state.last_logged_at_s = now_s;
+
+    for (
+        entity,
+        guid,
+        position,
+        rotation,
+        linear_velocity,
+        angular_velocity,
+        mass,
+        angular_inertia,
+        has_replicate,
+        replication_state,
+    ) in &entities
+    {
+        let visible_clients = membership_cache
+            .visible_clients(entity)
+            .map(|clients| {
+                let mut values = clients
+                    .iter()
+                    .map(|client| format!("{client:?}"))
+                    .collect::<Vec<_>>();
+                values.sort();
+                values
+            })
+            .unwrap_or_default();
+        let velocity = linear_velocity.map(|value| value.0);
+        let rotation_rad = rotation.map(|value| value.as_radians());
+        let angular_velocity_rad_s = angular_velocity.map(|value| value.0);
+        let mass_kg = mass.map(|value| value.0);
+        let angular_inertia_kg_m2 = angular_inertia.map(|value| value.0);
+        info!(
+            entity = ?entity,
+            guid = %guid.0,
+            position_x = position.0.x,
+            position_y = position.0.y,
+            position_changed = position.is_changed(),
+            rotation_rad,
+            velocity = ?velocity,
+            angular_velocity_rad_s,
+            mass_kg,
+            angular_inertia_kg_m2,
+            has_replicate,
+            has_replication_state = replication_state.is_some(),
+            visible_clients = ?visible_clients,
+            "server motion replication diagnostic"
+        );
+    }
 }
 
 #[allow(clippy::type_complexity)]

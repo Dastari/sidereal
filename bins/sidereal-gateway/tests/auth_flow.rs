@@ -2,11 +2,11 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde_json::Value;
-use sidereal_core::auth::AuthClaims;
+use sidereal_core::auth::{AuthClaims, AuthSessionContext};
 use sidereal_gateway::api::app_with_service;
 use sidereal_gateway::auth::{
     AuthConfig, AuthService, InMemoryAuthStore, NoopStarterWorldPersister,
-    RecordingBootstrapDispatcher,
+    RecordingBootstrapDispatcher, RecordingEmailDelivery, now_epoch_s, totp_code,
 };
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,6 +75,7 @@ async fn register_login_refresh_me_happy_path() {
     );
 
     let me_response = app
+        .clone()
         .oneshot(json_request(
             Method::GET,
             "/auth/me",
@@ -89,12 +90,74 @@ async fn register_login_refresh_me_happy_path() {
         me_json["email"].as_str().expect("email"),
         "pilot@example.com"
     );
-    let player_entity_id = me_json["player_entity_id"]
+    assert_eq!(
+        me_json["player_entity_id"]
+            .as_str()
+            .expect("legacy player entity id"),
+        "",
+        "registration should not create a default character"
+    );
+
+    let empty_characters = app
+        .clone()
+        .oneshot(json_request(
+            Method::GET,
+            "/auth/v1/characters",
+            "",
+            Some(&access_token),
+        ))
+        .await
+        .expect("empty characters response");
+    assert_eq!(empty_characters.status(), StatusCode::OK);
+    let empty_json = response_json(empty_characters).await;
+    assert_eq!(
+        empty_json["characters"]
+            .as_array()
+            .expect("characters array")
+            .len(),
+        0
+    );
+
+    let create_character = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/characters",
+            r#"{"display_name":"Talanah"}"#,
+            Some(&access_token),
+        ))
+        .await
+        .expect("create character response");
+    assert_eq!(create_character.status(), StatusCode::OK);
+    let create_json = response_json(create_character).await;
+    assert_eq!(
+        create_json["display_name"].as_str().expect("display_name"),
+        "Talanah"
+    );
+    let player_entity_id = create_json["player_entity_id"]
         .as_str()
         .expect("player entity id");
     assert!(
         uuid::Uuid::parse_str(player_entity_id).is_ok(),
         "player_entity_id should be a valid UUID, got: {player_entity_id}"
+    );
+
+    let characters = app
+        .oneshot(json_request(
+            Method::GET,
+            "/auth/v1/characters",
+            "",
+            Some(&access_token),
+        ))
+        .await
+        .expect("characters response");
+    assert_eq!(characters.status(), StatusCode::OK);
+    let characters_json = response_json(characters).await;
+    assert_eq!(
+        characters_json["characters"][0]["player_entity_id"]
+            .as_str()
+            .expect("listed character id"),
+        player_entity_id
     );
 }
 
@@ -172,11 +235,13 @@ async fn register_conflict_does_not_dispatch_bootstrap() {
 
 #[tokio::test]
 async fn password_reset_request_confirm_allows_new_login() {
-    let service = Arc::new(AuthService::new_with_persister(
+    let email_delivery = Arc::new(RecordingEmailDelivery::default());
+    let service = Arc::new(AuthService::new_with_dependencies(
         AuthConfig::for_tests(),
         Arc::new(InMemoryAuthStore::default()),
         Arc::new(RecordingBootstrapDispatcher::default()),
         Arc::new(NoopStarterWorldPersister),
+        email_delivery.clone(),
     ));
     let app = app_with_service(service.clone());
 
@@ -191,7 +256,7 @@ async fn password_reset_request_confirm_allows_new_login() {
         .await
         .expect("register response");
 
-    let request_reset = app
+    let legacy_request_reset = app
         .clone()
         .oneshot(json_request(
             Method::POST,
@@ -200,21 +265,43 @@ async fn password_reset_request_confirm_allows_new_login() {
             None,
         ))
         .await
+        .expect("legacy password reset request");
+    assert_eq!(legacy_request_reset.status(), StatusCode::NOT_FOUND);
+
+    let request_reset = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/password-reset/request",
+            r#"{"email":"pilot@example.com"}"#,
+            None,
+        ))
+        .await
         .expect("password reset request");
     assert_eq!(request_reset.status(), StatusCode::OK);
-    let reset_json = response_json(request_reset).await;
-    let reset_token = reset_json["reset_token"]
-        .as_str()
-        .expect("reset token")
-        .to_string();
+    let messages = email_delivery.messages().await;
+    assert_eq!(messages.len(), 1);
+    let reset_token = extract_email_line(&messages[0].body_text, "Reset token: ");
 
     let confirm_body =
         format!(r#"{{"reset_token":"{reset_token}","new_password":"new-very-strong-password"}}"#);
-    let confirm = app
+    let legacy_confirm = app
         .clone()
         .oneshot(json_request(
             Method::POST,
             "/auth/password-reset/confirm",
+            &confirm_body,
+            None,
+        ))
+        .await
+        .expect("legacy password reset confirm");
+    assert_eq!(legacy_confirm.status(), StatusCode::NOT_FOUND);
+
+    let confirm = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/password-reset/confirm",
             &confirm_body,
             None,
         ))
@@ -244,6 +331,338 @@ async fn password_reset_request_confirm_allows_new_login() {
         .await
         .expect("new login response");
     assert_eq!(new_login.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn v1_password_reset_request_sends_email_without_returning_token() {
+    let email_delivery = Arc::new(RecordingEmailDelivery::default());
+    let service = Arc::new(AuthService::new_with_dependencies(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+        email_delivery.clone(),
+    ));
+    let app = app_with_service(service.clone());
+
+    let _ = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/register",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("register response");
+
+    let request_reset = app
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/password-reset/request",
+            r#"{"email":"pilot@example.com"}"#,
+            None,
+        ))
+        .await
+        .expect("password reset request");
+
+    assert_eq!(request_reset.status(), StatusCode::OK);
+    let reset_json = response_json(request_reset).await;
+    assert_eq!(reset_json["accepted"].as_bool(), Some(true));
+    assert!(reset_json["reset_token"].is_null());
+    let messages = email_delivery.messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(
+        messages[0].body_text.contains("Reset token: "),
+        "test delivery should receive reset token in body"
+    );
+}
+
+#[tokio::test]
+async fn v1_email_login_request_and_verify_issues_tokens() {
+    let email_delivery = Arc::new(RecordingEmailDelivery::default());
+    let service = Arc::new(AuthService::new_with_dependencies(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+        email_delivery.clone(),
+    ));
+    let app = app_with_service(service.clone());
+
+    let _ = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/register",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("register response");
+
+    let request_login = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/login/email/request",
+            r#"{"email":"pilot@example.com"}"#,
+            None,
+        ))
+        .await
+        .expect("email login request");
+    assert_eq!(request_login.status(), StatusCode::OK);
+    let request_json = response_json(request_login).await;
+    assert_eq!(request_json["accepted"].as_bool(), Some(true));
+
+    let messages = email_delivery.messages().await;
+    assert_eq!(messages.len(), 1);
+    let challenge_id = extract_email_line(&messages[0].body_text, "Challenge ID: ");
+    let code = extract_email_line(&messages[0].body_text, "Code: ");
+    let verify_body = format!(r#"{{"challenge_id":"{challenge_id}","code":"{code}"}}"#);
+    let verify = app
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/login/email/verify",
+            &verify_body,
+            None,
+        ))
+        .await
+        .expect("email login verify");
+
+    assert_eq!(verify.status(), StatusCode::OK);
+    let verify_json = response_json(verify).await;
+    assert_eq!(verify_json["token_type"].as_str(), Some("bearer"));
+    assert!(verify_json["access_token"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn v1_totp_enroll_and_verify_routes_enable_mfa() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+
+    let register_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/register",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("register response");
+    assert_eq!(register_response.status(), StatusCode::OK);
+    let register_json = response_json(register_response).await;
+    let access_token = register_json["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+
+    let enroll_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/mfa/totp/enroll",
+            "",
+            Some(&access_token),
+        ))
+        .await
+        .expect("totp enroll response");
+    assert_eq!(enroll_response.status(), StatusCode::OK);
+    let enroll_json = response_json(enroll_response).await;
+    assert!(
+        enroll_json["provisioning_uri"]
+            .as_str()
+            .expect("provisioning uri")
+            .starts_with("otpauth://totp/")
+    );
+    assert!(
+        enroll_json["qr_svg"]
+            .as_str()
+            .expect("qr svg")
+            .contains("<svg")
+    );
+
+    let manual_secret = enroll_json["manual_secret"]
+        .as_str()
+        .expect("manual secret");
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(manual_secret.as_bytes())
+        .expect("manual secret decode");
+    let code = totp_code(
+        &secret,
+        now_epoch_s() / AuthConfig::for_tests().totp_step_s,
+        6,
+    )
+    .expect("totp code");
+    let verify_body = format!(
+        r#"{{"enrollment_id":"{}","code":"{}"}}"#,
+        enroll_json["enrollment_id"]
+            .as_str()
+            .expect("enrollment id"),
+        code
+    );
+    let verify_response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/mfa/totp/verify",
+            &verify_body,
+            Some(&access_token),
+        ))
+        .await
+        .expect("totp verify response");
+    assert_eq!(verify_response.status(), StatusCode::OK);
+    let verify_json = response_json(verify_response).await;
+    assert_eq!(verify_json["accepted"].as_bool(), Some(true));
+}
+
+#[tokio::test]
+async fn v1_password_login_returns_totp_challenge_for_mfa_account() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+
+    let register_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/register",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("register response");
+    assert_eq!(register_response.status(), StatusCode::OK);
+    let register_json = response_json(register_response).await;
+    let access_token = register_json["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+
+    let enroll_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/mfa/totp/enroll",
+            "",
+            Some(&access_token),
+        ))
+        .await
+        .expect("totp enroll response");
+    let enroll_json = response_json(enroll_response).await;
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(
+            enroll_json["manual_secret"]
+                .as_str()
+                .expect("manual secret")
+                .as_bytes(),
+        )
+        .expect("manual secret decode");
+    let code = totp_code(
+        &secret,
+        now_epoch_s() / AuthConfig::for_tests().totp_step_s,
+        6,
+    )
+    .expect("totp code");
+    let verify_body = format!(
+        r#"{{"enrollment_id":"{}","code":"{}"}}"#,
+        enroll_json["enrollment_id"]
+            .as_str()
+            .expect("enrollment id"),
+        code
+    );
+    let verify_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/mfa/totp/verify",
+            &verify_body,
+            Some(&access_token),
+        ))
+        .await
+        .expect("totp verify response");
+    assert_eq!(verify_response.status(), StatusCode::OK);
+    let verify_json = response_json(verify_response).await;
+    assert_eq!(verify_json["accepted"].as_bool(), Some(true));
+    let enrollment_access_token = verify_json["tokens"]["access_token"]
+        .as_str()
+        .expect("enrollment access token");
+    let enrollment_claims = service
+        .decode_access_token(enrollment_access_token)
+        .expect("decode enrollment access token");
+    assert!(enrollment_claims.session_context.mfa_verified);
+    assert_eq!(
+        enrollment_claims.session_context.auth_method,
+        "totp_enrollment"
+    );
+
+    let legacy_login_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/login",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("legacy password login response");
+    assert_eq!(legacy_login_response.status(), StatusCode::UNAUTHORIZED);
+
+    let login_response = app
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/login/password",
+            r#"{"email":"pilot@example.com","password":"very-strong-password"}"#,
+            None,
+        ))
+        .await
+        .expect("password login response");
+    assert_eq!(login_response.status(), StatusCode::OK);
+    let login_json = response_json(login_response).await;
+    assert_eq!(login_json["status"].as_str(), Some("mfa_required"));
+    assert_eq!(login_json["challenge_type"].as_str(), Some("totp"));
+    assert!(login_json["tokens"].is_null());
+
+    let code = totp_code(
+        &secret,
+        now_epoch_s() / AuthConfig::for_tests().totp_step_s,
+        6,
+    )
+    .expect("totp code");
+    let challenge_body = format!(
+        r#"{{"challenge_id":"{}","code":"{}"}}"#,
+        login_json["challenge_id"].as_str().expect("challenge id"),
+        code
+    );
+    let challenge_response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/auth/v1/login/challenge/totp",
+            &challenge_body,
+            None,
+        ))
+        .await
+        .expect("totp challenge response");
+    assert_eq!(challenge_response.status(), StatusCode::OK);
+    let challenge_json = response_json(challenge_response).await;
+    let access_token = challenge_json["access_token"]
+        .as_str()
+        .expect("access token");
+    let claims = service
+        .decode_access_token(access_token)
+        .expect("decode access token");
+    assert!(claims.session_context.mfa_verified);
+    assert_eq!(claims.session_context.auth_method, "password_totp");
 }
 
 #[tokio::test]
@@ -300,6 +719,8 @@ async fn admin_spawn_entity_rejects_invalid_player_id() {
         Uuid::new_v4(),
         Uuid::new_v4(),
         vec!["admin".to_string()],
+        vec!["admin:spawn".to_string()],
+        true,
     );
 
     let response = app
@@ -329,6 +750,8 @@ async fn admin_spawn_entity_dispatches_for_admin_role() {
         Uuid::new_v4(),
         Uuid::new_v4(),
         vec!["dev_tool".to_string()],
+        vec!["admin:spawn".to_string()],
+        true,
     );
     let target_player_id = Uuid::new_v4().to_string();
 
@@ -378,6 +801,8 @@ async fn admin_spawn_entity_returns_nondeterministic_entity_ids() {
         Uuid::new_v4(),
         Uuid::new_v4(),
         vec!["admin".to_string()],
+        vec!["admin:spawn".to_string()],
+        true,
     );
     let target_player_id = Uuid::new_v4().to_string();
     let request_body = format!(
@@ -414,6 +839,72 @@ async fn admin_spawn_entity_returns_nondeterministic_entity_ids() {
         .as_str()
         .expect("second spawned_entity_id");
     assert_ne!(first_id, second_id);
+}
+
+#[tokio::test]
+async fn admin_spawn_entity_requires_mfa_verified_token() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+    let admin_token = signed_token_with_roles(
+        &AuthConfig::for_tests().jwt_secret,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        vec!["admin".to_string()],
+        vec!["admin:spawn".to_string()],
+        false,
+    );
+    let target_player_id = Uuid::new_v4().to_string();
+
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/spawn-entity",
+            &format!(
+                r#"{{"player_entity_id":"{target_player_id}","bundle_id":"corvette","overrides":{{}}}}"#
+            ),
+            Some(&admin_token),
+        ))
+        .await
+        .expect("admin spawn response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_spawn_entity_requires_route_scope() {
+    let service = Arc::new(AuthService::new_with_persister(
+        AuthConfig::for_tests(),
+        Arc::new(InMemoryAuthStore::default()),
+        Arc::new(RecordingBootstrapDispatcher::default()),
+        Arc::new(NoopStarterWorldPersister),
+    ));
+    let app = app_with_service(service.clone());
+    let admin_token = signed_token_with_roles(
+        &AuthConfig::for_tests().jwt_secret,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        vec!["admin".to_string()],
+        vec!["scripts:read".to_string()],
+        true,
+    );
+    let target_player_id = Uuid::new_v4().to_string();
+
+    let response = app
+        .oneshot(json_request(
+            Method::POST,
+            "/admin/spawn-entity",
+            &format!(
+                r#"{{"player_entity_id":"{target_player_id}","bundle_id":"corvette","overrides":{{}}}}"#
+            ),
+            Some(&admin_token),
+        ))
+        .await
+        .expect("admin spawn response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -519,11 +1010,20 @@ async fn response_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).expect("json body")
 }
 
+fn extract_email_line(body: &str, prefix: &str) -> String {
+    body.lines()
+        .find_map(|line| line.strip_prefix(prefix))
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("missing {prefix} line in email body: {body}"))
+}
+
 fn signed_token_with_roles(
     jwt_secret: &str,
     account_id: Uuid,
     player_entity_id: Uuid,
     roles: Vec<String>,
+    scopes: Vec<String>,
+    mfa_verified: bool,
 ) -> String {
     let now_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -533,6 +1033,22 @@ fn signed_token_with_roles(
         sub: account_id.to_string(),
         player_entity_id: player_entity_id.to_string(),
         roles,
+        scope: scopes.join(" "),
+        session_context: AuthSessionContext {
+            auth_method: if mfa_verified {
+                "password_totp".to_string()
+            } else {
+                "password".to_string()
+            },
+            mfa_verified,
+            mfa_methods: if mfa_verified {
+                vec!["totp".to_string()]
+            } else {
+                Vec::new()
+            },
+            active_scope: scopes,
+            active_character_id: None,
+        },
         iat: now_s,
         exp: now_s + 3600,
         jti: Uuid::new_v4().to_string(),

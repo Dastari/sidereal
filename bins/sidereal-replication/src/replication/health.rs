@@ -26,7 +26,7 @@ use serde::Serialize;
 use sidereal_core::SIM_TICK_HZ;
 use sidereal_game::{
     BallisticProjectile, ControlledEntityGuid, DisplayName, EntityGuid, EntityLabels, MapIcon,
-    PlayerTag, ScriptState, ShipTag, SizeM, StaticLandmark, WorldPosition,
+    MountedOn, ParentGuid, PlayerTag, ScriptState, ShipTag, SizeM, StaticLandmark, WorldPosition,
 };
 
 const DEFAULT_HEALTH_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 15716);
@@ -210,13 +210,34 @@ struct ExplorerEntityMeta {
     guid: String,
     display_name: Option<String>,
     labels: Vec<String>,
-    bevy_parent_guid: Option<String>,
+    parent_guid: Option<String>,
     kind_label: String,
     position_xy: Option<(f64, f64)>,
     is_player_anchor: bool,
     latency_ms: Option<u64>,
     controlled_entity_guid: Option<String>,
 }
+
+type WorldExplorerEntityQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static EntityGuid,
+        Option<&'static EntityLabels>,
+        Option<&'static DisplayName>,
+        Option<&'static Position>,
+        Option<&'static WorldPosition>,
+        Option<&'static MountedOn>,
+        Option<&'static ParentGuid>,
+        Option<&'static ChildOf>,
+        Option<&'static ControlledEntityGuid>,
+        Has<PlayerTag>,
+        Has<ShipTag>,
+        Has<StaticLandmark>,
+        Has<BallisticProjectile>,
+    ),
+>;
 
 #[derive(Clone, Default, Resource)]
 pub struct SharedWorldExplorerSnapshot {
@@ -610,24 +631,7 @@ pub fn update_world_explorer_snapshot(
     shared: Res<'_, SharedWorldExplorerSnapshot>,
     mut snapshot: ResMut<'_, WorldExplorerSnapshot>,
     inputs: WorldExplorerSnapshotInputs<'_, '_>,
-    entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Option<&'_ EntityLabels>,
-            Option<&'_ DisplayName>,
-            Option<&'_ Position>,
-            Option<&'_ WorldPosition>,
-            Option<&'_ ChildOf>,
-            Option<&'_ ControlledEntityGuid>,
-            Has<PlayerTag>,
-            Has<ShipTag>,
-            Has<StaticLandmark>,
-            Has<BallisticProjectile>,
-        ),
-    >,
+    entities: WorldExplorerEntityQuery<'_, '_>,
 ) {
     let now_s = time.elapsed_secs_f64();
     if !should_refresh_snapshot(
@@ -658,6 +662,8 @@ pub fn update_world_explorer_snapshot(
         display_name,
         position,
         world_position,
+        mounted_on,
+        parent_guid,
         child_of,
         controlled_entity_guid,
         is_player,
@@ -676,12 +682,12 @@ pub fn update_world_explorer_snapshot(
             position_xy: position
                 .map(|value| (value.0.x, value.0.y))
                 .or_else(|| world_position.map(|value| (value.0.x, value.0.y))),
-            bevy_parent_guid: child_of.and_then(|value| {
-                entities
-                    .get(value.parent())
-                    .ok()
-                    .map(|(_, parent_guid, ..)| parent_guid.0.to_string())
-            }),
+            parent_guid: resolved_explorer_parent_guid(
+                mounted_on,
+                parent_guid,
+                child_of,
+                &entities,
+            ),
             kind_label: explorer_kind_label(
                 entity_labels,
                 is_player,
@@ -732,7 +738,7 @@ fn build_world_explorer_groups(
             continue;
         };
         let parent_guid = meta
-            .bevy_parent_guid
+            .parent_guid
             .as_deref()
             .filter(|parent_guid| all_guids.contains(*parent_guid));
         if let Some(parent_guid) = parent_guid {
@@ -829,6 +835,26 @@ fn explorer_sort_key(
                 .unwrap_or(left)
                 .cmp(right_meta.display_name.as_deref().unwrap_or(right)),
         )
+        .then(left.cmp(right))
+}
+
+fn resolved_explorer_parent_guid(
+    mounted_on: Option<&MountedOn>,
+    parent_guid: Option<&ParentGuid>,
+    child_of: Option<&ChildOf>,
+    entities: &WorldExplorerEntityQuery<'_, '_>,
+) -> Option<String> {
+    mounted_on
+        .map(|mounted_on| mounted_on.parent_entity_id.to_string())
+        .or_else(|| parent_guid.map(|parent_guid| parent_guid.0.to_string()))
+        .or_else(|| {
+            child_of.and_then(|value| {
+                entities
+                    .get(value.parent())
+                    .ok()
+                    .map(|(_, parent_guid, ..)| parent_guid.0.to_string())
+            })
+        })
 }
 
 fn explorer_kind_label(
@@ -939,7 +965,9 @@ fn should_refresh_snapshot(now_s: f64, last_at_s: &mut Option<f64>, interval_s: 
 
 #[cfg(test)]
 mod tests {
-    use super::ReplicationHealthSnapshot;
+    use std::collections::HashMap;
+
+    use super::{ExplorerEntityMeta, ReplicationHealthSnapshot, build_world_explorer_groups};
 
     #[test]
     fn health_snapshot_serializes_summary_fields() {
@@ -956,5 +984,86 @@ mod tests {
         assert_eq!(value["fixed_ticks_last_update"], 2);
         assert_eq!(value["input_rate_limited_drop_total"], 5);
         assert!(value.get("sessions").is_none());
+    }
+
+    #[test]
+    fn world_explorer_groups_use_parent_guid_hierarchy_and_stable_order() {
+        let root_guid = "00000000-0000-0000-0000-000000000001".to_string();
+        let engine_guid = "00000000-0000-0000-0000-000000000002".to_string();
+        let shield_guid = "00000000-0000-0000-0000-000000000003".to_string();
+        let asteroid_guid = "00000000-0000-0000-0000-000000000004".to_string();
+        let mut by_guid = HashMap::new();
+        by_guid.insert(
+            root_guid.clone(),
+            ExplorerEntityMeta {
+                guid: root_guid.clone(),
+                display_name: Some("Ship".to_string()),
+                labels: vec!["Ship".to_string()],
+                parent_guid: None,
+                kind_label: "ship".to_string(),
+                position_xy: None,
+                is_player_anchor: false,
+                latency_ms: None,
+                controlled_entity_guid: None,
+            },
+        );
+        by_guid.insert(
+            shield_guid.clone(),
+            ExplorerEntityMeta {
+                guid: shield_guid.clone(),
+                display_name: Some("Module".to_string()),
+                labels: vec!["Shield".to_string()],
+                parent_guid: Some(root_guid.clone()),
+                kind_label: "module".to_string(),
+                position_xy: None,
+                is_player_anchor: false,
+                latency_ms: None,
+                controlled_entity_guid: None,
+            },
+        );
+        by_guid.insert(
+            engine_guid.clone(),
+            ExplorerEntityMeta {
+                guid: engine_guid.clone(),
+                display_name: Some("Module".to_string()),
+                labels: vec!["Engine".to_string()],
+                parent_guid: Some(root_guid.clone()),
+                kind_label: "module".to_string(),
+                position_xy: None,
+                is_player_anchor: false,
+                latency_ms: None,
+                controlled_entity_guid: None,
+            },
+        );
+        by_guid.insert(
+            asteroid_guid.clone(),
+            ExplorerEntityMeta {
+                guid: asteroid_guid.clone(),
+                display_name: Some("Asteroid".to_string()),
+                labels: vec!["Asteroid".to_string()],
+                parent_guid: None,
+                kind_label: "asteroid".to_string(),
+                position_xy: None,
+                is_player_anchor: false,
+                latency_ms: None,
+                controlled_entity_guid: None,
+            },
+        );
+
+        let groups = build_world_explorer_groups(&by_guid);
+        let ship = groups
+            .iter()
+            .flat_map(|group| &group.entities)
+            .find(|entity| entity.guid == root_guid)
+            .expect("ship root");
+        assert_eq!(ship.children.len(), 2);
+        assert_eq!(ship.children[0].guid, engine_guid);
+        assert_eq!(ship.children[1].guid, shield_guid);
+        assert!(groups.iter().any(|group| {
+            group
+                .entities
+                .iter()
+                .any(|entity| entity.guid == asteroid_guid)
+        }));
     }
 }

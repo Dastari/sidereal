@@ -1,11 +1,15 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { listShaderCatalog } from '@/lib/shader-workbench.server'
+import { requireDashboardAdmin } from '@/server/dashboard-auth'
 
 export const Route = createFileRoute('/api/shaders')({
   server: {
     handlers: {
-      GET: async () => {
+      GET: async ({ request }) => {
+        const authFailure = requireDashboardAdmin(request, 'scripts:read')
+        if (authFailure) return authFailure
+
         try {
           const payload = await listShaderCatalog()
           return json(payload)

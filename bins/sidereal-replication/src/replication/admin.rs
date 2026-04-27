@@ -402,7 +402,7 @@ fn perform_admin_reset(world: &mut World) -> Result<usize, String> {
         world.resource_mut::<ClientLastActivity>().0.clear();
         world
             .resource_mut::<ClientInputTickTracker>()
-            .last_accepted_tick_by_player_entity_id
+            .last_accepted_tick_by_stream
             .clear();
         world
             .resource_mut::<InputRateLimitState>()

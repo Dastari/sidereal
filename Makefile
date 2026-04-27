@@ -1,5 +1,15 @@
 SHELL := /bin/bash
 
+ifneq (,$(wildcard .env))
+include .env
+export GATEWAY_JWT_SECRET
+export GATEWAY_AUTH_SECRET_KEY_B64
+export GATEWAY_BOOTSTRAP_TOKEN
+export GATEWAY_EMAIL_DELIVERY
+export GATEWAY_PUBLIC_BASE_URL
+export SIDEREAL_DASHBOARD_SESSION_SECRET
+endif
+
 PG_URL ?= postgres://sidereal:sidereal@127.0.0.1:5432/sidereal
 SIDEREAL_PG_PORT ?= 5432
 GATEWAY_BIND ?= 0.0.0.0:8080

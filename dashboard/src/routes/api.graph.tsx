@@ -91,7 +91,15 @@ function sanitizePayloadKey(typePath: string): string {
 export const Route = createFileRoute('/api/graph')({
   server: {
     handlers: {
-      GET: async () => {
+      GET: async ({ request }) => {
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:database:read',
+        )
+        if (authFailure) {
+          return authFailure
+        }
+
         const graphName = safeGraphName(process.env.GRAPH_NAME || 'sidereal')
         const pool = await getPostgresPool()
         const client = await pool.connect()
@@ -184,7 +192,10 @@ export const Route = createFileRoute('/api/graph')({
         }
       },
       POST: async ({ request }) => {
-        const authFailure = requireDashboardAdmin(request)
+        const authFailure = requireDashboardAdmin(
+          request,
+          'dashboard:database:write',
+        )
         if (authFailure) {
           return authFailure
         }
