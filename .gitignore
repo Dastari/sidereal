@@ -1,4 +1,5 @@
 /target/
+**/target/
 /.env
 /data/postgresql/
 /data/cache_stream/

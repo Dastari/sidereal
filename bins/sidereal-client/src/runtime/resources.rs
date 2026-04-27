@@ -620,16 +620,16 @@ pub(crate) struct DebugOverlayDisplayMetrics {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DebugOverlayCalloutEntry {
+pub(crate) struct AnnotationCalloutEntry {
     pub root: Entity,
     pub text: Entity,
     pub line: Entity,
 }
 
 #[derive(Debug, Resource, Default)]
-pub(crate) struct DebugOverlayCalloutRegistry {
-    pub active_by_target: HashMap<Entity, DebugOverlayCalloutEntry>,
-    pub free_entries: Vec<DebugOverlayCalloutEntry>,
+pub(crate) struct AnnotationCalloutRegistry {
+    pub active_by_target: HashMap<Entity, AnnotationCalloutEntry>,
+    pub free_entries: Vec<AnnotationCalloutEntry>,
     pub allocated_entries: usize,
 }
 

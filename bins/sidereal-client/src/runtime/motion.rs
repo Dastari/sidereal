@@ -21,8 +21,8 @@ use std::collections::HashSet;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
-    ControlledEntity, NearbyCollisionProxy, PredictedMotionBootstrapSeed,
-    SuppressedPredictedDuplicateVisual, WorldEntity,
+    ControlledEntity, ControlledPredictionReconciliationState, NearbyCollisionProxy,
+    PredictedMotionBootstrapSeed, SuppressedPredictedDuplicateVisual, WorldEntity,
 };
 use super::resources::{
     ControlBootstrapPhase, ControlBootstrapState, MotionOwnershipReconcileState,
@@ -299,6 +299,171 @@ fn seed_prediction_history<C: Component + Clone>(
     history.add_update(seed_tick, value.clone());
     if current_tick != seed_tick {
         history.add_update(current_tick, value);
+    }
+}
+
+fn wrap_angle_rad(angle: f64) -> f64 {
+    let two_pi = std::f64::consts::TAU;
+    (angle + std::f64::consts::PI).rem_euclid(two_pi) - std::f64::consts::PI
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub(crate) fn reconcile_controlled_prediction_with_confirmed_history(
+    mut commands: Commands<'_, '_>,
+    control_bootstrap_state: Res<'_, ControlBootstrapState>,
+    rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
+    mut controlled: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            &'_ ConfirmedTick,
+            &'_ Confirmed<Position>,
+            Option<&'_ Confirmed<Rotation>>,
+            Option<&'_ Confirmed<LinearVelocity>>,
+            Option<&'_ Confirmed<AngularVelocity>>,
+            Option<&'_ PredictionHistory<Position>>,
+            Option<&'_ PredictionHistory<Rotation>>,
+            Option<&'_ PredictionHistory<LinearVelocity>>,
+            Option<&'_ PredictionHistory<AngularVelocity>>,
+            &'_ mut Position,
+            Option<&'_ mut Rotation>,
+            Option<&'_ mut LinearVelocity>,
+            Option<&'_ mut AngularVelocity>,
+            Option<&'_ mut ControlledPredictionReconciliationState>,
+        ),
+        (
+            With<ControlledEntity>,
+            With<SimulationMotionWriter>,
+            With<lightyear::prelude::Predicted>,
+        ),
+    >,
+) {
+    if is_in_rollback(rollback_query) {
+        return;
+    }
+    let ControlBootstrapPhase::ActivePredicted {
+        generation,
+        entity: active_entity,
+        ..
+    } = control_bootstrap_state.phase
+    else {
+        return;
+    };
+    let Ok((
+        entity,
+        confirmed_tick,
+        confirmed_position,
+        confirmed_rotation,
+        confirmed_linear_velocity,
+        confirmed_angular_velocity,
+        position_history,
+        rotation_history,
+        linear_velocity_history,
+        angular_velocity_history,
+        mut position,
+        rotation,
+        linear_velocity,
+        angular_velocity,
+        reconciliation_state,
+    )) = controlled.get_mut(active_entity)
+    else {
+        return;
+    };
+
+    let already_applied = reconciliation_state.as_ref().is_some_and(|state| {
+        state.generation == generation && state.last_confirmed_tick == Some(confirmed_tick.tick)
+    });
+    if already_applied {
+        return;
+    }
+
+    let predicted_position_at_confirmed = position_history
+        .and_then(|history| history.get(confirmed_tick.tick))
+        .map(|value| value.0);
+    let position_error = predicted_position_at_confirmed
+        .map(|predicted| confirmed_position.0.0 - predicted)
+        .unwrap_or_else(|| confirmed_position.0.0 - position.0);
+    let position_error_len = position_error.length();
+    let has_position_history = predicted_position_at_confirmed.is_some();
+    let mut corrected_position = false;
+    if has_position_history && position_error_len > 0.05 || position_error_len > 128.0 {
+        position.0 += position_error;
+        corrected_position = true;
+    }
+
+    let mut corrected_rotation = false;
+    if let (Some(confirmed_rotation), Some(mut rotation)) = (confirmed_rotation, rotation) {
+        let predicted_rotation_at_confirmed = rotation_history
+            .and_then(|history| history.get(confirmed_tick.tick))
+            .map(|rotation| rotation.as_radians());
+        let rotation_error = predicted_rotation_at_confirmed
+            .map(|predicted| wrap_angle_rad(confirmed_rotation.0.as_radians() - predicted))
+            .unwrap_or_else(|| {
+                wrap_angle_rad(confirmed_rotation.0.as_radians() - rotation.as_radians())
+            });
+        if predicted_rotation_at_confirmed.is_some() && rotation_error.abs() > 0.001
+            || rotation_error.abs() > 1.0
+        {
+            *rotation = Rotation::radians(rotation.as_radians() + rotation_error);
+            corrected_rotation = true;
+        }
+    }
+
+    if let (Some(confirmed_linear_velocity), Some(mut linear_velocity)) =
+        (confirmed_linear_velocity, linear_velocity)
+    {
+        let predicted_velocity_at_confirmed = linear_velocity_history
+            .and_then(|history| history.get(confirmed_tick.tick))
+            .map(|value| value.0);
+        let velocity_error = predicted_velocity_at_confirmed
+            .map(|predicted| confirmed_linear_velocity.0.0 - predicted)
+            .unwrap_or_else(|| confirmed_linear_velocity.0.0 - linear_velocity.0);
+        if predicted_velocity_at_confirmed.is_some() && velocity_error.length() > 0.05
+            || velocity_error.length() > 64.0
+        {
+            linear_velocity.0 += velocity_error;
+        }
+    }
+
+    if let (Some(confirmed_angular_velocity), Some(mut angular_velocity)) =
+        (confirmed_angular_velocity, angular_velocity)
+    {
+        let predicted_angular_velocity_at_confirmed = angular_velocity_history
+            .and_then(|history| history.get(confirmed_tick.tick))
+            .map(|value| value.0);
+        let angular_velocity_error = predicted_angular_velocity_at_confirmed
+            .map(|predicted| confirmed_angular_velocity.0.0 - predicted)
+            .unwrap_or(confirmed_angular_velocity.0.0 - angular_velocity.0);
+        if predicted_angular_velocity_at_confirmed.is_some() && angular_velocity_error.abs() > 0.001
+            || angular_velocity_error.abs() > 1.0
+        {
+            angular_velocity.0 += angular_velocity_error;
+        }
+    }
+
+    if let Some(mut state) = reconciliation_state {
+        state.generation = generation;
+        state.last_confirmed_tick = Some(confirmed_tick.tick);
+    } else {
+        commands
+            .entity(entity)
+            .insert(ControlledPredictionReconciliationState {
+                generation,
+                last_confirmed_tick: Some(confirmed_tick.tick),
+            });
+    }
+
+    if corrected_position || corrected_rotation {
+        bevy::log::debug!(
+            entity = ?entity,
+            generation,
+            confirmed_tick = ?confirmed_tick.tick,
+            position_error_m = position_error_len,
+            corrected_position,
+            corrected_rotation,
+            "reconciled controlled prediction from confirmed history"
+        );
     }
 }
 
@@ -758,10 +923,14 @@ pub(crate) fn enforce_controlled_planar_motion(
 mod tests {
     use super::{
         enforce_motion_ownership_for_world_entities,
+        reconcile_controlled_prediction_with_confirmed_history,
         seed_controlled_predicted_motion_from_confirmed,
     };
     use crate::runtime::app_state::{ClientSession, LocalPlayerViewState};
-    use crate::runtime::components::{ControlledEntity, PredictedMotionBootstrapSeed, WorldEntity};
+    use crate::runtime::components::{
+        ControlledEntity, ControlledPredictionReconciliationState, PredictedMotionBootstrapSeed,
+        WorldEntity,
+    };
     use crate::runtime::resources::{
         ControlBootstrapPhase, ControlBootstrapState, MotionOwnershipReconcileState,
         NearbyCollisionProxyTuning,
@@ -1057,6 +1226,101 @@ mod tests {
                 .get::<Position>(target_entity)
                 .map(|value| value.0),
             Some(Vec2::new(5.0, 6.0).into())
+        );
+    }
+
+    #[test]
+    fn controlled_prediction_reconciles_each_confirmed_tick_from_prediction_history() {
+        let mut app = App::new();
+        let target_id = "ce9e421c-8b62-458a-803e-51e9ad272908".to_string();
+        let target_guid = Uuid::parse_str(&target_id).unwrap();
+        let target_entity = app
+            .world_mut()
+            .spawn((
+                EntityGuid(target_guid),
+                ControlledEntity {
+                    entity_id: target_id.clone(),
+                    player_entity_id: "1521601b-7e69-4700-853f-eb1eb3a41199".to_string(),
+                },
+                SimulationMotionWriter,
+                lightyear::prelude::Predicted,
+                Position(Vec2::new(10.0, 0.0).into()),
+                Rotation::radians(0.5),
+                LinearVelocity(Vec2::new(2.0, 0.0).into()),
+                AngularVelocity(0.25),
+                Confirmed(Position(Vec2::new(6.0, 0.0).into())),
+                Confirmed(Rotation::radians(0.3)),
+                Confirmed(LinearVelocity(Vec2::new(3.0, 0.0).into())),
+                Confirmed(AngularVelocity(0.4)),
+                ConfirmedTick { tick: Tick(5) },
+                Transform::default(),
+            ))
+            .id();
+        let mut position_history = PredictionHistory::<Position>::default();
+        position_history.add_update(Tick(5), Position(Vec2::new(2.0, 0.0).into()));
+        let mut rotation_history = PredictionHistory::<Rotation>::default();
+        rotation_history.add_update(Tick(5), Rotation::radians(0.1));
+        let mut velocity_history = PredictionHistory::<LinearVelocity>::default();
+        velocity_history.add_update(Tick(5), LinearVelocity(Vec2::new(1.0, 0.0).into()));
+        let mut angular_history = PredictionHistory::<AngularVelocity>::default();
+        angular_history.add_update(Tick(5), AngularVelocity(0.1));
+        app.world_mut().entity_mut(target_entity).insert((
+            position_history,
+            rotation_history,
+            velocity_history,
+            angular_history,
+        ));
+        app.insert_resource(ControlBootstrapState {
+            authoritative_target_entity_id: Some(target_id.clone()),
+            generation: 9,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: target_id,
+                generation: 9,
+                entity: target_entity,
+            },
+            last_transition_at_s: 0.0,
+        });
+        app.add_systems(
+            Update,
+            reconcile_controlled_prediction_with_confirmed_history,
+        );
+
+        app.update();
+
+        let entity = app.world().entity(target_entity);
+        assert_eq!(
+            entity.get::<Position>().map(|value| value.0),
+            Some(Vec2::new(14.0, 0.0).into())
+        );
+        assert_eq!(
+            entity
+                .get::<Rotation>()
+                .map(|rotation| rotation.as_radians()),
+            Some(0.7)
+        );
+        assert_eq!(
+            entity.get::<LinearVelocity>().map(|value| value.0),
+            Some(Vec2::new(4.0, 0.0).into())
+        );
+        assert_eq!(
+            entity.get::<AngularVelocity>().map(|value| value.0),
+            Some(0.55)
+        );
+        assert_eq!(
+            entity.get::<ControlledPredictionReconciliationState>(),
+            Some(&ControlledPredictionReconciliationState {
+                generation: 9,
+                last_confirmed_tick: Some(Tick(5))
+            })
+        );
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .get::<Position>(target_entity)
+                .map(|value| value.0),
+            Some(Vec2::new(14.0, 0.0).into())
         );
     }
 }

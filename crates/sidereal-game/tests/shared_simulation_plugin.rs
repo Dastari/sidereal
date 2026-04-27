@@ -110,6 +110,10 @@ fn server_authority_role_grants_motion_authority_and_processes_input() {
 }
 
 fn spawn_predicted_flight_body(app: &mut App) -> Entity {
+    spawn_predicted_flight_body_with_fuel(app, true)
+}
+
+fn spawn_predicted_flight_body_with_fuel(app: &mut App, spawn_fuel: bool) -> Entity {
     let parent_guid = Uuid::new_v4();
     let size = SizeM {
         length: 12.0,
@@ -166,14 +170,16 @@ fn spawn_predicted_flight_body(app: &mut App) -> Entity {
             burn_rate_kg_s: 1.0,
         },
     ));
-    app.world_mut().spawn((
-        EntityGuid(Uuid::new_v4()),
-        MountedOn {
-            parent_entity_id: parent_guid,
-            hardpoint_id: "fuel".to_string(),
-        },
-        sidereal_game::FuelTank { fuel_kg: 1_000.0 },
-    ));
+    if spawn_fuel {
+        app.world_mut().spawn((
+            EntityGuid(Uuid::new_v4()),
+            MountedOn {
+                parent_entity_id: parent_guid,
+                hardpoint_id: "fuel".to_string(),
+            },
+            sidereal_game::FuelTank { fuel_kg: 1_000.0 },
+        ));
+    }
     entity
 }
 
@@ -239,6 +245,37 @@ fn assert_motion_parity_for_actions(
         server_entity_ref.get::<AngularInertia>().unwrap().0,
         client_entity_ref.get::<AngularInertia>().unwrap().0
     );
+}
+
+#[test]
+fn client_prediction_applies_engine_thrust_without_local_fuel_state() {
+    let mut client = configure_sim_app(SimulationRuntimeRole::ClientPrediction);
+    let entity = spawn_predicted_flight_body_with_fuel(&mut client, false);
+
+    for _ in 0..10 {
+        set_actions(
+            &mut client,
+            entity,
+            &[EntityAction::Forward, EntityAction::Right],
+        );
+        run_fixed_tick(&mut client);
+    }
+
+    let entity_ref = client.world().entity(entity);
+    let position = entity_ref.get::<Position>().unwrap().0;
+    let rotation = entity_ref.get::<Rotation>().unwrap().as_radians();
+    let velocity = entity_ref.get::<LinearVelocity>().unwrap().0;
+    let angular_velocity = entity_ref.get::<AngularVelocity>().unwrap().0;
+
+    assert!(
+        position.length() > 0.01,
+        "client prediction should not require replicated fuel tanks to apply local thrust"
+    );
+    assert!(
+        rotation.abs() > 0.001 || angular_velocity.abs() > 0.001,
+        "client prediction should not require replicated fuel tanks to apply local torque"
+    );
+    assert!(velocity.length() > 0.01);
 }
 
 #[test]

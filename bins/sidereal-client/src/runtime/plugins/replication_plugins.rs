@@ -4,6 +4,7 @@ use sidereal_game::SiderealSimulationSet;
 use crate::runtime::app_state::ClientAppState;
 use crate::runtime::motion::{
     apply_predicted_input_to_action_queue, enforce_controlled_planar_motion,
+    reconcile_controlled_prediction_with_confirmed_history,
     seed_controlled_predicted_motion_from_confirmed,
 };
 use crate::runtime::{
@@ -155,6 +156,7 @@ impl Plugin for ClientPredictionPlugin {
                 FixedUpdate,
                 (
                     seed_controlled_predicted_motion_from_confirmed,
+                    reconcile_controlled_prediction_with_confirmed_history,
                     apply_predicted_input_to_action_queue,
                     enforce_controlled_planar_motion,
                 )

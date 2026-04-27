@@ -14,8 +14,8 @@ use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::PrimaryWindow;
 use bevy_svg::prelude::{Svg, Svg2d};
 use sidereal_game::{
-    EntityAction, EntityGuid, FuelTank, HealthPool, MapIcon, MountedOn, SizeM,
-    TacticalMapUiSettings, TacticalPresentationDefaults,
+    EntityAction, EntityGuid, FuelTank, HealthPool, MapIcon, MountedOn, PlanetBodyShaderSettings,
+    SizeM, TacticalMapUiSettings, TacticalPresentationDefaults,
 };
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use sidereal_ui::layout;
@@ -33,17 +33,18 @@ use super::app_state::{
 use super::assets::{LocalAssetManager, RuntimeAssetHttpFetchState, RuntimeAssetNetIndicatorState};
 use super::backdrop::TacticalMapOverlayMaterial;
 use super::components::{
-    ActiveNameplateEntry, CanonicalPresentationEntity, ControlledEntity, DebugOverlayCalloutLine,
-    DebugOverlayCalloutRoot, DebugOverlayCalloutText, DebugOverlayPanelLabelShadowText,
-    DebugOverlayPanelLabelText, DebugOverlayPanelRoot, DebugOverlayPanelSecondaryLabelShadowText,
-    DebugOverlayPanelSecondaryLabelText, DebugOverlayPanelSecondaryValueShadowText,
-    DebugOverlayPanelSecondaryValueText, DebugOverlayPanelTertiaryLabelShadowText,
-    DebugOverlayPanelTertiaryLabelText, DebugOverlayPanelTertiaryValueShadowText,
-    DebugOverlayPanelTertiaryValueText, DebugOverlayPanelText, DebugOverlayPanelValueShadowText,
-    DebugOverlayPanelValueText, EntityNameplateHealthFill, EntityNameplateRoot, GameplayCamera,
-    GameplayHud, HudFuelBarFill, HudHealthBarFill, HudPositionValueText, HudSpeedValueText,
-    LoadingOverlayRoot, LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction,
-    OwnedEntitiesPanelButton, OwnedEntitiesPanelRoot, RuntimeScreenOverlayPass,
+    ActiveNameplateEntry, AnnotationCalloutLine, AnnotationCalloutPlacement, AnnotationCalloutRoot,
+    AnnotationCalloutText, CanonicalPresentationEntity, ControlledEntity,
+    DebugOverlayPanelLabelShadowText, DebugOverlayPanelLabelText, DebugOverlayPanelRoot,
+    DebugOverlayPanelSecondaryLabelShadowText, DebugOverlayPanelSecondaryLabelText,
+    DebugOverlayPanelSecondaryValueShadowText, DebugOverlayPanelSecondaryValueText,
+    DebugOverlayPanelTertiaryLabelShadowText, DebugOverlayPanelTertiaryLabelText,
+    DebugOverlayPanelTertiaryValueShadowText, DebugOverlayPanelTertiaryValueText,
+    DebugOverlayPanelText, DebugOverlayPanelValueShadowText, DebugOverlayPanelValueText,
+    EntityNameplateHealthFill, EntityNameplateRoot, GameplayCamera, GameplayHud, HudFuelBarFill,
+    HudHealthBarFill, HudPositionValueText, HudSpeedValueText, LoadingOverlayRoot,
+    LoadingOverlayText, LoadingProgressBarFill, OwnedEntitiesPanelAction, OwnedEntitiesPanelButton,
+    OwnedEntitiesPanelRoot, ResolvedRuntimeRenderLayer, RuntimeScreenOverlayPass,
     RuntimeScreenOverlayPassKind, SegmentedBarSegment, SegmentedBarStyle, SegmentedBarValue,
     TacticalMapCursorText, TacticalMapMarkerDynamic, TacticalMapOverlayRoot, TacticalMapTitle,
     UiOverlayCamera, UiOverlayLayer, WorldEntity,
@@ -52,14 +53,14 @@ use super::dev_console::{DevConsoleState, is_console_open};
 use super::ecs_util::queue_despawn_if_exists;
 use super::platform::{ORTHO_SCALE_PER_DISTANCE, UI_OVERLAY_RENDER_LAYER};
 use super::resources::{
-    CameraMotionState, ClientControlRequestState, ClientInputSendState, DebugOverlayCalloutEntry,
-    DebugOverlayCalloutRegistry, DebugOverlayDisplayMetrics, DebugOverlaySnapshot,
-    DebugOverlayState, EmbeddedFonts, HudPerfCounters, NameplateRegistry, NameplateRegistryEntry,
-    NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache, TacticalFogCache,
-    TacticalMapUiState,
+    AnnotationCalloutEntry, AnnotationCalloutRegistry, CameraMotionState,
+    ClientControlRequestState, ClientInputSendState, DebugOverlayDisplayMetrics,
+    DebugOverlaySnapshot, DebugOverlayState, EmbeddedFonts, HudPerfCounters, NameplateRegistry,
+    NameplateRegistryEntry, NameplateUiState, OwnedAssetManifestCache, TacticalContactsCache,
+    TacticalFogCache, TacticalMapUiState,
 };
 
-type DebugCalloutLineQuery<'w, 's> = Query<
+type AnnotationCalloutLineQuery<'w, 's> = Query<
     'w,
     's,
     (
@@ -67,23 +68,22 @@ type DebugCalloutLineQuery<'w, 's> = Query<
         &'static mut UiTransform,
         &'static mut Visibility,
     ),
-    (
-        With<DebugOverlayCalloutLine>,
-        Without<DebugOverlayCalloutRoot>,
-    ),
+    (With<AnnotationCalloutLine>, Without<AnnotationCalloutRoot>),
 >;
 
-type DebugCalloutTargetQuery<'w, 's> = Query<
+type AnnotationCalloutTargetQuery<'w, 's> = Query<
     'w,
     's,
     (
         Option<&'static GlobalTransform>,
         Option<&'static Visibility>,
         Option<&'static SizeM>,
+        Option<&'static PlanetBodyShaderSettings>,
+        Option<&'static ResolvedRuntimeRenderLayer>,
     ),
     (
-        Without<DebugOverlayCalloutRoot>,
-        Without<DebugOverlayCalloutLine>,
+        Without<AnnotationCalloutRoot>,
+        Without<AnnotationCalloutLine>,
     ),
 >;
 
@@ -116,21 +116,21 @@ pub(super) struct DebugOverlayTextUiQueries<'w, 's> {
 
 #[allow(clippy::type_complexity)]
 #[derive(SystemParam)]
-pub(super) struct DebugOverlayCalloutUiQueries<'w, 's> {
-    registry: ResMut<'w, DebugOverlayCalloutRegistry>,
+pub(super) struct AnnotationCalloutUiQueries<'w, 's> {
+    registry: ResMut<'w, AnnotationCalloutRegistry>,
     root_query: Query<
         'w,
         's,
         (
-            &'static DebugOverlayCalloutRoot,
+            &'static AnnotationCalloutRoot,
             &'static mut Node,
             &'static mut Visibility,
         ),
-        Without<DebugOverlayCalloutLine>,
+        Without<AnnotationCalloutLine>,
     >,
-    text_query: Query<'w, 's, &'static mut Text, With<DebugOverlayCalloutText>>,
-    line_query: DebugCalloutLineQuery<'w, 's>,
-    target_query: DebugCalloutTargetQuery<'w, 's>,
+    text_query: Query<'w, 's, &'static mut Text, With<AnnotationCalloutText>>,
+    line_query: AnnotationCalloutLineQuery<'w, 's>,
+    target_query: AnnotationCalloutTargetQuery<'w, 's>,
     gameplay_camera:
         Query<'w, 's, (Entity, &'static Camera, &'static Transform), With<GameplayCamera>>,
     window_query: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
@@ -2514,12 +2514,16 @@ pub(super) fn update_entity_nameplate_positions_system(
 
 pub(super) fn sync_debug_entity_callouts_system(
     debug_overlay: Res<'_, DebugOverlayState>,
+    tactical_map_state: Res<'_, TacticalMapUiState>,
+    camera_motion: Res<'_, CameraMotionState>,
     snapshot: Res<'_, DebugOverlaySnapshot>,
     mut commands: Commands<'_, '_>,
     fonts: Res<'_, EmbeddedFonts>,
-    mut ui_queries: DebugOverlayCalloutUiQueries<'_, '_>,
+    active_theme: Res<'_, ActiveUiTheme>,
+    visual_settings: Res<'_, UiVisualSettings>,
+    mut ui_queries: AnnotationCalloutUiQueries<'_, '_>,
 ) {
-    if !debug_overlay.enabled {
+    if !debug_overlay.enabled || tactical_map_state.enabled {
         for (_, _, mut visibility) in &mut ui_queries.root_query {
             *visibility = Visibility::Hidden;
         }
@@ -2530,7 +2534,7 @@ pub(super) fn sync_debug_entity_callouts_system(
     }
 
     let Some((_camera_entity, camera, camera_transform)) =
-        select_debug_callout_camera(&ui_queries.gameplay_camera)
+        select_annotation_callout_camera(&ui_queries.gameplay_camera)
     else {
         for (_, _, mut visibility) in &mut ui_queries.root_query {
             *visibility = Visibility::Hidden;
@@ -2562,6 +2566,8 @@ pub(super) fn sync_debug_entity_callouts_system(
                 )
         })
         .map(|entity| entity.position_xy);
+    let theme = theme_definition(active_theme.0);
+    let glow_intensity = visual_settings.glow_intensity();
 
     let desired_targets = snapshot
         .entities
@@ -2577,21 +2583,25 @@ pub(super) fn sync_debug_entity_callouts_system(
         .collect::<Vec<_>>();
     for target in stale_targets {
         if let Some(entry) = ui_queries.registry.active_by_target.remove(&target) {
-            release_debug_callout_entry(&mut commands, &mut ui_queries.registry, entry);
+            release_annotation_callout_entry(&mut commands, &mut ui_queries.registry, entry);
         }
     }
 
     for entity in &snapshot.entities {
-        let Some(callout_target) =
-            debug_callout_target(entity, &ui_queries.target_query, &camera, &camera_global)
-        else {
+        let Some(callout_target) = annotation_callout_target(
+            entity,
+            &ui_queries.target_query,
+            &camera,
+            &camera_global,
+            camera_motion.parallax_position_xy,
+        ) else {
             if let Some(entry) = ui_queries
                 .registry
                 .active_by_target
                 .get(&entity.entity)
                 .copied()
             {
-                hide_debug_callout_entry(&mut ui_queries, entry);
+                hide_annotation_callout_entry(&mut ui_queries, entry);
             }
             continue;
         };
@@ -2607,7 +2617,7 @@ pub(super) fn sync_debug_entity_callouts_system(
                 .get(&entity.entity)
                 .copied()
             {
-                hide_debug_callout_entry(&mut ui_queries, entry);
+                hide_annotation_callout_entry(&mut ui_queries, entry);
             }
             continue;
         }
@@ -2626,7 +2636,9 @@ pub(super) fn sync_debug_entity_callouts_system(
                 .registry
                 .free_entries
                 .pop()
-                .unwrap_or_else(|| spawn_debug_callout_entry(&mut commands, &fonts));
+                .unwrap_or_else(|| {
+                    spawn_annotation_callout_entry(&mut commands, &fonts, theme, glow_intensity)
+                });
             ui_queries
                 .registry
                 .active_by_target
@@ -2636,28 +2648,42 @@ pub(super) fn sync_debug_entity_callouts_system(
         let hovered = cursor_px.is_some_and(|cursor_px| {
             cursor_px.distance(viewport_pos) <= DEBUG_CALLOUT_HOVER_RADIUS_PX
         });
+        let placement = if entity.is_component {
+            AnnotationCalloutPlacement::BottomRight
+        } else {
+            AnnotationCalloutPlacement::TopLeft
+        };
+        if entity.is_component && !hovered {
+            hide_annotation_callout_entry(&mut ui_queries, entry);
+            continue;
+        }
         if let Ok((root, mut node, mut visibility)) = ui_queries.root_query.get_mut(entry.root) {
-            let text = debug_callout_text(entity, controlled_position, hovered);
+            let text = annotation_callout_text(entity, controlled_position);
             let line_count = text.lines().count().max(1) as f32;
             let height_px =
                 line_count * DEBUG_CALLOUT_ROW_HEIGHT_PX + DEBUG_CALLOUT_PADDING_PX * 2.0 + 2.0;
-            let callout_rect =
-                debug_callout_rect(callout_target.anchor_viewport_pos, height_px, window_size);
+            let callout_rect = annotation_callout_rect(
+                callout_target.anchor_viewport_pos,
+                height_px,
+                window_size,
+                placement,
+            );
             node.left = px(callout_rect.min.x);
             node.top = px(callout_rect.min.y);
             node.height = px(height_px);
             *visibility = Visibility::Visible;
-            if root.target != Some(entity.entity)
+            if (root.target, root.placement) != (Some(entity.entity), placement)
                 && let Ok(mut root_commands) = commands.get_entity(entry.root)
             {
-                root_commands.insert(DebugOverlayCalloutRoot {
+                root_commands.insert(AnnotationCalloutRoot {
                     target: Some(entity.entity),
+                    placement,
                 });
             }
             if let Ok(mut text_value) = ui_queries.text_query.get_mut(entry.text) {
                 text_value.0 = text;
             }
-            sync_debug_callout_line(
+            sync_annotation_callout_line(
                 &mut ui_queries.line_query,
                 entry.line,
                 callout_rect,
@@ -2668,25 +2694,32 @@ pub(super) fn sync_debug_entity_callouts_system(
 }
 
 #[derive(Clone, Copy)]
-struct DebugCalloutTarget {
+struct AnnotationCalloutTarget {
     center_viewport_pos: Vec2,
     anchor_viewport_pos: Vec2,
 }
 
 #[derive(Clone, Copy)]
-struct DebugCalloutRect {
+struct AnnotationCalloutRect {
     min: Vec2,
     max: Vec2,
 }
 
-fn debug_callout_target(
+fn annotation_callout_target(
     entity: &super::resources::DebugOverlayEntity,
-    target_query: &DebugCalloutTargetQuery<'_, '_>,
+    target_query: &AnnotationCalloutTargetQuery<'_, '_>,
     camera: &Camera,
     camera_global: &GlobalTransform,
-) -> Option<DebugCalloutTarget> {
-    let (center_world, anchor_world) =
-        if let Ok((global_transform, maybe_visibility, size_m)) = target_query.get(entity.entity) {
+    parallax_position_xy: Vec2,
+) -> Option<AnnotationCalloutTarget> {
+    let (center_world, anchor_world) = if let Ok((
+        global_transform,
+        maybe_visibility,
+        size_m,
+        planet_settings,
+        resolved_render_layer,
+    )) = target_query.get(entity.entity)
+    {
             if maybe_visibility
                 .is_some_and(|entity_visibility| *entity_visibility == Visibility::Hidden)
             {
@@ -2694,6 +2727,32 @@ fn debug_callout_target(
             }
             if let Some(global_transform) = global_transform {
                 let world_pos = global_transform.translation();
+                if planet_settings.is_some_and(|settings| settings.enabled) {
+                    let projected_center_world = super::visuals::planet_camera_relative_translation(
+                        resolved_render_layer,
+                        world_pos.truncate(),
+                        parallax_position_xy,
+                    );
+                    let radius_m = size_m
+                        .map(|size| size.width.max(size.length) * 0.5)
+                        .unwrap_or(128.0);
+                    let layer_screen_scale = resolved_render_layer
+                        .map(|layer| {
+                            super::visuals::runtime_layer_screen_scale_factor(&layer.definition)
+                        })
+                        .unwrap_or(1.0);
+                    let projected_radius_m = radius_m * layer_screen_scale;
+                    return Some(project_annotation_callout_target(
+                        camera,
+                        camera_global,
+                        projected_center_world.extend(0.0),
+                        Vec3::new(
+                            projected_center_world.x - projected_radius_m,
+                            projected_center_world.y + projected_radius_m,
+                            0.0,
+                        ),
+                    )?);
+                }
                 let anchor_world = size_m
                     .map(|size| {
                         Vec3::new(
@@ -2705,22 +2764,31 @@ fn debug_callout_target(
                     .unwrap_or(Vec3::new(world_pos.x, world_pos.y, 0.0));
                 (Vec3::new(world_pos.x, world_pos.y, 0.0), anchor_world)
             } else {
-                debug_callout_snapshot_world_positions(entity)
+                annotation_callout_snapshot_world_positions(entity)
             }
         } else {
-            debug_callout_snapshot_world_positions(entity)
+            annotation_callout_snapshot_world_positions(entity)
         };
+    project_annotation_callout_target(camera, camera_global, center_world, anchor_world)
+}
+
+fn project_annotation_callout_target(
+    camera: &Camera,
+    camera_global: &GlobalTransform,
+    center_world: Vec3,
+    anchor_world: Vec3,
+) -> Option<AnnotationCalloutTarget> {
     let center_viewport_pos = camera.world_to_viewport(camera_global, center_world).ok()?;
     let anchor_viewport_pos = camera
         .world_to_viewport(camera_global, anchor_world)
         .unwrap_or(center_viewport_pos);
-    Some(DebugCalloutTarget {
+    Some(AnnotationCalloutTarget {
         center_viewport_pos,
         anchor_viewport_pos,
     })
 }
 
-fn debug_callout_snapshot_world_positions(
+fn annotation_callout_snapshot_world_positions(
     entity: &super::resources::DebugOverlayEntity,
 ) -> (Vec3, Vec3) {
     let center = entity.position_xy.extend(0.0);
@@ -2750,14 +2818,22 @@ fn debug_callout_snapshot_world_positions(
     (center, anchor)
 }
 
-fn debug_callout_rect(
+fn annotation_callout_rect(
     anchor_viewport_pos: Vec2,
     height_px: f32,
     window_size: Vec2,
-) -> DebugCalloutRect {
-    let unclamped_left =
-        anchor_viewport_pos.x - DEBUG_CALLOUT_WIDTH_PX - DEBUG_CALLOUT_TARGET_GAP_PX;
-    let unclamped_top = anchor_viewport_pos.y - height_px - DEBUG_CALLOUT_TARGET_GAP_PX;
+    placement: AnnotationCalloutPlacement,
+) -> AnnotationCalloutRect {
+    let (unclamped_left, unclamped_top) = match placement {
+        AnnotationCalloutPlacement::TopLeft => (
+            anchor_viewport_pos.x - DEBUG_CALLOUT_WIDTH_PX - DEBUG_CALLOUT_TARGET_GAP_PX,
+            anchor_viewport_pos.y - height_px - DEBUG_CALLOUT_TARGET_GAP_PX,
+        ),
+        AnnotationCalloutPlacement::BottomRight => (
+            anchor_viewport_pos.x + DEBUG_CALLOUT_TARGET_GAP_PX,
+            anchor_viewport_pos.y + DEBUG_CALLOUT_TARGET_GAP_PX,
+        ),
+    };
     let max_left = (window_size.x - DEBUG_CALLOUT_WIDTH_PX - DEBUG_CALLOUT_VIEWPORT_MARGIN_PX)
         .max(DEBUG_CALLOUT_VIEWPORT_MARGIN_PX);
     let max_top = (window_size.y - height_px - DEBUG_CALLOUT_VIEWPORT_MARGIN_PX)
@@ -2766,22 +2842,22 @@ fn debug_callout_rect(
         unclamped_left.clamp(DEBUG_CALLOUT_VIEWPORT_MARGIN_PX, max_left),
         unclamped_top.clamp(DEBUG_CALLOUT_VIEWPORT_MARGIN_PX, max_top),
     );
-    DebugCalloutRect {
+    AnnotationCalloutRect {
         min,
         max: min + Vec2::new(DEBUG_CALLOUT_WIDTH_PX, height_px),
     }
 }
 
-fn sync_debug_callout_line(
-    line_query: &mut DebugCalloutLineQuery<'_, '_>,
+fn sync_annotation_callout_line(
+    line_query: &mut AnnotationCalloutLineQuery<'_, '_>,
     line_entity: Entity,
-    callout_rect: DebugCalloutRect,
+    callout_rect: AnnotationCalloutRect,
     target_viewport_pos: Vec2,
 ) {
     let Ok((mut node, mut transform, mut visibility)) = line_query.get_mut(line_entity) else {
         return;
     };
-    let start = closest_point_on_debug_callout_rect(callout_rect, target_viewport_pos);
+    let start = closest_point_on_annotation_callout_rect(callout_rect, target_viewport_pos);
     let delta = target_viewport_pos - start;
     let length = delta.length();
     if length <= 1.0 {
@@ -2797,16 +2873,16 @@ fn sync_debug_callout_line(
     *visibility = Visibility::Visible;
 }
 
-fn closest_point_on_debug_callout_rect(rect: DebugCalloutRect, target: Vec2) -> Vec2 {
+fn closest_point_on_annotation_callout_rect(rect: AnnotationCalloutRect, target: Vec2) -> Vec2 {
     Vec2::new(
         target.x.clamp(rect.min.x, rect.max.x),
         target.y.clamp(rect.min.y, rect.max.y),
     )
 }
 
-fn hide_debug_callout_entry(
-    ui_queries: &mut DebugOverlayCalloutUiQueries<'_, '_>,
-    entry: DebugOverlayCalloutEntry,
+fn hide_annotation_callout_entry(
+    ui_queries: &mut AnnotationCalloutUiQueries<'_, '_>,
+    entry: AnnotationCalloutEntry,
 ) {
     if let Ok((_, _, mut visibility)) = ui_queries.root_query.get_mut(entry.root) {
         *visibility = Visibility::Hidden;
@@ -2816,7 +2892,7 @@ fn hide_debug_callout_entry(
     }
 }
 
-fn select_debug_callout_camera(
+fn select_annotation_callout_camera(
     gameplay_camera: &Query<'_, '_, (Entity, &'_ Camera, &'_ Transform), With<GameplayCamera>>,
 ) -> Option<(Entity, Camera, Transform)> {
     let mut selected_camera: Option<(Entity, bool, Camera, Transform)> = None;
@@ -2837,10 +2913,10 @@ fn select_debug_callout_camera(
     selected_camera.map(|(entity, _, camera, transform)| (entity, camera, transform))
 }
 
-fn spawn_debug_callout_entry(
+fn spawn_annotation_callout_entry(
     commands: &mut Commands<'_, '_>,
     fonts: &EmbeddedFonts,
-) -> DebugOverlayCalloutEntry {
+) -> AnnotationCalloutEntry {
     let root = commands
         .spawn((
             Name::new("DebugEntityCallout"),
@@ -2859,7 +2935,7 @@ fn spawn_debug_callout_entry(
             Visibility::Hidden,
             UiOverlayLayer,
             RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
-            DebugOverlayCalloutRoot { target: None },
+            AnnotationCalloutRoot { target: None },
             DespawnOnExit(ClientAppState::InWorld),
         ))
         .id();
@@ -2868,7 +2944,7 @@ fn spawn_debug_callout_entry(
             Text::new(""),
             text_font(fonts.mono.clone(), 9.5),
             TextColor(Color::srgb(0.78, 1.0, 0.82)),
-            DebugOverlayCalloutText,
+            AnnotationCalloutText,
             RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
         ))
         .id();
@@ -2887,30 +2963,30 @@ fn spawn_debug_callout_entry(
             BackgroundColor(Color::srgba(0.22, 1.0, 0.4, 0.78)),
             Visibility::Hidden,
             UiOverlayLayer,
-            DebugOverlayCalloutLine,
+            AnnotationCalloutLine,
             RenderLayers::layer(UI_OVERLAY_RENDER_LAYER),
             DespawnOnExit(ClientAppState::InWorld),
         ))
         .id();
     commands.entity(root).add_child(text);
-    DebugOverlayCalloutEntry { root, text, line }
+    AnnotationCalloutEntry { root, text, line }
 }
 
-fn release_debug_callout_entry(
+fn release_annotation_callout_entry(
     commands: &mut Commands<'_, '_>,
-    registry: &mut DebugOverlayCalloutRegistry,
-    entry: DebugOverlayCalloutEntry,
+    registry: &mut AnnotationCalloutRegistry,
+    entry: AnnotationCalloutEntry,
 ) {
     registry.free_entries.push(entry);
     if let Ok(mut root_commands) = commands.get_entity(entry.root) {
-        root_commands.insert((Visibility::Hidden, DebugOverlayCalloutRoot { target: None }));
+        root_commands.insert((Visibility::Hidden, AnnotationCalloutRoot { target: None }));
     }
     if let Ok(mut line_commands) = commands.get_entity(entry.line) {
         line_commands.insert(Visibility::Hidden);
     }
 }
 
-fn debug_callout_text(
+fn annotation_callout_text(
     entity: &super::resources::DebugOverlayEntity,
     controlled_position: Option<Vec2>,
     hovered: bool,

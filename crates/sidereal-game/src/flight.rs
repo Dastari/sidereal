@@ -289,13 +289,20 @@ pub fn apply_engine_thrust(
             .get(parent)
             .copied()
             .unwrap_or(0.0);
-        let actual_burn_kg = requested_burn_kg.min(available).max(0.0);
-        let thrust_scale = if *requested_burn_kg > 0.0 {
-            actual_burn_kg / *requested_burn_kg
+        let (actual_burn_kg, thrust_scale) = if consume_fuel {
+            let actual_burn_kg = requested_burn_kg.min(available).max(0.0);
+            let thrust_scale = if *requested_burn_kg > 0.0 {
+                actual_burn_kg / *requested_burn_kg
+            } else {
+                0.0
+            };
+            (actual_burn_kg, thrust_scale)
+        } else if *requested_burn_kg > 0.0 {
+            (0.0, 1.0)
         } else {
-            0.0
+            (0.0, 0.0)
         };
-        if thrust_scale <= 0.0 {
+        if consume_fuel && thrust_scale <= 0.0 {
             let empty_count = fuel_tank_count_by_parent.get(parent).copied().unwrap_or(0);
             if empty_count > 0 {
                 fuel_exhausted_count.insert(*parent, empty_count);

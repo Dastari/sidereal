@@ -437,9 +437,6 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         if is_suppressed_duplicate {
             continue;
         }
-        if is_planet {
-            continue;
-        }
         if !debug_overlay_candidate_visible(visibility) {
             continue;
         }
@@ -463,14 +460,21 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
             hardpoint.is_some(),
         );
         let world = global_transform.compute_transform();
-        let label = debug_overlay_entity_label(
-            display_name,
-            entity_labels,
-            hardpoint,
-            mounted_on,
-            has_engine,
-            ballistic_weapon,
-        );
+        let label = if is_planet {
+            display_name
+                .map(|name| name.0.trim().to_ascii_uppercase())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "PLANET".to_string())
+        } else {
+            debug_overlay_entity_label(
+                display_name,
+                entity_labels,
+                hardpoint,
+                mounted_on,
+                has_engine,
+                ballistic_weapon,
+            )
+        };
         let overlay_entity = DebugOverlayEntity {
             entity,
             guid: guid.0,
@@ -659,7 +663,7 @@ pub(crate) fn collect_debug_overlay_snapshot_system(
         };
 
         let parent_rotation = Quat::from_rotation_z(parent_rotation_rad);
-        let hardpoint_world_offset = parent_rotation * hardpoint.offset_m;
+        let hardpoint_world_offset = parent_rotation * hardpoint_debug_offset_m(hardpoint);
         let local_rotation_rad = hardpoint.local_rotation.to_euler(EulerRot::XYZ).2;
         let overlay_entity = DebugOverlayEntity {
             entity,
@@ -804,6 +808,16 @@ fn draw_component_marker_square(gizmos: &mut Gizmos<'_, '_>, center: Vec3, color
 
 fn component_marker_color() -> Color {
     Color::srgb(0.2, 1.0, 0.35)
+}
+
+fn hardpoint_debug_offset_m(hardpoint: &Hardpoint) -> Vec3 {
+    let offset = hardpoint.offset_m;
+    let longitudinal_m = if offset.z.abs() > offset.y.abs() {
+        offset.z
+    } else {
+        offset.y
+    };
+    Vec3::new(offset.x, longitudinal_m, 0.0)
 }
 
 #[allow(clippy::type_complexity)]

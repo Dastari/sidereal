@@ -2607,7 +2607,7 @@ fn runtime_layer_z_bias(definition: &RuntimeRenderLayerDefinition) -> f32 {
     definition.depth_bias_z.unwrap_or(definition.order as f32)
 }
 
-fn runtime_layer_screen_scale_factor(definition: &RuntimeRenderLayerDefinition) -> f32 {
+pub(super) fn runtime_layer_screen_scale_factor(definition: &RuntimeRenderLayerDefinition) -> f32 {
     definition
         .screen_scale_factor
         .unwrap_or(1.0)
@@ -2632,7 +2632,7 @@ fn planet_visual_child_rotation(parent_rotation_rad: f32) -> Quat {
     Quat::from_rotation_z(-parent_rotation_rad)
 }
 
-fn planet_camera_relative_translation(
+pub(super) fn planet_camera_relative_translation(
     resolved_render_layer: Option<&ResolvedRuntimeRenderLayer>,
     planet_world_position: Vec2,
     camera_world_position_xy: Vec2,

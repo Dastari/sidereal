@@ -1,6 +1,7 @@
 //! ECS component markers and data used by native client systems.
 
 use bevy::prelude::*;
+use lightyear::prelude::Tick;
 use sidereal_game::RuntimeRenderLayerDefinition;
 
 #[derive(Component)]
@@ -103,16 +104,23 @@ pub(crate) struct DebugOverlayPanelTertiaryLabelShadowText;
 #[derive(Component)]
 pub(crate) struct DebugOverlayPanelTertiaryValueShadowText;
 
-#[derive(Component)]
-pub(crate) struct DebugOverlayCalloutRoot {
-    pub target: Option<Entity>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnnotationCalloutPlacement {
+    TopLeft,
+    BottomRight,
 }
 
 #[derive(Component)]
-pub(crate) struct DebugOverlayCalloutText;
+pub(crate) struct AnnotationCalloutRoot {
+    pub target: Option<Entity>,
+    pub placement: AnnotationCalloutPlacement,
+}
 
 #[derive(Component)]
-pub(crate) struct DebugOverlayCalloutLine;
+pub(crate) struct AnnotationCalloutText;
+
+#[derive(Component)]
+pub(crate) struct AnnotationCalloutLine;
 
 #[derive(Component)]
 pub(crate) struct LoadingProgressBarFill;
@@ -382,6 +390,12 @@ pub(crate) struct SuppressedPredictedDuplicateVisual;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PredictedMotionBootstrapSeed {
     pub generation: u64,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ControlledPredictionReconciliationState {
+    pub generation: u64,
+    pub last_confirmed_tick: Option<Tick>,
 }
 
 #[derive(Component)]
