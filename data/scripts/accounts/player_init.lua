@@ -6,7 +6,7 @@ function PlayerInit.player_init(ctx)
   local _ = ctx
   return {
     player_bundle_id = "player.default",
-    ship_bundle_id = "ship.corvette",
+    controlled_bundle_id = "ship.corvette",
   }
 end
 

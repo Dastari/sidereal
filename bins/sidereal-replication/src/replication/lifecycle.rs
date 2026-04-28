@@ -17,7 +17,7 @@ use sidereal_net::{
     ClientAuthMessage, ClientControlRequestMessage, ClientDisconnectNotifyMessage,
     ClientLocalViewModeMessage, ClientNotificationDismissedMessage, ClientRealtimeInputMessage,
     ClientTacticalResnapshotRequestMessage, ServerControlAckMessage, ServerControlRejectMessage,
-    ServerSessionDeniedMessage, ServerSessionReadyMessage,
+    ServerNotificationMessage, ServerSessionDeniedMessage, ServerSessionReadyMessage,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -182,23 +182,30 @@ pub fn log_replication_client_connected(
             Option<&'_ Transport>,
             Has<MessageReceiver<ClientAuthMessage>>,
             Has<MessageSender<ServerSessionReadyMessage>>,
+            Has<MessageSender<ServerNotificationMessage>>,
         ),
         With<ClientOf>,
     >,
 ) {
-    if let Ok((link_of, transport, has_auth_receiver, has_session_ready_sender)) =
-        clients.get(trigger.entity)
+    if let Ok((
+        link_of,
+        transport,
+        has_auth_receiver,
+        has_session_ready_sender,
+        has_notification_sender,
+    )) = clients.get(trigger.entity)
     {
         let has_control_receiver = transport
             .is_some_and(|transport| transport.has_receiver::<sidereal_net::ControlChannel>());
         let has_control_sender = transport
             .is_some_and(|transport| transport.has_sender::<sidereal_net::ControlChannel>());
         info!(
-            "replication lightyear client connected entity={:?} server={:?} has_auth_receiver={} has_session_ready_sender={} has_control_receiver={} has_control_sender={}",
+            "replication lightyear client connected entity={:?} server={:?} has_auth_receiver={} has_session_ready_sender={} has_notification_sender={} has_control_receiver={} has_control_sender={}",
             trigger.entity,
             link_of.map(|link| link.server),
             has_auth_receiver,
             has_session_ready_sender,
+            has_notification_sender,
             has_control_receiver,
             has_control_sender
         );
@@ -244,20 +251,11 @@ pub fn prime_client_link_transport_on_insert(
     if !transport.has_sender::<sidereal_net::InputChannel>() {
         transport.add_sender_from_registry::<sidereal_net::InputChannel>(&registry);
     }
-    if !transport.has_receiver::<sidereal_net::TacticalSnapshotChannel>() {
-        transport.add_receiver_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
-    }
     if !transport.has_sender::<sidereal_net::TacticalSnapshotChannel>() {
         transport.add_sender_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
     }
-    if !transport.has_receiver::<sidereal_net::TacticalDeltaChannel>() {
-        transport.add_receiver_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
-    }
     if !transport.has_sender::<sidereal_net::TacticalDeltaChannel>() {
         transport.add_sender_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
-    }
-    if !transport.has_receiver::<sidereal_net::ManifestChannel>() {
-        transport.add_receiver_from_registry::<sidereal_net::ManifestChannel>(&registry);
     }
     if !transport.has_sender::<sidereal_net::ManifestChannel>() {
         transport.add_sender_from_registry::<sidereal_net::ManifestChannel>(&registry);
@@ -281,6 +279,7 @@ pub fn prime_client_link_transport_on_insert(
         MessageSender::<ServerSessionDeniedMessage>::default(),
         MessageSender::<ServerControlAckMessage>::default(),
         MessageSender::<ServerControlRejectMessage>::default(),
+        MessageSender::<ServerNotificationMessage>::default(),
     ));
 
     info!(
@@ -306,21 +305,11 @@ pub fn ensure_server_transport_channels(
         if !transport.has_sender::<sidereal_net::InputChannel>() {
             transport.add_sender_from_registry::<sidereal_net::InputChannel>(&registry);
         }
-        if !transport.has_receiver::<sidereal_net::TacticalSnapshotChannel>() {
-            transport
-                .add_receiver_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
-        }
         if !transport.has_sender::<sidereal_net::TacticalSnapshotChannel>() {
             transport.add_sender_from_registry::<sidereal_net::TacticalSnapshotChannel>(&registry);
         }
-        if !transport.has_receiver::<sidereal_net::TacticalDeltaChannel>() {
-            transport.add_receiver_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
-        }
         if !transport.has_sender::<sidereal_net::TacticalDeltaChannel>() {
             transport.add_sender_from_registry::<sidereal_net::TacticalDeltaChannel>(&registry);
-        }
-        if !transport.has_receiver::<sidereal_net::ManifestChannel>() {
-            transport.add_receiver_from_registry::<sidereal_net::ManifestChannel>(&registry);
         }
         if !transport.has_sender::<sidereal_net::ManifestChannel>() {
             transport.add_sender_from_registry::<sidereal_net::ManifestChannel>(&registry);
@@ -353,6 +342,7 @@ pub fn ensure_server_message_components(
             Has<MessageSender<ServerSessionDeniedMessage>>,
             Has<MessageSender<ServerControlAckMessage>>,
             Has<MessageSender<ServerControlRejectMessage>>,
+            Has<MessageSender<ServerNotificationMessage>>,
         ),
         With<ClientOf>,
     >,
@@ -370,6 +360,7 @@ pub fn ensure_server_message_components(
         has_session_denied_send,
         has_control_ack_send,
         has_control_reject_send,
+        has_notification_send,
     ) in &clients
     {
         let mut patched = Vec::new();
@@ -420,6 +411,10 @@ pub fn ensure_server_message_components(
         if !has_control_reject_send {
             entity_commands.insert(MessageSender::<ServerControlRejectMessage>::default());
             patched.push("send:ServerControlRejectMessage");
+        }
+        if !has_notification_send {
+            entity_commands.insert(MessageSender::<ServerNotificationMessage>::default());
+            patched.push("send:ServerNotificationMessage");
         }
 
         if !patched.is_empty() {

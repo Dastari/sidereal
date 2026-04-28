@@ -24,6 +24,7 @@ import { Route as ApiDashboardSessionRouteImport } from './routes/api.dashboard-
 import { Route as ApiBrpRouteImport } from './routes/api.brp'
 import { Route as ApiBootstrapRouteImport } from './routes/api.bootstrap'
 import { Route as DashboardSoundStudioRouteImport } from './routes/_dashboard.sound-studio'
+import { Route as DashboardShipyardRouteImport } from './routes/_dashboard.shipyard'
 import { Route as DashboardShaderWorkshopRouteImport } from './routes/_dashboard.shader-workshop'
 import { Route as DashboardSettingsRouteImport } from './routes/_dashboard.settings'
 import { Route as DashboardScriptEditorRouteImport } from './routes/_dashboard.script-editor'
@@ -32,6 +33,7 @@ import { Route as DashboardGameWorldRouteImport } from './routes/_dashboard.game
 import { Route as DashboardGameClientRouteImport } from './routes/_dashboard.game-client'
 import { Route as DashboardDatabaseRouteImport } from './routes/_dashboard.database'
 import { Route as DashboardDatabaseIndexRouteImport } from './routes/_dashboard.database.index'
+import { Route as ApiShipyardCatalogRouteImport } from './routes/api.shipyard.catalog'
 import { Route as ApiShadersUploadRouteImport } from './routes/api.shaders.upload'
 import { Route as ApiShadersShaderIdRouteImport } from './routes/api.shaders.$shaderId'
 import { Route as ApiPasswordResetConfirmRouteImport } from './routes/api.password-reset.confirm'
@@ -46,7 +48,12 @@ import { Route as DashboardGameWorldEntityGuidRouteImport } from './routes/_dash
 import { Route as DashboardDatabaseTablesRouteImport } from './routes/_dashboard.database.tables'
 import { Route as DashboardDatabaseAccountsRouteImport } from './routes/_dashboard.database.accounts'
 import { Route as DashboardDatabaseEntityGuidRouteImport } from './routes/_dashboard.database.$entityGuid'
+import { Route as ApiShipyardAssetsAssetIdRouteImport } from './routes/api.shipyard.assets.$assetId'
 import { Route as ApiAccountCharactersPlayerEntityIdRouteImport } from './routes/api.account.characters.$playerEntityId'
+import { Route as ApiShipyardShipsShipIdPublishRouteImport } from './routes/api.shipyard.ships.$shipId.publish'
+import { Route as ApiShipyardShipsShipIdDraftRouteImport } from './routes/api.shipyard.ships.$shipId.draft'
+import { Route as ApiShipyardModulesModuleIdPublishRouteImport } from './routes/api.shipyard.modules.$moduleId.publish'
+import { Route as ApiShipyardModulesModuleIdDraftRouteImport } from './routes/api.shipyard.modules.$moduleId.draft'
 import { Route as ApiGenesisPlanetsPlanetIdPublishRouteImport } from './routes/api.genesis.planets.$planetId.publish'
 import { Route as ApiGenesisPlanetsPlanetIdDraftRouteImport } from './routes/api.genesis.planets.$planetId.draft'
 import { Route as ApiDatabaseCharactersPlayerEntityIdDisplayNameRouteImport } from './routes/api.database.characters.$playerEntityId.display-name'
@@ -129,6 +136,11 @@ const DashboardSoundStudioRoute = DashboardSoundStudioRouteImport.update({
   path: '/sound-studio',
   getParentRoute: () => DashboardRoute,
 } as any)
+const DashboardShipyardRoute = DashboardShipyardRouteImport.update({
+  id: '/shipyard',
+  path: '/shipyard',
+  getParentRoute: () => DashboardRoute,
+} as any)
 const DashboardShaderWorkshopRoute = DashboardShaderWorkshopRouteImport.update({
   id: '/shader-workshop',
   path: '/shader-workshop',
@@ -168,6 +180,11 @@ const DashboardDatabaseIndexRoute = DashboardDatabaseIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => DashboardDatabaseRoute,
+} as any)
+const ApiShipyardCatalogRoute = ApiShipyardCatalogRouteImport.update({
+  id: '/api/shipyard/catalog',
+  path: '/api/shipyard/catalog',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiShadersUploadRoute = ApiShadersUploadRouteImport.update({
   id: '/upload',
@@ -244,11 +261,41 @@ const DashboardDatabaseEntityGuidRoute =
     path: '/$entityGuid',
     getParentRoute: () => DashboardDatabaseRoute,
   } as any)
+const ApiShipyardAssetsAssetIdRoute =
+  ApiShipyardAssetsAssetIdRouteImport.update({
+    id: '/api/shipyard/assets/$assetId',
+    path: '/api/shipyard/assets/$assetId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiAccountCharactersPlayerEntityIdRoute =
   ApiAccountCharactersPlayerEntityIdRouteImport.update({
     id: '/$playerEntityId',
     path: '/$playerEntityId',
     getParentRoute: () => ApiAccountCharactersRoute,
+  } as any)
+const ApiShipyardShipsShipIdPublishRoute =
+  ApiShipyardShipsShipIdPublishRouteImport.update({
+    id: '/api/shipyard/ships/$shipId/publish',
+    path: '/api/shipyard/ships/$shipId/publish',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiShipyardShipsShipIdDraftRoute =
+  ApiShipyardShipsShipIdDraftRouteImport.update({
+    id: '/api/shipyard/ships/$shipId/draft',
+    path: '/api/shipyard/ships/$shipId/draft',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiShipyardModulesModuleIdPublishRoute =
+  ApiShipyardModulesModuleIdPublishRouteImport.update({
+    id: '/api/shipyard/modules/$moduleId/publish',
+    path: '/api/shipyard/modules/$moduleId/publish',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiShipyardModulesModuleIdDraftRoute =
+  ApiShipyardModulesModuleIdDraftRouteImport.update({
+    id: '/api/shipyard/modules/$moduleId/draft',
+    path: '/api/shipyard/modules/$moduleId/draft',
+    getParentRoute: () => rootRouteImport,
   } as any)
 const ApiGenesisPlanetsPlanetIdPublishRoute =
   ApiGenesisPlanetsPlanetIdPublishRouteImport.update({
@@ -305,6 +352,7 @@ export interface FileRoutesByFullPath {
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
+  '/shipyard': typeof DashboardShipyardRoute
   '/sound-studio': typeof DashboardSoundStudioRouteWithChildren
   '/api/bootstrap': typeof ApiBootstrapRoute
   '/api/brp': typeof ApiBrpRoute
@@ -327,8 +375,10 @@ export interface FileRoutesByFullPath {
   '/api/password-reset/confirm': typeof ApiPasswordResetConfirmRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
+  '/api/shipyard/catalog': typeof ApiShipyardCatalogRoute
   '/database/': typeof DashboardDatabaseIndexRoute
   '/api/account/characters/$playerEntityId': typeof ApiAccountCharactersPlayerEntityIdRouteWithChildren
+  '/api/shipyard/assets/$assetId': typeof ApiShipyardAssetsAssetIdRoute
   '/api/account/characters/$playerEntityId/reset': typeof ApiAccountCharactersPlayerEntityIdResetRoute
   '/api/account/mfa/totp/enroll': typeof ApiAccountMfaTotpEnrollRoute
   '/api/account/mfa/totp/verify': typeof ApiAccountMfaTotpVerifyRoute
@@ -336,6 +386,10 @@ export interface FileRoutesByFullPath {
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
   '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
   '/api/genesis/planets/$planetId/publish': typeof ApiGenesisPlanetsPlanetIdPublishRoute
+  '/api/shipyard/modules/$moduleId/draft': typeof ApiShipyardModulesModuleIdDraftRoute
+  '/api/shipyard/modules/$moduleId/publish': typeof ApiShipyardModulesModuleIdPublishRoute
+  '/api/shipyard/ships/$shipId/draft': typeof ApiShipyardShipsShipIdDraftRoute
+  '/api/shipyard/ships/$shipId/publish': typeof ApiShipyardShipsShipIdPublishRoute
 }
 export interface FileRoutesByTo {
   '/forgot-password': typeof ForgotPasswordRoute
@@ -349,6 +403,7 @@ export interface FileRoutesByTo {
   '/script-editor': typeof DashboardScriptEditorRoute
   '/settings': typeof DashboardSettingsRoute
   '/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
+  '/shipyard': typeof DashboardShipyardRoute
   '/sound-studio': typeof DashboardSoundStudioRouteWithChildren
   '/api/bootstrap': typeof ApiBootstrapRoute
   '/api/brp': typeof ApiBrpRoute
@@ -372,8 +427,10 @@ export interface FileRoutesByTo {
   '/api/password-reset/confirm': typeof ApiPasswordResetConfirmRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
+  '/api/shipyard/catalog': typeof ApiShipyardCatalogRoute
   '/database': typeof DashboardDatabaseIndexRoute
   '/api/account/characters/$playerEntityId': typeof ApiAccountCharactersPlayerEntityIdRouteWithChildren
+  '/api/shipyard/assets/$assetId': typeof ApiShipyardAssetsAssetIdRoute
   '/api/account/characters/$playerEntityId/reset': typeof ApiAccountCharactersPlayerEntityIdResetRoute
   '/api/account/mfa/totp/enroll': typeof ApiAccountMfaTotpEnrollRoute
   '/api/account/mfa/totp/verify': typeof ApiAccountMfaTotpVerifyRoute
@@ -381,6 +438,10 @@ export interface FileRoutesByTo {
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
   '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
   '/api/genesis/planets/$planetId/publish': typeof ApiGenesisPlanetsPlanetIdPublishRoute
+  '/api/shipyard/modules/$moduleId/draft': typeof ApiShipyardModulesModuleIdDraftRoute
+  '/api/shipyard/modules/$moduleId/publish': typeof ApiShipyardModulesModuleIdPublishRoute
+  '/api/shipyard/ships/$shipId/draft': typeof ApiShipyardShipsShipIdDraftRoute
+  '/api/shipyard/ships/$shipId/publish': typeof ApiShipyardShipsShipIdPublishRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -397,6 +458,7 @@ export interface FileRoutesById {
   '/_dashboard/script-editor': typeof DashboardScriptEditorRoute
   '/_dashboard/settings': typeof DashboardSettingsRoute
   '/_dashboard/shader-workshop': typeof DashboardShaderWorkshopRouteWithChildren
+  '/_dashboard/shipyard': typeof DashboardShipyardRoute
   '/_dashboard/sound-studio': typeof DashboardSoundStudioRouteWithChildren
   '/api/bootstrap': typeof ApiBootstrapRoute
   '/api/brp': typeof ApiBrpRoute
@@ -420,8 +482,10 @@ export interface FileRoutesById {
   '/api/password-reset/confirm': typeof ApiPasswordResetConfirmRoute
   '/api/shaders/$shaderId': typeof ApiShadersShaderIdRoute
   '/api/shaders/upload': typeof ApiShadersUploadRoute
+  '/api/shipyard/catalog': typeof ApiShipyardCatalogRoute
   '/_dashboard/database/': typeof DashboardDatabaseIndexRoute
   '/api/account/characters/$playerEntityId': typeof ApiAccountCharactersPlayerEntityIdRouteWithChildren
+  '/api/shipyard/assets/$assetId': typeof ApiShipyardAssetsAssetIdRoute
   '/api/account/characters/$playerEntityId/reset': typeof ApiAccountCharactersPlayerEntityIdResetRoute
   '/api/account/mfa/totp/enroll': typeof ApiAccountMfaTotpEnrollRoute
   '/api/account/mfa/totp/verify': typeof ApiAccountMfaTotpVerifyRoute
@@ -429,6 +493,10 @@ export interface FileRoutesById {
   '/api/database/characters/$playerEntityId/display-name': typeof ApiDatabaseCharactersPlayerEntityIdDisplayNameRoute
   '/api/genesis/planets/$planetId/draft': typeof ApiGenesisPlanetsPlanetIdDraftRoute
   '/api/genesis/planets/$planetId/publish': typeof ApiGenesisPlanetsPlanetIdPublishRoute
+  '/api/shipyard/modules/$moduleId/draft': typeof ApiShipyardModulesModuleIdDraftRoute
+  '/api/shipyard/modules/$moduleId/publish': typeof ApiShipyardModulesModuleIdPublishRoute
+  '/api/shipyard/ships/$shipId/draft': typeof ApiShipyardShipsShipIdDraftRoute
+  '/api/shipyard/ships/$shipId/publish': typeof ApiShipyardShipsShipIdPublishRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -446,6 +514,7 @@ export interface FileRouteTypes {
     | '/script-editor'
     | '/settings'
     | '/shader-workshop'
+    | '/shipyard'
     | '/sound-studio'
     | '/api/bootstrap'
     | '/api/brp'
@@ -468,8 +537,10 @@ export interface FileRouteTypes {
     | '/api/password-reset/confirm'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
+    | '/api/shipyard/catalog'
     | '/database/'
     | '/api/account/characters/$playerEntityId'
+    | '/api/shipyard/assets/$assetId'
     | '/api/account/characters/$playerEntityId/reset'
     | '/api/account/mfa/totp/enroll'
     | '/api/account/mfa/totp/verify'
@@ -477,6 +548,10 @@ export interface FileRouteTypes {
     | '/api/database/characters/$playerEntityId/display-name'
     | '/api/genesis/planets/$planetId/draft'
     | '/api/genesis/planets/$planetId/publish'
+    | '/api/shipyard/modules/$moduleId/draft'
+    | '/api/shipyard/modules/$moduleId/publish'
+    | '/api/shipyard/ships/$shipId/draft'
+    | '/api/shipyard/ships/$shipId/publish'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/forgot-password'
@@ -490,6 +565,7 @@ export interface FileRouteTypes {
     | '/script-editor'
     | '/settings'
     | '/shader-workshop'
+    | '/shipyard'
     | '/sound-studio'
     | '/api/bootstrap'
     | '/api/brp'
@@ -513,8 +589,10 @@ export interface FileRouteTypes {
     | '/api/password-reset/confirm'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
+    | '/api/shipyard/catalog'
     | '/database'
     | '/api/account/characters/$playerEntityId'
+    | '/api/shipyard/assets/$assetId'
     | '/api/account/characters/$playerEntityId/reset'
     | '/api/account/mfa/totp/enroll'
     | '/api/account/mfa/totp/verify'
@@ -522,6 +600,10 @@ export interface FileRouteTypes {
     | '/api/database/characters/$playerEntityId/display-name'
     | '/api/genesis/planets/$planetId/draft'
     | '/api/genesis/planets/$planetId/publish'
+    | '/api/shipyard/modules/$moduleId/draft'
+    | '/api/shipyard/modules/$moduleId/publish'
+    | '/api/shipyard/ships/$shipId/draft'
+    | '/api/shipyard/ships/$shipId/publish'
   id:
     | '__root__'
     | '/_dashboard'
@@ -537,6 +619,7 @@ export interface FileRouteTypes {
     | '/_dashboard/script-editor'
     | '/_dashboard/settings'
     | '/_dashboard/shader-workshop'
+    | '/_dashboard/shipyard'
     | '/_dashboard/sound-studio'
     | '/api/bootstrap'
     | '/api/brp'
@@ -560,8 +643,10 @@ export interface FileRouteTypes {
     | '/api/password-reset/confirm'
     | '/api/shaders/$shaderId'
     | '/api/shaders/upload'
+    | '/api/shipyard/catalog'
     | '/_dashboard/database/'
     | '/api/account/characters/$playerEntityId'
+    | '/api/shipyard/assets/$assetId'
     | '/api/account/characters/$playerEntityId/reset'
     | '/api/account/mfa/totp/enroll'
     | '/api/account/mfa/totp/verify'
@@ -569,6 +654,10 @@ export interface FileRouteTypes {
     | '/api/database/characters/$playerEntityId/display-name'
     | '/api/genesis/planets/$planetId/draft'
     | '/api/genesis/planets/$planetId/publish'
+    | '/api/shipyard/modules/$moduleId/draft'
+    | '/api/shipyard/modules/$moduleId/publish'
+    | '/api/shipyard/ships/$shipId/draft'
+    | '/api/shipyard/ships/$shipId/publish'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -590,8 +679,14 @@ export interface RootRouteChildren {
   ApiAudioCuesSoundIdRoute: typeof ApiAudioCuesSoundIdRoute
   ApiDeleteEntityEntityIdRoute: typeof ApiDeleteEntityEntityIdRoute
   ApiGenesisPlanetsRoute: typeof ApiGenesisPlanetsRouteWithChildren
+  ApiShipyardCatalogRoute: typeof ApiShipyardCatalogRoute
+  ApiShipyardAssetsAssetIdRoute: typeof ApiShipyardAssetsAssetIdRoute
   ApiAccountMfaTotpEnrollRoute: typeof ApiAccountMfaTotpEnrollRoute
   ApiAccountMfaTotpVerifyRoute: typeof ApiAccountMfaTotpVerifyRoute
+  ApiShipyardModulesModuleIdDraftRoute: typeof ApiShipyardModulesModuleIdDraftRoute
+  ApiShipyardModulesModuleIdPublishRoute: typeof ApiShipyardModulesModuleIdPublishRoute
+  ApiShipyardShipsShipIdDraftRoute: typeof ApiShipyardShipsShipIdDraftRoute
+  ApiShipyardShipsShipIdPublishRoute: typeof ApiShipyardShipsShipIdPublishRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -701,6 +796,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardSoundStudioRouteImport
       parentRoute: typeof DashboardRoute
     }
+    '/_dashboard/shipyard': {
+      id: '/_dashboard/shipyard'
+      path: '/shipyard'
+      fullPath: '/shipyard'
+      preLoaderRoute: typeof DashboardShipyardRouteImport
+      parentRoute: typeof DashboardRoute
+    }
     '/_dashboard/shader-workshop': {
       id: '/_dashboard/shader-workshop'
       path: '/shader-workshop'
@@ -756,6 +858,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/database/'
       preLoaderRoute: typeof DashboardDatabaseIndexRouteImport
       parentRoute: typeof DashboardDatabaseRoute
+    }
+    '/api/shipyard/catalog': {
+      id: '/api/shipyard/catalog'
+      path: '/api/shipyard/catalog'
+      fullPath: '/api/shipyard/catalog'
+      preLoaderRoute: typeof ApiShipyardCatalogRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/shaders/upload': {
       id: '/api/shaders/upload'
@@ -855,12 +964,47 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardDatabaseEntityGuidRouteImport
       parentRoute: typeof DashboardDatabaseRoute
     }
+    '/api/shipyard/assets/$assetId': {
+      id: '/api/shipyard/assets/$assetId'
+      path: '/api/shipyard/assets/$assetId'
+      fullPath: '/api/shipyard/assets/$assetId'
+      preLoaderRoute: typeof ApiShipyardAssetsAssetIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/account/characters/$playerEntityId': {
       id: '/api/account/characters/$playerEntityId'
       path: '/$playerEntityId'
       fullPath: '/api/account/characters/$playerEntityId'
       preLoaderRoute: typeof ApiAccountCharactersPlayerEntityIdRouteImport
       parentRoute: typeof ApiAccountCharactersRoute
+    }
+    '/api/shipyard/ships/$shipId/publish': {
+      id: '/api/shipyard/ships/$shipId/publish'
+      path: '/api/shipyard/ships/$shipId/publish'
+      fullPath: '/api/shipyard/ships/$shipId/publish'
+      preLoaderRoute: typeof ApiShipyardShipsShipIdPublishRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/shipyard/ships/$shipId/draft': {
+      id: '/api/shipyard/ships/$shipId/draft'
+      path: '/api/shipyard/ships/$shipId/draft'
+      fullPath: '/api/shipyard/ships/$shipId/draft'
+      preLoaderRoute: typeof ApiShipyardShipsShipIdDraftRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/shipyard/modules/$moduleId/publish': {
+      id: '/api/shipyard/modules/$moduleId/publish'
+      path: '/api/shipyard/modules/$moduleId/publish'
+      fullPath: '/api/shipyard/modules/$moduleId/publish'
+      preLoaderRoute: typeof ApiShipyardModulesModuleIdPublishRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/shipyard/modules/$moduleId/draft': {
+      id: '/api/shipyard/modules/$moduleId/draft'
+      path: '/api/shipyard/modules/$moduleId/draft'
+      fullPath: '/api/shipyard/modules/$moduleId/draft'
+      preLoaderRoute: typeof ApiShipyardModulesModuleIdDraftRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/genesis/planets/$planetId/publish': {
       id: '/api/genesis/planets/$planetId/publish'
@@ -975,6 +1119,7 @@ interface DashboardRouteChildren {
   DashboardScriptEditorRoute: typeof DashboardScriptEditorRoute
   DashboardSettingsRoute: typeof DashboardSettingsRoute
   DashboardShaderWorkshopRoute: typeof DashboardShaderWorkshopRouteWithChildren
+  DashboardShipyardRoute: typeof DashboardShipyardRoute
   DashboardSoundStudioRoute: typeof DashboardSoundStudioRouteWithChildren
   DashboardIndexRoute: typeof DashboardIndexRoute
 }
@@ -987,6 +1132,7 @@ const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardScriptEditorRoute: DashboardScriptEditorRoute,
   DashboardSettingsRoute: DashboardSettingsRoute,
   DashboardShaderWorkshopRoute: DashboardShaderWorkshopRouteWithChildren,
+  DashboardShipyardRoute: DashboardShipyardRoute,
   DashboardSoundStudioRoute: DashboardSoundStudioRouteWithChildren,
   DashboardIndexRoute: DashboardIndexRoute,
 }
@@ -1095,8 +1241,15 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAudioCuesSoundIdRoute: ApiAudioCuesSoundIdRoute,
   ApiDeleteEntityEntityIdRoute: ApiDeleteEntityEntityIdRoute,
   ApiGenesisPlanetsRoute: ApiGenesisPlanetsRouteWithChildren,
+  ApiShipyardCatalogRoute: ApiShipyardCatalogRoute,
+  ApiShipyardAssetsAssetIdRoute: ApiShipyardAssetsAssetIdRoute,
   ApiAccountMfaTotpEnrollRoute: ApiAccountMfaTotpEnrollRoute,
   ApiAccountMfaTotpVerifyRoute: ApiAccountMfaTotpVerifyRoute,
+  ApiShipyardModulesModuleIdDraftRoute: ApiShipyardModulesModuleIdDraftRoute,
+  ApiShipyardModulesModuleIdPublishRoute:
+    ApiShipyardModulesModuleIdPublishRoute,
+  ApiShipyardShipsShipIdDraftRoute: ApiShipyardShipsShipIdDraftRoute,
+  ApiShipyardShipsShipIdPublishRoute: ApiShipyardShipsShipIdPublishRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

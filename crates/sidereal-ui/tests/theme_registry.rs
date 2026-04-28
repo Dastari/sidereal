@@ -16,16 +16,17 @@ fn poseidon_and_aphrodite_are_distinct_palettes() {
 }
 
 #[test]
-fn warning_tone_uses_white_foreground_and_chrome() {
+fn warning_tone_uses_white_foreground_and_accent_chrome() {
     let theme = theme_definition(UiThemeId::Tron);
 
     let foreground = UiSemanticTone::Warning.foreground_color(theme).to_srgba();
     let chrome = UiSemanticTone::Warning.chrome_color(theme).to_srgba();
+    let accent = UiSemanticTone::Warning.accent_color(theme).to_srgba();
 
     assert!((foreground.red - 1.0).abs() < f32::EPSILON);
     assert!((foreground.green - 1.0).abs() < f32::EPSILON);
     assert!((foreground.blue - 1.0).abs() < f32::EPSILON);
-    assert!((chrome.red - 1.0).abs() < f32::EPSILON);
-    assert!((chrome.green - 1.0).abs() < f32::EPSILON);
-    assert!((chrome.blue - 1.0).abs() < f32::EPSILON);
+    assert!((chrome.red - accent.red).abs() < f32::EPSILON);
+    assert!((chrome.green - accent.green).abs() < f32::EPSILON);
+    assert!((chrome.blue - accent.blue).abs() < f32::EPSILON);
 }

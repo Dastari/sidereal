@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::{ClientOf, LinkOf};
 use lightyear::prelude::{
-    MessageReceiver, NetworkTarget, RemoteId, Server, ServerMultiMessageSender,
+    MessageReceiver, NetworkTarget, PeerId, RemoteId, Server, ServerMultiMessageSender,
 };
 use sidereal_net::{
     ClientNotificationDismissedMessage, NotificationChannel, NotificationImageRef,
@@ -218,13 +218,10 @@ pub fn stream_notification_messages(
     server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<Connected>>,
     bindings: Res<'_, AuthenticatedClientBindings>,
-    client_remotes: Query<'_, '_, (&'_ LinkOf, &'_ RemoteId), With<ClientOf>>,
+    client_remotes: Query<'_, '_, (Entity, &'_ LinkOf, &'_ RemoteId), With<ClientOf>>,
     mut delivery: ResMut<'_, NotificationDeliveryState>,
     mut worker: ResMut<'_, NotificationPersistenceWorker>,
 ) {
-    let Ok(server) = server_query.single() else {
-        return;
-    };
     if delivery.pending.is_empty() {
         return;
     }
@@ -235,13 +232,18 @@ pub fn stream_notification_messages(
             continue;
         }
         let mut sent = false;
-        for (_link, remote_id) in &client_remotes {
-            let Some(bound_player) = bindings.by_remote_id.get(&remote_id.0) else {
+        for (client_entity, link_of, remote_id) in &client_remotes {
+            let Some(bound_player) =
+                bound_player_for_notification_client(&bindings, client_entity, remote_id.0)
+            else {
                 continue;
             };
             if !same_player(bound_player, &message.player_entity_id) {
                 continue;
             }
+            let Ok(server) = server_query.get(link_of.server) else {
+                continue;
+            };
             let target = NetworkTarget::Single(remote_id.0);
             if sender
                 .send::<ServerNotificationMessage, NotificationChannel>(&message, server, &target)
@@ -277,14 +279,17 @@ pub fn receive_notification_dismissals(
         '_,
         '_,
         (
+            Entity,
             &'_ RemoteId,
             &'_ mut MessageReceiver<ClientNotificationDismissedMessage>,
         ),
         With<ClientOf>,
     >,
 ) {
-    for (remote_id, mut receiver) in &mut clients {
-        let Some(bound_player) = bindings.by_remote_id.get(&remote_id.0) else {
+    for (client_entity, remote_id, mut receiver) in &mut clients {
+        let Some(bound_player) =
+            bound_player_for_notification_client(&bindings, client_entity, remote_id.0)
+        else {
             continue;
         };
         let messages = receiver.receive().collect::<Vec<_>>();
@@ -313,6 +318,18 @@ pub fn receive_notification_dismissals(
             );
         }
     }
+}
+
+fn bound_player_for_notification_client(
+    bindings: &AuthenticatedClientBindings,
+    client_entity: Entity,
+    remote_id: PeerId,
+) -> Option<&str> {
+    bindings
+        .by_client_entity
+        .get(&client_entity)
+        .or_else(|| bindings.by_remote_id.get(&remote_id))
+        .map(String::as_str)
 }
 
 fn notification_message_from_command(command: NotificationCommand) -> ServerNotificationMessage {
@@ -435,6 +452,40 @@ mod tests {
             "11111111-1111-1111-1111-111111111111",
             "22222222-2222-2222-2222-222222222222"
         ));
+    }
+
+    #[test]
+    fn notification_binding_prefers_client_entity_mapping() {
+        let mut bindings = AuthenticatedClientBindings::default();
+        let client_entity = Entity::from_bits(1);
+        bindings.by_client_entity.insert(
+            client_entity,
+            "11111111-1111-1111-1111-111111111111".to_string(),
+        );
+        bindings.by_remote_id.insert(
+            PeerId::Netcode(42),
+            "22222222-2222-2222-2222-222222222222".to_string(),
+        );
+
+        assert_eq!(
+            bound_player_for_notification_client(&bindings, client_entity, PeerId::Netcode(42)),
+            Some("11111111-1111-1111-1111-111111111111")
+        );
+    }
+
+    #[test]
+    fn notification_binding_falls_back_to_remote_mapping() {
+        let mut bindings = AuthenticatedClientBindings::default();
+        let client_entity = Entity::from_bits(1);
+        bindings.by_remote_id.insert(
+            PeerId::Netcode(42),
+            "22222222-2222-2222-2222-222222222222".to_string(),
+        );
+
+        assert_eq!(
+            bound_player_for_notification_client(&bindings, client_entity, PeerId::Netcode(42)),
+            Some("22222222-2222-2222-2222-222222222222")
+        );
     }
 
     #[test]

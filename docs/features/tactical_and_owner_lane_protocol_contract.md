@@ -44,6 +44,32 @@ Primary references:
 
 2026-04-27 update:
 
+1. Audit follow-up plan added at `docs/plans/server_authoritative_tactical_scanner_and_contact_index_plan_2026-04-27.md`.
+2. H3 remains open until server tactical streaming resolves an effective scanner source from `PlayerControlledEntityMap` and applies scanner-tier redaction before emitting fog/contact products.
+3. M1 remains open until tactical streaming consumes cached authoring data plus a spatial contact index instead of scanning all replicated entities per authenticated client interval.
+
+2026-04-27 update:
+
+1. Tactical fog/contact streaming now resolves a server-side effective scanner source from `PlayerControlledEntityMap` before producing scanner-derived products.
+2. Free roam/player-anchor control, missing controlled entities, and controlled entities without a usable `ScannerComponent` now emit empty live scanner cells and no scanner-derived tactical contacts while preserving already explored fog memory.
+3. Full visible tactical contacts are additionally range-gated by the resolved scanner source; signal-only unknown contacts use the same source and preserve relative strength/quality redaction.
+4. H3 remains partially open until scanner-tier redaction is centralized and tested. M1 remains open because the stream still uses the current per-client replicated-entity scan pending the tactical contact index phase.
+
+2026-04-28 update:
+
+1. Exact visible tactical contacts that also carry `SignalSignature` now include scanner-relative `signal_strength` and `contact_quality` when the player's effective scanner source can detect that signal.
+2. This does not widen entity replication or expose private component payloads; it only lets client tactical instruments render directional signal-strength presentation for already-disclosed contacts such as stars and planets.
+
+2026-04-27 update:
+
+1. M2 protocol audit follow-up: Lightyear message registration is now direction-scoped by semantic owner. Client-authored messages are `ClientToServer`; server-authored snapshots, deltas, notifications, control responses, session responses, asset catalog version notices, and combat presentation notices are `ServerToClient`.
+2. Channel registration remains bidirectional only where a channel intentionally carries both client requests and server responses/events (`ControlChannel`, `InputChannel`, `TacticalSnapshotChannel`, and `NotificationChannel`). `TacticalDeltaChannel` and `ManifestChannel` are server-to-client only.
+3. Runtime transport repair systems must preserve those channel directions instead of adding missing senders/receivers for both sides.
+4. Native impact: narrower Lightyear sender/receiver components reduce accidental wrong-side message consumption. WASM impact: shared client protocol registration is affected and must compile with the normal `sidereal-client` WASM target.
+5. The replication protocol version is `7` for the directional registration contract.
+
+2026-04-27 update:
+
 1. `TacticalContact` now includes optional public `size_m` and `mass_kg` metadata when disclosed by the tactical lane.
 2. The native client tactical map uses live planet/star/black-hole contacts from those fields to drive shader-side gravity-well grid warping; planet tactical icons render at 8x the standard tactical marker scale.
 3. WASM impact: the behavior is shared client runtime/shader logic and must compile with the normal `sidereal-client` WASM target; no browser-only transport or asset-loading behavior changed.

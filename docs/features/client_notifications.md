@@ -1,7 +1,7 @@
 # Client Notifications
 
 Status: Active partial implementation spec
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 Owners: client runtime + replication + scripting
 Scope: server-authored non-blocking notification delivery, Bevy toast presentation, and player-scoped notification history
 
@@ -27,7 +27,16 @@ Primary references:
 
 1. Implemented: when a player successfully enters the world through replication auth binding, the replication server enqueues a `Generic` notification with event type `player_entered_world` for every other currently authenticated player session.
 2. The entering player's own session is excluded, and duplicate connected sessions for the same recipient player are collapsed to one persisted/player-scoped notification.
-3. Native impact: existing Bevy toast UI shows the message. WASM impact: shared notification protocol only; no platform-specific behavior.
+3. Implemented: notification streaming resolves the server transport through each authenticated client's `LinkOf` binding, matching the tactical and owner-manifest lanes. This avoids silently retaining queued notifications when the world has more than one server/link context.
+4. Implemented: client and server transport lifecycle systems explicitly attach notification `MessageReceiver`/`MessageSender` components so server-authored notifications exercise the Lightyear notification lane instead of relying only on client-local dev-console injection.
+5. Implemented: the replication admin command `notify <player_entity_id> <message>` queues a server-authored generic notification for live-path testing.
+6. Native impact: existing Bevy toast UI shows the message. WASM impact: shared notification protocol only; no platform-specific behavior.
+
+2026-04-28 status note:
+
+1. Implemented: server notification delivery and dismissal validation now resolve the authenticated player from the client Bevy entity binding first, then fall back to the transport `RemoteId` binding. This matches the primary authenticated-session shape used by tactical and asset streaming and prevents server-authored notifications from remaining queued when only one of the two auth maps is populated.
+2. Landmark discovery and long-range gravity-well notifications continue to use the same `NotificationChannel` and client toast UI path; the client remains presentation-only and still filters received messages to its local player entity.
+3. Native impact: fixes live server-authored notification delivery for native clients. WASM impact: shared protocol/server behavior only; no platform-specific notification UI change.
 
 ## 1. Contract
 
@@ -49,6 +58,8 @@ The notification lane uses:
 1. `ServerNotificationMessage`
 2. `ClientNotificationDismissedMessage`
 3. `NotificationChannel`
+
+`NotificationChannel` is a dedicated ordered reliable presentation lane for server-authored UI/history notifications. It is not the long-term chat/social transport. Future global chat, channels, private communication, mail, or other social infrastructure should use a separate communication/social protocol lane with its own delivery, moderation, history, fanout, and privacy rules, while reusing the toast UI only as one possible presentation surface.
 
 Supported severities:
 
@@ -74,6 +85,8 @@ Current payload variants:
 Current generic event types include:
 
 1. `player_entered_world`
+2. `long_range_gravity_well_detected`
+3. `server_admin_notify_test`
 
 ## 3. Persistence
 

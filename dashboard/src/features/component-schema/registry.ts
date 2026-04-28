@@ -23,11 +23,23 @@ const COMPONENT_SHADER_ASSET_IDS: Record<string, Array<string>> = {
     'space_background_base_wgsl',
     'space_background_nebula_wgsl',
   ],
-  [COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS]: ['planet_visual_wgsl'],
+  [COMPONENT_TYPE_PLANET_BODY_SHADER_SETTINGS]: [
+    'planet_visual_wgsl',
+    'star_visual_wgsl',
+  ],
 }
 
 const GENERATED_COMPONENT_REGISTRY_SUFFIX =
   '::generated::components::GeneratedComponentRegistry'
+const AGE_PROPERTY_IDENTIFIER_MAX_CHARS = 63
+const COMPONENT_PAYLOAD_METADATA_KEYS = new Set([
+  'component_id',
+  'component_kind',
+  'entity_id',
+  'entityId',
+  'last_tick',
+  'typePath',
+])
 
 function asObjectRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null
@@ -39,7 +51,26 @@ function sanitizeTypePathKey(typePath: string): string {
   return typePath.replaceAll('::', '__')
 }
 
-export function isGeneratedComponentRegistryTypePath(typePath: string): boolean {
+function agePropertyKeyForTypePath(typePath: string): string {
+  return sanitizeTypePathKey(typePath).slice(
+    0,
+    AGE_PROPERTY_IDENTIFIER_MAX_CHARS,
+  )
+}
+
+function componentPayloadEnvelopeKeys(typePath: string): Array<string> {
+  return Array.from(
+    new Set([
+      typePath,
+      sanitizeTypePathKey(typePath),
+      agePropertyKeyForTypePath(typePath),
+    ]),
+  )
+}
+
+export function isGeneratedComponentRegistryTypePath(
+  typePath: string,
+): boolean {
   return typePath.endsWith(GENERATED_COMPONENT_REGISTRY_SUFFIX)
 }
 
@@ -55,73 +86,87 @@ export function parseGeneratedComponentRegistryResource(
     ? wrapped.shader_entries
     : []
 
-  const entries = entriesRaw.flatMap((entry): Array<GeneratedComponentRegistryEntry> => {
-    const record = asObjectRecord(entry)
-    const schema = asObjectRecord(record?.editor_schema)
-    const fieldsRaw = Array.isArray(schema?.fields) ? schema.fields : []
-    const componentKind = record?.component_kind
-    const typePath = record?.type_path
-    const rootValueKind = schema?.root_value_kind
-    if (
-      typeof componentKind !== 'string' ||
-      typeof typePath !== 'string' ||
-      typeof rootValueKind !== 'string'
-    ) {
-      return []
-    }
+  const entries = entriesRaw.flatMap(
+    (entry): Array<GeneratedComponentRegistryEntry> => {
+      const record = asObjectRecord(entry)
+      const schema = asObjectRecord(record?.editor_schema)
+      const fieldsRaw = Array.isArray(schema?.fields) ? schema.fields : []
+      const componentKind = record?.component_kind
+      const typePath = record?.type_path
+      const rootValueKind = schema?.root_value_kind
+      if (
+        typeof componentKind !== 'string' ||
+        typeof typePath !== 'string' ||
+        typeof rootValueKind !== 'string'
+      ) {
+        return []
+      }
 
-    return [
-      {
-        component_kind: componentKind,
-        type_path: typePath,
-        replication_visibility: Array.isArray(record?.replication_visibility)
-          ? record.replication_visibility.filter(
-              (scope): scope is string => typeof scope === 'string',
-            )
-          : [],
-        editor_schema: {
-          root_value_kind: rootValueKind as GeneratedComponentRegistryEntry['editor_schema']['root_value_kind'],
-          fields: fieldsRaw.flatMap((field): Array<ComponentEditorFieldSchema> => {
-            const fieldRecord = asObjectRecord(field)
-            const fieldPath = fieldRecord?.field_path
-            const fieldName = fieldRecord?.field_name
-            const displayName = fieldRecord?.display_name
-            const valueKind = fieldRecord?.value_kind
-            if (
-              typeof fieldPath !== 'string' ||
-              typeof fieldName !== 'string' ||
-              typeof displayName !== 'string' ||
-              typeof valueKind !== 'string'
-            ) {
-              return []
-            }
-            return [
-              {
-                field_path: fieldPath,
-                field_name: fieldName,
-                display_name: displayName,
-                value_kind:
-                  valueKind as ComponentEditorFieldSchema['value_kind'],
-                min:
-                  typeof fieldRecord?.min === 'number' ? fieldRecord.min : null,
-                max:
-                  typeof fieldRecord?.max === 'number' ? fieldRecord.max : null,
-                step:
-                  typeof fieldRecord?.step === 'number' ? fieldRecord.step : null,
-                unit:
-                  typeof fieldRecord?.unit === 'string' ? fieldRecord.unit : null,
-                options: Array.isArray(fieldRecord?.options)
-                  ? fieldRecord.options.filter(
-                      (option): option is string => typeof option === 'string',
-                    )
-                  : [],
+      return [
+        {
+          component_kind: componentKind,
+          type_path: typePath,
+          replication_visibility: Array.isArray(record?.replication_visibility)
+            ? record.replication_visibility.filter(
+                (scope): scope is string => typeof scope === 'string',
+              )
+            : [],
+          editor_schema: {
+            root_value_kind:
+              rootValueKind as GeneratedComponentRegistryEntry['editor_schema']['root_value_kind'],
+            fields: fieldsRaw.flatMap(
+              (field): Array<ComponentEditorFieldSchema> => {
+                const fieldRecord = asObjectRecord(field)
+                const fieldPath = fieldRecord?.field_path
+                const fieldName = fieldRecord?.field_name
+                const displayName = fieldRecord?.display_name
+                const valueKind = fieldRecord?.value_kind
+                if (
+                  typeof fieldPath !== 'string' ||
+                  typeof fieldName !== 'string' ||
+                  typeof displayName !== 'string' ||
+                  typeof valueKind !== 'string'
+                ) {
+                  return []
+                }
+                return [
+                  {
+                    field_path: fieldPath,
+                    field_name: fieldName,
+                    display_name: displayName,
+                    value_kind:
+                      valueKind as ComponentEditorFieldSchema['value_kind'],
+                    min:
+                      typeof fieldRecord?.min === 'number'
+                        ? fieldRecord.min
+                        : null,
+                    max:
+                      typeof fieldRecord?.max === 'number'
+                        ? fieldRecord.max
+                        : null,
+                    step:
+                      typeof fieldRecord?.step === 'number'
+                        ? fieldRecord.step
+                        : null,
+                    unit:
+                      typeof fieldRecord?.unit === 'string'
+                        ? fieldRecord.unit
+                        : null,
+                    options: Array.isArray(fieldRecord?.options)
+                      ? fieldRecord.options.filter(
+                          (option): option is string =>
+                            typeof option === 'string',
+                        )
+                      : [],
+                  },
+                ]
               },
-            ]
-          }),
+            ),
+          },
         },
-      },
-    ]
-  })
+      ]
+    },
+  )
 
   const shader_entries = shaderEntriesRaw.flatMap(
     (entry): Array<ShaderEditorRegistryEntry> => {
@@ -142,10 +187,13 @@ export function parseGeneratedComponentRegistryResource(
           asset_id: assetId,
           source_path: sourcePath,
           shader_family:
-            typeof record?.shader_family === 'string' ? record.shader_family : null,
+            typeof record?.shader_family === 'string'
+              ? record.shader_family
+              : null,
           dependencies: Array.isArray(record?.dependencies)
             ? record.dependencies.filter(
-                (dependency): dependency is string => typeof dependency === 'string',
+                (dependency): dependency is string =>
+                  typeof dependency === 'string',
               )
             : [],
           bootstrap_required: record?.bootstrap_required === true,
@@ -173,13 +221,20 @@ export function parseGeneratedComponentRegistryResource(
                     typeof fieldRecord?.description === 'string'
                       ? fieldRecord.description
                       : null,
-                  value_kind: valueKind as ShaderEditorFieldSchema['value_kind'],
+                  value_kind:
+                    valueKind as ShaderEditorFieldSchema['value_kind'],
                   min:
-                    typeof fieldRecord?.min === 'number' ? fieldRecord.min : null,
+                    typeof fieldRecord?.min === 'number'
+                      ? fieldRecord.min
+                      : null,
                   max:
-                    typeof fieldRecord?.max === 'number' ? fieldRecord.max : null,
+                    typeof fieldRecord?.max === 'number'
+                      ? fieldRecord.max
+                      : null,
                   step:
-                    typeof fieldRecord?.step === 'number' ? fieldRecord.step : null,
+                    typeof fieldRecord?.step === 'number'
+                      ? fieldRecord.step
+                      : null,
                   options: optionsRaw.flatMap((option) => {
                     const optionRecord = asObjectRecord(option)
                     const optionValue = optionRecord?.value
@@ -197,7 +252,9 @@ export function parseGeneratedComponentRegistryResource(
                       ? fieldRecord.default_value_json
                       : null,
                   group:
-                    typeof fieldRecord?.group === 'string' ? fieldRecord.group : null,
+                    typeof fieldRecord?.group === 'string'
+                      ? fieldRecord.group
+                      : null,
                 },
               ]
             },
@@ -206,7 +263,10 @@ export function parseGeneratedComponentRegistryResource(
             const presetRecord = asObjectRecord(preset)
             const presetId = presetRecord?.preset_id
             const displayName = presetRecord?.display_name
-            if (typeof presetId !== 'string' || typeof displayName !== 'string') {
+            if (
+              typeof presetId !== 'string' ||
+              typeof displayName !== 'string'
+            ) {
               return []
             }
             return [
@@ -260,7 +320,9 @@ export function resolveShaderRegistryEntry(
   if (typeof shader.sourcePath !== 'string' || shader.sourcePath.length === 0) {
     return null
   }
-  const normalizedSourcePath = normalizeShaderRegistrySourcePath(shader.sourcePath)
+  const normalizedSourcePath = normalizeShaderRegistrySourcePath(
+    shader.sourcePath,
+  )
   return (
     registry.shader_entries.find(
       (entry) =>
@@ -277,7 +339,9 @@ export function resolveShaderRegistryEntryForComponent(
   if (!registry) return null
   const assetIds = COMPONENT_SHADER_ASSET_IDS[componentTypePath] ?? []
   for (const assetId of assetIds) {
-    const match = registry.shader_entries.find((entry) => entry.asset_id === assetId)
+    const match = registry.shader_entries.find(
+      (entry) => entry.asset_id === assetId,
+    )
     if (match) {
       return match
     }
@@ -293,7 +357,8 @@ export function resolveComponentRegistryEntry(
   const directTypePath = node.properties.typePath
   if (typeof directTypePath === 'string') {
     return (
-      registry.entries.find((entry) => entry.type_path === directTypePath) ?? null
+      registry.entries.find((entry) => entry.type_path === directTypePath) ??
+      null
     )
   }
   const directComponentKind = node.properties.component_kind
@@ -311,14 +376,40 @@ export function getComponentPayloadFromNode(
   node: GraphNode,
   entry: GeneratedComponentRegistryEntry | null,
 ): unknown {
+  if (entry) {
+    const payloadKeys = new Set(componentPayloadEnvelopeKeys(entry.type_path))
+    const fieldRoots = new Set(
+      entry.editor_schema.fields
+        .map((field) => field.field_path.split('.')[0])
+        .filter((fieldRoot): fieldRoot is string => Boolean(fieldRoot)),
+    )
+    const hasRootField = Array.from(fieldRoots).some(
+      (fieldRoot) => node.properties[fieldRoot] !== undefined,
+    )
+    if (hasRootField) {
+      const payload: Record<string, unknown> = {}
+      for (const fieldRoot of fieldRoots) {
+        if (node.properties[fieldRoot] !== undefined) {
+          payload[fieldRoot] = node.properties[fieldRoot]
+        }
+      }
+      return payload
+    }
+
+    for (const key of payloadKeys) {
+      const envelopePayload = node.properties[key]
+      if (envelopePayload !== undefined) return envelopePayload
+    }
+
+    const metadataOnly = Object.keys(node.properties).every(
+      (key) => COMPONENT_PAYLOAD_METADATA_KEYS.has(key) || payloadKeys.has(key),
+    )
+    if (!metadataOnly && node.properties.value !== undefined) {
+      return node.properties.value
+    }
+  }
   if ('value' in node.properties && node.properties.value !== undefined) {
     return node.properties.value
-  }
-  if (entry) {
-    const direct = node.properties[entry.type_path]
-    if (direct !== undefined) return direct
-    const sanitized = node.properties[sanitizeTypePathKey(entry.type_path)]
-    if (sanitized !== undefined) return sanitized
   }
   if ('0' in node.properties && node.properties['0'] !== undefined) {
     return node.properties['0']

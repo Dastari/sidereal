@@ -1,0 +1,37 @@
+[package]
+name = "lightyear_udp"
+version = "0.26.4"
+authors = ["Charles Bournhonesque <charlesbour@gmail.com>"]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "IO primitives for the lightyear networking library"
+repository = "https://github.com/cBournhonesque/lightyear"
+
+[features]
+default = []
+server = ["bevy_platform"]
+metrics = ["dep:metrics"]
+
+[dependencies]
+lightyear_core = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+lightyear_link = { git = "https://github.com/Dastari/lightyear", rev = "87b7dfd95e415d2b7646effeb09a3af09272f86e", version = "0.26.4", default-features = false }
+
+aeronet_io = { version = "0.19" }
+
+metrics = { version = "0.24", optional = true }
+tracing = "0.1.40"
+
+# bevy
+bevy_app = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.18", default-features = false, features = ["std"] }
+bevy_platform = { version = "0.18", default-features = false, optional = true }
+
+# utils
+bytes = { version = "1.8", default-features = false, features = ["serde"] }
+thiserror = "2.0.3"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[workspace]

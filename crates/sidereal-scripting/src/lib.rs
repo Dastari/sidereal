@@ -82,6 +82,8 @@ pub struct LoadedLuaModule {
 pub const WORLD_INIT_SCRIPT_REL_PATH: &str = "world/world_init.lua";
 pub const PLANET_REGISTRY_SCRIPT_REL_PATH: &str = "planets/registry.lua";
 pub const ASTEROID_REGISTRY_SCRIPT_REL_PATH: &str = "asteroids/registry.lua";
+pub const SHIP_REGISTRY_SCRIPT_REL_PATH: &str = "ships/registry.lua";
+pub const SHIP_MODULE_REGISTRY_SCRIPT_REL_PATH: &str = "ship_modules/registry.lua";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldInitScriptConfig {
@@ -196,6 +198,69 @@ pub fn load_asteroid_registry_from_source(
         })?;
     validate_asteroid_registry(registry_path, &registry)?;
     Ok(registry)
+}
+
+pub fn load_ship_module_registry_from_root(
+    scripts_root: &Path,
+) -> Result<sidereal_game::ShipModuleRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let registry_path =
+        resolve_script_path_from_root(scripts_root, SHIP_MODULE_REGISTRY_SCRIPT_REL_PATH)?;
+    let registry_source = std::fs::read_to_string(&registry_path).map_err(|err| {
+        ScriptError::Io(format!("read {} failed: {err}", registry_path.display()))
+    })?;
+    let registry_module = load_lua_module_from_source(
+        &registry_source,
+        Path::new(SHIP_MODULE_REGISTRY_SCRIPT_REL_PATH),
+        &policy,
+    )?;
+    let index = decode_ship_module_registry_index_module(&registry_module)?;
+    let mut sources_by_script_path = HashMap::<String, String>::new();
+    for entry in &index.entries {
+        let script_path = resolve_script_path_from_root(scripts_root, &entry.script)?;
+        let source = std::fs::read_to_string(&script_path).map_err(|err| {
+            ScriptError::Io(format!("read {} failed: {err}", script_path.display()))
+        })?;
+        sources_by_script_path.insert(entry.script.clone(), source);
+    }
+    load_ship_module_registry_from_sources(
+        &registry_source,
+        Path::new(SHIP_MODULE_REGISTRY_SCRIPT_REL_PATH),
+        &sources_by_script_path,
+    )
+}
+
+pub fn load_ship_registry_from_root(
+    scripts_root: &Path,
+) -> Result<sidereal_game::ShipRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let registry_path = resolve_script_path_from_root(scripts_root, SHIP_REGISTRY_SCRIPT_REL_PATH)?;
+    let registry_source = std::fs::read_to_string(&registry_path).map_err(|err| {
+        ScriptError::Io(format!("read {} failed: {err}", registry_path.display()))
+    })?;
+    let registry_module = load_lua_module_from_source(
+        &registry_source,
+        Path::new(SHIP_REGISTRY_SCRIPT_REL_PATH),
+        &policy,
+    )?;
+    let index = decode_ship_registry_index_module(&registry_module)?;
+    let mut sources_by_script_path = HashMap::<String, String>::new();
+    for entry in &index.entries {
+        let script_path = resolve_script_path_from_root(scripts_root, &entry.script)?;
+        let source = std::fs::read_to_string(&script_path).map_err(|err| {
+            ScriptError::Io(format!("read {} failed: {err}", script_path.display()))
+        })?;
+        sources_by_script_path.insert(entry.script.clone(), source);
+    }
+    let module_registry = load_ship_module_registry_from_root(scripts_root)?;
+    let asset_registry = load_asset_registry_from_root(scripts_root)?;
+    load_ship_registry_from_sources(
+        &registry_source,
+        Path::new(SHIP_REGISTRY_SCRIPT_REL_PATH),
+        &sources_by_script_path,
+        &module_registry,
+        &asset_registry,
+    )
 }
 
 fn validate_asteroid_registry(
@@ -339,6 +404,548 @@ fn validate_unique_ids<'a>(
         }
     }
     Ok(())
+}
+
+pub fn load_ship_module_registry_from_sources(
+    registry_source: &str,
+    registry_path: &Path,
+    sources_by_script_path: &HashMap<String, String>,
+) -> Result<sidereal_game::ShipModuleRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let registry_module = load_lua_module_from_source(registry_source, registry_path, &policy)?;
+    let index = decode_ship_module_registry_index_module(&registry_module)?;
+    let known_component_kinds = known_component_kind_set();
+    let forbidden_module_component_kinds = forbidden_ship_module_component_kinds();
+    let mut definitions = Vec::with_capacity(index.entries.len());
+    for entry in &index.entries {
+        let Some(source) = sources_by_script_path.get(&entry.script) else {
+            return Err(ScriptError::Contract(format!(
+                "{}: module_id={} references missing script={}",
+                registry_path.display(),
+                entry.module_id,
+                entry.script
+            )));
+        };
+        let definition_module =
+            load_lua_module_from_source(source, Path::new(&entry.script), &policy)?;
+        let definition_json = lua_value_to_json(Value::Table(definition_module.root().clone()))?;
+        let mut definition =
+            serde_json::from_value::<sidereal_game::ShipModuleDefinition>(definition_json)
+                .map_err(|err| {
+                    ScriptError::Contract(format!(
+                        "{}: ship module definition decode failed: {err}",
+                        entry.script
+                    ))
+                })?;
+        if definition.module_id != entry.module_id {
+            return Err(ScriptError::Contract(format!(
+                "{}: module_id={} does not match registry module_id={}",
+                entry.script, definition.module_id, entry.module_id
+            )));
+        }
+        if definition.entity_labels.is_empty() {
+            definition.entity_labels = vec!["Module".to_string()];
+        }
+        validate_ship_module_definition(
+            registry_path,
+            &definition,
+            &known_component_kinds,
+            &forbidden_module_component_kinds,
+        )?;
+        definitions.push(definition);
+    }
+    Ok(sidereal_game::ShipModuleRegistry {
+        schema_version: index.schema_version,
+        entries: index.entries,
+        definitions,
+    })
+}
+
+pub fn load_ship_registry_from_sources(
+    registry_source: &str,
+    registry_path: &Path,
+    sources_by_script_path: &HashMap<String, String>,
+    module_registry: &sidereal_game::ShipModuleRegistry,
+    asset_registry: &ScriptAssetRegistry,
+) -> Result<sidereal_game::ShipRegistry, ScriptError> {
+    let policy = LuaSandboxPolicy::from_env();
+    let registry_module = load_lua_module_from_source(registry_source, registry_path, &policy)?;
+    let index = decode_ship_registry_index_module(&registry_module)?;
+    let mut definitions = Vec::with_capacity(index.entries.len());
+    for entry in &index.entries {
+        let Some(source) = sources_by_script_path.get(&entry.script) else {
+            return Err(ScriptError::Contract(format!(
+                "{}: ship_id={} references missing script={}",
+                registry_path.display(),
+                entry.ship_id,
+                entry.script
+            )));
+        };
+        let definition_module =
+            load_lua_module_from_source(source, Path::new(&entry.script), &policy)?;
+        let definition_json = lua_value_to_json(Value::Table(definition_module.root().clone()))?;
+        let mut definition = serde_json::from_value::<sidereal_game::ShipDefinition>(
+            definition_json,
+        )
+        .map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: ship definition decode failed: {err}",
+                entry.script
+            ))
+        })?;
+        if definition.ship_id != entry.ship_id {
+            return Err(ScriptError::Contract(format!(
+                "{}: ship_id={} does not match registry ship_id={}",
+                entry.script, definition.ship_id, entry.ship_id
+            )));
+        }
+        if definition.bundle_id != entry.bundle_id {
+            return Err(ScriptError::Contract(format!(
+                "{}: bundle_id={} does not match registry bundle_id={}",
+                entry.script, definition.bundle_id, entry.bundle_id
+            )));
+        }
+        if definition.entity_labels.is_empty() {
+            definition.entity_labels = vec!["Ship".to_string()];
+        }
+        validate_ship_definition(registry_path, &definition, module_registry, asset_registry)?;
+        definitions.push(definition);
+    }
+    Ok(sidereal_game::ShipRegistry {
+        schema_version: index.schema_version,
+        entries: index.entries,
+        definitions,
+    })
+}
+
+fn decode_ship_registry_index_module(
+    module: &LoadedLuaModule,
+) -> Result<sidereal_game::ShipRegistry, ScriptError> {
+    let root = module.root();
+    let schema_version = decode_schema_version(root, module.script_path())?;
+    let ships_table = root.get::<Table>("ships").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{}: ships table read failed: {err}",
+            module.script_path().display()
+        ))
+    })?;
+    let mut entries = Vec::<sidereal_game::ShipRegistryEntry>::new();
+    for (idx, value) in ships_table.sequence_values::<Table>().enumerate() {
+        let table = value.map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: ships[{}] decode failed: {err}",
+                module.script_path().display(),
+                idx + 1
+            ))
+        })?;
+        let context = format!("ships[{}]", idx + 1);
+        entries.push(sidereal_game::ShipRegistryEntry {
+            ship_id: table_get_required_string(&table, "ship_id", &context)?,
+            bundle_id: table_get_required_string(&table, "bundle_id", &context)?,
+            script: table_get_required_string(&table, "script", &context)?,
+            spawn_enabled: table
+                .get::<Option<bool>>("spawn_enabled")
+                .map_err(|err| {
+                    ScriptError::Contract(format!("{context}.spawn_enabled read failed: {err}"))
+                })?
+                .unwrap_or(false),
+            tags: table_get_optional_string_array(&table, "tags", &context)?,
+        });
+    }
+    validate_ship_registry_entries(module.script_path(), &entries)?;
+    Ok(sidereal_game::ShipRegistry {
+        schema_version,
+        entries,
+        definitions: Vec::new(),
+    })
+}
+
+fn decode_ship_module_registry_index_module(
+    module: &LoadedLuaModule,
+) -> Result<sidereal_game::ShipModuleRegistry, ScriptError> {
+    let root = module.root();
+    let schema_version = decode_schema_version(root, module.script_path())?;
+    let modules_table = root.get::<Table>("modules").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{}: modules table read failed: {err}",
+            module.script_path().display()
+        ))
+    })?;
+    let mut entries = Vec::<sidereal_game::ShipModuleRegistryEntry>::new();
+    for (idx, value) in modules_table.sequence_values::<Table>().enumerate() {
+        let table = value.map_err(|err| {
+            ScriptError::Contract(format!(
+                "{}: modules[{}] decode failed: {err}",
+                module.script_path().display(),
+                idx + 1
+            ))
+        })?;
+        let context = format!("modules[{}]", idx + 1);
+        entries.push(sidereal_game::ShipModuleRegistryEntry {
+            module_id: table_get_required_string(&table, "module_id", &context)?,
+            script: table_get_required_string(&table, "script", &context)?,
+            tags: table_get_optional_string_array(&table, "tags", &context)?,
+        });
+    }
+    validate_ship_module_registry_entries(module.script_path(), &entries)?;
+    Ok(sidereal_game::ShipModuleRegistry {
+        schema_version,
+        entries,
+        definitions: Vec::new(),
+    })
+}
+
+fn decode_schema_version(root: &Table, script_path: &Path) -> Result<u32, ScriptError> {
+    let schema_version_i64 = root.get::<i64>("schema_version").map_err(|err| {
+        ScriptError::Contract(format!(
+            "{}: schema_version read failed: {err}",
+            script_path.display()
+        ))
+    })?;
+    if schema_version_i64 < 1 {
+        return Err(ScriptError::Contract(format!(
+            "{}: schema_version must be >= 1",
+            script_path.display()
+        )));
+    }
+    u32::try_from(schema_version_i64).map_err(|_| {
+        ScriptError::Contract(format!(
+            "{}: schema_version must fit u32",
+            script_path.display()
+        ))
+    })
+}
+
+fn table_get_optional_string_array(
+    table: &Table,
+    key: &str,
+    context: &str,
+) -> Result<Vec<String>, ScriptError> {
+    match table
+        .get::<Value>(key)
+        .map_err(|err| ScriptError::Contract(format!("{context}.{key} read failed: {err}")))?
+    {
+        Value::Nil => Ok(Vec::new()),
+        Value::Table(values_table) => {
+            let mut out = Vec::new();
+            for value in values_table.sequence_values::<String>() {
+                out.push(value.map_err(|err| {
+                    ScriptError::Contract(format!("{context}.{key} entry decode failed: {err}"))
+                })?);
+            }
+            Ok(out)
+        }
+        _ => Err(ScriptError::Contract(format!(
+            "{context}.{key} must be an array of strings when present"
+        ))),
+    }
+}
+
+fn validate_ship_registry_entries(
+    script_path: &Path,
+    entries: &[sidereal_game::ShipRegistryEntry],
+) -> Result<(), ScriptError> {
+    if entries.is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: ships table must not be empty",
+            script_path.display()
+        )));
+    }
+    validate_unique_ids(
+        script_path,
+        "ship_id",
+        entries.iter().map(|entry| entry.ship_id.as_str()),
+    )?;
+    validate_unique_ids(
+        script_path,
+        "bundle_id",
+        entries.iter().map(|entry| entry.bundle_id.as_str()),
+    )?;
+    validate_unique_ids(
+        script_path,
+        "ship script",
+        entries.iter().map(|entry| entry.script.as_str()),
+    )?;
+    for entry in entries {
+        validate_safe_lua_script_path(script_path, &entry.ship_id, &entry.script)?;
+        if !entry.ship_id.starts_with("ship.") {
+            return Err(ScriptError::Contract(format!(
+                "{}: ship_id={} must use the ship.<slug> form",
+                script_path.display(),
+                entry.ship_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_ship_module_registry_entries(
+    script_path: &Path,
+    entries: &[sidereal_game::ShipModuleRegistryEntry],
+) -> Result<(), ScriptError> {
+    if entries.is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: modules table must not be empty",
+            script_path.display()
+        )));
+    }
+    validate_unique_ids(
+        script_path,
+        "module_id",
+        entries.iter().map(|entry| entry.module_id.as_str()),
+    )?;
+    validate_unique_ids(
+        script_path,
+        "module script",
+        entries.iter().map(|entry| entry.script.as_str()),
+    )?;
+    for entry in entries {
+        validate_safe_lua_script_path(script_path, &entry.module_id, &entry.script)?;
+        if !entry.module_id.starts_with("module.") {
+            return Err(ScriptError::Contract(format!(
+                "{}: module_id={} must use the module.<slug> form",
+                script_path.display(),
+                entry.module_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_safe_lua_script_path(
+    script_path: &Path,
+    id: &str,
+    child_script: &str,
+) -> Result<(), ScriptError> {
+    if !child_script.ends_with(".lua")
+        || child_script.starts_with('/')
+        || child_script.contains("../")
+        || child_script.contains("..\\")
+        || child_script.contains('\0')
+    {
+        return Err(ScriptError::Security(format!(
+            "{}: id={} script path is not allowed: {}",
+            script_path.display(),
+            id,
+            child_script
+        )));
+    }
+    Ok(())
+}
+
+fn validate_ship_definition(
+    registry_path: &Path,
+    definition: &sidereal_game::ShipDefinition,
+    module_registry: &sidereal_game::ShipModuleRegistry,
+    asset_registry: &ScriptAssetRegistry,
+) -> Result<(), ScriptError> {
+    if definition.display_name.trim().is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} display_name must not be empty",
+            registry_path.display(),
+            definition.ship_id
+        )));
+    }
+    if !(definition.dimensions.length_m.is_finite() && definition.dimensions.length_m > 0.0) {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} dimensions.length_m must be positive and finite",
+            registry_path.display(),
+            definition.ship_id
+        )));
+    }
+    if !(definition.dimensions.height_m.is_finite() && definition.dimensions.height_m > 0.0) {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} dimensions.height_m must be positive and finite",
+            registry_path.display(),
+            definition.ship_id
+        )));
+    }
+    validate_ship_visual_asset(registry_path, definition, asset_registry)?;
+    validate_unique_ids(
+        registry_path,
+        "hardpoint_id",
+        definition
+            .hardpoints
+            .iter()
+            .map(|hardpoint| hardpoint.hardpoint_id.as_str()),
+    )?;
+
+    let hardpoints_by_id = definition
+        .hardpoints
+        .iter()
+        .map(|hardpoint| (hardpoint.hardpoint_id.as_str(), hardpoint))
+        .collect::<HashMap<_, _>>();
+    let modules_by_id = module_registry
+        .definitions
+        .iter()
+        .map(|module| (module.module_id.as_str(), module))
+        .collect::<HashMap<_, _>>();
+
+    for hardpoint in &definition.hardpoints {
+        validate_ship_hardpoint(registry_path, definition, hardpoint)?;
+    }
+    for mount in &definition.mounted_modules {
+        let Some(hardpoint) = hardpoints_by_id.get(mount.hardpoint_id.as_str()) else {
+            return Err(ScriptError::Contract(format!(
+                "{}: ship_id={} mounted module references unknown hardpoint_id={}",
+                registry_path.display(),
+                definition.ship_id,
+                mount.hardpoint_id
+            )));
+        };
+        let Some(module) = modules_by_id.get(mount.module_id.as_str()) else {
+            return Err(ScriptError::Contract(format!(
+                "{}: ship_id={} mounted module references unknown module_id={}",
+                registry_path.display(),
+                definition.ship_id,
+                mount.module_id
+            )));
+        };
+        if !module
+            .compatible_slot_kinds
+            .iter()
+            .any(|slot_kind| slot_kind == &hardpoint.slot_kind)
+        {
+            return Err(ScriptError::Contract(format!(
+                "{}: ship_id={} module_id={} is incompatible with hardpoint_id={} slot_kind={}",
+                registry_path.display(),
+                definition.ship_id,
+                module.module_id,
+                hardpoint.hardpoint_id,
+                hardpoint.slot_kind
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_ship_visual_asset(
+    registry_path: &Path,
+    definition: &sidereal_game::ShipDefinition,
+    asset_registry: &ScriptAssetRegistry,
+) -> Result<(), ScriptError> {
+    let Some(asset) = asset_registry
+        .assets
+        .iter()
+        .find(|asset| asset.asset_id == definition.visual.visual_asset_id)
+    else {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} visual.visual_asset_id={} is not in asset registry",
+            registry_path.display(),
+            definition.ship_id,
+            definition.visual.visual_asset_id
+        )));
+    };
+    if !asset.content_type.starts_with("image/") {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} visual.visual_asset_id={} must reference an image asset",
+            registry_path.display(),
+            definition.ship_id,
+            definition.visual.visual_asset_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_ship_hardpoint(
+    registry_path: &Path,
+    definition: &sidereal_game::ShipDefinition,
+    hardpoint: &sidereal_game::ShipHardpointDefinition,
+) -> Result<(), ScriptError> {
+    if hardpoint.slot_kind.trim().is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} hardpoint_id={} slot_kind must not be empty",
+            registry_path.display(),
+            definition.ship_id,
+            hardpoint.hardpoint_id
+        )));
+    }
+    if hardpoint.offset_m.iter().any(|value| !(value.is_finite())) {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} hardpoint_id={} offset_m values must be finite",
+            registry_path.display(),
+            definition.ship_id,
+            hardpoint.hardpoint_id
+        )));
+    }
+    if hardpoint.offset_m[2] != 0.0 {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} hardpoint_id={} offset_m[3] must be 0 for Shipyard V1 X/Y authoring",
+            registry_path.display(),
+            definition.ship_id,
+            hardpoint.hardpoint_id
+        )));
+    }
+    if !hardpoint.local_rotation_rad.is_finite() {
+        return Err(ScriptError::Contract(format!(
+            "{}: ship_id={} hardpoint_id={} local_rotation_rad must be finite",
+            registry_path.display(),
+            definition.ship_id,
+            hardpoint.hardpoint_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_ship_module_definition(
+    registry_path: &Path,
+    definition: &sidereal_game::ShipModuleDefinition,
+    known_component_kinds: &HashSet<String>,
+    forbidden_component_kinds: &HashSet<String>,
+) -> Result<(), ScriptError> {
+    if definition.display_name.trim().is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: module_id={} display_name must not be empty",
+            registry_path.display(),
+            definition.module_id
+        )));
+    }
+    if definition.compatible_slot_kinds.is_empty() {
+        return Err(ScriptError::Contract(format!(
+            "{}: module_id={} compatible_slot_kinds must not be empty",
+            registry_path.display(),
+            definition.module_id
+        )));
+    }
+    let component_kinds = definition
+        .components
+        .iter()
+        .map(|component| component.kind.clone())
+        .collect::<Vec<_>>();
+    validate_component_kinds(
+        known_component_kinds,
+        &component_kinds,
+        &format!(
+            "{}: module_id={}",
+            registry_path.display(),
+            definition.module_id
+        ),
+    )?;
+    for component in &definition.components {
+        if forbidden_component_kinds.contains(&component.kind) {
+            return Err(ScriptError::Contract(format!(
+                "{}: module_id={} must not author generated hierarchy component kind={}",
+                registry_path.display(),
+                definition.module_id,
+                component.kind
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn known_component_kind_set() -> HashSet<String> {
+    generated_component_registry()
+        .into_iter()
+        .map(|entry| entry.component_kind.to_string())
+        .collect()
+}
+
+fn forbidden_ship_module_component_kinds() -> HashSet<String> {
+    ["parent_guid", "mounted_on", "owner_id", "entity_guid"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn load_planet_registry_from_sources(

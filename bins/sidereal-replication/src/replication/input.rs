@@ -111,6 +111,49 @@ pub struct InputRateLimitState {
     pub message_count_in_window_by_player_entity_id: HashMap<String, u32>,
 }
 
+#[derive(SystemParam)]
+pub struct RealtimeInputCleanupState<'w> {
+    pub input_tick_tracker: ResMut<'w, ClientInputTickTracker>,
+    pub input_rate_limit_state: ResMut<'w, InputRateLimitState>,
+    pub latest_realtime_inputs: ResMut<'w, LatestRealtimeInputsByPlayer>,
+    pub realtime_input_activity: ResMut<'w, RealtimeInputActivityByPlayer>,
+}
+
+pub(crate) fn clear_realtime_input_for_player(
+    player_entity_id: PlayerEntityId,
+    input_tick_tracker: &mut ClientInputTickTracker,
+    input_rate_limit_state: &mut InputRateLimitState,
+    latest_realtime_inputs: &mut LatestRealtimeInputsByPlayer,
+    realtime_input_activity: &mut RealtimeInputActivityByPlayer,
+) {
+    let player_wire = player_entity_id.canonical_wire_id();
+    input_tick_tracker.clear_player(player_entity_id);
+    input_rate_limit_state
+        .current_window_index_by_player_entity_id
+        .remove(player_wire.as_str());
+    input_rate_limit_state
+        .message_count_in_window_by_player_entity_id
+        .remove(player_wire.as_str());
+    latest_realtime_inputs
+        .by_player_entity_id
+        .remove(&player_entity_id);
+    realtime_input_activity
+        .last_received_at_s_by_player_entity_id
+        .remove(&player_entity_id);
+}
+
+impl RealtimeInputCleanupState<'_> {
+    pub(crate) fn clear_player(&mut self, player_entity_id: PlayerEntityId) {
+        clear_realtime_input_for_player(
+            player_entity_id,
+            &mut self.input_tick_tracker,
+            &mut self.input_rate_limit_state,
+            &mut self.latest_realtime_inputs,
+            &mut self.realtime_input_activity,
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputValidationFailure {
     FutureTick,

@@ -586,10 +586,6 @@ fn two_headless_clients_receive_remote_motion_diagnostics() {
     stop_child(&mut client_b);
     stop_child(&mut rep_child);
 
-    let strict_motion_assert = std::env::var("SIDEREAL_TWO_CLIENT_MOTION_DIAGNOSTIC_STRICT")
-        .ok()
-        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-
     assert!(
         a_ready && b_ready,
         "clients did not both become ready.\nreplication log:\n{}\nclient A log:\n{}\nclient B log:\n{}",
@@ -602,15 +598,6 @@ fn two_headless_clients_receive_remote_motion_diagnostics() {
         "replication did not report visible moving entities.\nreplication log:\n{}",
         rep_log.lock().expect("rep log lock"),
     );
-    if !(strict_motion_assert || a_received_motion && b_received_motion) {
-        tracing::warn!(
-            "two-client motion diagnostic did not observe changing remote transforms; \
-             treating as non-strict because the local database fixture may not bind players \
-             to mobile controlled entities. Set SIDEREAL_TWO_CLIENT_MOTION_DIAGNOSTIC_STRICT=1 \
-             to make this a hard failure."
-        );
-        return;
-    }
     assert!(
         a_received_motion && b_received_motion,
         "both clients must report changing remote presentation transforms.\nclient A log:\n{}\nclient B log:\n{}\nreplication log:\n{}",

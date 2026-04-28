@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sidereal_game::EntityAction;
 
-pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 6;
+pub const LIGHTYEAR_PROTOCOL_VERSION: u32 = 7;
 
 /// Client authenticates replication session and binds transport identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -5373,7 +5373,6 @@ dependencies = [
 [[package]]
 name = "lightyear_udp"
 version = "0.26.4"
-source = "git+https://github.com/Dastari/lightyear?rev=87b7dfd95e415d2b7646effeb09a3af09272f86e#87b7dfd95e415d2b7646effeb09a3af09272f86e"
 dependencies = [
  "aeronet_io",
  "bevy_app",
@@ -7934,6 +7933,7 @@ dependencies = [
  "kira",
  "lightyear",
  "mint",
+ "naga",
  "rand 0.9.4",
  "reqwest",
  "resvg",

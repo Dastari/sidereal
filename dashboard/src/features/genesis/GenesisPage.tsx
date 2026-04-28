@@ -36,6 +36,8 @@ import { apiDelete, apiGet, apiPost } from '@/lib/api/client'
 const DEFAULT_GENESIS_SIDEBAR_WIDTH = 320
 const DEFAULT_GENESIS_DETAIL_WIDTH = 400
 const DEFAULT_GENESIS_DEFINITION_WIDTH = 760
+const PLANET_VISUAL_SHADER_ASSET_ID = 'planet_visual_wgsl'
+const STAR_VISUAL_SHADER_ASSET_ID = 'star_visual_wgsl'
 
 type OperationState = 'idle' | 'saving' | 'publishing' | 'discarding'
 
@@ -297,14 +299,28 @@ export function GenesisPage() {
 
   const updateSettings = React.useCallback(
     (patch: Partial<GenesisPlanetShaderSettings>) => {
-      setDraftDefinition((current) =>
-        current
-          ? {
-              ...current,
-              shader_settings: { ...current.shader_settings, ...patch },
-            }
-          : current,
-      )
+      setDraftDefinition((current) => {
+        if (!current) return current
+        const nextSettings = { ...current.shader_settings, ...patch }
+        const currentBodyKind = current.shader_settings.body_kind
+        const nextBodyKind = patch.body_kind ?? currentBodyKind
+        const shouldSwitchShader =
+          patch.body_kind !== undefined && nextBodyKind !== currentBodyKind
+        const nextShaderAssetId =
+          shouldSwitchShader && nextBodyKind === 1
+            ? STAR_VISUAL_SHADER_ASSET_ID
+            : shouldSwitchShader && current.spawn.planet_visual_shader_asset_id === STAR_VISUAL_SHADER_ASSET_ID
+              ? PLANET_VISUAL_SHADER_ASSET_ID
+              : current.spawn.planet_visual_shader_asset_id
+        return {
+          ...current,
+          spawn: {
+            ...current.spawn,
+            planet_visual_shader_asset_id: nextShaderAssetId,
+          },
+          shader_settings: nextSettings,
+        }
+      })
     },
     [],
   )
@@ -698,6 +714,7 @@ function GenesisShaderForm({
   onUpdateSettings: (patch: Partial<GenesisPlanetShaderSettings>) => void
 }) {
   const settings = definition.shader_settings
+  const isStar = settings.body_kind === 1
   return (
     <div className="xl:col-span-2">
       <FormSection title="Shader">
@@ -770,31 +787,31 @@ function GenesisShaderForm({
             onChange={(ocean_level) => onUpdateSettings({ ocean_level })}
           />
           <NumberField
-            label="Cloud Coverage"
+            label={isStar ? 'Surface Coverage' : 'Cloud Coverage'}
             value={settings.cloud_coverage}
             step={0.01}
             onChange={(cloud_coverage) => onUpdateSettings({ cloud_coverage })}
           />
           <NumberField
-            label="Cloud Alpha"
+            label={isStar ? 'Surface Alpha' : 'Cloud Alpha'}
             value={settings.cloud_alpha}
             step={0.01}
             onChange={(cloud_alpha) => onUpdateSettings({ cloud_alpha })}
           />
           <NumberField
-            label="Cloud Scale"
+            label={isStar ? 'Surface Scale' : 'Cloud Scale'}
             value={settings.cloud_scale}
             step={0.01}
             onChange={(cloud_scale) => onUpdateSettings({ cloud_scale })}
           />
           <NumberField
-            label="Cloud Speed"
+            label={isStar ? 'Flare Rate' : 'Cloud Speed'}
             value={settings.cloud_speed}
             step={0.01}
             onChange={(cloud_speed) => onUpdateSettings({ cloud_speed })}
           />
           <NumberField
-            label="Atmosphere"
+            label={isStar ? 'Glow Size' : 'Atmosphere'}
             value={settings.atmosphere_thickness}
             step={0.01}
             onChange={(atmosphere_thickness) =>
@@ -802,7 +819,7 @@ function GenesisShaderForm({
             }
           />
           <NumberField
-            label="Atmosphere Alpha"
+            label={isStar ? 'Glow Alpha' : 'Atmosphere Alpha'}
             value={settings.atmosphere_alpha}
             step={0.01}
             onChange={(atmosphere_alpha) =>
@@ -810,7 +827,7 @@ function GenesisShaderForm({
             }
           />
           <NumberField
-            label="Atmosphere Falloff"
+            label={isStar ? 'Glow Falloff' : 'Atmosphere Falloff'}
             value={settings.atmosphere_falloff}
             step={0.01}
             onChange={(atmosphere_falloff) =>
@@ -818,7 +835,7 @@ function GenesisShaderForm({
             }
           />
           <NumberField
-            label="Corona Size"
+            label={isStar ? 'Flare Reach' : 'Corona Size'}
             value={settings.corona_intensity}
             step={0.01}
             onChange={(corona_intensity) =>
@@ -864,7 +881,7 @@ function GenesisShaderForm({
             }
           />
           <NumberField
-            label="Surface Activity"
+            label={isStar ? 'Flare Density' : 'Surface Activity'}
             value={settings.surface_activity}
             step={0.01}
             onChange={(surface_activity) =>
@@ -872,7 +889,13 @@ function GenesisShaderForm({
             }
           />
           <NumberField
-            label="Bands"
+            label={isStar ? 'Flare Count' : 'Spot Density'}
+            value={settings.spot_density}
+            step={0.01}
+            onChange={(spot_density) => onUpdateSettings({ spot_density })}
+          />
+          <NumberField
+            label={isStar ? 'Arc Events' : 'Bands'}
             value={settings.bands_count}
             step={0.01}
             onChange={(bands_count) => onUpdateSettings({ bands_count })}
@@ -910,7 +933,14 @@ function GenesisShaderForm({
             }
           />
           <ColorField
-            label="Atmosphere"
+            label="Tertiary"
+            value={settings.color_tertiary_rgb}
+            onChange={(color_tertiary_rgb) =>
+              onUpdateSettings({ color_tertiary_rgb })
+            }
+          />
+          <ColorField
+            label={isStar ? 'Corona / Glow' : 'Atmosphere'}
             value={settings.color_atmosphere_rgb}
             onChange={(color_atmosphere_rgb) =>
               onUpdateSettings({ color_atmosphere_rgb })
@@ -921,6 +951,13 @@ function GenesisShaderForm({
             value={settings.color_clouds_rgb}
             onChange={(color_clouds_rgb) =>
               onUpdateSettings({ color_clouds_rgb })
+            }
+          />
+          <ColorField
+            label={isStar ? 'Back / Shadow' : 'Night Lights'}
+            value={settings.color_night_lights_rgb}
+            onChange={(color_night_lights_rgb) =>
+              onUpdateSettings({ color_night_lights_rgb })
             }
           />
           <ColorField

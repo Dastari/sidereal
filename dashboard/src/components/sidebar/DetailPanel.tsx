@@ -525,7 +525,7 @@ type EntityClipboardExport = {
   entityTree: EntityClipboardNodeExport
 }
 
-function buildEntityClipboardExport(
+export function buildEntityClipboardExport(
   rootEntityId: string,
   entities: Array<WorldEntity>,
   expandedNodes: Map<string, ExpandedNode>,
@@ -533,25 +533,82 @@ function buildEntityClipboardExport(
   graphEdges: Array<GraphEdge>,
 ): EntityClipboardExport | null {
   const entitiesById = new Map(entities.map((entity) => [entity.id, entity]))
+  const entityIdByReference = new Map<string, string>()
+  for (const entity of entities) {
+    entityIdByReference.set(entity.id, entity.id)
+    const normalizedId = entity.id.toLowerCase()
+    if (normalizedId !== entity.id) {
+      entityIdByReference.set(normalizedId, entity.id)
+    }
+    if (entity.entityGuid) {
+      entityIdByReference.set(entity.entityGuid, entity.id)
+      const normalizedGuid = entity.entityGuid.toLowerCase()
+      if (normalizedGuid !== entity.entityGuid) {
+        entityIdByReference.set(normalizedGuid, entity.id)
+      }
+    }
+  }
+
+  const resolveEntityId = (reference: string): string | null =>
+    entityIdByReference.get(reference) ??
+    entityIdByReference.get(reference.toLowerCase()) ??
+    null
+
   const childrenByParent = new Map<string, Array<string>>()
+  const childrenWithResolvedParents = new Set<string>()
+  const addChildLink = (parentReference: string, childReference: string) => {
+    const parentId = resolveEntityId(parentReference)
+    const childId = resolveEntityId(childReference)
+    if (!parentId || !childId || parentId === childId) {
+      return false
+    }
+
+    const list = childrenByParent.get(parentId)
+    if (list) {
+      if (!list.includes(childId)) {
+        list.push(childId)
+      }
+    } else {
+      childrenByParent.set(parentId, [childId])
+    }
+    childrenWithResolvedParents.add(childId)
+    return true
+  }
+
   for (const entity of entities) {
     if (!entity.parentEntityId) continue
-    const list = childrenByParent.get(entity.parentEntityId)
-    if (list) {
-      list.push(entity.id)
-    } else {
-      childrenByParent.set(entity.parentEntityId, [entity.id])
+    addChildLink(entity.parentEntityId, entity.id)
+  }
+
+  for (const edge of graphEdges) {
+    const label = edge.label.toUpperCase()
+    if (
+      label === 'HAS_CHILD' ||
+      label === 'PARENT' ||
+      label === 'HAS_HARDPOINT'
+    ) {
+      const childId = resolveEntityId(edge.to)
+      if (childId && !childrenWithResolvedParents.has(childId)) {
+        addChildLink(edge.from, edge.to)
+      }
+    } else if (label === 'MOUNTED_ON') {
+      const childId = resolveEntityId(edge.from)
+      if (childId && !childrenWithResolvedParents.has(childId)) {
+        addChildLink(edge.to, edge.from)
+      }
     }
   }
 
   const componentIdsByEntityId = new Map<string, Array<string>>()
   for (const edge of graphEdges) {
     if (edge.label !== 'HAS_COMPONENT') continue
-    const list = componentIdsByEntityId.get(edge.from)
+    const entityId = resolveEntityId(edge.from)
+    if (!entityId) continue
+    const list = componentIdsByEntityId.get(entityId)
     if (list) {
       list.push(edge.to)
     } else {
-      componentIdsByEntityId.set(edge.from, [edge.to])
+      componentIdsByEntityId.set(entityId, [edge.to])
     }
   }
 
@@ -583,9 +640,8 @@ function buildEntityClipboardExport(
         } satisfies EntityClipboardComponentExport
       })
       .filter(
-        (
-          component,
-        ): component is EntityClipboardComponentExport => component !== null,
+        (component): component is EntityClipboardComponentExport =>
+          component !== null,
       )
       .sort((a, b) => {
         const left = a.typePath ?? a.label
@@ -598,8 +654,7 @@ function buildEntityClipboardExport(
       .filter((child): child is EntityClipboardNodeExport => child !== null)
       .sort((a, b) => {
         const left = a.entity?.name ?? a.graphNode?.label ?? a.entity?.id ?? ''
-        const right =
-          b.entity?.name ?? b.graphNode?.label ?? b.entity?.id ?? ''
+        const right = b.entity?.name ?? b.graphNode?.label ?? b.entity?.id ?? ''
         return left.localeCompare(right)
       })
 

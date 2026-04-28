@@ -4,7 +4,6 @@ use sidereal_game::SiderealSimulationSet;
 use crate::runtime::app_state::ClientAppState;
 use crate::runtime::motion::{
     apply_predicted_input_to_action_queue, enforce_controlled_planar_motion,
-    reconcile_controlled_prediction_with_confirmed_history,
     seed_controlled_predicted_motion_from_confirmed,
 };
 use crate::runtime::{
@@ -42,7 +41,6 @@ fn add_shared_replication_runtime_systems(app: &mut App) {
     app.add_systems(
         Update,
         (
-            replication::ensure_prediction_manager_present_system,
             replication::configure_prediction_manager_tuning,
             replication::prune_runtime_entity_registry_system,
             (
@@ -57,19 +55,14 @@ fn add_shared_replication_runtime_systems(app: &mut App) {
             ),
             replication::adopt_native_lightyear_replicated_entities
                 .after(replication::prune_runtime_entity_registry_system),
-            replication::bootstrap_missing_confirmed_components_for_interpolated_entities
+            transforms::sync_frame_interpolation_markers_for_world_entities
                 .after(replication::adopt_native_lightyear_replicated_entities),
-            transforms::sync_frame_interpolation_markers_for_world_entities.after(
-                replication::bootstrap_missing_confirmed_components_for_interpolated_entities,
-            ),
             transforms::sync_confirmed_world_entity_transforms_from_physics
                 .after(transforms::sync_frame_interpolation_markers_for_world_entities),
             transforms::sync_confirmed_world_entity_transforms_from_world_space
                 .after(transforms::sync_confirmed_world_entity_transforms_from_physics),
-            transforms::sync_interpolated_world_entity_transforms_without_history
-                .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
             transforms::reveal_world_entities_when_initial_transform_ready
-                .after(transforms::sync_interpolated_world_entity_transforms_without_history),
+                .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
             transforms::log_motion_replication_diagnostics
                 .after(transforms::reveal_world_entities_when_initial_transform_ready),
         ),
@@ -77,28 +70,17 @@ fn add_shared_replication_runtime_systems(app: &mut App) {
 }
 
 fn add_shared_replication_control_systems(app: &mut App) {
-    app.add_observer(
-        replication::sanitize_conflicting_prediction_interpolation_markers_on_predicted_added,
-    );
-    app.add_observer(
-        replication::sanitize_conflicting_prediction_interpolation_markers_on_interpolated_added,
-    );
     app.add_systems(
         Update,
         (
-            (
-                replication::sync_local_player_view_state_system
-                    .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
-                replication::sync_controlled_entity_tags_system
-                    .after(replication::sync_local_player_view_state_system),
-            ),
             control::send_local_view_mode_updates
-                .after(replication::sync_local_player_view_state_system),
-            control::send_lightyear_control_requests
-                .after(replication::sync_controlled_entity_tags_system)
-                .after(control::send_local_view_mode_updates),
+                .after(transforms::sync_confirmed_world_entity_transforms_from_world_space),
+            control::send_lightyear_control_requests.after(control::send_local_view_mode_updates),
             control::receive_lightyear_control_results
                 .after(control::send_lightyear_control_requests),
+            replication::sync_controlled_entity_tags_system
+                .after(transforms::sync_confirmed_world_entity_transforms_from_world_space)
+                .after(control::receive_lightyear_control_results),
             assets::receive_asset_catalog_version_messages
                 .after(control::receive_lightyear_control_results),
             owner_manifest::receive_owner_asset_manifest_messages
@@ -156,7 +138,6 @@ impl Plugin for ClientPredictionPlugin {
                 FixedUpdate,
                 (
                     seed_controlled_predicted_motion_from_confirmed,
-                    reconcile_controlled_prediction_with_confirmed_history,
                     apply_predicted_input_to_action_queue,
                     enforce_controlled_planar_motion,
                 )

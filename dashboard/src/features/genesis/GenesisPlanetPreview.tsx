@@ -11,7 +11,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { apiGet } from '@/lib/api/client'
+import { apiGet, apiRequest } from '@/lib/api/client'
 
 type ShaderCatalogEntry = {
   shaderId: string
@@ -95,8 +95,15 @@ export function GenesisPlanetPreview({
           `Shader asset ${definition.spawn.planet_visual_shader_asset_id} is not registered in the dashboard shader catalog.`,
         )
       }
-      const file = await apiGet<ShaderFileResponse>(
-        `/api/shaders/${encodeURIComponent(shader.shaderId)}`,
+      const file = await apiRequest<ShaderFileResponse>(
+        `/api/shaders/${encodeURIComponent(shader.shaderId)}?preview=${Date.now()}`,
+        {
+          method: 'GET',
+          cache: 'no-store',
+          headers: {
+            'cache-control': 'no-cache',
+          },
+        },
       )
       if (!cancelled) {
         setShaderSource(file.source)

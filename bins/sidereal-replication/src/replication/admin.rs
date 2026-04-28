@@ -6,6 +6,7 @@ use lightyear::prelude::Unlink;
 use lightyear::prelude::server::ClientOf;
 use postgres::NoTls;
 use sidereal_game::{EntityGuid, GeneratedComponentRegistry};
+use sidereal_net::{NotificationPayload, NotificationPlacement, NotificationSeverity};
 use sidereal_persistence::GraphPersistence;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
@@ -17,6 +18,9 @@ use crate::replication::input::{
     LatestRealtimeInputsByPlayer, RealtimeInputActivityByPlayer,
 };
 use crate::replication::lifecycle::{ClientLastActivity, HydratedGraphEntity};
+use crate::replication::notifications::{
+    NotificationCommand, NotificationCommandQueue, enqueue_player_notification,
+};
 use crate::replication::persistence::{
     PersistenceDirtyState, PersistenceFingerprintState, PersistenceSchemaInitState,
     SimulationPersistenceTimer,
@@ -36,14 +40,30 @@ use crate::replication::visibility::{
 pub enum AdminCommand {
     Help,
     Clear,
-    Filter { level: String },
-    Player { player_entity_id: String },
-    Entity { entity_guid: String },
-    View { target: String },
+    Filter {
+        level: String,
+    },
+    Player {
+        player_entity_id: String,
+    },
+    Entity {
+        entity_guid: String,
+    },
+    View {
+        target: String,
+    },
+    Notify {
+        player_entity_id: String,
+        body: String,
+    },
     Health,
-    Reset { force: bool },
+    Reset {
+        force: bool,
+    },
     Quit,
-    Raw { input: String },
+    Raw {
+        input: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +134,14 @@ const COMMAND_SPECS: &[AdminCommandSpec] = &[
         usage: "view <target>",
         summary: "Request a named UI focus or viewport target.",
         parameters: "target: free-form label",
+        scope: AdminCommandScope::Shared,
+        requires_confirmation: false,
+    },
+    AdminCommandSpec {
+        name: "notify",
+        usage: "notify <player_entity_id> <message>",
+        summary: "Send a server-authored test notification to one authenticated player.",
+        parameters: "player_entity_id: canonical UUID, message: free-form text",
         scope: AdminCommandScope::Shared,
         requires_confirmation: false,
     },
@@ -221,6 +249,7 @@ pub fn format_command_catalog() -> String {
 pub fn execute_admin_commands(
     receiver: Res<'_, AdminCommandBusReceiver>,
     mut reset_queue: ResMut<'_, PendingAdminResetQueue>,
+    mut notification_queue: ResMut<'_, NotificationCommandQueue>,
     health_snapshot: Option<Res<'_, crate::replication::health::ReplicationHealthSnapshot>>,
     mut exit: MessageWriter<'_, AppExit>,
 ) {
@@ -241,6 +270,34 @@ pub fn execute_admin_commands(
                         request.raw
                     );
                     reset_queue.push(AdminResetRequest { force: *force });
+                }
+                AdminCommand::Notify {
+                    player_entity_id,
+                    body,
+                } => {
+                    if player_entity_id.trim().is_empty() || body.trim().is_empty() {
+                        info!("admin notify rejected: usage notify <player_entity_id> <message>");
+                    } else {
+                        enqueue_player_notification(
+                            &mut notification_queue,
+                            NotificationCommand {
+                                player_entity_id: player_entity_id.clone(),
+                                title: "Server Notification Test".to_string(),
+                                body: body.clone(),
+                                severity: NotificationSeverity::Info,
+                                placement: NotificationPlacement::BottomRight,
+                                image: None,
+                                payload: NotificationPayload::Generic {
+                                    event_type: "server_admin_notify_test".to_string(),
+                                    data: serde_json::json!({
+                                        "source": "replication_admin",
+                                    }),
+                                },
+                                auto_dismiss_after_s: None,
+                            },
+                        );
+                        info!("queued server admin notification for player={player_entity_id}");
+                    }
                 }
                 _ => info!(
                     "{}",
@@ -291,6 +348,13 @@ pub fn parse_admin_command(input: &str) -> AdminCommandRequest {
         Some("view") => AdminCommand::View {
             target: parts.collect::<Vec<_>>().join(" "),
         },
+        Some("notify") => {
+            let player_entity_id = parts.next().unwrap_or_default().to_string();
+            AdminCommand::Notify {
+                player_entity_id,
+                body: parts.collect::<Vec<_>>().join(" "),
+            }
+        }
         Some("health") => AdminCommand::Health,
         Some("reset") => AdminCommand::Reset {
             force: parts
@@ -323,6 +387,14 @@ fn format_admin_command_result(
             format!("admin entity inspect requested entity_guid={entity_guid}")
         }
         AdminCommand::View { target } => format!("admin view requested target={target}"),
+        AdminCommand::Notify {
+            player_entity_id,
+            body,
+        } => format!(
+            "admin notify requested player_entity_id={} body_len={}",
+            player_entity_id,
+            body.chars().count()
+        ),
         AdminCommand::Health => match health_snapshot {
             Some(snapshot) => format!(
                 "health status={} users_online={} sessions={} entities={} physics_bodies={} lua_errors={}",
@@ -515,17 +587,37 @@ fn reset_persisted_runtime_world() -> Result<(), String> {
 
     let mut client = postgres::Client::connect(&database_url, NoTls)
         .map_err(|err| format!("admin reset postgres reconnect failed: {err}"))?;
-    client
-        .batch_execute(
-            "
-            TRUNCATE TABLE replication_snapshot_markers RESTART IDENTITY;
-            DELETE FROM script_world_init_state;
-            TRUNCATE TABLE replication_player_bootstrap RESTART IDENTITY;
-            TRUNCATE TABLE replication_bootstrap_events RESTART IDENTITY;
-            ",
-        )
-        .map_err(|err| format!("admin reset table cleanup failed: {err}"))?;
+    for relation in [
+        "public.replication_snapshot_markers",
+        "sidereal.replication_snapshot_markers",
+        "public.script_world_init_state",
+        "sidereal.script_world_init_state",
+        "public.replication_player_bootstrap",
+        "sidereal.replication_player_bootstrap",
+        "public.replication_bootstrap_events",
+        "sidereal.replication_bootstrap_events",
+    ] {
+        truncate_optional_reset_table(&mut client, relation)?;
+    }
     Ok(())
+}
+
+fn truncate_optional_reset_table(
+    client: &mut postgres::Client,
+    relation: &'static str,
+) -> Result<(), String> {
+    let row = client
+        .query_one("SELECT to_regclass($1)::text", &[&relation])
+        .map_err(|err| format!("admin reset table lookup failed for {relation}: {err}"))?;
+    let resolved: Option<String> = row.get(0);
+    if resolved.is_none() {
+        return Ok(());
+    }
+
+    let statement = format!("TRUNCATE TABLE {relation} RESTART IDENTITY;");
+    client
+        .batch_execute(&statement)
+        .map_err(|err| format!("admin reset table cleanup failed for `{statement}`: {err}"))
 }
 
 fn replication_database_url() -> String {
@@ -550,10 +642,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_notify_command() {
+        let request = parse_admin_command(
+            "notify 11111111-1111-1111-1111-111111111111 Server side notification",
+        );
+        assert_eq!(
+            request.command,
+            AdminCommand::Notify {
+                player_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                body: "Server side notification".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn command_catalog_includes_reset() {
         let catalog = format_command_catalog();
         assert!(catalog.contains("reset [force]"));
+        assert!(catalog.contains("notify <player_entity_id> <message>"));
         assert!(command_spec("reset").is_some());
+        assert!(command_spec("notify").is_some());
     }
 
     #[test]

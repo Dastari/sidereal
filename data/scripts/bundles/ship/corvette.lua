@@ -44,6 +44,7 @@ function CorvetteBundle.build_graph_records(ctx)
   local owner_id = ctx.owner_id or "npc:unowned"
   local display_name = ctx.display_name or "Corvette"
   local ship_entity_labels = ctx.ship_entity_labels or { "Ship", "Corvette" }
+  local intrinsic_visibility_range_m = ctx.intrinsic_visibility_range_m or ctx.base_visibility_range_m or 300.0
   local scanner_base_range_m = ctx.scanner_base_range_m or 1000.0
   local ship_length_m = ctx.ship_length_m or 21.2
   local spawn_position = ctx.spawn_position or { 0.0, 0.0 }
@@ -61,16 +62,19 @@ function CorvetteBundle.build_graph_records(ctx)
   local hardpoint_engine_main_aft_id = ctx.new_uuid()
   local hardpoint_fuel_left_id = ctx.new_uuid()
   local hardpoint_fuel_right_id = ctx.new_uuid()
+  local hardpoint_scanner_dorsal_id = ctx.new_uuid()
   local hardpoint_weapon_fore_center_id = ctx.new_uuid()
   local module_flight_computer_id = ctx.new_uuid()
   local module_engine_main_id = ctx.new_uuid()
   local module_fuel_tank_left_id = ctx.new_uuid()
   local module_fuel_tank_right_id = ctx.new_uuid()
+  local module_scanner_array_id = ctx.new_uuid()
   local module_weapon_gatling_fore_id = ctx.new_uuid()
 
   local ship_components = {
     component(ship_id, "display_name", display_name),
     component(ship_id, "ship_tag", {}),
+    component(ship_id, "controlled_start_target", {}),
     component(ship_id, "entity_labels", ship_entity_labels),
     component(ship_id, "flight_computer", {
       profile = "basic_fly_by_wire",
@@ -110,16 +114,8 @@ function CorvetteBundle.build_graph_records(ctx)
     component(ship_id, "total_mass_kg", 15000.0),
     component(ship_id, "mass_dirty", {}),
     component(ship_id, "visibility_range_buff_m", {
-      additive_m = scanner_base_range_m,
+      additive_m = intrinsic_visibility_range_m,
       multiplier = 1.0,
-    }),
-    component(ship_id, "scanner_component", {
-      base_range_m = scanner_base_range_m,
-      level = 1,
-      detail_tier = "Iff",
-      supports_density = true,
-      supports_directional_awareness = true,
-      max_contacts = 64,
     }),
     component(ship_id, "avian_position", { spawn_position[1] or 0.0, spawn_position[2] or 0.0 }),
     component(ship_id, "avian_rotation", { cos = 1.0, sin = 0.0 }),
@@ -213,6 +209,21 @@ function CorvetteBundle.build_graph_records(ctx)
         }),
         component(hardpoint_weapon_fore_center_id, "parent_guid", ship_id),
         component(hardpoint_weapon_fore_center_id, "owner_id", owner_id),
+      }
+    ),
+    new_entity(
+      hardpoint_scanner_dorsal_id,
+      { "Entity", "Hardpoint" },
+      ship_id,
+      {
+        component(hardpoint_scanner_dorsal_id, "display_name", "Scanner Dorsal Hardpoint"),
+        component(hardpoint_scanner_dorsal_id, "entity_labels", { "Hardpoint" }),
+        component(hardpoint_scanner_dorsal_id, "hardpoint", {
+          hardpoint_id = "scanner_dorsal",
+          offset_m = { 0.0, 1.5, 2.5 },
+        }),
+        component(hardpoint_scanner_dorsal_id, "parent_guid", ship_id),
+        component(hardpoint_scanner_dorsal_id, "owner_id", owner_id),
       }
     ),
     new_entity(
@@ -311,6 +322,34 @@ function CorvetteBundle.build_graph_records(ctx)
           hardpoint_id = "fuel_right",
         }),
         component(module_fuel_tank_right_id, "owner_id", owner_id),
+      }
+    ),
+    new_entity(
+      module_scanner_array_id,
+      { "Entity", "Module", "Scanner" },
+      hardpoint_scanner_dorsal_id,
+      {
+        component(module_scanner_array_id, "display_name", "Scanner Array MK1"),
+        component(module_scanner_array_id, "entity_labels", { "Module", "Scanner" }),
+        component(module_scanner_array_id, "scanner_component", {
+          base_range_m = scanner_base_range_m,
+          level = 1,
+          detail_tier = "Iff",
+          supports_density = true,
+          supports_directional_awareness = true,
+          max_contacts = 64,
+        }),
+        component(module_scanner_array_id, "visibility_range_buff_m", {
+          additive_m = scanner_base_range_m,
+          multiplier = 1.0,
+        }),
+        component(module_scanner_array_id, "mass_kg", 80.0),
+        component(module_scanner_array_id, "parent_guid", hardpoint_scanner_dorsal_id),
+        component(module_scanner_array_id, "mounted_on", {
+          parent_entity_id = ship_id,
+          hardpoint_id = "scanner_dorsal",
+        }),
+        component(module_scanner_array_id, "owner_id", owner_id),
       }
     ),
     new_entity(

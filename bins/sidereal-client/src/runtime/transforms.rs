@@ -6,8 +6,9 @@ use avian2d::prelude::{
 use bevy::{math::DVec2, prelude::*};
 use lightyear::frame_interpolation::FrameInterpolate;
 use lightyear::interpolation::interpolation_history::ConfirmedHistory;
-use lightyear::prelude::Confirmed;
+use lightyear::prediction::prelude::PredictionHistory;
 use lightyear::prelude::input::native::{ActionState, InputMarker};
+use lightyear::prelude::{Confirmed, ConfirmedTick};
 use sidereal_game::{
     EntityGuid, FlightControlAuthority, FullscreenLayer, RENDER_DOMAIN_FULLSCREEN,
     RENDER_PHASE_FULLSCREEN_BACKGROUND, RENDER_PHASE_FULLSCREEN_FOREGROUND,
@@ -70,6 +71,8 @@ pub(crate) fn log_motion_replication_diagnostics(
         '_,
         (
             Option<&'_ Confirmed<Rotation>>,
+            Option<&'_ ConfirmedTick>,
+            Option<&'_ PredictionHistory<Position>>,
             Option<&'_ Mass>,
             Option<&'_ AngularInertia>,
             Has<InputMarker<PlayerInput>>,
@@ -128,6 +131,8 @@ pub(crate) fn log_motion_replication_diagnostics(
     {
         let (
             confirmed_rotation,
+            confirmed_tick,
+            prediction_history,
             mass,
             angular_inertia,
             has_input_marker,
@@ -135,13 +140,16 @@ pub(crate) fn log_motion_replication_diagnostics(
             has_rigidbody,
         ) = extras
             .get(entity)
-            .unwrap_or((None, None, None, false, None, false));
+            .unwrap_or((None, None, None, None, None, false, None, false));
         let previous = state
             .last_transform_by_guid
             .insert(guid.0, transform.translation);
         let transform_changed_since_last = previous
             .is_some_and(|previous| previous.distance_squared(transform.translation) > 0.0001);
         let history_len = position_history.map(ConfirmedHistory::len).unwrap_or(0);
+        let prediction_history_len = prediction_history
+            .map(PredictionHistory::<Position>::len)
+            .unwrap_or(0);
         let current = position.map(|value| value.0);
         let relevant_to_local_control =
             Some(guid.0) == controlled_guid || Some(guid.0) == player_guid;
@@ -151,13 +159,18 @@ pub(crate) fn log_motion_replication_diagnostics(
             && confirmed_position.is_none()
             && current.is_none()
             && history_len == 0
+            && prediction_history_len == 0
         {
             continue;
         }
         let history_newest_tick = position_history
             .and_then(ConfirmedHistory::newest)
             .map(|(tick, _)| tick.0);
+        let prediction_history_newest_tick = prediction_history
+            .and_then(PredictionHistory::<Position>::most_recent)
+            .map(|(tick, _)| tick.0);
         let confirmed = confirmed_position.map(|value| value.0.0);
+        let confirmed_tick = confirmed_tick.map(|tick| tick.tick.0);
         let confirmed_rotation_rad = confirmed_rotation.map(|value| value.0.as_radians());
         let linear_velocity = velocity.map(|value| value.0);
         let rotation_rad = rotation.map(|value| value.as_radians());
@@ -176,6 +189,7 @@ pub(crate) fn log_motion_replication_diagnostics(
             has_input_marker,
             has_rigidbody,
             confirmed_position = ?confirmed,
+            confirmed_tick,
             confirmed_rotation_rad,
             current_position = ?current,
             rotation_rad,
@@ -185,6 +199,8 @@ pub(crate) fn log_motion_replication_diagnostics(
             angular_inertia_kg_m2,
             history_len,
             history_newest_tick,
+            prediction_history_len,
+            prediction_history_newest_tick,
             transform_x = transform.translation.x,
             transform_y = transform.translation.y,
             transform_rotation_rad = transform.rotation.to_euler(EulerRot::XYZ).2,
@@ -351,91 +367,6 @@ pub(crate) fn sync_confirmed_world_entity_transforms_from_world_space(
     }
 }
 
-/// Bootstrap for interpolated entities that just became relevant but do not yet
-/// have interpolation history samples. Without this, they can render at default
-/// Transform (0,0) until the next server delta arrives.
-#[allow(clippy::type_complexity)]
-pub(crate) fn sync_interpolated_world_entity_transforms_without_history(
-    entity_registry: Res<'_, RuntimeEntityHierarchy>,
-    mut entities: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ EntityGuid,
-            Option<&'_ Position>,
-            Option<&'_ Rotation>,
-            Option<&'_ WorldPosition>,
-            Option<&'_ WorldRotation>,
-            Option<&'_ Confirmed<Position>>,
-            Option<&'_ Confirmed<Rotation>>,
-            &'_ mut Transform,
-            Option<&'_ ConfirmedHistory<Position>>,
-            Option<&'_ ConfirmedHistory<Rotation>>,
-        ),
-        (With<WorldEntity>, With<lightyear::prelude::Interpolated>),
-    >,
-    confirmed_entities: Query<
-        '_,
-        '_,
-        (
-            Option<&'_ Position>,
-            Option<&'_ Rotation>,
-            Option<&'_ WorldPosition>,
-            Option<&'_ WorldRotation>,
-        ),
-        (With<WorldEntity>, Without<lightyear::prelude::Interpolated>),
-    >,
-) {
-    for (
-        entity,
-        entity_guid,
-        position,
-        rotation,
-        world_position,
-        world_rotation,
-        confirmed_position,
-        confirmed_rotation,
-        mut transform,
-        position_history,
-        rotation_history,
-    ) in &mut entities
-    {
-        let is_static_world_spatial = position.is_none()
-            && rotation.is_none()
-            && (world_position.is_some() || world_rotation.is_some());
-        if is_static_world_spatial {
-            let (planar_position, heading) =
-                resolve_current_planar_pose(position, rotation, world_position, world_rotation)
-                    .unwrap_or((DVec2::ZERO, 0.0));
-            apply_planar_transform(&mut transform, planar_position, heading);
-            continue;
-        }
-        // Interpolation needs at least 2 samples. With only one (or zero), preserve
-        // authoritative spawn pose from Confirmed values so entities don't render at origin.
-        let history_ready = position_history.and_then(|h| h.end()).is_some()
-            && rotation_history.and_then(|h| h.end()).is_some();
-        if history_ready {
-            continue;
-        }
-        let (planar_position, heading) =
-            resolve_confirmed_planar_pose(confirmed_position, confirmed_rotation)
-                .or_else(|| {
-                    resolve_canonical_confirmed_planar_pose(
-                        entity_guid,
-                        entity,
-                        &entity_registry,
-                        &confirmed_entities,
-                    )
-                })
-                .or_else(|| {
-                    resolve_current_planar_pose(position, rotation, world_position, world_rotation)
-                })
-                .unwrap_or((DVec2::ZERO, 0.0));
-        apply_planar_transform(&mut transform, planar_position, heading);
-    }
-}
-
 /// Keep `FrameInterpolate<Transform>` aligned with the runtime clone types that Lightyear expects.
 ///
 /// Sidereal intentionally defers native replicated adoption until enough components exist to avoid
@@ -473,100 +404,6 @@ pub(crate) fn sync_frame_interpolation_markers_for_world_entities(
             commands
                 .entity(entity)
                 .remove::<FrameInterpolate<Transform>>();
-        }
-    }
-}
-
-/// Seed observer visual transforms only while frame interpolation is still uninitialized.
-///
-/// Late-lane bootstrap belongs in Lightyear/Avian. Sidereal keeps only this narrow seeding path so
-/// freshly adopted observer entities do not spend a frame at the default transform before
-/// interpolation state is ready.
-#[allow(clippy::type_complexity)]
-pub(crate) fn recover_stalled_interpolated_world_entity_transforms(
-    mut entities: Query<
-        '_,
-        '_,
-        (
-            Option<&'_ Position>,
-            Option<&'_ Rotation>,
-            Option<&'_ WorldPosition>,
-            Option<&'_ WorldRotation>,
-            &'_ mut Transform,
-            &'_ mut FrameInterpolate<Transform>,
-        ),
-        (With<WorldEntity>, With<lightyear::prelude::Interpolated>),
-    >,
-) {
-    for (
-        position,
-        rotation,
-        world_position,
-        world_rotation,
-        mut transform,
-        mut frame_interpolate,
-    ) in &mut entities
-    {
-        let Some((planar_position, heading)) =
-            resolve_current_planar_pose(position, rotation, world_position, world_rotation)
-        else {
-            continue;
-        };
-
-        let frame_interpolation_uninitialized =
-            frame_interpolate.previous_value.is_none() || frame_interpolate.current_value.is_none();
-        if !frame_interpolation_uninitialized {
-            continue;
-        }
-
-        apply_planar_transform(&mut transform, planar_position, heading);
-        let seeded_transform = *transform;
-        frame_interpolate.previous_value = Some(seeded_transform);
-        frame_interpolate.current_value = Some(seeded_transform);
-    }
-}
-
-/// Seed predicted visual transforms only while frame interpolation is still uninitialized.
-///
-/// Once the predicted lane is live, transform ownership should stay with Lightyear/Avian and the
-/// frame interpolation pipeline rather than a client-side drift-repair shim.
-#[allow(clippy::type_complexity)]
-pub(crate) fn recover_stalled_predicted_world_entity_transforms(
-    mut entities: Query<
-        '_,
-        '_,
-        (
-            &'_ Position,
-            &'_ Rotation,
-            &'_ mut Transform,
-            Option<&'_ mut FrameInterpolate<Transform>>,
-        ),
-        (
-            With<WorldEntity>,
-            With<lightyear::prelude::Predicted>,
-            Without<lightyear::prelude::Interpolated>,
-        ),
-    >,
-) {
-    for (position, rotation, mut transform, frame_interpolate) in &mut entities {
-        let planar_position = position.0;
-        let heading = rotation.as_radians();
-        if !planar_position.is_finite() || !heading.is_finite() {
-            continue;
-        }
-
-        let frame_interpolation_uninitialized = frame_interpolate
-            .as_ref()
-            .is_some_and(|frame| frame.previous_value.is_none() || frame.current_value.is_none());
-        if !frame_interpolation_uninitialized {
-            continue;
-        }
-
-        apply_planar_transform(&mut transform, planar_position, heading);
-        if let Some(mut frame_interpolate) = frame_interpolate {
-            let seeded_transform = *transform;
-            frame_interpolate.previous_value = Some(seeded_transform);
-            frame_interpolate.current_value = Some(seeded_transform);
         }
     }
 }
@@ -762,7 +599,6 @@ pub(crate) fn reveal_world_entities_when_initial_transform_ready(
 mod tests {
     use super::{
         interpolated_presentation_ready, reveal_world_entities_when_initial_transform_ready,
-        sync_interpolated_world_entity_transforms_without_history,
     };
     use crate::runtime::components::{PendingInitialVisualReady, WorldEntity};
     use avian2d::prelude::{Position, Rotation};
@@ -869,52 +705,5 @@ mod tests {
             !entity_ref.contains::<PendingInitialVisualReady>(),
             "entity should become renderable once the canonical confirmed clone has a pose"
         );
-    }
-
-    #[test]
-    fn interpolated_without_history_uses_canonical_confirmed_pose() {
-        let mut app = App::new();
-        app.init_resource::<RuntimeEntityHierarchy>();
-        app.add_systems(
-            Update,
-            sync_interpolated_world_entity_transforms_without_history,
-        );
-
-        let guid = Uuid::parse_str("ce9e421c-8b62-458a-803e-51e9ad272908").expect("valid guid");
-        let confirmed = app
-            .world_mut()
-            .spawn((
-                WorldEntity,
-                EntityGuid(guid),
-                Position(Vec2::new(-20.0, 48.0).into()),
-                Rotation::radians(-0.5),
-                Transform::default(),
-            ))
-            .id();
-        app.world_mut()
-            .resource_mut::<RuntimeEntityHierarchy>()
-            .by_entity_id
-            .insert(guid.to_string(), confirmed);
-        let interpolated = app
-            .world_mut()
-            .spawn((
-                WorldEntity,
-                EntityGuid(guid),
-                Interpolated,
-                Position(Vec2::ZERO.into()),
-                Rotation::IDENTITY,
-                Transform::default(),
-            ))
-            .id();
-
-        app.update();
-
-        let transform = app
-            .world()
-            .entity(interpolated)
-            .get::<Transform>()
-            .expect("transform");
-        assert_eq!(transform.translation.x, -20.0);
-        assert_eq!(transform.translation.y, 48.0);
     }
 }

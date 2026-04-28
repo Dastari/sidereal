@@ -11,6 +11,7 @@
 //! 5. Avian's physics integrator handles the rest
 
 use avian2d::prelude::*;
+use bevy::math::DVec2;
 use bevy::prelude::*;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -18,7 +19,8 @@ use uuid::Uuid;
 use crate::{
     ActionQueue, AfterburnerCapability, AfterburnerState, Engine, EntityAction, EntityGuid,
     FlightComputer, FlightControlAuthority, FlightFuelConsumptionEnabled, FlightTuning, FuelTank,
-    MaxVelocityMps, MountedOn, PlayerTag, SimulationMotionWriter, SizeM, TotalMassKg,
+    MaxVelocityMps, MountedOn, PlayerTag, ScriptNavigationTarget, SimulationMotionWriter, SizeM,
+    TotalMassKg, WorldPosition, resolve_world_position,
 };
 
 const PASSIVE_ANGULAR_DAMP_RATE: f32 = 4.0;
@@ -154,6 +156,80 @@ pub fn process_flight_actions(
             }
         }
     }
+}
+
+/// Translates high-level script navigation into the current flight-control capability.
+///
+/// Scripts own only the generic f64 target. This system resolves authoritative
+/// world-space state and maps it to the legacy FlightComputer control surface.
+#[allow(clippy::type_complexity)]
+pub fn apply_navigation_targets_to_flight_computers(
+    mut query: Query<
+        (
+            &ScriptNavigationTarget,
+            Option<&Position>,
+            Option<&WorldPosition>,
+            Option<&Rotation>,
+            Option<&Transform>,
+            &mut FlightComputer,
+        ),
+        (With<FlightControlAuthority>, With<SimulationMotionWriter>),
+    >,
+) {
+    for (navigation, position, world_position, rotation, transform, mut computer) in &mut query {
+        let Some(entity_position) =
+            resolve_navigation_position(position, world_position, transform)
+        else {
+            continue;
+        };
+        let target_position = navigation.target_position;
+        if !target_position.is_finite() {
+            continue;
+        }
+        let to_target = target_position - entity_position;
+        if to_target.length_squared() < 4.0 {
+            computer.throttle = 0.0;
+            computer.yaw_input = 0.0;
+            computer.brake_active = true;
+            continue;
+        }
+        let Some(desired) = to_target.try_normalize() else {
+            continue;
+        };
+        let forward = resolve_navigation_forward(rotation, transform);
+        let cross = forward.perp_dot(desired);
+        computer.yaw_input = if cross > 0.08 {
+            1.0
+        } else if cross < -0.08 {
+            -1.0
+        } else {
+            0.0
+        };
+        computer.throttle = 1.0;
+        computer.brake_active = false;
+    }
+}
+
+fn resolve_navigation_position(
+    position: Option<&Position>,
+    world_position: Option<&WorldPosition>,
+    transform: Option<&Transform>,
+) -> Option<DVec2> {
+    resolve_world_position(position, world_position)
+        .or_else(|| transform.map(|value| value.translation.truncate().as_dvec2()))
+        .filter(|value| value.is_finite())
+}
+
+fn resolve_navigation_forward(rotation: Option<&Rotation>, transform: Option<&Transform>) -> DVec2 {
+    if let Some(rotation) = rotation {
+        let angle = rotation.as_radians();
+        return DVec2::new(-angle.sin(), angle.cos());
+    }
+    transform
+        .map(|value| value.up().truncate().as_dvec2())
+        .filter(|value| value.is_finite())
+        .and_then(DVec2::try_normalize)
+        .unwrap_or(DVec2::Y)
 }
 
 /// System that applies engine thrust based on FlightComputer state

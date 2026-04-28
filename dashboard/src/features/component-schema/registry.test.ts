@@ -34,6 +34,50 @@ describe('component schema registry helpers', () => {
         },
       },
       {
+        component_kind: 'stellar_light_source',
+        type_path:
+          'sidereal_game::components::stellar_light_source::StellarLightSource',
+        replication_visibility: ['Public'],
+        editor_schema: {
+          root_value_kind: 'Struct',
+          fields: [
+            {
+              field_path: 'enabled',
+              field_name: 'enabled',
+              display_name: 'Enabled',
+              value_kind: 'Bool',
+              min: null,
+              max: null,
+              step: null,
+              unit: null,
+              options: [],
+            },
+            {
+              field_path: 'color_rgb',
+              field_name: 'color_rgb',
+              display_name: 'Color RGB',
+              value_kind: 'Vec3',
+              min: 0,
+              max: 1,
+              step: 0.01,
+              unit: null,
+              options: [],
+            },
+            {
+              field_path: 'intensity',
+              field_name: 'intensity',
+              display_name: 'Intensity',
+              value_kind: 'Float',
+              min: 0,
+              max: null,
+              step: 0.01,
+              unit: null,
+              options: [],
+            },
+          ],
+        },
+      },
+      {
         component_kind: 'avian_rigid_body',
         type_path: 'avian2d::dynamics::rigid_body::RigidBody',
         replication_visibility: ['Public'],
@@ -107,13 +151,13 @@ describe('component schema registry helpers', () => {
   }
 
   it('parses generated component registry payloads', () => {
-    expect(registry.entries).toHaveLength(2)
+    expect(registry.entries).toHaveLength(3)
     expect(registry.shader_entries).toHaveLength(1)
     expect(registry.entries[0]?.component_kind).toBe('ammo_count')
     expect(registry.shader_entries[0]?.asset_id).toBe('planet_visual_wgsl')
-    expect(registry.shader_entries[0]?.uniform_schema[1]?.options[0]?.value).toBe(
-      'screen',
-    )
+    expect(
+      registry.shader_entries[0]?.uniform_schema[1]?.options[0]?.value,
+    ).toBe('screen')
   })
 
   it('resolves shader registry entries by asset id and source path', () => {
@@ -204,5 +248,71 @@ describe('component schema registry helpers', () => {
     expect(setSchemaFieldValue('Dynamic', rigidBodyField, 'Static', 1)).toBe(
       'Static',
     )
+  })
+
+  it('recovers component payloads from AGE-truncated type path envelope keys', () => {
+    const stellarEntry = registry.entries.find(
+      (entry) => entry.component_kind === 'stellar_light_source',
+    )
+    expect(stellarEntry).toBeTruthy()
+
+    const payload = getComponentPayloadFromNode(
+      {
+        id: 'stellar',
+        label: 'Stellar Light Source',
+        kind: 'Component',
+        properties: {
+          component_id: 'star:stellar_light_source',
+          component_kind: 'stellar_light_source',
+          sidereal_game__components__stellar_light_source__StellarLightSo: {
+            enabled: true,
+            color_rgb: [0.12, 0.38, 1],
+            intensity: 1.25,
+          },
+        },
+      },
+      stellarEntry ?? null,
+    )
+
+    expect(payload).toEqual({
+      enabled: true,
+      color_rgb: [0.12, 0.38, 1],
+      intensity: 1.25,
+    })
+  })
+
+  it('prefers top-level component fields over stale nested envelopes', () => {
+    const stellarEntry = registry.entries.find(
+      (entry) => entry.component_kind === 'stellar_light_source',
+    )
+    expect(stellarEntry).toBeTruthy()
+
+    const payload = getComponentPayloadFromNode(
+      {
+        id: 'stellar',
+        label: 'Stellar Light Source',
+        kind: 'Component',
+        properties: {
+          component_id: 'star:stellar_light_source',
+          component_kind: 'stellar_light_source',
+          last_tick: 1777340154057270500,
+          enabled: true,
+          color_rgb: [0.12, 0.38, 1],
+          intensity: 1.25,
+          sidereal_game__components__stellar_light_source__StellarLightSo: {
+            enabled: true,
+            color_rgb: [1, 0.58, 0.12],
+            intensity: 0,
+          },
+        },
+      },
+      stellarEntry ?? null,
+    )
+
+    expect(payload).toEqual({
+      enabled: true,
+      color_rgb: [0.12, 0.38, 1],
+      intensity: 1.25,
+    })
   })
 })

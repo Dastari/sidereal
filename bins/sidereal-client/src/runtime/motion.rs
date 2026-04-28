@@ -21,8 +21,8 @@ use std::collections::HashSet;
 
 use super::app_state::{ClientSession, LocalPlayerViewState};
 use super::components::{
-    ControlledEntity, ControlledPredictionReconciliationState, NearbyCollisionProxy,
-    PredictedMotionBootstrapSeed, SuppressedPredictedDuplicateVisual, WorldEntity,
+    ControlledEntity, NearbyCollisionProxy, PredictedMotionBootstrapSeed,
+    SuppressedPredictedDuplicateVisual, WorldEntity,
 };
 use super::resources::{
     ControlBootstrapPhase, ControlBootstrapState, MotionOwnershipReconcileState,
@@ -66,6 +66,7 @@ pub(crate) fn mark_motion_ownership_dirty_signals(
 #[allow(clippy::type_complexity)]
 pub(crate) fn apply_predicted_input_to_action_queue(
     mut commands: Commands<'_, '_>,
+    control_bootstrap_state: Res<'_, ControlBootstrapState>,
     mut query: Query<
         '_,
         '_,
@@ -73,7 +74,19 @@ pub(crate) fn apply_predicted_input_to_action_queue(
         (With<SimulationMotionWriter>, With<InputMarker<PlayerInput>>),
     >,
 ) {
+    let active_entity = match control_bootstrap_state.phase {
+        ControlBootstrapPhase::ActivePredicted { entity, .. } => Some(entity),
+        _ => None,
+    };
     for (entity, action_state, maybe_queue) in &mut query {
+        if Some(entity) != active_entity {
+            commands.entity(entity).remove::<(
+                InputMarker<PlayerInput>,
+                ActionState<PlayerInput>,
+                SimulationMotionWriter,
+            )>();
+            continue;
+        }
         if let Some(mut queue) = maybe_queue {
             replace_action_queue_from_player_input(&mut queue, &action_state.0);
         } else {
@@ -302,171 +315,6 @@ fn seed_prediction_history<C: Component + Clone>(
     }
 }
 
-fn wrap_angle_rad(angle: f64) -> f64 {
-    let two_pi = std::f64::consts::TAU;
-    (angle + std::f64::consts::PI).rem_euclid(two_pi) - std::f64::consts::PI
-}
-
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub(crate) fn reconcile_controlled_prediction_with_confirmed_history(
-    mut commands: Commands<'_, '_>,
-    control_bootstrap_state: Res<'_, ControlBootstrapState>,
-    rollback_query: Query<'_, '_, (), With<lightyear::prelude::Rollback>>,
-    mut controlled: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            &'_ ConfirmedTick,
-            &'_ Confirmed<Position>,
-            Option<&'_ Confirmed<Rotation>>,
-            Option<&'_ Confirmed<LinearVelocity>>,
-            Option<&'_ Confirmed<AngularVelocity>>,
-            Option<&'_ PredictionHistory<Position>>,
-            Option<&'_ PredictionHistory<Rotation>>,
-            Option<&'_ PredictionHistory<LinearVelocity>>,
-            Option<&'_ PredictionHistory<AngularVelocity>>,
-            &'_ mut Position,
-            Option<&'_ mut Rotation>,
-            Option<&'_ mut LinearVelocity>,
-            Option<&'_ mut AngularVelocity>,
-            Option<&'_ mut ControlledPredictionReconciliationState>,
-        ),
-        (
-            With<ControlledEntity>,
-            With<SimulationMotionWriter>,
-            With<lightyear::prelude::Predicted>,
-        ),
-    >,
-) {
-    if is_in_rollback(rollback_query) {
-        return;
-    }
-    let ControlBootstrapPhase::ActivePredicted {
-        generation,
-        entity: active_entity,
-        ..
-    } = control_bootstrap_state.phase
-    else {
-        return;
-    };
-    let Ok((
-        entity,
-        confirmed_tick,
-        confirmed_position,
-        confirmed_rotation,
-        confirmed_linear_velocity,
-        confirmed_angular_velocity,
-        position_history,
-        rotation_history,
-        linear_velocity_history,
-        angular_velocity_history,
-        mut position,
-        rotation,
-        linear_velocity,
-        angular_velocity,
-        reconciliation_state,
-    )) = controlled.get_mut(active_entity)
-    else {
-        return;
-    };
-
-    let already_applied = reconciliation_state.as_ref().is_some_and(|state| {
-        state.generation == generation && state.last_confirmed_tick == Some(confirmed_tick.tick)
-    });
-    if already_applied {
-        return;
-    }
-
-    let predicted_position_at_confirmed = position_history
-        .and_then(|history| history.get(confirmed_tick.tick))
-        .map(|value| value.0);
-    let position_error = predicted_position_at_confirmed
-        .map(|predicted| confirmed_position.0.0 - predicted)
-        .unwrap_or_else(|| confirmed_position.0.0 - position.0);
-    let position_error_len = position_error.length();
-    let has_position_history = predicted_position_at_confirmed.is_some();
-    let mut corrected_position = false;
-    if has_position_history && position_error_len > 0.05 || position_error_len > 128.0 {
-        position.0 += position_error;
-        corrected_position = true;
-    }
-
-    let mut corrected_rotation = false;
-    if let (Some(confirmed_rotation), Some(mut rotation)) = (confirmed_rotation, rotation) {
-        let predicted_rotation_at_confirmed = rotation_history
-            .and_then(|history| history.get(confirmed_tick.tick))
-            .map(|rotation| rotation.as_radians());
-        let rotation_error = predicted_rotation_at_confirmed
-            .map(|predicted| wrap_angle_rad(confirmed_rotation.0.as_radians() - predicted))
-            .unwrap_or_else(|| {
-                wrap_angle_rad(confirmed_rotation.0.as_radians() - rotation.as_radians())
-            });
-        if predicted_rotation_at_confirmed.is_some() && rotation_error.abs() > 0.001
-            || rotation_error.abs() > 1.0
-        {
-            *rotation = Rotation::radians(rotation.as_radians() + rotation_error);
-            corrected_rotation = true;
-        }
-    }
-
-    if let (Some(confirmed_linear_velocity), Some(mut linear_velocity)) =
-        (confirmed_linear_velocity, linear_velocity)
-    {
-        let predicted_velocity_at_confirmed = linear_velocity_history
-            .and_then(|history| history.get(confirmed_tick.tick))
-            .map(|value| value.0);
-        let velocity_error = predicted_velocity_at_confirmed
-            .map(|predicted| confirmed_linear_velocity.0.0 - predicted)
-            .unwrap_or_else(|| confirmed_linear_velocity.0.0 - linear_velocity.0);
-        if predicted_velocity_at_confirmed.is_some() && velocity_error.length() > 0.05
-            || velocity_error.length() > 64.0
-        {
-            linear_velocity.0 += velocity_error;
-        }
-    }
-
-    if let (Some(confirmed_angular_velocity), Some(mut angular_velocity)) =
-        (confirmed_angular_velocity, angular_velocity)
-    {
-        let predicted_angular_velocity_at_confirmed = angular_velocity_history
-            .and_then(|history| history.get(confirmed_tick.tick))
-            .map(|value| value.0);
-        let angular_velocity_error = predicted_angular_velocity_at_confirmed
-            .map(|predicted| confirmed_angular_velocity.0.0 - predicted)
-            .unwrap_or(confirmed_angular_velocity.0.0 - angular_velocity.0);
-        if predicted_angular_velocity_at_confirmed.is_some() && angular_velocity_error.abs() > 0.001
-            || angular_velocity_error.abs() > 1.0
-        {
-            angular_velocity.0 += angular_velocity_error;
-        }
-    }
-
-    if let Some(mut state) = reconciliation_state {
-        state.generation = generation;
-        state.last_confirmed_tick = Some(confirmed_tick.tick);
-    } else {
-        commands
-            .entity(entity)
-            .insert(ControlledPredictionReconciliationState {
-                generation,
-                last_confirmed_tick: Some(confirmed_tick.tick),
-            });
-    }
-
-    if corrected_position || corrected_rotation {
-        bevy::log::debug!(
-            entity = ?entity,
-            generation,
-            confirmed_tick = ?confirmed_tick.tick,
-            position_error_m = position_error_len,
-            corrected_position,
-            corrected_rotation,
-            "reconciled controlled prediction from confirmed history"
-        );
-    }
-}
-
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn enforce_motion_ownership_for_world_entities(
     mut commands: Commands<'_, '_>,
@@ -541,15 +389,6 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
     } else {
         -1
     };
-    let is_player_anchor_target = matches!(
-        control_bootstrap_state.phase,
-        ControlBootstrapPhase::ActiveAnchor { .. }
-    ) || session
-        .player_entity_id
-        .as_deref()
-        .and_then(parse_guid_from_entity_id)
-        .zip(Some(target_guid))
-        .is_some_and(|(player_guid, control_guid)| player_guid == control_guid);
     let mut target_entity_is_predicted = matches!(
         control_bootstrap_state.phase,
         ControlBootstrapPhase::ActivePredicted { .. }
@@ -599,9 +438,9 @@ pub(crate) fn enforce_motion_ownership_for_world_entities(
     let Some(target_entity) = target_entity else {
         return;
     };
-    if !is_player_anchor_target && !target_entity_is_predicted {
+    if !target_entity_is_predicted {
         // Sidereal's dynamic handoff means the desired control GUID can resolve before Lightyear
-        // has spawned the Predicted clone. Do not promote a confirmed/interpolated ship into the
+        // has spawned the Predicted clone. Do not promote a confirmed/interpolated entity into the
         // local motion-writer lane: that creates a second simulation writer and makes the runtime
         // feel "jerky" instead of truly predicted.
         if now_s - *missing_predicted_warn_at_s >= 1.0 {
@@ -922,15 +761,11 @@ pub(crate) fn enforce_controlled_planar_motion(
 #[cfg(test)]
 mod tests {
     use super::{
-        enforce_motion_ownership_for_world_entities,
-        reconcile_controlled_prediction_with_confirmed_history,
+        apply_predicted_input_to_action_queue, enforce_motion_ownership_for_world_entities,
         seed_controlled_predicted_motion_from_confirmed,
     };
     use crate::runtime::app_state::{ClientSession, LocalPlayerViewState};
-    use crate::runtime::components::{
-        ControlledEntity, ControlledPredictionReconciliationState, PredictedMotionBootstrapSeed,
-        WorldEntity,
-    };
+    use crate::runtime::components::{ControlledEntity, PredictedMotionBootstrapSeed, WorldEntity};
     use crate::runtime::resources::{
         ControlBootstrapPhase, ControlBootstrapState, MotionOwnershipReconcileState,
         NearbyCollisionProxyTuning,
@@ -942,11 +777,13 @@ mod tests {
     use bevy::prelude::{App, Time, Transform, Vec2};
     use lightyear::frame_interpolation::FrameInterpolate;
     use lightyear::prediction::prelude::PredictionHistory;
+    use lightyear::prelude::input::native::{ActionState, InputMarker};
     use lightyear::prelude::{Confirmed, ConfirmedTick, LocalTimeline, Tick};
     use sidereal_game::{
-        CollisionProfile, EntityGuid, FlightControlAuthority, SimulationMotionWriter, SizeM,
-        TotalMassKg,
+        ActionQueue, CollisionProfile, EntityAction, EntityGuid, FlightControlAuthority,
+        SimulationMotionWriter, SizeM, TotalMassKg,
     };
+    use sidereal_net::PlayerInput;
     use uuid::Uuid;
 
     #[test]
@@ -1230,97 +1067,66 @@ mod tests {
     }
 
     #[test]
-    fn controlled_prediction_reconciles_each_confirmed_tick_from_prediction_history() {
+    fn predicted_input_bridge_removes_non_active_marker_before_queue_write() {
         let mut app = App::new();
-        let target_id = "ce9e421c-8b62-458a-803e-51e9ad272908".to_string();
-        let target_guid = Uuid::parse_str(&target_id).unwrap();
-        let target_entity = app
+        let active_entity = app
             .world_mut()
             .spawn((
-                EntityGuid(target_guid),
-                ControlledEntity {
-                    entity_id: target_id.clone(),
-                    player_entity_id: "1521601b-7e69-4700-853f-eb1eb3a41199".to_string(),
-                },
                 SimulationMotionWriter,
-                lightyear::prelude::Predicted,
-                Position(Vec2::new(10.0, 0.0).into()),
-                Rotation::radians(0.5),
-                LinearVelocity(Vec2::new(2.0, 0.0).into()),
-                AngularVelocity(0.25),
-                Confirmed(Position(Vec2::new(6.0, 0.0).into())),
-                Confirmed(Rotation::radians(0.3)),
-                Confirmed(LinearVelocity(Vec2::new(3.0, 0.0).into())),
-                Confirmed(AngularVelocity(0.4)),
-                ConfirmedTick { tick: Tick(5) },
-                Transform::default(),
+                InputMarker::<PlayerInput>::default(),
+                ActionState(PlayerInput {
+                    actions: vec![EntityAction::Forward],
+                }),
+                ActionQueue::default(),
             ))
             .id();
-        let mut position_history = PredictionHistory::<Position>::default();
-        position_history.add_update(Tick(5), Position(Vec2::new(2.0, 0.0).into()));
-        let mut rotation_history = PredictionHistory::<Rotation>::default();
-        rotation_history.add_update(Tick(5), Rotation::radians(0.1));
-        let mut velocity_history = PredictionHistory::<LinearVelocity>::default();
-        velocity_history.add_update(Tick(5), LinearVelocity(Vec2::new(1.0, 0.0).into()));
-        let mut angular_history = PredictionHistory::<AngularVelocity>::default();
-        angular_history.add_update(Tick(5), AngularVelocity(0.1));
-        app.world_mut().entity_mut(target_entity).insert((
-            position_history,
-            rotation_history,
-            velocity_history,
-            angular_history,
-        ));
+        let stale_entity = app
+            .world_mut()
+            .spawn((
+                SimulationMotionWriter,
+                InputMarker::<PlayerInput>::default(),
+                ActionState(PlayerInput {
+                    actions: vec![EntityAction::Left],
+                }),
+                ActionQueue::default(),
+            ))
+            .id();
         app.insert_resource(ControlBootstrapState {
-            authoritative_target_entity_id: Some(target_id.clone()),
-            generation: 9,
+            authoritative_target_entity_id: Some(
+                "11111111-1111-1111-1111-111111111111".to_string(),
+            ),
+            generation: 5,
             phase: ControlBootstrapPhase::ActivePredicted {
-                target_entity_id: target_id,
-                generation: 9,
-                entity: target_entity,
+                target_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                generation: 5,
+                entity: active_entity,
             },
             last_transition_at_s: 0.0,
         });
-        app.add_systems(
-            Update,
-            reconcile_controlled_prediction_with_confirmed_history,
-        );
-
-        app.update();
-
-        let entity = app.world().entity(target_entity);
-        assert_eq!(
-            entity.get::<Position>().map(|value| value.0),
-            Some(Vec2::new(14.0, 0.0).into())
-        );
-        assert!(
-            entity
-                .get::<Rotation>()
-                .is_some_and(|rotation| (rotation.as_radians() - 0.7).abs() <= 1e-9)
-        );
-        assert_eq!(
-            entity.get::<LinearVelocity>().map(|value| value.0),
-            Some(Vec2::new(4.0, 0.0).into())
-        );
-        assert!(
-            entity
-                .get::<AngularVelocity>()
-                .is_some_and(|value| (value.0 - 0.55).abs() <= 1e-9)
-        );
-        assert_eq!(
-            entity.get::<ControlledPredictionReconciliationState>(),
-            Some(&ControlledPredictionReconciliationState {
-                generation: 9,
-                last_confirmed_tick: Some(Tick(5))
-            })
-        );
+        app.add_systems(Update, apply_predicted_input_to_action_queue);
 
         app.update();
 
         assert_eq!(
             app.world()
-                .get::<Position>(target_entity)
-                .map(|value| value.0),
-            Some(Vec2::new(14.0, 0.0).into())
+                .get::<ActionQueue>(active_entity)
+                .map(|queue| queue.pending.clone()),
+            Some(vec![EntityAction::Forward])
+        );
+        assert!(
+            app.world()
+                .get::<InputMarker<PlayerInput>>(stale_entity)
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<SimulationMotionWriter>(stale_entity)
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<ActionQueue>(stale_entity)
+                .is_some_and(|queue| queue.pending.is_empty())
         );
     }
 }

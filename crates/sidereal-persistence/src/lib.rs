@@ -2,6 +2,7 @@ use postgres::{Client, NoTls, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use thiserror::Error;
 
 const DEFAULT_GRAPH_NAME: &str = "sidereal";
@@ -9,6 +10,8 @@ const SCRIPT_CATALOG_DOCUMENTS_TABLE: &str = "script_catalog_documents";
 const SCRIPT_CATALOG_VERSIONS_TABLE: &str = "script_catalog_versions";
 const SCRIPT_CATALOG_DRAFTS_TABLE: &str = "script_catalog_drafts";
 const PLAYER_NOTIFICATIONS_TABLE: &str = "player_notifications";
+
+static GRAPH_SCHEMA_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Error)]
 pub enum PersistenceError {
@@ -21,6 +24,13 @@ pub enum PersistenceError {
 }
 
 pub type Result<T> = std::result::Result<T, PersistenceError>;
+
+fn lock_graph_schema_write() -> Result<MutexGuard<'static, ()>> {
+    GRAPH_SCHEMA_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| PersistenceError::Database("graph schema/write lock poisoned".to_string()))
+}
 
 /// Sanitize a Rust type path into a key safe for AGE/Cypher property names.
 /// AGE strips characters like `:` from property keys, so we replace `::` with `__`.
@@ -189,6 +199,7 @@ impl GraphPersistence {
     }
 
     pub fn ensure_schema(&mut self) -> Result<()> {
+        let _guard = lock_graph_schema_write()?;
         self.client
             .batch_execute("CREATE EXTENSION IF NOT EXISTS age;")
             .map_err(db_err("create age extension"))?;
@@ -392,6 +403,7 @@ impl GraphPersistence {
         if records.is_empty() {
             return Ok(());
         }
+        let _guard = lock_graph_schema_write()?;
         validate_runtime_guid_uniqueness(records)?;
         self.client
             .batch_execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
@@ -484,6 +496,7 @@ impl GraphPersistence {
             return Ok(());
         }
 
+        let _guard = lock_graph_schema_write()?;
         let mut tx = self
             .client
             .transaction()
@@ -498,6 +511,7 @@ impl GraphPersistence {
         if entity_ids.is_empty() {
             return Ok(());
         }
+        let _guard = lock_graph_schema_write()?;
         self.client
             .batch_execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
             .map_err(db_err("prep age for graph remove"))?;
@@ -531,6 +545,7 @@ impl GraphPersistence {
     }
 
     pub fn drop_graph(mut self) -> Result<()> {
+        let _guard = lock_graph_schema_write()?;
         self.client
             .batch_execute("LOAD 'age'; SET search_path = ag_catalog, \"$user\", public;")
             .map_err(db_err("prep age for graph drop"))?;
@@ -706,6 +721,7 @@ impl GraphPersistence {
 }
 
 pub fn ensure_schema_in_transaction(tx: &mut Transaction<'_>, graph_name: &str) -> Result<()> {
+    let _guard = lock_graph_schema_write()?;
     tx.batch_execute("CREATE EXTENSION IF NOT EXISTS age;")
         .map_err(db_err("create age extension"))?;
     tx.batch_execute("LOAD 'age';")

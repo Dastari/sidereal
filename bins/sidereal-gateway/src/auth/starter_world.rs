@@ -138,26 +138,26 @@ pub fn persist_starter_world_for_new_account(
     }
     let Some(selected_bundle) = bundle_registry
         .bundles
-        .get(&player_init_config.ship_bundle_id)
+        .get(&player_init_config.controlled_bundle_id)
     else {
         return Err(AuthError::Internal(format!(
-            "accounts/player_init.lua selected ship_bundle_id={} missing from bundles/bundle_registry.lua",
-            player_init_config.ship_bundle_id
+            "accounts/player_init.lua selected controlled_bundle_id={} missing from bundles/bundle_registry.lua",
+            player_init_config.controlled_bundle_id
         )));
     };
 
-    if selected_bundle.bundle_class != "ship" {
+    if selected_bundle.bundle_class != "controllable" {
         return Err(AuthError::Internal(format!(
-            "accounts/player_init.lua selected bundle_id={} bundle_class={} (expected ship)",
+            "accounts/player_init.lua selected bundle_id={} bundle_class={} (expected controllable)",
             selected_bundle.bundle_id, selected_bundle.bundle_class
         )));
     }
 
     info!(
-        "gateway starter ship bundle selected {} (scripted graph records) for account_id={} player_entity_id={}",
+        "gateway starter controlled bundle selected {} (scripted graph records) for account_id={} player_entity_id={}",
         selected_bundle.bundle_id, account_id, player_entity_id
     );
-    let ship_graph_records = load_graph_records_for_bundle(
+    let controlled_graph_records = load_graph_records_for_bundle(
         &scripts_root,
         selected_bundle,
         ScriptContext {
@@ -167,8 +167,10 @@ pub fn persist_starter_world_for_new_account(
             controlled_entity_guid: None,
         },
     )?;
-    let controlled_entity_id =
-        resolve_controlled_entity_id(&ship_graph_records, selected_bundle.bundle_id.as_str())?;
+    let controlled_entity_id = resolve_controlled_entity_id(
+        &controlled_graph_records,
+        selected_bundle.bundle_id.as_str(),
+    )?;
 
     let Some(player_bundle) = bundle_registry
         .bundles
@@ -195,7 +197,7 @@ pub fn persist_starter_world_for_new_account(
             controlled_entity_guid: Some(&controlled_entity_id),
         },
     )?;
-    graph_records.extend(ship_graph_records);
+    graph_records.extend(controlled_graph_records);
     persistence
         .persist_graph_records(&graph_records, 0)
         .map_err(|err| AuthError::Internal(format!("persist starter world failed: {err}")))?;
@@ -273,19 +275,95 @@ fn resolve_controlled_entity_id(
     records: &[GraphEntityRecord],
     bundle_id: &str,
 ) -> Result<String, AuthError> {
-    if let Some(record) = records
+    let mut marked_records = records
         .iter()
-        .find(|record| record.labels.iter().any(|label| label == "Ship"))
-    {
-        return Ok(record.entity_id.clone());
-    }
-    records
-        .first()
-        .map(|record| record.entity_id.clone())
-        .ok_or_else(|| {
-            AuthError::Internal(format!(
-                "bundle {} returned no graph records; cannot resolve controlled_entity_guid",
-                bundle_id
-            ))
+        .filter(|record| {
+            record
+                .components
+                .iter()
+                .any(|component| component.component_kind == "controlled_start_target")
         })
+        .map(|record| record.entity_id.clone());
+
+    let Some(controlled_entity_id) = marked_records.next() else {
+        return Err(AuthError::Internal(format!(
+            "bundle {} returned no controlled_start_target component; cannot resolve controlled_entity_guid",
+            bundle_id
+        )));
+    };
+
+    if marked_records.next().is_some() {
+        return Err(AuthError::Internal(format!(
+            "bundle {} returned multiple controlled_start_target components; starter control target is ambiguous",
+            bundle_id
+        )));
+    }
+
+    Ok(controlled_entity_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_controlled_entity_id;
+    use serde_json::json;
+    use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
+
+    fn graph_record(entity_id: &str, component_kinds: &[&str]) -> GraphEntityRecord {
+        GraphEntityRecord {
+            entity_id: entity_id.to_string(),
+            labels: vec!["Entity".to_string()],
+            properties: json!({}),
+            components: component_kinds
+                .iter()
+                .map(|component_kind| GraphComponentRecord {
+                    component_id: format!("{entity_id}:{component_kind}"),
+                    component_kind: (*component_kind).to_string(),
+                    properties: json!({}),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn controlled_entity_resolves_from_marker_component_not_labels() {
+        let records = vec![
+            graph_record("module-a", &["display_name"]),
+            graph_record("controlled-a", &["display_name", "controlled_start_target"]),
+        ];
+
+        let resolved = resolve_controlled_entity_id(&records, "test.bundle").expect("resolve");
+
+        assert_eq!(resolved, "controlled-a");
+    }
+
+    #[test]
+    fn controlled_entity_requires_exactly_one_marker_component() {
+        let missing = resolve_controlled_entity_id(
+            &[graph_record(
+                "ship-looking-label-is-not-enough",
+                &["display_name"],
+            )],
+            "test.bundle",
+        )
+        .expect_err("missing marker should fail");
+        assert!(
+            missing
+                .to_string()
+                .contains("no controlled_start_target component")
+        );
+
+        let duplicate = resolve_controlled_entity_id(
+            &[
+                graph_record("controlled-a", &["controlled_start_target"]),
+                graph_record("controlled-b", &["controlled_start_target"]),
+            ],
+            "test.bundle",
+        )
+        .expect_err("duplicate marker should fail");
+        assert!(
+            duplicate
+                .to_string()
+                .contains("multiple controlled_start_target")
+        );
+    }
 }

@@ -1,5 +1,7 @@
 use sidereal_persistence::GraphPersistence;
 use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
+use std::sync::{Arc, Barrier};
+use std::thread;
 use uuid::Uuid;
 
 fn test_database_url() -> String {
@@ -140,6 +142,72 @@ fn graph_persistence_full_lifecycle_ship_hardpoint_engine() {
     assert_eq!(
         ship_after.properties["velocity_mps"],
         serde_json::json!([19.0, 0.0, 0.0])
+    );
+
+    persistence.drop_graph().expect("test graph should drop");
+}
+
+#[test]
+fn graph_persistence_serializes_concurrent_same_entity_writes() {
+    let database_url = test_database_url();
+    let graph_name = unique_graph_name("sidereal_persistence_concurrent_control");
+    let mut persistence = match GraphPersistence::connect_with_graph(&database_url, &graph_name) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!("skipping concurrent graph write test; postgres unavailable: {err}");
+            return;
+        }
+    };
+    if let Err(err) = persistence.ensure_schema() {
+        tracing::warn!("skipping concurrent graph write test; AGE schema unavailable: {err}");
+        return;
+    }
+
+    let player_id = Uuid::new_v4().to_string();
+    let database_url = Arc::new(database_url);
+    let graph_name = Arc::new(graph_name);
+    let barrier = Arc::new(Barrier::new(12));
+    let mut handles = Vec::new();
+
+    for index in 0..12_u64 {
+        let database_url = Arc::clone(&database_url);
+        let graph_name = Arc::clone(&graph_name);
+        let barrier = Arc::clone(&barrier);
+        let player_id = player_id.clone();
+        handles.push(thread::spawn(move || {
+            let mut persistence = GraphPersistence::connect_with_graph(&database_url, &*graph_name)
+                .expect("concurrent writer should connect");
+            let record = GraphEntityRecord {
+                entity_id: player_id,
+                labels: vec!["Entity".to_string(), "Player".to_string()],
+                properties: serde_json::json!({
+                    "controlled_entity_guid": format!("controlled-{index}"),
+                }),
+                components: Vec::new(),
+            };
+            barrier.wait();
+            persistence
+                .persist_graph_records_transactional(&[record], 100 + index)
+                .expect("concurrent same-entity write should serialize");
+        }));
+    }
+
+    for handle in handles {
+        handle
+            .join()
+            .expect("concurrent writer thread should finish");
+    }
+
+    let records = persistence
+        .load_graph_records()
+        .expect("load graph records should succeed");
+    let player = records
+        .iter()
+        .find(|record| record.entity_id == player_id)
+        .expect("player entity should persist");
+    assert_eq!(
+        player.properties["controlled_entity_guid"],
+        serde_json::json!("controlled-11")
     );
 
     persistence.drop_graph().expect("test graph should drop");

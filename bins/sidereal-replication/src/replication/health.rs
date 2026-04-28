@@ -132,6 +132,7 @@ pub struct ReplicationHealthSnapshot {
     pub visibility_max_entities_per_cell: usize,
     pub visibility_visible_gains: usize,
     pub visibility_visible_losses: usize,
+    pub visibility_delivery_range_clamped_requests_total: u64,
     pub persistence_enqueued_batches: u64,
     pub persistence_queue_full_events: u64,
     pub persistence_disconnected_events: u64,
@@ -520,6 +521,9 @@ pub fn update_health_snapshot(
         visibility_max_entities_per_cell: inputs.visibility_metrics.max_entities_per_cell,
         visibility_visible_gains: inputs.visibility_metrics.visible_gains,
         visibility_visible_losses: inputs.visibility_metrics.visible_losses,
+        visibility_delivery_range_clamped_requests_total: inputs
+            .visibility_metrics
+            .delivery_range_clamped_requests_total,
         persistence_enqueued_batches: inputs.persistence_state.enqueued_batches(),
         persistence_queue_full_events: inputs.persistence_state.queue_full_events(),
         persistence_disconnected_events: inputs.persistence_state.disconnected_events(),
@@ -976,6 +980,7 @@ mod tests {
             session_count: 4,
             fixed_ticks_last_update: 2,
             input_rate_limited_drop_total: 5,
+            visibility_delivery_range_clamped_requests_total: 6,
             ..Default::default()
         };
         let value = serde_json::to_value(&snapshot).unwrap();
@@ -983,6 +988,7 @@ mod tests {
         assert_eq!(value["session_count"], 4);
         assert_eq!(value["fixed_ticks_last_update"], 2);
         assert_eq!(value["input_rate_limited_drop_total"], 5);
+        assert_eq!(value["visibility_delivery_range_clamped_requests_total"], 6);
         assert!(value.get("sessions").is_none());
     }
 

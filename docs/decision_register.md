@@ -1255,3 +1255,30 @@ For each decision:
   - `docs/features/asset_delivery_contract.md`
   - `docs/sidereal_design_document.md`
   - `AGENTS.md`
+
+## DR-0038: Lighting V2 Material Contract
+- Status: Accepted
+- Date: 2026-04-28
+- Owners: client rendering + gameplay runtime + asset/shader authoring
+- Context:
+  - Lighting V1 shares world lighting across several materials but still resolves one primary light and one dominant local light.
+  - Sidereal's continuous galaxy needs authored stellar falloff, a readable deep-space ambient floor, and dynamic local lights from bullets, impacts, thrusters, and explosions.
+- Decision:
+  - Lighting V2 uses top 2 stellar lights, top 8 local dynamic lights, authored smooth falloff, deep-space ambient from `EnvironmentLightingState`, and a shared `Material2d` uniform contract for world-facing shaders.
+  - Lighting remains client-derived presentation state and must not write authoritative simulation state.
+- Alternatives considered:
+  - Keep the V1 one-local-light path: rejected because overlapping stars and combat lighting need multiple contributors.
+  - Use physical inverse-square lighting: rejected because gameplay readability and authoring control are the priority.
+  - Use Bevy 3D PBR lights as the primary path: rejected because the world render stack is 2D material-driven and must stay native/WASM consistent.
+- Consequences:
+  - Positive: star influence fades cleanly, deep-space objects stay readable, bullets/impacts can light surfaces, and ships/generic sprites can join the same world-lighting model.
+  - Negative: shader ABI/cache parity and shader-loop cost require stricter validation.
+- Follow-up:
+  - Implement the phased plan and migrate world-facing materials.
+- Decision doc:
+  - `docs/decisions/dr-0038_lighting_v2_material_contract.md`
+- References:
+  - `docs/decisions/dr-0038_lighting_v2_material_contract.md`
+  - `docs/plans/lighting_v2_overhaul_plan.md`
+  - `docs/plans/lighting_model_and_dynamic_space_events_plan.md`
+  - `docs/core_systems_catalog_v1.md`

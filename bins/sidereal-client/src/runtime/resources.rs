@@ -14,6 +14,7 @@ use sidereal_game::{EntityAction, ScannerContactDetailTier};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) type GatewayFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + 'static>>;
@@ -882,7 +883,7 @@ pub(crate) struct DeferredPredictedAdoptionState {
     pub resolved_max_wait_s: f64,
     pub last_summary_at_s: f64,
     // Sidereal supports dynamic control handoff and free-roam via the persisted player
-    // anchor. If the intended controlled ship never gets a Predicted clone, we must not
+    // anchor. If the intended controlled entity never gets a Predicted clone, we must not
     // silently bind local control to an Interpolated fallback because that breaks the
     // single-writer motion invariant and feels "jerky" rather than truly predicted.
     pub missing_predicted_control_entity_id: Option<String>,
@@ -893,10 +894,6 @@ pub(crate) struct DeferredPredictedAdoptionState {
 pub(crate) enum ControlBootstrapPhase {
     Idle,
     PendingPredicted {
-        target_entity_id: String,
-        generation: u64,
-    },
-    ActiveAnchor {
         target_entity_id: String,
         generation: u64,
     },
@@ -974,9 +971,9 @@ impl PredictionRollbackStateTuning {
             .map(str::to_ascii_lowercase)
             .as_deref()
         {
-            Some("always") => Self::Always,
             Some("disabled") => Self::Disabled,
-            _ => Self::Check,
+            Some("check") => Self::Check,
+            _ => Self::Always,
         }
     }
 }
@@ -1113,4 +1110,32 @@ pub(crate) struct DisconnectRequest(pub bool);
 #[derive(Debug, Resource, Default)]
 pub(crate) struct PauseMenuState {
     pub open: bool,
+}
+
+#[derive(Debug, Resource, Default)]
+pub(crate) struct ServerDisconnectDialogState {
+    pub shown: bool,
+}
+
+#[derive(Debug, Resource, Clone, Default)]
+pub(crate) struct SharedClientTransportErrorBuffer {
+    inner: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl SharedClientTransportErrorBuffer {
+    pub(crate) fn push(&self, message: String) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.push_back(message);
+            while guard.len() > 16 {
+                let _ = guard.pop_front();
+            }
+        }
+    }
+
+    pub(crate) fn drain(&self) -> Vec<String> {
+        let Ok(mut guard) = self.inner.lock() else {
+            return Vec::new();
+        };
+        guard.drain(..).collect()
+    }
 }

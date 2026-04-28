@@ -8,6 +8,10 @@ Scope: current Lua-authored asteroid field-member bootstrap and procedural aster
 ## 0. Status Notes
 
 - 2026-04-24: Current implementation remains phase-1 live: `asteroid.field_member` graph records are generated from Lua, persisted as individual world entities, replicated through normal world visibility, and rendered with procedural sprite/streamed shader support. Not yet implemented: the field-root activation/depletion/fracture model described in `docs/features/asteroid_field_system.md`. Native impact: current path is live. WASM impact: shared content/runtime path should remain target-shared; live browser validation remains deferred behind native stabilization.
+- 2026-04-28: Asteroid shader lighting now blends generated normal-map relief back under a macro spherical normal so the star-facing hemisphere drives the dominant light/shadow shape. UV-local albedo/ridge variation was reduced so surface texture reads as rock grain rather than independent light patches. Native impact: asteroids near the same light source should share a coherent lit side while preserving local bump detail. WASM impact: shader-only behavior change within the existing rotated-light material contract.
+- 2026-04-28: Asteroid materials now pass parent world rotation into the shader as a local rotation uniform. The shader rotates world/local light directions into asteroid-local normal-map space before computing lighting, so spun or rotated asteroid sprites no longer appear to carry independent light sources. Native impact: asteroid shadowing should stay coherent with the star/local light while the sprite rotates. WASM impact: shared asteroid material binding contract changed and must compile with the same WGSL/cache payload.
+- 2026-04-27: Asteroid shader style was retuned to sample procedural albedo at native UVs, desaturate generated asteroid colors into a grey stone palette, and use the generated normal map for smoother relief lighting with darkened chipped edges. Native impact: field asteroids should read less pixelated and less red/yellow noisy while retaining procedural craters, cracks, and silhouette variation. WASM impact: no new binding contract; browser builds consume the same shader/cache payload.
+- 2026-04-27: Procedural asteroid generation now avoids per-pixel edge noise, uses smoothed low-frequency silhouette noise, produces a browner neutral albedo without baked directional lighting, and post-smooths/caps collision outlines after RDP tracing. Native impact: visual outlines and Avian collision outlines should align without a jagged sawtooth border, and shader lighting should carry the directional read. WASM impact: shared generator behavior changed but remains target-shared.
 - 2026-04-27: Native asteroid rendering now binds the generated procedural normal map into `AsteroidSpriteShaderMaterial` and shades it through the shared world-lighting uniform. The normal texture is treated as linear data, while albedo remains sRGB. Native impact: asteroids should read as more faceted, bumped rocks under the active star/local light. WASM impact: shared material/shader bindings changed and must compile on browser targets.
 - 2026-04-26: Asteroid Field System V2 is now the active replacement direction for field roots, deterministic member lineage, zero-health fracture, resource profiles, and field ambient effects; see `docs/features/asteroid_field_system_v2.md`. This document remains the live reference for the current procedural sprite/member baseline that V2 builds on. Native impact: current asteroid visuals will evolve in the native client first. WASM impact: procedural generation and schemas remain shared-client compatible.
 - 2026-04-26: Procedural asteroid payloads now include surface style, pixel-step, crack intensity, mineral vein intensity, mineral accent color, and optional family seed key. The generator uses these to produce chunkier top-down ARPG-style silhouettes, quantized color bands, cracks, and ore accents. Native impact: native streamed asteroid visuals rebuild from the expanded payload. WASM impact: schema is shared and must be consumed by browser builds before live parity resumes.
@@ -22,10 +26,10 @@ Asteroids are now generated from `data/scripts/world/world_init.lua` using bundl
 
 - `world_init.lua` calls `spawn_bundle_graph_records("asteroid.field_member", overrides)` in a deterministic loop.
 - Default field profile:
-  - `asteroid_field_count = 120`
+  - `asteroid_field_count = 150`
   - center at `(0, 0)`
   - radial distribution with deterministic jitter
-  - diameter range `4m..28m`
+  - diameter range `12m..72m`
 - World init remains one-time/idempotent via `script_world_init_state` guard.
 
 ### 1.2 Asteroid bundle
@@ -68,9 +72,9 @@ The client generates the actual asteroid sprite from that payload plus entity GU
 The authoritative host uses that same payload plus entity ID to derive:
 - collision half extents
 - RDP collision outline
-- the same procedural silhouette deterministically
+- the same procedural silhouette deterministically, then a post-smoothed/capped outline polygon
 
-The shared generator also produces a normal-map texture from the generated height field so asteroid lighting can be added later without changing the authored content model.
+The shared generator also produces a normal-map texture from the generated height field. Native clients bind that linear normal texture into `AsteroidSpriteShaderMaterial`, and `data/shaders/asteroid.wgsl` consumes it with `SharedWorldLightingUniforms` so asteroid lighting uses the same generated shape data as the sprite and collider without introducing a separate PBR/material lane.
 
 ## 2. Determinism Model
 
@@ -91,8 +95,8 @@ Given the same script defaults, first-world bootstrap produces stable layout and
 Asteroids are now rendered as 2D procedurally generated sprites:
 - Lua bundle scripts author the replicated procedural sprite profile.
 - Client runtime generates an irregular alpha-masked sprite from the entity GUID.
-- Client runtime also generates a matching normal map from the same height field and keeps it available for later lighting work.
-- `data/shaders/asteroid.wgsl` runs as the asteroid-specific 2D sprite shader.
+- Client runtime also generates a matching linear normal map from the same height field and binds it to the asteroid material.
+- `data/shaders/asteroid.wgsl` runs as the asteroid-specific 2D sprite shader and combines procedural albedo, generated normal relief, shared world lighting, and parent rotation into a grey stone asteroid treatment.
 
 ## 4. Collision Model
 
@@ -107,10 +111,9 @@ This keeps visual sprite generation and collision generation aligned because bot
 
 1. Move more surface-generation parameters out of Rust and into Lua-authored replicated payloads.
 2. Add multiple asteroid generator profiles beyond `asteroid_rocky_v1`.
-3. Bake the shared 2.5D lighting contract into the sprite/material stack so asteroid albedo + normal generation feeds the same world-lighting model as ships and planets.
+3. Extend the shared 2.5D lighting contract to ship/world-sprite materials so they use the same directionality as asteroids and planets.
 4. Add LOD policy for sprite resolution and shader detail.
-5. Consume the generated normal map in asteroid lighting/material work.
-6. Replace the fallback `red.png` placeholder source with a neutral white mask asset or remove that dependency entirely.
+5. Replace the fallback `red.png` placeholder source with a neutral white mask asset or remove that dependency entirely.
 
 ## 6. Files
 

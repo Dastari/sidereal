@@ -22,12 +22,37 @@ Primary references:
 
 2026-04-27 status note:
 
-1. Implemented first client slice: `ScannerComponent` now carries contact detail tier, density/directional support, and contact cap fields; starter ship bundles author root scanners; the native client has a TAB-toggle tactical sensor ring that draws broken radial ticks, a forward cue, optional density bars, and contact blips from `TacticalContactsCache`.
+1. Implemented first client slice: `ScannerComponent` now carries contact detail tier, density/directional support, and contact cap fields; the native client has a TAB-toggle tactical sensor ring that draws broken radial ticks, a forward cue, optional density bars, and contact blips from `TacticalContactsCache`.
 2. Implemented client availability gating: the ring opens only for a non-player-anchor controlled entity with an active scanner profile and closes when the tactical map is active, control changes, or scanner capability disappears.
 3. Open server work: tactical contact disclosure is not yet fully gated/redacted by the controlled entity scanner tier. Existing tactical lane data is consumed as-is by the first client ring slice.
 4. Open visual polish: the first slice uses simple `Mesh2d` primitives for ticks and blips; SVG contact icon reuse, scanner pulse effects, and target selection remain future work.
 5. Native impact: this feature adds native Bevy HUD presentation and TAB input handling.
 6. WASM impact: implementation remains in shared client code. Live browser validation can remain deferred while native stabilization is the priority, but shared client code must compile for WASM.
+
+2026-04-27 server implementation update:
+
+1. The replication tactical stream now shares the client ring's core scanner-source rule: only the currently controlled non-player-anchor entity can provide scanner-derived tactical products.
+2. Server source resolution supports root scanners and direct mounted scanner modules, using `VisibilityRangeM` when present and falling back to `ScannerComponent.base_range_m`.
+3. No-scanner states now produce no live scanner cells and no tactical contacts from the scanner lane; already explored fog memory is retained.
+4. Remaining server work: scanner-tier redaction still needs a centralized helper and tests before the server disclosure model fully matches the tier table below.
+
+2026-04-28 client visual update:
+
+1. Tactical sensor ring contact markers now use the same cached/tinted SVG icon resolution path as the in-game tactical map, including `TacticalContact.map_icon_asset_id`, tactical presentation default fallbacks, map marker scale multipliers, and tactical map contact color.
+2. Ring bearing math now follows the ship heading convention used by flight/runtime transforms: heading `0` points along world `+Y`, so forward contacts appear at the top of the ring and starboard contacts appear to the right.
+3. Native impact: TAB ring contact icons and bearings are visually aligned with the tactical map. WASM impact: shared client runtime code changed; no transport or browser-only path changed.
+
+2026-04-28 correction:
+
+1. The ring contact rim is now screen-relative rather than ship-heading-relative: contacts projected left/right/up/down from the controlled entity on the current camera viewport appear in the corresponding ring direction.
+2. The bright outer cue is no longer a fixed forward marker. It is a directionally binned signal-strength band using disclosed `TacticalContact.signal_strength`, with visible stars/black holes/planets treated as gravity-well signal sources for presentation when exact contacts are already disclosed.
+3. The server now includes relative signal strength/quality on exact visible contacts when the contact has `SignalSignature` and the player's resolved scanner source can detect that signal.
+
+2026-04-27 content authoring note:
+
+1. The starter corvette authors scanner capability as a mounted `Scanner Array MK1` module on a `scanner_dorsal` hardpoint.
+2. The corvette root carries its own `VisibilityRangeBuffM` for intrinsic hull/passive visibility, independent of installed scanner modules.
+3. The scanner module carries both `ScannerComponent` and `VisibilityRangeBuffM`, so the ring can resolve the mounted scanner and runtime visibility range aggregation can contribute the module's range to the controlled ship.
 
 2026-04-27 visual target note:
 

@@ -4,10 +4,13 @@
 
 The live client path is a layered **2D planet billboard** pipeline built on Bevy `Material2d`, not the older 3D/PBR sketch path.
 
-2026-04-24 update: the active runtime shader is now the unified `planet_visual.wgsl` family. Lua still authors a layered visual stack, but all planet, cloud, ring, star, and black-hole passes select behavior through the stable planet material uniform/pass contract instead of separate body/cloud/ring shader files.
+2026-04-24 update: the active runtime shader became the unified `planet_visual.wgsl` family. Lua still authors a layered visual stack, but planet, cloud, ring, star, and black-hole passes selected behavior through the stable planet material uniform/pass contract instead of separate body/cloud/ring shader files.
 
-Active runtime shader:
+2026-04-28 update: stars are split out to `star_visual.wgsl` with shader family `world_polygon_star`. The split keeps the same `PlanetBodyShaderSettings` uniform ABI for now, but star corona/photosphere logic no longer lives in the planet shader path.
+
+Active runtime shaders:
 - `planet_visual.wgsl`
+- `star_visual.wgsl`
 
 Reference-only legacy sketches still in the repo:
 - `planet_core.wgsl`
@@ -70,7 +73,6 @@ Responsible for:
 - terran water-mask specular response
 - derivative-based bump-style lighting from the height field
 - atmosphere/rim/emissive response
-- star body rendering
 - black-hole event-horizon body rendering
 
 Not responsible for:
@@ -99,6 +101,20 @@ The visible line artifacts on terran planets came from overloading the old body 
 
 2026-04-24 cloud update: cloud density now branches by planet type instead of evaluating terran and gas-family cloud functions for every cloud/shadow sample. Terran clouds use a cheaper broad-cell plus feathered-wisp field, and Lua-authored cloud passes use a lower shell scale so Aurelia-style planets keep weather visually close to the surface.
 
+2026-04-28 star/corona update: the active `planet_visual.wgsl` star path no longer samples corona or photosphere noise from unwrapped longitude coordinates. Corona fields now fade before the render quad edge, which avoids hard rectangular flare cutoffs, star bodies reserve more in-material space for radial streamer/tendril prominences, and the photosphere uses deeper orange mids. Planet color grading is slightly desaturated and darkened to reduce the washed-out look.
+
+2026-04-28 Helion palette update: the starter star uses more separated hot-gold, orange, ember, and red-orange authored colors. The star shader also preserves dark convection lanes more aggressively and uses star saturation/contrast authoring so tone mapping does not flatten the surface into a uniform yellow disc.
+
+2026-04-28 authored hue update: star hue now comes from material color fields only. The shader uses scalar weighting for surface/corona detail instead of hidden yellow/orange RGB multipliers, so all-white authored colors produce neutral white star shading.
+
+2026-04-28 photosphere update: star surface detail now combines sphere-space flow with screen-disc convection cells to avoid center-pole convergence artifacts. Corona prominences are one-sided limb lobes that extend outward from the edge rather than symmetric quad-space arcs. Near-grayscale authored star palettes are forced back to neutral luminance after grading so Genesis all-white color controls stay visually white.
+
+2026-04-28 prominence update: the star corona is now an edge-emitted polar plasma field. Alpha starts at the authored star radius, flare length varies by angle, radial filament bands taper outward from the limb, and color/alpha share the same density field so prominences read as attached fiery plasma rather than detached smoky blobs.
+
+2026-04-28 star shader split: `star_visual.wgsl` is now the active star body shader. It fakes three separate phenomena instead of treating the sun as one noisy halo: a bright limb corona, high-frequency radial wisps/tendrils generated in polar space from the star edge, and sparse procedural parabolic prominence loops that grow/fade without CPU-side event state. The planet shader remains responsible for planets, clouds, rings, and black holes.
+
+2026-04-28 Genesis star control update: the star shader maps existing `PlanetBodyShaderSettings` fields to star-specific controls so authoring does not require a schema migration yet. `cloud_speed` controls flare/arc event rate, `spot_density` and `surface_activity` control flare count/density, `bands_count` controls active arc events, `corona_intensity` controls flare reach, `atmosphere_thickness`/`atmosphere_alpha` control glow size/alpha, `color_atmosphere_rgb` controls glow color, and `color_night_lights_rgb` controls the star back/shadow color visible behind rim plasma.
+
 ## Tuning Notes
 
 Useful references for the current look direction:
@@ -115,10 +131,10 @@ We are **not** trying to reproduce a pixel-art pipeline.
 
 ## Lua / Schema Interface
 
-Lua exposes the planet shader through the asset registry as `planet_visual_wgsl` with shader/editor metadata. Starter planet bundles attach that asset ID through `sprite_shader_asset_id`, replicate persisted tuning through `PlanetBodyShaderSettings`, and compose the pass stack through `RuntimeWorldVisualStack`.
+Lua exposes the planet shader through the asset registry as `planet_visual_wgsl` with shader/editor metadata. Stars use `star_visual_wgsl` / `world_polygon_star`. Starter planet bundles attach that asset ID through `sprite_shader_asset_id`, replicate persisted tuning through `PlanetBodyShaderSettings`, and compose the pass stack through `RuntimeWorldVisualStack`.
 
 The dashboard-facing schema remains data-driven from the Lua asset registry and generated metadata. Shader implementation changes must preserve:
-- `data/shaders/planet_visual.wgsl` and `data/cache_stream/shaders/planet_visual.wgsl` parity
+- source and generated cache parity for `planet_visual_wgsl` and `star_visual_wgsl`
 - the existing `PlanetBodyShaderSettings` field names unless Rust/Lua/dashboard schemas are updated together
 - the existing planet material uniform/pass ABI unless the client runtime and editor metadata are updated in the same change
 

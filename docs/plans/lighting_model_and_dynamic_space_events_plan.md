@@ -12,6 +12,10 @@ Update note (2026-03-10):
 
 Update note (2026-04-27):
 - Asteroid world sprites now consume generated normal-map textures in `AsteroidSpriteShaderMaterial` alongside the shared world-lighting uniform. This completes the asteroid-specific bump-lighting proof point described below without adding a separate lighting authority path. Native impact: asteroid materials use albedo + linear normal map + shared lighting. WASM impact: the material binding contract is shared and must remain in shader/cache parity for browser builds.
+- Starter environment-lighting defaults now use a lower primary elevation, warmer key color, reduced ambient fill, and weaker backlight so 2D material normal response is visibly directional instead of reading as static flat fill. Native impact: asteroids and planets should show stronger lit/shadowed faces from the active star direction. WASM impact: data defaults and shared replicated component defaults changed only; no platform-specific path.
+
+Update note (2026-04-28):
+- Lighting V2 is now tracked as `system.lighting.v2` with a dedicated implementation plan in `docs/plans/lighting_v2_overhaul_plan.md` and decision record `docs/decisions/dr-0038_lighting_v2_material_contract.md`. V2 supersedes the current one-primary/one-local material ABI with top-2 stellar lights, authored stellar falloff, deep-space ambient, and top-8 dynamic local emitters. Native impact: all world-facing materials must migrate to the V2 uniform contract or document an emissive/UI exemption. WASM impact: shader source, streamed cache, and published cache must remain in V2 binding parity.
 
 Primary references:
 - `docs/sidereal_design_document.md`

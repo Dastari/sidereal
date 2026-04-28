@@ -6,6 +6,7 @@ import {
   Globe2,
   Orbit,
   Settings,
+  Ship,
   Sparkles,
   UserRound,
   Volume2,
@@ -70,6 +71,13 @@ export const toolNavItems: Array<ToolNavItem> = [
     description:
       'Planet registry authoring, deterministic randomization, and Lua publishing.',
     icon: Globe2,
+  },
+  {
+    to: '/shipyard',
+    label: 'Shipyard',
+    description:
+      'Ship registry authoring, hardpoint layout, and module library editing.',
+    icon: Ship,
   },
   {
     to: '/sound-studio',

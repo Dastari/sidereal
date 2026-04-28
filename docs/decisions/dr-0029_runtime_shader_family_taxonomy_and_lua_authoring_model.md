@@ -9,6 +9,12 @@ Status note (2026-03-12):
 1. `RuntimeEffectMaterial` now has an initial explosion billboard variant in addition to thruster plume, impact spark, and tracer usage.
 2. Explosion visuals still use the same fixed Rust-owned effect family ABI; no new standalone explosion material type was introduced.
 
+Status note (2026-04-28):
+
+1. Native client runtime shader reloads now preflight streamed WGSL with Naga and validate every declared `@group(2)` resource against the fixed Rust-owned material-family ABI before installing it into a Bevy shader handle.
+2. Invalid streamed shader updates are rejected without replacing the currently installed shader. If there is no previous shader for that slot, the client installs the family fallback shader instead.
+3. This preserves live shader editing while preventing material binding-layout mismatches from reaching wgpu pipeline creation, where they are fatal by default. WASM uses the same shared validation path when streamed shader overrides are enabled; existing browser-safe fullscreen fallbacks remain unchanged.
+
 Primary references:
 - `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`
 - `docs/plans/dynamic_runtime_shader_material_plan.md`

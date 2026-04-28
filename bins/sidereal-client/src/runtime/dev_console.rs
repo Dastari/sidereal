@@ -36,6 +36,7 @@ use uuid::Uuid;
 use super::app_state::ClientSession;
 use super::ecs_util::queue_despawn_if_exists;
 use super::notification_ui::NotificationQueue;
+use super::resources::SharedClientTransportErrorBuffer;
 
 const DEV_CONSOLE_MAX_BUFFER_LINES: usize = 10_000;
 const DEV_CONSOLE_VISIBLE_LINES_MAX: usize = 200;
@@ -159,6 +160,7 @@ fn console_timestamp_epoch_ms() -> u128 {
 
 pub(crate) struct ConsoleTracingLayer {
     buffer: SharedConsoleLogBuffer,
+    transport_errors: SharedClientTransportErrorBuffer,
 }
 
 impl<S> Layer<S> for ConsoleTracingLayer
@@ -174,6 +176,11 @@ where
         let mut visitor = ConsoleFieldVisitor::default();
         event.record(&mut visitor);
         let message = visitor.render_message();
+        if metadata.target() == "lightyear_udp"
+            && message.starts_with("Error receiving UDP packet:")
+        {
+            self.transport_errors.push(message.trim().to_string());
+        }
         self.buffer.push(
             *metadata.level(),
             metadata.target().to_string(),
@@ -239,7 +246,19 @@ pub(crate) fn build_log_capture_layer(app: &mut App) -> Option<BoxedLayer> {
             app.world_mut().insert_resource(created.clone());
             created
         });
-    Some(Box::new(ConsoleTracingLayer { buffer }))
+    let transport_errors = app
+        .world_mut()
+        .get_resource::<SharedClientTransportErrorBuffer>()
+        .cloned()
+        .unwrap_or_else(|| {
+            let created = SharedClientTransportErrorBuffer::default();
+            app.world_mut().insert_resource(created.clone());
+            created
+        });
+    Some(Box::new(ConsoleTracingLayer {
+        buffer,
+        transport_errors,
+    }))
 }
 
 #[derive(Clone)]

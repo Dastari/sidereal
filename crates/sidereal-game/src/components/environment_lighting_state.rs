@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 /// The JSON must match `EnvironmentLightingState` and use arrays for `Vec2`/`Vec3` fields.
 pub const DEFAULT_ENVIRONMENT_LIGHTING_STATE_JSON: &str = r#"{
   "primary_direction_xy": [0.76, 0.58],
-  "primary_elevation": 0.82,
-  "primary_color_rgb": [1.0, 0.97, 0.92],
-  "primary_intensity": 1.0,
-  "ambient_color_rgb": [0.22, 0.3, 0.42],
-  "ambient_intensity": 0.18,
+  "primary_elevation": 0.36,
+  "primary_color_rgb": [1.0, 0.92, 0.78],
+  "primary_intensity": 1.15,
+  "ambient_color_rgb": [0.16, 0.20, 0.27],
+  "ambient_intensity": 0.12,
   "backlight_color_rgb": [0.28, 0.42, 0.62],
-  "backlight_intensity": 0.16,
+  "backlight_intensity": 0.08,
   "event_flash_color_rgb": [1.0, 0.95, 0.88],
   "event_flash_intensity": 0.0
 }"#;

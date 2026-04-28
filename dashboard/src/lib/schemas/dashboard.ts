@@ -321,6 +321,144 @@ export const genesisPlanetParamsSchema = z.object({
   planetId: genesisPlanetIdSchema,
 })
 
+const shipyardFiniteNumberSchema = z
+  .number()
+  .finite('numeric Shipyard fields must be finite numbers')
+
+const shipyardVec3Schema = z.tuple([
+  shipyardFiniteNumberSchema,
+  shipyardFiniteNumberSchema,
+  shipyardFiniteNumberSchema,
+])
+
+export const shipyardShipIdSchema = z
+  .string()
+  .trim()
+  .min(1, 'shipId is required')
+  .regex(/^ship\.[a-z0-9_.-]+$/, 'shipId must use the ship.<slug> form')
+
+export const shipyardModuleIdSchema = z
+  .string()
+  .trim()
+  .min(1, 'moduleId is required')
+  .regex(/^module\.[a-z0-9_.-]+$/, 'moduleId must use the module.<slug> form')
+
+export const shipyardHardpointSchema = z.object({
+  hardpoint_id: z.string().trim().min(1).max(96),
+  display_name: z.string().trim().min(1).max(96),
+  slot_kind: z.string().trim().min(1).max(64),
+  offset_m: shipyardVec3Schema.refine(
+    (value) => value[2] === 0,
+    'Shipyard V1 hardpoints must stay on the local X/Y plane',
+  ),
+  local_rotation_rad: shipyardFiniteNumberSchema,
+  mirror_group: z.string().trim().min(1).max(96).nullable().optional(),
+  compatible_tags: z.array(z.string().trim().min(1).max(64)).max(24),
+})
+
+export const shipyardMountedModuleSchema = z.object({
+  hardpoint_id: z.string().trim().min(1).max(96),
+  module_id: shipyardModuleIdSchema,
+  display_name: z.string().trim().min(1).max(96).nullable().optional(),
+  component_overrides: z.record(z.string(), z.unknown()).default({}),
+})
+
+export const shipyardShipDefinitionSchema = z.object({
+  ship_id: shipyardShipIdSchema,
+  bundle_id: shipyardShipIdSchema,
+  script_path: z
+    .string()
+    .trim()
+    .regex(
+      /^ships\/[A-Za-z0-9_.-]+\.lua$/,
+      'scriptPath must stay under ships/ and end in .lua',
+    ),
+  display_name: z.string().trim().min(1).max(96),
+  entity_labels: z.array(z.string().trim().min(1).max(64)).max(16),
+  tags: z.array(z.string().trim().min(1).max(64)).max(24),
+  visual: z.object({
+    visual_asset_id: z.string().trim().min(1).max(128),
+    map_icon_asset_id: z.string().trim().min(1).max(128),
+  }),
+  dimensions: z.object({
+    length_m: shipyardFiniteNumberSchema.min(0.1).max(10_000),
+    width_m: shipyardFiniteNumberSchema
+      .min(0.1)
+      .max(10_000)
+      .nullable()
+      .optional(),
+    height_m: shipyardFiniteNumberSchema.min(0.1).max(10_000),
+    collision_mode: z.string().trim().min(1).max(64),
+    collision_from_texture: z.boolean(),
+  }),
+  root: z.object({
+    base_mass_kg: shipyardFiniteNumberSchema.min(0),
+    total_mass_kg: shipyardFiniteNumberSchema.min(0).nullable().optional(),
+    cargo_mass_kg: shipyardFiniteNumberSchema.min(0).nullable().optional(),
+    module_mass_kg: shipyardFiniteNumberSchema.min(0).nullable().optional(),
+    angular_inertia: shipyardFiniteNumberSchema.min(0).nullable().optional(),
+    max_velocity_mps: shipyardFiniteNumberSchema.min(0),
+    health_pool: z.unknown(),
+    destructible: z.unknown(),
+    flight_computer: z.unknown(),
+    flight_tuning: z.unknown(),
+    visibility_range_buff_m: z.unknown(),
+    scanner_component: z.unknown().optional(),
+    avian_linear_damping: shipyardFiniteNumberSchema
+      .min(0)
+      .nullable()
+      .optional(),
+    avian_angular_damping: shipyardFiniteNumberSchema
+      .min(0)
+      .nullable()
+      .optional(),
+  }),
+  hardpoints: z.array(shipyardHardpointSchema).max(256),
+  mounted_modules: z.array(shipyardMountedModuleSchema).max(256),
+})
+
+export const shipyardShipDraftBodySchema = z.object({
+  definition: shipyardShipDefinitionSchema,
+  spawnEnabled: z.boolean(),
+})
+
+export const shipyardModuleComponentSchema = z.object({
+  kind: z.string().trim().min(1).max(96),
+  properties: z.unknown(),
+})
+
+export const shipyardModuleDefinitionSchema = z.object({
+  module_id: shipyardModuleIdSchema,
+  script_path: z
+    .string()
+    .trim()
+    .regex(
+      /^ship_modules\/[A-Za-z0-9_.-]+\.lua$/,
+      'scriptPath must stay under ship_modules/ and end in .lua',
+    ),
+  display_name: z.string().trim().min(1).max(96),
+  category: z.string().trim().min(1).max(64),
+  entity_labels: z.array(z.string().trim().min(1).max(64)).max(16),
+  compatible_slot_kinds: z
+    .array(z.string().trim().min(1).max(64))
+    .min(1)
+    .max(32),
+  tags: z.array(z.string().trim().min(1).max(64)).max(24),
+  components: z.array(shipyardModuleComponentSchema).max(128),
+})
+
+export const shipyardModuleDraftBodySchema = z.object({
+  definition: shipyardModuleDefinitionSchema,
+})
+
+export const shipyardShipParamsSchema = z.object({
+  shipId: shipyardShipIdSchema,
+})
+
+export const shipyardModuleParamsSchema = z.object({
+  moduleId: shipyardModuleIdSchema,
+})
+
 export type DatabaseAccountsSearch = z.infer<
   typeof databaseAccountsSearchSchema
 >

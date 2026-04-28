@@ -16,7 +16,10 @@ use super::app_state::{
 use super::components::{GameplayCamera, TopDownCamera};
 use super::platform::safe_viewport_size;
 use super::resources::ClientViewModeState;
-use super::resources::{ClientControlRequestState, HeadlessTransportMode};
+use super::resources::{
+    ClientControlRequestState, ClientInputAckTracker, ClientInputSendState, HeadlessTransportMode,
+    NativePredictionRecoveryState,
+};
 
 fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
     if left == right {
@@ -25,6 +28,18 @@ fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
     parse_guid_from_entity_id(left)
         .zip(parse_guid_from_entity_id(right))
         .is_some_and(|(l, r)| l == r)
+}
+
+fn reset_client_input_for_control_generation(
+    ack_tracker: &mut ClientInputAckTracker,
+    input_send_state: &mut ClientInputSendState,
+    recovery_state: &mut NativePredictionRecoveryState,
+) {
+    ack_tracker.pending_ticks.clear();
+    input_send_state.last_sent_at_s = f64::NEG_INFINITY;
+    input_send_state.last_sent_actions.clear();
+    input_send_state.last_sent_target_entity_id = None;
+    recovery_state.pending_neutral_send = false;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -216,10 +231,14 @@ pub fn send_local_view_mode_updates(
     state.last_sent_at_s = now_s;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn receive_lightyear_control_results(
     session: Res<'_, ClientSession>,
     mut player_view_state: ResMut<'_, LocalPlayerViewState>,
     mut request_state: ResMut<'_, ClientControlRequestState>,
+    mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
+    mut input_send_state: ResMut<'_, ClientInputSendState>,
+    mut recovery_state: ResMut<'_, NativePredictionRecoveryState>,
     mut ack_receivers: Query<
         '_,
         '_,
@@ -254,6 +273,8 @@ pub fn receive_lightyear_control_results(
                 request_state.pending_request_seq = None;
                 request_state.last_sent_request_seq = None;
             }
+            let previous_generation = player_view_state.controlled_entity_generation;
+            let previous_controlled_entity_id = player_view_state.controlled_entity_id.clone();
             player_view_state.controlled_entity_generation = message.control_generation;
             if let Some(controlled_entity_id) = message.controlled_entity_id {
                 player_view_state.controlled_entity_id = Some(controlled_entity_id);
@@ -262,6 +283,17 @@ pub fn receive_lightyear_control_results(
             }
             player_view_state.desired_controlled_entity_id =
                 player_view_state.controlled_entity_id.clone();
+            let lease_changed = previous_generation
+                != player_view_state.controlled_entity_generation
+                || previous_controlled_entity_id.as_deref()
+                    != player_view_state.controlled_entity_id.as_deref();
+            if lease_changed {
+                reset_client_input_for_control_generation(
+                    &mut ack_tracker,
+                    &mut input_send_state,
+                    &mut recovery_state,
+                );
+            }
             info!(
                 "client control request acknowledged player={} seq={} authoritative_controlled_entity_id={}",
                 message.player_entity_id,
@@ -289,6 +321,8 @@ pub fn receive_lightyear_control_results(
                 request_state.pending_request_seq = None;
                 request_state.last_sent_request_seq = None;
             }
+            let previous_generation = player_view_state.controlled_entity_generation;
+            let previous_controlled_entity_id = player_view_state.controlled_entity_id.clone();
             player_view_state.controlled_entity_generation = message.control_generation;
             if let Some(authoritative) = message.authoritative_controlled_entity_id {
                 player_view_state.controlled_entity_id = Some(authoritative);
@@ -297,6 +331,17 @@ pub fn receive_lightyear_control_results(
             }
             player_view_state.desired_controlled_entity_id =
                 player_view_state.controlled_entity_id.clone();
+            let lease_changed = previous_generation
+                != player_view_state.controlled_entity_generation
+                || previous_controlled_entity_id.as_deref()
+                    != player_view_state.controlled_entity_id.as_deref();
+            if lease_changed {
+                reset_client_input_for_control_generation(
+                    &mut ack_tracker,
+                    &mut input_send_state,
+                    &mut recovery_state,
+                );
+            }
             let duplicate_stale_seq =
                 message.reason == "stale_seq" && pending_request_seq != Some(message.request_seq);
             if !duplicate_stale_seq {

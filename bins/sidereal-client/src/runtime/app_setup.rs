@@ -31,6 +31,8 @@ fn init_transport_resources(
     app.insert_resource(LogoutCleanupRequested::default());
     app.insert_resource(DisconnectRequest::default());
     app.insert_resource(PauseMenuState::default());
+    app.insert_resource(ServerDisconnectDialogState::default());
+    app.insert_resource(SharedClientTransportErrorBuffer::default());
     app.insert_resource(ClientNetworkTick::default());
     app.insert_resource(ClientInputAckTracker::default());
     app.insert_resource(ClientInputSendState::default());

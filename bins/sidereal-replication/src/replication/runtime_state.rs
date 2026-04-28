@@ -1,3 +1,4 @@
+use avian2d::prelude::Position;
 use bevy::prelude::*;
 use lightyear::prelude::is_in_rollback;
 use lightyear::prelude::server::ClientOf;
@@ -6,7 +7,7 @@ use lightyear::prelude::{
 };
 use sidereal_game::{
     ControlledEntityGuid, EntityGuid, MountedOn, PlayerTag, VisibilityRangeBuffM, VisibilityRangeM,
-    total_visibility_range_for_parent,
+    WorldPosition, resolve_world_position, total_visibility_range_for_parent,
 };
 
 use crate::replication::visibility::ClientObserverAnchorPositionMap;
@@ -20,6 +21,13 @@ type ControlledTargetDebugQueryItem<'a> = (
     Has<InterpolationTarget>,
     Option<&'a ControlledBy>,
     Option<&'a ReplicationState>,
+);
+
+type ObserverAnchorPositionQueryItem<'a> = (
+    Option<&'a Position>,
+    Option<&'a WorldPosition>,
+    Option<&'a GlobalTransform>,
+    Option<&'a Transform>,
 );
 
 #[derive(Resource, Default)]
@@ -141,15 +149,7 @@ pub fn log_player_control_state_changes(
 pub fn update_client_observer_anchor_positions(
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
     controlled_entity_map: Res<'_, crate::replication::PlayerControlledEntityMap>,
-    anchor_positions: Query<
-        '_,
-        '_,
-        (
-            Option<&'_ avian2d::prelude::Position>,
-            Option<&'_ GlobalTransform>,
-            Option<&'_ Transform>,
-        ),
-    >,
+    anchor_positions: Query<'_, '_, ObserverAnchorPositionQueryItem<'_>>,
     mut position_map: ResMut<'_, ClientObserverAnchorPositionMap>,
 ) {
     for (player_entity_id, player_entity) in &player_entities.by_player_entity_id {
@@ -169,17 +169,14 @@ pub fn update_client_observer_anchor_positions(
             .chain(std::iter::once(*player_entity));
 
         for observer_anchor_entity in observer_anchor_entities {
-            let Ok((position, global, transform)) = anchor_positions.get(observer_anchor_entity)
+            let Ok((position, world_position, global, transform)) =
+                anchor_positions.get(observer_anchor_entity)
             else {
                 continue;
             };
             // Contract: observer anchor follows the currently controlled entity when one exists.
             // Fall back to the persisted player anchor for free-roam or incomplete bootstrap.
-            let world = global
-                .map(GlobalTransform::translation)
-                .or_else(|| transform.map(|t| t.translation))
-                .or_else(|| position.map(|p| p.0.extend(0.0).as_vec3()))
-                .unwrap_or(Vec3::ZERO);
+            let world = observer_anchor_world_position(position, world_position, global, transform);
             position_map.update_position(player_entity_id, world);
             if canonical_player_entity_id != *player_entity_id {
                 position_map.update_position(canonical_player_entity_id.as_str(), world);
@@ -187,6 +184,29 @@ pub fn update_client_observer_anchor_positions(
             break;
         }
     }
+}
+
+fn observer_anchor_world_position(
+    position: Option<&Position>,
+    world_position: Option<&WorldPosition>,
+    global_transform: Option<&GlobalTransform>,
+    transform: Option<&Transform>,
+) -> Vec3 {
+    if let Some(position) = resolve_world_position(position, world_position) {
+        return position.extend(0.0).as_vec3();
+    }
+    if let Some(global_transform) = global_transform {
+        let translation = global_transform.translation();
+        if translation.is_finite() {
+            return translation;
+        }
+    }
+    if let Some(transform) = transform
+        && transform.translation.is_finite()
+    {
+        return transform.translation;
+    }
+    Vec3::ZERO
 }
 
 #[allow(clippy::type_complexity)]
@@ -241,7 +261,9 @@ mod tests {
     use crate::replication::simulation_entities::PlayerControlledEntityMap;
     use crate::replication::visibility::ClientObserverAnchorPositionMap;
     use avian2d::prelude::Position;
+    use bevy::math::DVec2;
     use bevy::prelude::*;
+    use sidereal_game::WorldPosition;
     use sidereal_net::PlayerEntityId;
     use uuid::Uuid;
 
@@ -267,8 +289,8 @@ mod tests {
             .world_mut()
             .spawn((
                 Position(Vec2::new(250.0, -125.0).into()),
-                Transform::from_xyz(250.0, -125.0, 0.0),
-                GlobalTransform::from(Transform::from_xyz(250.0, -125.0, 0.0)),
+                Transform::from_xyz(1.0, 1.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(2.0, 2.0, 0.0)),
             ))
             .id();
 
@@ -322,5 +344,75 @@ mod tests {
             .resource::<ClientObserverAnchorPositionMap>()
             .get_position(player_id.canonical_wire_id().as_str());
         assert_eq!(stored, Some(Vec3::new(42.0, 84.0, 0.0)));
+    }
+
+    #[test]
+    fn observer_anchor_uses_f64_position_over_stale_render_transforms() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<PlayerRuntimeEntityMap>();
+        app.init_resource::<PlayerControlledEntityMap>();
+        app.init_resource::<ClientObserverAnchorPositionMap>();
+        app.add_systems(Update, update_client_observer_anchor_positions);
+
+        let player_id =
+            PlayerEntityId(Uuid::parse_str("7ecb3154-7fae-40a2-b140-39df016dbec9").unwrap());
+        let authoritative_position = DVec2::new(1_000_000_000_123.25, -999_999_999_876.75);
+        let player_entity = app
+            .world_mut()
+            .spawn((
+                Position(authoritative_position),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                GlobalTransform::from_translation(Vec3::new(12.0, 34.0, 0.0)),
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(player_id.canonical_wire_id(), player_entity);
+
+        app.update();
+
+        let stored = app
+            .world()
+            .resource::<ClientObserverAnchorPositionMap>()
+            .get_position(player_id.canonical_wire_id().as_str());
+        assert_eq!(stored, Some(authoritative_position.extend(0.0).as_vec3()));
+    }
+
+    #[test]
+    fn observer_anchor_uses_world_position_before_render_transforms() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<PlayerRuntimeEntityMap>();
+        app.init_resource::<PlayerControlledEntityMap>();
+        app.init_resource::<ClientObserverAnchorPositionMap>();
+        app.add_systems(Update, update_client_observer_anchor_positions);
+
+        let player_id =
+            PlayerEntityId(Uuid::parse_str("e0147520-630a-4ae7-8573-401c7549d23c").unwrap());
+        let authoritative_position = DVec2::new(-750_000_000_500.5, 750_000_000_125.25);
+        let player_entity = app
+            .world_mut()
+            .spawn((
+                WorldPosition(authoritative_position),
+                Transform::from_xyz(1.0, 2.0, 0.0),
+                GlobalTransform::from_translation(Vec3::new(3.0, 4.0, 0.0)),
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<PlayerRuntimeEntityMap>()
+            .by_player_entity_id
+            .insert(player_id.canonical_wire_id(), player_entity);
+
+        app.update();
+
+        let stored = app
+            .world()
+            .resource::<ClientObserverAnchorPositionMap>()
+            .get_position(player_id.canonical_wire_id().as_str());
+        assert_eq!(stored, Some(authoritative_position.extend(0.0).as_vec3()));
     }
 }

@@ -5,8 +5,11 @@ use std::collections::HashMap;
 use crate::CollisionOutlineM;
 
 const OUTLINE_ALPHA_THRESHOLD: u8 = 16;
-const OUTLINE_SIMPLIFY_EPSILON: f32 = 1.35;
+const OUTLINE_SIMPLIFY_EPSILON: f32 = 2.25;
+const OUTLINE_POST_SMOOTH_EPSILON: f32 = 0.85;
 const OUTLINE_SCALE_BIAS: f32 = 1.0;
+const OUTLINE_CHAIKIN_ITERATIONS: usize = 1;
+const OUTLINE_MAX_POINTS: usize = 64;
 
 pub fn generate_rdp_collision_outline_from_sprite_png(
     sprite_png: &[u8],
@@ -87,6 +90,16 @@ pub fn generate_rdp_collision_outline_from_rgba(
     if simplified.len() < 3 {
         return None;
     }
+    let smoothed = limit_closed_outline_points(
+        &rdp_simplify_closed(
+            &chaikin_smooth_closed(&simplified, OUTLINE_CHAIKIN_ITERATIONS),
+            OUTLINE_POST_SMOOTH_EPSILON,
+        ),
+        OUTLINE_MAX_POINTS,
+    );
+    if smoothed.len() < 3 {
+        return None;
+    }
 
     let image_w_px = (width as f32).max(1.0);
     let image_h_px = (height as f32).max(1.0);
@@ -94,7 +107,7 @@ pub fn generate_rdp_collision_outline_from_rgba(
     let scale_y = ((target_half_extents_y * 2.0) / image_h_px) * OUTLINE_SCALE_BIAS;
     let center_x = image_w_px * 0.5;
     let center_y = image_h_px * 0.5;
-    let points = simplified
+    let points = smoothed
         .into_iter()
         .map(|p| {
             let local_x_px = p.x - center_x;
@@ -256,6 +269,38 @@ fn rdp_simplify_closed(points: &[Vec2], epsilon: f32) -> Vec<Vec2> {
     } else {
         open
     }
+}
+
+fn chaikin_smooth_closed(points: &[Vec2], iterations: usize) -> Vec<Vec2> {
+    if points.len() < 3 || iterations == 0 {
+        return points.to_vec();
+    }
+    let mut current = points.to_vec();
+    for _ in 0..iterations {
+        let len = current.len();
+        let mut next = Vec::with_capacity(len * 2);
+        for idx in 0..len {
+            let a = current[idx];
+            let b = current[(idx + 1) % len];
+            next.push(a.lerp(b, 0.25));
+            next.push(a.lerp(b, 0.75));
+        }
+        current = next;
+    }
+    current
+}
+
+fn limit_closed_outline_points(points: &[Vec2], max_points: usize) -> Vec<Vec2> {
+    if points.len() <= max_points || max_points < 3 {
+        return points.to_vec();
+    }
+    let step = points.len() as f32 / max_points as f32;
+    let mut limited = Vec::with_capacity(max_points);
+    for idx in 0..max_points {
+        let source_idx = (idx as f32 * step).floor() as usize;
+        limited.push(points[source_idx.min(points.len() - 1)]);
+    }
+    limited
 }
 
 fn rdp_simplify(points: &[Vec2], epsilon: f32) -> Vec<Vec2> {

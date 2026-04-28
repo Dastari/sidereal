@@ -9,6 +9,7 @@
 // @group(2) @binding(2) SharedWorldLightingUniforms
 // @group(2) @binding(3) generated normal texture
 // @group(2) @binding(4) generated normal sampler
+// @group(2) @binding(5) local rotation: x=cos(theta), y=sin(theta)
 
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
@@ -16,15 +17,17 @@
 @group(2) @binding(1) var image_sampler: sampler;
 @group(2) @binding(3) var normal_image: texture_2d<f32>;
 @group(2) @binding(4) var normal_sampler: sampler;
+@group(2) @binding(5) var<uniform> local_rotation: vec4<f32>;
 
 struct SharedWorldLightingUniforms {
-    primary_dir_intensity: vec4<f32>,
-    primary_color_elevation: vec4<f32>,
+    metadata: vec4<f32>,
     ambient: vec4<f32>,
     backlight: vec4<f32>,
     flash: vec4<f32>,
-    local_dir_intensity: vec4<f32>,
-    local_color_radius: vec4<f32>,
+    stellar_dir_intensity: array<vec4<f32>, 2>,
+    stellar_color_params: array<vec4<f32>, 2>,
+    local_dir_intensity: array<vec4<f32>, 8>,
+    local_color_radius: array<vec4<f32>, 8>,
 }
 
 @group(2) @binding(2) var<uniform> lighting: SharedWorldLightingUniforms;
@@ -33,14 +36,41 @@ fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
 }
 
-fn posterize3(c: vec3<f32>, steps: f32) -> vec3<f32> {
-    return floor(c * steps + vec3<f32>(0.5)) / steps;
+fn luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.299, 0.587, 0.114));
+}
+
+fn safe_normalize(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let len = length(v);
+    if len > 0.0001 {
+        return v / len;
+    }
+    return fallback;
 }
 
 fn normal_from_map(uv: vec2<f32>) -> vec3<f32> {
     let sample = textureSample(normal_image, normal_sampler, uv).rgb;
     let decoded = sample * 2.0 - vec3<f32>(1.0, 1.0, 1.0);
-    return normalize(vec3<f32>(decoded.xy * 1.85, max(decoded.z, 0.14)));
+    return normalize(vec3<f32>(decoded.x * 1.18, -decoded.y * 1.18, max(decoded.z, 0.34)));
+}
+
+fn sample_alpha(uv: vec2<f32>) -> f32 {
+    let clamped_uv = clamp(uv, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    return textureSample(image, image_sampler, clamped_uv).a;
+}
+
+fn world_dir_to_local(v: vec3<f32>) -> vec3<f32> {
+    let c = local_rotation.x;
+    let s = local_rotation.y;
+    return vec3<f32>(
+        c * v.x + s * v.y,
+        -s * v.x + c * v.y,
+        v.z
+    );
+}
+
+fn uv_to_sprite_local_xy(uv: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
 }
 
 fn hash12(p: vec2<f32>) -> f32 {
@@ -110,104 +140,144 @@ fn vein_mask(uv: vec2<f32>) -> f32 {
 
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    let uv_raw = mesh.uv;
-    let pixel_grid = 128.0;
-    let uv = (floor(uv_raw * pixel_grid) + vec2<f32>(0.5, 0.5)) / pixel_grid;
+    let uv = clamp(mesh.uv, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
     let base = textureSample(image, image_sampler, uv);
 
     if base.a <= 0.001 {
         discard;
     }
 
-    let texel = vec2<f32>(1.0 / pixel_grid, 1.0 / pixel_grid);
-    let alpha_l = textureSample(image, image_sampler, uv - vec2<f32>(texel.x, 0.0)).a;
-    let alpha_r = textureSample(image, image_sampler, uv + vec2<f32>(texel.x, 0.0)).a;
-    let alpha_d = textureSample(image, image_sampler, uv - vec2<f32>(0.0, texel.y)).a;
-    let alpha_u = textureSample(image, image_sampler, uv + vec2<f32>(0.0, texel.y)).a;
-    let edge_contrast = saturate((base.a - min(min(alpha_l, alpha_r), min(alpha_d, alpha_u))) * 3.0);
+    let dims = max(vec2<f32>(textureDimensions(image)), vec2<f32>(1.0, 1.0));
+    let texel = vec2<f32>(1.0, 1.0) / dims;
+    let alpha_l = sample_alpha(uv - vec2<f32>(texel.x, 0.0));
+    let alpha_r = sample_alpha(uv + vec2<f32>(texel.x, 0.0));
+    let alpha_d = sample_alpha(uv - vec2<f32>(0.0, texel.y));
+    let alpha_u = sample_alpha(uv + vec2<f32>(0.0, texel.y));
+    let alpha_min = min(min(alpha_l, alpha_r), min(alpha_d, alpha_u));
+    let edge_contrast = saturate((base.a - alpha_min) * 2.4);
 
-    // Radial falloff keeps center fuller and edges rockier.
-    let centered = uv * 2.0 - vec2<f32>(1.0, 1.0);
+    let centered = uv_to_sprite_local_xy(uv);
     let r = clamp(length(centered), 0.0, 1.0);
-    let body_falloff = smoothstep(1.0, 0.2, 1.0 - r);
+    let edge_shadow = max(edge_contrast, smoothstep(0.62, 1.0, r));
 
-    let grain = floor(fbm2d(uv * 18.0 + vec2<f32>(2.1, 7.4)) * 6.0) / 6.0;
-    let craters = crater_mask(uv);
-    let cracks = pow(1.0 - abs(fbm2d(uv * 17.0 + vec2<f32>(7.3, 2.4)) - 0.5) * 2.0, 5.0);
-    let veins = vein_mask(uv) * smoothstep(0.2, 0.9, grain);
-    let fracture_ridge_a = pow(1.0 - abs(sin(centered.x * 12.0 - centered.y * 8.0 + grain * 5.7)), 5.0);
-    let fracture_ridge_b = pow(1.0 - abs(sin(centered.x * -7.0 + centered.y * 15.0 + grain * 4.1)), 6.0);
+    let broad_grain = fbm2d(uv * 5.5 + vec2<f32>(2.1, 7.4));
+    let mid_grain = fbm2d(uv * 15.0 + vec2<f32>(8.6, 1.7));
+    let fine_grain = fbm2d(uv * 42.0 + vec2<f32>(13.5, 4.2));
+    let craters = crater_mask(uv) * 0.72;
+    let cracks = pow(1.0 - abs(fbm2d(uv * 16.0 + vec2<f32>(7.3, 2.4)) - 0.5) * 2.0, 7.0)
+        * (0.35 + smoothstep(0.15, 0.95, r) * 0.65);
+    let veins = vein_mask(uv) * smoothstep(0.45, 0.92, mid_grain) * 0.12;
+    let fracture_ridge_a = pow(1.0 - abs(sin(centered.x * 9.0 - centered.y * 6.0 + mid_grain * 4.2)), 6.0);
+    let fracture_ridge_b = pow(1.0 - abs(sin(centered.x * -5.0 + centered.y * 12.0 + broad_grain * 5.0)), 7.0);
     let ridges = max(fracture_ridge_a * 0.75, fracture_ridge_b * 0.55)
-        * (1.0 - smoothstep(0.18, 0.95, r));
+        * (1.0 - smoothstep(0.25, 0.98, r));
 
-    // Rock base tint: slightly warm/cool variation from noise.
-    let rock_tint = mix(
-        vec3<f32>(0.28, 0.23, 0.19),
-        vec3<f32>(0.48, 0.42, 0.36),
-        grain
+    let base_value = clamp(
+        luminance(base.rgb) * 0.24 + broad_grain * 0.24 + mid_grain * 0.12 + fine_grain * 0.04 + 0.18,
+        0.0,
+        1.0
     );
+    let stone_dark = vec3<f32>(0.105, 0.108, 0.105);
+    let stone_mid = vec3<f32>(0.36, 0.35, 0.325);
+    let stone_light = vec3<f32>(0.74, 0.71, 0.64);
+    var color = mix(stone_dark, stone_mid, smoothstep(0.14, 0.58, base_value));
+    color = mix(color, stone_light, smoothstep(0.52, 0.96, base_value) * 0.82);
 
-    // Mineral tint injected along veins.
-    let mineral_tint = mix(
-        vec3<f32>(0.75, 0.48, 0.21),
-        vec3<f32>(0.25, 0.62, 0.86),
-        fbm2d(uv * 7.0 + vec2<f32>(19.0, 5.0))
+    let warm_cool_mottle = mix(
+        vec3<f32>(0.88, 0.94, 1.05),
+        vec3<f32>(1.08, 1.04, 0.92),
+        broad_grain
     );
+    color *= warm_cool_mottle;
+    color *= 0.94 + fine_grain * 0.10;
+    color += vec3<f32>(0.025, 0.023, 0.020) * smoothstep(0.82, 0.98, fine_grain);
 
-    var color = base.rgb;
+    let cavity = saturate(craters * 0.58 + cracks * 0.40 + veins * 0.28);
+    color *= 1.0 - cavity * 0.42;
+    color += vec3<f32>(0.08, 0.078, 0.068) * ridges * 0.12;
+    color *= 1.0 - edge_shadow * 0.20;
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
 
-    // Re-color texture toward a small rocky palette for a stronger top-down ARPG read.
-    color = mix(color, color * rock_tint, 0.72);
-    color = posterize3(color, 5.0);
-
-    // Crater bowls darken; rims slightly brighten.
-    color *= 1.0 - craters * 0.45;
-    let rim_highlight = smoothstep(0.2, 0.9, craters) * 0.08;
-    color += rim_highlight;
-    color *= 1.0 - cracks * 0.22;
-    color *= 1.0 - ridges * 0.18;
-
-    // Veins + tiny glow pockets.
-    color = mix(color, mineral_tint, veins * 0.55);
-    let gem = smoothstep(0.78, 0.93, fbm2d(uv * 34.0 + vec2<f32>(5.5, 14.3))) * veins;
-    color += mineral_tint * gem * 0.18;
-
-    // Stronger sprite rim and chipped-edge contrast than the old soft spherical read.
-    color *= mix(0.62, 1.0, body_falloff);
-    color *= 1.0 - edge_contrast * 0.28;
-
-    // Preserve source alpha masking.
     let sphere_normal = normalize(vec3<f32>(
         centered.x,
         centered.y,
         sqrt(max(0.0, 1.0 - dot(centered, centered)))
     ));
     let relief_normal = normal_from_map(uv);
-    let surface_normal = normalize(sphere_normal * 0.52 + relief_normal * 0.88);
-    let primary_dir = normalize(lighting.primary_dir_intensity.xyz);
-    let primary_ndl = saturate(dot(surface_normal, primary_dir));
-    let wrap_raw = saturate(primary_ndl * 0.90 + 0.10);
-    let wrap = floor(wrap_raw * 7.0 + 0.5) / 7.0;
-    let backlight = pow(saturate(dot(surface_normal, -primary_dir)), 2.1);
-    let primary_light = lighting.primary_color_elevation.rgb
-        * lighting.primary_dir_intensity.w
-        * wrap;
-    let local_ndl = saturate(dot(surface_normal, normalize(lighting.local_dir_intensity.xyz)));
-    let local_light = lighting.local_color_radius.rgb
-        * lighting.local_dir_intensity.w
-        * (0.22 + local_ndl * 0.78);
-    let ambient_light = lighting.ambient.rgb * lighting.ambient.w;
-    let backlight_term = lighting.backlight.rgb * lighting.backlight.w * backlight;
+    let surface_normal = normalize(sphere_normal * 0.68 + relief_normal * 0.72);
+    var dominant_dir_world = vec3<f32>(-0.35, 0.45, 0.82);
+    var dominant_dir = safe_normalize(world_dir_to_local(dominant_dir_world), vec3<f32>(-0.35, 0.45, 0.82));
+    var dominant_color = lighting.ambient.rgb;
+    var dominant_macro_ndl = 0.0;
+    var primary_light = vec3<f32>(0.0);
+    let stellar_count = min(u32(lighting.metadata.x), 2u);
+    for (var i: u32 = 0u; i < stellar_count; i = i + 1u) {
+        let slot = lighting.stellar_dir_intensity[i];
+        if slot.w <= 0.001 {
+            continue;
+        }
+        let light_dir_world = safe_normalize(slot.xyz, dominant_dir_world);
+        let light_dir = safe_normalize(world_dir_to_local(light_dir_world), dominant_dir);
+        let macro_ndl_i = saturate(dot(sphere_normal, light_dir));
+        let relief_ndl_i = saturate(dot(surface_normal, light_dir));
+        let primary_ndl_i = mix(macro_ndl_i, relief_ndl_i, 0.24);
+        let wrapped_key = saturate(primary_ndl_i * 0.98 + 0.02);
+        let banded_key = mix(wrapped_key, floor(wrapped_key * 6.0 + 0.5) / 6.0, 0.10);
+        let light_color = lighting.stellar_color_params[i].rgb;
+        primary_light += light_color * slot.w * (banded_key * 1.24);
+        if macro_ndl_i * slot.w > dominant_macro_ndl {
+            dominant_macro_ndl = macro_ndl_i * slot.w;
+            dominant_dir_world = light_dir_world;
+            dominant_dir = light_dir;
+            dominant_color = light_color;
+        }
+    }
+    let macro_ndl = saturate(dominant_macro_ndl);
+    let primary_ndl = macro_ndl;
+    let backlight = pow(saturate(dot(surface_normal, -dominant_dir)), 2.1);
+    var local_light = vec3<f32>(0.0);
+    let local_count = min(u32(lighting.metadata.y), 8u);
+    for (var i: u32 = 0u; i < local_count; i = i + 1u) {
+        let slot = lighting.local_dir_intensity[i];
+        if slot.w <= 0.001 {
+            continue;
+        }
+        let local_dir_world = safe_normalize(slot.xyz, dominant_dir_world);
+        let local_dir = safe_normalize(world_dir_to_local(local_dir_world), dominant_dir);
+        let local_ndl = mix(
+            saturate(dot(sphere_normal, local_dir)),
+            saturate(dot(surface_normal, local_dir)),
+            0.30
+        );
+        local_light += lighting.local_color_radius[i].rgb * slot.w * (local_ndl * 0.38);
+    }
+    let ambient_light = lighting.ambient.rgb * lighting.ambient.w * 0.20 + vec3<f32>(0.010, 0.012, 0.016);
+    let backlight_term = lighting.backlight.rgb * lighting.backlight.w * backlight * 0.05;
     let flash = lighting.flash.rgb * lighting.flash.w;
-    let shadow_cool = vec3<f32>(0.42, 0.55, 0.68) * (1.0 - primary_ndl) * 0.18;
-    let ridge_highlight = lighting.primary_color_elevation.rgb * ridges * primary_ndl * 0.22;
-    let bevel_highlight = lighting.primary_color_elevation.rgb * edge_contrast * primary_ndl * 0.16;
-    let vein_glint = mix(vec3<f32>(0.03, 0.05, 0.07), mineral_tint * 0.08, veins);
-    let lit_color = posterize3(color * (ambient_light + primary_light + backlight_term + local_light + shadow_cool), 7.0)
-        + flash * 0.18
+    let shadow_occlusion = clamp(
+        1.0 - (1.0 - macro_ndl) * 0.68 - cavity * 0.18 - edge_shadow * 0.12,
+        0.12,
+        1.0
+    );
+    let shadow_tint = mix(
+        vec3<f32>(0.34, 0.38, 0.46),
+        vec3<f32>(1.06, 1.02, 0.92),
+        smoothstep(0.08, 0.88, macro_ndl)
+    );
+    let view_dir = vec3<f32>(0.0, 0.0, 1.0);
+    let half_dir = safe_normalize(dominant_dir + view_dir, view_dir);
+    let stone_glint = pow(saturate(dot(surface_normal, half_dir)), 28.0)
+        * primary_ndl
+        * (0.25 + fine_grain * 0.75);
+    let ridge_highlight = dominant_color * ridges * macro_ndl * 0.08;
+    let bevel_highlight = dominant_color * edge_contrast * macro_ndl * 0.08;
+    let glint_highlight = dominant_color * stone_glint * 0.03;
+    let lit_color =
+        color * (ambient_light + primary_light + backlight_term + local_light) * shadow_occlusion * shadow_tint
+        + flash * 0.16
         + ridge_highlight
         + bevel_highlight
-        + vein_glint
-        + veins * 0.05;
+        + glint_highlight
+        + vec3<f32>(veins * 0.012);
     return vec4<f32>(clamp(lit_color, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
 }

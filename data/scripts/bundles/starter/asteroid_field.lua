@@ -55,12 +55,12 @@ local function build_single_asteroid(ctx, opts)
     edge_noise = 0.03,
     lobe_amplitude = 0.12,
     crater_count = 6,
-    palette_dark_rgb = { 0.18, 0.16, 0.14 },
-    palette_light_rgb = { 0.54, 0.48, 0.42 },
+    palette_dark_rgb = { 0.20, 0.13, 0.08 },
+    palette_light_rgb = { 0.70, 0.54, 0.36 },
     surface_style = "Rocky",
     pixel_step_px = 2,
     crack_intensity = 0.3,
-    mineral_vein_intensity = 0.16,
+    mineral_vein_intensity = 0.08,
     mineral_accent_rgb = { 0.72, 0.52, 0.24 },
     family_seed_key = nil,
   }
@@ -310,34 +310,34 @@ function AsteroidFieldBundle.build_graph_records(ctx)
     local asteroid_kind_roll = hash01(i, 8.0)
     local asteroid_kind = "Rocky"
     local surface_style = "Rocky"
-    local palette_dark_rgb = { 0.18, 0.16, 0.14 }
-    local palette_light_rgb = { 0.54, 0.48, 0.42 }
-    local mineral_accent_rgb = { 0.72, 0.52, 0.24 }
-    local mineral_vein_intensity = 0.16
+    local palette_dark_rgb = { 0.20, 0.13, 0.08 }
+    local palette_light_rgb = { 0.70, 0.54, 0.36 }
+    local mineral_accent_rgb = { 0.64, 0.42, 0.20 }
+    local mineral_vein_intensity = 0.08
     local crater_count = 6
     if asteroid_kind_roll > 0.94 then
       asteroid_kind = "Gem-rich"
       surface_style = "GemRich"
-      palette_dark_rgb = { 0.15, 0.14, 0.18 }
-      palette_light_rgb = { 0.46, 0.45, 0.56 }
-      mineral_accent_rgb = { 0.25, 0.72, 0.94 }
-      mineral_vein_intensity = 0.45
+      palette_dark_rgb = { 0.18, 0.13, 0.10 }
+      palette_light_rgb = { 0.64, 0.50, 0.38 }
+      mineral_accent_rgb = { 0.28, 0.58, 0.68 }
+      mineral_vein_intensity = 0.18
       crater_count = 5
     elseif asteroid_kind_roll > 0.74 then
       asteroid_kind = "Metallic"
       surface_style = "Metallic"
-      palette_dark_rgb = { 0.16, 0.17, 0.19 }
-      palette_light_rgb = { 0.58, 0.60, 0.63 }
-      mineral_accent_rgb = { 0.90, 0.70, 0.32 }
-      mineral_vein_intensity = 0.26
+      palette_dark_rgb = { 0.18, 0.15, 0.12 }
+      palette_light_rgb = { 0.66, 0.56, 0.42 }
+      mineral_accent_rgb = { 0.84, 0.60, 0.28 }
+      mineral_vein_intensity = 0.12
       crater_count = 4
     elseif asteroid_kind_roll > 0.54 then
       asteroid_kind = "Carbonaceous"
       surface_style = "Carbonaceous"
-      palette_dark_rgb = { 0.08, 0.08, 0.09 }
-      palette_light_rgb = { 0.30, 0.29, 0.27 }
-      mineral_accent_rgb = { 0.50, 0.64, 0.54 }
-      mineral_vein_intensity = 0.10
+      palette_dark_rgb = { 0.10, 0.075, 0.055 }
+      palette_light_rgb = { 0.42, 0.34, 0.25 }
+      mineral_accent_rgb = { 0.42, 0.36, 0.24 }
+      mineral_vein_intensity = 0.06
       crater_count = 7
     end
     local cluster_key = "core"

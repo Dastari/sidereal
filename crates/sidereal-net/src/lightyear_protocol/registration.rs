@@ -72,47 +72,47 @@ pub fn register_lightyear_server_protocol(app: &mut App) {
 
 fn register_lightyear_common_protocol(app: &mut App) {
     app.register_message::<ClientAuthMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ClientToServer);
     app.register_message::<ClientControlRequestMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ClientToServer);
     app.register_message::<ClientRealtimeInputMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ClientToServer);
     app.register_message::<ClientLocalViewModeMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ClientToServer);
     app.register_message::<ClientTacticalResnapshotRequestMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ClientToServer);
     app.register_message::<ServerWeaponFiredMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerEntityDestructionMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerTacticalFogSnapshotMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerTacticalFogDeltaMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerTacticalContactsSnapshotMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerTacticalContactsDeltaMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerOwnerAssetManifestSnapshotMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerOwnerAssetManifestDeltaMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerAssetCatalogVersionMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerSessionReadyMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerSessionDeniedMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ClientDisconnectNotifyMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ClientToServer);
     app.register_message::<ServerControlAckMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerControlRejectMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ServerNotificationMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ServerToClient);
     app.register_message::<ClientNotificationDismissedMessage>()
-        .add_direction(NetworkDirection::Bidirectional);
+        .add_direction(NetworkDirection::ClientToServer);
 
     app.add_channel::<ControlChannel>(ChannelSettings {
         mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
@@ -140,14 +140,14 @@ fn register_lightyear_common_protocol(app: &mut App) {
         send_frequency: Duration::default(),
         priority: 5.0,
     })
-    .add_direction(NetworkDirection::Bidirectional);
+    .add_direction(NetworkDirection::ServerToClient);
 
     app.add_channel::<ManifestChannel>(ChannelSettings {
         mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
         send_frequency: Duration::default(),
         priority: 6.0,
     })
-    .add_direction(NetworkDirection::Bidirectional);
+    .add_direction(NetworkDirection::ServerToClient);
 
     app.add_channel::<NotificationChannel>(ChannelSettings {
         mode: ChannelMode::OrderedReliable(ReliableSettings::default()),

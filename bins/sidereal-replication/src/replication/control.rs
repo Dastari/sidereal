@@ -9,7 +9,7 @@ use sidereal_game::{
     ActionQueue, AfterburnerState, ControlledEntityGuid, EntityGuid, FlightComputer, OwnerId,
     PlayerTag,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sidereal_net::{
     ClientControlRequestMessage, ControlChannel, PlayerEntityId, ServerControlAckMessage,
@@ -17,12 +17,13 @@ use sidereal_net::{
 };
 
 use crate::replication::auth::AuthenticatedClientBindings;
+use crate::replication::input::RealtimeInputCleanupState;
 use crate::replication::persistence::{
     PersistenceDirtyState, SimulationPersistenceTimer, persist_entity_snapshot_async,
 };
 use crate::replication::{
     PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity,
-    visibility::VisibilityMembershipCache,
+    visibility::{VisibilityMembershipCache, VisibilitySpatialIndex},
 };
 
 #[derive(Resource, Default)]
@@ -57,10 +58,50 @@ pub struct PendingControlAckQueue {
     queued: Vec<PendingControlAck>,
 }
 
+#[derive(Resource, Default)]
+pub struct RoleVisibilityRearmState {
+    pending_loss_passes: HashMap<(Entity, Entity), u8>,
+}
+
+impl RoleVisibilityRearmState {
+    const SUPPRESS_MEMBERSHIP_PASSES: u8 = 1;
+
+    fn queue_loss_pass(&mut self, entity: Entity, client_entity: Entity) {
+        self.pending_loss_passes
+            .insert((entity, client_entity), Self::SUPPRESS_MEMBERSHIP_PASSES);
+    }
+
+    pub fn suppress_desired_clients(
+        &self,
+        entity: Entity,
+        desired_visible_clients: &mut HashSet<Entity>,
+    ) {
+        desired_visible_clients.retain(|client_entity| {
+            !self
+                .pending_loss_passes
+                .contains_key(&(entity, *client_entity))
+        });
+    }
+
+    pub fn advance_after_membership_pass(&mut self) {
+        self.pending_loss_passes.retain(|_, passes| {
+            *passes = passes.saturating_sub(1);
+            *passes > 0
+        });
+    }
+
+    #[cfg(test)]
+    fn is_pending(&self, entity: Entity, client_entity: Entity) -> bool {
+        self.pending_loss_passes
+            .contains_key(&(entity, client_entity))
+    }
+}
+
 pub fn init_resources(app: &mut App) {
     app.insert_resource(ClientControlRequestOrder::default());
     app.insert_resource(ClientControlLeaseGenerations::default());
     app.insert_resource(PendingControlAckQueue::default());
+    app.insert_resource(RoleVisibilityRearmState::default());
 }
 
 #[doc(hidden)]
@@ -187,6 +228,7 @@ pub fn receive_client_control_requests(
     mut pending_acks: ResMut<'_, PendingControlAckQueue>,
     player_entities: Res<'_, PlayerRuntimeEntityMap>,
     mut controlled_entity_map: ResMut<'_, PlayerControlledEntityMap>,
+    mut input_cleanup: RealtimeInputCleanupState<'_>,
 ) {
     let now_s = time.elapsed_secs_f64();
     for (client_entity, link_of, remote_id, mut receiver) in &mut receivers {
@@ -463,7 +505,9 @@ pub fn receive_client_control_requests(
                 .generation_by_player
                 .insert(bound_player.clone(), control_generation);
             if rebind_required {
+                input_cleanup.clear_player(bound_player_id);
                 queue_neutralize_control_intent(&mut commands, currently_bound_entity);
+                queue_neutralize_control_intent(&mut commands, resolved_target_entity);
             }
 
             info!(
@@ -649,24 +693,92 @@ fn collect_visible_clients_for_role_rearm(
 }
 
 fn rearm_visible_clients_for_role_change(
-    membership_cache: &VisibilityMembershipCache,
+    membership_cache: &mut VisibilityMembershipCache,
     replication_state: &mut ReplicationState,
+    role_rearms: &mut RoleVisibilityRearmState,
     entity: Entity,
 ) -> usize {
     let visible_clients =
         collect_visible_clients_for_role_rearm(membership_cache, replication_state, entity);
     for client_entity in &visible_clients {
         replication_state.lose_visibility(*client_entity);
-        replication_state.gain_visibility(*client_entity);
+        membership_cache.remove_visible_client(entity, *client_entity);
+        role_rearms.queue_loss_pass(entity, *client_entity);
     }
     visible_clients.len()
+}
+
+fn collect_role_rearm_entities(world: &World, root: Entity) -> Vec<Entity> {
+    world
+        .get_resource::<VisibilitySpatialIndex>()
+        .and_then(|index| index.entities_under_root(root))
+        .filter(|entities| !entities.is_empty())
+        .unwrap_or_else(|| vec![root])
+}
+
+fn rearm_world_entity_for_role_change(world: &mut World, entity: Entity) -> usize {
+    world.resource_scope(
+        |world, mut membership_cache: Mut<'_, VisibilityMembershipCache>| {
+            world.resource_scope(
+                |world, mut role_rearms: Mut<'_, RoleVisibilityRearmState>| {
+                    let Some(mut replication_state) = world.get_mut::<ReplicationState>(entity)
+                    else {
+                        return 0;
+                    };
+                    rearm_visible_clients_for_role_change(
+                        &mut membership_cache,
+                        &mut replication_state,
+                        &mut role_rearms,
+                        entity,
+                    )
+                },
+            )
+        },
+    )
+}
+
+fn rearm_visibility_tree_for_role_change(world: &mut World, roots: &[(Entity, String)]) {
+    let mut rearmed_entities = HashSet::<Entity>::new();
+    for (root, root_guid) in roots {
+        let entities = collect_role_rearm_entities(world, *root);
+        let mut rearmed_entity_count = 0usize;
+        let mut rearmed_visible_client_count = 0usize;
+        for entity in entities {
+            if !rearmed_entities.insert(entity) {
+                continue;
+            }
+            let rearmed_clients = rearm_world_entity_for_role_change(world, entity);
+            if rearmed_clients > 0 {
+                rearmed_entity_count = rearmed_entity_count.saturating_add(1);
+                rearmed_visible_client_count =
+                    rearmed_visible_client_count.saturating_add(rearmed_clients);
+            }
+        }
+        if rearmed_visible_client_count > 0 {
+            info!(
+                "server control role rearm root_entity={:?} guid={} entities={} visible_clients={}",
+                root, root_guid, rearmed_entity_count, rearmed_visible_client_count
+            );
+        }
+    }
+}
+
+fn queue_visibility_tree_rearm_for_role_change(
+    commands: &mut Commands<'_, '_>,
+    roots: Vec<(Entity, String)>,
+) {
+    if roots.is_empty() {
+        return;
+    }
+    commands.queue(move |world: &mut World| {
+        rearm_visibility_tree_for_role_change(world, &roots);
+    });
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn reconcile_control_replication_roles(
     mut commands: Commands<'_, '_>,
     bindings: Res<'_, AuthenticatedClientBindings>,
-    membership_cache: Res<'_, VisibilityMembershipCache>,
     player_entity_map: Res<'_, PlayerRuntimeEntityMap>,
     controlled_entity_map: Res<'_, PlayerControlledEntityMap>,
     entity_guids: Query<'_, '_, &'_ EntityGuid>,
@@ -704,6 +816,7 @@ pub fn reconcile_control_replication_roles(
     let mut desired_controlled_by_client = HashMap::<Entity, Entity>::new();
     let mut desired_control_guid_by_player = HashMap::<Entity, Option<String>>::new();
     let mut desired_owner_by_entity = HashMap::<Entity, Entity>::new();
+    let mut role_rearm_roots = Vec::<(Entity, String)>::new();
 
     for (client_entity, player_wire) in &bindings.by_client_entity {
         let Some(player_id) = PlayerEntityId::parse(player_wire.as_str()) else {
@@ -736,7 +849,7 @@ pub fn reconcile_control_replication_roles(
         current_replicate,
         current_prediction,
         current_interpolation,
-        mut replication_state,
+        replication_state,
     ) in &mut players
     {
         let player_wire = player_guid.0.to_string();
@@ -809,16 +922,8 @@ pub fn reconcile_control_replication_roles(
             }
         }
 
-        if replication_topology_changed && let Some(replication_state) = replication_state.as_mut()
-        {
-            let rearmed =
-                rearm_visible_clients_for_role_change(&membership_cache, replication_state, entity);
-            if rearmed > 0 {
-                info!(
-                    "server control role rearm entity={:?} guid={} visible_clients={}",
-                    entity, player_wire, rearmed
-                );
-            }
+        if replication_topology_changed && replication_state.is_some() {
+            role_rearm_roots.push((entity, player_wire));
         }
     }
 
@@ -829,7 +934,7 @@ pub fn reconcile_control_replication_roles(
         current_replicate,
         current_prediction,
         current_interpolation,
-        mut replication_state,
+        replication_state,
     ) in &mut controlled_entities
     {
         let desired_owner = desired_owner_by_entity
@@ -869,35 +974,30 @@ pub fn reconcile_control_replication_roles(
         );
         replication_topology_changed |= interpolation_changed;
 
-        if replication_topology_changed && let Some(replication_state) = replication_state.as_mut()
-        {
-            let rearmed =
-                rearm_visible_clients_for_role_change(&membership_cache, replication_state, entity);
-            if rearmed > 0 {
-                let entity_guid = entity_guids
-                    .get(entity)
-                    .map(|guid| guid.0.to_string())
-                    .unwrap_or_else(|_| format!("{entity:?}"));
-                info!(
-                    "server control role rearm entity={:?} guid={} visible_clients={}",
-                    entity, entity_guid, rearmed
-                );
-            }
+        if replication_topology_changed && replication_state.is_some() {
+            let entity_guid = entity_guids
+                .get(entity)
+                .map(|guid| guid.0.to_string())
+                .unwrap_or_else(|_| format!("{entity:?}"));
+            role_rearm_roots.push((entity, entity_guid));
         }
     }
+    queue_visibility_tree_rearm_for_role_change(&mut commands, role_rearm_roots);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientControlLeaseGenerations, collect_visible_clients_for_role_rearm,
-        next_control_generation, observer_interpolation_target, owner_interpolation_target,
-        owner_only_replicate, owner_prediction_target, reconcile_control_replication_roles,
+        ClientControlLeaseGenerations, RoleVisibilityRearmState,
+        collect_visible_clients_for_role_rearm, next_control_generation,
+        observer_interpolation_target, owner_interpolation_target, owner_only_replicate,
+        owner_prediction_target, rearm_visibility_tree_for_role_change,
+        rearm_visible_clients_for_role_change, reconcile_control_replication_roles,
     };
     use crate::replication::auth::AuthenticatedClientBindings;
     use crate::replication::{
         PlayerControlledEntityMap, PlayerRuntimeEntityMap, SimulatedControlledEntity,
-        visibility::VisibilityMembershipCache,
+        visibility::{VisibilityMembershipCache, VisibilitySpatialIndex},
     };
     use bevy::prelude::*;
     use lightyear::prelude::server::ClientOf;
@@ -907,6 +1007,7 @@ mod tests {
     };
     use sidereal_game::{ControlledEntityGuid, EntityGuid, PlayerTag};
     use sidereal_net::PlayerEntityId;
+    use std::collections::HashSet;
     use uuid::Uuid;
 
     #[test]
@@ -940,6 +1041,7 @@ mod tests {
         app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
         app.init_resource::<AuthenticatedClientBindings>();
         app.init_resource::<VisibilityMembershipCache>();
+        app.init_resource::<RoleVisibilityRearmState>();
         app.init_resource::<PlayerControlledEntityMap>();
         app.init_resource::<PlayerRuntimeEntityMap>();
         app.add_systems(Update, reconcile_control_replication_roles);
@@ -1045,6 +1147,7 @@ mod tests {
         app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
         app.init_resource::<AuthenticatedClientBindings>();
         app.init_resource::<VisibilityMembershipCache>();
+        app.init_resource::<RoleVisibilityRearmState>();
         app.init_resource::<PlayerControlledEntityMap>();
         app.init_resource::<PlayerRuntimeEntityMap>();
         app.add_systems(Update, reconcile_control_replication_roles);
@@ -1126,6 +1229,7 @@ mod tests {
         app.add_plugins(lightyear::prelude::server::ServerPlugins::default());
         app.init_resource::<AuthenticatedClientBindings>();
         app.init_resource::<VisibilityMembershipCache>();
+        app.init_resource::<RoleVisibilityRearmState>();
         app.init_resource::<PlayerControlledEntityMap>();
         app.init_resource::<PlayerRuntimeEntityMap>();
         app.add_systems(Update, reconcile_control_replication_roles);
@@ -1226,5 +1330,99 @@ mod tests {
             collect_visible_clients_for_role_rearm(&membership_cache, &replication_state, entity);
 
         assert_eq!(visible_clients, vec![visible_client]);
+    }
+
+    #[test]
+    fn role_rearm_sends_loss_before_allowing_regain() {
+        let entity = Entity::from_bits(10);
+        let visible_client = Entity::from_bits(20);
+        let mut membership_cache = VisibilityMembershipCache::default();
+        membership_cache.replace_visible_clients(entity, HashSet::from([visible_client]));
+        let mut replication_state = ReplicationState::default();
+        replication_state.gain_visibility(visible_client);
+        let mut role_rearms = RoleVisibilityRearmState::default();
+
+        let rearmed = rearm_visible_clients_for_role_change(
+            &mut membership_cache,
+            &mut replication_state,
+            &mut role_rearms,
+            entity,
+        );
+
+        assert_eq!(rearmed, 1);
+        assert!(!replication_state.is_visible(visible_client));
+        assert!(
+            membership_cache
+                .visible_clients(entity)
+                .is_none_or(|clients| !clients.contains(&visible_client))
+        );
+        assert!(role_rearms.is_pending(entity, visible_client));
+
+        let mut desired_visible_clients = HashSet::from([visible_client]);
+        role_rearms.suppress_desired_clients(entity, &mut desired_visible_clients);
+        assert!(desired_visible_clients.is_empty());
+
+        role_rearms.advance_after_membership_pass();
+        assert!(!role_rearms.is_pending(entity, visible_client));
+    }
+
+    #[test]
+    fn role_rearm_covers_entities_under_same_visibility_root() {
+        let mut world = World::new();
+        world.init_resource::<VisibilityMembershipCache>();
+        world.init_resource::<RoleVisibilityRearmState>();
+        world.init_resource::<VisibilitySpatialIndex>();
+
+        let root = world.spawn(ReplicationState::default()).id();
+        let child = world.spawn(ReplicationState::default()).id();
+        let visible_client = world.spawn_empty().id();
+
+        world
+            .resource_mut::<VisibilitySpatialIndex>()
+            .replace_entities_under_root(root, HashSet::from([root, child]));
+        world
+            .resource_mut::<VisibilityMembershipCache>()
+            .replace_visible_clients(root, HashSet::from([visible_client]));
+        world
+            .resource_mut::<VisibilityMembershipCache>()
+            .replace_visible_clients(child, HashSet::from([visible_client]));
+        world
+            .get_mut::<ReplicationState>(root)
+            .unwrap()
+            .gain_visibility(visible_client);
+        world
+            .get_mut::<ReplicationState>(child)
+            .unwrap()
+            .gain_visibility(visible_client);
+
+        rearm_visibility_tree_for_role_change(&mut world, &[(root, "root-guid".to_string())]);
+
+        assert!(
+            !world
+                .get::<ReplicationState>(root)
+                .unwrap()
+                .is_visible(visible_client)
+        );
+        assert!(
+            !world
+                .get::<ReplicationState>(child)
+                .unwrap()
+                .is_visible(visible_client)
+        );
+        assert!(
+            world
+                .resource::<VisibilityMembershipCache>()
+                .visible_clients(root)
+                .is_none_or(|clients| !clients.contains(&visible_client))
+        );
+        assert!(
+            world
+                .resource::<VisibilityMembershipCache>()
+                .visible_clients(child)
+                .is_none_or(|clients| !clients.contains(&visible_client))
+        );
+        let rearm_state = world.resource::<RoleVisibilityRearmState>();
+        assert!(rearm_state.is_pending(root, visible_client));
+        assert!(rearm_state.is_pending(child, visible_client));
     }
 }

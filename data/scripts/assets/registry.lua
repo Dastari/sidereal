@@ -1309,6 +1309,14 @@ AssetRegistry.assets = {
     },
   },
   {
+    asset_id = "star_visual_wgsl",
+    shader_family = "world_polygon_star",
+    source_path = "shaders/star_visual.wgsl",
+    content_type = "text/plain; charset=utf-8",
+    dependencies = {},
+    bootstrap_required = true,
+  },
+  {
     asset_id = "runtime_effect_wgsl",
     shader_family = "effect",
     source_path = "shaders/runtime_effect.wgsl",

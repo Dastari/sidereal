@@ -19,6 +19,7 @@ avian2d.workspace = true
 bevy = { workspace = true, default-features = false, features = ["2d", "webgpu", "mp3"] }
 bevy_svg = "0.18.0"
 mint = "0.5"
+naga = { version = "27.0.3", default-features = false, features = ["wgsl-in"] }
 resvg = "0.46.0"
 sidereal-audio = { path = "../../crates/sidereal-audio" }
 sidereal-core = { path = "../../crates/sidereal-core" }

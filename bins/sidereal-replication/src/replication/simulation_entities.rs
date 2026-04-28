@@ -105,6 +105,75 @@ fn resolve_display_name(
         })
 }
 
+fn vec2_from_value_recursive(value: &serde_json::Value) -> Option<DVec2> {
+    if let Some(values) = value.as_array()
+        && values.len() == 2
+    {
+        return Some(DVec2::new(values[0].as_f64()?, values[1].as_f64()?));
+    }
+    let object = value.as_object()?;
+    if let (Some(x), Some(y)) = (object.get("x"), object.get("y")) {
+        return Some(DVec2::new(x.as_f64()?, y.as_f64()?));
+    }
+    for nested in object.values() {
+        if let Some(value) = vec2_from_value_recursive(nested) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn rotation_radians_from_value_recursive(value: &serde_json::Value) -> Option<f64> {
+    if let Ok(rotation) = serde_json::from_value::<Rotation>(value.clone()) {
+        return Some(rotation.as_radians());
+    }
+    if let Some(radians) = value.as_f64() {
+        return Some(radians);
+    }
+    let object = value.as_object()?;
+    if let (Some(cos), Some(sin)) = (object.get("cos"), object.get("sin")) {
+        return Some(sin.as_f64()?.atan2(cos.as_f64()?));
+    }
+    for nested in object.values() {
+        if let Some(value) = rotation_radians_from_value_recursive(nested) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn initial_transform_from_graph_record(
+    record: &GraphEntityRecord,
+    type_paths: &HashMap<String, String>,
+) -> Transform {
+    let planar_position = component_record(&record.components, "avian_position")
+        .and_then(|component| decode_graph_component_payload(component, type_paths))
+        .and_then(vec2_from_value_recursive)
+        .or_else(|| {
+            component_record(&record.components, "world_position")
+                .and_then(|component| decode_graph_component_payload(component, type_paths))
+                .and_then(vec2_from_value_recursive)
+        })
+        .filter(|value| value.is_finite())
+        .unwrap_or(DVec2::ZERO);
+    let heading = component_record(&record.components, "avian_rotation")
+        .and_then(|component| decode_graph_component_payload(component, type_paths))
+        .and_then(rotation_radians_from_value_recursive)
+        .or_else(|| {
+            component_record(&record.components, "world_rotation")
+                .and_then(|component| decode_graph_component_payload(component, type_paths))
+                .and_then(rotation_radians_from_value_recursive)
+        })
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0);
+
+    Transform {
+        translation: Vec3::new(planar_position.x as f32, planar_position.y as f32, 0.0),
+        rotation: Quat::from_rotation_z(heading as f32),
+        ..Default::default()
+    }
+}
+
 /// General-purpose entity hydration: takes a set of graph records and spawns them
 /// into the Bevy world with full component and hierarchy support.
 ///
@@ -159,10 +228,11 @@ pub fn hydrate_records_into_world(
 
         let display_name = resolve_display_name(record, &type_paths);
 
+        let initial_transform = initial_transform_from_graph_record(record, &type_paths);
         let entity_commands = commands.spawn((
             Name::new(display_name),
             EntityGuid(entity_guid),
-            Transform::default(),
+            initial_transform,
             Visibility::default(),
         ));
         let entity = entity_commands.id();
@@ -1236,8 +1306,51 @@ pub fn enforce_planar_motion(
 
 #[cfg(test)]
 mod tests {
-    use super::retry_startup_persistence;
+    use super::{initial_transform_from_graph_record, retry_startup_persistence};
+    use avian2d::prelude::{Position, Rotation};
+    use bevy::prelude::EulerRot;
+    use bevy::reflect::TypePath;
+    use sidereal_persistence::{GraphComponentRecord, GraphEntityRecord};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn hydration_initial_transform_uses_avian_spatial_components() {
+        let entity_id = uuid::Uuid::new_v4().to_string();
+        let mut type_paths = HashMap::new();
+        type_paths.insert(
+            "avian_position".to_string(),
+            Position::type_path().to_string(),
+        );
+        type_paths.insert(
+            "avian_rotation".to_string(),
+            Rotation::type_path().to_string(),
+        );
+        let record = GraphEntityRecord {
+            entity_id: entity_id.clone(),
+            labels: vec!["Entity".to_string(), "Asteroid".to_string()],
+            properties: serde_json::json!({}),
+            components: vec![
+                GraphComponentRecord {
+                    component_id: format!("{entity_id}:avian_position"),
+                    component_kind: "avian_position".to_string(),
+                    properties: serde_json::json!([128.5, -64.25]),
+                },
+                GraphComponentRecord {
+                    component_id: format!("{entity_id}:avian_rotation"),
+                    component_kind: "avian_rotation".to_string(),
+                    properties: serde_json::json!({"cos": 0.0, "sin": 1.0}),
+                },
+            ],
+        };
+
+        let transform = initial_transform_from_graph_record(&record, &type_paths);
+
+        assert_eq!(transform.translation.x, 128.5);
+        assert_eq!(transform.translation.y, -64.25);
+        let heading = transform.rotation.to_euler(EulerRot::XYZ).2;
+        assert!((heading - std::f32::consts::FRAC_PI_2).abs() < 0.0001);
+    }
 
     #[test]
     fn startup_retry_returns_first_successful_result() {

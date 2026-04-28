@@ -54,6 +54,26 @@ function escapeCypherString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "''")
 }
 
+const AGE_PROPERTY_IDENTIFIER_MAX_CHARS = 63
+const COMPONENT_UPDATE_METADATA_KEYS = new Set([
+  'component_id',
+  'component_kind',
+  'componentKind',
+  'entity_id',
+  'entityId',
+  'last_tick',
+  'typePath',
+])
+
+function cypherPropertyIdentifier(rawKey: string): string {
+  const cleanKey = rawKey
+    .split('')
+    .filter((char) => /[A-Za-z0-9_]/.test(char))
+    .join('')
+    .slice(0, AGE_PROPERTY_IDENTIFIER_MAX_CHARS)
+  return `\`${cleanKey.replace(/`/g, '``')}\``
+}
+
 function toCypherLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'null'
   if (typeof value === 'boolean') return value ? 'true' : 'false'
@@ -74,9 +94,7 @@ function toCypherLiteral(value: unknown): string {
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>
     const entries = Object.entries(record).map(([key, entryValue]) => {
-      const cypherKey = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)
-        ? key
-        : `\`${key.replace(/`/g, '``')}\``
+      const cypherKey = cypherPropertyIdentifier(key)
       return `${cypherKey}: ${toCypherLiteral(entryValue)}`
     })
     return `{${entries.join(', ')}}`
@@ -86,6 +104,81 @@ function toCypherLiteral(value: unknown): string {
 
 function sanitizePayloadKey(typePath: string): string {
   return typePath.replaceAll('::', '__')
+}
+
+function agePayloadKey(typePath: string): string {
+  return sanitizePayloadKey(typePath).slice(
+    0,
+    AGE_PROPERTY_IDENTIFIER_MAX_CHARS,
+  )
+}
+
+function payloadEnvelopeKeys(typePath: string): Array<string> {
+  return Array.from(
+    new Set([typePath, sanitizePayloadKey(typePath), agePayloadKey(typePath)]),
+  )
+}
+
+function asObjectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function normalizeComponentUpdateValue(
+  value: unknown,
+  typePath: string,
+): unknown {
+  const record = asObjectRecord(value)
+  if (!record) return value
+
+  const envelopeKeys = new Set(payloadEnvelopeKeys(typePath))
+  const canonicalEntries = Object.entries(record).filter(
+    ([key]) =>
+      !COMPONENT_UPDATE_METADATA_KEYS.has(key) && !envelopeKeys.has(key),
+  )
+  if (canonicalEntries.length > 0) {
+    return Object.fromEntries(canonicalEntries)
+  }
+
+  for (const key of envelopeKeys) {
+    if (record[key] !== undefined) {
+      return normalizeComponentUpdateValue(record[key], typePath)
+    }
+  }
+
+  return value
+}
+
+function componentUpdateClauses(
+  value: unknown,
+  typePath: string,
+): { setClauses: Array<string>; removeClauses: Array<string> } {
+  const normalizedValue = normalizeComponentUpdateValue(value, typePath)
+  const record = asObjectRecord(normalizedValue)
+  const staleEnvelopeKeys = payloadEnvelopeKeys(typePath)
+
+  if (!record) {
+    return {
+      setClauses: [
+        `c.value = ${toCypherLiteral(JSON.stringify(normalizedValue))}`,
+      ],
+      removeClauses: staleEnvelopeKeys.map(
+        (key) => `c.${cypherPropertyIdentifier(key)}`,
+      ),
+    }
+  }
+
+  return {
+    setClauses: Object.entries(record).map(
+      ([key, entryValue]) =>
+        `c.${cypherPropertyIdentifier(key)} = ${toCypherLiteral(entryValue)}`,
+    ),
+    removeClauses: [
+      'c.value',
+      ...staleEnvelopeKeys.map((key) => `c.${cypherPropertyIdentifier(key)}`),
+    ],
+  }
 }
 
 export const Route = createFileRoute('/api/graph')({
@@ -226,16 +319,30 @@ export const Route = createFileRoute('/api/graph')({
           await client.query("LOAD 'age'")
           await client.query('SET search_path = ag_catalog, public')
 
-          const payloadKey = sanitizePayloadKey(typePath)
-          const payloadLiteral = toCypherLiteral(value)
+          const payloadKey = agePayloadKey(typePath)
+          const { setClauses, removeClauses } = componentUpdateClauses(
+            value,
+            typePath,
+          )
+          if (setClauses.length === 0) {
+            return json(
+              { error: 'Component value has no writable fields' },
+              { status: 400 },
+            )
+          }
           const escapedEntityId = escapeCypherString(entityId)
           const escapedComponentKind = escapeCypherString(componentKind)
+          const removeClause =
+            removeClauses.length > 0
+              ? `REMOVE ${Array.from(new Set(removeClauses)).join(', ')}`
+              : ''
 
           const result = await client.query(
             `SELECT component_id::text AS component_id
              FROM ag_catalog.cypher('${escapeCypherString(graphName)}', $$
                MATCH (e:Entity {entity_id:'${escapedEntityId}'})-[:HAS_COMPONENT]->(c:Component {component_kind:'${escapedComponentKind}'})
-               SET c.${payloadKey} = ${payloadLiteral}
+               SET ${setClauses.join(', ')}
+               ${removeClause}
                RETURN c.component_id
              $$) AS (component_id agtype);`,
           )

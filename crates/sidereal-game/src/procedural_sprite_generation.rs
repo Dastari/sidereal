@@ -72,6 +72,58 @@ fn hash01(seed: u64, salt: u64) -> f32 {
     value / 16_777_215.0
 }
 
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn hash01_grid(seed: u64, x: i32, y: i32, salt: u64) -> f32 {
+    let mixed = seed
+        ^ (x as i64 as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ (y as i64 as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
+        ^ salt.wrapping_mul(0x1656_67b1_9e37_79f9);
+    hash01(mixed, salt ^ 0xa24b_aed4_963e_e407)
+}
+
+fn value_noise2d(seed: u64, x: f32, y: f32, salt: u64) -> f32 {
+    let ix = x.floor() as i32;
+    let iy = y.floor() as i32;
+    let fx = x - ix as f32;
+    let fy = y - iy as f32;
+    let ux = fx * fx * (3.0 - 2.0 * fx);
+    let uy = fy * fy * (3.0 - 2.0 * fy);
+    let a = hash01_grid(seed, ix, iy, salt);
+    let b = hash01_grid(seed, ix + 1, iy, salt);
+    let c = hash01_grid(seed, ix, iy + 1, salt);
+    let d = hash01_grid(seed, ix + 1, iy + 1, salt);
+    let ab = a + (b - a) * ux;
+    let cd = c + (d - c) * ux;
+    ab + (cd - ab) * uy
+}
+
+fn fbm2d(seed: u64, x: f32, y: f32, salt: u64, octaves: usize) -> f32 {
+    let mut value = 0.0;
+    let mut amplitude = 0.5;
+    let mut frequency = 1.0;
+    let mut norm = 0.0;
+    for octave in 0..octaves {
+        value += value_noise2d(
+            seed,
+            x * frequency,
+            y * frequency,
+            salt + octave as u64 * 31,
+        ) * amplitude;
+        norm += amplitude;
+        frequency *= 2.0;
+        amplitude *= 0.5;
+    }
+    if norm <= f32::EPSILON {
+        0.0
+    } else {
+        value / norm
+    }
+}
+
 fn generate_asteroid_rocky_v1(
     seed_key: &str,
     sprite: &ProceduralSprite,
@@ -123,12 +175,19 @@ fn generate_asteroid_rocky_v1(
             let lobe_1 = (angle * 3.0 + hash01(seed, 12) * TAU).cos();
             let lobe_2 = (angle * 5.0 + hash01(seed, 13) * TAU).sin();
             let shard_lobe = (angle * 8.0 + hash01(seed, 14) * TAU).sin().abs();
+            let broad_edge_noise = (fbm2d(seed, nx * 2.2 + 5.1, ny * 2.2 - 3.4, 101, 4) - 0.5)
+                * sprite.edge_noise
+                * 1.35;
+            let medium_edge_noise = (fbm2d(seed, nx * 5.4 - 2.0, ny * 5.4 + 8.7, 139, 3) - 0.5)
+                * sprite.edge_noise
+                * 0.35;
             let silhouette_radius = 0.74
                 + lobe_0 * sprite.lobe_amplitude * style_silhouette
                 + lobe_1 * (sprite.lobe_amplitude * 0.62)
                 + lobe_2 * (sprite.lobe_amplitude * 0.42)
                 + shard_lobe * sprite.lobe_amplitude * 0.18
-                + (hash01(seed, (x as u64 + 1) * 3 + (y as u64 + 1) * 5) - 0.5) * sprite.edge_noise;
+                + broad_edge_noise
+                + medium_edge_noise;
 
             let edge = silhouette_radius - dist;
             if edge <= -0.03 {
@@ -136,18 +195,22 @@ fn generate_asteroid_rocky_v1(
             }
 
             let alpha = (edge / 0.03).clamp(0.0, 1.0);
-            let lighting = (0.55 + (-nx * 0.32) + (ny * 0.18)).clamp(0.18, 1.0);
             let grain = hash01(seed, qx as u64 * 131 + qy as u64 * 977);
-            let mut shade = 0.38 + lighting * 0.42 + (grain - 0.5) * 0.12;
-            let mut height_value = 0.55 + lighting * 0.18 + (grain - 0.5) * 0.06;
+            let broad_grain = fbm2d(seed, nx * 3.1 + 13.0, ny * 3.1 - 7.0, 211, 4);
+            let local_grain = fbm2d(seed, nx * 9.0 - 17.0, ny * 9.0 + 4.0, 251, 3);
+            let body_round = (1.0 - (dist / silhouette_radius.max(0.2)).powf(1.7)).clamp(0.0, 1.0);
+            let mut shade =
+                0.22 + body_round * 0.34 + (broad_grain - 0.5) * 0.24 + (grain - 0.5) * 0.05;
+            let mut height_value =
+                0.28 + body_round * 0.48 + (broad_grain - 0.5) * 0.22 + (local_grain - 0.5) * 0.08;
             let ridge_a = (angle * 6.0 + dist * 10.5 + hash01(seed, 71) * TAU)
                 .sin()
                 .abs();
             let ridge_b = (nx * 12.0 - ny * 9.0 + hash01(seed, 73) * TAU).sin().abs();
             let facet_ridge = (1.0 - ridge_a).powf(5.0) * 0.55 + (1.0 - ridge_b).powf(7.0) * 0.35;
             let facet_shadow = ridge_a.min(ridge_b).powf(3.0) * 0.10;
-            shade += facet_ridge * 0.18;
-            shade -= facet_shadow;
+            shade += facet_ridge * 0.10;
+            shade -= facet_shadow * 0.65;
             height_value += facet_ridge * 0.24;
             height_value -= facet_shadow * 0.26;
 
@@ -167,7 +230,7 @@ fn generate_asteroid_rocky_v1(
             let crack = (1.0 - crack_wave).max(0.0).powf(8.0)
                 * sprite.crack_intensity.clamp(0.0, 1.0)
                 * (0.4 + dist * 0.8);
-            shade -= crack * 0.34;
+            shade -= crack * 0.18;
             height_value -= crack * 0.22;
 
             let vein_wave = ((nx * 13.0 + ny * 7.0 + hash01(seed, 53) * TAU).sin()).abs();
@@ -175,8 +238,8 @@ fn generate_asteroid_rocky_v1(
                 * sprite.mineral_vein_intensity.clamp(0.0, 1.0)
                 * (0.35 + grain * 0.65);
 
-            shade = (shade * 5.0).round() / 5.0;
-            shade = shade.clamp(0.08, 0.92);
+            shade = (shade * 8.0).round() / 8.0;
+            shade = shade.clamp(0.06, 0.88);
             height_value = height_value.clamp(0.0, 1.0);
 
             let dark = sprite.palette_dark_rgb;
@@ -187,9 +250,14 @@ fn generate_asteroid_rocky_v1(
                 dark[2] + (light[2] - dark[2]) * shade,
             ];
             let mineral = sprite.mineral_accent_rgb;
-            color[0] = color[0] + (mineral[0] - color[0]) * vein;
-            color[1] = color[1] + (mineral[1] - color[1]) * vein;
-            color[2] = color[2] + (mineral[2] - color[2]) * vein;
+            let vein_mix = vein * 0.28;
+            color[0] = color[0] + (mineral[0] - color[0]) * vein_mix;
+            color[1] = color[1] + (mineral[1] - color[1]) * vein_mix;
+            color[2] = color[2] + (mineral[2] - color[2]) * vein_mix;
+            let dust = smoothstep(0.42, 0.78, local_grain) * 0.08;
+            color[0] += dust;
+            color[1] += dust * 0.85;
+            color[2] += dust * 0.62;
             let r = (color[0].clamp(0.0, 1.0) * 255.0) as u8;
             let g = (color[1].clamp(0.0, 1.0) * 255.0) as u8;
             let b = (color[2].clamp(0.0, 1.0) * 255.0) as u8;

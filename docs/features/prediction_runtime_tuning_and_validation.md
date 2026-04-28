@@ -1,7 +1,7 @@
 # Prediction Runtime Tuning and Validation
 
 Status: Active feature reference
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 Owners: client runtime + replication
 Scope: Lightyear-native prediction/interpolation behavior verification and production default tuning
 
@@ -75,6 +75,13 @@ Scope: Lightyear-native prediction/interpolation behavior verification and produ
 
 2026-04-27 status note:
 
+1. Implemented: the default native prediction rollback state is now Lightyear state rollback `Always` while input rollback remains disabled.
+2. Reason: dynamic control handoff can reseed or replace the predicted lane. Relying on Lightyear's state rollback `Check` mode allowed a handoff to miss correction when local prediction history was stale, leaving `Confirmed<Position>` moving while the local predicted `Position` stayed behind. `Always` keeps reconciliation owned by Lightyear but forces every confirmed state update to drive rollback/resimulation.
+3. Native impact: ship and free-roam handoffs should converge to server state through Lightyear rollback instead of leaving the predicted entity stuck at the handoff origin.
+4. WASM impact: shared client runtime behavior only; no target-specific code path was introduced.
+
+2026-04-27 status note:
+
 1. Implemented: shared character/free-roam movement now distinguishes physics-backed entities from non-physics player anchors.
 2. Reason: Avian `RigidBody` entities should set `LinearVelocity` and let physics integrate motion, but a self-controlled player anchor can have `LinearVelocity` without `RigidBody`; in that lane, shared fixed-step movement must also advance `Position`/`Transform` or client prediction stays at the handoff origin while the server confirms movement.
 3. Native impact: switching from a ship to free-roam/self-control should no longer produce local-prediction snapbacks caused by the player anchor receiving velocity but not moving locally.
@@ -101,6 +108,74 @@ Scope: Lightyear-native prediction/interpolation behavior verification and produ
 2. Reason: realtime input snapshots are only one source of intent. A previously processed action can leave durable `FlightComputer` state non-neutral; if a client crashes while thrusting or turning, the server must not keep applying that stale player intent and burning fuel after the session is gone.
 3. Native impact: crashed or disconnected native clients should leave ships coasting with neutral controls instead of continuing thrust/turn input in the background.
 4. WASM impact: replication-server behavior only; no browser-specific branch was introduced.
+
+2026-04-27 status note:
+
+Superseded later on 2026-04-27 by the Lightyear-only controlled reconciliation note below.
+
+1. Implemented: client prediction treats disabled fuel consumption as a prediction-only mode and no longer requires local replicated `FuelTank` availability before applying thrust or torque.
+2. Superseded implementation: controlled predicted entities applied each new `ConfirmedTick` as a Sidereal-owned correction delta against `PredictionHistory<Position>`, `PredictionHistory<Rotation>`, `PredictionHistory<LinearVelocity>`, and `PredictionHistory<AngularVelocity>`.
+3. Reason: the server remains authoritative for fuel and motion, but a selected ship can temporarily lack complete owner-only module/fuel state on the client. Confirmed server state must still reconcile the predicted lane instead of leaving the local body stuck at its handoff pose while the server ghost moves away.
+4. Native impact: selecting a ship after login or control handoff should converge toward the authoritative server pose even if prediction parity is temporarily incomplete.
+5. WASM impact: shared client/runtime and shared simulation behavior only; no target-specific branch was introduced.
+
+2026-04-27 status note:
+
+1. Implemented: Sidereal now patches Lightyear's UDP transport send path locally so `WouldBlock`/`EAGAIN` socket backpressure preserves the unsent packet and remaining per-link queue for the next frame instead of draining and dropping them.
+2. Reason: reconnect/login replication bursts can temporarily fill the UDP socket send buffer; treating that as packet loss caused server-side `lightyear_udp::server` error spam and could starve confirmed-state delivery immediately after client connection.
+3. Native impact: native UDP transport should degrade to extra latency under short send-buffer backpressure instead of losing queued replication packets during session bootstrap.
+4. WASM impact: no browser transport behavior changed; the patch is in the UDP transport crate used by native runtime.
+
+2026-04-27 status note:
+
+1. Implemented: Sidereal's custom realtime input bridge now suppresses active local input when the controlled predicted entity's `ConfirmedTick` falls beyond the configured prediction budget.
+2. Reason: Lightyear still owns rollback/correction, but Sidereal injects `ActionState<PlayerInput>` from its authenticated realtime input lane. That bridge must not keep advancing prediction indefinitely when confirmed server state has stopped arriving or is far outside the allowed lead.
+3. Native impact: a second unfocused/local client or a client connected to a stale/disconnected server should enter a neutral recovery window instead of building hundreds of unconfirmed predicted ticks and then rubberbanding violently.
+4. WASM impact: shared client runtime behavior only; no target-specific branch was introduced.
+
+2026-04-27 status note:
+
+1. Implemented: free-roam/player-anchor control now follows the same predicted-readiness rule as ship/entity control. The client no longer binds `ControlledEntity` or `SimulationMotionWriter` to a confirmed/interpolated player-anchor fallback while waiting for Lightyear to spawn the predicted clone.
+2. Implemented: client motion-ownership reconciliation now refuses confirmed/interpolated fallback targets for all control lanes, including player-anchor free roam.
+3. Implemented: replication observer-anchor position resolution now prefers authoritative Avian f64 `Position` before f32 `GlobalTransform`/`Transform` fallback.
+4. Reason: control handoff must preserve single-writer motion ownership. Letting free roam write to a confirmed/interpolated anchor allowed local prediction and replicated correction to fight during ship -> free-roam switches.
+5. Native impact: switching between a ship and free roam should wait briefly for the predicted anchor instead of producing local snap/jump behavior.
+6. WASM impact: shared client/runtime and replication-server behavior only; no target-specific branch was introduced.
+
+2026-04-27 status note:
+
+1. Implemented: the Sidereal client no longer schedules a custom controlled-motion reconciliation writer. `seed_controlled_predicted_motion_from_confirmed` remains only for control-generation bootstrap; ongoing correction is owned by Lightyear rollback/visual correction.
+2. Implemented: removed the per-entity `ControlledPredictionReconciliationState` component and the emergency fallback correction path.
+3. Implemented: client motion diagnostics still log confirmed tick/history state and prediction-history length/newest tick for controlled entities, so rubber-band reports can distinguish confirmed-state latency from missing rollback history without Sidereal writing corrections itself.
+4. Reason: controlled prediction must have one correction owner. Applying any Sidereal-side correction directly to Avian `Position`, `Rotation`, `LinearVelocity`, or `AngularVelocity` can double-correct with Lightyear and progressively worsen rotation during back-and-forth input.
+5. Native impact: slow controlled flight and on-the-spot rotation should no longer receive any Sidereal-side reconciliation corrections after the initial control-generation seed.
+6. WASM impact: shared client/runtime behavior only; no browser-specific branch was introduced.
+
+2026-04-28 status note:
+
+1. Implemented: client realtime input and local `ActionState<PlayerInput>` insertion now require `ControlBootstrapState::ActivePredicted` for the exact active control lease. Confirmed/interpolated GUID fallbacks are no longer eligible for input authority.
+2. Implemented: pending control requests and pending predicted bootstrap remove local input markers, local action state, and `SimulationMotionWriter` instead of allowing old or fallback entities to keep receiving input.
+3. Implemented: control ACK/reject lease changes reset client input send/ack state so ticks and last-sent actions from one target/generation cannot leak into the next target/generation.
+4. Implemented: replication accepted rebinds explicitly clear short-lived realtime input state for the authenticated player and neutralize old and new targets before fresh input is accepted.
+5. Reason: control handoff must be a lease boundary. If the predicted clone for the authoritative target/generation is missing, the correct behavior is to suppress active input and surface diagnostics, not to write fallback simulation state locally.
+6. Native impact: ship/free-roam/ship switching should no longer drive confirmed or interpolated entities locally while Lightyear is still establishing the predicted lane.
+7. WASM impact: shared client/runtime and replication-server behavior only; no target-specific branch was introduced.
+
+2026-04-28 status note:
+
+1. Implemented: server control-role rearm is now staged across visibility membership passes instead of calling `lose_visibility()` and `gain_visibility()` in the same tick.
+2. Implemented: the client-side conflicting `Predicted`/`Interpolated` marker sanitizer was removed. A runtime entity must receive exactly one Lightyear role from the server topology rather than being repaired locally after a mixed-role spawn.
+3. Reason: the latest native logs showed the server accepting generation-2 ship input and moving the authoritative ship, while the client promoted the already-interpolated ship into prediction, sanitized both markers locally, and then left stale Lightyear prediction/interpolation sidecar state to fight rollback/visual correction.
+4. Native impact: switching from free roam to an already-visible owned ship should now wait for a clean Lightyear role transition instead of mutating one local clone from observer to prediction in place.
+5. WASM impact: shared client/runtime and replication-server behavior only; no target-specific branch was introduced.
+
+2026-04-28 status note:
+
+1. Implemented: removed the active client systems that fabricated missing `Confirmed<T>` motion mirrors for interpolated entities, inserted a missing Lightyear `PredictionManager`, continuously synced interpolated transforms without Lightyear history, and repaired predicted/interpolated visual transforms in PostUpdate.
+2. Implemented: presentation bootstrap now uses the existing hidden-until-ready reveal gate only; it does not keep repairing dynamic interpolated transforms while waiting for Lightyear interpolation history.
+3. Reason: these systems were local repair shims for invalid or incomplete Lightyear role/bootstrap states. After server-side staged role rearm, mixed-role handoff is not a valid recoverable state; it should be prevented by topology and caught by diagnostics/tests, not patched on the client.
+4. Native impact: control handoff presentation now relies on clean Lightyear role lifecycle plus the hidden-until-ready visual gate. It no longer seeds Lightyear confirmation sidecars, creates missing Lightyear prediction managers, or repairs predicted transforms locally after rollback/visual correction.
+5. WASM impact: shared client/runtime behavior only; no target-specific branch was introduced.
 
 ## 1. Purpose
 
@@ -140,7 +215,7 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - Server ingress keeps latest-intent semantics:
   - validates tick ordering per authenticated client/player/controlled-entity/control-generation input stream and rate limits per authenticated player,
   - validates `control_generation` against the server-issued control lease before applying tick-order rejection or accepting a realtime input snapshot,
-  - clears per-player realtime input tick/latest-intent state on a fresh authenticated bind so a restarted native client with a reset local input timeline is not rejected against stale ticks from a prior session,
+  - clears per-player realtime input tick/latest-intent state on a fresh authenticated bind and on accepted control rebind so a restarted native client or newly active target/generation is not rejected against stale ticks from a prior lease,
   - stores latest input snapshot by player/tick,
   - expires realtime input snapshots after `REPLICATION_REALTIME_INPUT_TIMEOUT_SECONDS` (default `0.35s`) so authoritative motion cannot stay latched if the client loses focus, background-throttles, or misses the neutral heartbeat,
   - removes expired, stale-generation, or wrong-controlled-target latest snapshots during drain so disconnected clients and completed control handoffs do not leave reusable input residue,
@@ -178,16 +253,12 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - Native client input timeline no longer defaults to zero input delay.
   - Sidereal now defaults `SIDEREAL_CLIENT_INPUT_DELAY_TICKS` to `2` for native timeline setup, with `--input-delay-ticks` as the equivalent CLI override.
   - Reason: the project is currently reproducing multi-second confirmed-vs-predicted drift and aborted rollbacks under `fixed_input_delay(0)`, and Lightyear upstream already treats zero-delay localhost timing as fragile.
-- Client runtime now seeds missing `Confirmed<T>` mirrors for Avian motion components (`Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`) when an already-existing replicated entity is in the `Interpolated` lane but still only has raw motion components.
-  - This is a bounded transition-bootstrap guard for control handoff / visibility role churn, not a new steady-state presentation contract.
-  - Reason: upstream Lightyear still carries an explicit interpolation TODO for "if `Interpolated` is added on an existing entity" and Sidereal exercises that path during control transfer.
+- Superseded 2026-04-28: the client runtime no longer seeds missing `Confirmed<T>` mirrors for Avian motion components on interpolated entities. Clean role rearm must provide a valid Lightyear lane; incomplete lanes remain hidden or diagnosed instead of locally fabricating confirmation state.
 - World-entry auth/bootstrap sequencing is tighter now.
   - Replication now sends `ServerSessionDeniedMessage` for every terminal auth rejection after the peer is identified, including invalid token, token/player mismatch, account ownership mismatch, and missing runtime player cases.
   - Native client bootstrap-required asset download now waits for `ServerSessionReady` for the selected player instead of starting immediately after `/world/enter` acceptance.
   - Goal: let the observer lane become immediately presentable and interpolation-ready without waiting for a later delta to populate `Confirmed<T>`.
-- Conflicting `Predicted` + `Interpolated` marker cleanup on the client is now transition-driven rather than an every-frame scan.
-  - Sidereal still sanitizes invalid mixed-lane entities locally because dynamic handoff can reuse a local entity and leave both markers present.
-  - The sanitizer now runs when either marker is added, and the winning lane depends on whether the entity is the active local control target or an observer-only entity.
+- Superseded 2026-04-28: conflicting `Predicted` + `Interpolated` marker cleanup was removed from the client. Mixed-role entities are invalid topology; server visibility role rearm now stages loss before re-gain so the client receives a clean role lifecycle.
 - Native impact:
   - reduces the chance that the local prediction timeline outruns confirmed state badly enough to exceed the rollback budget after focus churn or localhost sync jitter.
   - reduces long observer-transition stalls where the authoritative/server lane is advancing but the local observer presentation is still waiting for confirmed bootstrap.
@@ -247,14 +318,26 @@ Track remaining non-structural work after Lightyear-native migration completion:
 - WASM impact:
   - shared client/runtime dependency behavior only; no target-specific branch was introduced.
 
-2026-04-24 update:
+2026-04-24 update, superseded 2026-04-28:
 
 - Client conflicting `Predicted` + `Interpolated` marker cleanup now resolves the intended local control lane from any pending control request first, then desired control state, then the last acknowledged authoritative target.
 - This prevents a dynamic handoff race where Lightyear can deliver the target entity's `Predicted` marker before the reliable control ack updates `LocalPlayerViewState`; the sanitizer must keep `Predicted` for that pending target instead of stripping it as an observer marker.
+- Superseded reason: the client-side sanitizer is removed. Correctness now comes from server-side staged visibility role rearm plus client refusal to bind input until `ControlBootstrapState::ActivePredicted`.
 - Native impact:
   - owner-controlled ship handoff should no longer get stuck in `PendingPredicted` after a successful server ack when the prediction marker arrives slightly before the ack.
 - WASM impact:
   - shared client runtime behavior only; no target-specific branch.
+
+2026-04-28 update:
+
+- Client local control view state is now lease-owned by `ServerSessionReadyMessage` and `ServerControlAckMessage` / `ServerControlRejectMessage` only.
+- The legacy client replication sync that copied replicated `ControlledEntityGuid` from the local player entity back into `LocalPlayerViewState` was removed. Replicated control components are confirmation/diagnostic data during handoff, not a writer for pending or acknowledged local intent.
+- Client adoption now ignores `EntityGuid` entities that do not have a Lightyear replication lane marker (`Replicated`, `Predicted`, or `Interpolated`). This prevents orphan/non-network-role entities from being promoted into rendered `WorldEntity` state and flickering as visibility changes.
+- Native impact:
+  - ship fuel HUD, scanner availability, selected-control UI, and `ControlledEntity` tagging should continue to follow the latest session-ready/control-ACK lease even if stale replicated player-anchor components arrive afterward.
+  - free-roam/frustum visuals should no longer adopt unclassified `EntityGuid` entities as replicated world visuals.
+- WASM impact:
+  - shared client runtime behavior only; no target-specific branch was introduced.
 
 ## 2.3 Dynamic Handoff Lightyear Exception (2026-03-09)
 

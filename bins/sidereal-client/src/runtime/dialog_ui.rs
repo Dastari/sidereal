@@ -1,6 +1,8 @@
 use super::ecs_util::queue_despawn_if_exists;
+use bevy::app::AppExit;
 use bevy::log::info;
 use bevy::prelude::*;
+use bevy::ui::FocusPolicy;
 use sidereal_ui::layout;
 use sidereal_ui::theme::{ActiveUiTheme, UiSemanticTone, UiVisualSettings, theme_definition};
 use sidereal_ui::typography::text_font;
@@ -8,6 +10,8 @@ use sidereal_ui::widgets::{
     UiButtonVariant, UiInteractionState, button_surface, panel_surface_with_tone,
     spawn_hud_frame_chrome_with_tone,
 };
+
+use super::resources::LogoutCleanupRequested;
 
 /// Dialog UI System for client-side error/info/warning modals
 ///
@@ -69,7 +73,9 @@ struct DialogRoot;
 struct DialogBackdrop;
 
 #[derive(Component)]
-struct DialogOkayButton;
+struct DialogActionButton {
+    action: DialogAction,
+}
 
 #[derive(Resource, Default)]
 pub struct DialogQueue {
@@ -82,6 +88,7 @@ pub struct DialogMessage {
     pub title: String,
     pub message: String,
     pub severity: DialogSeverity,
+    pub actions: Vec<DialogAction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +99,13 @@ pub enum DialogSeverity {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogAction {
+    Acknowledge,
+    Disconnect,
+    Quit,
+}
+
 #[allow(dead_code)]
 impl DialogQueue {
     pub fn push_error(&mut self, title: impl Into<String>, message: impl Into<String>) {
@@ -99,6 +113,7 @@ impl DialogQueue {
             title: title.into(),
             message: message.into(),
             severity: DialogSeverity::Error,
+            actions: vec![DialogAction::Acknowledge],
         });
     }
 
@@ -107,6 +122,7 @@ impl DialogQueue {
             title: title.into(),
             message: message.into(),
             severity: DialogSeverity::Warning,
+            actions: vec![DialogAction::Acknowledge],
         });
     }
 
@@ -115,6 +131,20 @@ impl DialogQueue {
             title: title.into(),
             message: message.into(),
             severity: DialogSeverity::Info,
+            actions: vec![DialogAction::Acknowledge],
+        });
+    }
+
+    pub fn push_disconnect_error(&mut self, error_message: impl Into<String>) {
+        let error_message = error_message.into();
+        self.pending.push(DialogMessage {
+            title: "Disconnected from Server".to_string(),
+            message: format!(
+                "The game has been paused because the server connection was lost.\n\n{}",
+                error_message.trim()
+            ),
+            severity: DialogSeverity::Error,
+            actions: vec![DialogAction::Disconnect, DialogAction::Quit],
         });
     }
 
@@ -225,34 +255,47 @@ fn show_next_dialog(
 
                 panel
                     .spawn((
-                        Button,
-                        DialogOkayButton,
                         Node {
+                            width: Val::Percent(100.0),
                             margin: UiRect::top(Val::Px(8.0)),
-                            align_self: AlignSelf::FlexEnd,
-                            ..layout::button(
-                                Val::Px(120.0),
-                                44.0,
-                                theme.metrics.input_radius_px,
-                                theme.metrics.control_border_px,
-                            )
+                            justify_content: JustifyContent::FlexEnd,
+                            column_gap: Val::Px(10.0),
+                            ..default()
                         },
-                        button_bg,
-                        button_border,
-                        button_shadow,
+                        FocusPolicy::Pass,
                     ))
-                    .with_children(|button| {
-                        button.spawn((
-                            Text::new("OKAY"),
-                            text_font(fonts.mono_bold.clone(), 18.0),
-                            TextColor(theme.colors.panel_foreground_color()),
-                        ));
+                    .with_children(|actions| {
+                        for action in dialog.actions.iter().copied() {
+                            actions
+                                .spawn((
+                                    Button,
+                                    DialogActionButton { action },
+                                    Node {
+                                        ..layout::button(
+                                            Val::Px(dialog_action_width_px(action)),
+                                            44.0,
+                                            theme.metrics.input_radius_px,
+                                            theme.metrics.control_border_px,
+                                        )
+                                    },
+                                    button_bg,
+                                    button_border,
+                                    button_shadow.clone(),
+                                ))
+                                .with_children(|button| {
+                                    button.spawn((
+                                        Text::new(dialog_action_label(action)),
+                                        text_font(fonts.mono_bold.clone(), 18.0),
+                                        TextColor(theme.colors.panel_foreground_color()),
+                                    ));
+                                });
+                        }
                     });
             });
         });
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_dialog_interactions(
     mut commands: Commands,
     mut dialog_queue: ResMut<DialogQueue>,
@@ -261,25 +304,32 @@ fn handle_dialog_interactions(
     mut interaction_query: Query<
         (
             &Interaction,
+            &DialogActionButton,
             &mut BackgroundColor,
             &mut BorderColor,
             &mut BoxShadow,
         ),
-        (Changed<Interaction>, With<DialogOkayButton>),
+        Changed<Interaction>,
     >,
     dialog_root: Query<Entity, With<DialogRoot>>,
     keyboard: Res<ButtonInput<KeyCode>>,
+    mut cleanup_requested: ResMut<LogoutCleanupRequested>,
+    mut app_exit: MessageWriter<AppExit>,
 ) {
     let theme = theme_definition(active_theme.0);
     let glow_intensity = visual_settings.glow_intensity();
-    for (interaction, mut bg_color, mut border_color, mut shadow) in &mut interaction_query {
+    for (interaction, button, mut bg_color, mut border_color, mut shadow) in &mut interaction_query
+    {
         match *interaction {
             Interaction::Pressed => {
-                info!("client dialog dismissed via button");
-                dialog_queue.current = None;
-                for entity in &dialog_root {
-                    queue_despawn_if_exists(&mut commands, entity);
-                }
+                apply_dialog_action(
+                    button.action,
+                    &mut commands,
+                    &mut dialog_queue,
+                    &dialog_root,
+                    &mut cleanup_requested,
+                    &mut app_exit,
+                );
             }
             Interaction::Hovered | Interaction::None => {}
         }
@@ -295,7 +345,12 @@ fn handle_dialog_interactions(
         *shadow = next_shadow;
     }
 
-    if !dialog_root.is_empty()
+    let keyboard_can_acknowledge = dialog_queue
+        .current
+        .as_ref()
+        .is_some_and(|dialog| dialog.actions == [DialogAction::Acknowledge]);
+    if keyboard_can_acknowledge
+        && !dialog_root.is_empty()
         && (keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::Escape))
     {
         info!("client dialog dismissed via keyboard");
@@ -303,6 +358,46 @@ fn handle_dialog_interactions(
         for entity in &dialog_root {
             queue_despawn_if_exists(&mut commands, entity);
         }
+    }
+}
+
+fn apply_dialog_action(
+    action: DialogAction,
+    commands: &mut Commands<'_, '_>,
+    dialog_queue: &mut DialogQueue,
+    dialog_root: &Query<'_, '_, Entity, With<DialogRoot>>,
+    cleanup_requested: &mut LogoutCleanupRequested,
+    app_exit: &mut MessageWriter<'_, AppExit>,
+) {
+    info!("client dialog action selected action={action:?}");
+    dialog_queue.current = None;
+    for entity in dialog_root {
+        queue_despawn_if_exists(commands, entity);
+    }
+    match action {
+        DialogAction::Acknowledge => {}
+        DialogAction::Disconnect => {
+            cleanup_requested.0 = true;
+        }
+        DialogAction::Quit => {
+            app_exit.write(AppExit::Success);
+        }
+    }
+}
+
+fn dialog_action_label(action: DialogAction) -> &'static str {
+    match action {
+        DialogAction::Acknowledge => "OKAY",
+        DialogAction::Disconnect => "DISCONNECT",
+        DialogAction::Quit => "QUIT",
+    }
+}
+
+fn dialog_action_width_px(action: DialogAction) -> f32 {
+    match action {
+        DialogAction::Acknowledge => 120.0,
+        DialogAction::Disconnect => 158.0,
+        DialogAction::Quit => 118.0,
     }
 }
 

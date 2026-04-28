@@ -56,22 +56,35 @@ fn screen_uv_from_centered(centered_uv: vec2<f32>, viewport: vec2<f32>) -> vec2<
     return vec2<f32>(0.5) + centered_uv / vec2<f32>(aspect, 1.0);
 }
 
+fn visual_gravity_well_radius(well: vec4<f32>) -> f32 {
+    let source_radius = max(well.z, 1.0);
+    let safe_zoom = max(map_center_zoom_mode.z, 1e-6);
+    let max_screen_radius_world = 360.0 / safe_zoom;
+    let min_screen_radius_world = 80.0 / safe_zoom;
+    return max(min(source_radius, max_screen_radius_world), min_screen_radius_world);
+}
+
 fn gravity_warp_for_well(world_pos: vec2<f32>, well: vec4<f32>) -> vec2<f32> {
-    let radius = max(well.z, 1.0);
+    let radius = visual_gravity_well_radius(well);
     let from_center = world_pos - well.xy;
     let dist = length(from_center);
-    let influence = smoothstep(radius, 0.0, dist);
-    let direction = from_center / max(dist, 1.0);
+    let normalized_dist = clamp(dist / radius, 0.0, 1.0);
+    let basin = 1.0 - smoothstep(0.0, 1.0, normalized_dist);
+    let core_relief = smoothstep(0.06, 0.22, normalized_dist);
+    let direction = from_center / max(dist, 1e-3);
     let mass_scale = clamp(well.w, 0.25, 4.0);
-    let pull = radius * gravity_well_params.y * mass_scale * influence * influence;
+    let basin_wall = normalized_dist * pow(1.0 - normalized_dist, 2.0);
+    let pull = radius * gravity_well_params.y * mass_scale * basin * basin_wall * core_relief * 2.2;
     return direction * pull;
 }
 
 fn gravity_well_intensity(world_pos: vec2<f32>, well: vec4<f32>) -> f32 {
-    let radius = max(well.z, 1.0);
+    let radius = visual_gravity_well_radius(well);
     let dist = length(world_pos - well.xy);
-    let influence = smoothstep(radius, 0.0, dist);
-    return influence * influence * clamp(well.w, 0.25, 4.0);
+    let normalized_dist = clamp(dist / radius, 0.0, 1.0);
+    let bowl = 1.0 - smoothstep(0.0, 1.0, normalized_dist);
+    let wall = smoothstep(0.08, 0.35, normalized_dist) * (1.0 - smoothstep(0.78, 1.0, normalized_dist));
+    return max(bowl * 0.45, wall) * clamp(well.w, 0.25, 4.0);
 }
 
 fn warped_grid_world_pos(world_pos: vec2<f32>) -> vec2<f32> {
@@ -201,7 +214,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let origin_w = 2.4 * world_per_pixel;
     let origin_x = smoothstep(origin_w, 0.0, abs(world_pos.x));
     let origin_y = smoothstep(origin_w, 0.0, abs(world_pos.y));
-    let origin = max(origin_x, origin_y);
+    let origin = max(origin_x, origin_y) * (1.0 - gravity_intensity * 0.9);
     color = mix(color, grid_major.rgb, origin);
 
     // Tactical fog-of-war: unexplored cells are blackened, with a softened edge.

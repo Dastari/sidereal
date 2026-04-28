@@ -10,13 +10,14 @@ struct RuntimeEffectUniforms {
 }
 
 struct SharedWorldLightingUniforms {
-    primary_dir_intensity: vec4<f32>,
-    primary_color_elevation: vec4<f32>,
+    metadata: vec4<f32>,
     ambient: vec4<f32>,
     backlight: vec4<f32>,
     flash: vec4<f32>,
-    local_dir_intensity: vec4<f32>,
-    local_color_radius: vec4<f32>,
+    stellar_dir_intensity: array<vec4<f32>, 2>,
+    stellar_color_params: array<vec4<f32>, 2>,
+    local_dir_intensity: array<vec4<f32>, 8>,
+    local_color_radius: array<vec4<f32>, 8>,
 }
 
 @group(2) @binding(0) var<uniform> effect: RuntimeEffectUniforms;
@@ -138,8 +139,7 @@ fn render_thruster(mesh: VertexOutput) -> vec4<f32> {
     let backlight_tint =
         lighting.backlight.rgb * lighting.backlight.w * (0.2 + (1.0 - tail_t) * 0.5);
     let flash_tint = lighting.flash.rgb * lighting.flash.w * 0.25;
-    let local_tint = lighting.local_color_radius.rgb * lighting.local_dir_intensity.w * 0.2;
-    let scene_tint = ambient_tint + backlight_tint + flash_tint + local_tint;
+    let scene_tint = ambient_tint + backlight_tint + flash_tint;
     let lit_rgb = final_rgb + scene_tint * (0.2 + outer * 0.28);
 
     return vec4<f32>(lit_rgb, alpha);

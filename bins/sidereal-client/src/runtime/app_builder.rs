@@ -1,7 +1,7 @@
 use super::app_setup::configure_client_runtime;
 use super::backdrop::{
     AsteroidSpriteShaderMaterial, PlanetVisualMaterial, RuntimeEffectMaterial,
-    SpaceBackgroundMaterial, SpaceBackgroundNebulaMaterial, StarfieldMaterial,
+    SpaceBackgroundMaterial, SpaceBackgroundNebulaMaterial, StarVisualMaterial, StarfieldMaterial,
     StreamedSpriteShaderMaterial, TacticalMapOverlayMaterial,
 };
 use super::platform::DEBUG_OVERLAY_RENDER_LAYER;
@@ -30,6 +30,7 @@ pub(crate) fn build_windowed_client_app(
     app.add_plugins(Material2dPlugin::<StreamedSpriteShaderMaterial>::default());
     app.add_plugins(Material2dPlugin::<AsteroidSpriteShaderMaterial>::default());
     app.add_plugins(Material2dPlugin::<PlanetVisualMaterial>::default());
+    app.add_plugins(Material2dPlugin::<StarVisualMaterial>::default());
     app.add_plugins(Material2dPlugin::<RuntimeEffectMaterial>::default());
     app.add_plugins(Material2dPlugin::<TacticalMapOverlayMaterial>::default());
     app.add_plugins(SvgPlugin);

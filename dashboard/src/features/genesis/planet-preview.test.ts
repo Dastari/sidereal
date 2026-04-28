@@ -89,7 +89,8 @@ describe('buildGenesisPlanetPreviewUniforms', () => {
 
   it('keeps the preview primary light direction normalized', () => {
     const uniforms = buildGenesisPlanetPreviewUniforms(baseSettings, 0)
-    const direction = uniforms['params.world_light_primary_dir_intensity'] ?? []
+    const direction =
+      uniforms['params.world_lighting.stellar_dir_intensity[0]'] ?? []
     const length = Math.hypot(
       direction[0] ?? 0,
       direction[1] ?? 0,

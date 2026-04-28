@@ -5,13 +5,12 @@ use crate::replication::PlayerControlledEntityMap;
 use crate::replication::PlayerRuntimeEntityMap;
 use crate::replication::auth::{
     AUTH_CONFIG_DENIED_REASON, AuthenticatedClientBindings, cleanup_client_auth_bindings,
-    configured_gateway_jwt_secret, reset_realtime_input_session_for_player,
-    sync_visibility_registry_with_authenticated_clients,
+    configured_gateway_jwt_secret, sync_visibility_registry_with_authenticated_clients,
 };
 use crate::replication::control::ClientControlRequestOrder;
 use crate::replication::input::{
     ClientInputStreamKey, ClientInputTickTracker, InputRateLimitState,
-    LatestRealtimeInputsByPlayer, RealtimeInputActivityByPlayer,
+    LatestRealtimeInputsByPlayer, RealtimeInputActivityByPlayer, clear_realtime_input_for_player,
 };
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::visibility::{ClientVisibilityRegistry, VisibilityClientContextCache};
@@ -277,7 +276,7 @@ fn fresh_auth_bind_clears_prior_realtime_input_timeline_for_player() {
         .last_received_at_s_by_player_entity_id
         .insert(player_id, 12.0);
 
-    reset_realtime_input_session_for_player(
+    clear_realtime_input_for_player(
         player_id,
         &mut tracker,
         &mut rate_limit,

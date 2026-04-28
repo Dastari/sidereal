@@ -64,6 +64,7 @@ lightyear_avian2d = { path = "third_party/lightyear_avian2d_f64" }
 lightyear_inputs = { path = "third_party/lightyear_inputs" }
 lightyear_inputs_native = { path = "third_party/lightyear_inputs_native" }
 lightyear_interpolation = { path = "third_party/lightyear_interpolation" }
+lightyear_udp = { path = "third_party/lightyear_udp" }
 
 #[profile.release]
 #opt-level = 'z'

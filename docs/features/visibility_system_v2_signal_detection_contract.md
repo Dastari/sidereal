@@ -21,7 +21,7 @@ Primary references:
 2. Implemented partial V2 baseline: signal-only targets can produce redacted unknown tactical contacts with stable per-player contact IDs, `map_icon_unknown_contact_svg`, `signal_strength`, `contact_quality`, and `position_accuracy_m`.
 3. Implemented partial V2 baseline: signal-bearing static landmarks can be discovered before full local-bubble visibility, and planet/star/black-hole signal contacts enqueue a server-authored `long_range_gravity_well_detected` notification once per target per player stream.
 4. Implemented partial V2 baseline: signal-only discovery updates durable `DiscoveredStaticLandmarks` but does not emit the identity-bearing `LandmarkDiscovery` notification payload; player-facing signal messaging stays redacted until normal visibility/delivery discloses the body.
-5. Implemented partial V2 baseline: native client local-view delivery requests use projected viewport overscan to reduce rapid zoom-out edge snap-in.
+5. Implemented partial V2 baseline: native client local-view delivery requests use projected viewport overscan, and planet visual children use buffered projected-bounds culling with rapid zoom-out expansion plus short retention hysteresis.
 6. Open: richer unknown-contact UI presentation and broader runtime tuning still need follow-up.
 7. Native impact: V2 changes server tactical/contact generation, server delivery-range requests, and client tactical/viewport culling. Native validation must include rapid zoom in/out around parallaxed planets and high-signal non-landmarks.
 8. WASM impact: no platform-specific visibility model is allowed. Browser clients must consume the same tactical/contact protocol and use equivalent projected-culling rules once live WASM parity resumes.
@@ -273,6 +273,7 @@ For planets and other large/parallaxed world visuals:
 2. Cull only when the projected visual bounds are outside an expanded viewport.
 3. Use a larger expansion while zoom velocity is outward.
 4. Retain recently visible large/parallaxed visuals for a short grace period to avoid one-frame disappear/reappear churn.
+5. The current native planet-body visual path implements this at the generated planet visual child level, not through Bevy frustum culling, because the planet shaders are already spawned with `NoFrustumCulling`.
 
 Recommended initial values:
 

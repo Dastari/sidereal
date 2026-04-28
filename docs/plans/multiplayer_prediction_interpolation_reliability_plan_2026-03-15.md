@@ -510,10 +510,7 @@ That points to a narrower client bootstrap problem:
 - current pose on that clone can still be the default origin,
 - but the canonical confirmed clone for the same `EntityGuid` may already exist locally with the correct authoritative pose.
 
-The client transform/bootstrap path now needs to use that canonical confirmed clone as the fallback authority for initial interpolated rendering:
-
-- `sync_interpolated_world_entity_transforms_without_history` should seed from the canonical confirmed clone before falling back to the interpolated clone's own current pose,
-- `reveal_world_entities_when_initial_transform_ready` should allow initial reveal from that same canonical confirmed pose instead of waiting for history or showing origin.
+Superseded 2026-04-28: the client transform/bootstrap path must not continuously seed dynamic interpolated transforms without Lightyear interpolation history. The old `sync_interpolated_world_entity_transforms_without_history` repair system was removed. `reveal_world_entities_when_initial_transform_ready` may use a canonical confirmed pose once to reveal an entity, but ongoing dynamic interpolated presentation must come from a clean Lightyear lane.
 
 This keeps the fix narrow and avoids reintroducing a broad per-frame whole-world scan: the lookup stays GUID-scoped through `RuntimeEntityHierarchy`.
 

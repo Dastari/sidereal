@@ -121,9 +121,12 @@ impl Plugin for ClientLightingPlugin {
         let in_world_lighting = (
             lighting::sync_world_lighting_state_system
                 .after(replication::adopt_native_lightyear_replicated_entities),
-            lighting::collect_thruster_local_light_emitters_system
-                .after(visuals::update_thruster_plume_visuals_system),
-            visuals::update_asteroid_shader_lighting_system
+            lighting::collect_camera_local_light_emitters_system
+                .after(visuals::update_thruster_plume_visuals_system)
+                .after(visuals::update_weapon_tracer_visuals_system)
+                .after(visuals::update_weapon_impact_sparks_system)
+                .after(visuals::update_weapon_impact_explosions_system),
+            visuals::update_world_sprite_shader_lighting_system
                 .after(lighting::sync_world_lighting_state_system),
         );
         app.add_systems(

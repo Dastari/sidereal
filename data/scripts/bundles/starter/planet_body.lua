@@ -37,7 +37,11 @@ function PlanetBody.build_graph_records(ctx)
   local body_size_m = ctx.size_m or 640.0
   local spawn_position = ctx.spawn_position or { 0.0, 0.0 }
   local spawn_rotation_rad = ctx.spawn_rotation_rad or 0.0
-  local planet_visual_shader_asset_id = ctx.planet_visual_shader_asset_id or "planet_visual_wgsl"
+  local default_visual_shader_asset_id = "planet_visual_wgsl"
+  if (ctx.body_kind or 0) == 1 then
+    default_visual_shader_asset_id = "star_visual_wgsl"
+  end
+  local planet_visual_shader_asset_id = ctx.planet_visual_shader_asset_id or default_visual_shader_asset_id
   local runtime_render_layer_override = {
     layer_id = ctx.runtime_render_layer_id or "midground_planets",
   }
@@ -136,6 +140,24 @@ function PlanetBody.build_graph_records(ctx)
     color_night_lights_rgb = vec3(ctx.color_night_lights_rgb, 1.0, 0.76, 0.4),
     color_emissive_rgb = vec3(ctx.color_emissive_rgb, 1.0, 0.42, 0.18),
   }
+  local stellar_light_source = nil
+  if shader_settings.body_kind == 1 and ctx.stellar_light_source_enabled ~= false then
+    local stellar = ctx.stellar_light_source or {}
+    stellar_light_source = {
+      enabled = stellar.enabled ~= false,
+      color_rgb = vec3(
+        stellar.color_rgb or ctx.stellar_light_color_rgb or ctx.color_emissive_rgb,
+        1.0,
+        0.86,
+        0.48
+      ),
+      intensity = stellar.intensity or ctx.stellar_light_intensity or 1.25,
+      inner_radius_m = stellar.inner_radius_m or ctx.stellar_light_inner_radius_m or 3500.0,
+      outer_radius_m = stellar.outer_radius_m or ctx.stellar_light_outer_radius_m or 18000.0,
+      elevation = stellar.elevation or ctx.stellar_light_elevation or 0.36,
+      priority = stellar.priority or ctx.stellar_light_priority or 1.0,
+    }
+  end
   local visual_stack = {
     passes = {
       {
@@ -209,35 +231,40 @@ function PlanetBody.build_graph_records(ctx)
     }
   end
 
+  local components = {
+    component(entity_id, "display_name", display_name),
+    component(entity_id, "entity_labels", labels),
+    component(entity_id, "owner_id", owner_id),
+    component(entity_id, "size_m", {
+      length = body_size_m,
+      width = body_size_m,
+      height = body_size_m,
+    }),
+    component(entity_id, "static_landmark", static_landmark),
+    component(entity_id, "signal_signature", signal_signature),
+    component(entity_id, "runtime_render_layer_override", runtime_render_layer_override),
+    component(entity_id, "map_icon", {
+      asset_id = ctx.map_icon_asset_id or "map_icon_planet_svg",
+    }),
+    component(entity_id, "sprite_shader_asset_id", planet_visual_shader_asset_id),
+    component(entity_id, "world_position", {
+      spawn_position[1] or spawn_position.x or 0.0,
+      spawn_position[2] or spawn_position.y or 0.0,
+    }),
+    component(entity_id, "world_rotation", spawn_rotation_rad),
+    component(entity_id, "planet_body_shader_settings", shader_settings),
+    component(entity_id, "runtime_world_visual_stack", visual_stack),
+  }
+  if stellar_light_source ~= nil then
+    components[#components + 1] = component(entity_id, "stellar_light_source", stellar_light_source)
+  end
+
   return {
     {
       entity_id = entity_id,
       labels = labels,
       properties = {},
-      components = {
-        component(entity_id, "display_name", display_name),
-        component(entity_id, "entity_labels", labels),
-        component(entity_id, "owner_id", owner_id),
-        component(entity_id, "size_m", {
-          length = body_size_m,
-          width = body_size_m,
-          height = body_size_m,
-        }),
-        component(entity_id, "static_landmark", static_landmark),
-        component(entity_id, "signal_signature", signal_signature),
-        component(entity_id, "runtime_render_layer_override", runtime_render_layer_override),
-        component(entity_id, "map_icon", {
-          asset_id = ctx.map_icon_asset_id or "map_icon_planet_svg",
-        }),
-        component(entity_id, "sprite_shader_asset_id", planet_visual_shader_asset_id),
-        component(entity_id, "world_position", {
-          spawn_position[1] or spawn_position.x or 0.0,
-          spawn_position[2] or spawn_position.y or 0.0,
-        }),
-        component(entity_id, "world_rotation", spawn_rotation_rad),
-        component(entity_id, "planet_body_shader_settings", shader_settings),
-        component(entity_id, "runtime_world_visual_stack", visual_stack),
-      },
+      components = components,
     },
   }
 end

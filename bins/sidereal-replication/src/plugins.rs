@@ -235,6 +235,7 @@ impl Plugin for ReplicationRuntimeScriptingPlugin {
                 runtime_scripting::run_script_intervals,
                 runtime_scripting::run_script_events,
                 runtime_scripting::apply_script_intents
+                    .before(sidereal_game::apply_navigation_targets_to_flight_computers)
                     .before(sidereal_game::process_flight_actions),
             )
                 .chain()

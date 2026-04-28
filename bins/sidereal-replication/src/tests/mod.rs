@@ -3,6 +3,7 @@
 mod auth;
 mod control;
 mod input;
+mod runtime_scripting;
 mod visibility;
 
 use bevy::prelude::*;

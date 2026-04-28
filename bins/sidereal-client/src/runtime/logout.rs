@@ -162,6 +162,7 @@ pub fn reset_logout_ui_flags_system(
     mut disconnect_request: ResMut<'_, DisconnectRequest>,
     mut pause_menu_state: ResMut<'_, PauseMenuState>,
     mut control_bootstrap_state: ResMut<'_, super::resources::ControlBootstrapState>,
+    mut disconnect_dialog_state: ResMut<'_, super::resources::ServerDisconnectDialogState>,
 ) {
     if !cleanup_requested.0 {
         return;
@@ -169,6 +170,7 @@ pub fn reset_logout_ui_flags_system(
     *disconnect_request = DisconnectRequest::default();
     *pause_menu_state = PauseMenuState::default();
     *control_bootstrap_state = super::resources::ControlBootstrapState::default();
+    *disconnect_dialog_state = super::resources::ServerDisconnectDialogState::default();
 }
 
 pub fn reset_asset_bootstrap_state_system(

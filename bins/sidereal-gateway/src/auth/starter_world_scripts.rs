@@ -16,10 +16,12 @@ use sidereal_persistence::{
     upsert_script_catalog_draft,
 };
 use sidereal_scripting::{
-    LuaSandboxPolicy, PLANET_REGISTRY_SCRIPT_REL_PATH, ScriptAssetRegistry, ScriptError,
-    WORLD_INIT_SCRIPT_REL_PATH, WorldInitScriptConfig, decode_graph_entity_records,
-    inject_script_logger, load_asset_registry_from_source, load_lua_module_from_source,
+    LuaSandboxPolicy, PLANET_REGISTRY_SCRIPT_REL_PATH, SHIP_MODULE_REGISTRY_SCRIPT_REL_PATH,
+    SHIP_REGISTRY_SCRIPT_REL_PATH, ScriptAssetRegistry, ScriptError, WORLD_INIT_SCRIPT_REL_PATH,
+    WorldInitScriptConfig, decode_graph_entity_records, inject_script_logger,
+    load_asset_registry_from_source, load_lua_module_from_source,
     load_lua_module_into_lua_from_source, load_planet_registry_from_sources,
+    load_ship_module_registry_from_sources, load_ship_registry_from_sources,
     load_world_init_config_from_source, lua_value_to_json, resolve_scripts_root,
     table_get_required_string, table_get_required_string_list, validate_component_kinds,
     validate_runtime_render_graph_records,
@@ -52,7 +54,7 @@ fn remove_empty_array_like_field(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerInitScriptConfig {
     pub player_bundle_id: String,
-    pub ship_bundle_id: String,
+    pub controlled_bundle_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,18 +480,19 @@ pub fn load_player_init_config_from_catalog(
             ));
         }
     };
-    let ship_bundle_id = table_get_required_string(&table, "ship_bundle_id", "player_init")
-        .map_err(map_script_error)?;
+    let controlled_bundle_id =
+        table_get_required_string(&table, "controlled_bundle_id", "player_init")
+            .map_err(map_script_error)?;
     let player_bundle_id = table_get_required_string(&table, "player_bundle_id", "player_init")
         .map_err(map_script_error)?;
     Ok(PlayerInitScriptConfig {
         player_bundle_id,
-        ship_bundle_id,
+        controlled_bundle_id,
     })
     .inspect(|config| {
         info!(
-            "gateway player-init script selected player_bundle_id={} ship_bundle_id={} for account_id={} player_entity_id={}",
-            config.player_bundle_id, config.ship_bundle_id, context.account_id, context.player_entity_id
+            "gateway player-init script selected player_bundle_id={} controlled_bundle_id={} for account_id={} player_entity_id={}",
+            config.player_bundle_id, config.controlled_bundle_id, context.account_id, context.player_entity_id
         );
     })
 }
@@ -704,6 +707,8 @@ fn inject_script_context(
     .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     inject_generate_collision_outline_fn(ctx.clone(), module.lua(), scripts_root)
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
+    inject_load_ship_authoring_fns(ctx.clone(), module.lua(), scripts_root)
+        .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     inject_load_planet_definitions_fn(ctx.clone(), module.lua(), scripts_root)
         .map_err(|err| AuthError::Internal(format!("{}: {err}", module.script_path().display())))?;
     inject_render_authoring_api(module.lua(), ctx)
@@ -733,6 +738,45 @@ fn load_planet_registry_from_catalog(
         &registry_entry.source,
         Path::new(PLANET_REGISTRY_SCRIPT_REL_PATH),
         &sources_by_script_path,
+    )
+    .map_err(map_script_error)
+}
+
+fn load_ship_module_registry_from_catalog(
+    catalog: &ScriptCatalogResource,
+) -> Result<sidereal_game::ShipModuleRegistry, AuthError> {
+    let registry_entry =
+        lookup_script_catalog_entry(catalog, SHIP_MODULE_REGISTRY_SCRIPT_REL_PATH)?;
+    let sources_by_script_path = catalog
+        .entries
+        .iter()
+        .map(|entry| (entry.script_path.clone(), entry.source.clone()))
+        .collect::<HashMap<_, _>>();
+    load_ship_module_registry_from_sources(
+        &registry_entry.source,
+        Path::new(SHIP_MODULE_REGISTRY_SCRIPT_REL_PATH),
+        &sources_by_script_path,
+    )
+    .map_err(map_script_error)
+}
+
+fn load_ship_registry_from_catalog(
+    catalog: &ScriptCatalogResource,
+) -> Result<sidereal_game::ShipRegistry, AuthError> {
+    let registry_entry = lookup_script_catalog_entry(catalog, SHIP_REGISTRY_SCRIPT_REL_PATH)?;
+    let module_registry = load_ship_module_registry_from_catalog(catalog)?;
+    let asset_registry = load_asset_registry_from_catalog(catalog)?;
+    let sources_by_script_path = catalog
+        .entries
+        .iter()
+        .map(|entry| (entry.script_path.clone(), entry.source.clone()))
+        .collect::<HashMap<_, _>>();
+    load_ship_registry_from_sources(
+        &registry_entry.source,
+        Path::new(SHIP_REGISTRY_SCRIPT_REL_PATH),
+        &sources_by_script_path,
+        &module_registry,
+        &asset_registry,
     )
     .map_err(map_script_error)
 }
@@ -777,6 +821,47 @@ fn inject_load_planet_definitions_fn(
             .map_err(mlua::Error::runtime)
     })?;
     ctx.set("load_planet_definitions", load_planet_definitions)?;
+    Ok(())
+}
+
+fn inject_load_ship_authoring_fns(
+    ctx: Table,
+    lua: &mlua::Lua,
+    scripts_root: &Path,
+) -> mlua::Result<()> {
+    let ship_scripts_root = scripts_root.to_path_buf();
+    let load_ship_definition = lua.create_function(move |lua, bundle_or_ship_id: String| {
+        let catalog = current_script_catalog(&ship_scripts_root)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let registry = load_ship_registry_from_catalog(&catalog)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let Some(definition) = registry.definitions.iter().find(|definition| {
+            definition.bundle_id == bundle_or_ship_id || definition.ship_id == bundle_or_ship_id
+        }) else {
+            return Ok(Value::Nil);
+        };
+        let definition_json = serde_json::to_value(definition).map_err(mlua::Error::runtime)?;
+        json_value_to_lua(lua, &definition_json).map_err(mlua::Error::runtime)
+    })?;
+    ctx.set("load_ship_definition", load_ship_definition)?;
+
+    let module_scripts_root = scripts_root.to_path_buf();
+    let load_ship_module_definition = lua.create_function(move |lua, module_id: String| {
+        let catalog = current_script_catalog(&module_scripts_root)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let registry = load_ship_module_registry_from_catalog(&catalog)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let Some(definition) = registry
+            .definitions
+            .iter()
+            .find(|definition| definition.module_id == module_id)
+        else {
+            return Ok(Value::Nil);
+        };
+        let definition_json = serde_json::to_value(definition).map_err(mlua::Error::runtime)?;
+        json_value_to_lua(lua, &definition_json).map_err(mlua::Error::runtime)
+    })?;
+    ctx.set("load_ship_module_definition", load_ship_module_definition)?;
     Ok(())
 }
 
@@ -835,6 +920,7 @@ fn inject_bundle_registry_spawn_fn_inner(
             bundle_ctx.set("new_uuid", new_uuid)?;
             inject_script_logger(lua, &bundle_ctx, &bundle_module_path.display().to_string())
                 .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+            inject_load_ship_authoring_fns(bundle_ctx.clone(), lua, &scripts_root)?;
             inject_bundle_registry_spawn_fn_inner(bundle_ctx.clone(), lua, &scripts_root)?;
             build_graph_records.call::<Value>(bundle_ctx)
         })?;
@@ -1261,13 +1347,14 @@ fn map_script_error(err: ScriptError) -> AuthError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ScriptContext, load_bundle_registry, load_graph_records_for_bundle,
+        ScriptCatalogEntry, ScriptCatalogResource, ScriptContext, load_bundle_registry,
+        load_graph_records_for_bundle, load_player_init_config_from_catalog,
         load_world_init_graph_records, scripts_root_dir,
     };
     use uuid::Uuid;
 
     #[test]
-    fn corvette_bundle_includes_visibility_range_buff_ms() {
+    fn corvette_bundle_uses_shipyard_registry_graph_shape() {
         let root = scripts_root_dir();
         let registry = load_bundle_registry(&root).expect("load bundle registry");
         let ship_bundle = registry.bundles.get("ship.corvette").expect("ship bundle");
@@ -1292,6 +1379,81 @@ mod tests {
             })
             .collect::<std::collections::HashSet<_>>();
         assert!(component_kinds.contains("visibility_range_buff_m"));
+        assert!(component_kinds.contains("controlled_start_target"));
+        assert!(component_kinds.contains("hardpoint"));
+        assert!(component_kinds.contains("parent_guid"));
+        assert!(component_kinds.contains("mounted_on"));
+
+        let root_ship_count = records
+            .iter()
+            .filter(|record| {
+                record.labels.iter().any(|label| label == "Ship")
+                    && record
+                        .components
+                        .iter()
+                        .any(|component| component.component_kind == "controlled_start_target")
+            })
+            .count();
+        let hardpoint_count = records
+            .iter()
+            .filter(|record| record.labels.iter().any(|label| label == "Hardpoint"))
+            .count();
+        let mounted_module_count = records
+            .iter()
+            .filter(|record| {
+                record
+                    .components
+                    .iter()
+                    .any(|component| component.component_kind == "mounted_on")
+            })
+            .count();
+        assert_eq!(root_ship_count, 1);
+        assert!(
+            hardpoint_count >= 1,
+            "expected deterministic hardpoint children"
+        );
+        assert!(mounted_module_count >= 1, "expected mounted module records");
+    }
+
+    #[test]
+    fn player_init_selects_controlled_bundle_id() {
+        let catalog = ScriptCatalogResource {
+            entries: vec![ScriptCatalogEntry {
+                script_path: "accounts/player_init.lua".to_string(),
+                source: r#"
+local PlayerInit = {}
+PlayerInit.context = {}
+function PlayerInit.player_init(ctx)
+  local _ = ctx
+  return {
+    player_bundle_id = "player.default",
+    controlled_bundle_id = "ship.corvette",
+  }
+end
+return PlayerInit
+"#
+                .to_string(),
+                revision: 1,
+                origin: "test".to_string(),
+            }],
+            revision: 1,
+            root_dir: "test".to_string(),
+        };
+        let player_entity_id = Uuid::new_v4().to_string();
+        let config = load_player_init_config_from_catalog(
+            &catalog,
+            &scripts_root_dir(),
+            ScriptContext {
+                account_id: Uuid::new_v4(),
+                player_entity_id: &player_entity_id,
+                email: "pilot@example.com",
+                controlled_entity_guid: None,
+            },
+        )
+        .expect("load player init config");
+
+        assert_eq!(config.player_bundle_id, "player.default");
+        assert_eq!(config.controlled_bundle_id, "ship.corvette");
     }
 
     #[test]

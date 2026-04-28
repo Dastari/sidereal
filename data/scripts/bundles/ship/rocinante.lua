@@ -71,6 +71,7 @@ function RocinanteBundle.build_graph_records(ctx)
   local ship_components = {
     component(ship_id, "display_name", display_name),
     component(ship_id, "ship_tag", {}),
+    component(ship_id, "controlled_start_target", {}),
     component(ship_id, "entity_labels", ship_entity_labels),
     component(ship_id, "flight_computer", {
       profile = "basic_fly_by_wire",

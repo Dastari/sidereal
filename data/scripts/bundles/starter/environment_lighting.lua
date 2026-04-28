@@ -36,13 +36,13 @@ function EnvironmentLighting.build_graph_records(ctx)
   local owner_id = ctx.owner_id or "world:system"
   local lighting = {
     primary_direction_xy = vec2(ctx.primary_direction_xy, 0.76, 0.58),
-    primary_elevation = ctx.primary_elevation or 0.82,
-    primary_color_rgb = vec3(ctx.primary_color_rgb, 1.0, 0.97, 0.92),
-    primary_intensity = ctx.primary_intensity or 1.0,
-    ambient_color_rgb = vec3(ctx.ambient_color_rgb, 0.22, 0.3, 0.42),
-    ambient_intensity = ctx.ambient_intensity or 0.18,
+    primary_elevation = ctx.primary_elevation or 0.36,
+    primary_color_rgb = vec3(ctx.primary_color_rgb, 1.0, 0.92, 0.78),
+    primary_intensity = ctx.primary_intensity or 1.15,
+    ambient_color_rgb = vec3(ctx.ambient_color_rgb, 0.16, 0.20, 0.27),
+    ambient_intensity = ctx.ambient_intensity or 0.12,
     backlight_color_rgb = vec3(ctx.backlight_color_rgb, 0.28, 0.42, 0.62),
-    backlight_intensity = ctx.backlight_intensity or 0.16,
+    backlight_intensity = ctx.backlight_intensity or 0.08,
     event_flash_color_rgb = vec3(ctx.event_flash_color_rgb, 1.0, 0.95, 0.88),
     event_flash_intensity = ctx.event_flash_intensity or 0.0,
   }

@@ -59,6 +59,21 @@ type StructField = {
   comment?: string
 }
 
+type FlattenedUniformField = {
+  name: string
+  type: string
+  components: number
+  labels: Array<string>
+  category: ShaderPreviewUniformDescriptor['category']
+  defaults: Array<number>
+  byteOffset: number
+}
+
+type TypeLayout = {
+  size: number
+  fields: Array<FlattenedUniformField>
+}
+
 type PreviewContext = {
   adapter: GPUAdapter
   device: GPUDevice
@@ -186,6 +201,86 @@ function parseComponentCount(type: string): number {
   return 0
 }
 
+function parseVec4ArrayLength(type: string): number {
+  const arrayMatch = type.match(/^array<\s*vec4<f32>\s*,\s*(\d+)\s*>$/)
+  return arrayMatch ? Number(arrayMatch[1]) : 0
+}
+
+function categoryForUniformName(
+  descriptorName: string,
+  components: number,
+): ShaderPreviewUniformDescriptor['category'] {
+  if (/color|tint|rgb|rgba/i.test(descriptorName)) return 'color'
+  return components === 1 ? 'scalar' : 'vector'
+}
+
+function layoutType(
+  type: string,
+  structMap: Map<string, Array<StructField>>,
+  namePrefix: string,
+  baseOffset: number,
+  comment?: string,
+): TypeLayout | null {
+  const components = parseComponentCount(type)
+  if (components > 0) {
+    const labels = inferComponentLabels(namePrefix, components, comment)
+    return {
+      size: 16,
+      fields: [
+        {
+          name: namePrefix,
+          type,
+          components,
+          labels,
+          category: categoryForUniformName(namePrefix, components),
+          defaults: inferDefaultValues(namePrefix, components, labels),
+          byteOffset: baseOffset,
+        },
+      ],
+    }
+  }
+
+  const vec4ArrayLength = parseVec4ArrayLength(type)
+  if (vec4ArrayLength > 0) {
+    const fields: Array<FlattenedUniformField> = []
+    for (let index = 0; index < vec4ArrayLength; index += 1) {
+      const elementName = `${namePrefix}[${index}]`
+      const labels = inferComponentLabels(elementName, 4, comment)
+      fields.push({
+        name: elementName,
+        type: 'vec4<f32>',
+        components: 4,
+        labels,
+        category: categoryForUniformName(elementName, 4),
+        defaults: inferDefaultValues(elementName, 4, labels),
+        byteOffset: baseOffset + index * 16,
+      })
+    }
+    return { size: vec4ArrayLength * 16, fields }
+  }
+
+  const structFields = structMap.get(type)
+  if (!structFields) return null
+
+  let cursor = 0
+  const fields: Array<FlattenedUniformField> = []
+  for (const field of structFields) {
+    const fieldLayout = layoutType(
+      field.type,
+      structMap,
+      `${namePrefix}.${field.name}`,
+      baseOffset + cursor,
+      field.comment,
+    )
+    if (!fieldLayout) {
+      continue
+    }
+    fields.push(...fieldLayout.fields)
+    cursor += fieldLayout.size
+  }
+  return { size: cursor, fields }
+}
+
 export function extractPreviewUniforms(
   source: string,
 ): Array<ShaderPreviewUniformDescriptor> {
@@ -198,71 +293,25 @@ export function extractPreviewUniforms(
     const name = match[3]
     const type = match[4].trim()
     const comment = match[5]
-    const scalarOrVectorComponents = parseComponentCount(type)
-    if (scalarOrVectorComponents > 0) {
-      const labels = inferComponentLabels(
-        name,
-        scalarOrVectorComponents,
-        comment,
-      )
-      const defaults = inferDefaultValues(
-        name,
-        scalarOrVectorComponents,
-        labels,
-      )
-      uniforms.push({
-        name,
-        binding,
-        sourceGroup,
-        previewGroup: 0,
-        type,
-        components: scalarOrVectorComponents,
-        labels,
-        category: /color|tint|rgb|rgba/i.test(name)
-          ? 'color'
-          : scalarOrVectorComponents === 1
-            ? 'scalar'
-            : 'vector',
-        defaults,
-        byteOffset: 0,
-      })
+    const layout = layoutType(type, structMap, name, 0, comment)
+    if (!layout) {
       continue
     }
 
-    const structFields = structMap.get(type)
-    if (!structFields) {
-      continue
-    }
-
-    structFields.forEach((field, fieldIndex) => {
-      const components = parseComponentCount(field.type)
-      if (components === 0) {
-        return
-      }
-      const flattenedName = `${name}.${field.name}`
-      const labels = inferComponentLabels(
-        flattenedName,
-        components,
-        field.comment,
-      )
-      const defaults = inferDefaultValues(flattenedName, components, labels)
+    for (const field of layout.fields) {
       uniforms.push({
-        name: flattenedName,
+        name: field.name,
         binding,
         sourceGroup,
         previewGroup: 0,
         type: field.type,
-        components,
-        labels,
-        category: /color|tint|rgb|rgba/i.test(flattenedName)
-          ? 'color'
-          : components === 1
-            ? 'scalar'
-            : 'vector',
-        defaults,
-        byteOffset: fieldIndex * 16,
+        components: field.components,
+        labels: field.labels,
+        category: field.category,
+        defaults: field.defaults,
+        byteOffset: field.byteOffset,
       })
-    })
+    }
   }
 
   return uniforms.sort((left, right) => left.binding - right.binding)
@@ -319,18 +368,23 @@ function extractStructDefinitions(
   for (const match of source.matchAll(STRUCT_DECLARATION)) {
     const structName = match[1]
     const body = match[2]
-    const fields = Array.from(
-      body.matchAll(
-        /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^,\n]+)\s*,?(?:\s*\/\/\s*([^\n]*))?/g,
-      ),
-    ).map(
-      (fieldMatch) =>
-        ({
-          name: fieldMatch[1],
-          type: fieldMatch[2].trim(),
-          comment: fieldMatch[3] ? fieldMatch[3].trim() : undefined,
-        }) satisfies StructField,
-    )
+    const fields = body
+      .split('\n')
+      .flatMap((line): Array<StructField> => {
+        const [fieldSource, rawComment] = line.split('//', 2)
+        const fieldMatch = fieldSource
+          .trim()
+          .match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?),?$/)
+        if (!fieldMatch) return []
+        const comment = (rawComment || '').trim()
+        return [
+          {
+            name: fieldMatch[1],
+            type: fieldMatch[2].trim(),
+            comment: comment || undefined,
+          },
+        ]
+      })
     structMap.set(structName, fields)
   }
   return structMap

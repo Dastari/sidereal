@@ -3,10 +3,10 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use lightyear::prelude::MessageSender;
 use lightyear::prelude::client::{Client, Connected};
 use lightyear::prelude::input::native::{ActionState, InputMarker};
-use sidereal_game::{EntityAction, EntityGuid, SimulationMotionWriter};
+use lightyear::prelude::{ConfirmedTick, LocalTimeline, MessageSender};
+use sidereal_game::{EntityAction, SimulationMotionWriter};
 use sidereal_net::{ClientRealtimeInputMessage, InputChannel, PlayerEntityId, PlayerInput};
 use sidereal_runtime_sync::parse_guid_from_entity_id;
 use std::sync::OnceLock;
@@ -17,8 +17,10 @@ use super::app_state::{
 use super::components::ControlledEntity;
 use super::dev_console::DevConsoleState;
 use super::resources::{
-    ClientControlRequestState, ClientInputAckTracker, ClientInputSendState, ClientNetworkTick,
-    HeadlessTransportMode, NativePredictionRecoveryState,
+    ClientControlRequestState, ClientInputAckTracker, ClientInputSendState,
+    ClientInputTimelineTuning, ClientNetworkTick, ControlBootstrapPhase, ControlBootstrapState,
+    HeadlessTransportMode, NativePredictionRecoveryPhase, NativePredictionRecoveryState,
+    NativePredictionRecoveryTuning, PredictionRecoveryReason,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,6 +30,14 @@ pub(crate) struct InputAxes {
     pub brake: bool,
     pub afterburner: bool,
     pub fire_primary: bool,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct PredictionGuardParams<'w, 's> {
+    input_tuning: Res<'w, ClientInputTimelineTuning>,
+    recovery_tuning: Res<'w, NativePredictionRecoveryTuning>,
+    timeline: Res<'w, LocalTimeline>,
+    confirmed_ticks: Query<'w, 's, &'static ConfirmedTick>,
 }
 
 pub(crate) fn player_input_from_keyboard(
@@ -80,6 +90,17 @@ pub(crate) fn neutral_player_input() -> (PlayerInput, InputAxes) {
         PlayerInput::from_axis_inputs(0.0, 0.0, false, false, false),
         axes,
     )
+}
+
+fn player_input_has_active_intent(input: &PlayerInput) -> bool {
+    input.actions.iter().any(|action| {
+        !matches!(
+            action,
+            EntityAction::LongitudinalNeutral
+                | EntityAction::LateralNeutral
+                | EntityAction::AfterburnerOff
+        )
+    })
 }
 
 #[derive(SystemParam)]
@@ -191,41 +212,6 @@ fn canonical_player_entity_id(id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-#[allow(clippy::type_complexity)]
-fn resolve_entity_by_guid_prefer_predicted(
-    guid_candidates: &Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Option<&'_ EntityGuid>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-        ),
-    >,
-    guid_like: &str,
-) -> Option<(Entity, bool)> {
-    let target_guid =
-        parse_guid_from_entity_id(guid_like).or_else(|| uuid::Uuid::parse_str(guid_like).ok())?;
-    let mut winner: Option<(Entity, i32)> = None;
-    for (entity, guid, is_predicted, is_interpolated) in guid_candidates {
-        if guid.is_none_or(|guid| guid.0 != target_guid) {
-            continue;
-        }
-        let score = if is_predicted {
-            3
-        } else if is_interpolated {
-            2
-        } else {
-            1
-        };
-        if winner.is_none_or(|(_, best_score)| score > best_score) {
-            winner = Some((entity, score));
-        }
-    }
-    winner.map(|(entity, score)| (entity, score >= 3))
-}
-
 fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
     if left == right {
         return true;
@@ -233,6 +219,57 @@ fn ids_refer_to_same_guid(left: &str, right: &str) -> bool {
     parse_guid_from_entity_id(left)
         .zip(parse_guid_from_entity_id(right))
         .is_some_and(|(l, r)| l == r)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveControlInputTarget {
+    entity: Entity,
+    target_entity_id: String,
+    generation: u64,
+}
+
+fn active_control_input_target(
+    control_bootstrap_state: &ControlBootstrapState,
+    request_state: &ClientControlRequestState,
+) -> Option<ActiveControlInputTarget> {
+    if request_state.pending_request_seq.is_some() {
+        return None;
+    }
+    let ControlBootstrapPhase::ActivePredicted {
+        target_entity_id,
+        generation,
+        entity,
+    } = &control_bootstrap_state.phase
+    else {
+        return None;
+    };
+    if *generation != control_bootstrap_state.generation {
+        return None;
+    }
+    if control_bootstrap_state
+        .authoritative_target_entity_id
+        .as_deref()
+        .is_none_or(|authoritative| !ids_refer_to_same_guid(authoritative, target_entity_id))
+    {
+        return None;
+    }
+    Some(ActiveControlInputTarget {
+        entity: *entity,
+        target_entity_id: target_entity_id.clone(),
+        generation: *generation,
+    })
+}
+
+fn reset_input_send_state_for_inactive_lease(
+    ack_tracker: &mut ClientInputAckTracker,
+    input_send_state: &mut ClientInputSendState,
+    recovery_state: &mut NativePredictionRecoveryState,
+) {
+    ack_tracker.pending_ticks.clear();
+    input_send_state.last_sent_at_s = f64::NEG_INFINITY;
+    input_send_state.last_sent_actions.clear();
+    input_send_state.last_sent_target_entity_id = None;
+    recovery_state.pending_neutral_send = false;
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -251,20 +288,12 @@ pub fn send_lightyear_input_messages(
         (With<Client>, With<Connected>),
     >,
     session_state: ClientInputSessionState<'_>,
-    guid_candidates: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Option<&'_ EntityGuid>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-        ),
-    >,
+    control_bootstrap_state: Res<'_, ControlBootstrapState>,
     mut tick: ResMut<'_, ClientNetworkTick>,
     mut ack_tracker: ResMut<'_, ClientInputAckTracker>,
     mut input_send_state: ResMut<'_, ClientInputSendState>,
     mut recovery_state: ResMut<'_, NativePredictionRecoveryState>,
+    prediction_guard: PredictionGuardParams<'_, '_>,
 ) {
     let suppress_for_console = super::dev_console::is_console_open(dev_console_state.as_deref());
     let in_world_state = is_active_world_state(&app_state, &headless_mode);
@@ -274,81 +303,99 @@ pub fn send_lightyear_input_messages(
     let suppress_for_recovery = recovery_state.is_suppressing_input(now_s);
     let force_neutral_send = recovery_state.pending_neutral_send;
 
-    let (player_entity_id, target_entity_id, player_input, suppress_network_for_control_handoff) =
-        if in_world_state {
-            let Some(player_entity_id) = session_state.session.player_entity_id.clone() else {
-                return;
-            };
-            let Some(canonical_player_entity_id) = PlayerEntityId::parse(player_entity_id.as_str())
-                .map(PlayerEntityId::canonical_wire_id)
-            else {
-                return;
-            };
-            let session_ready_for_player = session_state
-                .session_ready
-                .ready_player_entity_id
-                .as_deref()
-                .and_then(PlayerEntityId::parse)
-                .is_some_and(|ready_id| ready_id.canonical_wire_id() == canonical_player_entity_id);
-            if !session_ready_for_player {
-                return;
-            }
-            let target_entity_id = session_state
-                .player_view_state
-                .controlled_entity_id
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| player_entity_id.clone());
-            let controlling_player_anchor =
-                ids_refer_to_same_guid(target_entity_id.as_str(), player_entity_id.as_str());
-            let suppress_input_for_camera_only =
-                session_state.player_view_state.detached_free_camera && !controlling_player_anchor;
-            let suppress_for_control_handoff =
-                session_state.request_state.pending_request_seq.is_some();
-            let suppress_active_input = suppress_input_for_camera_only
-                || suppress_for_control_handoff
-                || !window_focused
-                || suppress_for_console
-                || suppress_for_recovery
-                || force_neutral_send;
-            let (player_input, _axes) = if suppress_active_input {
-                neutral_player_input()
-            } else if headless_mode.0 {
-                scripted_headless_player_input(
-                    now_s,
-                    &mut input_send_state.headless_script_started_at_s,
-                )
-                .unwrap_or_else(neutral_player_input)
-            } else {
-                player_input_from_keyboard(input.as_deref())
-            };
-            (
-                player_entity_id,
-                target_entity_id,
-                player_input,
-                suppress_for_control_handoff && !force_neutral_send,
-            )
-        } else {
+    let (player_entity_id, active_target, mut player_input) = if in_world_state {
+        let Some(player_entity_id) = session_state.session.player_entity_id.clone() else {
             return;
         };
+        let Some(canonical_player_entity_id) =
+            PlayerEntityId::parse(player_entity_id.as_str()).map(PlayerEntityId::canonical_wire_id)
+        else {
+            return;
+        };
+        let session_ready_for_player = session_state
+            .session_ready
+            .ready_player_entity_id
+            .as_deref()
+            .and_then(PlayerEntityId::parse)
+            .is_some_and(|ready_id| ready_id.canonical_wire_id() == canonical_player_entity_id);
+        if !session_ready_for_player {
+            return;
+        }
+        let Some(active_target) =
+            active_control_input_target(&control_bootstrap_state, &session_state.request_state)
+        else {
+            reset_input_send_state_for_inactive_lease(
+                &mut ack_tracker,
+                &mut input_send_state,
+                &mut recovery_state,
+            );
+            return;
+        };
+        let controlling_player_anchor = ids_refer_to_same_guid(
+            active_target.target_entity_id.as_str(),
+            player_entity_id.as_str(),
+        );
+        let suppress_input_for_camera_only =
+            session_state.player_view_state.detached_free_camera && !controlling_player_anchor;
+        let suppress_active_input = suppress_input_for_camera_only
+            || !window_focused
+            || suppress_for_console
+            || suppress_for_recovery
+            || force_neutral_send;
+        let (player_input, _axes) = if suppress_active_input {
+            neutral_player_input()
+        } else if headless_mode.0 {
+            scripted_headless_player_input(
+                now_s,
+                &mut input_send_state.headless_script_started_at_s,
+            )
+            .unwrap_or_else(neutral_player_input)
+        } else {
+            player_input_from_keyboard(input.as_deref())
+        };
+        (player_entity_id, active_target, player_input)
+    } else {
+        return;
+    };
 
-    let has_active_input = player_input.actions.iter().any(|a| {
-        !matches!(
-            a,
-            EntityAction::LongitudinalNeutral | EntityAction::LateralNeutral
+    let mut has_active_input = player_input_has_active_intent(&player_input);
+    if has_active_input
+        && prediction_confirmed_tick_gap_exceeded(
+            active_target.entity,
+            &prediction_guard.confirmed_ticks,
+            &prediction_guard.timeline,
+            &prediction_guard.input_tuning,
+            &prediction_guard.recovery_tuning,
+            window_focused,
         )
-    });
-    let target_entity =
-        resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
-            .map(|(entity, _)| entity);
+    {
+        let (neutral, _) = neutral_player_input();
+        player_input = neutral;
+        has_active_input = false;
+        recovery_state.phase = NativePredictionRecoveryPhase::Recovering {
+            regain_at_s: now_s,
+            suppress_input_until_s: now_s + prediction_guard.recovery_tuning.suppress_input_s,
+            reason: PredictionRecoveryReason::ConfirmedTickGapExceeded,
+        };
+        recovery_state.transition_count = recovery_state.transition_count.saturating_add(1);
+        recovery_state.pending_neutral_send = true;
+        warn!(
+            entity = ?active_target.entity,
+            current_tick = prediction_guard.timeline.tick().0,
+            max_predicted_ticks = prediction_guard.input_tuning.max_predicted_ticks,
+            unfocused_max_predicted_ticks = prediction_guard.input_tuning.unfocused_max_predicted_ticks,
+            recovery_max_tick_gap = prediction_guard.recovery_tuning.max_tick_gap,
+            "client prediction confirmed tick gap exceeded; suppressing active local input until confirmation catches up"
+        );
+    }
 
     // Canonical ids for network message so server lookup matches (same form used for target_changed).
     let message_player_id = canonical_player_entity_id(&player_entity_id);
     let message_controlled_id =
-        if canonical_player_entity_id(&target_entity_id) == message_player_id {
+        if canonical_player_entity_id(&active_target.target_entity_id) == message_player_id {
             message_player_id.clone()
         } else {
-            target_entity_id.clone()
+            active_target.target_entity_id.clone()
         };
 
     let input_changed = input_send_state.last_sent_actions != player_input.actions;
@@ -364,18 +411,13 @@ pub fn send_lightyear_input_messages(
     // server routing cannot stall on sparse heartbeats.
     let should_send_network = should_send_network || has_active_input;
 
-    if let Some(target_entity) = target_entity {
-        commands.entity(target_entity).insert((
-            SimulationMotionWriter,
-            InputMarker::<PlayerInput>::default(),
-            ActionState(player_input.clone()),
-        ));
-    }
+    commands.entity(active_target.entity).insert((
+        SimulationMotionWriter,
+        InputMarker::<PlayerInput>::default(),
+        ActionState(player_input.clone()),
+    ));
 
     if !should_send_network {
-        return;
-    }
-    if suppress_network_for_control_handoff {
         return;
     }
     if force_neutral_send {
@@ -391,7 +433,7 @@ pub fn send_lightyear_input_messages(
     let realtime_message = ClientRealtimeInputMessage {
         player_entity_id: message_player_id,
         controlled_entity_id: message_controlled_id,
-        control_generation: session_state.player_view_state.controlled_entity_generation,
+        control_generation: active_target.generation,
         actions: player_input.actions,
         tick: tick.0,
     };
@@ -401,6 +443,32 @@ pub fn send_lightyear_input_messages(
     input_send_state.last_sent_at_s = now_s;
     input_send_state.last_sent_actions = realtime_message.actions.clone();
     input_send_state.last_sent_target_entity_id = Some(realtime_message.controlled_entity_id);
+}
+
+fn prediction_confirmed_tick_gap_exceeded(
+    target_entity: Entity,
+    confirmed_ticks: &Query<'_, '_, &'_ ConfirmedTick>,
+    timeline: &LocalTimeline,
+    input_tuning: &ClientInputTimelineTuning,
+    recovery_tuning: &NativePredictionRecoveryTuning,
+    window_focused: bool,
+) -> bool {
+    let Ok(confirmed_tick) = confirmed_ticks.get(target_entity) else {
+        return false;
+    };
+    let current_tick = u32::from(timeline.tick().0);
+    let confirmed_tick = u32::from(confirmed_tick.tick.0);
+    let gap = current_tick.saturating_sub(confirmed_tick);
+    let max_predicted_ticks = if window_focused {
+        input_tuning.max_predicted_ticks
+    } else {
+        input_tuning.unfocused_max_predicted_ticks
+    };
+    let budget = u32::from(max_predicted_ticks)
+        .saturating_add(u32::from(input_tuning.fixed_input_delay_ticks))
+        .saturating_add(4);
+    let recovery_gap = recovery_tuning.max_tick_gap.max(1);
+    gap > budget.min(recovery_gap)
 }
 
 #[cfg(test)]
@@ -426,6 +494,23 @@ mod tests {
     }
 
     #[test]
+    fn neutral_input_is_not_active_intent() {
+        let (input, _) = neutral_player_input();
+        assert!(!player_input_has_active_intent(&input));
+    }
+
+    #[test]
+    fn active_input_detects_movement_afterburner_and_fire() {
+        let forward = PlayerInput::from_axis_inputs(1.0, 0.0, false, false, false);
+        let afterburner = PlayerInput::from_axis_inputs(0.0, 0.0, false, true, false);
+        let fire = PlayerInput::from_axis_inputs(0.0, 0.0, false, false, true);
+
+        assert!(player_input_has_active_intent(&forward));
+        assert!(player_input_has_active_intent(&afterburner));
+        assert!(player_input_has_active_intent(&fire));
+    }
+
+    #[test]
     fn headless_input_script_parses_forward_duration() {
         let script = parse_headless_input_script("forward:2.5").unwrap();
         assert_eq!(script.thrust, 1.0);
@@ -433,23 +518,200 @@ mod tests {
         assert!(!script.fire_primary);
         assert_eq!(script.duration_s, 2.5);
     }
+
+    #[test]
+    fn active_input_target_requires_active_predicted_bootstrap() {
+        let target_entity_id = "11111111-1111-1111-1111-111111111111".to_string();
+        let entity = Entity::from_bits(42);
+        let request_state = ClientControlRequestState::default();
+        let active = ControlBootstrapState {
+            authoritative_target_entity_id: Some(target_entity_id.clone()),
+            generation: 7,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: target_entity_id.clone(),
+                generation: 7,
+                entity,
+            },
+            last_transition_at_s: 0.0,
+        };
+
+        assert_eq!(
+            active_control_input_target(&active, &request_state),
+            Some(ActiveControlInputTarget {
+                entity,
+                target_entity_id,
+                generation: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn active_input_target_rejects_pending_request_and_generation_mismatch() {
+        let target_entity_id = "11111111-1111-1111-1111-111111111111".to_string();
+        let entity = Entity::from_bits(42);
+        let active = ControlBootstrapState {
+            authoritative_target_entity_id: Some(target_entity_id.clone()),
+            generation: 7,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id,
+                generation: 6,
+                entity,
+            },
+            last_transition_at_s: 0.0,
+        };
+        assert!(
+            active_control_input_target(&active, &ClientControlRequestState::default()).is_none()
+        );
+
+        let active = ControlBootstrapState {
+            generation: 7,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                generation: 7,
+                entity,
+            },
+            authoritative_target_entity_id: Some(
+                "11111111-1111-1111-1111-111111111111".to_string(),
+            ),
+            last_transition_at_s: 0.0,
+        };
+        let request_state = ClientControlRequestState {
+            pending_request_seq: Some(3),
+            ..Default::default()
+        };
+        assert!(active_control_input_target(&active, &request_state).is_none());
+    }
+
+    #[test]
+    fn marker_owner_keeps_only_exact_active_predicted_entity() {
+        let player_entity_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string();
+        let target_entity_id = "11111111-1111-1111-1111-111111111111".to_string();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(ClientSession {
+            player_entity_id: Some(player_entity_id.clone()),
+            ..Default::default()
+        });
+        app.insert_resource(ClientControlRequestState::default());
+        let active_entity = app
+            .world_mut()
+            .spawn((
+                ControlledEntity {
+                    entity_id: target_entity_id.clone(),
+                    player_entity_id: player_entity_id.clone(),
+                },
+                SimulationMotionWriter,
+                InputMarker::<PlayerInput>::default(),
+                ActionState(PlayerInput::default()),
+            ))
+            .id();
+        let stale_entity = app
+            .world_mut()
+            .spawn((
+                ControlledEntity {
+                    entity_id: "22222222-2222-2222-2222-222222222222".to_string(),
+                    player_entity_id: player_entity_id.clone(),
+                },
+                SimulationMotionWriter,
+                InputMarker::<PlayerInput>::default(),
+                ActionState(PlayerInput::default()),
+            ))
+            .id();
+        app.insert_resource(ControlBootstrapState {
+            authoritative_target_entity_id: Some(target_entity_id.clone()),
+            generation: 3,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id,
+                generation: 3,
+                entity: active_entity,
+            },
+            last_transition_at_s: 0.0,
+        });
+        app.add_systems(Update, enforce_single_input_marker_owner);
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<InputMarker<PlayerInput>>(active_entity)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<SimulationMotionWriter>(active_entity)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<InputMarker<PlayerInput>>(stale_entity)
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<SimulationMotionWriter>(stale_entity)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn marker_owner_removes_all_markers_while_control_request_is_pending() {
+        let player_entity_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string();
+        let target_entity_id = "11111111-1111-1111-1111-111111111111".to_string();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(ClientSession {
+            player_entity_id: Some(player_entity_id.clone()),
+            ..Default::default()
+        });
+        app.insert_resource(ClientControlRequestState {
+            pending_request_seq: Some(10),
+            ..Default::default()
+        });
+        let active_entity = app
+            .world_mut()
+            .spawn((
+                ControlledEntity {
+                    entity_id: target_entity_id.clone(),
+                    player_entity_id,
+                },
+                SimulationMotionWriter,
+                InputMarker::<PlayerInput>::default(),
+                ActionState(PlayerInput::default()),
+            ))
+            .id();
+        app.insert_resource(ControlBootstrapState {
+            authoritative_target_entity_id: Some(target_entity_id.clone()),
+            generation: 3,
+            phase: ControlBootstrapPhase::ActivePredicted {
+                target_entity_id,
+                generation: 3,
+                entity: active_entity,
+            },
+            last_transition_at_s: 0.0,
+        });
+        app.add_systems(Update, enforce_single_input_marker_owner);
+
+        app.update();
+
+        assert!(
+            app.world()
+                .get::<InputMarker<PlayerInput>>(active_entity)
+                .is_none()
+        );
+        assert!(
+            app.world()
+                .get::<SimulationMotionWriter>(active_entity)
+                .is_none()
+        );
+    }
 }
 
 #[allow(clippy::type_complexity)]
 pub fn enforce_single_input_marker_owner(
     mut commands: Commands<'_, '_>,
     session: Res<'_, ClientSession>,
-    player_view_state: Res<'_, LocalPlayerViewState>,
-    guid_candidates: Query<
-        '_,
-        '_,
-        (
-            Entity,
-            Option<&'_ EntityGuid>,
-            Has<lightyear::prelude::Predicted>,
-            Has<lightyear::prelude::Interpolated>,
-        ),
-    >,
+    request_state: Res<'_, ClientControlRequestState>,
+    control_bootstrap_state: Res<'_, ControlBootstrapState>,
     input_marked_entities: Query<
         '_,
         '_,
@@ -460,17 +722,12 @@ pub fn enforce_single_input_marker_owner(
     let Some(player_entity_id) = session.player_entity_id.as_ref() else {
         return;
     };
-    let target_entity_id = player_view_state
-        .controlled_entity_id
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| player_entity_id.clone());
-    let target_entity =
-        resolve_entity_by_guid_prefer_predicted(&guid_candidates, &target_entity_id)
-            .map(|(entity, _)| entity);
+    let active_target = active_control_input_target(&control_bootstrap_state, &request_state);
 
     for (entity, controlled) in &input_marked_entities {
-        let keep = Some(entity) == target_entity
+        let keep = active_target
+            .as_ref()
+            .is_some_and(|target| entity == target.entity)
             && controlled.is_none_or(|controlled| {
                 ids_refer_to_same_guid(&controlled.player_entity_id, player_entity_id)
                     || controlled.player_entity_id == *player_entity_id
@@ -478,8 +735,10 @@ pub fn enforce_single_input_marker_owner(
         if keep {
             continue;
         }
-        commands
-            .entity(entity)
-            .remove::<(InputMarker<PlayerInput>, ActionState<PlayerInput>)>();
+        commands.entity(entity).remove::<(
+            InputMarker<PlayerInput>,
+            ActionState<PlayerInput>,
+            SimulationMotionWriter,
+        )>();
     }
 }

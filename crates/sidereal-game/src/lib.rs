@@ -16,6 +16,7 @@ pub mod mass;
 pub mod planet_registry;
 pub mod procedural_sprite_generation;
 pub mod render_layers;
+pub mod ship_registry;
 pub mod visibility_range;
 pub mod world_spatial;
 
@@ -62,6 +63,7 @@ pub use render_layers::{
     validate_runtime_post_process_stack, validate_runtime_render_layer_definition,
     validate_runtime_render_layer_rule, validate_runtime_world_visual_stack,
 };
+pub use ship_registry::*;
 pub use visibility_range::{apply_visibility_range_buff, total_visibility_range_for_parent};
 pub use world_spatial::{resolve_world_position, resolve_world_rotation_rad};
 
@@ -108,8 +110,8 @@ pub enum SiderealSimulationSet {
 
 // Re-export flight systems (not components, those come from generated)
 pub use flight::{
-    angular_inertia_from_size, apply_engine_thrust, clamp_angular_velocity,
-    compute_brake_decel_accel_mps2, grant_flight_control_authority_system,
+    angular_inertia_from_size, apply_engine_thrust, apply_navigation_targets_to_flight_computers,
+    clamp_angular_velocity, compute_brake_decel_accel_mps2, grant_flight_control_authority_system,
     grant_simulation_motion_writer_system, process_flight_actions,
     revoke_stale_flight_control_authority_system, revoke_stale_simulation_motion_writer_system,
     sanitize_planar_angular_velocity, stabilize_idle_motion,
@@ -144,6 +146,7 @@ impl Plugin for SiderealGameCorePlugin {
             .register_type::<ActionCapabilities>()
             .register_type::<FlightControlAuthority>()
             .register_type::<SimulationMotionWriter>()
+            .register_type::<ScriptNavigationTarget>()
             .register_type::<PlanetRegistryEntry>()
             .register_type::<PlanetSpawnDefinition>()
             .register_type::<PlanetDefinition>()
@@ -194,6 +197,7 @@ impl Plugin for SiderealSharedSimulationPlugin {
                     (
                         validate_action_capabilities,
                         process_character_movement_actions,
+                        apply_navigation_targets_to_flight_computers,
                         process_flight_actions,
                         bootstrap_weapon_cooldown_state,
                         tick_weapon_cooldowns,

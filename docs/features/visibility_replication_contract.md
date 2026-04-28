@@ -1,7 +1,7 @@
 # Visibility and Replication Contract
 
 Status: Active implementation contract
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 Owners: replication + gameplay + client runtime
 Scope: server-authoritative visibility, delivery narrowing, payload disclosure, and tactical/owner lane interaction
 
@@ -23,16 +23,38 @@ Primary references:
 
 2026-04-27 status note:
 
-1. Implemented partial V2 baseline: generic `SignalSignature` detection now feeds redacted unknown tactical contacts, scanner-controlled approximate contact accuracy, signal-triggered static-landmark discovery, and buffered native local-view delivery requests.
+1. Implemented partial V2 baseline: generic `SignalSignature` detection now feeds redacted unknown tactical contacts, scanner-controlled approximate contact accuracy, signal-triggered static-landmark discovery, buffered native local-view delivery requests, and render-local planet visual culling hysteresis.
 2. V2 does not replace the V1 authorization order. Signal-only detection may create a tactical/intel product or trigger `StaticLandmark` discovery, but it must not grant ordinary full entity replication by itself.
 3. Signal-only static-landmark discovery must not emit identity-bearing landmark notification payloads; player-facing signal messaging remains redacted until normal visibility/delivery discloses the body.
-4. Rapid zoom-out culling must use buffered/hysteretic projected bounds on both server delivery requests and client local render culling so large/parallaxed bodies do not snap in at viewport edges. Current native client requests apply viewport overscan; additional render-local culling tuning remains open.
+4. Rapid zoom-out culling must use buffered/hysteretic projected bounds on both server delivery requests and client local render culling so large/parallaxed bodies do not snap in at viewport edges. Current native client requests apply viewport overscan and the planet visual path applies projected-bounds hysteresis.
 
 2026-04-27 status note:
 
 1. Tactical sensor ring client presentation now requires an effective scanner profile on the actively controlled non-player-anchor entity before TAB can open the ring.
 2. The target server contract is stricter than the first client slice: tactical contact disclosure and any scanner-derived contact detail must resolve scanner capability from the currently controlled entity, not from free-roam/player-anchor camera state.
 3. Free roam/player-anchor control has no scanner source for scanner-derived tactical products. Existing full tactical-map/fog behavior remains separate until server-side scanner-tier gating is implemented.
+
+2026-04-27 status note:
+
+1. The tactical lane now resolves a server-side effective scanner source from the authenticated player's controlled entity before authoring live scanner cells or contacts.
+2. If the player has no controlled entity, controls the player anchor/free-roam entity, or controls an entity without a usable root/direct-mounted scanner, the server emits no scanner-derived live cells or tactical contacts for that update.
+3. Signal-only contacts and gravity-well signal notifications use the same scanner source as live tactical fog. This preserves the visibility order: authorization/disclosure remains server-owned, delivery stays bounded, and client presentation cannot create scanner authority.
+4. Remaining open work: scanner-tier payload redaction and the M1 tactical contact spatial index.
+
+2026-04-27 status note:
+
+1. Runtime visibility sources are now emitted from the range-bearing owned entity when the resolved hierarchy root does not itself carry a matching visibility range.
+2. Reason: dynamic hydration and control handoff can briefly leave the root cache behind the current controlled entity. Dropping the source during that window can make nearby clients observe one-way visibility, where one player receives the other ship but the reverse client has no visibility source for range authorization.
+3. This does not widen authorization: the server still evaluates `Authorization -> Delivery -> Payload`, and delivery remains per-client. It only prevents a valid owned `VisibilityRangeM` source from being discarded because of stale root bookkeeping.
+4. Native impact: two-client local-bubble visibility should be symmetric once both ships are within authoritative range. WASM impact: server-side behavior only; no platform-specific branch was introduced.
+
+2026-04-28 status note:
+
+1. Control-role topology changes no longer use a same-frame `lose_visibility()` + `gain_visibility()` rearm.
+2. Reason: Lightyear visibility treats same-tick loss/gain as cancellation or duplicate-spawn behavior, which can leave a client-side runtime entity with both `Predicted` and `Interpolated` role markers during control handoff.
+3. Implemented: replication now queues a role-visibility loss, removes that client from the membership cache for the affected visibility root and all entities under that root, suppresses normal visibility re-gain for one membership pass, then lets the ordinary visibility system re-add the tree with the new Lightyear role.
+4. Reason: mounted children and other entities under the same visibility root may have their own `NetworkVisibility` / `ReplicationState`. Rearming only the root can despawn the parent lane while children keep sending updates to remote entities the client has already removed.
+5. Native impact: selecting an already-visible owned ship should despawn the observer lane before the predicted lane is spawned, without leaving child/module update spam from stale remote entities. WASM impact: replication-server behavior only; no platform-specific branch was introduced.
 
 2026-04-24 update:
 - Visibility spatial indexing and static-landmark discovery now resolve static non-physics world entities from canonical `WorldPosition` before falling back to Bevy `GlobalTransform`. This prevents static planets/celestial bodies from being indexed at stale/default transform positions before transform propagation catches up.
@@ -45,6 +67,11 @@ Primary references:
 2026-04-24 update:
 - DR-0035 makes f64 authoritative world coordinates the accepted target for visibility and replication. Visibility candidate generation, observer anchors, static-landmark discovery, delivery checks, tactical contacts, and owner manifest positions must prefer f64 Avian `Position` / f64 `WorldPosition` before falling back to f32 Bevy transforms.
 - Native impact: visibility and delivery checks remain stable at galaxy-scale coordinates. WASM impact: no platform-specific visibility model; browser clients consume the same f64 protocol payloads and project to f32 only at render/UI boundaries.
+
+2026-04-27 update:
+- Client local-view delivery radius messages are treated as hints only. The replication server clamps non-finite, too-small, and too-large requested ranges before updating per-client delivery state.
+- The server-side maximum is `REPLICATION_VISIBILITY_DELIVERY_RANGE_MAX_M`, defaulting to `50000` meters. This budget bounds tactical/map delivery candidate scans even when a modified client sends `f32::MAX`, `NaN`, or infinity.
+- Native impact: native client requests continue to fit under the default cap. WASM impact: future browser clients share the same server-owned cap and cannot widen delivery with transport-specific local-view messages.
 
 ## 1. Goal
 
@@ -83,6 +110,7 @@ Current implementation baseline:
 6. Current runtime uses generic `VisibilityRangeM` / `VisibilityRangeBuffM` with no implicit `ShipTag` baseline.
 7. `VisibilitySpatialGrid` and `VisibilityDisclosure` are mirrored onto player entity for owner debug/inspection.
 8. Delivery range is dynamic per client view and reflected in runtime visibility telemetry.
+   Client-provided delivery ranges are bounded by the server-owned `REPLICATION_VISIBILITY_DELIVERY_RANGE_MAX_M` cap and clamp telemetry.
 9. Fullscreen authored config entities are treated as non-spatial overlays: legacy `FullscreenLayer` entities and fullscreen-phase `RuntimeRenderLayerDefinition` entities bypass delivery-range/visibility-range candidate culling and remain replicated while connected.
 10. Background authoring settings such as `SpaceBackgroundShaderSettings` and `StarfieldShaderSettings` are durable world configuration and remain persistable so hydration recreates the full authored config entity rather than only the layer-definition shell.
 11. Discoverable static landmarks use explicit landmark classification plus player-scoped durable discovery state; they are not modeled as generic public-visibility entities.
@@ -122,17 +150,17 @@ Current backend behavior:
 
 Current limitations:
 
-1. The backend does not yet emit a dedicated "landmark discovered" gameplay/UI notification message.
-2. The client does not yet have a sonar/toast presentation path for first discovery.
+1. Static-landmark discovery emits the generic notification lane's `LandmarkDiscovery` payload for direct discovery only. Signal-only discovery keeps player-facing messaging redacted through the `long_range_gravity_well_detected` generic event.
+2. The client toast path exists, but there is no dedicated sonar/codex presentation for first discovery.
 3. Tactical-map landmark reveal is currently implied through ordinary replicated/map-icon visibility rather than a dedicated discovery delta stream.
 4. Discovery is player-local only; faction, party, or organization-shared discovery policies are not implemented.
 5. Landmark intel has one binary state: undiscovered/discovered. Rich scan quality, discovery history, codex text, and partial classification tiers are future work.
-6. Test coverage exists for authorization/delivery behavior and static `WorldPosition` regression, but a broader lifecycle suite is still needed for persistence/hydration, no-rediscovery-spam, notification emission, and map projection.
+6. Test coverage exists for authorization/delivery behavior, static `WorldPosition` regression, notification payload construction, and projected culling helpers, but a broader lifecycle suite is still needed for persistence/hydration, no-rediscovery-spam, end-to-end delivery, and map projection.
 
 Planned direction:
 
-1. Add a server-authored discovery event, for example `ServerLandmarkDiscoveredMessage`, keyed by authenticated `player_entity_id` and landmark entity UUID.
-2. Route the event into a generic client notification/sonar queue; the UI component must not infer discoveries from local-only rendering side effects.
+1. Add a richer server-authored discovery/intel event if the generic notification payload is not sufficient for codex, sonar, or tactical map workflows.
+2. Keep discovery UI routed from server-authored events; the UI component must not infer discoveries from local-only rendering side effects.
 3. Add tactical/minimap projection support so newly discovered landmarks can reveal/update markers without requiring the client to scrape raw ECS internals.
 4. Extend discovery policy later for faction/shared discovery as an explicit server rule, not a client-side cache merge.
 5. Add optional scan-intel tiers for richer landmark metadata while preserving `Authorization -> Delivery -> Payload` redaction order.

@@ -1,5 +1,16 @@
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
+struct SharedWorldLightingUniforms {
+    metadata: vec4<f32>,
+    ambient: vec4<f32>,
+    backlight: vec4<f32>,
+    flash: vec4<f32>,
+    stellar_dir_intensity: array<vec4<f32>, 2>,
+    stellar_color_params: array<vec4<f32>, 2>,
+    local_dir_intensity: array<vec4<f32>, 8>,
+    local_color_radius: array<vec4<f32>, 8>,
+}
+
 struct PlanetBodyUniforms {
     identity_a: vec4<f32>,
     identity_b: vec4<f32>,
@@ -16,13 +27,7 @@ struct PlanetBodyUniforms {
     atmosphere_a: vec4<f32>,
     emissive_a: vec4<f32>,
     sun_dir_a: vec4<f32>,
-    world_light_primary_dir_intensity: vec4<f32>,
-    world_light_primary_color_elevation: vec4<f32>,
-    world_light_ambient: vec4<f32>,
-    world_light_backlight: vec4<f32>,
-    world_light_flash: vec4<f32>,
-    world_light_local_dir_intensity: vec4<f32>,
-    world_light_local_color_radius: vec4<f32>,
+    world_lighting: SharedWorldLightingUniforms,
     color_primary: vec4<f32>,
     color_secondary: vec4<f32>,
     color_tertiary: vec4<f32>,
@@ -40,6 +45,56 @@ fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
 }
 
+fn safe_normalize(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let len = length(v);
+    if len > 0.0001 {
+        return v / len;
+    }
+    return fallback;
+}
+
+fn primary_stellar_dir() -> vec3<f32> {
+    return safe_normalize(params.world_lighting.stellar_dir_intensity[0].xyz, vec3<f32>(0.0, 0.0, 1.0));
+}
+
+fn primary_stellar_color() -> vec3<f32> {
+    return params.world_lighting.stellar_color_params[0].rgb;
+}
+
+fn primary_stellar_intensity() -> f32 {
+    return max(params.world_lighting.stellar_dir_intensity[0].w, 0.0);
+}
+
+fn accumulated_stellar_light(normal: vec3<f32>, wrap: f32) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
+    let stellar_count = min(u32(params.world_lighting.metadata.x), 2u);
+    for (var i: u32 = 0u; i < stellar_count; i = i + 1u) {
+        let slot = params.world_lighting.stellar_dir_intensity[i];
+        if slot.w <= 0.001 {
+            continue;
+        }
+        let dir = safe_normalize(slot.xyz, vec3<f32>(0.0, 0.0, 1.0));
+        let wrapped = saturate((dot(normal, dir) + wrap) / (1.0 + wrap));
+        light += params.world_lighting.stellar_color_params[i].rgb * slot.w * wrapped;
+    }
+    return light;
+}
+
+fn accumulated_local_light(normal: vec3<f32>, wrap: f32) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
+    let local_count = min(u32(params.world_lighting.metadata.y), 8u);
+    for (var i: u32 = 0u; i < local_count; i = i + 1u) {
+        let slot = params.world_lighting.local_dir_intensity[i];
+        if slot.w <= 0.001 {
+            continue;
+        }
+        let dir = safe_normalize(slot.xyz, vec3<f32>(0.0, 0.0, 1.0));
+        let wrapped = saturate((dot(normal, dir) + wrap) / (1.0 + wrap));
+        light += params.world_lighting.local_color_radius[i].rgb * slot.w * wrapped;
+    }
+    return light;
+}
+
 fn apply_saturation(color: vec3<f32>, saturation: f32) -> vec3<f32> {
     let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
     return mix(vec3<f32>(luminance), color, saturation);
@@ -47,6 +102,10 @@ fn apply_saturation(color: vec3<f32>, saturation: f32) -> vec3<f32> {
 
 fn apply_contrast(color: vec3<f32>, contrast: f32) -> vec3<f32> {
     return (color - vec3<f32>(0.5)) * contrast + vec3<f32>(0.5);
+}
+
+fn color_chroma(color: vec3<f32>) -> f32 {
+    return max(max(color.r, color.g), color.b) - min(min(color.r, color.g), color.b);
 }
 
 fn tone_map(color: vec3<f32>) -> vec3<f32> {
@@ -468,22 +527,23 @@ fn atmosphere_response(dist: f32, radius: f32, atmosphere_radius: f32, light_ter
     return params.color_atmosphere.rgb * (outer_haze + mid_glow + inner_rim);
 }
 
-fn star_surface_color(sphere_p: vec3<f32>) -> vec3<f32> {
+fn star_surface_color(sphere_p: vec3<f32>, disc_uv: vec2<f32>) -> vec3<f32> {
     let time_s = params.identity_a.w;
-    let longitude = atan2(sphere_p.x, sphere_p.z);
     let latitude = sphere_p.y;
     let equator = 1.0 - abs(latitude);
+    let detail_level = saturate(params.lighting_a.z);
 
-    // Bias the star toward horizontal/equatorial flow so the disc reads side-on.
+    // Use continuous sphere-space fields for slow flow, then layer screen-disc
+    // convection on top so the photosphere does not converge into a center pole.
     let shear_p = vec3<f32>(
-        longitude * 1.55 + time_s * (0.2 + params.clouds_a.z * 0.12),
+        sphere_p.x * 1.8 + sphere_p.z * 0.55 + time_s * (0.2 + params.clouds_a.z * 0.12),
         latitude * (2.4 + params.clouds_a.x * 0.08),
-        equator * 1.2,
+        sphere_p.z * 1.35 - sphere_p.x * 0.42 + equator * 1.2,
     );
     let convection = fbm4_time(shear_p * 2.8, time_s * 0.37 + params.identity_a.z * 5.7, 4);
     let convection_detail = fbm4_time(shear_p.zxy * 5.4 + vec3<f32>(1.8, -0.7, 2.4), time_s * 0.63 + 2.9, 3);
     let lateral_ribbons = fbm4_time(
-        vec3<f32>(longitude * 2.6 + time_s * 0.34, latitude * 7.8, equator * 2.1),
+        vec3<f32>(sphere_p.x * 2.9 + sphere_p.z * 0.8 + time_s * 0.34, latitude * 7.8, sphere_p.z * 1.6 + equator * 2.1),
         time_s * 0.58 + 9.1,
         3,
     );
@@ -494,7 +554,12 @@ fn star_surface_color(sphere_p: vec3<f32>) -> vec3<f32> {
     );
 
     let cell_shape = saturate(convection * 0.64 + convection_detail * 0.36);
-    let granules = 1.0 - abs(cell_shape * 2.0 - 1.0);
+    let drift = vec2<f32>(time_s * 0.055, -time_s * 0.036);
+    let flow_uv = disc_uv * (4.8 + detail_level * 4.6) + drift + vec2<f32>(lateral_ribbons * 0.18, plume_noise * 0.14);
+    let cell_field_a = fbm2(flow_uv * 2.4 + vec2<f32>(params.identity_a.z * 19.1, time_s * 0.11));
+    let cell_field_b = fbm2(flow_uv.yx * 4.8 + vec2<f32>(time_s * -0.09, params.identity_a.z * 31.7));
+    let cell_edges = 1.0 - abs((cell_field_a * 0.68 + cell_field_b * 0.32) * 2.0 - 1.0);
+    let granules = 1.0 - abs((cell_shape * 0.44 + cell_edges * 0.56) * 2.0 - 1.0);
     let dark_lanes = smoothstep(0.18, 0.72, granules * 0.72 + lateral_ribbons * 0.28);
     let warm_cells = smoothstep(0.26, 0.86, cell_shape * 0.84 + equator * 0.16);
     let bright_filaments = smoothstep(
@@ -509,18 +574,18 @@ fn star_surface_color(sphere_p: vec3<f32>) -> vec3<f32> {
     );
     let molten_flow = fbm4_time(
         vec3<f32>(
-            longitude * 4.1 + time_s * 0.41,
+            sphere_p.x * 4.1 + sphere_p.z * 1.7 + time_s * 0.41,
             latitude * 6.4 + lateral_ribbons * 0.9,
-            equator * 2.8 + plume_noise * 0.4,
+            sphere_p.z * 3.2 - sphere_p.x * 1.1 + equator * 2.8 + plume_noise * 0.4,
         ),
         time_s * 0.92 + 21.6,
         4,
     );
     let molten_detail = fbm4_time(
         vec3<f32>(
-            longitude * 8.8 - time_s * 0.56,
+            sphere_p.x * 8.8 + sphere_p.z * 2.6 - time_s * 0.56,
             latitude * 10.6,
-            equator * 3.7,
+            sphere_p.z * 5.2 - sphere_p.x * 1.9 + equator * 3.7,
         ),
         time_s * 1.14 + 4.8,
         3,
@@ -528,72 +593,90 @@ fn star_surface_color(sphere_p: vec3<f32>) -> vec3<f32> {
     let caustic_flow = 1.0 - abs((molten_flow * 0.72 + molten_detail * 0.28) * 2.0 - 1.0);
     let orange_channels = smoothstep(0.34, 0.74, caustic_flow * 0.82 + dark_lanes * 0.18);
     let ember_pockets = smoothstep(0.58, 0.92, molten_detail * 0.68 + plume_noise * 0.32);
+    let fine_grain = fbm2(flow_uv * 13.5 + vec2<f32>(time_s * 0.28, params.identity_a.z * 47.0));
+    let detail_contrast = mix(0.95, 1.85, detail_level);
+    let dark_network = smoothstep(0.28, 0.76, dark_lanes * 0.44 + (1.0 - cell_edges) * 0.42 + (1.0 - caustic_flow) * 0.14);
+    let bright_cells = smoothstep(0.5, 0.9, warm_cells * 0.34 + cell_edges * 0.42 + fine_grain * 0.16 + flare_knots * 0.08);
 
-    var color = mix(params.color_tertiary.rgb * 0.58, params.color_secondary.rgb * 0.9, warm_cells);
-    color = mix(color, params.color_tertiary.rgb * 0.34, dark_lanes * 0.54 + orange_channels * 0.22);
-    color = mix(color, params.color_secondary.rgb * 0.54 + params.color_tertiary.rgb * 0.34, orange_channels * 0.72);
-    color = mix(color, params.color_primary.rgb * 0.98, bright_filaments * 0.42 + ember_pockets * 0.08);
-    color += params.color_emissive.rgb * (0.14 + params.color_emissive.a * 0.22) * flare_knots;
-    color += params.color_secondary.rgb * 0.08 * ember_pockets;
-    color *= 0.66 + bright_filaments * 0.14 + equator * 0.08 + orange_channels * 0.06;
+    let hot_color = params.color_primary.rgb;
+    let molten_color = params.color_secondary.rgb;
+    let ember_color = params.color_tertiary.rgb;
+    let emission_color = params.color_emissive.rgb;
+
+    var color = mix(ember_color * 0.66, molten_color * 0.94, warm_cells * 0.72 + bright_cells * 0.18);
+    color = mix(color, ember_color * 0.2, saturate(dark_network * (0.68 + detail_contrast * 0.18)));
+    color = mix(color, molten_color * 0.84 + ember_color * 0.34, orange_channels * 0.58 + cell_edges * 0.16);
+    color = mix(color, hot_color, bright_filaments * 0.1 + ember_pockets * 0.04 + bright_cells * 0.06);
+    color += emission_color * (0.045 + params.color_emissive.a * 0.07) * flare_knots;
+    color += molten_color * 0.1 * ember_pockets;
+    color *= 0.5 + fine_grain * 0.08 + bright_cells * 0.24 + equator * 0.03 + orange_channels * 0.08;
+    color *= 1.0 - dark_network * (0.36 + detail_contrast * 0.14);
+    color += hot_color * bright_cells * 0.07;
     return color;
 }
 
 fn star_corona_color(
     quad_uv: vec2<f32>,
     dist: f32,
+    radius: f32,
     atmosphere_radius: f32,
     body_kind: f32,
-    sphere_p: vec3<f32>,
-    view_n: vec3<f32>,
 ) -> vec4<f32> {
     if body_kind < 0.5 || body_kind > 1.5 {
         return vec4<f32>(0.0);
     }
 
-    let corona_band = 0.22 + params.clouds_a.w * 0.26;
-    let corona_mask = 1.0 - smoothstep(atmosphere_radius, atmosphere_radius + corona_band, dist);
-    if corona_mask <= 0.0001 {
+    let quad_edge = max(abs(quad_uv.x), abs(quad_uv.y));
+    let quad_edge_fade = 1.0 - smoothstep(0.92, 0.995, quad_edge);
+    let max_outer = max(0.035, 0.985 - radius);
+    let base_length = min(0.055 + params.clouds_a.w * 0.045, max_outer);
+    let length_variation = min(0.17 + params.clouds_a.w * 0.16, max_outer);
+    let inner_attach = smoothstep(radius - 0.018, radius + 0.004, dist);
+    if dist > radius + max_outer || inner_attach * quad_edge_fade <= 0.0001 {
         return vec4<f32>(0.0);
     }
 
-    let longitude = atan2(sphere_p.x, sphere_p.z);
-    let latitude = sphere_p.y;
-    let equator = 1.0 - abs(latitude);
-    let radial = saturate((dist - atmosphere_radius) / max(corona_band, 0.0001));
     let time_s = params.identity_a.w;
-    let base_noise = fbm4_time(
-        vec3<f32>(longitude * 1.9 + time_s * 0.16, latitude * 5.0, radial * 3.2),
-        time_s * 0.46 + params.identity_a.z * 9.3,
-        4,
-    );
-    let streamer_noise = fbm4_time(
-        vec3<f32>(longitude * 3.8 + time_s * 0.28, latitude * 9.4, radial * 8.8 - time_s * 0.38),
-        time_s * 0.64 + params.identity_a.z * 13.7,
-        3,
-    );
-    let cme_noise = fbm4_time(
-        vec3<f32>(longitude * 1.55 + 4.0, latitude * 3.2 + equator * 2.6, radial * 4.8 - time_s * 0.18),
-        time_s * 0.38 + params.identity_a.z * 17.1,
-        3,
-    );
+    let edge_distance = max(dist - radius, 0.0);
+    let quad_dir = quad_uv / max(dist, 0.0001);
+    let tangent = vec2<f32>(-quad_dir.y, quad_dir.x);
+    let angle = atan2(quad_dir.y, quad_dir.x);
+    let seed_angle = params.identity_a.z * 6.2831853 + time_s * 0.035;
+    let angle_p = vec2<f32>(cos(angle * 5.0 + seed_angle), sin(angle * 5.0 + seed_angle));
+    let angle_q = vec2<f32>(cos(angle * 11.0 - time_s * 0.18), sin(angle * 11.0 - time_s * 0.18));
+    let length_noise = fbm2(angle_p * 1.7 + vec2<f32>(params.identity_a.z * 8.0, time_s * 0.08));
+    let burst_noise = fbm2(angle_q * 1.25 + vec2<f32>(time_s * -0.12, params.identity_a.z * 17.0));
+    let active_burst = smoothstep(0.52, 0.94, length_noise * 0.68 + burst_noise * 0.32);
+    let flare_length = min(base_length + length_variation * active_burst * active_burst, max_outer);
+    let radial = saturate(edge_distance / max(flare_length, 0.0001));
 
-    let wisps = smoothstep(0.38, 0.9, streamer_noise * 0.72 + base_noise * 0.28);
-    let turbulence = smoothstep(0.3, 0.9, base_noise);
-    let cme = smoothstep(0.8, 0.96, cme_noise + wisps * 0.14 + equator * 0.08);
-    let radial_falloff = pow(1.0 - radial, 2.4);
-    let limb = pow(1.0 - saturate(view_n.z), 0.65);
-    let density = corona_mask
-        * radial_falloff
-        * limb
-        * (0.06 + wisps * 0.24 + turbulence * 0.08 + equator * 0.08)
-        * (1.0 + cme * 0.85);
+    let curl = (fbm2(quad_dir * 3.8 + tangent * (radial * 1.4) + vec2<f32>(time_s * 0.13, params.identity_a.z * 21.0)) - 0.5) * 1.8;
+    let filament_phase = angle * 34.0 + radial * 7.5 + curl * 2.8 + time_s * 1.4;
+    let filament_phase_b = angle * 21.0 - radial * 12.0 - curl * 2.2 - time_s * 0.95;
+    let filament_a = pow(0.5 + 0.5 * sin(filament_phase), 7.0);
+    let filament_b = pow(0.5 + 0.5 * sin(filament_phase_b), 9.0);
+    let filament_noise = fbm2(vec2<f32>(angle * 2.6 + curl, radial * 6.5 - time_s * 0.45));
+    let filaments = max(filament_a, filament_b) * smoothstep(0.28, 0.86, filament_noise + active_burst * 0.28);
+    let root_glow = 1.0 - smoothstep(0.0, 0.2, radial);
+    let taper = pow(1.0 - radial, 1.45);
+    let lick = smoothstep(0.18, 0.92, active_burst) * taper * (0.24 + filaments * 0.95);
+    let density = inner_attach
+        * quad_edge_fade
+        * (root_glow * 0.22 + lick)
+        * (0.78 + burst_noise * 0.36)
+        * (1.0 - smoothstep(0.9, 1.0, radial));
 
-    let corona_color = mix(params.color_tertiary.rgb * 0.78, params.color_secondary.rgb * 0.96, wisps * 0.62 + equator * 0.12);
-    let hot_filaments = mix(params.color_emissive.rgb, params.color_primary.rgb, 0.22);
-    let color = corona_color * (0.28 + wisps * 0.26 + turbulence * 0.08)
-        + hot_filaments * cme * (0.18 + params.color_emissive.a * 0.12);
-    let alpha = density * (0.12 + params.clouds_a.w * 0.08 + params.color_emissive.a * 0.04);
+    let heat = 1.0 - smoothstep(0.0, 0.62, radial);
+    let corona_color = mix(
+        params.color_tertiary.rgb,
+        params.color_secondary.rgb,
+        heat * 0.55 + filaments * 0.22,
+    );
+    let hot_edge = mix(params.color_emissive.rgb, params.color_primary.rgb, 0.45);
+    let color = (mix(corona_color, hot_edge, root_glow * 0.74 + filaments * 0.18)
+        * density
+        * (1.25 + filaments * 1.35 + root_glow * 0.8));
+    let alpha = density * (0.18 + params.clouds_a.w * 0.12 + params.color_emissive.a * 0.08);
     return vec4<f32>(color, alpha);
 }
 
@@ -636,25 +719,25 @@ fn render_cloud_pass(
     let mask = cloud_density(sphere_p, planet_type);
     let edge = 1.0 - smoothstep(cloud_shell_radius - 0.035, cloud_shell_radius, dist);
     let body_occlusion = smoothstep(body_radius - 0.008, body_radius + 0.01, dist);
-    let sun_dir = normalize(params.world_light_primary_dir_intensity.xyz);
+    let sun_dir = primary_stellar_dir();
     let lit = saturate(dot(view_shell_n, sun_dir) * 0.5 + 0.5)
-        * max(params.world_light_primary_dir_intensity.w * params.sun_dir_a.w, 0.0);
-    let local_dir = normalize(params.world_light_local_dir_intensity.xyz);
+        * max(params.world_lighting.stellar_dir_intensity[0].w * params.sun_dir_a.w, 0.0);
+    let local_dir = safe_normalize(params.world_lighting.local_dir_intensity[0].xyz, sun_dir);
     let local_lit = saturate(dot(view_shell_n, local_dir) * 0.5 + 0.5)
-        * params.world_light_local_dir_intensity.w;
+        * params.world_lighting.local_dir_intensity[0].w;
     let shadowed = smoothstep(0.1, 0.85, lit);
     let hemisphere_alpha = select(body_occlusion, 1.0 - body_occlusion, pass_mode > 1.5);
     let limb = pow(1.0 - saturate(view_shell_n.z), 1.6);
     let alpha = mask * edge * hemisphere_alpha * (0.12 + shadowed * 0.52) * (0.88 + limb * 0.16);
     let cloud_self_shadow = mix(0.82, 1.06, smoothstep(0.18, 0.82, mask));
     let color = mix(
-        params.color_clouds.rgb * (0.2 + params.world_light_ambient.w * 0.4),
-        params.color_clouds.rgb * mix(vec3<f32>(1.0), params.world_light_primary_color_elevation.rgb, 0.24),
+        params.color_clouds.rgb * (0.2 + params.world_lighting.ambient.w * 0.4),
+        params.color_clouds.rgb * mix(vec3<f32>(1.0), params.world_lighting.stellar_color_params[0].rgb, 0.24),
         lit * 0.74 + 0.06
     ) * cloud_self_shadow
       + params.color_atmosphere.rgb * limb * 0.055
-      + params.world_light_local_color_radius.rgb * local_lit * 0.24
-      + params.world_light_flash.rgb * params.world_light_flash.w * 0.2;
+      + params.world_lighting.local_color_radius[0].rgb * local_lit * 0.24
+      + params.world_lighting.flash.rgb * params.world_lighting.flash.w * 0.2;
     return vec4<f32>(color, alpha);
 }
 
@@ -687,10 +770,10 @@ fn render_ring_pass(mesh: VertexOutput, body_kind: f32, pass_mode: f32) -> vec4<
         let arc_soft = smoothstep(0.02, 0.22, abs(quad_uv.y));
         let alpha = (1.0 - band) * (1.0 - outer_band) * (0.32 + radial * 0.42 + az * 0.2) * arc_soft * pass_weight;
         let color = mix(params.color_atmosphere.rgb, params.color_emissive.rgb, radial * 0.7 + params.clouds_a.w * 0.3)
-            * (params.world_light_primary_color_elevation.rgb * (0.35 + params.world_light_primary_dir_intensity.w * 0.65)
-            + params.world_light_ambient.rgb * params.world_light_ambient.w)
-            + params.world_light_local_color_radius.rgb * params.world_light_local_dir_intensity.w * 0.22
-            + params.world_light_flash.rgb * params.world_light_flash.w * 0.4;
+            * (params.world_lighting.stellar_color_params[0].rgb * (0.35 + params.world_lighting.stellar_dir_intensity[0].w * 0.65)
+            + params.world_lighting.ambient.rgb * params.world_lighting.ambient.w)
+            + params.world_lighting.local_color_radius[0].rgb * params.world_lighting.local_dir_intensity[0].w * 0.22
+            + params.world_lighting.flash.rgb * params.world_lighting.flash.w * 0.4;
         return vec4<f32>(color, alpha * (0.35 + params.clouds_a.w * 0.55));
     }
 
@@ -710,10 +793,10 @@ fn render_ring_pass(mesh: VertexOutput, body_kind: f32, pass_mode: f32) -> vec4<
             * pass_weight
             * (0.12 + params.clouds_a.w * 0.18 + params.surface_d.w * 0.18);
         let color = mix(params.color_secondary.rgb, params.color_primary.rgb, dust * 0.6)
-            * (params.world_light_primary_color_elevation.rgb * (0.35 + params.world_light_primary_dir_intensity.w * 0.65)
-            + params.world_light_ambient.rgb * params.world_light_ambient.w)
-            + params.world_light_local_color_radius.rgb * params.world_light_local_dir_intensity.w * 0.18
-            + params.world_light_flash.rgb * params.world_light_flash.w * 0.2;
+            * (params.world_lighting.stellar_color_params[0].rgb * (0.35 + params.world_lighting.stellar_dir_intensity[0].w * 0.65)
+            + params.world_lighting.ambient.rgb * params.world_lighting.ambient.w)
+            + params.world_lighting.local_color_radius[0].rgb * params.world_lighting.local_dir_intensity[0].w * 0.18
+            + params.world_lighting.flash.rgb * params.world_lighting.flash.w * 0.2;
         return vec4<f32>(color, alpha);
     }
 
@@ -745,7 +828,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let planet_type = params.identity_a.y;
     let cloud_pass_mode = params.pass_flags_a.x;
     let ring_pass_mode = params.pass_flags_a.y;
-    let radius = mix(0.58, 0.8, saturate(params.lighting_a.x));
+    let authored_radius = mix(0.58, 0.8, saturate(params.lighting_a.x));
+    let star_radius = mix(0.5, 0.66, saturate(params.lighting_a.x));
+    let radius = select(authored_radius, star_radius, body_kind > 0.5 && body_kind < 1.5);
     if ring_pass_mode > 0.5 {
         let ring_color = render_ring_pass(mesh, body_kind, ring_pass_mode);
         if ring_color.a <= 0.0001 {
@@ -759,7 +844,8 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let atmosphere_radius = radius + mix(0.04, 0.16, saturate(params.emissive_a.x + params.clouds_a.w * 0.2));
     let quad_uv = mesh.uv * 2.0 - vec2<f32>(1.0, 1.0);
     let dist = length(quad_uv);
-    let extra_outer = select(0.0, 0.38 + params.clouds_a.w * 0.12, body_kind > 0.5);
+    let raw_extra_outer = select(0.0, 0.28 + params.clouds_a.w * 0.08, body_kind > 0.5);
+    let extra_outer = min(raw_extra_outer, max(0.025, 0.985 - atmosphere_radius));
     if dist > atmosphere_radius + extra_outer {
         discard;
     }
@@ -774,23 +860,21 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let height = planet_height(sphere_p, planet_type);
     let normal = perturbed_normal(sphere_p, body_kind, planet_type, height);
 
-    let sun_dir = normalize(params.world_light_primary_dir_intensity.xyz);
-    let sun_color = params.world_light_primary_color_elevation.rgb;
-    let ambient_color = params.world_light_ambient.rgb;
-    let ambient_strength = params.world_light_ambient.w;
-    let backlight_color = params.world_light_backlight.rgb;
-    let backlight_strength = params.world_light_backlight.w;
-    let flash_color = params.world_light_flash.rgb;
-    let flash_strength = params.world_light_flash.w;
-    let local_dir = normalize(params.world_light_local_dir_intensity.xyz);
-    let local_intensity = params.world_light_local_dir_intensity.w;
-    let local_color = params.world_light_local_color_radius.rgb;
+    let sun_dir = primary_stellar_dir();
+    let sun_color = primary_stellar_color();
+    let ambient_color = params.world_lighting.ambient.rgb;
+    let ambient_strength = params.world_lighting.ambient.w;
+    let backlight_color = params.world_lighting.backlight.rgb;
+    let backlight_strength = params.world_lighting.backlight.w;
+    let flash_color = params.world_lighting.flash.rgb;
+    let flash_strength = params.world_lighting.flash.w;
     let view_dir = vec3<f32>(0.0, 0.0, 1.0);
     let raw_light = dot(normal, sun_dir);
     let wrapped_light = saturate((raw_light + params.lighting_a.w) / (1.0 + params.lighting_a.w));
     let terminator = smoothstep(-0.16, 0.24, raw_light);
-    let sun_intensity = max(params.world_light_primary_dir_intensity.w * params.sun_dir_a.w, 0.0);
-    let local_wrapped_light = saturate((dot(normal, local_dir) + params.lighting_a.w) / (1.0 + params.lighting_a.w));
+    let sun_intensity = primary_stellar_intensity() * params.sun_dir_a.w;
+    let direct_light_color = accumulated_stellar_light(normal, params.lighting_a.w) * params.sun_dir_a.w;
+    let local_light_color = accumulated_local_light(normal, params.lighting_a.w);
     let half_vec = normalize(sun_dir + view_dir);
     let specular = pow(saturate(dot(normal, half_vec)), max(params.lighting_b.z, 1.0)) * params.lighting_b.y;
     let fresnel = pow(1.0 - saturate(dot(normal, view_dir)), max(params.surface_a.x, 0.5)) * params.surface_a.y;
@@ -802,11 +886,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     if body_kind < 0.5 {
         color = planet_surface_color(sphere_p, height, wrapped_light, planet_type);
         let ambient_mix = params.lighting_b.x * ambient_strength;
-        let direct_mix = wrapped_light * sun_intensity;
-        let local_mix = local_wrapped_light * local_intensity;
         let diffuse_tint = mix(vec3<f32>(1.0, 1.0, 1.0), sun_color, params.identity_b.w);
         let horizon_cool = mix(vec3<f32>(0.72, 0.82, 1.0), vec3<f32>(1.0), terminator);
-        color = color * (ambient_color * ambient_mix + diffuse_tint * direct_mix * horizon_cool + local_color * local_mix);
+        color = color * (ambient_color * ambient_mix + direct_light_color * diffuse_tint * horizon_cool + local_light_color);
         color *= 1.0 - cloud_shadow_mask * (0.32 + (1.0 - wrapped_light) * 0.28);
         if params.feature_flags_b.x > 0.5 {
             color += mix(vec3<f32>(1.0, 1.0, 1.0), sun_color, 0.28) * specular;
@@ -818,7 +900,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
             water_specular_mask = (1.0 - coastline) * mix(1.0, 0.45, shallows);
             if params.feature_flags_b.w > 0.5 && params.feature_flags_b.x > 0.5 {
                 color += vec3<f32>(specular * (0.6 + shallows * 0.18) * water_specular_mask * 1.3);
-                color += local_color * local_mix * water_specular_mask * 0.24;
+                color += local_light_color * water_specular_mask * 0.24;
             }
         }
         if params.feature_flags_a.w > 0.5 {
@@ -830,7 +912,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
             color += params.color_night_lights.rgb * params.emissive_a.w * (1.0 - wrapped_light) * params.surface_a.w;
         }
     } else if body_kind < 1.5 {
-        color = star_surface_color(sphere_p);
+        color = star_surface_color(sphere_p, visible_disc);
         let stellar_core = 0.52 + params.color_emissive.a * 0.18;
         color *= stellar_core;
         color += params.color_emissive.rgb * (0.04 + fresnel * 0.08);
@@ -848,7 +930,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         let ambient_mix = params.lighting_b.x * 0.55 * ambient_strength * smoothstep(0.0, 0.08, sun_intensity);
         color = color * ambient_color * ambient_mix
             + color * sun_color * (wrapped_light * sun_intensity * 1.2)
-            + local_color * local_intensity * 0.08;
+            + local_light_color * 0.08;
         if params.feature_flags_a.w > 0.5 {
             color += (params.color_atmosphere.rgb + backlight_color * backlight_strength) * rim * 0.14;
         }
@@ -871,7 +953,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let out_alpha = max(body_mask, atmosphere_alpha);
-    let star_corona = star_corona_color(quad_uv, dist, atmosphere_radius, body_kind, sphere_p, view_n);
+    let star_corona = star_corona_color(quad_uv, dist, radius, atmosphere_radius, body_kind);
     let out_color = mix(
         select(vec3<f32>(0.0), atmo_response, params.feature_flags_a.w > 0.5),
         color + atmo_response * (0.45 + rim * 0.3) + flash_color * flash_strength,
@@ -880,12 +962,28 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let total_alpha = max(out_alpha, star_corona.a);
     var graded_color = mix(out_color, out_color * out_color, 0.12);
     if body_kind < 0.5 {
-        graded_color = apply_saturation(graded_color, params.identity_b.y);
-        graded_color = apply_contrast(graded_color, params.identity_b.z);
+        let planet_saturation = mix(0.82, params.identity_b.y, 0.55);
+        let planet_contrast = mix(0.96, params.identity_b.z, 0.62);
+        graded_color = apply_saturation(graded_color, planet_saturation);
+        graded_color = apply_contrast(graded_color, planet_contrast) * 0.9;
     } else if body_kind < 1.5 {
-        graded_color = apply_saturation(graded_color, 1.28);
-        graded_color = apply_contrast(graded_color, 1.14);
+        graded_color = apply_saturation(graded_color, max(1.26, params.identity_b.y + 0.16));
+        graded_color = apply_contrast(graded_color, max(1.16, params.identity_b.z + 0.08));
     }
-    let final_color = tone_map(max(graded_color + star_corona.rgb, vec3<f32>(0.0)));
+    var final_linear = max(graded_color + star_corona.rgb, vec3<f32>(0.0));
+    if body_kind > 0.5 && body_kind < 1.5 {
+        let authored_chroma = max(
+            max(color_chroma(params.color_primary.rgb), color_chroma(params.color_secondary.rgb)),
+            max(
+                max(color_chroma(params.color_tertiary.rgb), color_chroma(params.color_atmosphere.rgb)),
+                color_chroma(params.color_emissive.rgb),
+            ),
+        );
+        if authored_chroma < 0.015 {
+            let neutral_luma = dot(final_linear, vec3<f32>(0.2126, 0.7152, 0.0722));
+            final_linear = vec3<f32>(neutral_luma);
+        }
+    }
+    let final_color = tone_map(final_linear);
     return vec4<f32>(saturate(final_color.r), saturate(final_color.g), saturate(final_color.b), total_alpha);
 }

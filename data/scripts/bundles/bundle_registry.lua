@@ -7,6 +7,7 @@ local C = {
   ProceduralSprite = "procedural_sprite",
   AccountId = "account_id",
   ControlledEntityGuid = "controlled_entity_guid",
+  ControlledStartTarget = "controlled_start_target",
   EntityLabels = "entity_labels",
   ActionCapabilities = "action_capabilities",
   CharacterMovementController = "character_movement_controller",
@@ -25,6 +26,7 @@ local C = {
   CollisionOutlineM = "collision_outline_m",
   CollisionAabbM = "collision_aabb_m",
   ContactResolutionM = "contact_resolution_m",
+  ScannerComponent = "scanner_component",
   VisibilityRangeBuffM = "visibility_range_buff_m",
   SignalSignature = "signal_signature",
   VisualAssetId = "visual_asset_id",
@@ -51,6 +53,7 @@ local C = {
   ParentGuid = "parent_guid",
   MountedOn = "mounted_on",
   PlanetBodyShaderSettings = "planet_body_shader_settings",
+  StellarLightSource = "stellar_light_source",
   StaticLandmark = "static_landmark",
   PublicVisibility = "public_visibility",
   Engine = "engine",
@@ -75,6 +78,7 @@ local C = {
 local SHIP_REQUIRED_COMPONENT_KINDS = {
   C.DisplayName,
   C.ShipTag,
+  C.ControlledStartTarget,
   C.EntityLabels,
   C.ActionCapabilities,
   C.ActionQueue,
@@ -90,6 +94,7 @@ local SHIP_REQUIRED_COMPONENT_KINDS = {
   C.CollisionProfile,
   C.CollisionOutlineM,
   C.CollisionAabbM,
+  C.ScannerComponent,
   C.VisibilityRangeBuffM,
   C.VisualAssetId,
   C.MapIcon,
@@ -193,6 +198,7 @@ local PLANET_REQUIRED_COMPONENT_KINDS = {
   C.WorldPosition,
   C.WorldRotation,
   C.PlanetBodyShaderSettings,
+  C.StellarLightSource,
 }
 
 local ENVIRONMENT_LIGHTING_REQUIRED_COMPONENT_KINDS = {
@@ -227,7 +233,7 @@ local PLAYER_REQUIRED_COMPONENT_KINDS = {
 
 BundleRegistry.bundle_classes = {
   player = { "player.default" },
-  ship = { "ship.corvette", "ship.rocinante" },
+  controllable = { "ship.corvette", "ship.rocinante" },
   world = { "asteroid.field", "asteroid.field_member", "planet.body", "environment.lighting" },
 }
 
@@ -238,13 +244,13 @@ BundleRegistry.bundles = {
     required_component_kinds = PLAYER_REQUIRED_COMPONENT_KINDS,
   },
   ["ship.corvette"] = {
-    bundle_class = "ship",
-    graph_records_script = "bundles/ship/corvette.lua",
+    bundle_class = "controllable",
+    graph_records_script = "bundles/ship/body.lua",
     required_component_kinds = SHIP_REQUIRED_COMPONENT_KINDS,
   },
   ["ship.rocinante"] = {
-    bundle_class = "ship",
-    graph_records_script = "bundles/ship/rocinante.lua",
+    bundle_class = "controllable",
+    graph_records_script = "bundles/ship/body.lua",
     required_component_kinds = SHIP_REQUIRED_COMPONENT_KINDS,
   },
   ["asteroid.field_member"] = {

@@ -1,7 +1,9 @@
 use bevy::ecs::system::SystemParam;
+use bevy::log::info;
 use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
 use lightyear::prelude::client::Client;
+use lightyear::prelude::client::Connected;
 use lightyear::prelude::{MessageReceiver, MessageSender};
 use sidereal_net::{
     ClientNotificationDismissedMessage, NotificationChannel, NotificationPlacement,
@@ -122,7 +124,12 @@ fn receive_server_notifications(
     mut queue: ResMut<'_, NotificationQueue>,
     session: Res<'_, ClientSession>,
     time: Res<'_, Time>,
-    mut receivers: Query<'_, '_, &'_ mut MessageReceiver<ServerNotificationMessage>, With<Client>>,
+    mut receivers: Query<
+        '_,
+        '_,
+        &'_ mut MessageReceiver<ServerNotificationMessage>,
+        (With<Client>, With<Connected>),
+    >,
 ) {
     let Some(local_player_id) = session.player_entity_id.as_deref() else {
         return;
@@ -142,6 +149,7 @@ fn receive_server_notifications(
                 dismissed_sent: false,
             });
             queue.dirty = true;
+            info!("client queued server notification for player={local_player_id}");
         }
     }
 }

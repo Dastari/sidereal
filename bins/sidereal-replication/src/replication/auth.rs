@@ -22,7 +22,8 @@ use crate::replication::control::queue_neutralize_control_intent;
 use crate::replication::control::{ClientControlLeaseGenerations, ClientControlRequestOrder};
 use crate::replication::input::{
     ClientInputTickTracker, InputRateLimitState, LatestRealtimeInputsByPlayer,
-    RealtimeInputActivityByPlayer, canonical_player_entity_id,
+    RealtimeInputActivityByPlayer, RealtimeInputCleanupState, canonical_player_entity_id,
+    clear_realtime_input_for_player,
 };
 use crate::replication::lifecycle::ClientLastActivity;
 use crate::replication::notifications::{self, NotificationCommandQueue};
@@ -85,17 +86,9 @@ pub(crate) struct SessionReadyLeaseState<'w> {
 }
 
 #[derive(SystemParam)]
-pub(crate) struct RealtimeInputCleanupState<'w> {
-    input_session_state: ResMut<'w, AuthenticatedInputSessionState>,
-    input_tick_tracker: ResMut<'w, ClientInputTickTracker>,
-    input_rate_limit_state: ResMut<'w, InputRateLimitState>,
-    latest_realtime_inputs: ResMut<'w, LatestRealtimeInputsByPlayer>,
-    realtime_input_activity: ResMut<'w, RealtimeInputActivityByPlayer>,
-}
-
-#[derive(SystemParam)]
 pub(crate) struct ClientDisconnectCleanupState<'w> {
     bindings: ResMut<'w, AuthenticatedClientBindings>,
+    input_session_state: ResMut<'w, AuthenticatedInputSessionState>,
     input_cleanup: RealtimeInputCleanupState<'w>,
     controlled_entity_map: Res<'w, PlayerControlledEntityMap>,
     visibility_registry: ResMut<'w, ClientVisibilityRegistry>,
@@ -133,36 +126,10 @@ fn send_session_denied_message(
     }
 }
 
-pub(crate) fn reset_realtime_input_session_for_player(
-    player_entity_id: PlayerEntityId,
-    input_tick_tracker: &mut ClientInputTickTracker,
-    input_rate_limit_state: &mut InputRateLimitState,
-    latest_realtime_inputs: &mut LatestRealtimeInputsByPlayer,
-    realtime_input_activity: &mut RealtimeInputActivityByPlayer,
-) {
-    let player_wire = player_entity_id.canonical_wire_id();
-    input_tick_tracker.clear_player(player_entity_id);
-    input_rate_limit_state
-        .current_window_index_by_player_entity_id
-        .remove(player_wire.as_str());
-    input_rate_limit_state
-        .message_count_in_window_by_player_entity_id
-        .remove(player_wire.as_str());
-    latest_realtime_inputs
-        .by_player_entity_id
-        .remove(&player_entity_id);
-    realtime_input_activity
-        .last_received_at_s_by_player_entity_id
-        .remove(&player_entity_id);
-}
-
 pub fn reset_realtime_input_on_fresh_auth_bind(
     bindings: Res<'_, AuthenticatedClientBindings>,
     mut session_state: ResMut<'_, AuthenticatedInputSessionState>,
-    mut input_tick_tracker: ResMut<'_, ClientInputTickTracker>,
-    mut input_rate_limit_state: ResMut<'_, InputRateLimitState>,
-    mut latest_realtime_inputs: ResMut<'_, LatestRealtimeInputsByPlayer>,
-    mut realtime_input_activity: ResMut<'_, RealtimeInputActivityByPlayer>,
+    mut input_cleanup: RealtimeInputCleanupState<'_>,
 ) {
     let live_clients = bindings
         .by_client_entity
@@ -188,13 +155,7 @@ pub fn reset_realtime_input_on_fresh_auth_bind(
             );
             continue;
         };
-        reset_realtime_input_session_for_player(
-            player_entity_id,
-            &mut input_tick_tracker,
-            &mut input_rate_limit_state,
-            &mut latest_realtime_inputs,
-            &mut realtime_input_activity,
-        );
+        input_cleanup.clear_player(player_entity_id);
         session_state
             .player_entity_id_by_client
             .insert(*client_entity, player_wire.clone());
@@ -253,6 +214,13 @@ pub fn cleanup_client_auth_bindings(
         if live_canonical.contains(&player_id.canonical_wire_id()) {
             continue;
         }
+        clear_realtime_input_for_player(
+            player_id,
+            &mut input_tick_tracker,
+            &mut input_rate_limit_state,
+            &mut latest_realtime_inputs,
+            &mut realtime_input_activity,
+        );
         if let Some(controlled_entity) = controlled_entity_map
             .by_player_entity_id
             .get(&player_id)
@@ -333,20 +301,13 @@ pub fn receive_client_disconnect_notify(
             cleanup.bindings.by_client_entity.remove(&client_entity);
             cleanup.bindings.by_remote_id.remove(&remote_id.0);
             cleanup
-                .input_cleanup
                 .input_session_state
                 .player_entity_id_by_client
                 .remove(&client_entity);
             if let Some(player_entity_id) =
                 PlayerEntityId::parse(canonical_player_entity_id(&msg.player_entity_id).as_str())
             {
-                reset_realtime_input_session_for_player(
-                    player_entity_id,
-                    &mut cleanup.input_cleanup.input_tick_tracker,
-                    &mut cleanup.input_cleanup.input_rate_limit_state,
-                    &mut cleanup.input_cleanup.latest_realtime_inputs,
-                    &mut cleanup.input_cleanup.realtime_input_activity,
-                );
+                cleanup.input_cleanup.clear_player(player_entity_id);
                 if let Some(controlled_entity) = cleanup
                     .controlled_entity_map
                     .by_player_entity_id
@@ -377,7 +338,6 @@ pub fn receive_client_disconnect_notify(
 
 #[allow(clippy::too_many_arguments)]
 pub fn receive_client_auth_messages(
-    mut commands: Commands<'_, '_>,
     server_query: Query<'_, '_, &'_ Server>,
     mut sender: ServerMultiMessageSender<'_, '_, With<lightyear::prelude::client::Connected>>,
     time: Res<'_, Time<Real>>,
@@ -525,22 +485,21 @@ pub fn receive_client_auth_messages(
             if !claims.sub.is_empty()
                 && let Some(player_entity) = player_entity
             {
-                let account_id_value = if let Ok(account_id_component) =
-                    player_accounts.get(player_entity)
-                {
-                    account_id_component.0.clone()
-                } else {
-                    // Hardening: if hydration missed AccountId for an existing player entity,
-                    // recover from authenticated token subject and patch entity immediately.
+                let Ok(account_id_component) = player_accounts.get(player_entity) else {
                     warn!(
-                        "replication auth repair: player {} missing AccountId component; injecting from authenticated token subject",
-                        message.player_entity_id
+                        "replication rejected client auth: player entity missing AccountId component (account={} player={})",
+                        claims.sub, message.player_entity_id
                     );
-                    commands
-                        .entity(player_entity)
-                        .insert(AccountId(claims.sub.clone()));
-                    claims.sub.clone()
+                    send_session_denied_message(
+                        &mut sender,
+                        server,
+                        remote_id.0,
+                        message_player_wire.as_str(),
+                        "Requested player entity is missing its account binding.",
+                    );
+                    continue;
                 };
+                let account_id_value = account_id_component.0.clone();
                 if account_id_value != claims.sub {
                     warn!(
                         "replication rejected client auth: account does not own player entity (account={} player={})",

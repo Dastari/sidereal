@@ -39,6 +39,7 @@ Update note (2026-03-09):
    - `docs/decisions/dr-0029_runtime_shader_family_taxonomy_and_lua_authoring_model.md`
    - `docs/plans/dynamic_runtime_shader_material_plan.md`
    - `docs/features/genesis_planet_registry_contract.md`
+   - `docs/features/shipyard_ship_authoring_contract.md`
 3. Visibility and replication:
    - `docs/features/visibility_replication_contract.md`
    - `docs/features/tactical_and_owner_lane_protocol_contract.md`
@@ -74,6 +75,9 @@ Update note (2026-03-16):
 
 Update note (2026-04-24):
 - Added `docs/features/genesis_planet_registry_contract.md` as the active feature spec for Genesis planet/celestial authoring and the Lua planet registry.
+
+Update note (2026-04-28):
+- Added `docs/features/shipyard_ship_authoring_contract.md` as the active partial implementation spec for Shipyard ship authoring, Lua ship/module registries, and hardpoint/module dashboard editing.
 
 Update note (2026-04-24):
 - Removed older superseded March 2026 audit reports now replaced by the 2026-04-23 reports under `docs/reports/`.

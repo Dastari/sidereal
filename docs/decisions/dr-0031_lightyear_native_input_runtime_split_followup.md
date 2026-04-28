@@ -27,6 +27,12 @@
 - The client still keeps Lightyear native input locally for `ActionState<PlayerInput>` and rollback replay input history; only the server-confirmation trigger from Lightyear's native input path is disabled.
 - Authoritative server simulation remains driven by Sidereal's authenticated realtime input lane.
 
+2026-04-28 control-lease follow-up:
+
+- Replication server startup now aliases the protocol-only `lightyear::input::plugin::InputPlugin<NativeStateSequence<PlayerInput>>` as `LightyearInputProtocolPlugin` to make the runtime split explicit in code.
+- Do not replace it with `lightyear::input::native::InputPlugin<PlayerInput>` on replication; that native plugin installs the server receive/update path blocked by this decision.
+- Control handoff cleanup continues to clear Sidereal realtime input state through Sidereal's authenticated lane rather than relying on Lightyear native server input confirmation.
+
 ## Context
 
 - The replication server accumulates long-running Bevy warnings such as:

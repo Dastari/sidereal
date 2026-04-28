@@ -211,10 +211,7 @@ impl UiSemanticTone {
     }
 
     pub fn chrome_color(self, theme: UiTheme) -> Color {
-        match self {
-            Self::Info => self.accent_color(theme),
-            Self::Success | Self::Warning | Self::Danger => self.foreground_color(theme),
-        }
+        self.accent_color(theme)
     }
 }
 

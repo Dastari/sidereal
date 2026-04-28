@@ -51,7 +51,7 @@ function PiratePatrol.on_tick(ctx, event)
   end
 
   if target ~= nil then
-    ctx:emit_intent("fly_towards", {
+    ctx:emit_intent("set_navigation_target", {
       entity_id = event.entity_id,
       target_position = { x = target.x, y = target.y },
     })

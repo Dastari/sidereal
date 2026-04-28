@@ -2,7 +2,10 @@ use avian2d::prelude::Position;
 use bevy::{math::DVec2, prelude::*};
 use mlua::{Function, Lua, RegistryKey, Table, UserData, UserDataMethods, Value};
 use serde_json::Value as JsonValue;
-use sidereal_game::{EntityGuid, FlightComputer, OwnerId, ScriptState, ScriptValue};
+use sidereal_game::{
+    EntityGuid, FlightComputer, OwnerId, ScriptNavigationTarget, ScriptState, ScriptValue,
+    WorldPosition,
+};
 use sidereal_net::{
     NotificationImageRef, NotificationPayload, NotificationPlacement, NotificationSeverity,
     PlayerEntityId,
@@ -108,10 +111,11 @@ impl Default for ScriptRuntimeMetrics {
     }
 }
 
-enum ScriptIntent {
-    FlyTowards {
+#[derive(Debug)]
+pub(crate) enum ScriptIntent {
+    SetNavigationTarget {
         entity_id: Uuid,
-        target: Vec2,
+        target_position: DVec2,
     },
     Stop {
         entity_id: Uuid,
@@ -243,15 +247,17 @@ pub fn refresh_script_world_snapshot(
         (
             &'_ EntityGuid,
             Option<&'_ Position>,
+            Option<&'_ WorldPosition>,
             Option<&'_ Transform>,
             Option<&'_ ScriptState>,
         ),
     >,
 ) {
     snapshot.entities_by_guid.clear();
-    for (guid, position, transform, script_state) in &query {
+    for (guid, position, world_position, transform, script_state) in &query {
         let pos = position
             .map(|v| v.0)
+            .or_else(|| world_position.map(|v| v.0))
             .or_else(|| transform.map(|t| t.translation.truncate().as_dvec2()))
             .unwrap_or(DVec2::ZERO);
         snapshot.entities_by_guid.insert(
@@ -526,15 +532,16 @@ pub fn run_script_events(
 pub fn apply_script_intents(
     runtime: Option<NonSendMut<'_, ScriptRuntime>>,
     mut notification_queue: ResMut<'_, NotificationCommandQueue>,
+    mut commands: Commands<'_, '_>,
     mut query: Query<
         '_,
         '_,
         (
+            Entity,
             &'_ EntityGuid,
-            &'_ Transform,
             Option<&'_ OwnerId>,
             Option<&'_ mut ScriptState>,
-            &'_ mut FlightComputer,
+            Option<&'_ mut FlightComputer>,
         ),
     >,
 ) {
@@ -545,48 +552,39 @@ pub fn apply_script_intents(
     let intents = std::mem::take(&mut runtime.pending_intents);
     for intent in intents {
         match intent {
-            ScriptIntent::FlyTowards { entity_id, target } => {
-                for (guid, transform, owner_id, script_state, mut computer) in &mut query {
+            ScriptIntent::SetNavigationTarget {
+                entity_id,
+                target_position,
+            } => {
+                for (entity, guid, owner_id, script_state, computer) in &mut query {
                     if guid.0 != entity_id {
                         continue;
                     }
                     if !is_script_controllable(owner_id, script_state.as_deref()) {
                         break;
                     }
-                    let position = transform.translation.truncate();
-                    let to_target = target - position;
-                    if to_target.length_squared() < 4.0 {
-                        computer.throttle = 0.0;
-                        computer.yaw_input = 0.0;
-                        computer.brake_active = true;
-                        break;
+                    if computer.is_some() {
+                        commands
+                            .entity(entity)
+                            .insert(ScriptNavigationTarget { target_position });
                     }
-                    let desired = to_target.normalize();
-                    let forward = transform.up().truncate();
-                    let cross = forward.perp_dot(desired);
-                    computer.yaw_input = if cross > 0.08 {
-                        1.0
-                    } else if cross < -0.08 {
-                        -1.0
-                    } else {
-                        0.0
-                    };
-                    computer.throttle = 1.0;
-                    computer.brake_active = false;
                     break;
                 }
             }
             ScriptIntent::Stop { entity_id } => {
-                for (guid, _transform, owner_id, script_state, mut computer) in &mut query {
+                for (entity, guid, owner_id, script_state, computer) in &mut query {
                     if guid.0 != entity_id {
                         continue;
                     }
                     if !is_script_controllable(owner_id, script_state.as_deref()) {
                         break;
                     }
-                    computer.throttle = 0.0;
-                    computer.yaw_input = 0.0;
-                    computer.brake_active = true;
+                    commands.entity(entity).remove::<ScriptNavigationTarget>();
+                    if let Some(mut computer) = computer {
+                        computer.throttle = 0.0;
+                        computer.yaw_input = 0.0;
+                        computer.brake_active = true;
+                    }
                     break;
                 }
             }
@@ -595,7 +593,7 @@ pub fn apply_script_intents(
                 key,
                 value,
             } => {
-                for (guid, _transform, owner_id, script_state, _computer) in &mut query {
+                for (_entity, guid, owner_id, script_state, _computer) in &mut query {
                     if guid.0 != entity_id {
                         continue;
                     }
@@ -686,31 +684,37 @@ fn build_script_context(
     Ok(ctx)
 }
 
-fn parse_intent(action: &str, payload: &JsonValue) -> Result<ScriptIntent, String> {
+pub(crate) fn parse_intent(action: &str, payload: &JsonValue) -> Result<ScriptIntent, String> {
     match action {
-        "fly_towards" => {
+        "set_navigation_target" => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "fly_towards requires payload.entity_id".to_string())
+                .ok_or_else(|| "set_navigation_target requires payload.entity_id".to_string())
                 .and_then(parse_uuid)?;
             let target_obj = payload
                 .get("target_position")
                 .and_then(|v| v.as_object())
-                .ok_or_else(|| "fly_towards requires payload.target_position".to_string())?;
+                .ok_or_else(|| {
+                    "set_navigation_target requires payload.target_position".to_string()
+                })?;
             let x = target_obj
                 .get("x")
                 .and_then(|v| v.as_f64())
-                .ok_or_else(|| "fly_towards target_position.x must be number".to_string())?
-                as f32;
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| {
+                    "set_navigation_target target_position.x must be finite number".to_string()
+                })?;
             let y = target_obj
                 .get("y")
                 .and_then(|v| v.as_f64())
-                .ok_or_else(|| "fly_towards target_position.y must be number".to_string())?
-                as f32;
-            Ok(ScriptIntent::FlyTowards {
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| {
+                    "set_navigation_target target_position.y must be finite number".to_string()
+                })?;
+            Ok(ScriptIntent::SetNavigationTarget {
                 entity_id,
-                target: Vec2::new(x, y),
+                target_position: DVec2::new(x, y),
             })
         }
         "stop" => {

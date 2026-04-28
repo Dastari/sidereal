@@ -1,0 +1,55 @@
+return {
+  module_id = "module.engine.main_mk1",
+  display_name = "Engine Main",
+  category = "engine",
+  entity_labels = { "Module", "Engine" },
+  compatible_slot_kinds = { "engine" },
+  tags = { "engine", "propulsion" },
+  components = {
+    {
+      kind = "engine",
+      properties = {
+        thrust = 300000.0,
+        reverse_thrust = 300000.0,
+        torque_thrust = 1500000.0,
+        burn_rate_kg_s = 0.8,
+      },
+    },
+    {
+      kind = "afterburner_capability",
+      properties = {
+        enabled = true,
+        multiplier = 1.5,
+        fuel_burn_multiplier = 2.0,
+        max_afterburner_velocity_mps = 250.0,
+      },
+    },
+    {
+      kind = "thruster_plume_shader_settings",
+      properties = {
+        enabled = true,
+        base_length_m = 2.4,
+        max_length_m = 11.2,
+        base_width_m = 1.1,
+        max_width_m = 3.7,
+        idle_core_alpha = 0.18,
+        max_alpha = 0.92,
+        falloff = 1.18,
+        edge_softness = 1.45,
+        noise_strength = 0.32,
+        flicker_hz = 16.0,
+        reactive_length_scale = 1.0,
+        reactive_alpha_scale = 1.0,
+        afterburner_length_scale = 1.5,
+        afterburner_alpha_boost = 0.18,
+        base_color_rgb = { 1.0, 0.52, 0.14 },
+        hot_color_rgb = { 1.0, 0.82, 0.38 },
+        afterburner_color_rgb = { 1.0, 0.96, 0.78 },
+      },
+    },
+    {
+      kind = "mass_kg",
+      properties = 500.0,
+    },
+  },
+}

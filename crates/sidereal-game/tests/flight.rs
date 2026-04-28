@@ -1,11 +1,13 @@
-use avian2d::prelude::{AngularVelocity, LinearVelocity};
+use avian2d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::ecs::system::RunSystemOnce;
+use bevy::math::DVec2;
 use bevy::prelude::*;
 use sidereal_game::flight::compute_flight_forces;
 use sidereal_game::{
     ActionQueue, AfterburnerState, Engine, EntityAction, EntityGuid, FlightComputer,
     FlightControlAuthority, FlightFuelConsumptionEnabled, FuelTank, MountedOn,
-    SimulationMotionWriter, apply_engine_thrust,
+    ScriptNavigationTarget, SimulationMotionWriter, WorldPosition, apply_engine_thrust,
+    apply_navigation_targets_to_flight_computers,
 };
 use sidereal_game::{
     clamp_angular_velocity, compute_brake_decel_accel_mps2, process_flight_actions,
@@ -75,6 +77,78 @@ fn process_flight_actions_handles_brake_as_intent_only() {
     assert!(computer.brake_active);
     assert!(computer.throttle.abs() < f32::EPSILON);
     assert!(computer.yaw_input.abs() < f32::EPSILON);
+}
+
+#[test]
+fn script_navigation_uses_authoritative_position_before_transform() {
+    let mut app = App::new();
+    let authoritative_position = DVec2::new(5_000_000_000_000.25, -7_000_000_000_000.5);
+    let entity = app
+        .world_mut()
+        .spawn((
+            EntityGuid(Uuid::new_v4()),
+            Position(authoritative_position),
+            Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+            Rotation::IDENTITY,
+            ScriptNavigationTarget {
+                target_position: authoritative_position + DVec2::Y * 100.0,
+            },
+            FlightComputer {
+                profile: "basic_fly_by_wire".to_string(),
+                throttle: 0.0,
+                yaw_input: 1.0,
+                brake_active: true,
+                turn_rate_deg_s: 45.0,
+            },
+            FlightControlAuthority,
+            SimulationMotionWriter,
+        ))
+        .id();
+
+    app.world_mut()
+        .run_system_once(apply_navigation_targets_to_flight_computers)
+        .unwrap();
+
+    let computer = app.world().entity(entity).get::<FlightComputer>().unwrap();
+    assert_eq!(computer.throttle, 1.0);
+    assert_eq!(computer.yaw_input, 0.0);
+    assert!(!computer.brake_active);
+}
+
+#[test]
+fn script_navigation_uses_world_position_before_transform() {
+    let mut app = App::new();
+    let authoritative_position = DVec2::new(-6_000_000_000_000.75, 4_000_000_000_000.5);
+    let entity = app
+        .world_mut()
+        .spawn((
+            EntityGuid(Uuid::new_v4()),
+            WorldPosition(authoritative_position),
+            Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+            Rotation::IDENTITY,
+            ScriptNavigationTarget {
+                target_position: authoritative_position,
+            },
+            FlightComputer {
+                profile: "basic_fly_by_wire".to_string(),
+                throttle: 0.8,
+                yaw_input: 0.5,
+                brake_active: false,
+                turn_rate_deg_s: 45.0,
+            },
+            FlightControlAuthority,
+            SimulationMotionWriter,
+        ))
+        .id();
+
+    app.world_mut()
+        .run_system_once(apply_navigation_targets_to_flight_computers)
+        .unwrap();
+
+    let computer = app.world().entity(entity).get::<FlightComputer>().unwrap();
+    assert_eq!(computer.throttle, 0.0);
+    assert_eq!(computer.yaw_input, 0.0);
+    assert!(computer.brake_active);
 }
 
 #[test]

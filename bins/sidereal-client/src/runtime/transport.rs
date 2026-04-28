@@ -9,6 +9,7 @@ use lightyear::prelude::LocalAddr;
 use lightyear::prelude::SyncConfig;
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::UdpIo;
+use lightyear::prelude::client::Disconnect;
 #[cfg(target_arch = "wasm32")]
 use lightyear::prelude::client::WebTransportClientIo;
 use lightyear::prelude::client::{
@@ -16,15 +17,17 @@ use lightyear::prelude::client::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use lightyear::prelude::{
-    ChannelRegistry, MessageManager, PeerAddr, ReplicationReceiver, Transport,
+    ChannelRegistry, MessageManager, MessageReceiver, MessageSender, PeerAddr, ReplicationReceiver,
+    Transport,
 };
 #[cfg(target_arch = "wasm32")]
 use lightyear::prelude::{
-    ChannelRegistry, MessageManager, PeerAddr, ReplicationReceiver, Transport,
+    ChannelRegistry, MessageManager, MessageReceiver, MessageSender, PeerAddr, ReplicationReceiver,
+    Transport,
 };
 use sidereal_net::{
-    ControlChannel, InputChannel, ManifestChannel, NotificationChannel, TacticalDeltaChannel,
-    TacticalSnapshotChannel,
+    ClientNotificationDismissedMessage, ControlChannel, InputChannel, ManifestChannel,
+    NotificationChannel, ServerNotificationMessage, TacticalDeltaChannel, TacticalSnapshotChannel,
 };
 use std::net::SocketAddr;
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,8 +39,9 @@ use super::ecs_util::queue_despawn_if_exists;
 use super::resources::{
     ClientInputTimelineTuning, ClientInterpolationTimelineTuning, ClientTimelineFocusState,
     ControlBootstrapState, LogoutCleanupRequested, NativePredictionRecoveryPhase,
-    NativePredictionRecoveryState, NativePredictionRecoveryTuning, PendingDisconnectNotify,
-    PredictionCorrectionTuning, PredictionRecoveryReason,
+    NativePredictionRecoveryState, NativePredictionRecoveryTuning, PauseMenuState,
+    PendingDisconnectNotify, PredictionCorrectionTuning, PredictionRecoveryReason,
+    ServerDisconnectDialogState, SharedClientTransportErrorBuffer,
 };
 use std::time::Duration;
 
@@ -381,14 +385,8 @@ pub fn ensure_client_transport_channels(
         if !transport.has_receiver::<TacticalSnapshotChannel>() {
             transport.add_receiver_from_registry::<TacticalSnapshotChannel>(&registry);
         }
-        if !transport.has_sender::<TacticalDeltaChannel>() {
-            transport.add_sender_from_registry::<TacticalDeltaChannel>(&registry);
-        }
         if !transport.has_receiver::<TacticalDeltaChannel>() {
             transport.add_receiver_from_registry::<TacticalDeltaChannel>(&registry);
-        }
-        if !transport.has_sender::<ManifestChannel>() {
-            transport.add_sender_from_registry::<ManifestChannel>(&registry);
         }
         if !transport.has_receiver::<ManifestChannel>() {
             transport.add_receiver_from_registry::<ManifestChannel>(&registry);
@@ -398,6 +396,43 @@ pub fn ensure_client_transport_channels(
         }
         if !transport.has_receiver::<NotificationChannel>() {
             transport.add_receiver_from_registry::<NotificationChannel>(&registry);
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn ensure_client_notification_message_components(
+    mut commands: Commands<'_, '_>,
+    clients: Query<
+        '_,
+        '_,
+        (
+            Entity,
+            Has<MessageReceiver<ServerNotificationMessage>>,
+            Has<MessageSender<ClientNotificationDismissedMessage>>,
+        ),
+        With<Client>,
+    >,
+) {
+    for (client, has_notification_receiver, has_dismissal_sender) in &clients {
+        let mut entity_commands = commands.entity(client);
+        let mut patched = Vec::new();
+
+        if !has_notification_receiver {
+            entity_commands.insert(MessageReceiver::<ServerNotificationMessage>::default());
+            patched.push("recv:ServerNotificationMessage");
+        }
+        if !has_dismissal_sender {
+            entity_commands.insert(MessageSender::<ClientNotificationDismissedMessage>::default());
+            patched.push("send:ClientNotificationDismissedMessage");
+        }
+
+        if !patched.is_empty() {
+            info!(
+                "client patched missing notification message components for client entity={:?}: {}",
+                client,
+                patched.join(", ")
+            );
         }
     }
 }
@@ -551,13 +586,16 @@ pub fn update_native_prediction_recovery_for_window_focus(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_unexpected_server_disconnect_system(
     mut removed_connected: RemovedComponents<'_, '_, Connected>,
     raw_clients: Query<'_, '_, Entity, With<RawClient>>,
     app_state: Option<Res<'_, State<ClientAppState>>>,
     pending_disconnect: Res<'_, PendingDisconnectNotify>,
-    mut cleanup_requested: ResMut<'_, LogoutCleanupRequested>,
+    cleanup_requested: Res<'_, LogoutCleanupRequested>,
     mut dialog_queue: ResMut<'_, DialogQueue>,
+    mut disconnect_dialog_state: ResMut<'_, ServerDisconnectDialogState>,
+    mut pause_menu_state: ResMut<'_, PauseMenuState>,
 ) {
     // Ignore expected disconnects initiated by local logout flow.
     if pending_disconnect.0.is_some() || cleanup_requested.0 {
@@ -587,11 +625,98 @@ pub fn handle_unexpected_server_disconnect_system(
         return;
     }
 
-    dialog_queue.push_error(
-        "Server Disconnected",
-        "The replication server connection was lost.\n\nYou have been returned to the login screen.",
+    push_server_disconnect_dialog_once(
+        &mut dialog_queue,
+        &mut disconnect_dialog_state,
+        &mut pause_menu_state,
+        "The Lightyear client connection closed unexpectedly.",
     );
-    cleanup_requested.0 = true;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn handle_lightyear_udp_receive_error_system(
+    transport_errors: Res<'_, SharedClientTransportErrorBuffer>,
+    mut commands: Commands<'_, '_>,
+    raw_clients: Query<
+        '_,
+        '_,
+        Entity,
+        (
+            With<RawClient>,
+            Without<lightyear::prelude::client::Disconnected>,
+        ),
+    >,
+    app_state: Option<Res<'_, State<ClientAppState>>>,
+    pending_disconnect: Res<'_, PendingDisconnectNotify>,
+    cleanup_requested: Res<'_, LogoutCleanupRequested>,
+    mut dialog_queue: ResMut<'_, DialogQueue>,
+    mut disconnect_dialog_state: ResMut<'_, ServerDisconnectDialogState>,
+    mut pause_menu_state: ResMut<'_, PauseMenuState>,
+) {
+    let errors = transport_errors.drain();
+    if errors.is_empty() {
+        return;
+    }
+
+    if pending_disconnect.0.is_some() || cleanup_requested.0 {
+        return;
+    }
+
+    if !is_disconnect_dialog_world_state(&app_state) {
+        return;
+    }
+
+    let error_message = errors
+        .last()
+        .map(|message| normalize_udp_receive_error(message))
+        .unwrap_or_else(|| "Transport receive failed.".to_string());
+    warn!("client detected Lightyear UDP receive failure: {error_message}");
+
+    for entity in &raw_clients {
+        commands.trigger(Disconnect { entity });
+    }
+
+    push_server_disconnect_dialog_once(
+        &mut dialog_queue,
+        &mut disconnect_dialog_state,
+        &mut pause_menu_state,
+        &error_message,
+    );
+}
+
+fn push_server_disconnect_dialog_once(
+    dialog_queue: &mut DialogQueue,
+    disconnect_dialog_state: &mut ServerDisconnectDialogState,
+    pause_menu_state: &mut PauseMenuState,
+    error_message: &str,
+) {
+    if disconnect_dialog_state.shown {
+        return;
+    }
+    disconnect_dialog_state.shown = true;
+    pause_menu_state.open = false;
+    dialog_queue.push_disconnect_error(error_message);
+}
+
+fn is_disconnect_dialog_world_state(app_state: &Option<Res<'_, State<ClientAppState>>>) -> bool {
+    app_state.as_ref().is_some_and(|state| {
+        matches!(
+            state.get(),
+            ClientAppState::InWorld
+                | ClientAppState::WorldLoading
+                | ClientAppState::AssetLoading
+                | ClientAppState::CharacterSelect
+        )
+    })
+}
+
+fn normalize_udp_receive_error(message: &str) -> String {
+    message
+        .strip_prefix("Error receiving UDP packet:")
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .unwrap_or(message.trim())
+        .to_string()
 }
 
 #[cfg(test)]

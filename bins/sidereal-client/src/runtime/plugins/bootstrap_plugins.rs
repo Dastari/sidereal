@@ -88,7 +88,10 @@ fn add_headless_transport_systems(app: &mut App) {
         (
             auth_net::apply_headless_account_switch_system,
             transport::ensure_client_transport_channels,
+            transport::ensure_client_notification_message_components
+                .after(transport::ensure_client_transport_channels),
             transport::adapt_client_timeline_tuning_for_window_focus,
+            transport::handle_lightyear_udp_receive_error_system,
             transport::handle_unexpected_server_disconnect_system,
             auth_net::send_lightyear_auth_messages,
             auth_net::receive_lightyear_session_ready_messages,
@@ -108,7 +111,10 @@ fn add_windowed_transport_systems(app: &mut App) {
         Update,
         (
             transport::ensure_client_transport_channels,
+            transport::ensure_client_notification_message_components
+                .after(transport::ensure_client_transport_channels),
             transport::adapt_client_timeline_tuning_for_window_focus,
+            transport::handle_lightyear_udp_receive_error_system,
             transport::handle_unexpected_server_disconnect_system,
             auth_net::send_lightyear_auth_messages,
             auth_net::receive_lightyear_session_ready_messages,

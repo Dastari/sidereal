@@ -1,11 +1,20 @@
 # Scripting Support
 
 Status: Active implementation contract
-Last updated: 2026-04-26
+Last updated: 2026-04-28
 Owners: scripting + replication + gameplay
 Scope: authoritative Lua scripting, script catalogs, validated mutation APIs, and content authoring boundaries
 
 ## 0. Implementation Status
+
+Update note (2026-04-28):
+- Shipyard ship registry authoring has started. Ship definitions now use `data/scripts/ships/registry.lua` plus one Lua file per ship, and module-library defaults use `data/scripts/ship_modules/registry.lua` plus one Lua file per module. Rust validates both registries, exposes typed `ShipRegistry` / `ShipModuleRegistry` resources, and injects `ctx.load_ship_definition(bundle_or_ship_id)` plus `ctx.load_ship_module_definition(module_id)` into gateway/replication bundle contexts. Native impact: `ship.corvette` and `ship.rocinante` keep stable bundle IDs while resolving through the generic registry-backed ship body builder. WASM impact: no authoritative script execution moves client-side.
+
+Update note (2026-04-27):
+- Gateway starter-world scripts now select a generic `controlled_bundle_id` from `accounts/player_init.lua`; gateway validation requires the selected bundle to use `bundle_class = "controllable"` and resolves the initial control target from exactly one persisted `controlled_start_target` component in the bundle graph records. Ship remains valid content taxonomy in Lua bundle IDs, labels, assets, and UI copy, but is no longer a gateway backend invariant. Native impact: character creation still spawns the same starter corvette by default and now supports non-ship controllable starters through the same contract. WASM impact: no client-side authority or transport change.
+
+Update note (2026-04-27):
+- Runtime navigation intents now use `ctx:emit_intent("set_navigation_target", { entity_id, target_position })`. Rust preserves f64 target coordinates, rejects non-finite coordinates, writes a runtime-only `ScriptNavigationTarget` component, and lets the shared flight authority system translate that generic navigation target into current `FlightComputer` control state using authoritative `Position` / `WorldPosition` before any f32 `Transform` fallback. Native impact: server-side scripted NPC steering keeps galaxy-scale precision; clients receive only normal replicated motion/control outcomes. WASM impact: no client-side scripting or protocol split.
 
 2026-04-24 status note:
 
@@ -182,6 +191,7 @@ Integration points:
 - Script-driven runtime shader binding and render-layer composition for 2D visuals now runs through Lua-authored `RuntimeRenderLayerDefinition`, `RuntimeRenderLayerRule`, `RuntimeRenderLayerOverride`, `RuntimePostProcessStack`, and `RuntimeWorldVisualStack` component data. Replication and gateway validate those authored records server-side, the client builds a runtime layer registry from replicated state, world entities resolve layer assignment as `override -> highest-priority rule -> default main_world`, fullscreen background/foreground plus camera-scoped post-process overlay passes execute from those authored definitions, and layered world visuals such as the current planet body/cloud/ring stack now consume an authored `RuntimeWorldVisualStack` instead of inferring pass composition client-side. The remaining migration gap is removal of the last content-specific shader adapters and continued reduction of the dedicated Rust `Material2d` families that still exist because Bevy material schemas are type-static (see `docs/decisions/dr-0027_lua_authored_render_layers_and_generic_shader_pipeline.md`, `docs/plans/dynamic_runtime_shader_material_plan.md`, and `docs/features/asset_delivery_contract.md`).
 - Procedural visual tuning payloads for authored world content are Lua-owned. Current examples include asteroid procedural sprite profiles and planet body shader settings emitted from Lua bundles, while Rust owns the validated component schema and render/runtime implementation.
 - Genesis planet registry definitions are Lua-owned catalog data under `data/scripts/planets/`. Rust validates the registry and exposes typed `PlanetRegistry` data; Lua world bootstrap consumes those definitions through `ctx.load_planet_definitions()` and still spawns authoritative entities through the existing bundle path.
+- Shipyard ship and module registry definitions are Lua-owned catalog data under `data/scripts/ships/` and `data/scripts/ship_modules/`. Rust validates ship visual asset IDs, hardpoint authoring-plane offsets, mounted-module compatibility, and component-kind payloads; the generic ship bundle consumes those definitions through host-injected `ctx.load_ship_definition()` and `ctx.load_ship_module_definition()`.
 - Shared environment-lighting defaults are also Lua-authored now via the `environment.lighting` bundle and replicated `EnvironmentLightingState` component, while the client derives its render-time lighting resource from that ECS state.
 
 ### 2.3 Content Model
@@ -309,7 +319,7 @@ function on_ai_tick(ctx, event)
       faction = faction,
     })
     if #stations > 0 then
-      ctx:emit_intent("fly_towards", {
+      ctx:emit_intent("set_navigation_target", {
         entity_id = event.entity_id,
         target_position = stations[1]:position(),
       })
@@ -325,7 +335,7 @@ function on_ai_tick(ctx, event)
 
   if #enemies > 0 then
     local target = enemies[1]
-    ctx:emit_intent("fly_towards", {
+    ctx:emit_intent("set_navigation_target", {
       entity_id = event.entity_id,
       target_position = target:position(),
     })
@@ -340,7 +350,7 @@ function on_ai_tick(ctx, event)
     local patrol_index = state.patrol_index or 1
     local patrol_points = state.patrol_points or {}
     if #patrol_points > 0 then
-      ctx:emit_intent("fly_towards", {
+      ctx:emit_intent("set_navigation_target", {
         entity_id = event.entity_id,
         target_position = patrol_points[patrol_index],
       })
@@ -956,7 +966,7 @@ ctx:emit_intent(action_name, payload_table)
 
 | Action | Payload | Description |
 |---|---|---|
-| `"fly_towards"` | `{ entity_id, target_position }` | Set flight computer target. Validated: entity ownership, fuel. |
+| `"set_navigation_target"` | `{ entity_id, target_position }` | Set a generic f64 navigation target. The current flight authority system translates it to `FlightComputer` control state. |
 | `"fly_away_from"` | `{ entity_id, away_from_position }` | Set flight computer to flee direction. |
 | `"stop"` | `{ entity_id }` | Set flight computer to brake. |
 | `"fire_weapons"` | `{ entity_id, target }` | Fire weapons at target. Validated: range, ammo, cooldown. |
@@ -1300,7 +1310,7 @@ function PirateCombat.on_lose_entity_visibility(ctx, event)
   persist_war_list(ctx, event.observer_entity_id, war)
 
   -- Move to last known position immediately.
-  ctx:emit_intent("fly_towards", {
+  ctx:emit_intent("set_navigation_target", {
     entity_id = event.observer_entity_id,
     target_position = event.last_known_position,
   })
@@ -1360,7 +1370,7 @@ function PirateCombat.on_tick(ctx, event)
 
   if best_target ~= nil then
     ctx:emit_intent("set_ai_mode", { entity_id = event.entity_id, mode = "attack" })
-    ctx:emit_intent("fly_towards", {
+    ctx:emit_intent("set_navigation_target", {
       entity_id = event.entity_id,
       target_position = best_target:position(),
     })
@@ -1379,7 +1389,7 @@ function PirateCombat.on_tick(ctx, event)
 
   if chase ~= nil then
     ctx:emit_intent("set_ai_mode", { entity_id = event.entity_id, mode = "search" })
-    ctx:emit_intent("fly_towards", {
+    ctx:emit_intent("set_navigation_target", {
       entity_id = event.entity_id,
       target_position = chase.last_seen_pos,
     })
@@ -1892,9 +1902,10 @@ Examples:
 2. **Script source root**: `data/scripts` (override via `SIDEREAL_SCRIPTS_ROOT`).
 
 3. **Gateway script hooks** (`bins/sidereal-gateway/src/auth/starter_world_scripts.rs`):
-   - `accounts/player_init.lua`: calls `player_init(ctx)` for ship bundle selection (`ship_bundle_id`).
+   - `accounts/player_init.lua`: calls `player_init(ctx)` for starter controlled bundle selection (`controlled_bundle_id`).
    - `bundles/bundle_registry.lua`: loads bundle definitions and validates `required_component_kinds` against `generated_component_registry()`.
-   - Account bootstrap now composes both the player entity record and starter ship graph records through Lua-authored bundle scripts selected by `accounts/player_init.lua`.
+   - Account bootstrap now composes both the player entity record and starter controlled entity graph records through Lua-authored bundle scripts selected by `accounts/player_init.lua`.
+   - Starter controlled bundles must use `bundle_class = "controllable"` and include exactly one `controlled_start_target` component so gateway can resolve `controlled_entity_guid` without content-label assumptions.
    - Script `context` includes `new_uuid()` for dynamic entity/module graph ID generation in Lua.
    - Lua-to-JSON recursive conversion is shared via `sidereal-scripting::lua_value_to_json`.
    - Gateway now resolves script execution through a cached in-memory `ScriptCatalogResource` instead of reading `.lua` files on every call.
@@ -1931,7 +1942,7 @@ Examples:
    - When `ScriptCatalogResource.revision` changes, the runtime scripting host rebuilds its handler set from the updated in-memory source on the next execution pass.
    - Generic per-entity interval scheduler runs Lua `on_tick(ctx, event)` handlers selected via `ScriptState.data.on_tick_handler`.
    - Read-only `ctx.world:find_entity(uuid)` + `ScriptEntity` wrapper (`guid`, `position`, `has`, `get` for `script_state`).
-   - Intent bridge prototype: `ctx:emit_intent("fly_towards" | "stop" | "set_script_state", payload)`.
+   - Intent bridge prototype: `ctx:emit_intent("set_navigation_target" | "stop" | "set_script_state", payload)`.
    - Event queue path supports per-entity `on_<event>` handler dispatch via `ScriptState.data.event_hooks`.
    - Rust validates script control authority (requires `ScriptState` and non-player owner) and applies intents to `FlightComputer` / `ScriptState`.
 
@@ -1949,7 +1960,7 @@ Examples:
 | File | Purpose |
 |---|---|
 | `data/scripts/world/world_init.lua` | World defaults + scripted world-init graph records for backdrop layers/settings |
-| `data/scripts/accounts/player_init.lua` | New-account ship bundle selection for player spawn (`ship_bundle_id`) |
+| `data/scripts/accounts/player_init.lua` | New-account controlled bundle selection for player spawn (`controlled_bundle_id`) |
 | `data/scripts/bundles/bundle_registry.lua` | Bundle definitions with component-kind allowlists |
 | `data/scripts/bundles/entity_registry.lua` | Optional bundle lifecycle hooks (`on_spawned`) |
 | `data/scripts/bundles/ship/*.lua` | Ship prefab bundle graph-record builders (for example `ship.corvette`, `ship.rocinante`) |
@@ -2095,7 +2106,7 @@ This subsection is the authoritative "what exists today" contract and should be 
 
 1. **Gateway registration scripts**
    - `accounts/player_init.lua`:
-     - Required function: `player_init(ctx) -> { starter_bundle_id = string }`
+     - Required function: `player_init(ctx) -> { player_bundle_id = string, controlled_bundle_id = string }`
      - Injected context fields:
        - `account_id` (UUID string)
        - `player_entity_id` (UUID string)
@@ -2104,8 +2115,10 @@ This subsection is the authoritative "what exists today" contract and should be 
    - `bundles/bundle_registry.lua`:
      - Required table: `bundles`
      - Each bundle entry requires:
+       - `bundle_class`
        - `graph_records_script`
        - `required_component_kinds`
+     - Starter controlled bundles selected by `controlled_bundle_id` must use `bundle_class = "controllable"` and their graph records must include exactly one `controlled_start_target` component. Content-specific labels such as `Ship` are not used to resolve the authoritative starter control target.
 2. **Replication startup scripts**
    - `world/world_init.lua`:
      - Required table: `world_defaults`
@@ -2185,7 +2198,7 @@ Payloads are JSON/Lua tables generated by replication combat systems.
 
 Only these actions are accepted by current runtime scripting intent parser:
 
-1. `fly_towards`
+1. `set_navigation_target`
 2. `stop`
 3. `set_script_state`
 
@@ -2197,6 +2210,7 @@ Current script-driven control intents are applied only if:
 1. target entity has `ScriptState`,
 2. target `OwnerId` exists and is **not** a player entity ID (`npc`/non-player ownership path),
 3. payload passes intent parser validation.
+4. navigation target coordinates are finite f64 JSON numbers.
 
 This prevents runtime scripts from directly steering player-owned entities in the current slice.
 
@@ -2207,7 +2221,7 @@ Current runtime scripting order in `FixedUpdate`:
 1. `refresh_script_world_snapshot`
 2. `run_script_intervals`
 3. `run_script_events`
-4. `apply_script_intents` (before `sidereal_game::process_flight_actions`)
+4. `apply_script_intents` (before `sidereal_game::apply_navigation_targets_to_flight_computers` and `sidereal_game::process_flight_actions`)
 
 This chain executes before physics prepare.
 
@@ -2273,7 +2287,7 @@ This chain executes before physics prepare.
 - [ ] Implement `ctx.world:distance(a, b)` and `ctx.world:distance_to_point(uuid, pos)`.
 - [ ] Implement `ctx.world:find_system_at(pos)` and `ctx.world:query_in_system(uuid, filter)` (solar system queries).
 - [ ] Implement intent queue: `ctx:emit_intent(action, payload)` -> Rust-side validation -> authoritative state change.
-- [ ] Add core intent actions: `fly_towards`, `stop`, `fire_weapons`, `spawn_entity`, `despawn_entity`, `set_script_state`, `emit_event`.
+- [ ] Add core intent actions: `set_navigation_target`, `stop`, `fire_weapons`, `spawn_entity`, `despawn_entity`, `set_script_state`, `emit_event`.
 - [ ] Add authoritative lifecycle-override intents for scripted exceptional cases (for example canceling destruction, restoring health through validated gameplay paths, selecting alternate authored effect/loot outcomes, or spawning reinforcement/content entities) without allowing raw ECS mutation from Lua.
 - [ ] Add privileged runtime actions for scripted orchestration (`teleport_entity`, `set_entity_transform`, `set_entity_velocity`, `batch_move_entities`) with scheduling and validation guardrails.
 - [ ] Add scanner/search support actions (`scanner_ping`, optional `set_ai_mode` state helper) for loss-of-visibility behavior loops.
@@ -2381,7 +2395,7 @@ All mutations remain intent-only and are validated in Rust authority systems.
 
 - [x] Implement AI tick prototype via fixed interval scheduler (`ai/pirate_patrol.lua`, 2s interval) on replication host.
 - [ ] Consider providing optional Rust-side behavior tree primitives that scripts configure for deterministic execution, built-in profiling, and serializable state.
-- [ ] Add movement intent actions: `fly_towards`, `fly_away_from`, `orbit`, `stop` (extend core intents from Phase D as needed).
+- [ ] Add movement intent actions: `set_navigation_target`, `fly_away_from`, `orbit`, `stop` (extend core intents from Phase D as needed).
 - [ ] Add combat intent actions: `fire_weapons`, `set_target`, `disengage`.
 - [ ] Create example AI scripts using the hybrid model (read-only queries + intent emission):
   - `ai/pirate_patrol.lua` -- patrol waypoints, engage enemies, flee when damaged.
